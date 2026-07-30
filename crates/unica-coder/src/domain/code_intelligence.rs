@@ -154,6 +154,76 @@ pub struct CodeSearchResult {
     pub sections: Vec<ProviderSearchSection>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeOutlineResult {
+    pub module: String,
+    pub identity: CodeOutlineIdentity,
+    pub totals: CodeOutlineTotals,
+    pub regions: Vec<CodeOutlineRegion>,
+    pub methods: Vec<CodeOutlineMethod>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeOutlineIdentity {
+    pub category: Option<String>,
+    pub object: Option<String>,
+    pub module_type: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeOutlineTotals {
+    pub methods: usize,
+    pub exports: usize,
+    pub regions: usize,
+    pub loc: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeOutlineRegion {
+    pub name: Option<String>,
+    pub line: usize,
+    pub end_line: Option<usize>,
+    pub regions: Vec<CodeOutlineRegion>,
+    pub methods: Vec<CodeOutlineMethod>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeOutlineMethod {
+    pub name: String,
+    pub kind: CodeOutlineMethodKind,
+    pub parameters: Vec<CodeOutlineParameter>,
+    #[serde(rename = "export")]
+    pub is_export: bool,
+    pub line: usize,
+    pub end_line: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CodeOutlineMethodKind {
+    Procedure,
+    Function,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeOutlineParameter {
+    pub name: String,
+    pub by_value: bool,
+    pub default_value: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum CodeIntelligenceReadData {
+    Outline(CodeOutlineResult),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderReadOutcome {
     pub provider: ProviderId,
@@ -164,6 +234,7 @@ pub struct ProviderReadOutcome {
     pub artifacts: Vec<String>,
     pub stdout: Option<String>,
     pub stderr: Option<String>,
+    pub data: Option<CodeIntelligenceReadData>,
 }
 
 pub trait CodeIntelligenceProvider: Send + Sync {
@@ -303,6 +374,7 @@ mod tests {
                 artifacts: Vec::new(),
                 stdout: None,
                 stderr: None,
+                data: None,
             })
         }
     }

@@ -14,29 +14,6 @@ use std::time::Duration;
 
 const RLM_NAVIGATION_TIMEOUT: Duration = Duration::from_secs(45);
 
-/// Stable machine-readable markers that let a caller tell a retryable pending
-/// index from a permanent one without parsing prose.
-const INDEX_PENDING_PREFIX: &str = "index_pending:";
-const INDEX_UNAVAILABLE_PREFIX: &str = "index_unavailable:";
-
-/// How a read tool renders a not-ready index. `Warn` keeps the call successful
-/// with a warning because the tool still answers something useful; `Fail`
-/// reports a typed failure because without the index the tool has nothing to
-/// return and a success would tell the caller the outline was empty.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum UnreadyIndexPolicy {
-    Warn,
-    Fail,
-}
-
-fn unready_index_policy(request: &CodeIntelligenceReadRequest) -> UnreadyIndexPolicy {
-    match request {
-        CodeIntelligenceReadRequest::Outline { .. } => UnreadyIndexPolicy::Fail,
-        CodeIntelligenceReadRequest::Definition { .. }
-        | CodeIntelligenceReadRequest::ObjectProfile { .. } => UnreadyIndexPolicy::Warn,
-    }
-}
-
 trait RlmNavigationClient: Send + Sync {
     fn readiness(
         &self,
@@ -121,6 +98,7 @@ impl<'a> RlmNavigationAdapter<'a> {
         cancellation: &CancellationToken,
     ) -> Result<AdapterOutcome, String> {
         let tool_name = request.tool_name();
+        let operation = operation_for_request(request)?;
         if cancellation.is_cancelled() {
             return Ok(AdapterOutcome::cancelled(format!(
                 "{tool_name} cancelled before provider work"
@@ -152,7 +130,6 @@ impl<'a> RlmNavigationAdapter<'a> {
         if timeout.is_zero() {
             return Err(format!("{tool_name} provider deadline exceeded"));
         }
-        let operation = operation_for_request(request);
         let output = match self.client.call(
             &context.workspace,
             &context.source_root.path,
@@ -177,7 +154,6 @@ impl<'a> RlmNavigationAdapter<'a> {
         }
         let (section, body) = match tool_name {
             "unica.code.definition" => ("rlm-definition", render_definition(&value)?),
-            "unica.code.outline" => ("rlm-outline", render_outline(&value)?),
             "unica.meta.profile" => ("rlm-meta-profile", render_profile(&value)?),
             _ => return Err(format!("unsupported RLM navigation tool: {tool_name}")),
         };
@@ -199,8 +175,13 @@ impl<'a> RlmNavigationAdapter<'a> {
     }
 }
 
-fn operation_for_request(request: &CodeIntelligenceReadRequest) -> WorkspaceRlmOperation {
-    match request {
+/// ADR-0020: the index serves definition and object profile. The outline is
+/// built from the current BSL file, so it has no RLM operation at all and asking
+/// for one is a routing defect rather than a runtime condition.
+fn operation_for_request(
+    request: &CodeIntelligenceReadRequest,
+) -> Result<WorkspaceRlmOperation, String> {
+    Ok(match request {
         CodeIntelligenceReadRequest::Definition {
             name,
             module_hint,
@@ -209,13 +190,6 @@ fn operation_for_request(request: &CodeIntelligenceReadRequest) -> WorkspaceRlmO
             name: name.clone(),
             module_hint: module_hint.clone(),
             limit: *limit,
-        },
-        CodeIntelligenceReadRequest::Outline {
-            path,
-            include_methods,
-        } => WorkspaceRlmOperation::Outline {
-            path: path.clone(),
-            include_methods: *include_methods,
         },
         CodeIntelligenceReadRequest::ObjectProfile {
             name,
@@ -226,7 +200,13 @@ fn operation_for_request(request: &CodeIntelligenceReadRequest) -> WorkspaceRlmO
             sections: sections.clone(),
             limit: *limit,
         },
-    }
+        CodeIntelligenceReadRequest::Outline { .. } => {
+            return Err(format!(
+                "{} is built from the current BSL source and has no RLM operation",
+                request.tool_name()
+            ))
+        }
+    })
 }
 
 fn render_definition(value: &Value) -> Result<String, String> {
@@ -308,101 +288,6 @@ fn render_definition(value: &Value) -> Result<String, String> {
     Ok(lines.join("\n"))
 }
 
-fn render_outline(value: &Value) -> Result<String, String> {
-    let path = required_value_string(value, "path", "RLM outline")?;
-    let mut lines = vec![format!("module: {path}")];
-    push_optional_line(&mut lines, "object", value.get("object_name"));
-    push_optional_line(&mut lines, "category", value.get("category"));
-    push_optional_line(&mut lines, "moduleType", value.get("module_type"));
-    if let Some(totals) = value.get("totals").and_then(Value::as_object) {
-        lines.push(format!(
-            "totals: methods={} exports={} regions={} loc={}",
-            json_count(totals.get("methods")),
-            json_count(totals.get("exports")),
-            json_count(totals.get("regions")),
-            json_count(totals.get("loc"))
-        ));
-    }
-    if let Some(outline) = value.get("outline").and_then(Value::as_array) {
-        render_outline_nodes(outline, 0, &mut lines);
-    }
-    if let Some(methods) = value.get("orphan_methods").and_then(Value::as_array) {
-        render_outline_methods(methods, 0, &mut lines);
-    }
-    Ok(lines.join("\n"))
-}
-
-fn render_outline_nodes(nodes: &[Value], depth: usize, lines: &mut Vec<String>) {
-    for node in nodes {
-        let name = node
-            .get("region")
-            .and_then(Value::as_str)
-            .unwrap_or("<unnamed>");
-        let line = node.get("line").and_then(Value::as_u64).unwrap_or_default();
-        let end_line = node
-            .get("end_line")
-            .and_then(Value::as_u64)
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "?".to_string());
-        lines.push(format!(
-            "{}region {name}: {line}-{end_line}",
-            "  ".repeat(depth)
-        ));
-        if let Some(methods) = node.get("methods").and_then(Value::as_array) {
-            render_outline_methods(methods, depth + 1, lines);
-        }
-        if let Some(children) = node.get("children").and_then(Value::as_array) {
-            render_outline_nodes(children, depth + 1, lines);
-        }
-    }
-}
-
-fn render_outline_methods(methods: &[Value], depth: usize, lines: &mut Vec<String>) {
-    for method in methods {
-        let kind = method
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or("method");
-        let name = method
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or("<unknown>");
-        let params = method
-            .get("params")
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            })
-            .unwrap_or_default();
-        let export = if method
-            .get("is_export")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
-            " export"
-        } else {
-            ""
-        };
-        let line = method
-            .get("line")
-            .and_then(Value::as_u64)
-            .unwrap_or_default();
-        let end_line = method
-            .get("end_line")
-            .and_then(Value::as_u64)
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "?".to_string());
-        lines.push(format!(
-            "{}{kind} {name}({params}){export} at {line}-{end_line}",
-            "  ".repeat(depth)
-        ));
-    }
-}
-
 fn render_profile(value: &Value) -> Result<String, String> {
     let object_name = required_value_string(value, "object_name", "RLM object profile")?;
     let category = value
@@ -481,19 +366,6 @@ fn compact_json(value: &Value) -> Result<String, String> {
     }
 }
 
-fn push_optional_line(lines: &mut Vec<String>, label: &str, value: Option<&Value>) {
-    if let Some(value) = value
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-    {
-        lines.push(format!("{label}: {value}"));
-    }
-}
-
-fn json_count(value: Option<&Value>) -> u64 {
-    value.and_then(Value::as_u64).unwrap_or_default()
-}
-
 fn required_value_string<'a>(
     value: &'a Value,
     key: &str,
@@ -520,7 +392,6 @@ fn index_unavailable_outcome(
     readiness: IndexReadiness,
 ) -> AdapterOutcome {
     let tool_name = request.tool_name();
-    let pending = matches!(readiness, IndexReadiness::Building);
     let warning = readiness_warning(readiness);
     if warning.starts_with(CANCELLED_PREFIX) {
         return AdapterOutcome::cancelled(
@@ -530,44 +401,13 @@ fn index_unavailable_outcome(
                 .trim(),
         );
     }
-    if unready_index_policy(request) == UnreadyIndexPolicy::Warn {
-        let mut outcome = AdapterOutcome::ok(format!(
-            "{tool_name} could not use the persistent RLM MCP API"
-        ));
-        outcome.warnings.push(warning);
-        return outcome;
-    }
-    let (summary, error) = if pending {
-        (
-            "pending RLM index build",
-            format!("{INDEX_PENDING_PREFIX} {warning}"),
-        )
-    } else {
-        (
-            "could not read RLM index",
-            format!(
-                "{INDEX_UNAVAILABLE_PREFIX} {}",
-                warning
-                    .strip_prefix("rlm index unavailable: ")
-                    .unwrap_or(&warning)
-            ),
-        )
-    };
-    index_failure_outcome(tool_name, summary, error)
-}
-
-fn index_failure_outcome(tool_name: &str, summary: &str, error: String) -> AdapterOutcome {
-    AdapterOutcome {
-        ok: false,
-        summary: format!("{tool_name} {summary}"),
-        changes: Vec::new(),
-        warnings: Vec::new(),
-        errors: vec![error],
-        artifacts: Vec::new(),
-        stdout: None,
-        stderr: None,
-        command: None,
-    }
+    // Definition and object profile still answer something useful without the
+    // index, so an unready index is a warning rather than a typed failure.
+    let mut outcome = AdapterOutcome::ok(format!(
+        "{tool_name} could not use the persistent RLM MCP API"
+    ));
+    outcome.warnings.push(warning);
+    outcome
 }
 
 fn cancelled_client_outcome(tool_name: &str, error: &str) -> AdapterOutcome {
@@ -599,8 +439,8 @@ fn readiness_warning(readiness: IndexReadiness) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        operation_for_request, render_definition, render_outline, render_profile,
-        RlmNavigationAdapter, RlmNavigationClient,
+        operation_for_request, render_definition, render_profile, RlmNavigationAdapter,
+        RlmNavigationClient,
     };
     use crate::application::AdapterOutcome;
     use crate::domain::cancellation::CancellationToken;
@@ -661,45 +501,6 @@ mod tests {
 
         assert!(text.contains("CommonModules/X/Module.bsl:7"));
         assert!(text.contains("diagnostic: ignored malformed RLM definition #2"));
-    }
-
-    #[test]
-    fn outline_renderer_handles_region_tree_and_orphans() {
-        let text = render_outline(&json!({
-            "path": "CommonModules/X/Module.bsl",
-            "category": "CommonModule",
-            "object_name": "X",
-            "module_type": "Module",
-            "totals": {"methods": 2, "exports": 1, "regions": 1, "loc": 40},
-            "outline": [{
-                "region": "API",
-                "line": 1,
-                "end_line": 20,
-                "methods": [{
-                    "name": "Запустить",
-                    "type": "procedure",
-                    "params": [],
-                    "is_export": true,
-                    "line": 3,
-                    "end_line": 9
-                }],
-                "children": []
-            }],
-            "orphan_methods": [{
-                "name": "Внутренняя",
-                "type": "function",
-                "params": [],
-                "is_export": false,
-                "line": 22,
-                "end_line": 30
-            }]
-        }))
-        .unwrap();
-
-        assert!(text.contains("module: CommonModules/X/Module.bsl"));
-        assert!(text.contains("region API: 1-20"));
-        assert!(text.contains("procedure Запустить() export at 3-9"));
-        assert!(text.contains("function Внутренняя() at 22-30"));
     }
 
     #[test]
@@ -817,7 +618,7 @@ mod tests {
             ]),
             limit: 11,
         };
-        let operation = operation_for_request(&request);
+        let operation = operation_for_request(&request).unwrap();
 
         assert_eq!(
             operation,
@@ -969,47 +770,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn outline_reports_building_index_as_retryable_failure() {
-        let outcome = unready_index_outcome(&outline_request(), IndexReadiness::Building);
-
-        assert!(!outcome.ok);
-        assert_eq!(
-            outcome.summary,
-            "unica.code.outline pending RLM index build"
-        );
-        assert_eq!(outcome.errors, vec!["index_pending: rlm index building"]);
-        assert!(outcome.warnings.is_empty());
-        assert!(outcome.stdout.is_none());
-    }
-
-    #[test]
-    fn outline_reports_unready_index_as_typed_failure() {
-        for (readiness, expected) in [
-            (
-                IndexReadiness::Missing,
-                "index_unavailable: index is missing",
-            ),
-            (
-                IndexReadiness::Failed("helper crashed".to_string()),
-                "index_unavailable: helper crashed",
-            ),
-            (
-                IndexReadiness::Stale {
-                    status: "dump is newer".to_string(),
-                },
-                "index_unavailable: rlm index stale: dump is newer",
-            ),
-        ] {
-            let outcome = unready_index_outcome(&outline_request(), readiness);
-
-            assert!(!outcome.ok, "{expected}");
-            assert_eq!(
-                outcome.summary,
-                "unica.code.outline could not read RLM index"
-            );
-            assert_eq!(outcome.errors, vec![expected.to_string()]);
-            assert!(outcome.stdout.is_none(), "{expected}");
+    fn definition_request() -> CodeIntelligenceReadRequest {
+        CodeIntelligenceReadRequest::Definition {
+            name: "ОбщегоНазначения".to_string(),
+            module_hint: String::new(),
+            limit: 50,
         }
     }
 
@@ -1039,21 +804,42 @@ mod tests {
     }
 
     #[test]
-    fn outline_reports_a_cancelled_readiness_as_cancellation_not_index_failure() {
+    fn a_cancelled_readiness_is_reported_as_cancellation_not_as_an_index_failure() {
         let outcome = unready_index_outcome(
-            &outline_request(),
+            &definition_request(),
             IndexReadiness::Unavailable("cancelled: readiness stopped".to_string()),
         );
 
         assert!(!outcome.ok);
         assert!(outcome.summary.contains("cancelled"), "{}", outcome.summary);
+        assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+    }
+
+    #[test]
+    fn the_index_adapter_refuses_to_serve_the_outline() {
+        // ADR-0020: the outline is owned by the current-source provider. Reaching
+        // this adapter with it is a routing defect, so it fails before any RLM
+        // work rather than answering from the index.
+        let client = RecordingClient {
+            operations: Mutex::new(Vec::new()),
+        };
+        let error = RlmNavigationAdapter::with_client(&client)
+            .invoke_resolved_cancellable(
+                &outline_request(),
+                &unready_index_context(),
+                ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
+                &CancellationToken::new(),
+            )
+            .unwrap_err();
+
         assert!(
-            !outcome
-                .errors
-                .iter()
-                .any(|error| error.starts_with(super::INDEX_UNAVAILABLE_PREFIX)),
-            "{:?}",
-            outcome.errors
+            error.contains("built from the current BSL source"),
+            "{error}"
+        );
+        assert!(operation_for_request(&outline_request()).is_err());
+        assert!(
+            client.operations.lock().unwrap().is_empty(),
+            "a misrouted outline must not reach the RLM client"
         );
     }
 

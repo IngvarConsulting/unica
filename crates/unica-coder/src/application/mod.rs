@@ -314,10 +314,12 @@ pub fn tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "unica.code.outline",
-            description: "Read compact BSL module outline from the internal code index.",
+            description: "Read compact BSL module outline from the current source file.",
             mutating: false,
+            // ADR-0020: the outline is parsed from the file on disk, so this tool
+            // neither reads nor writes any workspace cache.
             cache_access: CacheAccess {
-                reads: &["bsl_index"],
+                reads: &[],
                 writes: &[],
             },
             handler: ToolHandler::CodeIntelligence {
@@ -643,7 +645,13 @@ fn invoke_code_intelligence_read(
             ),
         );
     }
-    Ok(ports::HandlerOutcome::plain(AdapterOutcome {
+    let data = outcome
+        .data
+        .take()
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|error| format!("failed to serialize code intelligence read result: {error}"))?;
+    let adapter = AdapterOutcome {
         ok: outcome.ok,
         summary: outcome.summary,
         changes: Vec::new(),
@@ -653,7 +661,11 @@ fn invoke_code_intelligence_read(
         stdout: outcome.stdout,
         stderr: outcome.stderr,
         command: None,
-    }))
+    };
+    Ok(match data {
+        Some(data) => ports::HandlerOutcome::with_data(adapter, data),
+        None => ports::HandlerOutcome::plain(adapter),
+    })
 }
 
 fn code_intelligence_read_request(
@@ -4824,6 +4836,22 @@ mod tests {
         assert!(!stdout.contains("powershell.exe"));
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn code_outline_tool_declares_no_cache_access() {
+        // ADR-0020: the outline is parsed from the current file, so the envelope
+        // must not claim `bsl_index` as an input of this tool — neither as read
+        // nor as written.
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.code.outline")
+            .expect("code-outline tool exists");
+
+        assert!(!tool.mutating);
+        assert!(tool.cache_access.reads.is_empty());
+        assert!(tool.cache_access.writes.is_empty());
+        assert!(!tool.description.contains("index"), "{}", tool.description);
     }
 
     #[test]

@@ -1,4 +1,5 @@
 pub(crate) mod application_ports;
+pub(crate) mod bsl_outline;
 pub(crate) mod bundled_tools;
 pub(crate) mod code_intelligence;
 pub(crate) mod format_guard;
