@@ -1,22 +1,25 @@
 use crate::application::AdapterOutcome;
-use crate::domain::project_sources::{SourceFormat, SourceSetKind};
+use crate::application::SupportGuardRequirement;
+use crate::domain::source_target::{ResolvedTarget, TargetKind};
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::path_policy::WorkspacePathPolicy;
-use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
 use crate::infrastructure::platform_xml_source_targets::{
-    platform_xml_module_identity as module_identity, validate_platform_xml_module_descriptors,
+    resolve_platform_xml_target, revalidate_platform_xml_target, ClosedPlatformXmlTarget,
 };
-use crate::infrastructure::project_sources::discover_project_source_map;
-use crate::infrastructure::source_roots::{normalize_path_identity, resolve_source_root};
+use crate::infrastructure::support_guard::{
+    evaluate_resolved_support_guard, ResolvedSupportGuardCheck,
+};
 use bsl_syntax::ast::{AstNode, FunctionDef, ProcedureDef};
 use diffy::{apply, DiffOptions, Patch};
 use serde::Serialize;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::PathBuf;
 
-use super::common::guard_active_format_owner;
+#[cfg(test)]
+use crate::infrastructure::platform_xml_source_targets::platform_xml_module_identity as module_identity;
+
+use super::common::{code_patch_source_target, guard_code_patch_resolved_target};
 use super::compile_transaction::CompileTransaction;
 use super::text_snapshot::{
     resolve_line_ending, EolPolicy, LineEnding, LineEndingProfile, SourceTextSnapshot,
@@ -44,8 +47,9 @@ pub(crate) struct CodePatchExecution {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CodePatchData {
-    path: String,
     source_set: String,
+    metadata_path: String,
+    target_kind: TargetKind,
     pre_hash: String,
     post_hash: String,
     no_op: bool,
@@ -69,8 +73,9 @@ struct ChangedRange {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AffectedTarget {
-    path: String,
     source_set: String,
+    metadata_path: String,
+    target_kind: TargetKind,
     owner: String,
     module_role: String,
     raw_hash: String,
@@ -186,8 +191,8 @@ fn patch_inner(
     }
 }
 
-struct PatchPlan {
-    target: ResolvedTarget,
+struct CodePatchPlan {
+    target: CodePatchTarget,
     before: Vec<u8>,
     after: Vec<u8>,
     selector: Selector,
@@ -197,7 +202,10 @@ struct PatchPlan {
     no_op: bool,
 }
 
-fn build_patch(args: &Map<String, Value>, context: &WorkspaceContext) -> Result<PatchPlan, String> {
+fn build_patch(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<CodePatchPlan, String> {
     let target = resolve_target(args, context)?;
     let before = fs::read(&target.path)
         .map_err(|error| format!("failed to read {}: {error}", target.path.display()))?;
@@ -219,7 +227,7 @@ fn build_patch(args: &Map<String, Value>, context: &WorkspaceContext) -> Result<
     if !no_op {
         after.splice(site.offset..site.offset, insertion.iter().copied());
     }
-    Ok(PatchPlan {
+    Ok(CodePatchPlan {
         target,
         before,
         after,
@@ -232,7 +240,7 @@ fn build_patch(args: &Map<String, Value>, context: &WorkspaceContext) -> Result<
 }
 
 fn finish_patch(
-    plan: PatchPlan,
+    plan: CodePatchPlan,
     mode: PatchMode,
     context: &WorkspaceContext,
 ) -> CodePatchExecution {
@@ -286,7 +294,12 @@ fn finish_patch(
         let publish_result = (|| -> Result<(), String> {
             let mut transaction = CompileTransaction::new();
             transaction.replace_bytes(&plan.target.path, &plan.before, plan.after.clone())?;
-            guard_active_format_owner(&mut transaction, &plan.target.path, context)?;
+            let revalidated =
+                guard_code_patch_resolved_target(&mut transaction, &plan.target.handle, context)?;
+            if revalidated != plan.target.path {
+                return Err("resolved code.patch target changed before publication".to_string());
+            }
+            guard_resolved_support(&revalidated, context)?;
             transaction.commit()?;
             Ok(())
         })();
@@ -304,12 +317,22 @@ fn finish_patch(
             "unica.code.patch applied one insertion".to_string()
         },
         changes: (mode == PatchMode::Apply && !plan.no_op)
-            .then(|| format!("{}: inserted BSL content", plan.target.path.display()))
+            .then(|| {
+                format!(
+                    "{} + {}: inserted BSL content",
+                    plan.target.resolved.source_set,
+                    plan.target.metadata_path()
+                )
+            })
             .into_iter()
             .collect(),
         warnings: Vec::new(),
         errors: Vec::new(),
-        artifacts: vec![plan.target.path.display().to_string()],
+        artifacts: vec![format!(
+            "{} + {}",
+            plan.target.resolved.source_set,
+            plan.target.metadata_path()
+        )],
         stdout: None,
         stderr: None,
         command: None,
@@ -321,7 +344,7 @@ fn finish_patch(
 }
 
 fn patch_data(
-    plan: &PatchPlan,
+    plan: &CodePatchPlan,
     postimage: &str,
     post_hash: String,
     validation: SourceValidation,
@@ -346,19 +369,21 @@ fn patch_data(
     } else {
         let preimage = std::str::from_utf8(&plan.before)
             .map_err(|_| "original BSL module must be UTF-8".to_string())?;
-        unified_diff(&plan.target.relative_path, preimage, postimage)?
+        unified_diff(plan.target.metadata_path(), preimage, postimage)?
     };
     Ok(CodePatchData {
-        path: plan.target.relative_path.clone(),
-        source_set: plan.target.source_set.clone(),
+        source_set: plan.target.resolved.source_set.clone(),
+        metadata_path: plan.target.metadata_path().to_string(),
+        target_kind: plan.target.resolved.target_kind,
         pre_hash: hash(&plan.before),
         post_hash: post_hash.clone(),
         no_op: plan.no_op,
         changed_ranges,
         diff,
         affected_target: AffectedTarget {
-            path: plan.target.relative_path.clone(),
-            source_set: plan.target.source_set.clone(),
+            source_set: plan.target.resolved.source_set.clone(),
+            metadata_path: plan.target.metadata_path().to_string(),
+            target_kind: plan.target.resolved.target_kind,
             owner: plan.target.owner.clone(),
             module_role: plan.target.module_role.clone(),
             raw_hash: post_hash,
@@ -386,81 +411,61 @@ impl CodePatchExecution {
     }
 }
 
-struct ResolvedTarget {
+struct CodePatchTarget {
     path: PathBuf,
-    relative_path: String,
-    source_set: String,
+    resolved: ResolvedTarget,
+    handle: ClosedPlatformXmlTarget,
     owner: String,
     module_role: String,
+}
+
+impl CodePatchTarget {
+    fn metadata_path(&self) -> &str {
+        self.resolved
+            .metadata_path
+            .as_ref()
+            .expect("code.patch resolves one module metadataPath")
+            .as_str()
+    }
 }
 
 fn resolve_target(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Result<ResolvedTarget, String> {
-    let requested = Path::new(string_arg(args, "path")?);
-    if requested.is_absolute() {
-        return Err("unica.code.patch v1 requires a workspace-relative `path`".to_string());
+) -> Result<CodePatchTarget, String> {
+    let source_target = code_patch_source_target(args).map_err(|error| error.to_string())?;
+    let resolution =
+        resolve_platform_xml_target(context, &source_target).map_err(|error| error.to_string())?;
+    let path = revalidate_platform_xml_target(context, &resolution.handle)
+        .map_err(|error| error.to_string())?
+        .path;
+    let mut authorization = CompileTransaction::new();
+    let guarded_path =
+        guard_code_patch_resolved_target(&mut authorization, &resolution.handle, context)?;
+    if guarded_path != path {
+        return Err("resolved code.patch target changed during planning".to_string());
     }
-    let target = WorkspacePathPolicy::new(context).resolve_write(requested)?;
-    let target_metadata = fs::symlink_metadata(&target)
-        .map_err(|error| format!("failed to inspect BSL module {}: {error}", target.display()))?;
-    if metadata_is_link_or_reparse_point(&target_metadata) || !target_metadata.is_file() {
-        return Err("unica.code.patch v1 accepts only an existing regular *Module.bsl".to_string());
-    }
-    let source_root = resolve_source_root(context, args.get("sourceDir").and_then(Value::as_str))?;
-    let source_name = source_root
-        .source_set
-        .as_deref()
-        .ok_or_else(|| "sourceDir must select a configured Configuration source set".to_string())?;
-    let source_map = discover_project_source_map(&context.workspace_root)?;
-    let source_set = source_map
-        .source_sets
-        .iter()
-        .find(|set| set.name == source_name)
-        .ok_or_else(|| "effective source set is unavailable".to_string())?;
-    if source_set.kind != SourceSetKind::Configuration
-        || source_set.source_format != SourceFormat::PlatformXml
-    {
-        return Err(
-            "unica.code.patch v1 requires a platform XML Configuration source set".to_string(),
-        );
-    }
-    let target_identity = normalize_path_identity(&target)?;
-    if !target_identity.starts_with(&source_root.path) {
-        return Err("BSL module is outside the selected Configuration source set".to_string());
-    }
-    let source_relative = target_identity
-        .strip_prefix(&source_root.path)
-        .map_err(|_| "failed to derive BSL module identity".to_string())?;
-    let identity = module_identity(source_relative)?;
-    validate_platform_xml_module_descriptors(context, &source_root.path, &identity.descriptors)
-        .map_err(|error| error.to_string())?;
-    let workspace_identity = normalize_path_identity(&context.workspace_root)?;
-    let workspace_relative = target_identity
-        .strip_prefix(&workspace_identity)
-        .map_err(|_| "BSL module is outside the normalized workspace root".to_string())?;
-    let relative_path = portable_relative_path(workspace_relative)?;
-    Ok(ResolvedTarget {
-        path: target,
-        relative_path,
-        source_set: source_name.to_string(),
-        owner: identity.owner,
-        module_role: identity.role.as_str().to_string(),
+    guard_resolved_support(&path, context)?;
+    let metadata_path = resolution
+        .resolved
+        .metadata_path
+        .as_ref()
+        .expect("module resolver returns metadataPath");
+    let segments = metadata_path.segments().collect::<Vec<_>>();
+    let (owner, module_role) = match segments.as_slice() {
+        [module_role] => ("Configuration".to_string(), (*module_role).to_string()),
+        [kind, name, .., module_role] => (format!("{kind}.{name}"), (*module_role).to_string()),
+        _ => {
+            return Err("resolved module metadataPath has an invalid shape".to_string());
+        }
+    };
+    Ok(CodePatchTarget {
+        path,
+        resolved: resolution.resolved,
+        handle: resolution.handle,
+        owner,
+        module_role,
     })
-}
-
-fn portable_relative_path(path: &Path) -> Result<String, String> {
-    path.components()
-        .map(|component| match component {
-            Component::Normal(value) => value
-                .to_str()
-                .map(str::to_string)
-                .ok_or_else(|| "workspace-relative BSL path is not valid UTF-8".to_string()),
-            _ => Err("workspace-relative BSL path contains an invalid component".to_string()),
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .map(|components| components.join("/"))
 }
 
 #[cfg(test)]
@@ -622,7 +627,7 @@ fn canonical_match_end(text: &str, start: usize, needle: &str) -> Option<usize> 
 
 fn prove_repeat_is_noop(
     postimage: &str,
-    plan: &PatchPlan,
+    plan: &CodePatchPlan,
     methods: &[Method],
 ) -> Result<(), String> {
     let snapshot = SourceTextSnapshot::from_bytes(postimage.as_bytes())
@@ -643,6 +648,18 @@ fn prove_repeat_is_noop(
             "patch cannot be applied idempotently on the next call: repeated planning would change bytes"
                 .to_string(),
         )
+    }
+}
+
+fn guard_resolved_support(
+    target: &std::path::Path,
+    context: &WorkspaceContext,
+) -> Result<(), String> {
+    match evaluate_resolved_support_guard(target, SupportGuardRequirement::Editable, context) {
+        ResolvedSupportGuardCheck::Allow | ResolvedSupportGuardCheck::Warn(_) => Ok(()),
+        ResolvedSupportGuardCheck::Block(violation) => {
+            Err(format!("support guard: {}", violation.reason))
+        }
     }
 }
 
@@ -1184,7 +1201,8 @@ mod tests {
         let expected = b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\nProcedure Added()\r\nEndProcedure\r\n// untouched suffix\r\n";
         fs::write(&module, before).unwrap();
         let args = patch_args(
-            "src/CommonModules/Sample/Ext/Module.bsl",
+            "main",
+            "CommonModule.Sample.Module",
             "Run",
             "Procedure Added()\nEndProcedure",
         );
@@ -1218,6 +1236,92 @@ mod tests {
     }
 
     #[test]
+    fn code_patch_configuration_and_extension_preview_apply_preserve_unrelated_bytes() {
+        let root = temp_root("code-patch-config-extension");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            concat!(
+                "format: DESIGNER\n",
+                "source-set:\n",
+                "  - name: main\n",
+                "    type: CONFIGURATION\n",
+                "    path: cfg\n",
+                "  - name: addOn\n",
+                "    type: EXTENSION\n",
+                "    path: ext\n",
+            ),
+        )
+        .unwrap();
+        let context = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let before = b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\n// untouched\r\n";
+        let expected = b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\nProcedure Added()\r\nEndProcedure\r\n// untouched\r\n";
+        let mut protected = Vec::new();
+        for source_root in ["cfg", "ext"] {
+            let source_root = root.join(source_root);
+            let module = source_root.join("CommonModules/Shared/Ext/Module.bsl");
+            fs::create_dir_all(module.parent().unwrap()).unwrap();
+            fs::write(
+                source_root.join("Configuration.xml"),
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration/></MetaDataObject>"#,
+            )
+            .unwrap();
+            fs::write(
+                source_root.join("CommonModules/Shared.xml"),
+                b"\xef\xbb\xbf<MetaDataObject marker=\"descriptor\"/>\r\n",
+            )
+            .unwrap();
+            fs::write(source_root.join("unrelated.bin"), [0, 1, 2, 255]).unwrap();
+            fs::write(&module, before).unwrap();
+            protected.push(source_root.join("Configuration.xml"));
+            protected.push(source_root.join("CommonModules/Shared.xml"));
+            protected.push(source_root.join("unrelated.bin"));
+        }
+        let protected_before = protected
+            .iter()
+            .map(|path| (path.clone(), fs::read(path).unwrap()))
+            .collect::<Vec<_>>();
+
+        for (source_set, source_root) in [("main", "cfg"), ("addOn", "ext")] {
+            let module = root
+                .join(source_root)
+                .join("CommonModules/Shared/Ext/Module.bsl");
+            let args = patch_args(
+                source_set,
+                "CommonModule.Shared.Module",
+                "Run",
+                "Procedure Added()\nEndProcedure",
+            );
+
+            let preview = patch_inner(&args, &context, PatchMode::Preview);
+            assert!(preview.outcome.ok, "{:?}", preview.outcome.errors);
+            assert_eq!(fs::read(&module).unwrap(), before);
+            let preview_data = serde_json::to_value(preview.data.unwrap()).unwrap();
+            assert_eq!(preview_data["sourceSet"], source_set);
+            assert_eq!(preview_data["metadataPath"], "CommonModule.Shared.Module");
+            assert_eq!(preview_data["targetKind"], "module");
+
+            let applied = patch_inner(&args, &context, PatchMode::Apply);
+            assert!(applied.outcome.ok, "{:?}", applied.outcome.errors);
+            assert_eq!(fs::read(&module).unwrap(), expected);
+
+            let repeated = patch_inner(&args, &context, PatchMode::Apply);
+            assert!(repeated.outcome.ok, "{:?}", repeated.outcome.errors);
+            assert!(repeated.data.unwrap().no_op);
+            assert_eq!(fs::read(&module).unwrap(), expected);
+        }
+        for (path, bytes) in protected_before {
+            assert_eq!(fs::read(path).unwrap(), bytes);
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn code_patch_data_has_an_exact_stable_serialization_contract() {
         let context = temp_context("typed-serialization");
         let module = context
@@ -1229,7 +1333,8 @@ mod tests {
         let after = format!("{before}{inserted}");
         fs::write(&module, before).unwrap();
         let args = patch_args(
-            "src/CommonModules/Sample/Ext/Module.bsl",
+            "main",
+            "CommonModule.Sample.Module",
             "Run",
             "Procedure Added()\nEndProcedure",
         );
@@ -1240,12 +1345,21 @@ mod tests {
         let serialized = serde_json::to_value(preview.data.unwrap()).unwrap();
         let pre_hash = hash(before.as_bytes());
         let post_hash = hash(after.as_bytes());
-        let diff = unified_diff("src/CommonModules/Sample/Ext/Module.bsl", before, &after).unwrap();
+        let diff = concat!(
+            "--- a/CommonModule.Sample.Module\n",
+            "+++ b/CommonModule.Sample.Module\n",
+            "@@ -1,2 +1,4 @@\n",
+            " Procedure Run()\n",
+            " EndProcedure\n",
+            "+Procedure Added()\n",
+            "+EndProcedure\n",
+        );
         assert_eq!(
             serialized,
             json!({
-                "path": "src/CommonModules/Sample/Ext/Module.bsl",
                 "sourceSet": "main",
+                "metadataPath": "CommonModule.Sample.Module",
+                "targetKind": "module",
                 "preHash": pre_hash,
                 "postHash": post_hash.clone(),
                 "noOp": false,
@@ -1259,8 +1373,9 @@ mod tests {
                 }],
                 "diff": diff,
                 "affectedTarget": {
-                    "path": "src/CommonModules/Sample/Ext/Module.bsl",
                     "sourceSet": "main",
+                    "metadataPath": "CommonModule.Sample.Module",
+                    "targetKind": "module",
                     "owner": "CommonModule.Sample",
                     "moduleRole": "Module",
                     "rawHash": post_hash.clone()
@@ -1273,6 +1388,9 @@ mod tests {
                 }
             })
         );
+        let serialized_text = serialized.to_string();
+        assert!(!serialized_text.contains("src/CommonModules"));
+        assert!(!serialized_text.contains("Module.bsl"));
         fs::remove_dir_all(&context.workspace_root).unwrap();
     }
 
@@ -1289,7 +1407,8 @@ mod tests {
         )
         .unwrap();
         let args = patch_args_for_selector(
-            "src/CommonModules/Sample/Ext/Module.bsl",
+            "main",
+            "CommonModule.Sample.Module",
             json!({"anchor": "Message(\"old\");"}),
             "before",
             "    Message(\"new\");",
@@ -1321,7 +1440,8 @@ mod tests {
         );
         fs::write(&module, before).unwrap();
         let args = patch_args_for_selector(
-            "src/CommonModules/Sample/Ext/Module.bsl",
+            "main",
+            "CommonModule.Sample.Module",
             json!({"anchor": "\tКонецЕсли;\nКонецПроцедуры\n"}),
             "after",
             "// inserted",
@@ -1354,7 +1474,8 @@ mod tests {
         let before = b"Procedure Run()\n    Target();\nEndProcedure\n";
         fs::write(&module, before).unwrap();
         let args = patch_args_for_selector(
-            "src/CommonModules/Sample/Ext/Module.bsl",
+            "main",
+            "CommonModule.Sample.Module",
             json!({"anchor": "Target();"}),
             "before",
             "    Target();",
@@ -1382,7 +1503,8 @@ mod tests {
         let before = b"Procedure Run()\nEndProcedure\n";
         fs::write(&module, before).unwrap();
         let args = patch_args(
-            "src/CommonModules/Sample/Ext/Module.bsl",
+            "main",
+            "CommonModule.Sample.Module",
             "Run",
             "Procedure Run()\nEndProcedure",
         );
@@ -1404,7 +1526,8 @@ mod tests {
         fs::create_dir_all(module.parent().unwrap()).unwrap();
         fs::write(&module, "Procedure Run()\nEndProcedure").unwrap();
         let args = patch_args(
-            "src/CommonModules/Sample/Ext/Module.bsl",
+            "main",
+            "CommonModule.Sample.Module",
             "Run",
             "Procedure Added()\nEndProcedure",
         );
@@ -1432,7 +1555,8 @@ mod tests {
         let expected = "Процедура Тест() КонецПроцедуры\nПроцедура Добавлена() КонецПроцедуры\n";
         fs::write(&module, before).unwrap();
         let args = patch_args(
-            "src/CommonModules/Sample/Ext/Module.bsl",
+            "main",
+            "CommonModule.Sample.Module",
             "Тест",
             "Процедура Добавлена() КонецПроцедуры",
         );
@@ -1463,7 +1587,8 @@ mod tests {
         let expected = b"\xef\xbb\xbf\xef\xbb\xbfProcedure Run()\nEndProcedure\nProcedure Added()\nEndProcedure\n";
         fs::write(&module, before).unwrap();
         let args = patch_args(
-            "src/CommonModules/Sample/Ext/Module.bsl",
+            "main",
+            "CommonModule.Sample.Module",
             "Run",
             "Procedure Added()\nEndProcedure",
         );
@@ -1493,7 +1618,8 @@ mod tests {
         let before = b"Procedure First()\r\nEndProcedure\r\nProcedure Second()\nEndProcedure\n";
         fs::write(&module, before).unwrap();
         let args = patch_args(
-            "src/CommonModules/Sample/Ext/Module.bsl",
+            "main",
+            "CommonModule.Sample.Module",
             "Second",
             "Procedure Added()\r\nEndProcedure",
         );
@@ -1522,7 +1648,12 @@ mod tests {
             let module = context.workspace_root.join(&relative);
             fs::create_dir_all(module.parent().unwrap()).unwrap();
             fs::write(&module, "Procedure Run()\nEndProcedure\n").unwrap();
-            let args = patch_args(&relative, "Run", "Procedure Added()\nEndProcedure");
+            let args = patch_args(
+                "main",
+                &format!("Catalog.Items.{role}"),
+                "Run",
+                "Procedure Added()\nEndProcedure",
+            );
 
             let preview = patch_inner(&args, &context, PatchMode::Preview);
             assert!(preview.outcome.ok, "{:?}", preview.outcome.errors);
@@ -1684,17 +1815,24 @@ mod tests {
         let cases = [
             (
                 "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+                "Catalog.Items.Form.Main.FormModule",
                 "FormModule",
             ),
             (
                 "src/Catalogs/Items/Commands/Print/Ext/CommandModule.bsl",
+                "Catalog.Items.Command.Print.CommandModule",
                 "CommandModule",
             ),
         ];
-        for (relative, role) in cases {
+        for (relative, metadata_path, role) in cases {
             let module = context.workspace_root.join(relative);
             fs::write(&module, "Procedure Run()\nEndProcedure\n").unwrap();
-            let args = patch_args(relative, "Run", "Procedure Added()\nEndProcedure");
+            let args = patch_args(
+                "main",
+                metadata_path,
+                "Run",
+                "Procedure Added()\nEndProcedure",
+            );
 
             let preview = patch_inner(&args, &context, PatchMode::Preview);
 
@@ -1711,22 +1849,8 @@ mod tests {
     }
 
     #[test]
-    fn target_requires_relative_regular_file_and_metadata_descriptors() {
+    fn code_patch_requires_descriptor_evidence_and_a_proven_module_role() {
         let context = temp_context("target-contract");
-        let module = context
-            .workspace_root
-            .join("src/CommonModules/Sample/Ext/Module.bsl");
-        fs::create_dir_all(module.parent().unwrap()).unwrap();
-        fs::write(&module, "Procedure Run()\nEndProcedure\n").unwrap();
-
-        let absolute = patch_args(
-            module.to_str().unwrap(),
-            "Run",
-            "Procedure Added()\nEndProcedure",
-        );
-        let absolute_result = patch_inner(&absolute, &context, PatchMode::Preview);
-        assert!(!absolute_result.outcome.ok);
-        assert!(absolute_result.outcome.errors[0].contains("workspace-relative"));
 
         let missing_descriptor_module = context
             .workspace_root
@@ -1738,19 +1862,47 @@ mod tests {
         )
         .unwrap();
         let missing_descriptor = patch_args(
-            "src/CommonModules/Missing/Ext/Module.bsl",
+            "main",
+            "CommonModule.Missing.Module",
             "Run",
             "Procedure Added()\nEndProcedure",
         );
         let missing_result = patch_inner(&missing_descriptor, &context, PatchMode::Preview);
         assert!(!missing_result.outcome.ok);
-        assert!(missing_result.outcome.errors[0].contains("descriptor is unavailable"));
+        assert!(missing_result.outcome.errors[0].contains("metadata owner evidence"));
+
+        fs::create_dir_all(context.workspace_root.join("src/Languages/Ru/Ext")).unwrap();
+        fs::write(
+            context.workspace_root.join("src/Languages/Ru.xml"),
+            "<MetaDataObject/>",
+        )
+        .unwrap();
+        fs::write(
+            context
+                .workspace_root
+                .join("src/Languages/Ru/Ext/ManagerModule.bsl"),
+            "Procedure Run()\nEndProcedure\n",
+        )
+        .unwrap();
+        let unsupported_role = patch_args(
+            "main",
+            "Language.Ru.ManagerModule",
+            "Run",
+            "Procedure Added()\nEndProcedure",
+        );
+        let unsupported_result = patch_inner(&unsupported_role, &context, PatchMode::Preview);
+        assert!(!unsupported_result.outcome.ok);
+        assert!(
+            unsupported_result.outcome.errors[0].contains("supported canonical"),
+            "{:?}",
+            unsupported_result.outcome.errors
+        );
 
         fs::remove_dir_all(&context.workspace_root).unwrap();
     }
 
     #[test]
-    fn symlink_module_is_rejected_during_preview() {
+    fn code_patch_symlink_module_is_rejected_during_preview() {
         let context = temp_context("symlink-target");
         let real = context
             .workspace_root
@@ -1774,7 +1926,8 @@ mod tests {
             }
         }
         let args = patch_args(
-            "src/CommonModules/Sample/Ext/Module.bsl",
+            "main",
+            "CommonModule.Sample.Module",
             "Run",
             "Procedure Added()\nEndProcedure",
         );
@@ -1782,12 +1935,12 @@ mod tests {
         let result = patch_inner(&args, &context, PatchMode::Preview);
 
         assert!(!result.outcome.ok);
-        assert!(result.outcome.errors[0].contains("regular *Module.bsl"));
+        assert!(result.outcome.errors[0].contains("containment"));
         fs::remove_dir_all(&context.workspace_root).unwrap();
     }
 
     #[test]
-    fn invalid_postimage_returns_failed_validation_without_writing() {
+    fn code_patch_invalid_postimage_returns_failed_validation_without_writing() {
         let context = temp_context("validation-failure");
         let module = context
             .workspace_root
@@ -1796,7 +1949,8 @@ mod tests {
         let before = b"Procedure Run()\n    Message(\"ok\");\nEndProcedure\n";
         fs::write(&module, before).unwrap();
         let args = patch_args_for_selector(
-            "src/CommonModules/Sample/Ext/Module.bsl",
+            "main",
+            "CommonModule.Sample.Module",
             json!({"anchor": "Message(\"ok\");"}),
             "after",
             "    If True Then",
@@ -1833,7 +1987,7 @@ mod tests {
     }
 
     #[test]
-    fn dry_run_reports_the_same_postimage_without_writing() {
+    fn code_patch_dry_run_reports_the_same_postimage_without_writing() {
         let context = temp_context("dry-run");
         let module = context
             .workspace_root
@@ -1842,7 +1996,8 @@ mod tests {
         let before = b"Procedure Run()\nEndProcedure\n";
         fs::write(&module, before).unwrap();
         let args = patch_args(
-            "src/CommonModules/Sample/Ext/Module.bsl",
+            "main",
+            "CommonModule.Sample.Module",
             "Run",
             "Procedure Added()\nEndProcedure",
         );
@@ -1860,7 +2015,7 @@ mod tests {
     }
 
     #[test]
-    fn patch_refuses_a_stale_preimage_without_overwriting_concurrent_change() {
+    fn code_patch_refuses_a_stale_preimage_without_overwriting_concurrent_change() {
         let context = temp_context("stale-preimage");
         let module = context
             .workspace_root
@@ -1868,7 +2023,8 @@ mod tests {
         fs::create_dir_all(module.parent().unwrap()).unwrap();
         fs::write(&module, "Procedure Run()\nEndProcedure\n").unwrap();
         let args = patch_args(
-            "src/CommonModules/Sample/Ext/Module.bsl",
+            "main",
+            "CommonModule.Sample.Module",
             "Run",
             "Procedure Added()\nEndProcedure",
         );
@@ -1890,7 +2046,7 @@ mod tests {
     }
 
     #[test]
-    fn patch_rolls_back_if_v8project_changes_the_owner_source_set_before_commit() {
+    fn code_patch_rolls_back_if_v8project_changes_the_owner_source_set_before_commit() {
         let context = temp_context("source-map-race");
         let module = context
             .workspace_root
@@ -1904,7 +2060,8 @@ mod tests {
         )
         .unwrap();
         let args = patch_args(
-            "src/CommonModules/Sample/Ext/Module.bsl",
+            "main",
+            "CommonModule.Sample.Module",
             "Run",
             "Procedure Added()\nEndProcedure",
         );
@@ -1926,6 +2083,41 @@ mod tests {
             fs::read_to_string(&v8project).unwrap(),
             concurrent_source_map
         );
+        fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn code_patch_rolls_back_if_owner_descriptor_changes_before_commit() {
+        let context = temp_context("owner-descriptor-race");
+        let module = context
+            .workspace_root
+            .join("src/CommonModules/Sample/Ext/Module.bsl");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        let before = b"Procedure Run()\nEndProcedure\n";
+        fs::write(&module, before).unwrap();
+        let args = patch_args(
+            "main",
+            "CommonModule.Sample.Module",
+            "Run",
+            "Procedure Added()\nEndProcedure",
+        );
+        let descriptor = context.workspace_root.join("src/CommonModules/Sample.xml");
+        let replacement = "<MetaDataObject concurrent=\"true\"/>";
+        let descriptor_for_hook = descriptor.clone();
+
+        let result = with_before_commit_hook(
+            move |_| fs::write(&descriptor_for_hook, replacement).unwrap(),
+            || patch_inner(&args, &context, PatchMode::Apply),
+        );
+
+        assert!(!result.outcome.ok);
+        assert!(
+            result.outcome.errors.join("\n").contains("read guard"),
+            "{:?}",
+            result.outcome.errors
+        );
+        assert_eq!(fs::read(&module).unwrap(), before);
+        assert_eq!(fs::read_to_string(&descriptor).unwrap(), replacement);
         fs::remove_dir_all(&context.workspace_root).unwrap();
     }
 
@@ -1983,20 +2175,32 @@ mod tests {
         args
     }
 
-    fn patch_args(path: &str, method: &str, content: &str) -> Map<String, Value> {
-        patch_args_for_selector(path, json!({"method": method}), "after", content)
+    fn patch_args(
+        source_set: &str,
+        metadata_path: &str,
+        method: &str,
+        content: &str,
+    ) -> Map<String, Value> {
+        patch_args_for_selector(
+            source_set,
+            metadata_path,
+            json!({"method": method}),
+            "after",
+            content,
+        )
     }
 
     fn patch_args_for_selector(
-        path: &str,
+        source_set: &str,
+        metadata_path: &str,
         selector: Value,
         position: &str,
         content: &str,
     ) -> Map<String, Value> {
         let mut args = arguments(selector, position);
-        args.insert("path".to_string(), json!(path));
+        args.insert("sourceSet".to_string(), json!(source_set));
+        args.insert("metadataPath".to_string(), json!(metadata_path));
         args.insert("content".to_string(), json!(content));
-        args.insert("sourceDir".to_string(), json!("src"));
         args
     }
 

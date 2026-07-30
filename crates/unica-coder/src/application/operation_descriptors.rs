@@ -32,6 +32,9 @@ pub(crate) enum FormatGuardPolicy {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum SupportGuardPolicy {
+    HandlerResolved {
+        requirement: SupportGuardRequirement,
+    },
     PathArgs {
         names: &'static [&'static str],
         requirement: SupportGuardRequirement,
@@ -94,8 +97,14 @@ const SUBSYSTEM_COMPILE_REQUIRED: &[&str] = &["OutputDir"];
 const MXL_COMPILE_REQUIRED: &[&str] = &["JsonPath", "OutputPath"];
 const ROLE_COMPILE_REQUIRED: &[&str] = &["JsonPath", "OutputDir"];
 const EXTERNAL_INIT_REQUIRED: &[&str] = &["Name", "OutputDir"];
-const CODE_PATCH_PATH: &[&str] = &["path"];
-const CODE_PATCH_REQUIRED: &[&str] = &["path", "operation", "selector", "content", "position"];
+const CODE_PATCH_REQUIRED: &[&str] = &[
+    "sourceSet",
+    "metadataPath",
+    "operation",
+    "selector",
+    "content",
+    "position",
+];
 
 const JSON_PATH: &[&str] = &["JsonPath", "jsonPath"];
 const DEFINITION_FILE: &[&str] = &["DefinitionFile", "definitionFile"];
@@ -196,16 +205,14 @@ pub(crate) fn native_operation_descriptor(operation: &str) -> Option<&'static Op
 }
 
 pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
-    descriptor_with_format(
+    descriptor_with_paths(
         "code-patch",
         CODE_PATCH_REQUIRED,
-        CODE_PATCH_PATH,
-        CODE_PATCH_PATH,
+        EMPTY,
+        EMPTY,
         FormatGuardPolicy::ExistingDump,
-        Some(path_guard(
-            CODE_PATCH_PATH,
-            SupportGuardRequirement::Editable,
-        )),
+        FormatPathPolicy::HandlerResolved,
+        Some(handler_resolved_guard(SupportGuardRequirement::Editable)),
     ),
     descriptor_with_paths(
         "cf-edit",
@@ -621,6 +628,10 @@ const fn path_guard(
     requirement: SupportGuardRequirement,
 ) -> SupportGuardPolicy {
     SupportGuardPolicy::PathArgs { names, requirement }
+}
+
+const fn handler_resolved_guard(requirement: SupportGuardRequirement) -> SupportGuardPolicy {
+    SupportGuardPolicy::HandlerResolved { requirement }
 }
 
 const fn meta_remove_guard() -> SupportGuardPolicy {

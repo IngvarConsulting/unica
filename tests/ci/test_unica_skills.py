@@ -1420,6 +1420,29 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             ),
         )
 
+    def test_code_patch_skill_uses_only_logical_configuration_and_extension_targets(
+        self,
+    ) -> None:
+        path = self.skill_root() / "code-patch" / "SKILL.md"
+        text = path.read_text(encoding="utf-8")
+        calls = []
+        for block in re.findall(r"```json\s*(.*?)```", text, re.DOTALL):
+            payload = json.loads(block)
+            params = payload.get("params", {})
+            if params.get("name") == "unica.code.patch":
+                calls.append(params.get("arguments", {}))
+
+        self.assertGreaterEqual(len(calls), 2)
+        for arguments in calls:
+            with self.subTest(arguments=arguments):
+                self.assertIn("sourceSet", arguments)
+                self.assertIn("metadataPath", arguments)
+                self.assertNotIn("path", arguments)
+                self.assertNotIn("sourceDir", arguments)
+        self.assertRegex(text, r"Configuration.{0,120}Extension")
+        self.assertIn("sourceSet", text)
+        self.assertIn("metadataPath", text)
+
     def test_v8_runner_dump_references_keep_incomplete_and_external_routes_preview_only(
         self,
     ) -> None:

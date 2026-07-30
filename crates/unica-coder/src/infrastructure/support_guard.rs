@@ -5,7 +5,8 @@ use crate::application::ports::SupportGuardCheck;
 use crate::application::{AdapterOutcome, ToolHandler, ToolSpec};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::common::{
-    absolutize, path_arg, required_string, support_guard_violation, SupportGuardViolation,
+    absolutize, path_arg, required_string, resolve_code_patch_guard_path, support_guard_violation,
+    SupportGuardViolation,
 };
 use crate::infrastructure::native_operations::{meta, template};
 use crate::infrastructure::source_roots::normalize_path_identity;
@@ -19,6 +20,12 @@ enum SupportGuardMode {
     Off,
 }
 
+pub(crate) enum ResolvedSupportGuardCheck {
+    Allow,
+    Warn(String),
+    Block(SupportGuardViolation),
+}
+
 pub(crate) fn evaluate_support_guard(
     spec: ToolSpec,
     args: &Map<String, Value>,
@@ -27,21 +34,34 @@ pub(crate) fn evaluate_support_guard(
     let Some((target_path, requirement)) = support_guard_target(spec, args, context) else {
         return Ok(SupportGuardCheck::Allow);
     };
-    let Some(violation) = support_guard_violation(&target_path, requirement) else {
-        return Ok(SupportGuardCheck::Allow);
-    };
+    Ok(
+        match evaluate_resolved_support_guard(&target_path, requirement, context) {
+            ResolvedSupportGuardCheck::Allow => SupportGuardCheck::Allow,
+            ResolvedSupportGuardCheck::Warn(warning) => SupportGuardCheck::Warn(warning),
+            ResolvedSupportGuardCheck::Block(violation) => SupportGuardCheck::Block(
+                support_guard_blocked_outcome(spec, &violation, requirement),
+            ),
+        },
+    )
+}
 
-    Ok(match support_guard_mode(&violation.config_dir, context) {
-        SupportGuardMode::Off => SupportGuardCheck::Allow,
-        SupportGuardMode::Warn => SupportGuardCheck::Warn(format!(
+pub(crate) fn evaluate_resolved_support_guard(
+    target_path: &Path,
+    requirement: SupportGuardRequirement,
+    context: &WorkspaceContext,
+) -> ResolvedSupportGuardCheck {
+    let Some(violation) = support_guard_violation(target_path, requirement) else {
+        return ResolvedSupportGuardCheck::Allow;
+    };
+    match support_guard_mode(&violation.config_dir, context) {
+        SupportGuardMode::Off => ResolvedSupportGuardCheck::Allow,
+        SupportGuardMode::Warn => ResolvedSupportGuardCheck::Warn(format!(
             "[support guard] ПРЕДУПРЕЖДЕНИЕ: {}. Цель: {}",
             violation.reason,
             violation.target_path.display()
         )),
-        SupportGuardMode::Deny => {
-            SupportGuardCheck::Block(support_guard_blocked_outcome(spec, &violation, requirement))
-        }
-    })
+        SupportGuardMode::Deny => ResolvedSupportGuardCheck::Block(violation),
+    }
 }
 
 fn support_guard_target(
@@ -54,6 +74,11 @@ fn support_guard_target(
     };
     let policy = native_operation_descriptor(operation)?.support_guard?;
     match policy {
+        SupportGuardPolicy::HandlerResolved { requirement } => {
+            resolve_code_patch_guard_path(args, context)
+                .ok()
+                .map(|path| (path, requirement))
+        }
         SupportGuardPolicy::PathArgs { names, requirement } => {
             support_guard_path_arg(args, context, names, requirement)
         }

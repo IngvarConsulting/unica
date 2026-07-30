@@ -7,12 +7,12 @@ use uuid::Uuid;
 
 const COMMON_ARGS: &[&str] = &["cwd", "dryRun", "confirm"];
 const CODE_PATCH_ARGS: &[&str] = &[
-    "path",
+    "sourceSet",
+    "metadataPath",
     "operation",
     "selector",
     "content",
     "position",
-    "sourceDir",
 ];
 const RUNTIME_JOB_STATUS_ARGS: &[&str] = &["jobId"];
 const RUNTIME_JOB_WAIT_ARGS: &[&str] = &["jobId", "timeoutSeconds"];
@@ -661,6 +661,7 @@ pub fn validate_tool_arguments(
     args: &Map<String, Value>,
     dry_run: bool,
 ) -> Result<(), String> {
+    validate_removed_target_arguments(tool, args)?;
     let allowed = allowed_args(&tool).into_iter().collect::<BTreeSet<_>>();
     for key in args.keys() {
         if !allowed.contains(key.as_str()) {
@@ -700,11 +701,34 @@ pub fn validate_tool_arguments(
     Ok(())
 }
 
+fn validate_removed_target_arguments(
+    tool: ToolSpec,
+    args: &Map<String, Value>,
+) -> Result<(), String> {
+    if tool.name == "unica.code.patch"
+        && ["path", "sourceDir"]
+            .iter()
+            .any(|field| args.contains_key(*field))
+    {
+        return Err(
+            "legacy_target_removed: unica.code.patch no longer accepts `path` or `sourceDir`; use `sourceSet + metadataPath`"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 fn validate_code_patch_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Result<(), String> {
     if tool.name != "unica.code.patch" {
         return Ok(());
     }
-    for key in ["path", "operation", "content", "position"] {
+    for key in [
+        "sourceSet",
+        "metadataPath",
+        "operation",
+        "content",
+        "position",
+    ] {
         let value = args
             .get(key)
             .and_then(Value::as_str)
@@ -2043,7 +2067,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "metadataPath",
-        "Declared string argument that no handler reads; `unica.role.validate` derives the role metadata XML (`Roles/<Name>.xml`) from `rightsPath` itself and checks its UUID, name and synonym whenever that file exists.",
+        "Canonical logical metadata address. For unica.code.patch it identifies one existing module inside sourceSet, for example CommonModule.Service.Module or Catalog.Items.ObjectModule.",
     ),
     (
         "methodName",
@@ -2148,7 +2172,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "path",
-        "Workspace-relative file path whose meaning is tool-scoped: the required .cf or .cfe artifact for unica.runtime.execute operation load (.epf and .erf are rejected there), the target *Module.bsl or module-relative file for unica.code.patch and the other unica.code.* tools — on unica.code.diagnostics only mode `file` reads one file, so every other mode rejects `path` instead of ignoring it — the canonical alias of the object/config path argument on the native XML tools, and a plain --path passthrough on unica.build.*.",
+        "Workspace-relative file path whose meaning is tool-scoped: the required .cf or .cfe artifact for unica.runtime.execute operation load (.epf and .erf are rejected there), a module-relative file for the path-based unica.code.* tools — on unica.code.diagnostics only mode `file` reads one file, so every other mode rejects `path` instead of ignoring it — the canonical alias of the object/config path argument on the native XML tools, and a plain --path passthrough on unica.build.*.",
     ),
     (
         "position",
@@ -2244,11 +2268,11 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "sourceDir",
-        "Workspace-relative source root to work in: on unica.code.* , unica.code.patch and unica.meta.profile it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.runtime.execute has no sourceDir and selects sources by configured sourceSet name instead.",
+        "Workspace-relative source root to work in: on the path-based unica.code.* tools and unica.meta.profile it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead.",
     ),
     (
         "sourceSet",
-        "Name of one source-set declared in v8project.yaml, such as main or external-processors; accepted by config-init, build, dump, convert, make and extensions",
+        "Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set",
     ),
     (
         "sourceSets",
@@ -2422,6 +2446,9 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
     }
     if tool.name == "unica.code.patch" {
         return match name {
+            "sourceSet" | "metadataPath" | "content" => {
+                json!({ "type": "string", "minLength": 1, "pattern": r"\S" })
+            }
             "operation" => json!({ "type": "string", "enum": ["insert"] }),
             "position" => json!({ "type": "string", "enum": ["before", "after"] }),
             "selector" => json!({
@@ -2843,15 +2870,12 @@ mod tests {
             .find(|tool| tool.name == "unica.code.patch")
             .unwrap();
         let mut args = Map::new();
-        args.insert(
-            "path".to_string(),
-            json!("src/CommonModules/X/Ext/Module.bsl"),
-        );
+        args.insert("sourceSet".to_string(), json!("main"));
+        args.insert("metadataPath".to_string(), json!("CommonModule.X.Module"));
         args.insert("operation".to_string(), json!("insert"));
         args.insert("selector".to_string(), json!({"method": "ПриСоздании"}));
         args.insert("content".to_string(), json!("Сообщить(\"ok\");"));
         args.insert("position".to_string(), json!("after"));
-        args.insert("sourceDir".to_string(), json!("src"));
         validate_tool_arguments(tool, &args, false).unwrap();
 
         args.insert(
@@ -2864,6 +2888,31 @@ mod tests {
     }
 
     #[test]
+    fn code_patch_legacy_target_fields_fail_with_a_stable_migration_error() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.code.patch")
+            .unwrap();
+
+        for legacy in [
+            json!({"path": "src/CommonModules/X/Ext/Module.bsl"}),
+            json!({"sourceDir": "src"}),
+            json!({
+                "path": "src/CommonModules/X/Ext/Module.bsl",
+                "sourceDir": "src"
+            }),
+        ] {
+            let error =
+                validate_tool_arguments(tool, legacy.as_object().unwrap(), true).unwrap_err();
+            assert!(
+                error.starts_with("legacy_target_removed:"),
+                "{legacy}: {error}"
+            );
+            assert!(error.contains("sourceSet + metadataPath"), "{error}");
+        }
+    }
+
+    #[test]
     fn code_patch_json_schema_accepts_each_documented_selector_variant() {
         let tool = tools()
             .into_iter()
@@ -2872,11 +2921,11 @@ mod tests {
         let schema = input_schema_for_tool(&tool);
         let validator = jsonschema::validator_for(&schema).unwrap();
         let base = json!({
-            "path": "src/CommonModules/X/Ext/Module.bsl",
+            "sourceSet": "main",
+            "metadataPath": "CommonModule.X.Module",
             "operation": "insert",
             "content": "Сообщить(\"ok\");",
-            "position": "after",
-            "sourceDir": "src",
+            "position": "after"
         });
 
         for selector in [
@@ -3685,12 +3734,23 @@ mod tests {
         let schema = input_schema_for_tool(&tool);
         let selector = &schema["properties"]["selector"];
 
+        assert!(schema["properties"].get("sourceSet").is_some());
+        assert!(schema["properties"].get("metadataPath").is_some());
+        assert!(schema["properties"].get("path").is_none());
+        assert!(schema["properties"].get("sourceDir").is_none());
         assert_eq!(selector["type"], "object");
         assert_eq!(selector["additionalProperties"], false);
         assert_eq!(selector["properties"]["method"]["type"], "string");
         assert_eq!(selector["properties"]["anchor"]["type"], "string");
         assert_eq!(selector["oneOf"].as_array().map(Vec::len), Some(2));
-        for required in ["path", "operation", "selector", "content", "position"] {
+        for required in [
+            "sourceSet",
+            "metadataPath",
+            "operation",
+            "selector",
+            "content",
+            "position",
+        ] {
             assert!(schema["required"]
                 .as_array()
                 .is_some_and(|items| { items.iter().any(|value| value == required) }));

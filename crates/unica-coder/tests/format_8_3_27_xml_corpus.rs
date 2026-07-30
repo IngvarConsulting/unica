@@ -1971,10 +1971,10 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
         )
         .map_err(|error| format!("cannot seed BSL module: {error}"))?;
         let mut args = common_args(workspace);
-        args.insert("sourceDir".to_string(), Value::String("src".to_string()));
+        args.insert("sourceSet".to_string(), Value::String("main".to_string()));
         args.insert(
-            "path".to_string(),
-            Value::String("src/CommonModules/CorpusModule/Ext/Module.bsl".to_string()),
+            "metadataPath".to_string(),
+            Value::String("CommonModule.CorpusModule.Module".to_string()),
         );
         args.insert("operation".to_string(), Value::String("insert".to_string()));
         args.insert("selector".to_string(), json!({"method": "Run"}));

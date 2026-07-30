@@ -326,7 +326,8 @@ pub fn tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "unica.code.patch",
-            description: "Insert content into one selected existing BSL *Module.bsl file.",
+            description:
+                "Insert content into one logically addressed existing Platform XML Configuration or Extension BSL module.",
             mutating: true,
             cache_access: cache_access_for("code-patch", Some(DomainEventKind::ModuleChanged)),
             handler: ToolHandler::NativeOperation {
@@ -1858,8 +1859,8 @@ mod tests {
         let app = UnicaApplication::new();
         let mut args = json!({
             "cwd": workspace,
-            "sourceDir": "src",
-            "path": "src/CommonModules/Sample/Ext/Module.bsl",
+            "sourceSet": "main",
+            "metadataPath": "CommonModule.Sample.Module",
             "operation": "insert",
             "selector": {"method": "Run"},
             "content": "Procedure Added()\nEndProcedure",
@@ -1874,6 +1875,15 @@ mod tests {
         assert!(preview.stdout.is_none());
         assert!(preview.cache.events.is_empty());
         assert_eq!(preview.data.as_ref().unwrap()["sourceSet"], "main");
+        assert_eq!(
+            preview.data.as_ref().unwrap()["metadataPath"],
+            "CommonModule.Sample.Module"
+        );
+        assert_eq!(preview.data.as_ref().unwrap()["targetKind"], "module");
+        assert!(preview.data.as_ref().unwrap().get("path").is_none());
+        assert!(preview.data.as_ref().unwrap()["affectedTarget"]
+            .get("path")
+            .is_none());
         assert_eq!(
             preview.data.as_ref().unwrap()["affectedTarget"]["owner"],
             "CommonModule.Sample"
@@ -2225,8 +2235,8 @@ mod tests {
         let args = json!({
             "cwd": workspace,
             "dryRun": false,
-            "sourceDir": "src",
-            "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
+            "sourceSet": "main",
+            "metadataPath": "Catalog.Items.ObjectModule",
             "operation": "insert",
             "selector": {"method": "Run"},
             "content": "Procedure Added()\nEndProcedure",
@@ -4915,8 +4925,9 @@ mod tests {
             };
             let descriptor = operation_descriptors::native_operation_descriptor(operation).unwrap();
             assert!(
-                !descriptor.write_path_args.is_empty(),
-                "{operation} mutates workspace but has no descriptor write_path_args"
+                !descriptor.write_path_args.is_empty()
+                    || format!("{:?}", descriptor.format_path_policy) == "HandlerResolved",
+                "{operation} mutates workspace but has neither declared nor handler-resolved write targets"
             );
         }
     }
@@ -4932,9 +4943,23 @@ mod tests {
                 continue;
             };
             let descriptor = operation_descriptors::native_operation_descriptor(operation).unwrap();
+            if operation == "code-patch" {
+                assert_eq!(
+                    format!("{:?}", descriptor.support_guard),
+                    "Some(HandlerResolved { requirement: Editable })",
+                    "code.patch must not silently lose its support guard with the public path"
+                );
+            }
             match descriptor.support_guard {
                 Some(policy) => {
                     match policy {
+                        SupportGuardPolicy::HandlerResolved { requirement } => {
+                            assert_eq!(
+                                operation, "code-patch",
+                                "{operation} unexpectedly delegates support resolution"
+                            );
+                            assert_eq!(requirement, SupportGuardRequirement::Editable);
+                        }
                         SupportGuardPolicy::PathArgs { names, requirement } => {
                             assert!(!names.is_empty(), "{operation} guard target is empty");
                             assert_eq!(
@@ -5028,7 +5053,7 @@ mod tests {
         use operation_descriptors::FormatGuardPolicy;
 
         let expected = [
-            ("code-patch", &["path"][..], "DeclaredArgs"),
+            ("code-patch", &[][..], "HandlerResolved"),
             (
                 "cf-edit",
                 &["ConfigPath", "configPath", "Path", "path"][..],
@@ -5175,8 +5200,9 @@ mod tests {
             };
             let descriptor = operation_descriptors::native_operation_descriptor(operation).unwrap();
             assert!(
-                !descriptor.source_path_args.is_empty(),
-                "{operation} must declare its platform-XML read/target path arguments"
+                !descriptor.source_path_args.is_empty()
+                    || format!("{:?}", descriptor.format_path_policy) == "HandlerResolved",
+                "{operation} must declare path arguments or explicit handler resolution"
             );
         }
         assert_eq!(

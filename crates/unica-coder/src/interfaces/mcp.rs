@@ -806,8 +806,8 @@ mod tests {
         std::fs::write(&module, "Procedure Run()\nEndProcedure\n").unwrap();
         let args = json!({
             "cwd": root,
-            "sourceDir": "src",
-            "path": "src/CommonModules/Sample/Ext/Module.bsl",
+            "sourceSet": "main",
+            "metadataPath": "CommonModule.Sample.Module",
             "operation": "insert",
             "selector": {"method": "Run"},
             "content": "Procedure Added()\nEndProcedure",
@@ -827,6 +827,10 @@ mod tests {
         let result: Value = serde_json::from_str(&text).unwrap();
 
         assert!(result["data"].is_object());
+        assert_eq!(result["data"]["sourceSet"], "main");
+        assert_eq!(result["data"]["metadataPath"], "CommonModule.Sample.Module");
+        assert_eq!(result["data"]["targetKind"], "module");
+        assert!(result["data"].get("path").is_none());
         assert_eq!(result["data"]["validation"]["status"], "passed");
         assert!(result.get("stdout").is_none());
 
