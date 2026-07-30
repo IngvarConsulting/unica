@@ -786,6 +786,14 @@ def resolve_base(explicit: str | None) -> str | None:
     target a branch other than `main` is a normal arrangement, and the guard must
     not overrule the caller about it. `main` is only the fallback for a caller
     that named nothing, which is the repository's ordinary flow.
+
+    The decoding is pinned here too, even though a resolved ref prints an ASCII
+    object name. `capture_output` decodes stderr whether or not this function
+    reads it, and git localises its fatal messages: a runner whose `LC_MESSAGES`
+    names a Russian locale while `LC_CTYPE` stays at `C` would turn "no base ref
+    resolved" -- a skip this guard knows how to report -- into a decode error.
+    One decoding policy per file also keeps the next reader from having to work
+    out which of the three reads was the deliberate one.
     """
     for candidate in (explicit, os.environ.get("UNICA_DIFF_BASE")):
         if candidate:
@@ -796,6 +804,8 @@ def resolve_base(explicit: str | None) -> str | None:
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         if result.returncode == 0:
             return candidate
@@ -810,6 +820,12 @@ def read_diff(base: str) -> str | None:
     byte, `core.quotePath=false` keeps a Russian file name literal, and the two
     prefix settings keep `a/`/`b/` where the grammar expects them whatever the
     caller's git configuration says.
+
+    The decoding is pinned rather than left to the locale. `text=True` alone
+    decodes with the runner's preferred encoding, which on a host with no `LANG`
+    is ASCII -- and the record bodies this diff carries are Russian, so the guard
+    would die on a decode error instead of judging the change or reporting itself
+    unusable.
     """
     result = subprocess.run(
         [
@@ -829,6 +845,8 @@ def read_diff(base: str) -> str | None:
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     if result.returncode != 0:
         return None

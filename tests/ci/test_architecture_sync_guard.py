@@ -183,6 +183,33 @@ class CommandLineTests(unittest.TestCase):
     def test_explicit_base_wins_over_discovery(self) -> None:
         self.assertEqual(self.guard.resolve_base("release/1.2"), "release/1.2")
 
+    def test_the_base_resolution_pins_utf_8_as_well(self) -> None:
+        """A resolved ref is ASCII; the fatal git may print alongside it is not.
+
+        `capture_output` decodes stderr whether or not this function reads it,
+        and git localises its fatal messages. Leaving this one call on the locale
+        would turn "no base ref resolved" -- a skip the guard knows how to report
+        -- into a decode error on a runner whose `LC_MESSAGES` and `LC_CTYPE`
+        disagree.
+        """
+        from unittest.mock import patch
+
+        recorded: list[dict] = []
+
+        def fake_run(command, **kwargs):
+            recorded.append(kwargs)
+            return subprocess_result(returncode=1)
+
+        with patch.dict(self.guard.os.environ, {}, clear=True), patch.object(
+            self.guard.subprocess, "run", fake_run
+        ):
+            self.assertIsNone(self.guard.resolve_base(None))
+
+        self.assertTrue(recorded)
+        for kwargs in recorded:
+            self.assertEqual(kwargs.get("encoding"), "utf-8")
+            self.assertEqual(kwargs.get("errors"), "replace")
+
     def test_unresolvable_base_skips_instead_of_failing(self) -> None:
         from unittest.mock import patch
 
@@ -1108,6 +1135,29 @@ class BinarySectionTests(unittest.TestCase):
         self.assertIn("--text", command)
         self.assertIn("--no-ext-diff", command)
         self.assertIn("core.quotePath=false", command)
+
+    def test_the_diff_read_pins_utf_8_instead_of_trusting_the_locale(self) -> None:
+        """The diff carries Russian record bodies, so decoding is not the locale's call.
+
+        `text=True` on its own decodes with the runner's preferred encoding. On a
+        host with no `LANG` that is ASCII, and the read raises `UnicodeDecodeError`
+        the moment a `spec/decisions/` body appears in the diff -- the guard dies
+        instead of judging the change or reporting itself unusable, which is the
+        one outcome this module is written to avoid.
+        """
+        from unittest.mock import patch
+
+        recorded: dict[str, dict] = {}
+
+        def fake_run(command, **kwargs):
+            recorded["kwargs"] = kwargs
+            return subprocess_result(returncode=0, stdout="")
+
+        with patch.object(self.guard.subprocess, "run", fake_run):
+            self.guard.read_diff("origin/main")
+
+        self.assertEqual(recorded["kwargs"].get("encoding"), "utf-8")
+        self.assertEqual(recorded["kwargs"].get("errors"), "replace")
 
 
 class AnchorTests(unittest.TestCase):
