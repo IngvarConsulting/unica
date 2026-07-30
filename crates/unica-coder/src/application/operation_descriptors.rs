@@ -100,6 +100,7 @@ const EXTERNAL_INIT_REQUIRED: &[&str] = &["Name", "OutputDir"];
 // `position` is required only by operation `insert`, so the descriptor cannot
 // demand it for every call; `validate_code_patch_arguments` enforces it per
 // operation.
+const META_INFO_REQUIRED: &[&str] = &["sourceSet", "metadataPath"];
 const CODE_PATCH_REQUIRED: &[&str] = &[
     "sourceSet",
     "metadataPath",
@@ -178,7 +179,8 @@ pub(crate) fn native_path_alias_groups(operation: &str) -> &'static [PathAliasGr
         "cfe-validate" => CFE_VALIDATE_PATH_GROUPS,
         "meta-compile" | "role-compile" => COMPILE_TO_DIR_PATH_GROUPS,
         "meta-edit" => META_EDIT_PATH_GROUPS,
-        "meta-info" | "meta-validate" => OBJECT_READ_PATH_GROUPS,
+        // `meta-info` selects its target logically and has no path alias group.
+        "meta-validate" => OBJECT_READ_PATH_GROUPS,
         "meta-remove" => META_REMOVE_PATH_GROUPS,
         "help-add" | "form-remove" | "template-add" | "template-remove" => SRC_DIR_PATH_GROUPS,
         "form-add" => OBJECT_PATH_GROUPS,
@@ -324,9 +326,9 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
     ),
     descriptor_with_paths(
         "meta-info",
-        OBJECT_PATH_REQUIRED,
+        META_INFO_REQUIRED,
         EMPTY,
-        OBJECT_PATH,
+        EMPTY,
         FormatGuardPolicy::ExistingDump,
         FormatPathPolicy::HandlerResolved,
         None,

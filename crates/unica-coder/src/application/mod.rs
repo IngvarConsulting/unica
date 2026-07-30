@@ -4985,9 +4985,10 @@ mod tests {
             "cwd".to_string(),
             Value::String(workspace.display().to_string()),
         );
+        args.insert("sourceSet".to_string(), Value::String("main".to_string()));
         args.insert(
-            "ObjectPath".to_string(),
-            Value::String("src/Catalogs/Items.xml".to_string()),
+            "metadataPath".to_string(),
+            Value::String("Catalog.Items".to_string()),
         );
 
         let result = UnicaApplication::new()
@@ -7456,9 +7457,10 @@ mod tests {
             "cwd".to_string(),
             Value::String(workspace.display().to_string()),
         );
+        info_args.insert("sourceSet".to_string(), Value::String("main".to_string()));
         info_args.insert(
-            "ObjectPath".to_string(),
-            Value::String("src/Catalogs/Items.xml".to_string()),
+            "metadataPath".to_string(),
+            Value::String("Catalog.Items".to_string()),
         );
         let info = UnicaApplication::new()
             .call_tool("unica.meta.info", &info_args)
@@ -9597,7 +9599,9 @@ mod tests {
             ("unica.cf.info", "ConfigPath", "OutFile", "outFile"),
             ("unica.cf.validate", "ConfigPath", "OutFile", "outFile"),
             ("unica.cfe.validate", "ExtensionPath", "OutFile", "outFile"),
-            ("unica.meta.info", "ObjectPath", "OutFile", "outFile"),
+            // `unica.meta.info` selects logically and has no source path
+            // argument to pair a sink with; its own contract test covers the
+            // rejected sink.
             ("unica.meta.validate", "ObjectPath", "OutFile", "outFile"),
             ("unica.interface.validate", "CIPath", "OutFile", "outFile"),
             (
@@ -9697,21 +9701,33 @@ mod tests {
             .unwrap();
             std::fs::copy(&dcs_fixture, &template).unwrap();
 
-            for (tool, path_argument, path) in [
-                ("unica.meta.info", "ObjectPath", &object),
-                ("unica.meta.validate", "ObjectPath", &object),
-                ("unica.dcs.info", "TemplatePath", &template),
-                ("unica.dcs.validate", "TemplatePath", &template),
+            let logical_object = vec![
+                ("sourceSet".to_string(), Value::String("main".to_string())),
+                (
+                    "metadataPath".to_string(),
+                    Value::String("Catalog.Items".to_string()),
+                ),
+            ];
+            let path_selector = |name: &str, path: &std::path::Path| {
+                vec![(name.to_string(), Value::String(path.display().to_string()))]
+            };
+            for (tool, selector) in [
+                ("unica.meta.info", logical_object),
+                ("unica.meta.validate", path_selector("ObjectPath", &object)),
+                ("unica.dcs.info", path_selector("TemplatePath", &template)),
+                (
+                    "unica.dcs.validate",
+                    path_selector("TemplatePath", &template),
+                ),
             ] {
                 let mut args = Map::new();
                 args.insert(
                     "cwd".to_string(),
                     Value::String(workspace.display().to_string()),
                 );
-                args.insert(
-                    path_argument.to_string(),
-                    Value::String(path.display().to_string()),
-                );
+                for (key, value) in selector {
+                    args.insert(key, value);
+                }
                 let before = source_tree_snapshot(&src);
 
                 let result = UnicaApplication::new().call_tool(tool, &args).unwrap();

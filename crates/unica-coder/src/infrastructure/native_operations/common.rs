@@ -6,8 +6,8 @@ use crate::domain::format_profile::{
     classify_root_version, ExportFormatVersion, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
 };
 use crate::domain::source_target::{
-    MetadataAddress, SourceTarget, SourceTargetError, SourceTargetErrorCode, TargetKind,
-    PLATFORM_XML_8_3_27_FORMAT_2_20,
+    MetadataAddress, ResolvedTarget, SourceTarget, SourceTargetError, SourceTargetErrorCode,
+    TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform_xml_source_targets::{
@@ -1934,6 +1934,65 @@ pub(crate) fn code_patch_source_target(
         source_set: source_set.to_string(),
         metadata_path: Some(metadata_path),
     })
+}
+
+/// Builds the logical target of a read-only object reader from typed arguments.
+pub(crate) fn metadata_object_source_target(
+    args: &Map<String, Value>,
+) -> Result<SourceTarget, SourceTargetError> {
+    let source_set = args
+        .get("sourceSet")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            SourceTargetError::new(
+                SourceTargetErrorCode::SourceSetRequired,
+                "sourceSet must name an exact project source set",
+            )
+        })?;
+    let raw_metadata_path = args
+        .get("metadataPath")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            SourceTargetError::new(
+                SourceTargetErrorCode::MetadataAddressInvalid,
+                "metadataPath must identify one existing metadata object",
+            )
+        })?;
+    let metadata_path = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw_metadata_path)?;
+    Ok(SourceTarget {
+        source_set: source_set.to_string(),
+        metadata_path: Some(metadata_path),
+    })
+}
+
+/// Resolves a metadata object address to the descriptor that a reader parses.
+/// A module terminal is refused by name: reading a module is `unica.code.*`
+/// work, and silently reading its owner instead would answer another question.
+pub(crate) fn resolve_metadata_object_descriptor(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<(ResolvedTarget, PathBuf), String> {
+    let target = metadata_object_source_target(args).map_err(|error| error.to_string())?;
+    let resolution = resolve_platform_xml_target(context, &target, TargetKindPolicy::Any)
+        .map_err(|error| error.to_string())?;
+    if resolution.resolved.target_kind != TargetKind::MetadataObject {
+        return Err(format!(
+            "metadataPath `{}` names a module terminal; metadata object readers address the object itself",
+            target
+                .metadata_path
+                .as_ref()
+                .map(MetadataAddress::as_str)
+                .unwrap_or_default()
+        ));
+    }
+    let path = revalidate_platform_xml_target(context, &resolution.handle)
+        .map_err(|error| error.to_string())?
+        .path;
+    Ok((resolution.resolved, path))
 }
 
 pub(crate) fn resolve_code_patch_guard_path(

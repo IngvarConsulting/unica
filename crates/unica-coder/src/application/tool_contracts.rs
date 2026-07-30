@@ -19,6 +19,21 @@ const CODE_PATCH_ARGS: &[&str] = &[
     "content",
     "position",
 ];
+/// `meta.info` publishes only what it reads. The shared `NATIVE_XML_DSL_ARGS`
+/// list would also accept arguments no `meta.info` code path consults, and an
+/// accepted argument that changes nothing is a promise the tool cannot keep.
+const META_INFO_ARGS: &[&str] = &[
+    "sourceSet",
+    "metadataPath",
+    "Mode",
+    "mode",
+    "Name",
+    "name",
+    "Limit",
+    "limit",
+    "Offset",
+    "offset",
+];
 const RUNTIME_JOB_STATUS_ARGS: &[&str] = &["jobId"];
 const RUNTIME_JOB_WAIT_ARGS: &[&str] = &["jobId", "timeoutSeconds"];
 const RUNTIME_JOB_LOGS_ARGS: &[&str] = &["jobId", "tailChars"];
@@ -865,6 +880,16 @@ fn validate_removed_target_arguments(
                 .to_string(),
         );
     }
+    if tool.name == "unica.meta.info"
+        && ["ObjectPath", "objectPath", "Path", "path"]
+            .iter()
+            .any(|field| args.contains_key(*field))
+    {
+        return Err(
+            "legacy_target_removed: unica.meta.info no longer accepts `ObjectPath` or `Path`; use `sourceSet + metadataPath`"
+                .to_string(),
+        );
+    }
     Ok(())
 }
 
@@ -1648,10 +1673,10 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
     let mut names = COMMON_ARGS.to_vec();
     match tool.handler {
         ToolHandler::NativeOperation { operation, .. } => {
-            if operation == "code-patch" {
-                names.extend(CODE_PATCH_ARGS);
-            } else {
-                names.extend(native_args_for(operation));
+            match operation {
+                "code-patch" => names.extend(CODE_PATCH_ARGS),
+                "meta-info" => names.extend(META_INFO_ARGS),
+                _ => names.extend(native_args_for(operation)),
             }
             if operation == "form-edit" {
                 names.push("definition");
@@ -3074,7 +3099,7 @@ mod tests {
         let required_path = |name: &str| match name {
             "unica.cf.info" | "unica.cf.validate" => ("ConfigPath", "src"),
             "unica.cfe.validate" => ("ExtensionPath", "src"),
-            "unica.meta.info" | "unica.meta.validate" => ("ObjectPath", "src/Object.xml"),
+            "unica.meta.validate" => ("ObjectPath", "src/Object.xml"),
             "unica.interface.validate" => ("CIPath", "src/CommandInterface.xml"),
             "unica.subsystem.info" | "unica.subsystem.validate" => {
                 ("SubsystemPath", "src/Subsystems/Main.xml")
@@ -3088,7 +3113,6 @@ mod tests {
             "unica.cf.info",
             "unica.cf.validate",
             "unica.cfe.validate",
-            "unica.meta.info",
             "unica.meta.validate",
             "unica.interface.validate",
             "unica.subsystem.info",
@@ -3159,6 +3183,59 @@ mod tests {
         ] {
             let error =
                 validate_tool_arguments(tool, legacy.as_object().unwrap(), true).unwrap_err();
+            assert!(
+                error.starts_with("legacy_target_removed:"),
+                "{legacy}: {error}"
+            );
+            assert!(error.contains("sourceSet + metadataPath"), "{error}");
+        }
+    }
+
+    #[test]
+    fn meta_info_publishes_only_the_logical_selector_and_what_it_reads() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.meta.info")
+            .expect("unica.meta.info is registered");
+
+        let mut args = Map::new();
+        args.insert("sourceSet".to_string(), json!("main"));
+        args.insert("metadataPath".to_string(), json!("Catalog.Items"));
+        validate_tool_arguments(tool, &args, false).unwrap();
+        for (key, value) in [
+            ("Mode", json!("full")),
+            ("Name", json!("Реквизит")),
+            ("limit", json!(20)),
+            ("offset", json!(10)),
+        ] {
+            let mut with_option = args.clone();
+            with_option.insert(key.to_string(), value);
+            validate_tool_arguments(tool, &with_option, false).unwrap();
+        }
+
+        // `Detailed` belongs to the `*.validate` tools; `meta.info` never read
+        // it, and an accepted argument that changes nothing is a false promise.
+        for rejected in ["Detailed", "detailed", "OutFile", "outFile", "SrcDir"] {
+            let mut with_rejected = args.clone();
+            with_rejected.insert(rejected.to_string(), json!("value"));
+            let error = validate_tool_arguments(tool, &with_rejected, false).unwrap_err();
+            assert!(
+                error.contains(&format!("does not accept argument `{rejected}`")),
+                "{rejected}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn meta_info_legacy_target_fields_fail_with_a_stable_migration_error() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.meta.info")
+            .expect("unica.meta.info is registered");
+
+        for legacy in ["ObjectPath", "objectPath", "Path", "path"] {
+            let args = Map::from_iter([(legacy.to_string(), json!("src/Catalogs/Items.xml"))]);
+            let error = validate_tool_arguments(tool, &args, false).unwrap_err();
             assert!(
                 error.starts_with("legacy_target_removed:"),
                 "{legacy}: {error}"

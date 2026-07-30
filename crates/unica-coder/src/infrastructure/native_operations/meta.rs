@@ -7861,12 +7861,7 @@ pub(crate) fn analyze_meta_info(
     const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
     let result = (|| -> Result<(String, PathBuf), String> {
-        let raw_path = required_path(
-            args,
-            &["objectPath", "ObjectPath", "path", "Path"],
-            "ObjectPath",
-        )?;
-        let object_path = resolve_meta_info_path(absolutize(raw_path, &context.cwd))?;
+        let (resolved, object_path) = resolve_metadata_object_descriptor(args, context)?;
         let text = read_utf8_sig(&object_path)?;
         let doc = Document::parse(text.trim_start_matches('\u{feff}'))
             .map_err(|err| format!("XML parse error in {}: {err}", object_path.display()))?;
@@ -7900,8 +7895,22 @@ pub(crate) fn analyze_meta_info(
             meta_info_drill_lines(md_type, child_objs, drill_name, &obj_name)?
         };
         if drill_name.is_empty() {
+            // Identity in the answer is the resolved logical address, so a
+            // reader can feed it straight back to any other logical tool.
             lines.insert(
                 1,
+                format!(
+                    "Адрес: {} / {}",
+                    resolved.source_set,
+                    resolved
+                        .metadata_path
+                        .as_ref()
+                        .map(|path| path.as_str())
+                        .unwrap_or_default()
+                ),
+            );
+            lines.insert(
+                2,
                 format!("Поддержка: {}", support_status_for_path(&object_path)),
             );
         }
@@ -19953,6 +19962,136 @@ pub(crate) fn invoke_mutation(
         "meta-edit" => Some(edit_meta(args, context)),
         "meta-remove" => Some(remove_metadata_object(args, context)),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod meta_info_logical_target_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn workspace(name: &str) -> WorkspaceContext {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("unica-meta-info-logical-{name}-{nanos}"));
+        fs::create_dir_all(root.join("src/Catalogs/Items/Ext")).unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration/></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Items</Name><Synonym><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Номенклатура</v8:content></v8:item></Synonym></Properties></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/Catalogs/Items/Ext/ObjectModule.bsl"),
+            "Procedure BeforeWrite()\nEndProcedure\n",
+        )
+        .unwrap();
+        WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        }
+    }
+
+    fn info_args(address: &str) -> Map<String, Value> {
+        Map::from_iter([
+            ("sourceSet".to_string(), json!("main")),
+            ("metadataPath".to_string(), json!(address)),
+        ])
+    }
+
+    #[test]
+    fn meta_info_reads_the_descriptor_named_by_a_logical_address() {
+        let context = workspace("reads");
+
+        let outcome = analyze_meta_info(&info_args("Catalog.Items"), &context);
+
+        assert!(outcome.ok, "{outcome:?}");
+        let stdout = outcome.stdout.unwrap();
+        assert!(stdout.contains("Справочник: Items"), "{stdout}");
+        assert!(stdout.contains("Адрес: main / Catalog.Items"), "{stdout}");
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    #[test]
+    fn meta_info_accepts_a_russian_kind_alias_and_answers_with_the_canonical_address() {
+        let context = workspace("alias");
+
+        let outcome = analyze_meta_info(&info_args("Справочник.Items"), &context);
+
+        assert!(outcome.ok, "{outcome:?}");
+        assert!(outcome
+            .stdout
+            .unwrap()
+            .contains("Адрес: main / Catalog.Items"),);
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    /// Reading a module is `unica.code.*` work. Quietly reading the owner
+    /// instead would answer a question the caller did not ask.
+    #[test]
+    fn meta_info_refuses_a_module_terminal_by_name() {
+        let context = workspace("module");
+
+        let outcome = analyze_meta_info(&info_args("Catalog.Items.ObjectModule"), &context);
+
+        assert!(!outcome.ok);
+        assert!(
+            outcome.errors[0].contains("names a module terminal"),
+            "{:?}",
+            outcome.errors
+        );
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    #[test]
+    fn meta_info_reports_an_unknown_address_without_naming_a_path() {
+        let context = workspace("unknown");
+
+        let outcome = analyze_meta_info(&info_args("Catalog.Missing"), &context);
+
+        assert!(!outcome.ok);
+        assert!(
+            outcome.errors[0].contains("Catalog.Missing"),
+            "{:?}",
+            outcome.errors
+        );
+        assert!(
+            !outcome.errors[0].contains("Catalogs/"),
+            "{:?}",
+            outcome.errors
+        );
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    #[test]
+    fn meta_info_requires_a_source_set() {
+        let context = workspace("no-source-set");
+
+        let outcome = analyze_meta_info(
+            &Map::from_iter([("metadataPath".to_string(), json!("Catalog.Items"))]),
+            &context,
+        );
+
+        assert!(!outcome.ok);
+        assert!(
+            outcome.errors[0].contains("sourceSet"),
+            "{:?}",
+            outcome.errors
+        );
+        let _ = fs::remove_dir_all(&context.workspace_root);
     }
 }
 
