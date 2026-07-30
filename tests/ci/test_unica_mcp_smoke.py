@@ -168,15 +168,31 @@ class UnicaMcpSmokeTests(unittest.TestCase):
 
         threading.Thread(target=read_stdout, daemon=True).start()
 
+        # The session outlives many calls, so stderr has to be drained too:
+        # a full pipe buffer would stall the server and read as a timeout.
+        diagnostics: list[str] = []
+
+        def read_stderr() -> None:
+            for line in process.stderr:
+                diagnostics.append(line)
+
+        threading.Thread(target=read_stderr, daemon=True).start()
+
         def request(message: dict) -> dict:
             process.stdin.write(json.dumps(message) + "\n")
             process.stdin.flush()
             try:
                 line = lines.get(timeout=30)
             except queue.Empty:
-                self.fail("timed out waiting for interactive MCP response")
+                self.fail(
+                    "timed out waiting for interactive MCP response: "
+                    + "".join(diagnostics)
+                )
             if not line:
-                self.fail("interactive MCP process exited before a response")
+                self.fail(
+                    "interactive MCP process exited before a response: "
+                    + "".join(diagnostics)
+                )
             response = json.loads(line)
             self.assertEqual(response.get("id"), message.get("id"), response)
             return response
@@ -195,8 +211,7 @@ class UnicaMcpSmokeTests(unittest.TestCase):
             except subprocess.TimeoutExpired:
                 process.kill()
                 self.fail("interactive MCP process did not exit")
-            stderr = process.stderr.read()
-            self.assertEqual(return_code, 0, stderr)
+            self.assertEqual(return_code, 0, "".join(diagnostics))
             process.stdout.close()
             process.stderr.close()
 

@@ -93,8 +93,7 @@ pub(crate) fn resolve_named_source_set(
     })?;
     let lexical_path = lexical_contained_source_root(&context.workspace_root, &source_set.path)
         .map_err(|error| NamedSourceSetError::new(NamedSourceSetErrorKind::Containment, error))?;
-    reject_linked_source_root_route(&context.workspace_root, &lexical_path)
-        .map_err(|error| NamedSourceSetError::new(NamedSourceSetErrorKind::Containment, error))?;
+    reject_linked_source_root_route(&context.workspace_root, &lexical_path)?;
     let path = normalize_contained_source_root(&context.workspace_root, &source_set.path)
         .map_err(|error| NamedSourceSetError::new(NamedSourceSetErrorKind::Containment, error))?;
     Ok(ResolvedNamedSourceSet {
@@ -115,7 +114,12 @@ fn lexical_contained_source_root(
     } else {
         normalize_lexically(&workspace_root.join(configured_path))
     };
-    if !candidate.starts_with(&workspace_root) {
+    // The same host-case and verbatim-prefix policy `WorkspacePathPolicy` uses,
+    // so a source root it would accept is not rejected here as uncontained.
+    if !crate::infrastructure::platform::filesystem::path_starts_with_host_root(
+        &candidate,
+        &workspace_root,
+    ) {
         return Err(format!(
             "configured source root is outside workspace root {}: {}",
             workspace_root.display(),
@@ -128,29 +132,42 @@ fn lexical_contained_source_root(
 fn reject_linked_source_root_route(
     workspace_root: &Path,
     source_root: &Path,
-) -> Result<(), String> {
-    let workspace_root = absolute_lexical(workspace_root)?;
+) -> Result<(), NamedSourceSetError> {
+    let containment =
+        |detail: String| NamedSourceSetError::new(NamedSourceSetErrorKind::Containment, detail);
+    let workspace_root = absolute_lexical(workspace_root).map_err(containment)?;
     let relative = source_root.strip_prefix(&workspace_root).map_err(|_| {
-        format!(
+        containment(format!(
             "configured source root is outside workspace root {}",
             workspace_root.display()
-        )
+        ))
     })?;
     let mut current = workspace_root;
     for component in relative.components() {
         current.push(component.as_os_str());
         let metadata = fs::symlink_metadata(&current).map_err(|error| {
-            format!(
-                "failed to inspect configured source-root route {}: {error}",
-                current.display()
+            // A declared source root whose directory does not exist yet is a
+            // discovery condition. Reporting it as a containment denial sends
+            // the caller looking for a symbolic link that is not there.
+            let kind = if error.kind() == std::io::ErrorKind::NotFound {
+                NamedSourceSetErrorKind::NotFound
+            } else {
+                NamedSourceSetErrorKind::Discovery
+            };
+            NamedSourceSetError::new(
+                kind,
+                format!(
+                    "failed to inspect configured source-root route {}: {error}",
+                    current.display()
+                ),
             )
         })?;
         if crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point(&metadata)
         {
-            return Err(format!(
+            return Err(containment(format!(
                 "configured source-root route contains a symbolic link or reparse point: {}",
                 current.display()
-            ));
+            )));
         }
     }
     Ok(())

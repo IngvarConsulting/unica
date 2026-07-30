@@ -1345,9 +1345,7 @@ class LogicalSourceContractTests(unittest.TestCase):
         accepted = index.split("## Принятые решения", 1)[1].split(
             "## Предложенные решения", 1
         )[0]
-        proposed = index.split("## Предложенные решения", 1)[1].split(
-            "Записи в статусе", 1
-        )[0]
+        proposed = index.split("## Предложенные решения", 1)[1].split("\n## ", 1)[0]
 
         self.assertIn("- Статус: `superseded` — заменено ADR-0021", legacy)
         self.assertIn("- Статус: `accepted`", logical)

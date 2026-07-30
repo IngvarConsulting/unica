@@ -444,7 +444,7 @@ mod tests {
                 "snapshotId": "snapshot",
                 "resourceId": "resource",
                 "expectedHash": "sha256:before",
-                "content": "Procedure Run()\\nEndProcedure\\n",
+                "content": "Procedure Run()\nEndProcedure\n",
                 "contentEncoding": "utf-8"
             })
             .as_object()
@@ -458,7 +458,7 @@ mod tests {
                 snapshot_id: "snapshot".to_string(),
                 resource_id: "resource".to_string(),
                 expected_hash: "sha256:before".to_string(),
-                content: "Procedure Run()\\nEndProcedure\\n".to_string(),
+                content: "Procedure Run()\nEndProcedure\n".to_string(),
             }
         );
     }
@@ -470,7 +470,7 @@ mod tests {
                 "snapshotId": "snapshot",
                 "resourceId": ["one", "two"],
                 "expectedHash": "sha256:before",
-                "content": "Procedure Run()\\nEndProcedure\\n"
+                "content": "Procedure Run()\nEndProcedure\n"
             })
             .as_object()
             .unwrap(),
@@ -483,7 +483,7 @@ mod tests {
                 "snapshotId": "snapshot",
                 "resourceId": "resource",
                 "expectedHash": "sha256:before",
-                "content": "Procedure Run()\\nEndProcedure\\n",
+                "content": "Procedure Run()\nEndProcedure\n",
                 "contentEncoding": "base64"
             })
             .as_object()

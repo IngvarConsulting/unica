@@ -1220,16 +1220,31 @@ class McpSession:
         )
         assert self.process.stdin is not None
         assert self.process.stdout is not None
+        assert self.process.stderr is not None
         self.timeout_seconds = timeout_seconds
         self.lines: queue.Queue[str] = queue.Queue()
+        self.diagnostics: list[str] = []
         self.reader = threading.Thread(target=self._read_stdout, daemon=True)
         self.reader.start()
+        # The server stays open across the whole flow and writes diagnostics to
+        # stderr, so an undrained pipe buffer would block it mid-request and
+        # surface as a bare timeout.
+        self.error_reader = threading.Thread(target=self._read_stderr, daemon=True)
+        self.error_reader.start()
 
     def _read_stdout(self) -> None:
         assert self.process.stdout is not None
         for line in self.process.stdout:
             self.lines.put(line)
         self.lines.put("")
+
+    def _read_stderr(self) -> None:
+        assert self.process.stderr is not None
+        for line in self.process.stderr:
+            self.diagnostics.append(line)
+
+    def _detail(self) -> str:
+        return "".join(self.diagnostics).strip() or "no process output"
 
     def request(self, message: dict) -> dict:
         assert self.process.stdin is not None
@@ -1239,9 +1254,13 @@ class McpSession:
             try:
                 line = self.lines.get(timeout=self.timeout_seconds)
             except queue.Empty as error:
-                raise SystemExit(f"Unica MCP smoke timed out after {self.timeout_seconds:g}s") from error
+                raise SystemExit(
+                    f"Unica MCP smoke timed out after {self.timeout_seconds:g}s: {self._detail()}"
+                ) from error
             if not line:
-                raise SystemExit("Unica MCP exited before the expected response")
+                raise SystemExit(
+                    f"Unica MCP exited before the expected response: {self._detail()}"
+                )
             try:
                 response = json.loads(line)
             except json.JSONDecodeError as error:
@@ -1261,10 +1280,16 @@ class McpSession:
             result = self.process.wait(timeout=self.timeout_seconds)
         except subprocess.TimeoutExpired as error:
             self.process.kill()
-            raise SystemExit(f"Unica MCP smoke timed out after {self.timeout_seconds:g}s") from error
+            raise SystemExit(
+                f"Unica MCP smoke timed out after {self.timeout_seconds:g}s: {self._detail()}"
+            ) from error
+        self.reader.join(timeout=self.timeout_seconds)
+        self.error_reader.join(timeout=self.timeout_seconds)
+        detail = self._detail()
+        for stream in (self.process.stdout, self.process.stderr):
+            if stream is not None and not stream.closed:
+                stream.close()
         if result != 0:
-            assert self.process.stderr is not None
-            detail = self.process.stderr.read().strip() or "no process output"
             raise SystemExit(f"Unica MCP exited with {result}: {detail}")
 
 

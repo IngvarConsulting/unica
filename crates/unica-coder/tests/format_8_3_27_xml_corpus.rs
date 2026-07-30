@@ -3527,34 +3527,14 @@ fn none_impact_rejects_any_xml_map_change() {
     assert!(error.contains("complete XML map"), "{error}");
 }
 
-struct ScopedEnvironmentVariable {
-    key: &'static str,
-    previous: Option<std::ffi::OsString>,
-}
-
-impl ScopedEnvironmentVariable {
-    fn set(key: &'static str, value: &Path) -> Self {
-        let previous = std::env::var_os(key);
-        std::env::set_var(key, value);
-        Self { key, previous }
-    }
-}
-
-impl Drop for ScopedEnvironmentVariable {
-    fn drop(&mut self) {
-        if let Some(previous) = &self.previous {
-            std::env::set_var(self.key, previous);
-        } else {
-            std::env::remove_var(self.key);
-        }
-    }
-}
-
 #[test]
 fn source_resource_snapshot_chains_preserve_all_corpus_bytes_except_selected_bsl_modules() {
     let root = unique_temp_dir("source-resource-snapshot-chain");
     let workspace = root.join("workspace");
-    let _cache_guard = ScopedEnvironmentVariable::set("UNICA_CACHE_DIR", &root.join("cache"));
+    // No `UNICA_CACHE_DIR` override: setting it would mutate process-global
+    // state shared with every other test in this binary. The default cache
+    // root already lands in this workspace's own ignored `.build`, which the
+    // payload capture skips.
     fs::create_dir_all(&workspace).unwrap();
     write_designer_project(
         &workspace,
@@ -3711,6 +3691,10 @@ fn capture_workspace_payloads_for_source_test(root: &Path) -> BTreeMap<String, V
     fn visit(root: &Path, directory: &Path, payloads: &mut BTreeMap<String, Vec<u8>>) {
         for entry in fs::read_dir(directory).unwrap() {
             let path = entry.unwrap().path();
+            if path.file_name() == Some(std::ffi::OsStr::new(".build")) {
+                // Generated cache root, not corpus source under test.
+                continue;
+            }
             if path.is_dir() {
                 visit(root, &path, payloads);
             } else {

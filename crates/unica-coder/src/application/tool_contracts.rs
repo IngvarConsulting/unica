@@ -769,6 +769,17 @@ fn validate_source_resource_arguments(
                 1,
                 SOURCE_RESOURCE_PAGE_LIMIT_MAX as u64,
             )?;
+            if let Some(value) = args.get("scope") {
+                let scope = value
+                    .as_str()
+                    .ok_or_else(|| format!("{} argument `scope` must be a string", tool.name))?;
+                if !matches!(scope, "self" | "aggregate" | "registrations") {
+                    return Err(format!(
+                        "{} argument `scope` must be `self`, `aggregate`, or `registrations`",
+                        tool.name
+                    ));
+                }
+            }
         }
         SourceResourceOperation::Read => {
             validate_integer_bound(tool.name, args, "limit", 1, SOURCE_READ_LIMIT_MAX as u64)?;
