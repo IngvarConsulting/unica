@@ -215,9 +215,10 @@ Unica. Каждая запись формулирует одно нормати�
 - **Rule:** Имена и описания инструментов берутся из реестра `ToolSpec` в
   `application/mod.rs`, входные схемы — из `application/tool_contracts.rs`
   поверх `application/operation_descriptors.rs`, транспорт только собирает эти
-  три источника вместе, и ни одна публичная схема инструмента не показывает
-  сырые аргументы адаптера.
-- **Decision:** ADR-0001, ADR-0013
+  три источника вместе, обязательные пути публикуются в верхнем `required` под
+  каноническими именами без алиасов, и ни одна публичная схема инструмента не
+  показывает сырые аргументы адаптера.
+- **Decision:** ADR-0001, ADR-0013, ADR-0019
 - **Check:** `ci-test` — `crates/unica-coder/src/interfaces/mcp.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`

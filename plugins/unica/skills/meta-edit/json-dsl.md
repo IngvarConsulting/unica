@@ -10,8 +10,8 @@
     "name": "unica.meta.edit",
     "arguments": {
       "cwd": "<workspace>",
-      "objectPath": "<path>",
-      "definitionFile": "<json>"
+      "ObjectPath": "<path>",
+      "DefinitionFile": "<json>"
     }
   }
 }

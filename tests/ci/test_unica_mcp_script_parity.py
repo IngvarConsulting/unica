@@ -15,6 +15,7 @@ import threading
 import time
 import unittest
 import xml.etree.ElementTree as ET
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -126,6 +127,7 @@ class ParityScenario:
 @dataclasses.dataclass(frozen=True)
 class SkillMcpExample:
     skill: str
+    document: str
     line: int
     payload: dict[str, Any]
 
@@ -4786,6 +4788,39 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
                 self.assertTrue(result["ok"], json.dumps(result, ensure_ascii=False, indent=2))
                 self.assertIn("dry run", result["summary"])
 
+    def test_every_documented_tools_call_uses_published_argument_names(self) -> None:
+        examples = list(iter_documented_mcp_examples(SKILLS_ROOT.glob("**/*.md")))
+        self.assertGreater(len(examples), 0)
+
+        with tempfile.TemporaryDirectory(prefix="unica-skill-schema-") as temp:
+            responses = self.call_mcp_messages(
+                [
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/list",
+                        "params": {},
+                    }
+                ],
+                Path(temp) / "cache",
+            )
+        tools = {
+            tool["name"]: tool["inputSchema"]
+            for tool in responses[1]["result"]["tools"]
+        }
+
+        for example in examples:
+            tool_name = example.payload["params"]["name"]
+            with self.subTest(document=example.document, line=example.line, tool=tool_name):
+                self.assertIn(tool_name, tools)
+                published = set(tools[tool_name]["properties"])
+                arguments = set(example.payload["params"]["arguments"])
+                self.assertEqual(
+                    arguments - published,
+                    set(),
+                    f"{example.document}:{example.line} uses unpublished arguments",
+                )
+
     def test_mcp_calls_match_unica_reference_models(self) -> None:
         for scenario in SCENARIOS:
             with self.subTest(scenario=scenario.name, tool=scenario.tool):
@@ -5572,9 +5607,9 @@ def command_for_script(
     return ["python3", str(script_path), *script_args(arguments)]
 
 
-def iter_skill_mcp_examples() -> list[SkillMcpExample]:
+def iter_documented_mcp_examples(documents: Iterable[Path]) -> list[SkillMcpExample]:
     examples: list[SkillMcpExample] = []
-    for skill_doc in sorted(SKILLS_ROOT.glob("*/SKILL.md")):
+    for skill_doc in sorted(documents):
         text = skill_doc.read_text(encoding="utf-8")
         for match in re.finditer(r"```json\n(.*?)\n```", text, flags=re.S):
             block = match.group(1)
@@ -5586,12 +5621,17 @@ def iter_skill_mcp_examples() -> list[SkillMcpExample]:
             line = text.count("\n", 0, match.start()) + 1
             examples.append(
                 SkillMcpExample(
-                    skill=skill_doc.parent.name,
+                    skill=skill_doc.relative_to(SKILLS_ROOT).parts[0],
+                    document=skill_doc.relative_to(REPO_ROOT).as_posix(),
                     line=line,
                     payload=payload,
                 )
             )
     return examples
+
+
+def iter_skill_mcp_examples() -> list[SkillMcpExample]:
+    return iter_documented_mcp_examples(SKILLS_ROOT.glob("*/SKILL.md"))
 
 
 def dry_run_message_for_example(

@@ -4859,7 +4859,7 @@ mod tests {
     }
 
     #[test]
-    fn native_operation_descriptors_drive_required_schema_and_path_alias_alternatives() {
+    fn native_operation_descriptors_drive_canonical_required_schema_paths() {
         for tool in tools() {
             let ToolHandler::NativeOperation { operation, .. } = tool.handler else {
                 continue;
@@ -4867,47 +4867,40 @@ mod tests {
             let descriptor = operation_descriptors::native_operation_descriptor(operation).unwrap();
             let schema = input_schema_for_tool(&tool);
             let path_groups = operation_descriptors::native_path_alias_groups(operation);
-            let expected_direct = descriptor
-                .required_args
-                .iter()
-                .copied()
-                .filter(|required| !path_groups.iter().any(|group| group.canonical == *required))
-                .collect::<Vec<_>>();
             let required = schema["required"]
                 .as_array()
                 .expect("schema required is array")
                 .iter()
                 .map(|value| value.as_str().expect("required item is string"))
                 .collect::<Vec<_>>();
-            assert_eq!(required, expected_direct, "{operation} direct required");
-
-            let expected_alias_requirements = descriptor
-                .required_args
-                .iter()
-                .filter_map(|required| {
-                    path_groups
-                        .iter()
-                        .find(|group| group.canonical == *required)
-                        .map(|group| {
-                            json!({
-                                "anyOf": group
-                                    .aliases
-                                    .iter()
-                                    .map(|alias| json!({"required": [alias]}))
-                                    .collect::<Vec<_>>()
-                            })
-                        })
-                })
-                .collect::<Vec<_>>();
-            let actual_alias_requirements = schema
-                .get("allOf")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
             assert_eq!(
-                actual_alias_requirements, expected_alias_requirements,
-                "{operation} path alias requirements"
+                required, descriptor.required_args,
+                "{operation} canonical required arguments"
             );
+            assert!(
+                schema.get("allOf").is_none(),
+                "{operation} must not hide required paths in schema composition"
+            );
+            let properties = schema["properties"].as_object().unwrap();
+            for required in &required {
+                assert!(
+                    properties.contains_key(*required),
+                    "{operation} requires unpublished argument {required}"
+                );
+            }
+            for group in path_groups {
+                assert!(properties.contains_key(group.canonical));
+                for alias in group
+                    .aliases
+                    .iter()
+                    .filter(|alias| **alias != group.canonical)
+                {
+                    assert!(
+                        !properties.contains_key(*alias),
+                        "{operation} publishes compatibility path alias {alias}"
+                    );
+                }
+            }
         }
     }
 
