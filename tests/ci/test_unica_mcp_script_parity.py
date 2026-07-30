@@ -4737,6 +4737,7 @@ source-set:
 """,
                 encoding="utf-8",
             )
+            code_patch_source_sets: set[str] = set()
             for example in examples:
                 arguments = example.payload["params"]["arguments"]
                 if example.skill == "form-edit":
@@ -4790,6 +4791,7 @@ source-set:
                     kind, name, role = address
                     self.assertEqual((kind, role), ("CommonModule", "Module"))
                     self.assertIn(arguments["sourceSet"], source_roots)
+                    code_patch_source_sets.add(arguments["sourceSet"])
                     source_root = source_roots[arguments["sourceSet"]]
                     module_path = (
                         source_root
@@ -4817,6 +4819,7 @@ source-set:
                     )
                 elif example.skill == "meta-edit":
                     prepare_meta_edit_skill_example(workspace, example, arguments)
+            self.assertEqual(code_patch_source_sets, {"main", "myExtension"})
             messages = [
                 dry_run_message_for_example(example, index + 1, workspace)
                 for index, example in enumerate(examples)

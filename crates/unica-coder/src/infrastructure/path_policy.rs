@@ -1,4 +1,5 @@
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::platform::filesystem::strip_windows_extended_length_prefix;
 use crate::infrastructure::source_roots::normalize_path_identity;
 use std::path::{Component, Path, PathBuf};
 
@@ -24,14 +25,27 @@ impl<'a> WorkspacePathPolicy<'a> {
             cwd.join(path)
         };
         let normalized = normalize_lexically(&raw);
+        let lexical_workspace = normalize_lexically(&strip_windows_extended_length_prefix(
+            &self.context.workspace_root,
+        ));
+        let lexical_path = normalize_lexically(&strip_windows_extended_length_prefix(&normalized));
         let workspace_identity = normalize_path_identity(&self.context.workspace_root)
             .map_err(|error| format!("failed to inspect workspace root: {error}"))?;
+
+        if !path_starts_with_host_policy(&lexical_path, &lexical_workspace)
+            && !path_starts_with_host_policy(&lexical_path, &workspace_identity)
+        {
+            return Err(format!(
+                "refusing to {operation} outside workspace root: {}",
+                normalized.display()
+            ));
+        }
+
         let path_identity = normalize_path_identity(&normalized)
             .map_err(|error| format!("failed to inspect workspace path: {error}"))?;
-
-        if !path_identity.starts_with(&workspace_identity) {
+        if !path_starts_with_host_policy(&path_identity, &workspace_identity) {
             return Err(format!(
-                "refusing to {operation} outside workspace root or through a symlink: {}",
+                "refusing to {operation} through symlink outside workspace root: {}",
                 normalized.display()
             ));
         }
@@ -52,6 +66,25 @@ fn normalize_lexically(path: &Path) -> PathBuf {
         }
     }
     normalized
+}
+
+#[cfg(windows)]
+fn path_starts_with_host_policy(path: &Path, base: &Path) -> bool {
+    let path_components = path.components().collect::<Vec<_>>();
+    let base_components = base.components().collect::<Vec<_>>();
+    path_components.len() >= base_components.len()
+        && path_components
+            .iter()
+            .zip(base_components.iter())
+            .all(|(left, right)| {
+                left.as_os_str().to_string_lossy().to_lowercase()
+                    == right.as_os_str().to_string_lossy().to_lowercase()
+            })
+}
+
+#[cfg(not(windows))]
+fn path_starts_with_host_policy(path: &Path, base: &Path) -> bool {
+    path.starts_with(base)
 }
 
 #[cfg(test)]
@@ -76,6 +109,78 @@ mod tests {
 
         assert!(error.contains("outside workspace root"));
 
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_lexically_external_symlink_that_points_into_workspace() {
+        use std::os::unix::fs::symlink;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp = std::env::temp_dir().join(format!(
+            "unica-path-policy-inbound-link-{}-{nanos}",
+            std::process::id()
+        ));
+        let workspace = temp.join("workspace");
+        let outside = temp.join("outside");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(workspace.join("Configuration.xml"), "<MetaDataObject/>").unwrap();
+        symlink(&workspace, outside.join("workspace-alias")).unwrap();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build").join("unica"),
+            workspace_epoch: 1,
+        };
+        let policy = WorkspacePathPolicy::new(&context);
+
+        let error = policy
+            .resolve_write(outside.join("workspace-alias/Configuration.xml"))
+            .unwrap_err();
+
+        assert!(error.contains("outside workspace root"));
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_lexically_internal_symlink_that_points_outside_workspace() {
+        use std::os::unix::fs::symlink;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp = std::env::temp_dir().join(format!(
+            "unica-path-policy-outbound-link-{}-{nanos}",
+            std::process::id()
+        ));
+        let workspace = temp.join("workspace");
+        let outside = temp.join("outside");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("Configuration.xml"), "<MetaDataObject/>").unwrap();
+        symlink(&outside, workspace.join("outside-alias")).unwrap();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build").join("unica"),
+            workspace_epoch: 1,
+        };
+        let policy = WorkspacePathPolicy::new(&context);
+
+        let error = policy
+            .resolve_write(workspace.join("outside-alias/Configuration.xml"))
+            .unwrap_err();
+
+        assert!(error.contains("outside workspace root"));
         let _ = std::fs::remove_dir_all(temp);
     }
 
@@ -111,5 +216,14 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(regular_root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn lexical_containment_follows_windows_case_policy() {
+        assert!(path_starts_with_host_policy(
+            Path::new(r"C:\WORKSPACE\src\Module.bsl"),
+            Path::new(r"c:\workspace")
+        ));
     }
 }
