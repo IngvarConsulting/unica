@@ -718,6 +718,50 @@ mod tests {
             "{other_app_error:?}"
         );
 
+        let first_page_args = json!({
+            "cwd": root,
+            "sourceSet": "main",
+            "scope": "aggregate",
+            "limit": 2
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let first_page: Value = serde_json::from_str(
+            &call_tool_text(
+                &app,
+                "unica.source.resources",
+                &first_page_args,
+                CancellationToken::new(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(first_page["data"]["resources"].as_array().unwrap().len(), 2);
+        let continuation_args = json!({
+            "cwd": root,
+            "snapshotId": first_page["data"]["snapshotId"],
+            "cursor": first_page["data"]["nextCursor"]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let continuation: Value = serde_json::from_str(
+            &call_tool_text(
+                &app,
+                "unica.source.resources",
+                &continuation_args,
+                CancellationToken::new(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            continuation["data"]["resources"].as_array().unwrap().len(),
+            1
+        );
+        assert_no_private_source_resource_keys(&continuation);
+
         std::fs::remove_dir_all(root).unwrap();
     }
 

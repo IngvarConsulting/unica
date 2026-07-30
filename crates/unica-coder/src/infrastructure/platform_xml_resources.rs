@@ -12,6 +12,7 @@ use crate::domain::source_resources::{
 use crate::domain::source_target::{ResolvedTarget, TargetKind};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
+use crate::infrastructure::platform::secure_read::read_root_relative_regular_file;
 use crate::infrastructure::platform_xml_source_targets::{
     platform_xml_resource_evidence, resolve_platform_xml_target,
 };
@@ -20,23 +21,25 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 const PROVIDER_ID: &str = "platform-xml";
-const MAX_SNAPSHOT_RESOURCE_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_SNAPSHOT_BYTES: usize = 32 * 1024 * 1024;
+const MAX_LIVE_SNAPSHOT_BYTES: usize = 128 * 1024 * 1024;
+const MAX_LIVE_SNAPSHOTS: usize = 64;
 
 pub(crate) trait SourceResourceClock: Send + Sync {
     fn now(&self) -> Duration;
 }
 
-struct SystemClock;
+struct MonotonicClock {
+    origin: Instant,
+}
 
-impl SourceResourceClock for SystemClock {
+impl SourceResourceClock for MonotonicClock {
     fn now(&self) -> Duration {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
+        self.origin.elapsed()
     }
 }
 
@@ -58,6 +61,7 @@ struct StoredSnapshot {
     expires_at: Duration,
     page_size: usize,
     resources: Vec<StoredResource>,
+    byte_size: usize,
 }
 
 pub(crate) struct PlatformXmlResourceProvider {
@@ -70,7 +74,9 @@ pub(crate) struct PlatformXmlResourceProvider {
 
 impl PlatformXmlResourceProvider {
     pub(crate) fn new() -> Self {
-        Self::with_clock(Arc::new(SystemClock))
+        Self::with_clock(Arc::new(MonotonicClock {
+            origin: Instant::now(),
+        }))
     }
 
     pub(crate) fn with_clock(clock: Arc<dyn SourceResourceClock>) -> Self {
@@ -122,7 +128,7 @@ impl PlatformXmlResourceProvider {
             })?;
             if snapshots
                 .get(&request.snapshot_id)
-                .is_some_and(|snapshot| self.clock.now() > snapshot.expires_at)
+                .is_some_and(|snapshot| self.clock.now() >= snapshot.expires_at)
             {
                 snapshots.remove(&request.snapshot_id);
                 return Err(public_error(
@@ -171,31 +177,17 @@ impl PlatformXmlResourceProvider {
             .offset
             .saturating_add(request.limit)
             .min(bytes.len());
-        let (offset, end, content, content_encoding) = if public.text_profile.is_some() {
-            let text = std::str::from_utf8(&bytes).map_err(|_| {
-                public_error(
-                    SourceResourceErrorCode::ResourceNotReadable,
-                    "text resource snapshot is not valid UTF-8",
-                )
-            })?;
-            let mut offset = request.offset;
-            while offset < text.len() && !text.is_char_boundary(offset) {
-                offset += 1;
-            }
-            let mut end = requested_end.max(offset);
-            while end > offset && !text.is_char_boundary(end) {
-                end -= 1;
-            }
+        let (content, content_encoding) = if public.text_profile.is_some()
+            && std::str::from_utf8(&bytes[request.offset..requested_end]).is_ok()
+        {
             (
-                offset,
-                end,
-                text[offset..end].to_string(),
+                std::str::from_utf8(&bytes[request.offset..requested_end])
+                    .expect("validated UTF-8 slice")
+                    .to_string(),
                 "utf-8".to_string(),
             )
         } else {
             (
-                request.offset,
-                requested_end,
                 base64_encode(&bytes[request.offset..requested_end]),
                 "base64".to_string(),
             )
@@ -204,13 +196,13 @@ impl PlatformXmlResourceProvider {
         Ok(SourceReadResult {
             snapshot_id,
             resource_id: public.resource_id,
-            offset,
-            length: end - offset,
+            offset: request.offset,
+            length: requested_end - request.offset,
             size: bytes.len(),
             hash: public.hash,
             content,
             content_encoding,
-            eof: end == bytes.len(),
+            eof: requested_end == bytes.len(),
             applied_limit: request.limit,
             text_profile: public.text_profile,
         })
@@ -279,10 +271,18 @@ impl PlatformXmlResourceProvider {
         };
         self.check_cancelled(cancellation)?;
 
+        let source_root = evidence.source_root.clone();
         let mut stored_resources = Vec::new();
         for (path, role) in candidates.into_iter().take(SOURCE_MANIFEST_RESOURCE_MAX) {
             self.check_cancelled(cancellation)?;
-            stored_resources.push(snapshot_resource(&path, role)?);
+            stored_resources.push(snapshot_resource(&source_root, &path, role)?);
+        }
+        let byte_size = stored_resources
+            .iter()
+            .map(|resource| resource.bytes.len())
+            .sum::<usize>();
+        if byte_size > MAX_SNAPSHOT_BYTES {
+            return Err(capacity_error());
         }
         let revision = manifest_revision(&resolution.resolved, request.scope, &stored_resources);
         let snapshot_id = Uuid::new_v4().to_string();
@@ -305,6 +305,7 @@ impl PlatformXmlResourceProvider {
             expires_at: self.clock.now() + Duration::from_secs(SOURCE_SNAPSHOT_TTL_SECONDS),
             page_size: request.limit,
             resources: stored_resources,
+            byte_size,
         };
         self.check_cancelled(cancellation)?;
         let page = self.page(&snapshot, 0);
@@ -315,7 +316,14 @@ impl PlatformXmlResourceProvider {
             )
         })?;
         let now = self.clock.now();
-        snapshots.retain(|_, stored| now <= stored.expires_at);
+        snapshots.retain(|_, stored| now < stored.expires_at);
+        let live_bytes = snapshots
+            .values()
+            .map(|stored| stored.byte_size)
+            .sum::<usize>();
+        if !within_live_capacity(snapshots.len(), live_bytes, snapshot.byte_size) {
+            return Err(capacity_error());
+        }
         snapshots.insert(snapshot_id, snapshot);
         Ok(page)
     }
@@ -335,7 +343,7 @@ impl PlatformXmlResourceProvider {
         })?;
         if snapshots
             .get(&request.snapshot_id)
-            .is_some_and(|snapshot| self.clock.now() > snapshot.expires_at)
+            .is_some_and(|snapshot| self.clock.now() >= snapshot.expires_at)
         {
             snapshots.remove(&request.snapshot_id);
             return Err(public_error(
@@ -350,7 +358,10 @@ impl PlatformXmlResourceProvider {
             )
         })?;
         self.validate_snapshot(snapshot, context)?;
-        if request.limit != snapshot.page_size {
+        if request
+            .limit
+            .is_some_and(|limit| limit != snapshot.page_size)
+        {
             return Err(public_error(
                 SourceResourceErrorCode::InvalidCursor,
                 "cursor is bound to the original manifest page size",
@@ -411,7 +422,7 @@ impl PlatformXmlResourceProvider {
         snapshot: &StoredSnapshot,
         context: &WorkspaceContext,
     ) -> Result<(), SourceResourceError> {
-        if self.clock.now() > snapshot.expires_at {
+        if self.clock.now() >= snapshot.expires_at {
             return Err(public_error(
                 SourceResourceErrorCode::SnapshotExpired,
                 "resource snapshot has expired",
@@ -463,31 +474,23 @@ impl PlatformXmlResourceProvider {
 }
 
 fn snapshot_resource(
+    root: &Path,
     path: &Path,
     role: ResourceRole,
 ) -> Result<StoredResource, SourceResourceError> {
-    let metadata = fs::symlink_metadata(path).map_err(|_| {
-        public_error(
-            SourceResourceErrorCode::SourceUnavailable,
-            "source resource is unavailable",
-        )
-    })?;
-    if metadata_is_link_or_reparse_point(&metadata)
-        || !metadata.is_file()
-        || metadata.len() > MAX_SNAPSHOT_RESOURCE_BYTES
-    {
-        return Err(public_error(
-            SourceResourceErrorCode::SourceUnavailable,
-            "source resource cannot be safely snapshotted",
-        ));
-    }
-    let bytes = fs::read(path).map_err(|_| {
-        public_error(
-            SourceResourceErrorCode::SourceUnavailable,
-            "source resource could not be read",
-        )
-    })?;
-    let text_profile = text_profile(&bytes);
+    let bytes = read_root_relative_regular_file(root, path, MAX_SNAPSHOT_BYTES, |_| {})
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::FileTooLarge {
+                capacity_error()
+            } else {
+                public_error(
+                    SourceResourceErrorCode::SourceUnavailable,
+                    "source resource cannot be safely snapshotted",
+                )
+            }
+        })?
+        .bytes;
+    let text_profile = is_text_role(role).then(|| text_profile(&bytes)).flatten();
     let media_type = match role {
         ResourceRole::BslModule => "text/x-bsl",
         ResourceRole::ConfigurationDescriptor
@@ -515,6 +518,30 @@ fn snapshot_resource(
         },
         bytes: Arc::from(bytes),
     })
+}
+
+fn is_text_role(role: ResourceRole) -> bool {
+    matches!(
+        role,
+        ResourceRole::BslModule
+            | ResourceRole::ConfigurationDescriptor
+            | ResourceRole::MetadataDescriptor
+            | ResourceRole::Registration
+            | ResourceRole::Form
+            | ResourceRole::Dcs
+            | ResourceRole::Rights
+    )
+}
+
+fn capacity_error() -> SourceResourceError {
+    public_error(
+        SourceResourceErrorCode::SnapshotCapacityExceeded,
+        "resource snapshot capacity is exhausted",
+    )
+}
+
+fn within_live_capacity(count: usize, bytes: usize, new_bytes: usize) -> bool {
+    count < MAX_LIVE_SNAPSHOTS && bytes.saturating_add(new_bytes) <= MAX_LIVE_SNAPSHOT_BYTES
 }
 
 fn scan_root_resources(
@@ -957,7 +984,7 @@ mod tests {
                 SourceResourcesRequest::Continue(ContinueResourceSnapshotRequest {
                     snapshot_id: first.snapshot_id.clone(),
                     cursor: cursor.clone(),
-                    limit: 2,
+                    limit: None,
                 }),
                 &fixture.context,
                 &CancellationToken::new(),
@@ -968,7 +995,7 @@ mod tests {
                 SourceResourcesRequest::Continue(ContinueResourceSnapshotRequest {
                     snapshot_id: first.snapshot_id.clone(),
                     cursor,
-                    limit: 2,
+                    limit: None,
                 }),
                 &fixture.context,
                 &CancellationToken::new(),
@@ -986,7 +1013,7 @@ mod tests {
                 SourceResourcesRequest::Continue(ContinueResourceSnapshotRequest {
                     snapshot_id: first.snapshot_id,
                     cursor: first.next_cursor.unwrap(),
-                    limit: 1,
+                    limit: Some(1),
                 }),
                 &fixture.context,
                 &CancellationToken::new(),
@@ -1074,6 +1101,11 @@ mod tests {
     #[test]
     fn source_resources_binary_reads_are_bounded_base64_and_read_only() {
         let fixture = Fixture::new(b"Procedure Run()\nEndProcedure\n");
+        fs::write(
+            fixture.root.join("src/Templates/Blob/Ext/Template.bin"),
+            b"plain ASCII bytes",
+        )
+        .unwrap();
         let (provider, _) = provider();
         let page = provider
             .resources(
@@ -1105,9 +1137,193 @@ mod tests {
             )
             .unwrap();
         assert_eq!(read.content_encoding, "base64");
-        assert_eq!(read.content, "/wABAg==");
+        assert_eq!(read.content, "cGxhaW4gQVNDSUkgYnl0ZXM=");
         assert!(read.eof);
-        assert_eq!(read.length, 4);
+        assert_eq!(read.length, 17);
+    }
+
+    #[test]
+    fn text_reads_preserve_exact_byte_progress_at_utf8_boundaries() {
+        let fixture = Fixture::new("\u{feff}Ж".as_bytes());
+        let (provider, _) = provider();
+        let page = provider
+            .resources(
+                fixture.module_request(ResourceScope::SelfOnly, 50),
+                &fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let resource_id = page.resources[0].resource_id.clone();
+        for (offset, limit, encoding, length, eof) in [
+            (0, 1, "base64", 1, false),
+            (0, 2, "base64", 2, false),
+            (3, 1, "base64", 1, false),
+            (4, 1, "base64", 1, true),
+        ] {
+            let read = provider
+                .read(
+                    SourceReadRequest {
+                        snapshot_id: page.snapshot_id.clone(),
+                        resource_id: resource_id.clone(),
+                        offset,
+                        limit,
+                    },
+                    &fixture.context,
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            assert_eq!(read.offset, offset);
+            assert_eq!(read.length, length);
+            assert_eq!(read.content_encoding, encoding);
+            assert_eq!(read.eof, eof);
+            assert!(read.length > 0 || read.eof);
+        }
+    }
+
+    #[test]
+    fn ttl_boundary_expires_pages_and_reads_at_exact_deadline() {
+        let fixture = Fixture::new(b"Procedure Run()\nEndProcedure\n");
+        let (provider, clock) = provider();
+        let first = provider
+            .resources(
+                fixture.root_request(ResourceScope::Aggregate, 1),
+                &fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let continuation = ContinueResourceSnapshotRequest {
+            snapshot_id: first.snapshot_id.clone(),
+            cursor: first.next_cursor.clone().unwrap(),
+            limit: None,
+        };
+        clock.advance(299);
+        provider
+            .resources(
+                SourceResourcesRequest::Continue(continuation.clone()),
+                &fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        clock.advance(1);
+        assert_eq!(
+            provider
+                .resources(
+                    SourceResourcesRequest::Continue(continuation),
+                    &fixture.context,
+                    &CancellationToken::new(),
+                )
+                .unwrap_err()
+                .code,
+            SourceResourceErrorCode::SnapshotExpired
+        );
+
+        let second = provider
+            .resources(
+                fixture.module_request(ResourceScope::SelfOnly, 50),
+                &fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let read = SourceReadRequest {
+            snapshot_id: second.snapshot_id,
+            resource_id: second.resources[0].resource_id.clone(),
+            offset: 0,
+            limit: 1,
+        };
+        clock.advance(299);
+        provider
+            .read(read.clone(), &fixture.context, &CancellationToken::new())
+            .unwrap();
+        clock.advance(1);
+        assert_eq!(
+            provider
+                .read(read.clone(), &fixture.context, &CancellationToken::new())
+                .unwrap_err()
+                .code,
+            SourceResourceErrorCode::SnapshotExpired
+        );
+        clock.advance(1);
+        assert_eq!(
+            provider
+                .read(read, &fixture.context, &CancellationToken::new())
+                .unwrap_err()
+                .code,
+            SourceResourceErrorCode::SnapshotNotFound
+        );
+    }
+
+    #[test]
+    fn live_snapshot_capacity_is_bounded_without_evicting_unexpired_snapshots() {
+        assert!(within_live_capacity(63, MAX_LIVE_SNAPSHOT_BYTES - 1, 1));
+        assert!(!within_live_capacity(64, 0, 0));
+        assert!(!within_live_capacity(0, MAX_LIVE_SNAPSHOT_BYTES, 1));
+
+        let fixture = Fixture::new(b"x");
+        let (provider, _) = provider();
+        let first = provider
+            .resources(
+                fixture.module_request(ResourceScope::SelfOnly, 50),
+                &fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        for _ in 1..MAX_LIVE_SNAPSHOTS {
+            provider
+                .resources(
+                    fixture.module_request(ResourceScope::SelfOnly, 50),
+                    &fixture.context,
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            provider
+                .resources(
+                    fixture.module_request(ResourceScope::SelfOnly, 50),
+                    &fixture.context,
+                    &CancellationToken::new(),
+                )
+                .unwrap_err()
+                .code,
+            SourceResourceErrorCode::SnapshotCapacityExceeded
+        );
+        provider
+            .read(
+                SourceReadRequest {
+                    snapshot_id: first.snapshot_id,
+                    resource_id: first.resources[0].resource_id.clone(),
+                    offset: 0,
+                    limit: 1,
+                },
+                &fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn single_snapshot_byte_limit_has_stable_capacity_error() {
+        let fixture = Fixture::new(b"x");
+        fs::write(
+            fixture.root.join("src/CommonModules/Shared/Ext/Module.bsl"),
+            vec![b'x'; MAX_SNAPSHOT_BYTES + 1],
+        )
+        .unwrap();
+        let (provider, _) = provider();
+        let error = provider
+            .resources(
+                fixture.module_request(ResourceScope::SelfOnly, 50),
+                &fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.code,
+            SourceResourceErrorCode::SnapshotCapacityExceeded
+        );
+        assert!(!error
+            .message
+            .contains(fixture.root.to_string_lossy().as_ref()));
     }
 
     #[test]

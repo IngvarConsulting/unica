@@ -2,6 +2,7 @@ mod entrypoint;
 pub(crate) mod filesystem;
 pub(crate) mod full_dump_publication;
 mod process;
+pub(crate) mod secure_read;
 mod target;
 #[cfg(test)]
 pub(crate) mod testing;

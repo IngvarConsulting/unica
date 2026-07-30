@@ -28,7 +28,7 @@ pub(crate) struct OpenResourceSnapshotRequest {
 pub(crate) struct ContinueResourceSnapshotRequest {
     pub(crate) snapshot_id: String,
     pub(crate) cursor: String,
-    pub(crate) limit: usize,
+    pub(crate) limit: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,18 +86,12 @@ fn resources_request(args: &Map<String, Value>) -> Result<SourceResourcesRequest
     let has_open_fields = args.contains_key("sourceSet")
         || args.contains_key("metadataPath")
         || args.contains_key("scope");
-    let limit = bounded_limit(
-        args,
-        SOURCE_RESOURCE_PAGE_LIMIT_MAX,
-        SOURCE_RESOURCE_PAGE_LIMIT_MAX,
-    )?;
-
     match (snapshot_id, cursor, has_open_fields) {
         (Some(snapshot_id), Some(cursor), false) => Ok(SourceResourcesRequest::Continue(
             ContinueResourceSnapshotRequest {
                 snapshot_id,
                 cursor,
-                limit,
+                limit: optional_bounded_limit(args, SOURCE_RESOURCE_PAGE_LIMIT_MAX)?,
             },
         )),
         (None, None, _) => {
@@ -130,15 +124,28 @@ fn resources_request(args: &Map<String, Value>) -> Result<SourceResourcesRequest
                     metadata_path,
                 },
                 scope,
-                limit,
+                limit: bounded_limit(
+                    args,
+                    SOURCE_RESOURCE_PAGE_LIMIT_MAX,
+                    SOURCE_RESOURCE_PAGE_LIMIT_MAX,
+                )?,
             }))
         }
         _ => Err(SourceResourceError::new(
             SourceResourceErrorCode::InvalidRequest,
-            "snapshot continuation requires only snapshotId, cursor, and the original limit",
+            "snapshot continuation requires snapshotId and cursor without open-snapshot fields",
         )
         .to_string()),
     }
+}
+
+fn optional_bounded_limit(
+    args: &Map<String, Value>,
+    maximum: usize,
+) -> Result<Option<usize>, String> {
+    args.get("limit")
+        .map(|_| bounded_limit(args, maximum, maximum))
+        .transpose()
 }
 
 fn read_request(args: &Map<String, Value>) -> Result<SourceReadRequest, String> {
@@ -261,7 +268,20 @@ mod tests {
         .unwrap();
         assert!(matches!(
             continuation,
-            SourceResourcesRequest::Continue(ContinueResourceSnapshotRequest { limit: 25, .. })
+            SourceResourcesRequest::Continue(ContinueResourceSnapshotRequest {
+                limit: Some(25),
+                ..
+            })
+        ));
+        let continuation_without_limit = resources_request(
+            json!({"snapshotId": "snapshot", "cursor": "cursor"})
+                .as_object()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            continuation_without_limit,
+            SourceResourcesRequest::Continue(ContinueResourceSnapshotRequest { limit: None, .. })
         ));
 
         let mixed = resources_request(
