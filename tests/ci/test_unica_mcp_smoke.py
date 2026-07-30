@@ -204,9 +204,13 @@ class UnicaMcpSmokeTests(unittest.TestCase):
             process.stdin.flush()
             yield request
         finally:
-            if not process.stdin.closed:
-                process.stdin.close()
             try:
+                if not process.stdin.closed:
+                    try:
+                        process.stdin.close()
+                    except BrokenPipeError:
+                        # The child may already be gone; reaping still has to run.
+                        pass
                 try:
                     return_code = process.wait(timeout=30)
                 except subprocess.TimeoutExpired:
