@@ -18,6 +18,12 @@ Usage:
     UNICA_DIFF_BASE=origin/main python3.12 scripts/ci/check-architecture-sync.py
     git diff origin/main... | python3.12 scripts/ci/check-architecture-sync.py -
 
+The base ref is the target branch of the change, and it is the guard's clock for
+decision records: a record the target branch carries is history and immutable, a
+record only this pull request has is still the author's to edit, renumber or
+drop. `main` is the fallback, not an assumption -- a release flow that merges
+into another branch passes that branch and gets judged against it.
+
 Without a resolvable base the guard exits 0 and says so: a local checkout that
 cannot name its base ref is not evidence of a violation.
 
@@ -78,10 +84,16 @@ ARCHITECTURE_EVIDENCE = (
     "spec/architecture/invariants.md",
     "spec/architecture/quality-requirements.md",
 )
+# Where the catalogue lives. Both readers of the boundary -- the record pattern
+# below and the read of the target branch -- take the prefix from here, so the
+# catalogue cannot move for one of them and stay put for the other.
+DECISIONS_DIR = "spec/decisions/"
 # The four digits are the record's ID: `ADR-0011` is the file `0011-*.md`. The
 # ID is what every citation elsewhere in the spec points at, so it is the thing
 # the immutability rules below have to keep resolving.
-DECISION_RECORD = re.compile(r"^spec/decisions/(?P<id>\d{4})-.+\.md$")
+DECISION_RECORD = re.compile(
+    rf"^{re.escape(DECISIONS_DIR)}(?P<id>\d{{4}})-.+\.md$"
+)
 
 
 def is_architecture_evidence(path: str) -> bool:
@@ -131,14 +143,19 @@ C_ESCAPES = {
 }
 OCTAL_DIGITS = "01234567"
 
-# An accepted decision record is a dated statement of what was chosen, not a
-# description of current code (INV-DOC-SUPERSEDE-NOT-EDIT). The rewrites that a
-# diff can give away are all cheap to spot: moving the acceptance date, walking
-# the status backwards, parking the record on a status the catalogue does not
-# define, dropping the status or date field altogether, deleting the record, and
-# moving or renumbering it so its ID stops resolving. Prose edits stay legal
-# only when the diff also stamps the `Обновлено` field, which is what the
-# invariant asks an editorial change to carry.
+# A decision record becomes an immutable statement of what was chosen on the day
+# it appears in the target branch, not on the day someone types `accepted`
+# (INV-DOC-SUPERSEDE-NOT-EDIT). Until then the record exists only inside its own
+# pull request, where editing, renumbering, merging and dropping it are ordinary
+# review work; judging those as rewrites is how a guard invents violations.
+#
+# For a record the target branch already carries, the rewrites a diff gives away
+# are all cheap to spot: moving the acceptance date, walking the status
+# backwards, parking the record on a status the catalogue does not define,
+# dropping the status or date field altogether, deleting the record, and moving
+# or renumbering it so its ID stops resolving. Prose edits stay legal only when
+# the diff also stamps the `Обновлено` field, which is what the invariant asks an
+# editorial change to carry.
 #
 # Dropping a field and moving the file matter because both unaccept a record
 # without ever writing a smaller status: a record with no `Статус` line is no
@@ -151,6 +168,19 @@ STATUS_ORDER = {"proposed": 0, "accepted": 1, "superseded": 2}
 # Statuses that make a record binding. Deleting one is a rewrite by removal:
 # every reference to its ID becomes a dangling pointer.
 BINDING_STATUSES = frozenset({"accepted", "superseded"})
+
+# `superseded` is a transition, not a starting point: it says this repository
+# accepted the decision and later replaced it. A record that enters the
+# catalogue already superseded states a history the target branch never had, so
+# the status is only reachable from `accepted`.
+SUPERSEDED = "superseded"
+ACCEPTED = "accepted"
+
+# How a record names the one that replaced it: the citation form `ADR-0021` or a
+# link to the file that carries the ID. Either resolves for a reader; a bare
+# "заменено более новым решением" does not.
+REPLACEMENT_CITATION = re.compile(r"ADR-(?P<id>[0-9]{4})")
+REPLACEMENT_LINK = re.compile(r"(?<![0-9])(?P<id>[0-9]{4})-[^\s()]*\.md")
 
 
 def unquote_path(raw: str) -> str:
@@ -398,40 +428,138 @@ def unreadable_sections(diff_text: str) -> list[str]:
     return problems
 
 
-def analyze_decision_records(diff_text: str) -> list[str]:
-    """Report accepted decision records that the diff rewrites (INV-DOC-SUPERSEDE-NOT-EDIT).
+class BaseCatalogue:
+    """The decision records the target branch already carries.
 
-    Pure function over a unified diff: no git, no filesystem. Judgement starts
-    from the *old* side: a name that was not a record before this change states
-    nothing yet, so creating a record -- or moving a document into the catalogue
-    -- is skipped, and a brand new record may say anything.
+    Membership is what decides whether a record is history: an ID the target
+    branch does not have belongs to an unfinished pull request, whatever the
+    diff's own old side says about it. The status is read from the target branch
+    too, so `accepted -> superseded` can be recognised even in a diff that shows
+    only the added line.
+    """
 
-    A record that already existed is held to its ID and to its fields. Its ID
-    must still resolve after the change: deleting the file, moving it out of
+    def __init__(self, statuses: dict[str, str | None]) -> None:
+        self.statuses = statuses
+
+    def has(self, identifier: str) -> bool:
+        return identifier in self.statuses
+
+    def status(self, identifier: str) -> str | None:
+        return self.statuses.get(identifier)
+
+
+def read_base_records(base: str) -> BaseCatalogue | None:
+    """Read `spec/decisions/` out of the target branch. None when git refuses.
+
+    `-z` keeps every path literal: this catalogue is named in Russian, and the
+    quoting git applies by default is the same trap the diff grammar already has
+    to undo.
+
+    Returning None on failure drops the guard back to judging the diff alone,
+    which is the stricter of the two readings -- an unmerged record is then held
+    to the same rules as a merged one. A guard that cannot see the target branch
+    must not become more permissive than one that can.
+
+    The decoding is pinned rather than left to the locale. `text=True` alone
+    decodes with the runner's preferred encoding, which on a host with no `LANG`
+    is ASCII -- and every record body here is Russian, so the guard would die on
+    a decode error instead of reporting anything at all.
+    """
+    listing = subprocess.run(
+        ["git", "ls-tree", "-r", "--name-only", "-z", base, "--", DECISIONS_DIR],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if listing.returncode != 0:
+        return None
+
+    statuses: dict[str, str | None] = {}
+    for path in listing.stdout.split("\0"):
+        identifier = record_id(path) if path else None
+        if identifier is None:
+            continue
+        content = subprocess.run(
+            ["git", "show", f"{base}:{path}"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if content.returncode != 0:
+            statuses[identifier] = None
+            continue
+        statuses[identifier] = base_status(content.stdout)
+
+    return BaseCatalogue(statuses)
+
+
+def base_status(record_text: str) -> str | None:
+    """The status a record file states, or None when it states none.
+
+    The field patterns are written against diff bodies, where the leading `-` is
+    the markdown bullet rather than the diff marker -- so the same pattern reads
+    a plain file.
+    """
+    for line in record_text.splitlines():
+        status = STATUS_FIELD.match(line)
+        if status:
+            return status.group("value").lower()
+    return None
+
+
+def analyze_decision_records(
+    diff_text: str, base: BaseCatalogue | None = None
+) -> list[str]:
+    """Report decision records the diff rewrites (INV-DOC-SUPERSEDE-NOT-EDIT).
+
+    Immutability starts at the target branch, not at the word `accepted`. With
+    `base` given, a record whose ID that branch does not carry exists only inside
+    this pull request: editing it, renumbering it, merging it into another record
+    or dropping it are review work, not rewrites. Without `base` -- a diff piped
+    in with no ref to read -- the diff's own old side is the only statement about
+    history available, so a name that was already a record is treated as one.
+
+    A record the target branch carries is held to its ID and to its fields. Its
+    ID must still resolve after the change: deleting the file, moving it out of
     `spec/decisions/`, or renumbering it all leave every citation dangling, and
     a 100% rename is the quietest of the three. Its fields must not be walked
     back: a moved acceptance date, a status that goes backwards or leaves the
     catalogue, a status or date line dropped outright. Its prose must not move
     without the `Обновлено` stamp that marks an editorial change.
+
+    `superseded` is held to its origin in both directions. A record reaches it
+    only from `accepted`, and only while naming the record that replaced it: a
+    record born superseded, or one promoted straight out of `proposed`, writes a
+    history the target branch never had.
     """
     violations: list[str] = []
 
     for section in iter_file_diffs(diff_text):
         before_id = record_id(section.old_path)
-        if before_id is None:
+        after_id = record_id(section.new_path)
+        if before_id is None and after_id is None:
             continue
-        # An old-side ID means the old path is a real name, so `path` is set.
+        # One side carried an ID, so at least one path is a real name.
         path = section.path
 
         dates: dict[str, list[str]] = {"-": [], "+": []}
         statuses: dict[str, list[str]] = {"-": [], "+": []}
         updated_stamped = False
         prose_edited = False
+        replacements: set[str] = set()
 
         for line in section.lines:
             if not line or line[0] not in "+-":
                 continue
             side, body = line[0], line[1:]
+            if side == "+":
+                for pattern in (REPLACEMENT_CITATION, REPLACEMENT_LINK):
+                    for match in pattern.finditer(body):
+                        replacements.add(match.group("id"))
             date = DATE_FIELD.match(body)
             if date:
                 dates[side].append(date.group("value"))
@@ -446,18 +574,62 @@ def analyze_decision_records(diff_text: str) -> list[str]:
             if body.strip():
                 prose_edited = True
 
-        # A record whose removed status is visible and non-binding was never
-        # something anyone could cite, so withdrawing it is legal. When the diff
-        # shows no status at all -- which is exactly what a 100% rename looks
-        # like -- the record is treated as binding: a guard that assumes the
-        # harmless case is how `git mv` becomes the way around this rule.
-        withdrawn = bool(statuses["-"]) and not any(
-            status in BINDING_STATUSES for status in statuses["-"]
+        # The record's own ID is not a reference to the record that replaced it.
+        replacements -= {
+            identifier for identifier in (before_id, after_id) if identifier
+        }
+
+        # Does the target branch already carry this record? That, not the status
+        # written in the file, is what makes the record history.
+        if base is None:
+            in_target_branch = before_id is not None
+        else:
+            in_target_branch = before_id is not None and base.has(before_id)
+
+        if not in_target_branch:
+            # Not history yet. The whole record is the pull request's to change,
+            # with two exceptions. It must not land on a number the target branch
+            # already spent -- that is what renumbering before merge is for, and
+            # the collision would make one of the two IDs unciteable.
+            if base is not None and after_id is not None and base.has(after_id):
+                violations.append(
+                    f"{path}: number {after_id} is already spent in the target "
+                    "branch; a number is free only until it merges, so take the "
+                    "next unused one"
+                )
+            # And it must not enter the catalogue as a decision this repository
+            # never accepted.
+            if SUPERSEDED in statuses["+"]:
+                identifier = after_id or before_id
+                violations.append(
+                    f"{path}: record {identifier} enters the catalogue already "
+                    f"`{SUPERSEDED}`, but no branch ever carried it as "
+                    f"`{ACCEPTED}`; a record replaced before it merged is "
+                    "deleted, rewritten or merged into the record that replaced "
+                    "it, not filed as history"
+                )
+            continue
+
+        # What the record held before this change. The removed side of the diff
+        # states it directly; the target branch states it when the diff shows
+        # only an added line, which is what a per-commit diff of a header edit
+        # looks like.
+        prior = base.status(before_id) if base is not None else None
+        before_statuses = statuses["-"] or ([prior] if prior else [])
+
+        # A record whose earlier status is visible and non-binding was never
+        # something anyone could cite, so withdrawing it is legal. When neither
+        # the diff nor the target branch states a status -- which is what a 100%
+        # rename with no base ref looks like -- the record is treated as binding:
+        # a guard that assumes the harmless case is how `git mv` becomes the way
+        # around this rule.
+        withdrawn = bool(before_statuses) and not any(
+            status in BINDING_STATUSES for status in before_statuses
         )
 
         if section.deleted:
             if not withdrawn:
-                binding = statuses["-"][0] if statuses["-"] else "binding"
+                binding = before_statuses[0] if before_statuses else "binding"
                 violations.append(
                     f"{path}: {binding} record deleted; supersede it in place "
                     "so its ID keeps resolving"
@@ -497,7 +669,7 @@ def analyze_decision_records(diff_text: str) -> list[str]:
                     f"{path}: unknown status {after!r}; the catalogue defines "
                     + ", ".join(sorted(STATUS_ORDER))
                 )
-        for before in statuses["-"]:
+        for before in before_statuses:
             for after in statuses["+"]:
                 rank_before = STATUS_ORDER.get(before)
                 rank_after = STATUS_ORDER.get(after)
@@ -507,6 +679,20 @@ def analyze_decision_records(diff_text: str) -> list[str]:
                     violations.append(
                         f"{path}: status moved backwards ({before} -> {after})"
                     )
+        if SUPERSEDED in statuses["+"] and SUPERSEDED not in before_statuses:
+            if ACCEPTED not in before_statuses:
+                held = ", ".join(before_statuses) if before_statuses else "no status"
+                violations.append(
+                    f"{path}: status set to `{SUPERSEDED}` from {held}; the "
+                    f"transition runs from `{ACCEPTED}` only, because a decision "
+                    "the branch never accepted has nothing to replace"
+                )
+            elif not replacements:
+                violations.append(
+                    f"{path}: superseded without naming the replacing record; "
+                    "state `ADR-NNNN` or link its file so a reader can follow "
+                    "the chain"
+                )
         if prose_edited and not updated_stamped:
             violations.append(
                 f"{path}: text rewritten without an Updated field; an editorial "
@@ -594,6 +780,13 @@ def anchor_problems(repo_root: Path | None = None) -> list[str]:
 
 
 def resolve_base(explicit: str | None) -> str | None:
+    """The target branch the change is measured against.
+
+    Given explicitly, it is taken as given: a release flow whose pull requests
+    target a branch other than `main` is a normal arrangement, and the guard must
+    not overrule the caller about it. `main` is only the fallback for a caller
+    that named nothing, which is the repository's ordinary flow.
+    """
     for candidate in (explicit, os.environ.get("UNICA_DIFF_BASE")):
         if candidate:
             return candidate
@@ -677,8 +870,14 @@ def main(argv: list[str] | None = None) -> int:
             "the guard's own anchors moved, so it can no longer see what it guards"
         )
 
+    # The target branch decides which records are already history. A piped diff
+    # gets one only when the caller names it: auto-resolving a ref for input that
+    # may have been produced against a different one would judge the change
+    # against a branch nobody chose.
     if args.diff == "-":
         diff_text = sys.stdin.read()
+        named_base = args.base or os.environ.get("UNICA_DIFF_BASE")
+        base_records = read_base_records(named_base) if named_base else None
     else:
         base = resolve_base(args.base)
         if base is None:
@@ -688,6 +887,12 @@ def main(argv: list[str] | None = None) -> int:
         diff_text = read_diff(base)
         if diff_text is None:
             return unusable(f"cannot diff against {base!r}")
+        base_records = read_base_records(base)
+        if base_records is None:
+            print(
+                f"check-architecture-sync: cannot list decision records in "
+                f"{base!r}; judging every record in the diff as already merged"
+            )
 
     hidden = unreadable_sections(diff_text)
     if hidden:
@@ -704,16 +909,22 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    rewritten = analyze_decision_records(diff_text)
+    rewritten = analyze_decision_records(diff_text, base_records)
     if rewritten:
-        print("check-architecture-sync: an accepted decision record was rewritten")
+        print(
+            "check-architecture-sync: a decision record breaks the catalogue's "
+            "lifecycle"
+        )
         for violation in rewritten:
             print(f"  {violation}")
         print()
         print(
-            "INV-DOC-SUPERSEDE-NOT-EDIT: a record states what was chosen on its date. When the\n"
+            "INV-DOC-SUPERSEDE-NOT-EDIT: a record becomes history when it reaches the target\n"
+            "branch, and states from then on what was chosen on its date. When the\n"
             "choice stops applying, supersede it with a new record instead of\n"
-            "editing it to match the code."
+            "editing it to match the code. A record this pull request has not\n"
+            "merged yet is not history: edit, renumber or drop it here rather than\n"
+            "filing it as `superseded`."
         )
         return 1
 
