@@ -84,10 +84,16 @@ ARCHITECTURE_EVIDENCE = (
     "spec/architecture/invariants.md",
     "spec/architecture/quality-requirements.md",
 )
+# Where the catalogue lives. Both readers of the boundary -- the record pattern
+# below and the read of the target branch -- take the prefix from here, so the
+# catalogue cannot move for one of them and stay put for the other.
+DECISIONS_DIR = "spec/decisions/"
 # The four digits are the record's ID: `ADR-0011` is the file `0011-*.md`. The
 # ID is what every citation elsewhere in the spec points at, so it is the thing
 # the immutability rules below have to keep resolving.
-DECISION_RECORD = re.compile(r"^spec/decisions/(?P<id>\d{4})-.+\.md$")
+DECISION_RECORD = re.compile(
+    rf"^{re.escape(DECISIONS_DIR)}(?P<id>\d{{4}})-.+\.md$"
+)
 
 
 def is_architecture_evidence(path: str) -> bool:
@@ -175,10 +181,6 @@ ACCEPTED = "accepted"
 # "заменено более новым решением" does not.
 REPLACEMENT_CITATION = re.compile(r"ADR-(?P<id>[0-9]{4})")
 REPLACEMENT_LINK = re.compile(r"(?<![0-9])(?P<id>[0-9]{4})-[^\s()]*\.md")
-
-# Where the catalogue lives. The guard reads the target branch through this
-# prefix, so a record moved out of it is out of the catalogue by definition.
-DECISIONS_DIR = "spec/decisions/"
 
 
 def unquote_path(raw: str) -> str:

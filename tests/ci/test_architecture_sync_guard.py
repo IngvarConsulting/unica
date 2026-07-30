@@ -887,11 +887,19 @@ class BaseCatalogueReadTests(unittest.TestCase):
         self.assertIsNone(self.guard.base_status("# ADR-0011\n\n## Контекст\n"))
 
     def test_the_real_repository_reports_its_own_records(self) -> None:
+        """Membership and status are asserted, the status value is not.
+
+        ADR-0011 is here because a record never leaves the catalogue and `0007`
+        never re-enters it, so both answers are stable. Which status ADR-0011
+        holds is not: superseding it is the transition these rules exist to
+        allow, and a test that pins the value would fail on the day someone
+        uses it.
+        """
         catalogue = self.guard.read_base_records("HEAD")
 
         self.assertIsNotNone(catalogue)
         self.assertTrue(catalogue.has("0011"))
-        self.assertEqual(catalogue.status("0011"), "accepted")
+        self.assertIn(catalogue.status("0011"), self.guard.STATUS_ORDER)
         self.assertFalse(catalogue.has("0007"))
 
     def test_an_unresolvable_ref_reads_as_no_catalogue(self) -> None:
