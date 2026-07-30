@@ -559,6 +559,24 @@ fn validate_directory_handle(file: &fs::File) -> io::Result<()> {
 }
 
 #[cfg(windows)]
+fn nt_create_options_for_std_file(desired_access: u32, create_options: u32) -> io::Result<u32> {
+    use windows_sys::Win32::Foundation::{
+        GENERIC_ALL, GENERIC_EXECUTE, GENERIC_READ, GENERIC_WRITE,
+    };
+    use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
+
+    const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x0000_0020;
+    let generic_synchronous_access = GENERIC_ALL | GENERIC_EXECUTE | GENERIC_READ | GENERIC_WRITE;
+    if desired_access & SYNCHRONIZE == 0 && desired_access & generic_synchronous_access == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "std::fs::File native handles require SYNCHRONIZE-compatible access",
+        ));
+    }
+    Ok(create_options | FILE_SYNCHRONOUS_IO_NONALERT)
+}
+
+#[cfg(windows)]
 fn open_relative_child(
     parent: &fs::File,
     name: &std::ffi::OsStr,
@@ -576,6 +594,7 @@ fn open_relative_child(
     };
 
     const OBJ_CASE_INSENSITIVE: u32 = 0x40;
+    let create_options = nt_create_options_for_std_file(desired_access, create_options)?;
     let mut name = relative_child_name(name)?;
     let byte_length = name
         .len()
@@ -718,18 +737,127 @@ pub(crate) fn open_any_child_nofollow(
 }
 
 #[cfg(windows)]
+fn directory_query_is_end(restart: bool, error: &io::Error) -> bool {
+    use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_FILES};
+
+    matches!(
+        error.raw_os_error(),
+        Some(code)
+            if code == ERROR_NO_MORE_FILES as i32
+                || restart && code == ERROR_FILE_NOT_FOUND as i32
+    )
+}
+
+#[cfg(windows)]
+fn parse_directory_information_buffer(
+    buffer: &[u8],
+    names: &mut Vec<std::ffi::OsString>,
+) -> io::Result<()> {
+    use std::mem::{offset_of, size_of};
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ID_BOTH_DIR_INFO;
+
+    let file_name_offset = offset_of!(FILE_ID_BOTH_DIR_INFO, FileName);
+    let complete_header_size = size_of::<FILE_ID_BOTH_DIR_INFO>();
+    let mut offset = 0usize;
+    loop {
+        let complete_header_end = offset.checked_add(complete_header_size).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "directory entry complete header offset overflowed",
+            )
+        })?;
+        if complete_header_end > buffer.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "directory entry complete header exceeds the enumeration buffer",
+            ));
+        }
+        // SAFETY: the complete Rust structure was bounds-checked above; read_unaligned accepts
+        // every record offset supplied by the filesystem.
+        let entry = unsafe {
+            std::ptr::read_unaligned(buffer.as_ptr().add(offset).cast::<FILE_ID_BOTH_DIR_INFO>())
+        };
+        let name_bytes = entry.FileNameLength as usize;
+        if name_bytes == 0 || name_bytes % size_of::<u16>() != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "directory entry has an invalid UTF-16 name length",
+            ));
+        }
+        let name_start = offset.checked_add(file_name_offset).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "directory entry name offset overflowed",
+            )
+        })?;
+        let name_end = name_start.checked_add(name_bytes).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "directory entry name offset overflowed",
+            )
+        })?;
+        if name_end > buffer.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "directory entry name exceeds the enumeration buffer",
+            ));
+        }
+        let mut name = Vec::with_capacity(name_bytes / size_of::<u16>());
+        for unit_offset in (name_start..name_end).step_by(size_of::<u16>()) {
+            // SAFETY: every two-byte unit lies within the checked name range; read_unaligned
+            // accepts the byte buffer's alignment.
+            name.push(unsafe {
+                std::ptr::read_unaligned(buffer.as_ptr().add(unit_offset).cast::<u16>())
+            });
+        }
+        let name = std::ffi::OsString::from_wide(&name);
+        if name != "." && name != ".." {
+            names.push(name);
+        }
+
+        let next = entry.NextEntryOffset as usize;
+        if next == 0 {
+            break;
+        }
+        let minimum_record_bytes = file_name_offset.checked_add(name_bytes).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "directory entry record length overflowed",
+            )
+        })?;
+        if next < minimum_record_bytes || next % 8 != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "directory entry next-record offset is not 8-byte-aligned or overlaps the name",
+            ));
+        }
+        offset = offset.checked_add(next).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "directory entry offset overflowed",
+            )
+        })?;
+        if offset >= buffer.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "directory entry offset exceeds the enumeration buffer",
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
 #[allow(
     dead_code,
     reason = "the following Windows full-dump tree-inspection task consumes retained enumeration"
 )]
 pub(crate) fn read_directory_names(directory: &fs::File) -> io::Result<Vec<std::ffi::OsString>> {
-    use std::mem::{offset_of, size_of};
-    use std::os::windows::ffi::OsStringExt;
+    use std::mem::size_of;
     use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Foundation::ERROR_NO_MORE_FILES;
     use windows_sys::Win32::Storage::FileSystem::{
         FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo, GetFileInformationByHandleEx,
-        FILE_ID_BOTH_DIR_INFO,
     };
 
     const BUFFER_BYTES: usize = 64 * 1024;
@@ -738,7 +866,6 @@ pub(crate) fn read_directory_names(directory: &fs::File) -> io::Result<Vec<std::
     let word_count = BUFFER_BYTES.div_ceil(size_of::<usize>());
     let mut storage = vec![0usize; word_count];
     let buffer_bytes = storage.len() * size_of::<usize>();
-    let file_name_offset = offset_of!(FILE_ID_BOTH_DIR_INFO, FileName);
     let mut names = Vec::new();
     let mut restart = true;
     loop {
@@ -760,100 +887,18 @@ pub(crate) fn read_directory_names(directory: &fs::File) -> io::Result<Vec<std::
         };
         if succeeded == 0 {
             let error = io::Error::last_os_error();
-            if error.raw_os_error() == Some(ERROR_NO_MORE_FILES as i32) {
+            if directory_query_is_end(restart, &error) {
                 break;
             }
             return Err(error);
         }
         restart = false;
 
-        let mut offset = 0usize;
-        loop {
-            let header_end = offset.checked_add(file_name_offset).ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "directory entry header offset overflowed",
-                )
-            })?;
-            if header_end > buffer_bytes {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "directory entry header exceeds the enumeration buffer",
-                ));
-            }
-            // SAFETY: the fixed header was bounds-checked above; read_unaligned also accepts any
-            // offset alignment returned by the filesystem.
-            let entry = unsafe {
-                std::ptr::read_unaligned(
-                    storage
-                        .as_ptr()
-                        .cast::<u8>()
-                        .add(offset)
-                        .cast::<FILE_ID_BOTH_DIR_INFO>(),
-                )
-            };
-            let name_bytes = usize::try_from(entry.FileNameLength).map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "directory entry name length is not representable",
-                )
-            })?;
-            if name_bytes == 0 || name_bytes % size_of::<u16>() != 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "directory entry has an invalid UTF-16 name length",
-                ));
-            }
-            let name_end = header_end.checked_add(name_bytes).ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "directory entry name offset overflowed",
-                )
-            })?;
-            if name_end > buffer_bytes {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "directory entry name exceeds the enumeration buffer",
-                ));
-            }
-            // SAFETY: the complete name byte range was bounds-checked and the length is even.
-            let name = unsafe {
-                std::slice::from_raw_parts(
-                    storage.as_ptr().cast::<u8>().add(header_end).cast::<u16>(),
-                    name_bytes / size_of::<u16>(),
-                )
-            };
-            let name = std::ffi::OsString::from_wide(name);
-            if name != "." && name != ".." {
-                names.push(name);
-            }
-
-            let next = entry.NextEntryOffset as usize;
-            if next == 0 {
-                break;
-            }
-            if next < file_name_offset
-                || next < file_name_offset + name_bytes
-                || next % size_of::<u32>() != 0
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "directory entry has an invalid next-record offset",
-                ));
-            }
-            offset = offset.checked_add(next).ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "directory entry offset overflowed",
-                )
-            })?;
-            if offset >= buffer_bytes {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "directory entry offset exceeds the enumeration buffer",
-                ));
-            }
-        }
+        // SAFETY: storage owns buffer_bytes initialized bytes for this query. The parser performs
+        // complete structure, name, and next-record bounds checks before reading each field.
+        let buffer =
+            unsafe { std::slice::from_raw_parts(storage.as_ptr().cast::<u8>(), buffer_bytes) };
+        parse_directory_information_buffer(buffer, &mut names)?;
     }
     names.sort();
     Ok(names)
@@ -1520,10 +1565,16 @@ mod tests {
         use super::{fs, io, unique_temp_root};
         use crate::infrastructure::platform::filesystem::{
             create_owner_only_directory, create_owner_only_directory_child, create_owner_only_file,
-            file_identity, open_directory_child_nofollow, open_directory_nofollow,
-            read_directory_names, verify_owner_only_acl,
+            directory_query_is_end, file_identity, nt_create_options_for_std_file,
+            open_directory_child_nofollow, open_directory_nofollow,
+            parse_directory_information_buffer, read_directory_names, verify_owner_only_acl,
         };
         use std::ffi::OsString;
+        use std::mem::{offset_of, size_of};
+        use windows_sys::Win32::Foundation::{
+            ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_FILES,
+        };
+        use windows_sys::Win32::Storage::FileSystem::FILE_ID_BOTH_DIR_INFO;
 
         #[test]
         fn owner_only_directory_is_opened_without_following_reparse_points() {
@@ -1639,6 +1690,125 @@ mod tests {
             drop(child);
             drop(parent);
             fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn windows_nt_create_options_for_std_file_are_synchronous() {
+            const FILE_DIRECTORY_FILE: u32 = 0x0000_0001;
+            const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+            const FILE_SYNCHRONOUS_IO_ALERT: u32 = 0x0000_0010;
+            const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x0000_0020;
+            use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
+
+            let options = nt_create_options_for_std_file(
+                SYNCHRONIZE,
+                FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+            )
+            .unwrap();
+
+            assert_ne!(options & FILE_SYNCHRONOUS_IO_NONALERT, 0);
+            assert_eq!(options & FILE_SYNCHRONOUS_IO_ALERT, 0);
+            assert_ne!(options & FILE_DIRECTORY_FILE, 0);
+            assert_ne!(options & FILE_OPEN_REPARSE_POINT, 0);
+        }
+
+        #[test]
+        fn windows_nt_create_options_reject_asynchronous_std_file_access() {
+            let error = nt_create_options_for_std_file(0, 0).unwrap_err();
+
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert!(error.to_string().contains("SYNCHRONIZE"), "{error}");
+        }
+
+        #[test]
+        fn windows_directory_enumeration_status_classifier_distinguishes_first_query_eos() {
+            let no_more = io::Error::from_raw_os_error(ERROR_NO_MORE_FILES as i32);
+            let no_match = io::Error::from_raw_os_error(ERROR_FILE_NOT_FOUND as i32);
+            let denied = io::Error::from_raw_os_error(ERROR_ACCESS_DENIED as i32);
+
+            assert!(directory_query_is_end(true, &no_more));
+            assert!(directory_query_is_end(false, &no_more));
+            assert!(directory_query_is_end(true, &no_match));
+            assert!(!directory_query_is_end(false, &no_match));
+            assert!(!directory_query_is_end(true, &denied));
+        }
+
+        #[test]
+        fn windows_directory_enumeration_accepts_an_empty_retained_directory() {
+            let root = unique_temp_root("empty-enumeration");
+            fs::create_dir_all(&root).unwrap();
+            let directory = open_directory_nofollow(&root).unwrap();
+
+            assert!(read_directory_names(&directory).unwrap().is_empty());
+
+            drop(directory);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn windows_directory_enumeration_reads_multiple_native_buffers() {
+            let root = unique_temp_root("multi-buffer-enumeration");
+            fs::create_dir_all(&root).unwrap();
+            let mut expected = Vec::new();
+            for index in 0..900 {
+                let name = format!("{index:04}-{}.xml", "x".repeat(80));
+                fs::write(root.join(&name), b"x").unwrap();
+                expected.push(OsString::from(name));
+            }
+            let directory = open_directory_nofollow(&root).unwrap();
+
+            let names = read_directory_names(&directory).unwrap();
+
+            assert_eq!(names, expected);
+            drop(directory);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn windows_directory_parser_rejects_an_unaligned_next_record() {
+            let mut buffer = vec![0u8; 512];
+            let next = 108u32;
+            let name_length = 2u32;
+            // SAFETY: the test buffer is large enough for each field and unaligned writes accept
+            // Vec<u8>'s alignment.
+            unsafe {
+                std::ptr::write_unaligned(
+                    buffer
+                        .as_mut_ptr()
+                        .add(offset_of!(FILE_ID_BOTH_DIR_INFO, NextEntryOffset))
+                        .cast::<u32>(),
+                    next,
+                );
+                std::ptr::write_unaligned(
+                    buffer
+                        .as_mut_ptr()
+                        .add(offset_of!(FILE_ID_BOTH_DIR_INFO, FileNameLength))
+                        .cast::<u32>(),
+                    name_length,
+                );
+                std::ptr::write_unaligned(
+                    buffer
+                        .as_mut_ptr()
+                        .add(offset_of!(FILE_ID_BOTH_DIR_INFO, FileName))
+                        .cast::<u16>(),
+                    b'a' as u16,
+                );
+            }
+            let mut names = Vec::new();
+
+            let error = parse_directory_information_buffer(&buffer, &mut names).unwrap_err();
+
+            assert!(error.to_string().contains("8-byte-aligned"), "{error}");
+        }
+
+        #[test]
+        fn windows_directory_parser_rejects_a_truncated_rust_header() {
+            let buffer = vec![0u8; size_of::<FILE_ID_BOTH_DIR_INFO>() - 1];
+            let mut names = Vec::new();
+
+            let error = parse_directory_information_buffer(&buffer, &mut names).unwrap_err();
+
+            assert!(error.to_string().contains("complete header"), "{error}");
         }
     }
 
