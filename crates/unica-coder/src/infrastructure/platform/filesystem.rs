@@ -357,6 +357,10 @@ impl OwnerOnlySecurityAttributes {
         let _ = self.token.handle;
         &self.attributes
     }
+
+    fn security_descriptor(&self) -> windows_sys::Win32::Security::PSECURITY_DESCRIPTOR {
+        self.security_descriptor
+    }
 }
 
 #[cfg(windows)]
@@ -436,6 +440,304 @@ pub(crate) fn open_directory_nofollow(path: &Path) -> io::Result<fs::File> {
         ));
     }
     Ok(file)
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct NtUnicodeString {
+    length: u16,
+    maximum_length: u16,
+    buffer: windows_sys::core::PWSTR,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct NtObjectAttributes {
+    length: u32,
+    root_directory: windows_sys::Win32::Foundation::HANDLE,
+    object_name: *mut NtUnicodeString,
+    attributes: u32,
+    security_descriptor: *mut std::ffi::c_void,
+    security_quality_of_service: *mut std::ffi::c_void,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+union NtIoStatusStatus {
+    status: i32,
+    pointer: *mut std::ffi::c_void,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct NtIoStatusBlock {
+    status: NtIoStatusStatus,
+    information: usize,
+}
+
+#[cfg(windows)]
+unsafe extern "system" {
+    fn NtCreateFile(
+        file_handle: *mut windows_sys::Win32::Foundation::HANDLE,
+        desired_access: u32,
+        object_attributes: *mut NtObjectAttributes,
+        io_status_block: *mut NtIoStatusBlock,
+        allocation_size: *mut i64,
+        file_attributes: u32,
+        share_access: u32,
+        create_disposition: u32,
+        create_options: u32,
+        ea_buffer: *mut std::ffi::c_void,
+        ea_length: u32,
+    ) -> i32;
+    fn NtSetInformationFile(
+        file_handle: windows_sys::Win32::Foundation::HANDLE,
+        io_status_block: *mut NtIoStatusBlock,
+        file_information: *mut std::ffi::c_void,
+        length: u32,
+        file_information_class: u32,
+    ) -> i32;
+    fn RtlNtStatusToDosError(status: i32) -> u32;
+}
+
+#[cfg(windows)]
+fn nt_status_error(status: i32) -> io::Error {
+    // SAFETY: RtlNtStatusToDosError accepts all NTSTATUS values and returns a Win32 error code.
+    let error = unsafe { RtlNtStatusToDosError(status) };
+    io::Error::from_raw_os_error(error as i32)
+}
+
+#[cfg(windows)]
+fn relative_child_name(name: &std::ffi::OsStr) -> io::Result<Vec<u16>> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Component;
+
+    let mut components = Path::new(name).components();
+    if !matches!(components.next(), Some(Component::Normal(component)) if component == name)
+        || components.next().is_some()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "directory child name must be exactly one normal relative component",
+        ));
+    }
+    let wide = name.encode_wide().collect::<Vec<_>>();
+    if wide.is_empty()
+        || wide
+            .iter()
+            .any(|unit| {
+                *unit == 0
+                    || *unit == b'\\' as u16
+                    || *unit == b'/' as u16
+                    || *unit == b':' as u16
+            })
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "directory child name must not contain separators, a stream name, or NUL",
+        ));
+    }
+    Ok(wide)
+}
+
+#[cfg(windows)]
+fn validate_directory_handle(file: &fs::File) -> io::Result<()> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+    };
+
+    let attributes = windows_file_information(&file)?.dwFileAttributes;
+    if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "directory child resolves to a reparse point",
+        ));
+    }
+    if attributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "directory child does not resolve to a directory",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn open_relative_child(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+    desired_access: u32,
+    file_attributes: u32,
+    create_disposition: u32,
+    create_options: u32,
+    security_descriptor: Option<windows_sys::Win32::Security::PSECURITY_DESCRIPTOR>,
+) -> io::Result<fs::File> {
+    use std::mem::size_of;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle};
+    use std::ptr;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    const OBJ_CASE_INSENSITIVE: u32 = 0x40;
+    let mut name = relative_child_name(name)?;
+    let byte_length = name
+        .len()
+        .checked_mul(size_of::<u16>())
+        .and_then(|length| u16::try_from(length).ok())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "child name is too long"))?;
+    let mut object_name = NtUnicodeString {
+        length: byte_length,
+        maximum_length: byte_length,
+        buffer: name.as_mut_ptr(),
+    };
+    let mut attributes = NtObjectAttributes {
+        length: size_of::<NtObjectAttributes>() as u32,
+        root_directory: parent.as_raw_handle(),
+        object_name: &mut object_name,
+        attributes: OBJ_CASE_INSENSITIVE,
+        security_descriptor: security_descriptor.unwrap_or(ptr::null_mut()).cast(),
+        security_quality_of_service: ptr::null_mut(),
+    };
+    let mut status = NtIoStatusBlock {
+        status: NtIoStatusStatus { status: 0 },
+        information: 0,
+    };
+    let mut handle = ptr::null_mut();
+    // SAFETY: the root handle is borrowed from parent, and all pointers refer to valid mutable
+    // storage for the duration of NtCreateFile. The child name is validated as one relative
+    // component, so RootDirectory binds the operation to the retained parent handle.
+    let result = unsafe {
+        NtCreateFile(
+            &mut handle,
+            desired_access,
+            &mut attributes,
+            &mut status,
+            ptr::null_mut(),
+            file_attributes,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            create_disposition,
+            create_options,
+            ptr::null_mut(),
+            0,
+        )
+    };
+    if result < 0 {
+        return Err(nt_status_error(result));
+    }
+    // SAFETY: a non-error NtCreateFile result returns an owned file handle.
+    Ok(unsafe { fs::File::from_raw_handle(handle) })
+}
+
+#[cfg(windows)]
+pub(crate) fn open_directory_child_nofollow(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    const FILE_OPEN: u32 = 0x0000_0001;
+    const FILE_DIRECTORY_FILE: u32 = 0x0000_0001;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_READ_ATTRIBUTES, READ_CONTROL, SYNCHRONIZE,
+    };
+
+    let file = open_relative_child(
+        parent,
+        name,
+        FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
+        0,
+        FILE_OPEN,
+        FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+        None,
+    )?;
+    validate_directory_handle(&file)?;
+    Ok(file)
+}
+
+#[cfg(windows)]
+pub(crate) fn create_owner_only_directory_child(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    const FILE_CREATE: u32 = 0x0000_0002;
+    const FILE_DIRECTORY_FILE: u32 = 0x0000_0001;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_READ_ATTRIBUTES, READ_CONTROL, SYNCHRONIZE,
+    };
+
+    let security = OwnerOnlySecurityAttributes::current_user()?;
+    let file = open_relative_child(
+        parent,
+        name,
+        DELETE | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
+        FILE_ATTRIBUTE_DIRECTORY,
+        FILE_CREATE,
+        FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+        Some(security.security_descriptor()),
+    )?;
+    if let Err(error) = validate_directory_handle(&file) {
+        return match discard_created_child(&file) {
+            Ok(()) => Err(error),
+            Err(cleanup) => Err(io::Error::new(
+                error.kind(),
+                format!("{error}; failed to remove invalid created directory: {cleanup}"),
+            )),
+        };
+    }
+    Ok(file)
+}
+
+#[cfg(windows)]
+pub(crate) fn create_owner_only_file_child(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    const FILE_CREATE: u32 = 0x0000_0002;
+    const FILE_NON_DIRECTORY_FILE: u32 = 0x0000_0040;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
+    use windows_sys::Win32::Storage::FileSystem::{DELETE, FILE_ATTRIBUTE_NORMAL};
+
+    let security = OwnerOnlySecurityAttributes::current_user()?;
+    open_relative_child(
+        parent,
+        name,
+        GENERIC_READ | GENERIC_WRITE | DELETE,
+        FILE_ATTRIBUTE_NORMAL,
+        FILE_CREATE,
+        FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+        Some(security.security_descriptor()),
+    )
+}
+
+#[cfg(windows)]
+pub(crate) fn discard_created_child(file: &fs::File) -> io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+
+    const FILE_DISPOSITION_INFORMATION: u32 = 13;
+    let mut delete_file = 1u8;
+    let mut status = NtIoStatusBlock {
+        status: NtIoStatusStatus { status: 0 },
+        information: 0,
+    };
+    // SAFETY: file is an owned handle opened with DELETE access by the child-creation helpers,
+    // and delete_file/status remain writable for the duration of the native call. Once marked,
+    // the only subsequent operation on the handle is Drop/close.
+    let result = unsafe {
+        NtSetInformationFile(
+            file.as_raw_handle(),
+            &mut status,
+            (&mut delete_file as *mut u8).cast(),
+            std::mem::size_of_val(&delete_file) as u32,
+            FILE_DISPOSITION_INFORMATION,
+        )
+    };
+    if result < 0 {
+        Err(nt_status_error(result))
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(windows)]

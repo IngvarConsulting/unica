@@ -28,7 +28,8 @@ use crate::infrastructure::platform::filesystem::{
 };
 #[cfg(windows)]
 use crate::infrastructure::platform::filesystem::{
-    create_owner_only_directory, create_owner_only_file, open_directory_nofollow,
+    create_owner_only_directory_child, create_owner_only_file_child, discard_created_child,
+    open_directory_child_nofollow, open_directory_nofollow, verify_owner_only_acl,
 };
 use crate::infrastructure::platform_xml_owner::root_version_literal;
 use crate::infrastructure::plugin_runtime::find_plugin_root;
@@ -109,6 +110,23 @@ mod windows_anchor_tests {
 
         child.verify_path_binding().unwrap();
         verify_owner_only_acl(&child.directory).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_anchor_rejects_a_display_path_outside_the_parent() {
+        let root = unique_temp_root("anchor-containment");
+        let parent = root.join("parent");
+        let outside = root.join("outside");
+        fs::create_dir_all(&parent).unwrap();
+        let anchor = DirectoryAnchor::capture_exact(&parent).unwrap();
+
+        let error = anchor
+            .create_child(OsStr::new("child"), &outside)
+            .unwrap_err();
+
+        assert!(error.contains("does not match anchored child"), "{error}");
+        assert!(!outside.exists());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1780,11 +1798,11 @@ fn create_regular_child_owner_only(
 
 #[cfg(windows)]
 fn create_regular_child_owner_only(
-    _parent: &File,
-    _name: &OsStr,
-    display_path: &Path,
+    parent: &File,
+    name: &OsStr,
+    _display_path: &Path,
 ) -> std::io::Result<File> {
-    create_owner_only_file(display_path)
+    create_owner_only_file_child(parent, name)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -2036,38 +2054,61 @@ impl DirectoryAnchor {
     }
 
     #[cfg(windows)]
-    fn create_child(&self, _name: &OsStr, display_path: &Path) -> Result<Self, String> {
+    fn create_child(&self, name: &OsStr, display_path: &Path) -> Result<Self, String> {
+        let expected_path = self.path.join(name);
+        if display_path != expected_path {
+            return Err(format!(
+                "private directory display path does not match anchored child {}: {}",
+                expected_path.display(),
+                display_path.display()
+            ));
+        }
         self.verify_path_binding()?;
-        let directory = create_owner_only_directory(display_path).map_err(|error| {
+        let directory = create_owner_only_directory_child(&self.directory, name).map_err(|error| {
             format!(
                 "failed to create private directory {}: {error}",
                 display_path.display()
             )
         })?;
+        let cleanup_error = |error: String| match discard_created_child(&directory) {
+            Ok(()) => error,
+            Err(cleanup) => format!(
+                "{error}; failed to remove private directory created through the retained parent anchor {}: {cleanup}",
+                display_path.display()
+            ),
+        };
         let identity = file_identity(&directory).map_err(|error| {
-            format!(
+            cleanup_error(format!(
                 "failed to inspect private directory identity {}: {error}",
                 display_path.display()
-            )
+            ))
         })?;
-        self.verify_path_binding()?;
-        let rebound = open_directory_nofollow(display_path).map_err(|error| {
-            format!(
+        if let Err(error) = verify_owner_only_acl(&directory) {
+            return Err(cleanup_error(format!(
+                "failed to verify private directory ACL {}: {error}",
+                display_path.display()
+            )));
+        }
+        if let Err(error) = self.verify_path_binding() {
+            return Err(cleanup_error(error));
+        }
+        let rebound = open_directory_child_nofollow(&self.directory, name).map_err(|error| {
+            cleanup_error(format!(
                 "failed to bind newly created private directory {}: {error}",
                 display_path.display()
-            )
+            ))
         })?;
         let rebound_identity = file_identity(&rebound).map_err(|error| {
-            format!(
+            cleanup_error(format!(
                 "failed to recheck private directory identity {}: {error}",
                 display_path.display()
-            )
+            ))
         })?;
         if rebound_identity != identity {
-            return Err(format!(
+            return Err(cleanup_error(format!(
                 "private directory identity changed during creation: {}",
                 display_path.display()
-            ));
+            )));
         }
         Ok(Self {
             path: display_path.to_path_buf(),
