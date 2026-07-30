@@ -5,7 +5,7 @@ use crate::domain::code_intelligence::{
     ProviderReadOutcome, ProviderSearchHit, ProviderSearchSection, ProviderSectionStatus,
     SearchRequest,
 };
-use crate::infrastructure::bsl_outline::render_current_source_outline;
+use crate::infrastructure::bsl_outline::{render_current_source_outline, resolve_module_path};
 use crate::infrastructure::internal_adapters::{
     system_process_runner, ProcessCommand, ProcessOutput, ProcessRunner,
 };
@@ -203,13 +203,20 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
             ));
         };
         let tool_name = request.tool_name();
+        // The artifact of this call is the module file it read, named the way
+        // every other adapter names a filesystem artifact: as a resolved path a
+        // caller can open. A path that does not resolve leaves the list empty
+        // rather than echoing the argument back as if it were a location.
+        let artifacts = resolve_module_path(path, context)
+            .map(|module| vec![module.display().to_string()])
+            .unwrap_or_default();
         let mut outcome = ProviderReadOutcome {
             provider: ProviderId::BslAnalyzer,
             ok: true,
             summary: format!("{tool_name} completed from the current BSL source"),
             warnings: Vec::new(),
             errors: Vec::new(),
-            artifacts: vec![path.clone()],
+            artifacts,
             stdout: None,
             stderr: None,
             data: None,
@@ -217,17 +224,17 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
         match render_current_source_outline(path, *include_methods, context, deadline, cancellation)
         {
             Ok(result) => outcome.data = Some(CodeIntelligenceReadData::Outline(result)),
+            Err(error) if error.starts_with(CANCELLED_PREFIX) => {
+                // Same shape as `AdapterOutcome::cancelled`: the prefixed error
+                // is the summary, and a stopped call claims no artifacts.
+                outcome.ok = false;
+                outcome.summary = error.clone();
+                outcome.errors = vec![error];
+                outcome.artifacts = Vec::new();
+            }
             Err(error) => {
                 outcome.ok = false;
-                outcome.summary = if error.starts_with(CANCELLED_PREFIX) {
-                    error
-                        .strip_prefix(CANCELLED_PREFIX)
-                        .unwrap_or(&error)
-                        .trim()
-                        .to_string()
-                } else {
-                    format!("{tool_name} could not outline the current module")
-                };
+                outcome.summary = format!("{tool_name} could not outline the current module");
                 outcome.errors = vec![error];
             }
         }
@@ -860,9 +867,11 @@ mod tests {
         GitGrepProvider, RlmProvider, RlmSearchClient,
     };
     use crate::domain::cancellation::CancellationToken;
+    use crate::domain::cancellation::CANCELLED_PREFIX;
     use crate::domain::code_intelligence::{
-        CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceRegistry,
-        ProviderCapability, ProviderDeadline, ProviderId, ProviderSectionStatus, SearchRequest,
+        CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadRequest,
+        CodeIntelligenceRegistry, ProviderCapability, ProviderDeadline, ProviderId,
+        ProviderSectionStatus, SearchRequest,
     };
     use crate::domain::source_roots::ResolvedSourceRoot;
     use crate::domain::workspace::WorkspaceContext;
@@ -1578,6 +1587,81 @@ mod tests {
                 ProviderCapability::ObjectProfile,
             ]
         );
+    }
+
+    #[test]
+    fn an_outline_names_the_module_it_read_as_an_absolute_artifact() {
+        // Every other adapter reports a filesystem artifact as a path a caller
+        // can open, so echoing the relative argument back would name no location.
+        let root = std::env::temp_dir().join(format!(
+            "unica-outline-artifacts-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let source_root = root.join("src");
+        let module = source_root.join("CommonModules/X/Ext/Module.bsl");
+        std::fs::create_dir_all(module.parent().unwrap()).unwrap();
+        std::fs::write(&module, "Процедура П() Экспорт\nКонецПроцедуры\n").unwrap();
+        let context = CodeIntelligenceContext::new(
+            WorkspaceContext {
+                cwd: root.clone(),
+                workspace_root: root.clone(),
+                cache_root: root.join(".build/unica"),
+                workspace_epoch: 1,
+            },
+            ResolvedSourceRoot {
+                source_set: Some("main".to_string()),
+                path: source_root,
+            },
+        );
+        let request = CodeIntelligenceReadRequest::Outline {
+            path: "CommonModules/X/Ext/Module.bsl".to_string(),
+            include_methods: true,
+        };
+
+        let outcome = BslAnalyzerProvider::new()
+            .read(
+                &request,
+                &context,
+                ProviderDeadline::new(Instant::now() + Duration::from_secs(30)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        assert!(outcome.ok, "{:?}", outcome.errors);
+        assert_eq!(outcome.artifacts.len(), 1);
+        let artifact = PathBuf::from(&outcome.artifacts[0]);
+        assert!(artifact.is_absolute(), "{artifact:?}");
+        assert!(artifact.is_file(), "{artifact:?}");
+        assert!(
+            artifact.ends_with("CommonModules/X/Ext/Module.bsl"),
+            "{artifact:?}"
+        );
+
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        let stopped = BslAnalyzerProvider::new()
+            .read(
+                &request,
+                &context,
+                ProviderDeadline::new(Instant::now() + Duration::from_secs(30)),
+                &cancelled,
+            )
+            .unwrap();
+
+        // Same shape as `AdapterOutcome::cancelled`: the prefixed error is the
+        // summary and a stopped call claims no artifacts.
+        assert!(!stopped.ok);
+        assert!(
+            stopped.summary.starts_with(CANCELLED_PREFIX),
+            "{}",
+            stopped.summary
+        );
+        assert_eq!(stopped.errors, vec![stopped.summary.clone()]);
+        assert!(stopped.artifacts.is_empty(), "{:?}", stopped.artifacts);
+        assert!(stopped.data.is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -15,7 +15,7 @@ use crate::infrastructure::source_roots::normalize_path_identity;
 use bsl_syntax::ast::{AstNode, FunctionDef, Param, ProcedureDef};
 use bsl_syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Metadata categories of the Designer/platform XML layout. A path component
 /// outside this set never becomes a `category`, so an unknown layout reports no
@@ -135,17 +135,40 @@ pub(crate) fn render_current_source_outline(
     ))
 }
 
-fn read_module(path: &str, context: &CodeIntelligenceContext) -> Result<String, String> {
+/// Resolves the requested module against the selected source root.
+///
+/// The application port already normalized and contained the argument; this
+/// repeats containment against filesystem identity so a symlink resolved after
+/// normalization cannot escape the root.
+pub(crate) fn resolve_module_path(
+    path: &str,
+    context: &CodeIntelligenceContext,
+) -> Result<PathBuf, String> {
     let source_root = normalize_path_identity(&context.source_root.path)
         .map_err(|error| format!("could not resolve the selected source root: {error}"))?;
     let module = normalize_path_identity(&source_root.join(Path::new(path)))
         .map_err(|error| format!("could not resolve module `{path}`: {error}"))?;
-    // The application port already normalized and contained the argument; this
-    // repeats containment against filesystem identity right before the read so
-    // a symlink resolved after normalization cannot escape the root.
     if !module.starts_with(&source_root) {
         return Err(format!(
             "module `{path}` resolves outside the selected source root"
+        ));
+    }
+    Ok(module)
+}
+
+fn read_module(path: &str, context: &CodeIntelligenceContext) -> Result<String, String> {
+    let module = resolve_module_path(path, context)?;
+    // `path` names one module file. A directory or a missing entry is a caller
+    // mistake, and the raw OS message ("Is a directory") does not say which
+    // argument is wrong, so both are reported in terms of the contract.
+    if module.is_dir() {
+        return Err(format!(
+            "`{path}` is a directory; `path` expects one BSL module file such as CommonModules/<Имя>/Ext/Module.bsl"
+        ));
+    }
+    if !module.exists() {
+        return Err(format!(
+            "module `{path}` does not exist in the selected source root; `path` expects a source-root-relative path to a BSL module file"
         ));
     }
     fs::read_to_string(&module).map_err(|error| format!("could not read module `{path}`: {error}"))
@@ -251,14 +274,16 @@ fn parameters(syntax: &SyntaxNode) -> Result<Vec<CodeOutlineParameter>, String> 
         .collect()
 }
 
+/// The default value is reported as the source text of its expression node.
+///
+/// Joining the tokens with a separator instead would have to know where a
+/// separator belongs: `-1` would become `- 1` and `Новый Структура("к", 1)`
+/// would become `Новый Структура ( "к" , 1 )`. A signed numeric literal is the
+/// only multi-token default the platform accepts, and it is exactly the case a
+/// token join gets wrong, so the node text is both simpler and correct. It also
+/// cannot corrupt whitespace inside a string literal.
 fn inline_expression(expression: &SyntaxNode) -> String {
-    expression
-        .descendants_with_tokens()
-        .filter_map(|element| element.into_token())
-        .filter(|token| !token.kind().is_trivia())
-        .map(|token| token.text().to_string())
-        .collect::<Vec<_>>()
-        .join(" ")
+    expression.text().to_string().trim().to_string()
 }
 
 fn first_token(syntax: &SyntaxNode, kind: SyntaxKind) -> Option<SyntaxToken> {
@@ -750,6 +775,47 @@ mod tests {
     }
 
     #[test]
+    fn a_default_value_keeps_the_source_text_of_its_expression() {
+        // The platform allows only a literal as a default value, and the one
+        // literal made of several tokens is a signed number. Joining tokens with
+        // a separator turns `-1` into `- 1`, which is neither the source text nor
+        // valid BSL, so the source text of the expression node is reported.
+        let text = concat!(
+            "Процедура П(\n",
+            "\tКод = -1,\n",
+            "\tДоля = -0.5,\n",
+            "\tТекст = \"а, б\",\n",
+            "\tДата = '00010101',\n",
+            "\tФлаг = Ложь,\n",
+            "\tПусто = Неопределено,\n",
+            "\tЗнач Обязательный) Экспорт\n",
+            "КонецПроцедуры\n",
+        );
+
+        let parameters = &body(text, true).methods[0].parameters;
+
+        assert_eq!(
+            parameters
+                .iter()
+                .map(|parameter| (
+                    parameter.name.as_str(),
+                    parameter.by_value,
+                    parameter.default_value.as_deref()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Код", false, Some("-1")),
+                ("Доля", false, Some("-0.5")),
+                ("Текст", false, Some("\"а, б\"")),
+                ("Дата", false, Some("'00010101'")),
+                ("Флаг", false, Some("Ложь")),
+                ("Пусто", false, Some("Неопределено")),
+                ("Обязательный", true, None),
+            ]
+        );
+    }
+
+    #[test]
     fn methods_land_in_the_innermost_region_and_the_rest_are_orphans() {
         let text = concat!(
             "Процедура Сирота()\n",
@@ -915,7 +981,25 @@ mod tests {
             error.contains("CommonModules/Нет/Ext/Module.bsl"),
             "{error}"
         );
-        assert!(error.contains("could not read module"), "{error}");
+        assert!(error.contains("does not exist"), "{error}");
+        assert!(error.contains("BSL module file"), "{error}");
+    }
+
+    #[test]
+    fn a_path_that_names_a_directory_says_which_argument_is_wrong() {
+        // The raw OS message for this mistake is "Is a directory", which names
+        // neither the argument nor what it expects. A bare object name lands
+        // here too, because the index used to resolve such names and the current
+        // source path cannot.
+        let workspace = workspace("directory", "CommonModules/X/Ext/Module.bsl", "");
+
+        for path in ["CommonModules/X", "CommonModules/X/Ext"] {
+            let error = outline(&workspace, path, true).unwrap_err();
+
+            assert!(error.contains("is a directory"), "{path}: {error}");
+            assert!(error.contains("BSL module file"), "{path}: {error}");
+            assert!(!error.contains("os error"), "{path}: {error}");
+        }
     }
 
     #[test]
