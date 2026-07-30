@@ -4703,14 +4703,39 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
             temp_root = Path(temp)
             workspace = temp_root / "workspace"
             workspace.mkdir()
-            (workspace / "src" / "cf").mkdir(parents=True)
+            source_roots = {
+                "main": workspace / "src" / "cf",
+                "myExtension": workspace / "src" / "cfe",
+            }
+            for source_root in source_roots.values():
+                source_root.mkdir(parents=True)
             (workspace / "v8project.yaml").write_text(
-                "format: DESIGNER\nsource-set:\n  main:\n    type: CONFIGURATION\n    path: src/cf\n",
+                """format: DESIGNER
+source-set:
+  - name: main
+    type: CONFIGURATION
+    path: src/cf
+  - name: myExtension
+    type: EXTENSION
+    path: src/cfe
+""",
                 encoding="utf-8",
             )
             shutil.copyfile(
                 FIXTURES_ROOT / "meta-remove" / "Configuration.xml",
                 workspace / "src" / "cf" / "Configuration.xml",
+            )
+            (workspace / "src" / "cfe" / "Configuration.xml").write_text(
+                """<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Configuration>
+    <Properties>
+      <Name>ParityExtension</Name>
+      <ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose>
+    </Properties>
+  </Configuration>
+</MetaDataObject>
+""",
+                encoding="utf-8",
             )
             for example in examples:
                 arguments = example.payload["params"]["arguments"]
@@ -4756,7 +4781,23 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
                         json_path.write_text("{}\n", encoding="utf-8")
                         arguments["JsonPath"] = str(json_path.relative_to(workspace))
                 elif example.skill == "code-patch":
-                    module_path = workspace / arguments["path"]
+                    address = arguments["metadataPath"].split(".")
+                    self.assertEqual(
+                        len(address),
+                        3,
+                        "the code-patch example fixture supports one explicit module layout",
+                    )
+                    kind, name, role = address
+                    self.assertEqual((kind, role), ("CommonModule", "Module"))
+                    self.assertIn(arguments["sourceSet"], source_roots)
+                    source_root = source_roots[arguments["sourceSet"]]
+                    module_path = (
+                        source_root
+                        / "CommonModules"
+                        / name
+                        / "Ext"
+                        / "Module.bsl"
+                    )
                     module_path.parent.mkdir(parents=True, exist_ok=True)
                     module_path.write_text(
                         """Процедура ПриСозданииНаСервере()\n
@@ -4764,12 +4805,15 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
 КонецПроцедуры\n""",
                         encoding="utf-8",
                     )
-                    owner_directory = module_path.parent.parent
-                    descriptor_path = (
-                        owner_directory.parent / f"{owner_directory.name}.xml"
-                    )
+                    descriptor_path = source_root / "CommonModules" / f"{name}.xml"
                     descriptor_path.write_text(
-                        "<MetaDataObject/>\n", encoding="utf-8"
+                        f"""<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <CommonModule>
+    <Properties><Name>{name}</Name></Properties>
+  </CommonModule>
+</MetaDataObject>
+""",
+                        encoding="utf-8",
                     )
                 elif example.skill == "meta-edit":
                     prepare_meta_edit_skill_example(workspace, example, arguments)
@@ -4787,6 +4831,16 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
                 result = json.loads(response["result"]["content"][0]["text"])
                 self.assertTrue(result["ok"], json.dumps(result, ensure_ascii=False, indent=2))
                 self.assertIn("dry run", result["summary"])
+                if example.skill == "code-patch":
+                    arguments = example.payload["params"]["arguments"]
+                    self.assertNotIn("path", arguments)
+                    self.assertNotIn("sourceDir", arguments)
+                    self.assertEqual(
+                        result["data"]["sourceSet"], arguments["sourceSet"]
+                    )
+                    self.assertEqual(
+                        result["data"]["metadataPath"], arguments["metadataPath"]
+                    )
 
     def test_every_documented_tools_call_uses_published_argument_names(self) -> None:
         examples = list(iter_documented_mcp_examples(SKILLS_ROOT.glob("**/*.md")))
