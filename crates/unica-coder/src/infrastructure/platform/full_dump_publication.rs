@@ -25,11 +25,12 @@ use crate::infrastructure::native_operations::single_file_publisher::{
 use crate::infrastructure::platform::filesystem::hard_link_count;
 #[cfg(windows)]
 use crate::infrastructure::platform::filesystem::{
-    create_owner_only_directory_child, create_owner_only_file_child, delete_open_child,
-    discard_created_child, open_any_child_for_delete, open_any_child_nofollow,
-    open_directory_child_for_rename, open_directory_child_nofollow, open_directory_nofollow,
-    open_regular_child_nofollow, opened_child_kind, rename_directory_handle_child_no_replace,
-    verify_owner_only_acl, OpenedChildKind,
+    capture_windows_immutable_entry_evidence, create_owner_only_directory_child,
+    create_owner_only_file_child, delete_open_child, discard_created_child,
+    open_any_child_for_delete, open_any_child_nofollow, open_directory_child_for_rename,
+    open_directory_child_nofollow, open_directory_nofollow, open_regular_child_nofollow,
+    opened_child_kind, rename_directory_handle_child_no_replace, verify_owner_only_acl,
+    verify_unprivileged_windows_platform_caller, OpenedChildKind, WindowsImmutableAclProfile,
 };
 use crate::infrastructure::platform::filesystem::{
     file_identity, metadata_is_link_or_reparse_point, restrict_stage_to_owner, FileIdentity,
@@ -79,7 +80,8 @@ pub(crate) enum FullDumpInvocation {
 #[cfg(all(test, windows))]
 mod windows_anchor_tests {
     use super::{
-        capture_directory_snapshot, capture_tree_child_nofollow, remove_bound_directory_child,
+        capture_directory_snapshot, capture_tree_child_nofollow,
+        capture_windows_immutable_platform_children, remove_bound_directory_child,
         rename_child_no_replace, secure_path_is_absent, secure_read_regular_file_snapshot,
         unlink_bound_regular_child, with_secure_read_hook, with_tree_open_hook, DirectoryAnchor,
         TreeEntryKind, TreeSnapshot,
@@ -126,6 +128,45 @@ mod windows_anchor_tests {
         child.verify_path_binding().unwrap();
         verify_owner_only_acl(&child.directory).unwrap();
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_immutable_platform_inventory_rejects_a_multiply_linked_file() {
+        let root = unique_temp_root("immutable-hard-link");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("1cv8.exe"), b"platform").unwrap();
+        fs::hard_link(root.join("1cv8.exe"), root.join("alias.exe")).unwrap();
+        let directory = open_directory_nofollow(&root).unwrap();
+        let mut entries = Vec::new();
+
+        let error = capture_windows_immutable_platform_children(&directory, &root, &mut entries)
+            .unwrap_err();
+
+        assert!(error.contains("exactly one hard link"), "{error}");
+        drop(directory);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_immutable_platform_inventory_rejects_a_reparse_point() {
+        let root = unique_temp_root("immutable-reparse");
+        let outside = unique_temp_root("immutable-reparse-outside");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&outside, b"outside").unwrap();
+        std::os::windows::fs::symlink_file(&outside, root.join("1cv8.exe")).unwrap();
+        let directory = open_directory_nofollow(&root).unwrap();
+        let mut entries = Vec::new();
+
+        let error = capture_windows_immutable_platform_children(&directory, &root, &mut entries)
+            .unwrap_err();
+
+        assert!(
+            error.contains("reparse") || error.contains("unsupported"),
+            "{error}"
+        );
+        drop(directory);
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_file(outside).unwrap();
     }
 
     #[test]
@@ -1570,8 +1611,12 @@ struct ImmutablePlatformEntry {
     path: PathBuf,
     kind: ImmutablePlatformEntryKind,
     identity: FileIdentity,
+    #[cfg(unix)]
     owner: u32,
+    #[cfg(unix)]
     mode: u32,
+    #[cfg(windows)]
+    security_descriptor_sha256: [u8; 32],
 }
 
 impl PlatformAttestation {
@@ -1636,7 +1681,7 @@ impl PlatformAttestation {
                     )?);
                 if after != trust_before {
                     return Err(format!(
-                        "immutable platform ownership or mode changed during attestation: {}",
+                        "immutable platform trust metadata changed during attestation: {}",
                         install_path.display()
                     ));
                 }
@@ -1703,10 +1748,265 @@ impl ImmutablePlatformTrustSnapshot {
         Ok(Self { entries })
     }
 
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    fn capture(install: &Path, executable: &Path, probe: &Path) -> Result<Self, String> {
+        verify_unprivileged_windows_platform_caller().map_err(|error| {
+            format!("failed to prove an unprivileged Windows platform caller: {error}")
+        })?;
+        let (mut entries, install_directory) =
+            capture_windows_immutable_platform_ancestry(install)?;
+        capture_windows_immutable_platform_children(&install_directory, install, &mut entries)?;
+        entries.sort_by(|left, right| left.path.cmp(&right.path));
+        entries.dedup();
+        for (path, role) in [
+            (executable, "platform executable"),
+            (probe, "platform version probe"),
+        ] {
+            let Some(entry) = entries.iter().find(|entry| entry.path == path) else {
+                return Err(format!(
+                    "{role} is outside the immutable platform inventory: {}",
+                    path.display()
+                ));
+            };
+            if entry.kind != ImmutablePlatformEntryKind::File {
+                return Err(format!(
+                    "{role} is not an immutable regular file: {}",
+                    path.display()
+                ));
+            }
+        }
+        Ok(Self { entries })
+    }
+
+    #[cfg(not(any(unix, windows)))]
     fn capture(_install: &Path, _executable: &Path, _probe: &Path) -> Result<Self, String> {
         Err("immutable platform trust verification is unavailable on this host".to_string())
     }
+}
+
+#[cfg(windows)]
+fn capture_windows_immutable_platform_ancestry(
+    install: &Path,
+) -> Result<(Vec<ImmutablePlatformEntry>, File), String> {
+    use std::path::Component;
+
+    if !install.is_absolute() {
+        return Err(format!(
+            "immutable platform installation path must be absolute: {}",
+            install.display()
+        ));
+    }
+    let mut components = install.components();
+    let prefix = match components.next() {
+        Some(Component::Prefix(prefix)) => prefix,
+        _ => {
+            return Err(format!(
+                "Windows immutable platform path has no volume prefix: {}",
+                install.display()
+            ))
+        }
+    };
+    if !matches!(components.next(), Some(Component::RootDir)) {
+        return Err(format!(
+            "Windows immutable platform path has no volume root: {}",
+            install.display()
+        ));
+    }
+    let mut names = Vec::new();
+    for component in components {
+        match component {
+            Component::Normal(name) => names.push(name.to_os_string()),
+            Component::CurDir => {}
+            Component::ParentDir | Component::Prefix(_) | Component::RootDir => {
+                return Err(format!(
+                    "immutable platform installation path contains a non-normal component: {}",
+                    install.display()
+                ))
+            }
+        }
+    }
+
+    let mut root_path = PathBuf::from(prefix.as_os_str());
+    root_path.push(Path::new(r"\"));
+    let root = open_directory_nofollow(&root_path).map_err(|error| {
+        format!(
+            "failed to securely open immutable platform volume root {}: {error}",
+            root_path.display()
+        )
+    })?;
+    let root_profile = if names.is_empty() {
+        WindowsImmutableAclProfile::Installation
+    } else {
+        WindowsImmutableAclProfile::Ancestry
+    };
+    let mut entries = vec![capture_windows_immutable_platform_entry(
+        &root,
+        &root_path,
+        ImmutablePlatformEntryKind::Directory,
+        root_profile,
+    )?];
+    let mut current = root;
+    let mut current_path = root_path;
+    let final_index = names.len().saturating_sub(1);
+    for (index, name) in names.into_iter().enumerate() {
+        current = open_directory_child_nofollow(&current, &name).map_err(|error| {
+            format!(
+                "platform ancestry contains a reparse point, non-directory, or inaccessible component {}: {error}",
+                current_path.join(&name).display()
+            )
+        })?;
+        current_path.push(&name);
+        let profile = if index == final_index {
+            WindowsImmutableAclProfile::Installation
+        } else {
+            WindowsImmutableAclProfile::Ancestry
+        };
+        entries.push(capture_windows_immutable_platform_entry(
+            &current,
+            &current_path,
+            ImmutablePlatformEntryKind::Directory,
+            profile,
+        )?);
+    }
+    Ok((entries, current))
+}
+
+#[cfg(windows)]
+fn capture_windows_immutable_platform_children(
+    directory: &File,
+    display_path: &Path,
+    entries: &mut Vec<ImmutablePlatformEntry>,
+) -> Result<(), String> {
+    let initial_names = crate::infrastructure::platform::filesystem::read_directory_names(
+        directory,
+    )
+    .map_err(|error| {
+        format!(
+            "failed to enumerate immutable platform installation {}: {error}",
+            display_path.display()
+        )
+    })?;
+    for name in &initial_names {
+        let child_path = display_path.join(name);
+        match open_directory_child_nofollow(directory, name) {
+            Ok(child) => {
+                let entry = capture_windows_immutable_platform_entry(
+                    &child,
+                    &child_path,
+                    ImmutablePlatformEntryKind::Directory,
+                    WindowsImmutableAclProfile::Installation,
+                )?;
+                let expected_identity = entry.identity;
+                entries.push(entry);
+                capture_windows_immutable_platform_children(&child, &child_path, entries)?;
+                let rebound = open_directory_child_nofollow(directory, name).map_err(|error| {
+                    format!(
+                        "failed to rebind immutable platform directory {}: {error}",
+                        child_path.display()
+                    )
+                })?;
+                if file_identity(&rebound).map_err(|error| {
+                    format!(
+                        "failed to recheck immutable platform directory {}: {error}",
+                        child_path.display()
+                    )
+                })? != expected_identity
+                {
+                    return Err(format!(
+                        "immutable platform directory identity changed while inspecting: {}",
+                        child_path.display()
+                    ));
+                }
+            }
+            Err(directory_error) => {
+                let file = open_regular_child_nofollow(directory, name).map_err(|file_error| {
+                    format!(
+                        "immutable platform inventory contains an unsupported or reparse entry {}: directory open failed ({directory_error}); regular-file open failed ({file_error})",
+                        child_path.display()
+                    )
+                })?;
+                if hard_link_count(&file).map_err(|error| {
+                    format!(
+                        "failed to inspect hard links for immutable platform file {}: {error}",
+                        child_path.display()
+                    )
+                })? != 1
+                {
+                    return Err(format!(
+                        "immutable platform file must have exactly one hard link: {}",
+                        child_path.display()
+                    ));
+                }
+                let entry = capture_windows_immutable_platform_entry(
+                    &file,
+                    &child_path,
+                    ImmutablePlatformEntryKind::File,
+                    WindowsImmutableAclProfile::Installation,
+                )?;
+                let expected_identity = entry.identity;
+                entries.push(entry);
+                let rebound = open_regular_child_nofollow(directory, name).map_err(|error| {
+                    format!(
+                        "failed to rebind immutable platform file {}: {error}",
+                        child_path.display()
+                    )
+                })?;
+                if file_identity(&rebound).map_err(|error| {
+                    format!(
+                        "failed to recheck immutable platform file {}: {error}",
+                        child_path.display()
+                    )
+                })? != expected_identity
+                {
+                    return Err(format!(
+                        "immutable platform file identity changed while inspecting: {}",
+                        child_path.display()
+                    ));
+                }
+            }
+        }
+    }
+    let final_names = crate::infrastructure::platform::filesystem::read_directory_names(directory)
+        .map_err(|error| {
+            format!(
+                "failed to re-enumerate immutable platform installation {}: {error}",
+                display_path.display()
+            )
+        })?;
+    if final_names != initial_names {
+        return Err(format!(
+            "immutable platform directory name set changed while inspecting: {}",
+            display_path.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn capture_windows_immutable_platform_entry(
+    file: &File,
+    path: &Path,
+    kind: ImmutablePlatformEntryKind,
+    profile: WindowsImmutableAclProfile,
+) -> Result<ImmutablePlatformEntry, String> {
+    let evidence = capture_windows_immutable_entry_evidence(file).map_err(|error| {
+        format!(
+            "failed to capture immutable Windows platform evidence {}: {error}",
+            path.display()
+        )
+    })?;
+    evidence.verify(profile).map_err(|error| {
+        format!(
+            "immutable Windows platform ACL is not trusted {}: {error}",
+            path.display()
+        )
+    })?;
+    Ok(ImmutablePlatformEntry {
+        path: path.to_path_buf(),
+        kind,
+        identity: evidence.identity,
+        security_descriptor_sha256: evidence.security_descriptor_sha256,
+    })
 }
 
 #[cfg(unix)]

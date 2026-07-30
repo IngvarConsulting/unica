@@ -394,6 +394,431 @@ impl Drop for LocalSecurityDescriptor {
 }
 
 #[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WindowsImmutableAclProfile {
+    Ancestry,
+    Installation,
+}
+
+#[cfg(windows)]
+struct SelfRelativeSecurityDescriptor {
+    storage: Vec<usize>,
+    length: usize,
+}
+
+#[cfg(windows)]
+impl SelfRelativeSecurityDescriptor {
+    fn capture(descriptor: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR) -> io::Result<Self> {
+        use std::mem::size_of;
+        use std::ptr;
+        use windows_sys::Win32::Security::{
+            GetSecurityDescriptorControl, GetSecurityDescriptorLength, IsValidSecurityDescriptor,
+            MakeSelfRelativeSD, SE_SELF_RELATIVE,
+        };
+
+        if descriptor.is_null() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "security descriptor is absent",
+            ));
+        }
+        // SAFETY: descriptor is non-null; callers retain the allocation for this call.
+        if unsafe { IsValidSecurityDescriptor(descriptor) } == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "security descriptor is malformed",
+            ));
+        }
+        let mut control = 0;
+        let mut revision = 0;
+        // SAFETY: descriptor was validated and both output pointers are writable.
+        if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        if control & SE_SELF_RELATIVE != 0 {
+            // SAFETY: descriptor is a valid self-relative descriptor.
+            let length = unsafe { GetSecurityDescriptorLength(descriptor) } as usize;
+            if length == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "security descriptor has zero length",
+                ));
+            }
+            let mut storage = vec![0usize; length.div_ceil(size_of::<usize>())];
+            // SAFETY: storage has at least length writable bytes and descriptor has that many
+            // readable bytes according to GetSecurityDescriptorLength.
+            unsafe {
+                ptr::copy_nonoverlapping(
+                    descriptor.cast::<u8>(),
+                    storage.as_mut_ptr().cast::<u8>(),
+                    length,
+                )
+            };
+            return Ok(Self { storage, length });
+        }
+
+        let mut length = 0;
+        // SAFETY: this size query reads the validated absolute descriptor and writes length.
+        unsafe { MakeSelfRelativeSD(descriptor, ptr::null_mut(), &mut length) };
+        if length == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut storage = vec![0usize; (length as usize).div_ceil(size_of::<usize>())];
+        // SAFETY: storage is aligned and has at least length writable bytes.
+        if unsafe { MakeSelfRelativeSD(descriptor, storage.as_mut_ptr().cast(), &mut length) } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self {
+            storage,
+            length: length as usize,
+        })
+    }
+
+    fn as_ptr(&self) -> windows_sys::Win32::Security::PSECURITY_DESCRIPTOR {
+        self.storage.as_ptr().cast_mut().cast()
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        // SAFETY: storage owns at least length initialized bytes copied or written above.
+        unsafe { std::slice::from_raw_parts(self.storage.as_ptr().cast::<u8>(), self.length) }
+    }
+}
+
+#[cfg(windows)]
+pub(crate) struct WindowsImmutableEntryEvidence {
+    pub(crate) identity: FileIdentity,
+    pub(crate) security_descriptor_sha256: [u8; 32],
+    descriptor: SelfRelativeSecurityDescriptor,
+}
+
+#[cfg(windows)]
+impl WindowsImmutableEntryEvidence {
+    pub(crate) fn verify(&self, profile: WindowsImmutableAclProfile) -> io::Result<()> {
+        verify_windows_immutable_security_descriptor(self.descriptor.as_ptr(), profile)
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn capture_windows_immutable_entry_evidence(
+    file: &fs::File,
+) -> io::Result<WindowsImmutableEntryEvidence> {
+    use std::os::windows::io::AsRawHandle;
+    use std::ptr;
+    use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
+    use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION};
+
+    let mut descriptor = ptr::null_mut();
+    // SAFETY: file owns a valid handle and descriptor is writable output storage.
+    let status = unsafe {
+        GetSecurityInfo(
+            file.as_raw_handle(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            &mut descriptor,
+        )
+    };
+    if status != 0 {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    let descriptor = LocalSecurityDescriptor(descriptor);
+    let descriptor = SelfRelativeSecurityDescriptor::capture(descriptor.0)?;
+    use sha2::{Digest, Sha256};
+    Ok(WindowsImmutableEntryEvidence {
+        identity: file_identity(file)?,
+        security_descriptor_sha256: Sha256::digest(descriptor.as_bytes()).into(),
+        descriptor,
+    })
+}
+
+#[cfg(windows)]
+fn sid_string(sid: windows_sys::Win32::Security::PSID) -> io::Result<String> {
+    use std::ptr;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+
+    let mut text = ptr::null_mut();
+    // SAFETY: the caller supplies a validated SID and text is writable output storage.
+    if unsafe { ConvertSidToStringSidW(sid, &mut text) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the API returned a live NUL-terminated UTF-16 allocation.
+    let length = unsafe {
+        let mut length = 0;
+        while *text.add(length) != 0 {
+            length += 1;
+        }
+        length
+    };
+    // SAFETY: length ends before the allocation's terminating NUL.
+    let value = String::from_utf16(unsafe { std::slice::from_raw_parts(text, length) })
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error));
+    // SAFETY: ConvertSidToStringSidW allocates with LocalAlloc.
+    unsafe { LocalFree(text.cast()) };
+    value
+}
+
+#[cfg(windows)]
+fn windows_sid_is_trusted(sid: windows_sys::Win32::Security::PSID) -> io::Result<bool> {
+    const TRUSTED_INSTALLER: &str =
+        "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
+    Ok(matches!(
+        sid_string(sid)?.as_str(),
+        TRUSTED_INSTALLER | "S-1-5-18" | "S-1-5-32-544"
+    ))
+}
+
+#[cfg(windows)]
+fn windows_immutable_mutation_mask(profile: WindowsImmutableAclProfile) -> u32 {
+    use windows_sys::Win32::Foundation::{GENERIC_ALL, GENERIC_WRITE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_DELETE_CHILD, FILE_WRITE_ATTRIBUTES,
+        FILE_WRITE_DATA, FILE_WRITE_EA, WRITE_DAC, WRITE_OWNER,
+    };
+
+    let substitution =
+        DELETE | FILE_DELETE_CHILD | WRITE_DAC | WRITE_OWNER | GENERIC_WRITE | GENERIC_ALL;
+    match profile {
+        WindowsImmutableAclProfile::Ancestry => substitution,
+        WindowsImmutableAclProfile::Installation => {
+            substitution
+                | FILE_WRITE_DATA
+                | FILE_ADD_FILE
+                | FILE_ADD_SUBDIRECTORY
+                | FILE_WRITE_EA
+                | FILE_WRITE_ATTRIBUTES
+        }
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn verify_windows_immutable_security_descriptor(
+    descriptor: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR,
+    profile: WindowsImmutableAclProfile,
+) -> io::Result<()> {
+    use std::mem::{offset_of, size_of};
+    use std::ptr;
+    use windows_sys::Win32::Security::{
+        AclSizeInformation, GetAce, GetAclInformation, GetLengthSid, GetSecurityDescriptorDacl,
+        GetSecurityDescriptorOwner, IsValidAcl, IsValidSecurityDescriptor, IsValidSid,
+        ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_SIZE_INFORMATION,
+    };
+
+    const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+    const ACCESS_DENIED_ACE_TYPE: u8 = 1;
+    const VALID_INHERIT_FLAGS: u8 = 0x1f;
+    const INHERIT_ONLY_ACE: u8 = 0x08;
+
+    if descriptor.is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "security descriptor is absent",
+        ));
+    }
+    // SAFETY: descriptor is non-null and remains live for this function.
+    if unsafe { IsValidSecurityDescriptor(descriptor) } == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "security descriptor is malformed",
+        ));
+    }
+
+    let mut owner = ptr::null_mut();
+    let mut owner_defaulted = 0;
+    // SAFETY: descriptor was validated and output pointers are writable.
+    if unsafe { GetSecurityDescriptorOwner(descriptor, &mut owner, &mut owner_defaulted) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if owner.is_null() || unsafe { IsValidSid(owner) } == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "immutable platform owner SID is absent or malformed",
+        ));
+    }
+    if !windows_sid_is_trusted(owner)? {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "immutable platform owner SID is not trusted",
+        ));
+    }
+
+    let mut dacl_present = 0;
+    let mut dacl: *mut ACL = ptr::null_mut();
+    let mut dacl_defaulted = 0;
+    // SAFETY: descriptor was validated and output pointers are writable.
+    if unsafe {
+        GetSecurityDescriptorDacl(
+            descriptor,
+            &mut dacl_present,
+            &mut dacl,
+            &mut dacl_defaulted,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if dacl_present == 0 || dacl.is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "immutable platform security descriptor has an absent or null DACL",
+        ));
+    }
+    // SAFETY: dacl is non-null and points inside the validated descriptor.
+    if unsafe { IsValidAcl(dacl) } == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "immutable platform DACL is malformed",
+        ));
+    }
+
+    let mut information = ACL_SIZE_INFORMATION {
+        AceCount: 0,
+        AclBytesInUse: 0,
+        AclBytesFree: 0,
+    };
+    // SAFETY: dacl is valid and information is writable.
+    if unsafe {
+        GetAclInformation(
+            dacl,
+            (&mut information as *mut ACL_SIZE_INFORMATION).cast(),
+            size_of::<ACL_SIZE_INFORMATION>() as u32,
+            AclSizeInformation,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+
+    let mutation_mask = windows_immutable_mutation_mask(profile);
+    for index in 0..information.AceCount {
+        let mut ace = ptr::null_mut();
+        // SAFETY: index is within the validated ACL's reported ACE count.
+        if unsafe { GetAce(dacl, index, &mut ace) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: GetAce returned a pointer to a complete ACE header in the validated ACL.
+        let header = unsafe { &*ace.cast::<ACE_HEADER>() };
+        if header.AceFlags & !VALID_INHERIT_FLAGS != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "immutable platform DACL contains unsupported ACE flags",
+            ));
+        }
+        if !matches!(
+            header.AceType,
+            ACCESS_ALLOWED_ACE_TYPE | ACCESS_DENIED_ACE_TYPE
+        ) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "immutable platform DACL contains an unsupported ACE type",
+            ));
+        }
+
+        let sid_offset = offset_of!(ACCESS_ALLOWED_ACE, SidStart);
+        let minimum_sid_bytes = 8usize;
+        let ace_size = usize::from(header.AceSize);
+        if ace_size < sid_offset + minimum_sid_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "immutable platform DACL contains a truncated ACE SID",
+            ));
+        }
+        // SAFETY: the fixed ACE header and minimum SID were bounds-checked against AceSize.
+        let allowed = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
+        let sid: windows_sys::Win32::Security::PSID =
+            (&raw const allowed.SidStart).cast_mut().cast();
+        // SAFETY: the minimum SID header is contained in this ACE.
+        let subauthority_count = unsafe { *sid.cast::<u8>().add(1) } as usize;
+        let sid_length = minimum_sid_bytes
+            .checked_add(
+                subauthority_count
+                    .checked_mul(size_of::<u32>())
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "ACE SID length overflowed")
+                    })?,
+            )
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "ACE SID length overflowed")
+            })?;
+        if sid_offset + sid_length > ace_size {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "immutable platform DACL contains an out-of-bounds ACE SID",
+            ));
+        }
+        // SAFETY: the SID is fully contained in the ACE according to its own length field.
+        if unsafe { IsValidSid(sid) } == 0 || unsafe { GetLengthSid(sid) } as usize != sid_length {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "immutable platform DACL contains a malformed ACE SID",
+            ));
+        }
+
+        if header.AceType == ACCESS_DENIED_ACE_TYPE || header.AceFlags & INHERIT_ONLY_ACE != 0 {
+            continue;
+        }
+        if allowed.Mask & mutation_mask != 0 && !windows_sid_is_trusted(sid)? {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "immutable platform DACL grants mutation rights 0x{:08x} to an untrusted SID",
+                    allowed.Mask & mutation_mask
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+pub(crate) fn verify_windows_elevation_value(is_elevated: u32) -> io::Result<()> {
+    if is_elevated == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "immutable platform execution is refused for an elevated Windows caller",
+        ))
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn verify_unprivileged_windows_platform_caller() -> io::Result<()> {
+    use std::mem::size_of;
+    use windows_sys::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION};
+
+    let token = ProcessToken::current_user()?;
+    let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+    let mut returned = 0;
+    // SAFETY: token is a live process-token handle, elevation is writable storage of the exact
+    // requested type, and returned is writable.
+    if unsafe {
+        GetTokenInformation(
+            token.handle,
+            TokenElevation,
+            (&mut elevation as *mut TOKEN_ELEVATION).cast(),
+            size_of::<TOKEN_ELEVATION>() as u32,
+            &mut returned,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if returned != size_of::<TOKEN_ELEVATION>() as u32 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Windows token elevation proof returned an unexpected size",
+        ));
+    }
+    verify_windows_elevation_value(elevation.TokenIsElevated)
+}
+
+#[cfg(windows)]
 #[allow(
     dead_code,
     reason = "DirectoryAnchor callers are introduced by the following Windows full-dump task"
@@ -1621,17 +2046,229 @@ mod tests {
     mod windows {
         use super::{fs, io, unique_temp_root};
         use crate::infrastructure::platform::filesystem::{
-            create_owner_only_directory, create_owner_only_directory_child, create_owner_only_file,
-            directory_query_is_end, file_identity, nt_create_options_for_std_file,
-            open_directory_child_nofollow, open_directory_nofollow,
-            parse_directory_information_buffer, read_directory_names, verify_owner_only_acl,
+            capture_windows_immutable_entry_evidence, create_owner_only_directory,
+            create_owner_only_directory_child, create_owner_only_file, directory_query_is_end,
+            file_identity, nt_create_options_for_std_file, open_directory_child_nofollow,
+            open_directory_nofollow, parse_directory_information_buffer, read_directory_names,
+            verify_owner_only_acl, verify_windows_elevation_value,
+            verify_windows_immutable_security_descriptor, WindowsImmutableAclProfile,
         };
         use std::ffi::OsString;
         use std::mem::{offset_of, size_of};
+        use std::ptr;
+        use windows_sys::Win32::Foundation::{LocalFree, GENERIC_ALL, GENERIC_WRITE};
         use windows_sys::Win32::Foundation::{
             ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_FILES,
         };
-        use windows_sys::Win32::Storage::FileSystem::FILE_ID_BOTH_DIR_INFO;
+        use windows_sys::Win32::Security::Authorization::{
+            ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+        };
+        use windows_sys::Win32::Security::PSECURITY_DESCRIPTOR;
+        use windows_sys::Win32::Storage::FileSystem::{
+            DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_DELETE_CHILD, FILE_ID_BOTH_DIR_INFO,
+            FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA, WRITE_DAC, WRITE_OWNER,
+        };
+
+        struct TestSecurityDescriptor(PSECURITY_DESCRIPTOR);
+
+        impl Drop for TestSecurityDescriptor {
+            fn drop(&mut self) {
+                // SAFETY: the SDDL conversion API allocated this descriptor with LocalAlloc.
+                unsafe { LocalFree(self.0) };
+            }
+        }
+
+        fn descriptor_from_sddl(sddl: &str) -> TestSecurityDescriptor {
+            let mut wide = sddl.encode_utf16().collect::<Vec<_>>();
+            wide.push(0);
+            let mut descriptor = ptr::null_mut();
+            // SAFETY: wide is NUL-terminated and descriptor is writable output storage.
+            let converted = unsafe {
+                ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    wide.as_ptr(),
+                    SDDL_REVISION_1,
+                    &mut descriptor,
+                    ptr::null_mut(),
+                )
+            };
+            assert_ne!(converted, 0, "{}", io::Error::last_os_error());
+            TestSecurityDescriptor(descriptor)
+        }
+
+        fn descriptor_with_untrusted_mask(
+            owner: &str,
+            mask: u32,
+            flags: &str,
+        ) -> TestSecurityDescriptor {
+            descriptor_from_sddl(&format!(
+                "O:{owner}D:(A;;FA;;;SY)(A;{flags};0x{mask:08x};;;BU)"
+            ))
+        }
+
+        #[test]
+        fn windows_immutable_platform_accepts_trusted_owners_and_read_execute_users() {
+            const TRUSTED_INSTALLER: &str =
+                "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
+            for owner in [TRUSTED_INSTALLER, "SY", "BA"] {
+                let descriptor = descriptor_from_sddl(&format!(
+                    "O:{owner}D:(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x001200a9;;;BU)"
+                ));
+
+                verify_windows_immutable_security_descriptor(
+                    descriptor.0,
+                    WindowsImmutableAclProfile::Installation,
+                )
+                .unwrap();
+            }
+        }
+
+        #[test]
+        fn windows_immutable_platform_rejects_an_untrusted_owner() {
+            let descriptor = descriptor_from_sddl("O:BUD:(A;;FA;;;SY)(A;;FRFX;;;BU)");
+
+            let error = verify_windows_immutable_security_descriptor(
+                descriptor.0,
+                WindowsImmutableAclProfile::Installation,
+            )
+            .unwrap_err();
+
+            assert!(error.to_string().contains("owner"), "{error}");
+        }
+
+        #[test]
+        fn windows_immutable_platform_ancestry_allows_sibling_creation_only() {
+            let descriptor =
+                descriptor_with_untrusted_mask("SY", FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY, "");
+
+            verify_windows_immutable_security_descriptor(
+                descriptor.0,
+                WindowsImmutableAclProfile::Ancestry,
+            )
+            .unwrap();
+        }
+
+        #[test]
+        fn windows_immutable_platform_ancestry_rejects_untrusted_substitution_rights() {
+            for mask in [
+                DELETE,
+                FILE_DELETE_CHILD,
+                WRITE_DAC,
+                WRITE_OWNER,
+                GENERIC_WRITE,
+                GENERIC_ALL,
+            ] {
+                let descriptor = descriptor_with_untrusted_mask("SY", mask, "");
+
+                let error = verify_windows_immutable_security_descriptor(
+                    descriptor.0,
+                    WindowsImmutableAclProfile::Ancestry,
+                )
+                .unwrap_err();
+
+                assert!(
+                    error.to_string().contains("mutation"),
+                    "mask 0x{mask:08x}: {error}"
+                );
+            }
+        }
+
+        #[test]
+        fn windows_immutable_platform_inventory_rejects_every_untrusted_mutation_right() {
+            for mask in [
+                FILE_WRITE_DATA,
+                FILE_ADD_FILE,
+                FILE_ADD_SUBDIRECTORY,
+                FILE_WRITE_EA,
+                FILE_WRITE_ATTRIBUTES,
+                FILE_DELETE_CHILD,
+                DELETE,
+                WRITE_DAC,
+                WRITE_OWNER,
+                GENERIC_WRITE,
+                GENERIC_ALL,
+            ] {
+                let descriptor = descriptor_with_untrusted_mask("BA", mask, "");
+
+                let error = verify_windows_immutable_security_descriptor(
+                    descriptor.0,
+                    WindowsImmutableAclProfile::Installation,
+                )
+                .unwrap_err();
+
+                assert!(
+                    error.to_string().contains("mutation"),
+                    "mask 0x{mask:08x}: {error}"
+                );
+            }
+        }
+
+        #[test]
+        fn windows_immutable_platform_ignores_inherit_only_capabilities_on_current_entry() {
+            let descriptor = descriptor_with_untrusted_mask("SY", GENERIC_ALL, "OICIIO");
+
+            verify_windows_immutable_security_descriptor(
+                descriptor.0,
+                WindowsImmutableAclProfile::Installation,
+            )
+            .unwrap();
+        }
+
+        #[test]
+        fn windows_immutable_platform_rejects_missing_null_and_unsupported_dacls() {
+            let absent = descriptor_from_sddl("O:SY");
+            let null = descriptor_from_sddl("O:SYD:NO_ACCESS_CONTROL");
+            let object =
+                descriptor_from_sddl("O:SYD:(OA;;FA;00112233-4455-6677-8899-aabbccddeeff;;BU)");
+            let mut malformed = [0usize; 4];
+
+            for descriptor in [
+                absent.0,
+                null.0,
+                object.0,
+                malformed.as_mut_ptr().cast(),
+                ptr::null_mut(),
+            ] {
+                assert!(verify_windows_immutable_security_descriptor(
+                    descriptor,
+                    WindowsImmutableAclProfile::Installation,
+                )
+                .is_err());
+            }
+        }
+
+        #[test]
+        fn windows_immutable_platform_rejects_an_elevated_caller() {
+            let error = verify_windows_elevation_value(1).unwrap_err();
+
+            assert!(error.to_string().contains("elevated"), "{error}");
+            verify_windows_elevation_value(0).unwrap();
+        }
+
+        #[test]
+        fn windows_immutable_platform_handle_evidence_stays_bound_to_the_open_object() {
+            let root = unique_temp_root("immutable-handle-evidence");
+            fs::create_dir_all(&root).unwrap();
+            let original = root.join("entry");
+            let displaced = root.join("displaced");
+            let original_handle = create_owner_only_file(&original).unwrap();
+            let expected_identity = file_identity(&original_handle).unwrap();
+            fs::rename(&original, &displaced).unwrap();
+            fs::write(&original, b"decoy").unwrap();
+            let decoy_handle = fs::File::open(&original).unwrap();
+
+            let retained = capture_windows_immutable_entry_evidence(&original_handle).unwrap();
+            let decoy = capture_windows_immutable_entry_evidence(&decoy_handle).unwrap();
+
+            assert_eq!(retained.identity, expected_identity);
+            assert_ne!(retained.identity, decoy.identity);
+            assert_ne!(
+                retained.security_descriptor_sha256,
+                decoy.security_descriptor_sha256
+            );
+            drop(decoy_handle);
+            drop(original_handle);
+            fs::remove_dir_all(root).unwrap();
+        }
 
         #[test]
         fn owner_only_directory_is_opened_without_following_reparse_points() {
