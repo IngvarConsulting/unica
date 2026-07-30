@@ -195,5 +195,32 @@ class NormativeBoundaryTests(unittest.TestCase):
         )
 
 
+class LogicalSourceDesignContractTests(unittest.TestCase):
+    def test_source_designs_are_approved_and_describe_the_implemented_wire_contract(
+        self,
+    ) -> None:
+        logical = (
+            DESIGN_DIR / "2026-07-29-logical-source-addressing-design.md"
+        ).read_text(encoding="utf-8")
+        resources = (
+            DESIGN_DIR / "2026-07-30-bounded-source-resource-access-design.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("- Status: `approved`", logical)
+        self.assertIn("- Status: `approved`", resources)
+        self.assertNotIn("UUID объекта при наличии", logical)
+        self.assertNotIn("необязательная collection", logical)
+        self.assertIn("коллекции возвращаются как узлы", logical)
+        self.assertIn("50", resources)
+        self.assertIn("100", resources)
+        self.assertIn('"bomPrefixBytes"', resources)
+        self.assertIn('"limits"', resources)
+        self.assertIn('"target"', resources)
+        self.assertIn("точный диапазон байтов", resources)
+        self.assertIn("base64", resources)
+        self.assertNotIn("фактический диапазон может быть\nуже запрошенного", resources)
+        self.assertNotIn("До появления измерений", resources)
+
+
 if __name__ == "__main__":
     unittest.main()

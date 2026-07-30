@@ -89,6 +89,22 @@ response. Consumers must read `stdout`/structured response data instead of
 reading a file created by Unica. If a durable artifact is needed, the caller
 must save the returned value explicitly outside the read-only tool contract.
 
+## Logical source target migration
+
+The release containing
+[issue #260](https://github.com/IngvarConsulting/unica/issues/260) replaces
+physical target selectors for `unica.code.patch` with one logical target.
+There is no deprecated alias:
+
+| Removed selector | Canonical selector |
+| --- | --- |
+| `path` + `sourceDir` | `sourceSet` + `metadataPath` |
+
+Calls that still pass either removed field fail with
+`legacy_target_removed` and name the canonical replacement. The logical
+selector addresses existing Platform XML Configuration and Extension modules;
+Unica resolves the physical `*Module.bsl` location privately.
+
 ## Runtime delivery
 
 The marketplace plugin contains skills, references, assets, `launch.sh`, and
@@ -128,7 +144,8 @@ The `skills/` tree covers configuration and extension metadata, forms, roles,
 DCS/MXL, command interfaces, EPF/ERF and BSP registration, database/build
 workflows, BSL search and diagnostics, integrations, background jobs,
 performance, security, data separation, release support, autonomous runtime,
-and platform help.
+platform help, and logical source-resource inspection with a guarded BSL
+replacement fallback.
 
 ## Local development
 

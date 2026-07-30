@@ -393,9 +393,10 @@ patterns, Python CI contract tests, Markdown ADR/invariant/acceptance corpus.
 3. Update normative documents, skills, provenance, and README.
 4. Run the same targeted Python command until green.
 5. Run:
-   `python3.12 scripts/ci/check-architecture-sync.py`
+   `python3.12 scripts/ci/check-architecture-sync.py --base origin/main`,
+   `python3.12 scripts/ci/check-skill-upstreams.py --validate-only`
    and:
-   `python3.12 scripts/ci/check-plugin-publication-safety.py`.
+   `python3.12 scripts/ci/check-attributions.py`.
 6. Commit with message:
    `docs(architecture): accept logical source resource contracts`.
 

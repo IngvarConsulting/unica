@@ -299,6 +299,25 @@ class SkillProvenanceTests(unittest.TestCase):
         self.assertNotIn("upstreamPaths", owned["code-patch"])
         self.assertNotIn("baselineCommit", owned["code-patch"])
 
+    def test_source_access_is_recorded_as_exclusively_unica_owned(self) -> None:
+        data = self.load_provenance()
+        owned = {entry["skill"]: entry for entry in data["unicaOwnedSkills"]}
+        donor_skills = {
+            entry["skill"]
+            for upstream in data["upstreams"]
+            for entry in upstream["entries"]
+        }
+
+        self.assertIn("source-access", owned)
+        self.assertNotIn("source-access", donor_skills)
+        self.assertEqual(
+            owned["source-access"]["localPaths"],
+            ["plugins/unica/skills/source-access"],
+        )
+        self.assertNotIn("repository", owned["source-access"])
+        self.assertNotIn("upstreamPaths", owned["source-access"])
+        self.assertNotIn("baselineCommit", owned["source-access"])
+
     def test_tool_lock_ref_uses_tools_lock_as_single_binary_baseline(self) -> None:
         data = self.load_provenance()
         tool_lock = json.loads(

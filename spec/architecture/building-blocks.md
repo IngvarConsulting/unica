@@ -74,6 +74,7 @@
 | `unica.build.*` | выгрузка, загрузка, обновление, сборка и запуск через платформу | `RuntimeAdapter` в `infrastructure/internal_adapters.rs` поверх поставляемого `v8-runner` |
 | `unica.runtime.*` | типизированные сценарии runtime и долгоживущие задания | `RuntimeAdapter` и `RuntimeJobAdapter` в `internal_adapters.rs`, состояние — `infrastructure/runtime_jobs.rs` |
 | `unica.code.*` | поиск, навигация, правка и диагностика BSL | поиск и навигация — реестр поставщиков в `infrastructure/code_intelligence.rs`; граф и диагностика — адаптер анализатора в `internal_adapters.rs`; `unica.code.patch` — `native_operations/code.rs` |
+| `unica.source.*` | логическое разрешение и обход целей, снимки ресурсов, ограниченное чтение и запасная полная замена BSL | `application/source_navigation.rs` и `application/source_resources.rs` через `infrastructure/platform_xml_source_targets.rs` и `infrastructure/platform_xml_resources.rs` |
 | `unica.standards.*` | знания о стандартах разработки 1С | `StandardsAdapter` в `internal_adapters.rs` |
 
 Внутренние границы, до которых дотягиваются адаптеры: поставляемый инструмент
@@ -114,6 +115,11 @@ runtime для операций платформы, поставляемый а�
 - `source_roots` — `ResolvedSourceRoot` и детерминированный выбор набора
   исходников по умолчанию, общий для всех потребителей корня исходников
   (INV-SOURCE-SINGLE-RESOLVED-ROOT).
+- `source_target` — `SourceTarget`, `MetadataAddress`, `ResolvedTarget` и
+  профиль канонических адресов Platform XML (INV-SOURCE-LOGICAL-IDENTITY).
+- `source_resources` — роли, полнота, публичные манифесты, результаты чтения и
+  замены и стабильные коды ошибок ресурсного доступа
+  (INV-SOURCE-SNAPSHOT-BINDING, INV-SOURCE-ROLE-ALLOWLIST).
 - `workspace` — `WorkspaceContext`: пассивная запись о `cwd`, `workspace_root`,
   `cache_root` и `workspace_epoch`.
 
@@ -133,6 +139,12 @@ runtime для операций платформы, поставляемый а�
   чтения: параллельный запуск поставщиков, сроки, ограничение допущенных
   исполнителей, отмена, сохранение порядка секций и политика частичного успеха
   (INV-MCP-CODE-SEARCH-SECTIONS, INV-MCP-BOUNDED-ADMISSION).
+- `source_navigation` — запросы и результаты
+  `unica.source.resolve`/`unica.source.children`, ограничение выдачи и
+  типизированные адресуемые либо наблюдаемые местоположения.
+- `source_resources` — оркестрация `resources/read/apply`, разбор ограниченных
+  аргументов и разделение опубликованных и только проектируемых событий
+  предпросмотра (INV-SOURCE-PLAN-EVENT-PARITY).
 - `tool_contracts` — входные JSON-схемы, нормализация алиасов путей и проверка
   аргументов для каждого зарегистрированного инструмента (INV-MCP-DATA-DRIVEN-SCHEMA).
 - `operation_descriptors` — описатели нативных операций, включая политики
@@ -230,6 +242,12 @@ runtime для операций платформы, поставляемый а�
   инвентаризации.
 - `source_roots` — `resolve_source_root` и `normalize_path_identity`,
   детерминированный выбор корня исходников для анализатора и индекса.
+- `platform_xml_source_targets` — канонический обход Platform XML и закрытые
+  ручки, которые каждый writer обязан повторно авторизовать
+  (INV-SOURCE-HANDLE-REAUTH).
+- `platform_xml_resources` — хранилище ограниченных снимков на срок жизни
+  приложения, чтение точного диапазона байтов и безопасная замена одного
+  BSL-ресурса (REQ-PERF-SOURCE-BOUNDS).
 - `platform_xml_owner` — определяет, какой платформенный XML-файл владеет
   объектом метаданных, и сообщает происхождение этого решения.
 - `metadata_kinds` — статическая таблица видов метаданных: XML-тег, каталог

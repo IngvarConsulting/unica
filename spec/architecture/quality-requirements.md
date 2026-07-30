@@ -66,6 +66,19 @@
 - **Check:** `ci-test` — `crates/unica-coder/tests/platform/issue_89_workspace_service.rs`
 - **Scope:** runtime
 
+### REQ-PERF-SOURCE-BOUNDS — Снимки и ресурсные ответы имеют измеримые пределы
+
+- **Rule:** Ресурсный снимок живёт не более 5 минут, содержит не более 100
+  ресурсов и 32 МиБ, одна страница возвращает не более 50 ресурсов, одно чтение
+  — не более 64 КиБ, замена — не более 1 МиБ, а экземпляр удерживает не более
+  64 снимков и 128 МиБ; отмена проверяется до разрешения цели, между
+  ограниченными фазами и непосредственно перед атомарной публикацией.
+- **Decision:** ADR-0022
+- **Check:** `doc-assert` — `tests/ci/test_architecture_registry.py`
+- **Check:** `ci-test` — `crates/unica-coder/src/domain/source_resources.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_resources.rs`
+- **Scope:** runtime
+
 ## TOKEN — расход контекста модели
 
 ### REQ-TOKEN-NO-EXTRA-ROUNDTRIP — Согласование кеша не стоит лишнего вызова

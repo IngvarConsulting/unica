@@ -263,6 +263,19 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `tests/ci/test_architecture_sync_guard.py`
 - **Scope:** source, packaged
 
+### INV-MCP-SOURCE-SURFACE — Ресурсная поверхность логична и ограничена
+
+- **Rule:** Публичная группа источников содержит читающие
+  `unica.source.resolve`, `unica.source.children`, `unica.source.resources`,
+  `unica.source.read` и мутирующий `unica.source.apply`; их схемы принимают
+  логические цели и непрозрачные снимки, не принимают физический путь или
+  закрытую ручку и удерживают объявленные пределы.
+- **Decision:** ADR-0021, ADR-0022
+- **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/interfaces/mcp.rs`
+- **Scope:** source, runtime
+
 ### INV-MCP-CODE-SEARCH-SECTIONS — Поиск сохраняет независимые секции поставщиков
 
 - **Rule:** `unica.code.search` возвращает в фиксированном порядке секции
@@ -337,6 +350,17 @@ Unica. Каждая запись формулирует одно нормати�
   относящаяся к внешнему набору исходников выгрузка записана как
   вызов-предпросмотр.
 - **Decision:** ADR-0005
+- **Check:** `ci-test` — `tests/ci/test_unica_skills.py`
+- **Scope:** source, packaged
+
+### INV-SKILL-SOURCE-FALLBACK — Ресурсная запись остаётся запасным маршрутом
+
+- **Rule:** Скилл ресурсного доступа сначала выбирает существующий предметный
+  инструмент записи, использует `unica.source.resources` и `unica.source.read`
+  для исследования, а `unica.source.apply` вызывает только с явным
+  обоснованием отсутствия предметного writer-а, через предпросмотр до
+  применения.
+- **Decision:** ADR-0022
 - **Check:** `ci-test` — `tests/ci/test_unica_skills.py`
 - **Scope:** source, packaged
 
@@ -589,6 +613,64 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/tool_context.rs`
 - **Scope:** runtime
 
+### INV-SOURCE-LOGICAL-IDENTITY — Точная цель не зависит от файловой раскладки
+
+- **Rule:** Точная существующая цель задаётся именем `sourceSet` и
+  необязательным каноническим `metadataPath`: английские и русские виды
+  нормализуются в английские токены, прикладные имена сохраняются, а физический
+  путь не принимается и не возвращается как идентичность цели.
+- **Decision:** ADR-0021
+- **Check:** `ci-test` — `crates/unica-coder/src/domain/source_target.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs`
+- **Scope:** source, runtime
+
+### INV-SOURCE-HANDLE-REAUTH — Закрытая ручка не является правом записи
+
+- **Rule:** `unica.source.apply` перед планированием и перед публикацией заново
+  разрешает закрытую ручку и повторно доказывает рабочее пространство, набор
+  исходников, логического владельца, ограничение пути, профиль формата,
+  поддержку и точный преобраз; расхождение означает отказ до публикации.
+- **Decision:** ADR-0022
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_resources.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs`
+- **Scope:** runtime
+
+### INV-SOURCE-SNAPSHOT-BINDING — Ресурс действует только внутри своего снимка
+
+- **Rule:** Непрозрачные `snapshotId` и `resourceId` связаны с экземпляром
+  приложения, рабочим пространством, поставщиком, набором исходников, целью,
+  областью, ревизией и сроком действия; ресурс из другого, истёкшего или
+  подделанного снимка не читается и не записывается.
+- **Decision:** ADR-0022
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_resources.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/interfaces/mcp.rs`
+- **Scope:** runtime
+
+### INV-SOURCE-ROLE-ALLOWLIST — Право записи выдаётся по доказанной роли
+
+- **Rule:** Первый ресурсный writer заменяет ровно один существующий
+  `bslModule` только из полного снимка с возможностью `replace`;
+  дескрипторы, регистрации, формы, DCS, MXL, права, двоичные и неизвестные роли
+  остаются доступными только для чтения независимо от типа содержимого.
+- **Decision:** ADR-0022
+- **Check:** `ci-test` — `crates/unica-coder/src/domain/source_resources.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_resources.rs`
+- **Scope:** runtime
+
+### INV-SOURCE-PLAN-EVENT-PARITY — План, байты и событие описывают одну замену
+
+- **Rule:** Предпросмотр и применение `unica.source.apply` строятся одним
+  планировщиком из точного преобраза; предпросмотр сообщает проектируемое
+  событие и влияние на кеш без публикации и сохранения, а успешная непустая
+  публикация тех же байтов создаёт ровно одно событие
+  `SourceResourcesReplaced` и инвалидирует только индекс и диагностику BSL.
+- **Decision:** ADR-0022
+- **Check:** `ci-test` — `crates/unica-coder/src/application/source_resources.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_resources.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/domain/events.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/domain/cache.rs`
+- **Scope:** runtime
+
 ### INV-SOURCE-OBSERVED-EOL — Перевод строки наблюдается в источнике, а не назначается
 
 - **Rule:** Снимок исходного текста классифицирует переводы строк как `None`
@@ -604,6 +686,7 @@ Unica. Каждая запись формулирует одно нормати�
 - **Decision:** n/a
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/text_snapshot.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/code.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_resources.rs`
 - **Scope:** runtime
 
 ### INV-SOURCE-ATOMIC-PUBLISH — Мутация источника публикуется атомарно после проверки
@@ -614,7 +697,7 @@ Unica. Каждая запись формулирует одно нормати�
   только затем публикует его через промежуточный файл и атомарную замену;
   провал проверки, занятый путь промежуточного файла и любая ошибка публикации
   оставляют исходные байты нетронутыми.
-- **Decision:** ADR-0015
+- **Decision:** ADR-0021, ADR-0022
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/text_snapshot.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/code.rs`
 - **Scope:** runtime
@@ -626,8 +709,9 @@ Unica. Каждая запись формулирует одно нормати�
   диапазоны пусты, ни файл, ни состояние кеша не меняются и доменное событие не
   публикуется; первый вызов отклоняется без записи, если его образ после записи
   не позволяет доказать эту пустоту при следующем идентичном вызове.
-- **Decision:** ADR-0015
+- **Decision:** ADR-0021, ADR-0022
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/code.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_resources.rs`
 - **Scope:** runtime
 
 ### INV-SOURCE-WRITE-CONTAINMENT — Запись не выходит за корень рабочего пространства
@@ -1017,7 +1101,8 @@ Unica. Каждая запись формулирует одно нормати�
 
 - **Rule:** Каждая принятая запись решения перечислена в
   `spec/decisions/README.md`, каждая перечисленная запись существует на диске, и
-  каждый документ каталога `spec/architecture/` перечислен в `spec/README.md`.
+  каждый документ каталогов `spec/architecture/` и `spec/acceptance/`
+  перечислен в `spec/README.md`.
 - **Decision:** n/a
 - **Check:** `doc-assert` — `tests/ci/test_architecture_registry.py`
 - **Scope:** source

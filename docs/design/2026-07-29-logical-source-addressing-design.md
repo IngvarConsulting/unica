@@ -1,7 +1,7 @@
 # Логическая адресация целей 1С
 
 - Date: `2026-07-29`
-- Status: `draft`
+- Status: `approved`
 - Decision: `ADR-0021`
 
 ## Результат проектирования
@@ -260,21 +260,21 @@ runtime-фикстурой 8.3.27.
 - `sourceSet`;
 - `query`;
 - режим `exact|prefix`;
-- необязательные `targetKind` и platform type.
+- необязательный `targetKind`;
+- cursor и limit.
 
 Выход:
 
 - ограниченный список кандидатов;
 - канонический `metadataPath`;
 - `targetKind`;
-- platform type;
-- UUID объекта при наличии;
 - отображаемое имя;
 - признак точного или префиксного совпадения;
 - completeness и cursor.
 
 Инструмент не выполняет fuzzy ranking и не выбирает один из нескольких
-кандидатов.
+кандидатов. Платформенный тип и UUID объекта текущий wire-контракт не
+возвращает: идентичностью остаётся только `sourceSet + metadataPath`.
 
 ### `unica.source.children`
 
@@ -282,7 +282,6 @@ runtime-фикстурой 8.3.27.
 
 - `sourceSet`;
 - необязательный точный `metadataPath`;
-- необязательная collection;
 - cursor и limit.
 
 Поведение:
@@ -291,9 +290,10 @@ runtime-фикстурой 8.3.27.
   подтверждённые root modules;
 - для ExternalProcessor/ExternalReport без адреса перечисляет отдельные
   артефакты;
-- для объекта без collection перечисляет непосредственные коллекции и модули;
-- с collection перечисляет только непосредственные элементы;
-- collection и неадресуемый элемент не получают фиктивный address;
+- для точной цели перечисляет один уровень непосредственных детей;
+- коллекции возвращаются как узлы `nodeKind: "collection"` и не принимаются
+  отдельным входным аргументом;
+- collection-узел и неадресуемый элемент не получают фиктивный address;
 - элемент сообщает ближайшего адресуемого владельца и completeness.
 
 ## Типизированное местоположение
@@ -430,32 +430,22 @@ ADR-0019 сохраняется для настоящих file arguments. Для
 ADR-0021 является более новым решением: semantic replacement не называется
 alias normalization.
 
-## Первый implementation slice
+## Реализованный срез
 
-Первый PR реализации закрывает #260, не ожидая глобальной миграции:
+PR #266 реализует адресное ядро, `unica.source.resolve`,
+`unica.source.children` и миграцию `unica.code.patch`:
 
-- только `unica.code.patch`;
-- Configuration + Extension;
-- Platform XML 8.3.27/2.20;
-- existing BSL module;
-- preview/apply;
-- один insert;
-- current byte-stable/parser guarantees;
-- новый resolver и containment closed handle;
-- migration contract для `sourceDir/path`.
+- Configuration + Extension пишутся в Platform XML 8.3.27/2.20;
+- ExternalProcessor/ExternalReport с несколькими артефактами доступны для
+  read-only навигации;
+- существующий BSL-модуль выбирается через `sourceSet + metadataPath`;
+- предпросмотр и применение одной вставки сохраняют побайтовые гарантии,
+  BSL-парсер и повторную проверку closed handle;
+- `sourceDir/path` получают `legacy_target_removed`.
 
-Если адресное ядро задерживается, допустим отдельный независимый hotfix от
-`main`, который разрешает Extension через действующие selectors и не меняет
-публичный контракт. Он не должен быть дочерним PR от PR #266.
-
-Следующие срезы:
-
-1. `source.resolve/children` read-only;
-2. `cfe.patch_method` и его опубликованный `ModulePath`;
-3. ExternalProcessor/ExternalReport для `code.patch`;
-4. exact-target info/validate/edit инструменты;
-5. create-target инструменты;
-6. code intelligence locations.
+Миграция `cfe.patch_method`, exact-target предметных инструментов и
+местоположений code intelligence остаётся отдельными последующими изменениями;
+публичный адрес для них уже определён ADR-0021.
 
 ## Ошибки
 
@@ -479,7 +469,7 @@ alias normalization.
 
 ## Проверки
 
-До принятия ADR:
+При принятии ADR проверено:
 
 - inventory публичных селекторов сверяется с `operation_descriptors.rs` и
   `tool_contracts.rs`;
@@ -490,7 +480,7 @@ alias normalization.
 - `git-grep` fixture содержит адресуемый BSL hit и неадресуемый XML hit;
 - closed handle containment проверяется отдельно от public path arguments.
 
-При реализации:
+Исполняемые проверки покрывают:
 
 - unit tests parser/canonicalizer для ru/en aliases;
 - Configuration/Extension root tests;

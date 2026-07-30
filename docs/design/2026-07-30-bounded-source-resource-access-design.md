@@ -1,7 +1,7 @@
 # Ограниченный низкоуровневый доступ к ресурсам исходников
 
 - Date: `2026-07-30`
-- Status: `draft`
+- Status: `approved`
 - Decision: `ADR-0022`
 
 ## Результат проектирования
@@ -194,7 +194,7 @@ SnapshotResource {
   "sourceSet": "main",
   "metadataPath": "CommonModule.General.Module",
   "scope": "self",
-  "limit": 100
+  "limit": 50
 }
 ```
 
@@ -214,6 +214,7 @@ SnapshotResource {
   "snapshotId": "opaque",
   "sourceSet": "main",
   "target": {
+    "sourceSet": "main",
     "metadataPath": "CommonModule.General.Module",
     "targetKind": "module"
   },
@@ -228,10 +229,13 @@ SnapshotResource {
       "hash": "sha256:...",
       "textProfile": {
         "encoding": "utf-8",
-        "bom": false,
+        "bomPrefixBytes": 0,
         "eol": "crlf"
       },
-      "access": ["read", "replace"]
+      "access": ["read", "replace"],
+      "limits": {
+        "maxReadBytes": 65536
+      }
     }
   ],
   "nextCursor": null
@@ -248,7 +252,7 @@ SnapshotResource {
 {
   "snapshotId": "opaque",
   "cursor": "opaque",
-  "limit": 100
+  "limit": 50
 }
 ```
 
@@ -265,10 +269,12 @@ SnapshotResource {
 }
 ```
 
-Смещение и размер определяются в байтах исходного снимка. Для текста ответ
-дополнительно сообщает границы декодирования, кодировку, BOM и EOL. Поставщик
-не разрывает многобайтовую последовательность: фактический диапазон может быть
-уже запрошенного.
+Смещение и размер определяются в байтах исходного снимка. Ответ возвращает
+точный диапазон байтов от `offset` до меньшего из `offset + limit` и размера
+ресурса. Если весь диапазон является корректным UTF-8, `contentEncoding` равен
+`utf-8`; иначе те же байты возвращаются с `contentEncoding: "base64"` без
+сдвига или сужения диапазона. `textProfile` с `bomPrefixBytes` и EOL описывает
+весь ресурс снимка, а не только прочитанный фрагмент.
 
 Ответ содержит:
 
@@ -319,7 +325,7 @@ SnapshotResource {
 
 ## Единый план preview/apply
 
-Application layer строит типизированный `MutationPlan`:
+Инфраструктурный поставщик строит типизированный `MutationPlan`:
 
 ```text
 MutationPlan {
@@ -337,8 +343,10 @@ MutationPlan {
 }
 ```
 
-План не сериализует `closedHandle`. Preview возвращает diff, диапазоны,
-post-hash и доказательства, но ничего не пишет и не публикует событие.
+План не сериализует `closedHandle`. Preview возвращает `target`, роль, diff,
+диапазоны, pre/post-hash и доказательства, но ничего не пишет и не публикует
+событие. Общий конверт при этом показывает проектируемое событие и влияние на
+кеш в режиме `dry-run`, не сохраняя их.
 
 Apply не принимает от клиента ранее показанный diff как источник истины. Он
 повторно:
@@ -392,9 +400,10 @@ SourceResourcesReplaced {
 }
 ```
 
-Orchestrator инвалидирует workspace cache и provider-specific производные по
-этому событию. Preview, validation failure, stale snapshot, containment denial
-и cancellation не публикуют событие.
+Оркестратор инвалидирует индекс и диагностику BSL по этому событию. Preview
+сообщает то же событие как проектируемое, но не публикует и не сохраняет его;
+validation failure, stale snapshot, containment denial и cancellation не
+сообщают событие.
 
 Если публикация байтов завершилась, но событие не может быть зафиксировано,
 операция не сообщает обычный успех. Реализация обязана либо откатить атомарную
@@ -430,17 +439,13 @@ Orchestrator инвалидирует workspace cache и provider-specific пр�
 
 ## Пределы и отмена
 
-Каждый инструмент имеет явные:
+Действующий профиль ограничен REQ-PERF-SOURCE-BOUNDS:
 
-- максимальное число ресурсов на страницу;
-- максимальный суммарный размер манифеста;
-- максимальный размер read chunk;
-- максимальный размер replacement;
-- deadline;
-- cancellation checkpoints.
-
-Конкретные бюджеты задаются выведенным требованием качества при реализации.
-До появления измерений проект не фиксирует случайные численные значения в ADR.
+- снимок живёт 5 минут и содержит не более 100 ресурсов и 32 МиБ;
+- страница содержит не более 50 ресурсов;
+- read chunk содержит не более 64 КиБ;
+- replacement содержит не более 1 МиБ декодированного UTF-8;
+- экземпляр удерживает не более 64 снимков и 128 МиБ.
 
 Отмена проверяется до чтения, между chunk-операциями, до построения плана и
 перед атомарной публикацией. После начала неделимой публикации провайдер
@@ -460,20 +465,15 @@ Orchestrator инвалидирует workspace cache и provider-specific пр�
 `unica.code.patch`. Перед применением скилл обязан показать preview и назвать,
 почему предметная операция не выражает изменение.
 
-## Этапы реализации
+## Реализованный первый контракт
 
-### Срез 1: снимок и read-only Platform XML
+PR #266 объединяет снимок, read-only Platform XML и один BSL resource:
 
 - доменные типы снимка, ресурса, роли, completeness и limits;
-- `resources` и `read`;
+- `resources`, `read` и `apply`;
 - закрытые handles без физических путей в wire;
-- `self/aggregate/registrations`;
-- pagination и chunking;
-- fixture с полным и неполным агрегатом;
-- без `replace` capability.
-
-### Срез 2: один BSL resource
-
+- `self/aggregate/registrations`, pagination и точное byte chunking;
+- полные и неполные агрегаты;
 - роль `bslModule`;
 - один existing resource;
 - `dryRun=true` по умолчанию;
@@ -484,7 +484,7 @@ Orchestrator инвалидирует workspace cache и provider-specific пр�
 - atomic replace;
 - доменное событие и cache invalidation.
 
-### Срез 3 и далее
+### Последующие расширения
 
 Новая роль записи или второй пишущий provider не подключаются по аналогии.
 Каждый требует:
@@ -502,7 +502,7 @@ Source readability не доказывает writer safety.
 
 ## Проверки проекта
 
-До принятия ADR:
+При принятии ADR проверено:
 
 - схема трёх инструментов сверяется с `INV-MCP-NAMESPACE`,
   `INV-MCP-SURFACE-SYNC` и `INV-PRODUCT-DEVELOPER-OPERATIONS`;
@@ -513,7 +513,7 @@ Source readability не доказывает writer safety.
 - preview/apply используют один план;
 - событие описывает все invalidation keys.
 
-При реализации:
+Исполняемые проверки покрывают:
 
 - forged snapshot/resource pair получает typed отказ;
 - expired revision и hash mismatch ничего не пишут;

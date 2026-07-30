@@ -217,6 +217,13 @@ SCENARIO_SKILLS = {
         "unica.standards.explain",
         "unica.runtime.execute",
     ],
+    "source-access": [
+        "unica.source.resolve",
+        "unica.source.children",
+        "unica.source.resources",
+        "unica.source.read",
+        "unica.source.apply",
+    ],
 }
 
 SCENARIO_REQUIRED_TOKENS = {
@@ -252,6 +259,13 @@ SCENARIO_REQUIRED_TOKENS = {
     "security-auth-crypto": ["OpenID", "сертификаты", "CryptoPro", "секреты"],
     "data-separation": ["tenant-boundaries", "RLS", "разделители", "безопасные запросы"],
     "release-support": ["сравнение/объединение", "Поставка", "поддержка", "совместимость"],
+    "source-access": [
+        "предметн",
+        "fallback",
+        "dryRun",
+        "unica.code.patch",
+        "resource_not_replaceable",
+    ],
 }
 
 REPLACED_RUNTIME_SKILLS = {
@@ -1442,6 +1456,34 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertRegex(text, r"Configuration.{0,120}Extension")
         self.assertIn("sourceSet", text)
         self.assertIn("metadataPath", text)
+
+    def test_source_access_skill_prioritizes_specialized_writers_and_safe_fallback(
+        self,
+    ) -> None:
+        path = self.skill_root() / "source-access" / "SKILL.md"
+        text = path.read_text(encoding="utf-8")
+        writer = text.index("unica.code.patch")
+        inspect = text.index("unica.source.resources")
+        apply = text.index("unica.source.apply")
+
+        self.assertLess(writer, inspect)
+        self.assertLess(inspect, apply)
+        self.assertRegex(text, r"(?is)fallback.{0,240}(?:причин|обоснован)")
+        self.assertRegex(text, r"(?s)dryRun.{0,80}true.{0,400}dryRun.{0,80}false")
+        self.assertIn("complete", text)
+        self.assertIn("expectedHash", text)
+        self.assertIn("resource_not_replaceable", text)
+
+    def test_package_readme_documents_code_patch_target_migration(self) -> None:
+        text = (
+            self.repo_root() / "plugins" / "unica" / "README.md"
+        ).read_text(encoding="utf-8")
+        self.assertRegex(
+            text,
+            r"(?s)\|\s*`path`\s*\+\s*`sourceDir`\s*\|"
+            r"\s*`sourceSet`\s*\+\s*`metadataPath`\s*\|",
+        )
+        self.assertIn("legacy_target_removed", text)
 
     def test_v8_runner_dump_references_keep_incomplete_and_external_routes_preview_only(
         self,

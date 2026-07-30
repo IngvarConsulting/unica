@@ -17,6 +17,12 @@ allowed-tools:
 
 `unica.code.patch` edits only an existing module in a supported canonical layout, with its metadata descriptors present, inside the selected Platform XML Configuration or Extension source set. The physical `*Module.bsl` path is resolved privately from `sourceSet + metadataPath`; the removed `path` and `sourceDir` selector fields fail with `legacy_target_removed`. The tool performs exactly one `insert`; it cannot create a module, batch-edit files, replace or delete text, edit EDT/external files, or synchronize source with an infobase.
 
+If the requested BSL change cannot be expressed as one safe insertion and needs
+a full existing-module replacement, stop this route and use the
+`source-access` skill. It must explain why the specialized
+`unica.code.patch` writer is insufficient, inspect the issued snapshot, and
+preview `unica.source.apply` before any applying call.
+
 ## Parameters
 
 | Parameter | Required | Description |
