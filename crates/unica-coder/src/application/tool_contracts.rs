@@ -706,9 +706,12 @@ pub fn validate_tool_arguments(
     let allowed = allowed_args(&tool).into_iter().collect::<BTreeSet<_>>();
     for key in args.keys() {
         if !allowed.contains(key.as_str()) {
+            let accepted = allowed.iter().copied().collect::<Vec<_>>();
             return Err(format!(
-                "{} does not accept argument `{key}`; use typed MCP arguments only",
-                tool.name
+                "{} does not accept argument `{key}`;{} use typed MCP arguments only; accepted arguments: {}",
+                tool.name,
+                did_you_mean_clause(key, &accepted),
+                accepted.join(", ")
             ));
         }
     }
@@ -1483,8 +1486,14 @@ fn validate_runtime_operation_payload(
             continue;
         }
         if !allowed.contains(&key.as_str()) {
+            let mut accepted = allowed.to_vec();
+            accepted.extend_from_slice(COMMON_ARGS);
+            accepted.sort_unstable();
+            accepted.dedup();
             return Err(format!(
-                "{tool_name} operation `{operation}` does not accept `{key}`"
+                "{tool_name} operation `{operation}` does not accept `{key}`;{} accepted arguments: {}",
+                did_you_mean_clause(key, &accepted),
+                accepted.join(", ")
             ));
         }
     }
@@ -1642,6 +1651,89 @@ fn has_non_empty_array_arg(args: &Map<String, Value>, key: &str) -> bool {
     args.get(key)
         .and_then(Value::as_array)
         .is_some_and(|items| !items.is_empty())
+}
+
+/// Most names an unknown-argument error offers as a correction. A rejected
+/// argument rarely resembles more than a couple of accepted ones, and a longer
+/// list stops reading as a suggestion.
+const ARGUMENT_SUGGESTION_LIMIT: usize = 3;
+
+/// Renders the ` did you mean \`x\` or \`y\`?` fragment, or an empty string when
+/// nothing accepted is close enough to the rejected name. The fragment starts
+/// with a space so callers can splice it straight after their own `;`.
+fn did_you_mean_clause(key: &str, accepted: &[&str]) -> String {
+    let suggestions = closest_argument_names(key, accepted);
+    if suggestions.is_empty() {
+        return String::new();
+    }
+    format!(
+        " did you mean {}?",
+        suggestions
+            .iter()
+            .map(|name| format!("`{name}`"))
+            .collect::<Vec<_>>()
+            .join(" or ")
+    )
+}
+
+/// Accepted names close enough to `key` to be the one the caller meant. A name
+/// differing only in case wins outright: that is a spelling mistake, not a
+/// guess, and mixing it with edit-distance matches would bury it.
+fn closest_argument_names<'a>(key: &str, accepted: &[&'a str]) -> Vec<&'a str> {
+    let needle = key.to_lowercase();
+    let same_spelling = accepted
+        .iter()
+        .copied()
+        .filter(|name| name.to_lowercase() == needle)
+        .take(ARGUMENT_SUGGESTION_LIMIT)
+        .collect::<Vec<_>>();
+    if !same_spelling.is_empty() {
+        return same_spelling;
+    }
+
+    let budget = (needle.chars().count() / 3).max(1);
+    let mut scored = accepted
+        .iter()
+        .copied()
+        .filter_map(|name| {
+            let distance = argument_name_distance(&needle, &name.to_lowercase());
+            (distance <= budget).then_some((distance, name))
+        })
+        .collect::<Vec<_>>();
+    scored.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(right.1)));
+    scored
+        .into_iter()
+        .take(ARGUMENT_SUGGESTION_LIMIT)
+        .map(|(_, name)| name)
+        .collect()
+}
+
+/// Optimal string alignment distance: Levenshtein that also counts a swap of
+/// two adjacent characters as one edit, so `nmae` stays one step from `name`.
+fn argument_name_distance(left: &str, right: &str) -> usize {
+    let left = left.chars().collect::<Vec<_>>();
+    let right = right.chars().collect::<Vec<_>>();
+    let mut before_previous = vec![0usize; right.len() + 1];
+    let mut previous = (0..=right.len()).collect::<Vec<_>>();
+    let mut current = vec![0usize; right.len() + 1];
+
+    for i in 0..left.len() {
+        current[0] = i + 1;
+        for j in 0..right.len() {
+            let substitution = usize::from(left[i] != right[j]);
+            let mut distance = (previous[j] + substitution)
+                .min(previous[j + 1] + 1)
+                .min(current[j] + 1);
+            if i > 0 && j > 0 && left[i] == right[j - 1] && left[i - 1] == right[j] {
+                distance = distance.min(before_previous[j - 1] + 1);
+            }
+            current[j + 1] = distance;
+        }
+        std::mem::swap(&mut before_previous, &mut previous);
+        std::mem::swap(&mut previous, &mut current);
+    }
+
+    previous[right.len()]
 }
 
 fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
@@ -3052,6 +3144,114 @@ mod tests {
         let error = validate_tool_arguments(tool, &args, false).unwrap_err();
 
         assert!(error.contains("does not accept argument `unknown`"));
+    }
+
+    fn reject_argument(tool_name: &str, argument: &str) -> String {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == tool_name)
+            .unwrap();
+        let args = Map::from_iter([(argument.to_string(), json!("value"))]);
+
+        validate_tool_arguments(tool, &args, false).unwrap_err()
+    }
+
+    #[test]
+    fn unknown_argument_error_lists_every_published_argument() {
+        // The rejection has to answer "then what does it take?" on the spot;
+        // otherwise the caller has to re-read `inputSchema` from `tools/list`.
+        for tool in tools() {
+            let error = reject_argument(tool.name, "definitelyNotAnArgument");
+            let schema = input_schema_for_tool(&tool);
+            let published = schema["properties"].as_object().unwrap();
+
+            for name in published.keys() {
+                assert!(
+                    error.contains(name.as_str()),
+                    "{} rejection omits accepted argument `{name}`: {error}",
+                    tool.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_argument_error_suggests_the_argument_spelled_differently() {
+        let error = reject_argument("unica.code.definition", "SourceDir");
+
+        assert!(
+            error.contains("did you mean `sourceDir`?"),
+            "missing case-only suggestion: {error}"
+        );
+    }
+
+    #[test]
+    fn unknown_argument_error_suggests_the_nearest_argument() {
+        let error = reject_argument("unica.code.definition", "moduleHnit");
+
+        assert!(
+            error.contains("did you mean `moduleHint`?"),
+            "missing near-miss suggestion: {error}"
+        );
+    }
+
+    #[test]
+    fn unknown_argument_error_omits_a_suggestion_without_a_near_match() {
+        // `query` names a real argument of `unica.code.search`, so the caller is
+        // wrong about the tool rather than about the spelling. Guessing here
+        // would send them to an unrelated argument.
+        let error = reject_argument("unica.code.definition", "query");
+
+        assert!(
+            !error.contains("did you mean"),
+            "unexpected suggestion for an unrelated name: {error}"
+        );
+        assert!(
+            error.contains(
+                "accepted arguments: confirm, cwd, dryRun, limit, moduleHint, name, sourceDir"
+            ),
+            "missing accepted arguments: {error}"
+        );
+    }
+
+    #[test]
+    fn unknown_runtime_operation_argument_error_lists_accepted_arguments() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.runtime.execute")
+            .unwrap();
+        // `sourceSets` belongs to the tool but not to `build`, so only the
+        // operation-scoped check rejects it.
+        let args = Map::from_iter([
+            ("operation".to_string(), json!("build")),
+            ("sourceSets".to_string(), json!(["main"])),
+        ]);
+
+        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
+
+        assert!(
+            error.contains("operation `build` does not accept `sourceSets`"),
+            "unexpected rejection: {error}"
+        );
+        assert!(
+            error.contains("did you mean `sourceSet`?"),
+            "missing near-miss suggestion: {error}"
+        );
+        for name in [
+            "confirm",
+            "config",
+            "cwd",
+            "dryRun",
+            "fullRebuild",
+            "operation",
+            "sourceSet",
+            "workdir",
+        ] {
+            assert!(
+                error.contains(name),
+                "rejection omits accepted argument `{name}`: {error}"
+            );
+        }
     }
 
     #[test]
