@@ -971,7 +971,9 @@ mod tests {
         // Cancellation only reaches the call from inside the drain, so the
         // deadline was already running when this arrives: everything measured
         // from here is budget the call spent before provider cleanup starts.
-        cancelled_rx.recv().unwrap();
+        cancelled_rx
+            .recv_timeout(AGGREGATE_GRACE)
+            .expect("cancellation did not reach the tracked call within the aggregate grace");
         let held = Instant::now();
         std::thread::sleep(Duration::from_millis(20));
         release_tx.send(()).unwrap();
@@ -983,7 +985,7 @@ mod tests {
             "the drain gave up while the call was still tracked"
         );
         assert!(
-            provider_budget.unwrap() <= AGGREGATE_GRACE - held,
+            provider_budget.unwrap() <= AGGREGATE_GRACE.saturating_sub(held),
             "provider cleanup received a fresh grace instead of the aggregate remainder"
         );
 
