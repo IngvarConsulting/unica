@@ -399,9 +399,9 @@ pub(crate) fn open_directory_nofollow(path: &Path) -> io::Result<fs::File> {
     use std::ptr;
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
     use windows_sys::Win32::Storage::FileSystem::{
-        CreateFileW, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
-        FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
-        FILE_SHARE_WRITE, OPEN_EXISTING, READ_CONTROL,
+        CreateFileW, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, READ_CONTROL,
     };
 
     let path = windows_api_path(path)?;
@@ -422,10 +422,17 @@ pub(crate) fn open_directory_nofollow(path: &Path) -> io::Result<fs::File> {
     }
     // SAFETY: CreateFileW returned an owned, valid file handle.
     let file = unsafe { fs::File::from_raw_handle(handle) };
-    if windows_file_information(&file)?.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+    let attributes = windows_file_information(&file)?.dwFileAttributes;
+    if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "directory path resolves to a reparse point",
+        ));
+    }
+    if attributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "directory path does not resolve to a directory",
         ));
     }
     Ok(file)
@@ -940,6 +947,19 @@ mod tests {
                 error.kind(),
                 io::ErrorKind::InvalidInput | io::ErrorKind::PermissionDenied
             ));
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn directory_open_rejects_an_ordinary_file() {
+            let root = unique_temp_root("directory-file");
+            fs::create_dir_all(&root).unwrap();
+            let file = root.join("not-a-directory");
+            fs::write(&file, b"not a directory").unwrap();
+
+            let error = open_directory_nofollow(&file).unwrap_err();
+
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
             fs::remove_dir_all(root).unwrap();
         }
 
