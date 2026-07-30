@@ -316,7 +316,7 @@ pub fn tools() -> Vec<ToolSpec> {
             name: "unica.code.outline",
             description: "Read compact BSL module outline from the current source file.",
             mutating: false,
-            // ADR-0020: the outline is parsed from the file on disk, so this tool
+            // ADR-0021: the outline is parsed from the file on disk, so this tool
             // neither reads nor writes any workspace cache.
             cache_access: CacheAccess {
                 reads: &[],
@@ -4840,7 +4840,7 @@ mod tests {
 
     #[test]
     fn code_outline_tool_declares_no_cache_access() {
-        // ADR-0020: the outline is parsed from the current file, so the envelope
+        // ADR-0021: the outline is parsed from the current file, so the envelope
         // must not claim `bsl_index` as an input of this tool — neither as read
         // nor as written.
         let tool = tools()

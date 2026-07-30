@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 const SEARCH_CAPABILITIES: &[ProviderCapability] = &[ProviderCapability::Search];
-/// ADR-0020: the outline is built from the current BSL file by the pinned
+/// ADR-0021: the outline is built from the current BSL file by the pinned
 /// `bsl-parser`, so it belongs to this provider and not to the index.
 const BSL_ANALYZER_CAPABILITIES: &[ProviderCapability] =
     &[ProviderCapability::Search, ProviderCapability::Outline];
@@ -1582,7 +1582,7 @@ mod tests {
 
     #[test]
     fn the_outline_capability_belongs_to_the_current_source_provider() {
-        // ADR-0020: the outline is proved from the BSL file on disk, so the
+        // ADR-0021: the outline is proved from the BSL file on disk, so the
         // index-backed provider must not claim it and the registry must not be
         // able to route it there.
         assert!(!RlmProvider::new()

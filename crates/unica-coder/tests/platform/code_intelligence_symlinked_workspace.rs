@@ -40,7 +40,7 @@ fn code_intelligence_accepts_source_paths_reached_through_a_symlinked_workspace(
 
     match result {
         Ok(outcome) => {
-            // The outline is proved from the current file (ADR-0020), so the point
+            // The outline is proved from the current file (ADR-0021), so the point
             // of this test is only that it never fails on path containment.
             let rendered = format!("{} {:?}", outcome.summary, outcome.errors);
             assert!(

@@ -175,7 +175,7 @@ impl<'a> RlmNavigationAdapter<'a> {
     }
 }
 
-/// ADR-0020: the index serves definition and object profile. The outline is
+/// ADR-0021: the index serves definition and object profile. The outline is
 /// built from the current BSL file, so it has no RLM operation at all and asking
 /// for one is a routing defect rather than a runtime condition.
 fn operation_for_request(
@@ -817,7 +817,7 @@ mod tests {
 
     #[test]
     fn the_index_adapter_refuses_to_serve_the_outline() {
-        // ADR-0020: the outline is owned by the current-source provider. Reaching
+        // ADR-0021: the outline is owned by the current-source provider. Reaching
         // this adapter with it is a routing defect, so it fails before any RLM
         // work rather than answering from the index.
         let client = RecordingClient {

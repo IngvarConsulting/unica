@@ -610,7 +610,7 @@ mod tests {
 
     #[test]
     fn commented_out_declaration_in_a_bsp_header_is_not_a_method() {
-        // The regression that motivated ADR-0020: the shipped index reads
+        // The regression retained by ADR-0021: the shipped index reads
         // `// Процедура ОпределитьНастройки(...)` as a real exported method and
         // loses the real one. A syntax tree cannot make that mistake.
         let text = concat!(
