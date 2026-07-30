@@ -84,8 +84,10 @@ mod windows_anchor_tests {
         capture_directory_snapshot, capture_tree_child_nofollow,
         capture_windows_immutable_platform_children, parse_windows_local_platform_path,
         remove_bound_directory_child, rename_child_no_replace, secure_path_is_absent,
-        secure_read_regular_file_snapshot, unlink_bound_regular_child, with_secure_read_hook,
-        with_tree_open_hook, DirectoryAnchor, PrivateDumpStage, TreeEntryKind, TreeSnapshot,
+        secure_read_regular_file_snapshot, unlink_bound_regular_child,
+        with_private_cleanup_failpoint, with_private_creation_failpoint, with_secure_read_hook,
+        with_tree_open_hook, DirectoryAnchor, PrivateCleanupCheckpoint, PrivateCreationCheckpoint,
+        PrivateDumpStage, TreeEntryKind, TreeSnapshot,
     };
     use crate::infrastructure::platform::filesystem::{
         file_identity, open_directory_nofollow, verify_owner_only_acl,
@@ -657,6 +659,166 @@ mod windows_anchor_tests {
         stage.cleanup_now().unwrap();
 
         assert!(!private_root.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_effective_config_scrub_failure_keeps_cleanup_retry_and_drop_safe() {
+        let root = unique_temp_root("private-stage-scrub-cleanup-retry");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let target_parent = DirectoryAnchor::capture_exact(&workspace).unwrap();
+        let mut stage = PrivateDumpStage::create(&target_parent).unwrap();
+        stage
+            .write_effective_config(&serde_yaml::Value::String("secret".to_string()))
+            .unwrap();
+        let private_root = stage.root.clone();
+
+        let drop_result = with_private_cleanup_failpoint(
+            PrivateCleanupCheckpoint::BeforeEffectiveConfigScrub,
+            || {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    for _ in 0..2 {
+                        let error = stage.cleanup_now().expect_err(
+                            "faulted effective-config scrubbing must fail cleanup without advancing anchors",
+                        );
+                        assert!(error.contains("injected"), "{error}");
+                        assert!(stage.effective_config_handle.is_some());
+                        assert!(stage.execution_anchor.is_some());
+                    }
+                    drop(stage);
+                }))
+            },
+        );
+
+        assert!(
+            drop_result.is_ok(),
+            "Drop must retry cleanup without panicking after a scrub failure"
+        );
+        fs::remove_dir_all(private_root).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_effective_config_scrub_failure_keeps_recovery_retry_and_drop_safe() {
+        let root = unique_temp_root("private-stage-scrub-recovery-retry");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let target_parent = DirectoryAnchor::capture_exact(&workspace).unwrap();
+        let mut stage = PrivateDumpStage::create(&target_parent).unwrap();
+        stage
+            .write_effective_config(&serde_yaml::Value::String("secret".to_string()))
+            .unwrap();
+        let private_root = stage.root.clone();
+
+        let drop_result = with_private_cleanup_failpoint(
+            PrivateCleanupCheckpoint::BeforeEffectiveConfigScrub,
+            || {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    for _ in 0..2 {
+                        let error = stage.preserve_for_recovery().expect_err(
+                            "faulted effective-config scrubbing must fail recovery preservation without advancing anchors",
+                        );
+                        assert!(error.contains("injected"), "{error}");
+                        assert!(stage.effective_config_handle.is_some());
+                        assert!(stage.execution_anchor.is_some());
+                    }
+                    drop(stage);
+                }))
+            },
+        );
+
+        assert!(
+            drop_result.is_ok(),
+            "Drop must retry cleanup without panicking after recovery preservation failed"
+        );
+        fs::remove_dir_all(private_root).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_private_stage_cleanup_requires_parent_relative_root_absence() {
+        let root = unique_temp_root("private-stage-root-absence");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let target_parent = DirectoryAnchor::capture_exact(&workspace).unwrap();
+        let mut stage = PrivateDumpStage::create(&target_parent).unwrap();
+        let private_root = stage.root.clone();
+        let extra_root_handle = open_directory_nofollow(&private_root).unwrap();
+
+        let error = stage
+            .cleanup_now()
+            .expect_err("a delete-pending root is not proven absent");
+
+        assert!(
+            error.contains("absen") || error.contains("pending"),
+            "{error}"
+        );
+        assert!(!stage.root_removed);
+        assert!(stage.cleanup_on_drop);
+        drop(extra_root_handle);
+
+        stage.cleanup_now().unwrap();
+
+        assert!(stage.root_removed);
+        assert!(!stage.cleanup_on_drop);
+        assert!(!private_root.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_failure_after_execution_creation_leaves_no_private_root() {
+        let root = unique_temp_root("private-stage-partial-execution");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let target_parent = DirectoryAnchor::capture_exact(&workspace).unwrap();
+
+        let result = with_private_creation_failpoint(
+            PrivateCreationCheckpoint::AfterExecutionCreation,
+            || PrivateDumpStage::create(&target_parent),
+        );
+
+        let error = match result {
+            Ok(stage) => {
+                drop(stage);
+                panic!("construction unexpectedly passed its injected execution checkpoint")
+            }
+            Err(error) => error,
+        };
+        assert!(error.contains("injected"), "{error}");
+        assert!(fs::read_dir(&workspace).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".unica-dump-guard-")));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_failure_after_recovery_creation_leaves_no_private_root() {
+        let root = unique_temp_root("private-stage-partial-recovery");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let target_parent = DirectoryAnchor::capture_exact(&workspace).unwrap();
+
+        let result = with_private_creation_failpoint(
+            PrivateCreationCheckpoint::AfterRecoveryCreation,
+            || PrivateDumpStage::create(&target_parent),
+        );
+
+        let error = match result {
+            Ok(stage) => {
+                drop(stage);
+                panic!("construction unexpectedly passed its injected recovery checkpoint")
+            }
+            Err(error) => error,
+        };
+        assert!(error.contains("injected"), "{error}");
+        assert!(fs::read_dir(&workspace).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".unica-dump-guard-")));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -3251,6 +3413,8 @@ struct PrivateDumpStage {
     #[cfg(windows)]
     root_removed: bool,
     #[cfg(windows)]
+    root_disposition_requested: bool,
+    #[cfg(windows)]
     execution_removed: bool,
     #[cfg(windows)]
     recovery_removed: bool,
@@ -3273,6 +3437,19 @@ impl PrivateDumpStage {
         let execution_anchor = match root_anchor.create_child(OsStr::new("execution"), &execution) {
             Ok(anchor) => anchor,
             Err(error) => {
+                #[cfg(windows)]
+                return Err(windows_private_creation_error(
+                    &parent_anchor,
+                    root_anchor,
+                    &root_name,
+                    &root,
+                    None,
+                    &execution,
+                    None,
+                    &recovery,
+                    error,
+                ));
+                #[cfg(not(windows))]
                 return Err(private_creation_error(
                     &parent_anchor,
                     &root_anchor,
@@ -3282,9 +3459,38 @@ impl PrivateDumpStage {
                 ));
             }
         };
+        #[cfg(windows)]
+        if let Err(error) =
+            run_private_creation_failpoint(PrivateCreationCheckpoint::AfterExecutionCreation)
+        {
+            return Err(windows_private_creation_error(
+                &parent_anchor,
+                root_anchor,
+                &root_name,
+                &root,
+                Some(execution_anchor),
+                &execution,
+                None,
+                &recovery,
+                error,
+            ));
+        }
         let recovery_anchor = match root_anchor.create_child(OsStr::new("recovery"), &recovery) {
             Ok(anchor) => anchor,
             Err(error) => {
+                #[cfg(windows)]
+                return Err(windows_private_creation_error(
+                    &parent_anchor,
+                    root_anchor,
+                    &root_name,
+                    &root,
+                    Some(execution_anchor),
+                    &execution,
+                    None,
+                    &recovery,
+                    error,
+                ));
+                #[cfg(not(windows))]
                 return Err(private_creation_error(
                     &parent_anchor,
                     &root_anchor,
@@ -3294,7 +3500,36 @@ impl PrivateDumpStage {
                 ));
             }
         };
+        #[cfg(windows)]
+        if let Err(error) =
+            run_private_creation_failpoint(PrivateCreationCheckpoint::AfterRecoveryCreation)
+        {
+            return Err(windows_private_creation_error(
+                &parent_anchor,
+                root_anchor,
+                &root_name,
+                &root,
+                Some(execution_anchor),
+                &execution,
+                Some(recovery_anchor),
+                &recovery,
+                error,
+            ));
+        }
         if let Err(error) = parent_anchor.verify_path_binding() {
+            #[cfg(windows)]
+            return Err(windows_private_creation_error(
+                &parent_anchor,
+                root_anchor,
+                &root_name,
+                &root,
+                Some(execution_anchor),
+                &execution,
+                Some(recovery_anchor),
+                &recovery,
+                error,
+            ));
+            #[cfg(not(windows))]
             return Err(private_creation_error(
                 &parent_anchor,
                 &root_anchor,
@@ -3324,6 +3559,8 @@ impl PrivateDumpStage {
             recovery_identity,
             #[cfg(windows)]
             root_removed: false,
+            #[cfg(windows)]
+            root_disposition_requested: false,
             #[cfg(windows)]
             execution_removed: false,
             #[cfg(windows)]
@@ -3410,6 +3647,8 @@ impl PrivateDumpStage {
         let Some(file) = self.effective_config_handle.as_ref() else {
             return Ok(());
         };
+        #[cfg(windows)]
+        run_private_cleanup_failpoint(PrivateCleanupCheckpoint::BeforeEffectiveConfigScrub)?;
         let identity = file_identity(file).map_err(|error| {
             format!(
                 "private effective config identity check failed for {}: {error}; secret-bearing private data may remain",
@@ -3480,10 +3719,8 @@ impl PrivateDumpStage {
 
     #[cfg(windows)]
     fn preserve_for_recovery(&mut self) -> Result<(), String> {
+        self.remove_effective_config()?;
         let mut errors = Vec::new();
-        if let Err(error) = self.remove_effective_config() {
-            errors.push(error);
-        }
         let root_directory =
             self.root_anchor().directory.try_clone().map_err(|error| {
                 format!("failed to clone private root anchor for cleanup: {error}")
@@ -3563,10 +3800,8 @@ impl PrivateDumpStage {
         if !self.cleanup_on_drop {
             return Ok(());
         }
+        self.remove_effective_config()?;
         let mut errors = Vec::new();
-        if let Err(error) = self.remove_effective_config() {
-            errors.push(error);
-        }
 
         if self.root_anchor.is_none() && (!self.execution_removed || !self.recovery_removed) {
             errors.push(
@@ -3615,7 +3850,7 @@ impl PrivateDumpStage {
                     ));
                 }
             }
-            if errors.is_empty() {
+            if errors.is_empty() && !self.root_disposition_requested {
                 self.root_anchor.take();
                 match remove_bound_directory_child(
                     &self.parent_anchor.directory,
@@ -3623,11 +3858,21 @@ impl PrivateDumpStage {
                     self.root_identity,
                     &self.root,
                 ) {
-                    Ok(()) => self.root_removed = true,
+                    Ok(()) => self.root_disposition_requested = true,
                     Err(error) => errors.push(format!(
                         "private dump root cleanup failed for {}: {error}",
                         self.root.display()
                     )),
+                }
+            }
+            if errors.is_empty() && self.root_disposition_requested {
+                match prove_windows_child_absent(
+                    &self.parent_anchor.directory,
+                    &self.root_name,
+                    &self.root,
+                ) {
+                    Ok(()) => self.root_removed = true,
+                    Err(error) => errors.push(error),
                 }
             }
         }
@@ -3638,6 +3883,28 @@ impl PrivateDumpStage {
         } else {
             Err(errors.join("; "))
         }
+    }
+}
+
+#[cfg(windows)]
+fn prove_windows_child_absent(
+    parent: &File,
+    name: &OsStr,
+    display_path: &Path,
+) -> Result<(), String> {
+    match open_any_child_nofollow(parent, name) {
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Ok(child) => {
+            drop(child);
+            Err(format!(
+                "private path is still present after cleanup; absence was not proven: {}",
+                display_path.display()
+            ))
+        }
+        Err(error) => Err(format!(
+            "failed to prove private path absent through its retained parent anchor {}: {error}",
+            display_path.display()
+        )),
     }
 }
 
@@ -3662,6 +3929,91 @@ fn release_anchor_and_remove_private_child(
     Ok(())
 }
 
+#[cfg(windows)]
+fn windows_private_creation_error(
+    parent_anchor: &DirectoryAnchor,
+    root_anchor: DirectoryAnchor,
+    root_name: &OsStr,
+    root: &Path,
+    mut execution_anchor: Option<DirectoryAnchor>,
+    execution: &Path,
+    mut recovery_anchor: Option<DirectoryAnchor>,
+    recovery: &Path,
+    primary: String,
+) -> String {
+    let root_identity = root_anchor.identity;
+    let mut cleanup_errors = Vec::new();
+
+    if let Some(execution_identity) = execution_anchor.as_ref().map(|anchor| anchor.identity) {
+        let mut removed = false;
+        if let Err(error) = release_anchor_and_remove_private_child(
+            &root_anchor.directory,
+            &mut execution_anchor,
+            &mut removed,
+            OsStr::new("execution"),
+            execution_identity,
+            execution,
+        ) {
+            cleanup_errors.push(format!(
+                "private execution cleanup failed during construction rollback {}: {error}",
+                execution.display()
+            ));
+        }
+    }
+    execution_anchor.take();
+
+    if let Some(recovery_identity) = recovery_anchor.as_ref().map(|anchor| anchor.identity) {
+        let mut removed = false;
+        if let Err(error) = release_anchor_and_remove_private_child(
+            &root_anchor.directory,
+            &mut recovery_anchor,
+            &mut removed,
+            OsStr::new("recovery"),
+            recovery_identity,
+            recovery,
+        ) {
+            cleanup_errors.push(format!(
+                "private recovery cleanup failed during construction rollback {}: {error}",
+                recovery.display()
+            ));
+        }
+    }
+    recovery_anchor.take();
+
+    if let Err(error) = remove_directory_contents_nofollow(&root_anchor.directory, root) {
+        cleanup_errors.push(format!(
+            "private dump contents cleanup failed for {}: {error}",
+            root.display()
+        ));
+    }
+    drop(root_anchor);
+
+    let root_disposition_requested = match remove_bound_directory_child(
+        &parent_anchor.directory,
+        root_name,
+        root_identity,
+        root,
+    ) {
+        Ok(()) => true,
+        Err(error) => {
+            cleanup_errors.push(format!(
+                "private dump root cleanup failed for {}: {error}",
+                root.display()
+            ));
+            false
+        }
+    };
+    if let Err(error) = prove_windows_child_absent(&parent_anchor.directory, root_name, root) {
+        cleanup_errors.push(error);
+    }
+    if root_disposition_requested && cleanup_errors.is_empty() {
+        primary
+    } else {
+        format!("{primary}; {}", cleanup_errors.join("; "))
+    }
+}
+
+#[cfg(not(windows))]
 fn private_creation_error(
     parent_anchor: &DirectoryAnchor,
     root_anchor: &DirectoryAnchor,
@@ -5867,6 +6219,19 @@ enum PublicationCheckpoint {
     AfterStageInstall,
 }
 
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrivateCleanupCheckpoint {
+    BeforeEffectiveConfigScrub,
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrivateCreationCheckpoint {
+    AfterExecutionCreation,
+    AfterRecoveryCreation,
+}
+
 #[cfg(test)]
 type PublicationHook = (PublicationCheckpoint, Box<dyn FnOnce()>);
 #[cfg(test)]
@@ -5887,6 +6252,10 @@ thread_local! {
     static TEST_TREE_OPEN_HOOK: RefCell<Option<PathHook>> = const { RefCell::new(None) };
     static TEST_PRIVATE_CREATE_HOOK: RefCell<Option<PathHook>> = const { RefCell::new(None) };
     static TEST_TARGET_PARENT_CAPTURE_HOOK: RefCell<Option<PathHook>> = const { RefCell::new(None) };
+    #[cfg(windows)]
+    static TEST_PRIVATE_CLEANUP_FAILPOINT: RefCell<Option<PrivateCleanupCheckpoint>> = const { RefCell::new(None) };
+    #[cfg(windows)]
+    static TEST_PRIVATE_CREATION_FAILPOINT: RefCell<Option<PrivateCreationCheckpoint>> = const { RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -6016,6 +6385,66 @@ fn with_target_parent_capture_hook<T>(
     let previous = TEST_TARGET_PARENT_CAPTURE_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
     let _reset = Reset(previous);
     action()
+}
+
+#[cfg(all(test, windows))]
+fn with_private_cleanup_failpoint<T>(
+    checkpoint: PrivateCleanupCheckpoint,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<PrivateCleanupCheckpoint>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_PRIVATE_CLEANUP_FAILPOINT.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+    let previous = TEST_PRIVATE_CLEANUP_FAILPOINT.with(|slot| slot.replace(Some(checkpoint)));
+    let _reset = Reset(previous);
+    action()
+}
+
+#[cfg(all(test, windows))]
+fn with_private_creation_failpoint<T>(
+    checkpoint: PrivateCreationCheckpoint,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<PrivateCreationCheckpoint>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_PRIVATE_CREATION_FAILPOINT.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+    let previous = TEST_PRIVATE_CREATION_FAILPOINT.with(|slot| slot.replace(Some(checkpoint)));
+    let _reset = Reset(previous);
+    action()
+}
+
+#[cfg(windows)]
+fn run_private_cleanup_failpoint(checkpoint: PrivateCleanupCheckpoint) -> Result<(), String> {
+    #[cfg(test)]
+    if TEST_PRIVATE_CLEANUP_FAILPOINT.with(|slot| slot.borrow().as_ref() == Some(&checkpoint)) {
+        return Err(format!(
+            "injected private dump cleanup failure at {checkpoint:?}"
+        ));
+    }
+    let _ = checkpoint;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn run_private_creation_failpoint(checkpoint: PrivateCreationCheckpoint) -> Result<(), String> {
+    #[cfg(test)]
+    if TEST_PRIVATE_CREATION_FAILPOINT.with(|slot| slot.borrow().as_ref() == Some(&checkpoint)) {
+        return Err(format!(
+            "injected private dump creation failure at {checkpoint:?}"
+        ));
+    }
+    let _ = checkpoint;
+    Ok(())
 }
 
 fn run_private_create_hook(_path: &Path) {
