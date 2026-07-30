@@ -6,12 +6,13 @@ use crate::domain::format_profile::{
     classify_root_version, ExportFormatVersion, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
 };
 use crate::domain::source_target::{
-    MetadataAddress, SourceTarget, SourceTargetError, SourceTargetErrorCode,
+    MetadataAddress, SourceTarget, SourceTargetError, SourceTargetErrorCode, TargetKind,
     PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform_xml_source_targets::{
     resolve_platform_xml_target, revalidate_platform_xml_target, ClosedPlatformXmlTarget,
+    TargetKindPolicy,
 };
 use crate::infrastructure::source_roots::normalize_path_identity;
 use roxmltree::Document;
@@ -1940,8 +1941,8 @@ pub(crate) fn resolve_code_patch_guard_path(
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
     let target = code_patch_source_target(args).map_err(|error| error.to_string())?;
-    let resolution =
-        resolve_platform_xml_target(context, &target).map_err(|error| error.to_string())?;
+    let resolution = resolve_platform_xml_target(context, &target, TargetKindPolicy::ModuleOnly)
+        .map_err(|error| error.to_string())?;
     revalidate_platform_xml_target(context, &resolution.handle)
         .map(|target| target.path)
         .map_err(|error| error.to_string())
@@ -1952,6 +1953,15 @@ pub(crate) fn guard_code_patch_resolved_target(
     handle: &ClosedPlatformXmlTarget,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
+    // Belt and braces around the resolver policy: a handle that is not a module
+    // never reaches a writer, whatever produced it.
+    if handle.target_kind() != TargetKind::Module {
+        return Err(SourceTargetError::new(
+            SourceTargetErrorCode::TargetKindMismatch,
+            "metadataPath does not identify a module terminal",
+        )
+        .to_string());
+    }
     let target = revalidate_platform_xml_target(context, handle)
         .map_err(|error| error.to_string())?
         .path;

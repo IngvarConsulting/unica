@@ -9,12 +9,14 @@ use crate::domain::source_resources::{
     SourceResourceErrorCode, TextEncoding, TextProfile, SOURCE_MANIFEST_RESOURCE_MAX,
     SOURCE_READ_LIMIT_MAX, SOURCE_RESOURCE_PAGE_LIMIT_MAX, SOURCE_SNAPSHOT_TTL_SECONDS,
 };
-use crate::domain::source_target::{ResolvedTarget, TargetKind};
+use crate::domain::source_target::{
+    ResolvedTarget, SourceTargetError, SourceTargetErrorCode, TargetKind,
+};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
 use crate::infrastructure::platform::secure_read::read_root_relative_regular_file;
 use crate::infrastructure::platform_xml_source_targets::{
-    platform_xml_resource_evidence, resolve_platform_xml_target,
+    platform_xml_resource_evidence, resolve_platform_xml_target, TargetKindPolicy,
 };
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -231,12 +233,9 @@ impl PlatformXmlResourceProvider {
                 "manifest page limit is outside the public bound",
             ));
         }
-        let resolution = resolve_platform_xml_target(context, &request.target).map_err(|_| {
-            public_error(
-                SourceResourceErrorCode::SourceUnavailable,
-                "logical source target is unavailable",
-            )
-        })?;
+        let resolution =
+            resolve_platform_xml_target(context, &request.target, TargetKindPolicy::Any)
+                .map_err(public_target_error)?;
         self.run_phase_hook();
         self.check_cancelled(cancellation)?;
         let evidence =
@@ -263,6 +262,20 @@ impl PlatformXmlResourceProvider {
                 );
                 (candidates, ResourceCompleteness::Partial)
             }
+            (TargetKind::MetadataObject, ResourceScope::SelfOnly) => (
+                vec![(evidence.target_path, ResourceRole::MetadataDescriptor)],
+                ResourceCompleteness::Complete,
+            ),
+            (TargetKind::MetadataObject, ResourceScope::Aggregate) => {
+                let mut candidates = vec![(evidence.target_path, ResourceRole::MetadataDescriptor)];
+                candidates.extend(
+                    evidence
+                        .module_paths
+                        .into_iter()
+                        .map(|path| (path, ResourceRole::BslModule)),
+                );
+                (candidates, ResourceCompleteness::Partial)
+            }
             (_, ResourceScope::Registrations) => (
                 vec![(evidence.registration_path, ResourceRole::Registration)],
                 ResourceCompleteness::Partial,
@@ -278,7 +291,6 @@ impl PlatformXmlResourceProvider {
                 scan_root_resources(&evidence.source_root, cancellation)?,
                 ResourceCompleteness::Partial,
             ),
-            _ => (Vec::new(), ResourceCompleteness::Unavailable),
         };
         self.check_cancelled(cancellation)?;
 
@@ -804,6 +816,26 @@ fn public_error(code: SourceResourceErrorCode, message: impl Into<String>) -> So
     SourceResourceError::new(code, message)
 }
 
+/// Carries the resolver's own verdict outward. Collapsing every refusal into
+/// `source_unavailable` reads as a transient outage when the real answer is
+/// "this address is unknown" or "this scope is not supported for that target".
+/// The resolver's message is logical by construction and names no path.
+fn public_target_error(error: SourceTargetError) -> SourceResourceError {
+    let code = match error.code {
+        SourceTargetErrorCode::SourceSetRequired
+        | SourceTargetErrorCode::MetadataAddressInvalid
+        | SourceTargetErrorCode::AddressProfileUnsupported
+        // This surface accepts every address kind the profile renders, so a
+        // kind mismatch cannot reach it; the arm stays for totality.
+        | SourceTargetErrorCode::TargetKindMismatch => SourceResourceErrorCode::InvalidRequest,
+        SourceTargetErrorCode::SourceSetNotFound
+        | SourceTargetErrorCode::SourceRootNotAddressable
+        | SourceTargetErrorCode::MetadataAddressNotFound => SourceResourceErrorCode::TargetNotFound,
+        SourceTargetErrorCode::ContainmentDenied => SourceResourceErrorCode::ContainmentDenied,
+    };
+    public_error(code, error.message)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -880,6 +912,17 @@ mod tests {
             )
             .unwrap();
             fs::write(source.join("CommonModules/Shared/Ext/Module.bsl"), module).unwrap();
+            fs::create_dir_all(source.join("Catalogs/Items/Ext")).unwrap();
+            fs::write(
+                source.join("Catalogs/Items.xml"),
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Items</Name></Properties></Catalog></MetaDataObject>"#,
+            )
+            .unwrap();
+            fs::write(
+                source.join("Catalogs/Items/Ext/ObjectModule.bsl"),
+                b"Procedure BeforeWrite()\nEndProcedure\n",
+            )
+            .unwrap();
             fs::create_dir_all(source.join("Templates/Blob/Ext")).unwrap();
             fs::write(
                 source.join("Templates/Blob/Ext/Template.bin"),
@@ -905,6 +948,24 @@ mod tests {
                             "CommonModule.Shared.Module",
                         )
                         .unwrap(),
+                    ),
+                },
+                scope,
+                limit,
+            })
+        }
+
+        fn object_request(
+            &self,
+            address: &str,
+            scope: ResourceScope,
+            limit: usize,
+        ) -> SourceResourcesRequest {
+            SourceResourcesRequest::Open(OpenResourceSnapshotRequest {
+                target: SourceTarget {
+                    source_set: "main".to_string(),
+                    metadata_path: Some(
+                        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, address).unwrap(),
                     ),
                 },
                 scope,
@@ -964,6 +1025,141 @@ mod tests {
             assert!(!id.contains("platform"));
             assert!(!id.contains(fixture.root.to_string_lossy().as_ref()));
         }
+    }
+
+    #[test]
+    fn source_resources_object_self_snapshot_returns_the_descriptor() {
+        let fixture = Fixture::new(b"Procedure Run()\nEndProcedure\n");
+        let (provider, _) = provider();
+
+        let page = provider
+            .resources(
+                fixture.object_request("Catalog.Items", ResourceScope::SelfOnly, 50),
+                &fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        assert_eq!(page.completeness, ResourceCompleteness::Complete);
+        assert_eq!(page.resources.len(), 1);
+        assert_eq!(page.resources[0].role, ResourceRole::MetadataDescriptor);
+        assert_eq!(page.resources[0].access, [ResourceAccess::Read]);
+        assert_eq!(page.target.target_kind, TargetKind::MetadataObject);
+        assert_eq!(
+            page.target.metadata_path.as_ref().map(|path| path.as_str()),
+            Some("Catalog.Items")
+        );
+    }
+
+    #[test]
+    fn source_resources_object_aggregate_adds_only_proven_modules() {
+        let fixture = Fixture::new(b"Procedure Run()\nEndProcedure\n");
+        let (provider, _) = provider();
+
+        let page = provider
+            .resources(
+                fixture.object_request("Catalog.Items", ResourceScope::Aggregate, 50),
+                &fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        assert_eq!(page.completeness, ResourceCompleteness::Partial);
+        assert_eq!(
+            page.resources
+                .iter()
+                .map(|resource| resource.role)
+                .collect::<Vec<_>>(),
+            vec![ResourceRole::MetadataDescriptor, ResourceRole::BslModule]
+        );
+        assert!(page
+            .resources
+            .iter()
+            .all(|resource| resource.access == [ResourceAccess::Read]));
+    }
+
+    #[test]
+    fn source_resources_object_registrations_name_the_configuration() {
+        let fixture = Fixture::new(b"Procedure Run()\nEndProcedure\n");
+        let (provider, _) = provider();
+
+        let page = provider
+            .resources(
+                fixture.object_request("Catalog.Items", ResourceScope::Registrations, 50),
+                &fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        assert_eq!(page.resources.len(), 1);
+        assert_eq!(page.resources[0].role, ResourceRole::Registration);
+    }
+
+    /// An address nobody can prove is not an outage. Collapsing it into
+    /// `source_unavailable` told callers to retry something that will never
+    /// succeed.
+    #[test]
+    fn source_resources_report_an_unknown_address_as_a_missing_target() {
+        let fixture = Fixture::new(b"Procedure Run()\nEndProcedure\n");
+        let (provider, _) = provider();
+
+        let error = provider
+            .resources(
+                fixture.object_request("Catalog.Missing", ResourceScope::SelfOnly, 50),
+                &fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code, SourceResourceErrorCode::TargetNotFound);
+        assert!(!error.message.contains('/'), "{}", error.message);
+        assert!(!error.message.contains('\\'), "{}", error.message);
+    }
+
+    #[test]
+    fn source_resources_report_an_unknown_source_set_as_a_missing_target() {
+        let fixture = Fixture::new(b"Procedure Run()\nEndProcedure\n");
+        let (provider, _) = provider();
+
+        let error = provider
+            .resources(
+                SourceResourcesRequest::Open(OpenResourceSnapshotRequest {
+                    target: SourceTarget {
+                        source_set: "absent".to_string(),
+                        metadata_path: None,
+                    },
+                    scope: ResourceScope::SelfOnly,
+                    limit: 50,
+                }),
+                &fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code, SourceResourceErrorCode::TargetNotFound);
+    }
+
+    #[test]
+    fn source_resources_report_a_missing_source_set_name_as_an_invalid_request() {
+        let fixture = Fixture::new(b"Procedure Run()\nEndProcedure\n");
+        let (provider, _) = provider();
+
+        let error = provider
+            .resources(
+                SourceResourcesRequest::Open(OpenResourceSnapshotRequest {
+                    target: SourceTarget {
+                        source_set: String::new(),
+                        metadata_path: None,
+                    },
+                    scope: ResourceScope::SelfOnly,
+                    limit: 50,
+                }),
+                &fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code, SourceResourceErrorCode::InvalidRequest);
     }
 
     #[test]

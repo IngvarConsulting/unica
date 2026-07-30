@@ -4,6 +4,7 @@ use crate::domain::source_target::{ResolvedTarget, TargetKind};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform_xml_source_targets::{
     resolve_platform_xml_target, revalidate_platform_xml_target, ClosedPlatformXmlTarget,
+    TargetKindPolicy,
 };
 use crate::infrastructure::support_guard::{
     evaluate_resolved_support_guard, ResolvedSupportGuardCheck,
@@ -494,8 +495,11 @@ fn resolve_target(
     context: &WorkspaceContext,
 ) -> Result<CodePatchTarget, String> {
     let source_target = code_patch_source_target(args).map_err(|error| error.to_string())?;
+    // `ModuleOnly` is the write surface's declaration: a descriptor or any other
+    // metadata object address is refused here, not deeper.
     let resolution =
-        resolve_platform_xml_target(context, &source_target).map_err(|error| error.to_string())?;
+        resolve_platform_xml_target(context, &source_target, TargetKindPolicy::ModuleOnly)
+            .map_err(|error| error.to_string())?;
     let path = revalidate_platform_xml_target(context, &resolution.handle)
         .map_err(|error| error.to_string())?
         .path;
@@ -2160,6 +2164,43 @@ mod tests {
             "{:?}",
             unsupported_result.outcome.errors
         );
+
+        fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    /// The resolver also answers metadata object addresses for the read-only
+    /// surface. `code.patch` must keep refusing them by declaration, so a
+    /// descriptor can never become a write target.
+    #[test]
+    fn code_patch_refuses_a_metadata_object_address() {
+        let context = temp_context("object-address");
+        let descriptor = context.workspace_root.join("src/Catalogs/Items.xml");
+        fs::create_dir_all(descriptor.parent().unwrap()).unwrap();
+        fs::write(
+            &descriptor,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Items</Name></Properties></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        let before = fs::read(&descriptor).unwrap();
+
+        let result = patch_inner(
+            &patch_args(
+                "main",
+                "Catalog.Items",
+                "Run",
+                "Procedure Added()\nEndProcedure",
+            ),
+            &context,
+            PatchMode::Preview,
+        );
+
+        assert!(!result.outcome.ok);
+        assert!(
+            result.outcome.errors[0].contains("module terminal"),
+            "{:?}",
+            result.outcome.errors
+        );
+        assert_eq!(fs::read(&descriptor).unwrap(), before);
 
         fs::remove_dir_all(&context.workspace_root).unwrap();
     }
