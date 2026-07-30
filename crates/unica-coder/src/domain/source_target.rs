@@ -24,13 +24,12 @@ impl MetadataAddress {
         &self.0
     }
 
+    /// Arity decides the kind, not the spelling of the last segment: `parse`
+    /// accepts a module terminal only on an odd segment count, so an object
+    /// legitimately named `Module` stays a metadata object instead of being
+    /// read as the module role of a nameless owner.
     pub fn target_kind(&self) -> TargetKind {
-        if self
-            .0
-            .split('.')
-            .next_back()
-            .is_some_and(is_module_terminal)
-        {
+        if self.0.split('.').count() % 2 == 1 {
             TargetKind::Module
         } else {
             TargetKind::MetadataObject
@@ -211,11 +210,17 @@ impl AddressProfile {
             if let Ok(kind) = canonical_kind_or_collection(parts[0]) {
                 return Ok(MetadataAddressPrefix(kind.to_string()));
             }
-            if ROOT_MODULE_TERMINALS
-                .iter()
-                .any(|terminal| terminal.starts_with(parts[0]))
-            {
+            if is_root_module_terminal(parts[0]) {
                 return Ok(MetadataAddressPrefix(parts[0].to_string()));
+            }
+            if is_canonical_token_prefix(parts[0]) {
+                return Ok(MetadataAddressPrefix(parts[0].to_string()));
+            }
+            if is_alias_prefix(parts[0]) {
+                return Err(SourceTargetError::invalid(format!(
+                    "metadata address prefix `{}` matches only a partial alias; use the complete kind token or its canonical English prefix",
+                    parts[0]
+                )));
             }
             return Err(SourceTargetError::invalid(format!(
                 "unknown metadata address prefix root `{}`",
@@ -520,6 +525,27 @@ fn canonical_kind_or_collection(raw: &str) -> Result<&'static str, SourceTargetE
         .ok_or_else(|| SourceTargetError::invalid(format!("unknown metadata kind `{raw}`")))
 }
 
+/// A partial prefix segment is matched against canonical English spelling only.
+/// A partial alias has no single canonical form to expand into, so it is
+/// reported instead of being silently passed through unnormalized.
+fn is_canonical_token_prefix(raw: &str) -> bool {
+    ADDRESS_KINDS
+        .iter()
+        .any(|kind| kind.canonical.starts_with(raw))
+        || ROOT_MODULE_TERMINALS
+            .iter()
+            .any(|terminal| terminal.starts_with(raw))
+}
+
+fn is_alias_prefix(raw: &str) -> bool {
+    ADDRESS_KINDS.iter().any(|kind| {
+        kind.russian_aliases
+            .iter()
+            .chain(kind.collection_aliases.iter())
+            .any(|alias| alias.starts_with(raw))
+    })
+}
+
 fn canonical_nested_kind(raw: &str) -> Result<&'static str, SourceTargetError> {
     let canonical = canonical_kind_or_collection(raw)?;
     if matches!(canonical, "Form" | "Command") {
@@ -685,6 +711,68 @@ mod tests {
                 "{raw}"
             );
         }
+    }
+
+    #[test]
+    fn source_target_profile_classifies_by_arity_not_by_terminal_spelling() {
+        for raw in [
+            "CommonModule.Module",
+            "Catalog.SessionModule",
+            "Document.ObjectModule",
+            "Catalog.Items.Form.FormModule",
+        ] {
+            let address = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw).unwrap();
+            assert_eq!(
+                address.target_kind(),
+                TargetKind::MetadataObject,
+                "{raw} names an object, its terminal segment is an application name"
+            );
+        }
+        for raw in [
+            "SessionModule",
+            "CommonModule.Shared.Module",
+            "Catalog.Items.Form.Order.FormModule",
+        ] {
+            let address = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw).unwrap();
+            assert_eq!(address.target_kind(), TargetKind::Module, "{raw}");
+        }
+    }
+
+    #[test]
+    fn source_target_prefix_profile_matches_partial_roots_uniformly() {
+        for (raw, expected) in [
+            ("S", "S"),
+            ("Su", "Su"),
+            ("Subsystem", "Subsystem"),
+            ("Doc", "Doc"),
+            ("Document", "Document"),
+            ("Документ", "Document"),
+            ("M", "M"),
+            ("Man", "Man"),
+            ("ManagedApplicationModule", "ManagedApplicationModule"),
+        ] {
+            let prefix =
+                MetadataAddressPrefix::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw).unwrap();
+            assert_eq!(prefix.as_str(), expected, "{raw}");
+        }
+    }
+
+    #[test]
+    fn source_target_prefix_profile_names_partial_aliases_apart_from_unknown_roots() {
+        let alias =
+            MetadataAddressPrefix::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Док").unwrap_err();
+        assert_eq!(alias.code, SourceTargetErrorCode::MetadataAddressInvalid);
+        assert!(alias.message.contains("partial alias"), "{}", alias.message);
+
+        let unknown =
+            MetadataAddressPrefix::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Zz").unwrap_err();
+        assert!(
+            unknown
+                .message
+                .contains("unknown metadata address prefix root"),
+            "{}",
+            unknown.message
+        );
     }
 
     #[test]

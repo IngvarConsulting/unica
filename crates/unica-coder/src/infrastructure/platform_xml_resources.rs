@@ -47,6 +47,8 @@ const PROVIDER_ID: &str = "platform-xml";
 const MAX_SNAPSHOT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_LIVE_SNAPSHOT_BYTES: usize = 128 * 1024 * 1024;
 const MAX_LIVE_SNAPSHOTS: usize = 64;
+const SOURCE_APPLY_SPIN_ATTEMPTS: usize = 8;
+const SOURCE_APPLY_BACKOFF_CAP_MILLIS: u64 = 8;
 
 #[cfg(test)]
 type ConstructionObserver = Box<dyn FnMut(usize) + Send>;
@@ -218,10 +220,15 @@ impl PlatformXmlResourceProvider {
                 "byte offset is beyond the resource snapshot",
             ));
         }
-        let requested_end = request
-            .offset
-            .saturating_add(request.limit)
-            .min(bytes.len());
+        let requested_end = text_chunk_end(
+            &bytes,
+            request.offset,
+            request
+                .offset
+                .saturating_add(request.limit)
+                .min(bytes.len()),
+            public.text_profile.is_some(),
+        );
         let (content, content_encoding) = if public.text_profile.is_some()
             && std::str::from_utf8(&bytes[request.offset..requested_end]).is_ok()
         {
@@ -448,7 +455,7 @@ impl PlatformXmlResourceProvider {
                         ) =>
                 {
                     attempt += 1;
-                    std::thread::yield_now();
+                    contention_backoff(attempt);
                     continue;
                 }
                 Err(_) => {
@@ -505,7 +512,7 @@ impl PlatformXmlResourceProvider {
                         && is_retryable_cache_state_conflict(&error, &cache_publication_paths) =>
                 {
                     attempt += 1;
-                    std::thread::yield_now();
+                    contention_backoff(attempt);
                 }
                 Err(error) => {
                     return Err(map_source_apply_commit_error(
@@ -663,12 +670,13 @@ impl PlatformXmlResourceProvider {
         };
         self.check_cancelled(cancellation)?;
 
+        let budget = self.available_snapshot_budget()?;
         let source_root = evidence.source_root.clone();
         let mut stored_resources = Vec::new();
         let mut byte_size = 0_usize;
         for (path, role) in candidates.into_iter().take(SOURCE_MANIFEST_RESOURCE_MAX) {
             self.check_cancelled(cancellation)?;
-            let remaining = MAX_SNAPSHOT_BYTES - byte_size;
+            let remaining = budget - byte_size;
             let replace_allowed = completeness == ResourceCompleteness::Complete
                 && request.scope == ResourceScope::SelfOnly
                 && role == ResourceRole::BslModule;
@@ -721,6 +729,29 @@ impl PlatformXmlResourceProvider {
         }
         snapshots.insert(snapshot_id, snapshot);
         Ok(page)
+    }
+
+    /// Bytes this snapshot may buffer, bounded by what the live store could
+    /// actually accept. Without it a request that the store has no room for
+    /// still reads its way to the single-snapshot ceiling before the capacity
+    /// check at insertion time rejects it.
+    fn available_snapshot_budget(&self) -> Result<usize, SourceResourceError> {
+        let mut snapshots = self.snapshots.lock().map_err(|_| {
+            public_error(
+                SourceResourceErrorCode::SourceUnavailable,
+                "resource snapshot store is unavailable",
+            )
+        })?;
+        let now = self.clock.now();
+        snapshots.retain(|_, stored| now < stored.expires_at);
+        let live_bytes = snapshots
+            .values()
+            .map(|stored| stored.byte_size)
+            .sum::<usize>();
+        if snapshots.len() >= MAX_LIVE_SNAPSHOTS || live_bytes >= MAX_LIVE_SNAPSHOT_BYTES {
+            return Err(capacity_error());
+        }
+        Ok(MAX_SNAPSHOT_BYTES.min(MAX_LIVE_SNAPSHOT_BYTES - live_bytes))
     }
 
     fn continue_snapshot(
@@ -915,6 +946,48 @@ impl PlatformXmlResourceProvider {
 
     #[cfg(not(test))]
     fn observe_construction_for_test(&self, _bytes: usize) {}
+}
+
+/// Backoff between transaction retries. Every attempt redoes a secure read,
+/// a full revalidation and a publish with post-validation, so spinning on
+/// `yield_now` alone burns an expensive attempt against a conflict that a
+/// short wait usually clears. The first attempts still spin, because the
+/// common conflict is another in-process plan finishing immediately.
+fn contention_backoff(attempt: usize) {
+    if attempt <= SOURCE_APPLY_SPIN_ATTEMPTS {
+        std::thread::yield_now();
+        return;
+    }
+    let step = u64::try_from(attempt - SOURCE_APPLY_SPIN_ATTEMPTS).unwrap_or(u64::MAX);
+    std::thread::sleep(Duration::from_millis(
+        step.min(SOURCE_APPLY_BACKOFF_CAP_MILLIS),
+    ));
+}
+
+/// Shrinks a chunk of a declared-text resource to the nearest UTF-8 boundary.
+/// Without it a byte limit landing inside a multi-byte character flips the
+/// whole chunk to base64, so reading one Cyrillic BSL module in `maxReadBytes`
+/// steps would alternate encodings for reasons the caller cannot predict.
+/// The chunk is left as requested when shrinking would return no bytes at all,
+/// so a limit smaller than one character still makes progress through the
+/// base64 branch instead of looping forever on an empty read.
+fn text_chunk_end(bytes: &[u8], offset: usize, end: usize, is_text: bool) -> usize {
+    if !is_text || end >= bytes.len() {
+        return end;
+    }
+    let mut boundary = end;
+    while boundary > offset && !is_utf8_char_boundary(bytes[boundary]) {
+        boundary -= 1;
+    }
+    if boundary == offset {
+        end
+    } else {
+        boundary
+    }
+}
+
+fn is_utf8_char_boundary(byte: u8) -> bool {
+    (byte & 0xc0) != 0x80
 }
 
 fn normalized_replacement(
@@ -1688,6 +1761,60 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(error.code, SourceResourceErrorCode::ResourceNotFound);
+    }
+
+    #[test]
+    fn source_read_keeps_text_chunks_on_utf8_boundaries_and_still_advances() {
+        let module = "Процедура Выполнить()\nКонецПроцедуры\n".as_bytes();
+        let fixture = Fixture::new(module);
+        let (provider, _) = provider();
+        let page = provider
+            .resources(
+                fixture.module_request(ResourceScope::SelfOnly, 50),
+                &fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let resource_id = page.resources[0].resource_id.clone();
+        let read_chunk = |offset: usize, limit: usize| {
+            provider
+                .read(
+                    SourceReadRequest {
+                        snapshot_id: page.snapshot_id.clone(),
+                        resource_id: resource_id.clone(),
+                        offset,
+                        limit,
+                    },
+                    &fixture.context,
+                    &CancellationToken::new(),
+                )
+                .unwrap()
+        };
+
+        // `П` is two bytes, so a three-byte limit lands inside `р`.
+        let clipped = read_chunk(0, 3);
+        assert_eq!(clipped.content_encoding, "utf-8");
+        assert_eq!(clipped.content, "П");
+        assert_eq!(clipped.length, 2);
+        assert!(!clipped.eof);
+
+        // A limit narrower than one character still returns exact bytes rather
+        // than an empty chunk the caller could never move past.
+        let unsplittable = read_chunk(0, 1);
+        assert_eq!(unsplittable.content_encoding, "base64");
+        assert_eq!(unsplittable.length, 1);
+
+        // Chunked reading reassembles the module byte for byte.
+        let mut assembled = Vec::new();
+        let mut offset = 0;
+        while offset < module.len() {
+            let chunk = read_chunk(offset, 3);
+            assert!(chunk.length > 0, "read must always advance");
+            assert_eq!(chunk.content_encoding, "utf-8");
+            assembled.extend_from_slice(chunk.content.as_bytes());
+            offset += chunk.length;
+        }
+        assert_eq!(assembled, module);
     }
 
     #[test]

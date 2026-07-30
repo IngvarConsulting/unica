@@ -16,6 +16,8 @@
 | Configuration и Extension | Одинаковый логический адрес модуля разрешается в каждом явно выбранном `sourceSet`, физический путь не входит в результат | `cargo test -p unica-coder platform_xml_source_targets -- --test-threads=1` |
 | ExternalProcessor и ExternalReport | В одном внешнем наборе обнаруживаются как минимум два независимых корневых артефакта без эвристического выбора одного | `cargo test -p unica-coder source_navigation -- --test-threads=1` |
 | Точное и префиксное разрешение | `exact` не выбирает неоднозначного кандидата, `prefix` возвращает ограниченную каноническую выдачу | `cargo test -p unica-coder source_navigation -- --test-threads=1` |
+| Вид цели по числу сегментов | Вид определяется арностью адреса, поэтому объект с прикладным именем `Module` остаётся `metadataObject`, а не читается как роль модуля | `cargo test -p unica-coder source_target -- --test-threads=1` |
+| Частичный корень префикса | Неполный сегмент сопоставляется с каноническим английским токеном, а неполный псевдоним отклоняется отдельной ошибкой вместо непредсказуемого частичного совпадения | `cargo test -p unica-coder source_target -- --test-threads=1` |
 | Непосредственные дети | `children` принимает цель, обходит один уровень, а коллекции возвращаются как узлы без вымышленного адреса | `cargo test -p unica-coder source_navigation -- --test-threads=1` |
 | Снятые селекторы `unica.code.patch` | `path` и `sourceDir` отклоняются кодом `legacy_target_removed` с подсказкой `sourceSet + metadataPath` | `cargo test -p unica-coder code_patch -- --test-threads=1` |
 | Частные поля поставщика | `providerRevision`, закрытая ручка, абсолютный путь и строка соединения отсутствуют в MCP-ответе | `cargo test -p unica-coder interfaces::mcp::tests -- --test-threads=1` |
@@ -28,7 +30,7 @@
 | Истёкший снимок | После пяти минут чтение и запись получают `snapshot_expired` | `cargo test -p unica-coder source_resources -- --test-threads=1` |
 | Неполный манифест | `partial` и `unavailable` остаются читаемыми для выданного ресурса, но не дают возможности `replace` | `cargo test -p unica-coder source_apply -- --test-threads=1` |
 | Дескриптор | Роль `metadataDescriptor` с текстовым содержимым остаётся read-only и при записи получает `resource_not_replaceable` | `cargo test -p unica-coder source_apply -- --test-threads=1` |
-| Точный диапазон | `unica.source.read` возвращает ровно запрошенный диапазон байтов до 64 КиБ как UTF-8 либо base64, сохраняя общий хеш снимка | `cargo test -p unica-coder source_resources -- --test-threads=1` |
+| Точный диапазон | `unica.source.read` возвращает диапазон до 64 КиБ, усекая фрагмент текстового ресурса до ближайшей границы UTF-8; base64 остаётся для двоичных данных и для лимита уже одного символа, чтение всегда продвигается, а общий хеш снимка не меняется | `cargo test -p unica-coder source_resources -- --test-threads=1` |
 | Профиль текста | `bomPrefixBytes`, единый LF/CRLF и побайтовый preimage относятся к тем же байтам, что читаются и заменяются; смешанный EOL запрещает замену | `cargo test -p unica-coder source_apply -- --test-threads=1` |
 | Подмена символической ссылки | Смена каталога на symlink между снимком, планом и публикацией получает `containment_denied` без изменения соседних файлов | `cargo test -p unica-coder source_apply -- --test-threads=1` |
 | Смена owner или карты исходников | Повторная авторизация закрытой ручки отклоняет изменившегося логического owner и не публикует план | `cargo test -p unica-coder source_apply -- --test-threads=1` |

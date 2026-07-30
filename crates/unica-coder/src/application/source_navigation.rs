@@ -5,8 +5,8 @@ use crate::domain::source_target::{MetadataAddress, TargetKind, PLATFORM_XML_8_3
 use crate::domain::workspace::WorkspaceContext;
 use serde::Serialize;
 use serde_json::{Map, Value};
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use sha2::{Digest, Sha256};
+use std::sync::OnceLock;
 
 pub(crate) const SOURCE_NAVIGATION_LIMIT_DEFAULT: usize = 20;
 pub(crate) const SOURCE_NAVIGATION_LIMIT_MAX: usize = 50;
@@ -311,12 +311,34 @@ fn decode_cursor(cursor: &str, cursor_key: &str) -> Result<usize, String> {
     usize::try_from(offset).map_err(|_| "source navigation cursor is invalid".to_string())
 }
 
+/// Per-process secret behind every navigation cursor. It gives the same
+/// guarantee the resource-snapshot cursor already carries: a continuation
+/// token is evidence issued by this running application, not a reversible
+/// encoding anyone can recompute. `DefaultHasher` could not carry it — it
+/// hashes with a fixed key and an algorithm std does not promise to keep
+/// stable across releases.
+fn cursor_secret() -> &'static str {
+    static SECRET: OnceLock<String> = OnceLock::new();
+    SECRET.get_or_init(|| uuid::Uuid::new_v4().to_string())
+}
+
 fn cursor_checksum(offset: u64, cursor_key: &str) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    "unica-source-navigation-v1".hash(&mut hasher);
-    offset.hash(&mut hasher);
-    cursor_key.hash(&mut hasher);
-    hasher.finish()
+    let mut hasher = Sha256::new();
+    for component in [
+        cursor_secret(),
+        "unica-source-navigation-v1",
+        &offset.to_string(),
+        cursor_key,
+    ] {
+        hasher.update(component.as_bytes());
+        hasher.update([0]);
+    }
+    let digest = hasher.finalize();
+    u64::from_be_bytes(
+        digest[..8]
+            .try_into()
+            .expect("a sha256 digest is always 32 bytes"),
+    )
 }
 
 #[cfg(test)]
