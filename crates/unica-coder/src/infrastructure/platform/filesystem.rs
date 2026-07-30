@@ -1619,7 +1619,7 @@ pub(crate) fn create_owner_only_directory_child(
     };
 
     let security = OwnerOnlySecurityAttributes::current_user()?;
-    let file = open_relative_child(
+    let created = open_relative_child(
         parent,
         name,
         DELETE | FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
@@ -1628,8 +1628,8 @@ pub(crate) fn create_owner_only_directory_child(
         FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
         Some(security.security_descriptor()),
     )?;
-    if let Err(error) = validate_directory_handle(&file) {
-        return match discard_created_child(&file) {
+    if let Err(error) = validate_directory_handle(&created) {
+        return match discard_created_child(&created) {
             Ok(()) => Err(error),
             Err(cleanup) => Err(io::Error::new(
                 error.kind(),
@@ -1637,7 +1637,57 @@ pub(crate) fn create_owner_only_directory_child(
             )),
         };
     }
-    Ok(file)
+    let expected_identity = match file_identity(&created) {
+        Ok(identity) => identity,
+        Err(error) => {
+            return match discard_created_child(&created) {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(io::Error::new(
+                    error.kind(),
+                    format!("{error}; failed to remove unverified created directory: {cleanup}"),
+                )),
+            };
+        }
+    };
+    let reopened = match open_directory_child_nofollow(parent, name) {
+        Ok(reopened) => reopened,
+        Err(error) => {
+            return match discard_created_child(&created) {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(io::Error::new(
+                    error.kind(),
+                    format!("{error}; failed to remove unreopenable created directory: {cleanup}"),
+                )),
+            };
+        }
+    };
+    let actual_identity = match file_identity(&reopened) {
+        Ok(identity) => identity,
+        Err(error) => {
+            return match discard_created_child(&created) {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(io::Error::new(
+                    error.kind(),
+                    format!("{error}; failed to remove unverified created directory: {cleanup}"),
+                )),
+            };
+        }
+    };
+    if actual_identity != expected_identity {
+        let error = io::Error::new(
+            io::ErrorKind::InvalidData,
+            "created directory identity changed before least-privilege reopen",
+        );
+        return match discard_created_child(&created) {
+            Ok(()) => Err(error),
+            Err(cleanup) => Err(io::Error::new(
+                error.kind(),
+                format!("{error}; failed to remove replaced created directory: {cleanup}"),
+            )),
+        };
+    }
+    drop(created);
+    Ok(reopened)
 }
 
 #[cfg(windows)]
@@ -1649,13 +1699,13 @@ pub(crate) fn create_owner_only_file_child(
     const FILE_NON_DIRECTORY_FILE: u32 = 0x0000_0040;
     const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
     use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
-    use windows_sys::Win32::Storage::FileSystem::{DELETE, FILE_ATTRIBUTE_NORMAL};
+    use windows_sys::Win32::Storage::FileSystem::{DELETE, FILE_ATTRIBUTE_NORMAL, SYNCHRONIZE};
 
     let security = OwnerOnlySecurityAttributes::current_user()?;
     open_relative_child(
         parent,
         name,
-        GENERIC_READ | GENERIC_WRITE | DELETE,
+        GENERIC_READ | GENERIC_WRITE | DELETE | SYNCHRONIZE,
         FILE_ATTRIBUTE_NORMAL,
         FILE_CREATE,
         FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
@@ -2172,13 +2222,16 @@ mod tests {
         use super::{fs, io, unique_temp_root};
         use crate::infrastructure::platform::filesystem::{
             capture_windows_immutable_entry_evidence, create_owner_only_directory,
-            create_owner_only_directory_child, create_owner_only_file, directory_query_is_end,
-            file_identity, nt_create_options_for_std_file, open_directory_child_nofollow,
-            open_directory_nofollow, parse_directory_information_buffer, read_directory_names,
-            verify_owner_only_acl, verify_thread_token_fallback_error,
-            verify_windows_elevation_value, verify_windows_immutable_security_descriptor,
-            verify_windows_local_fixed_device_info, verify_windows_local_fixed_volume,
-            EffectiveTokenSource, ProcessToken, WindowsImmutableAclProfile,
+            create_owner_only_directory_child, create_owner_only_file,
+            create_owner_only_file_child, delete_open_child, directory_query_is_end, file_identity,
+            nt_create_options_for_std_file, open_any_child_for_delete,
+            open_directory_child_for_rename, open_directory_child_nofollow,
+            open_directory_nofollow, opened_child_kind, parse_directory_information_buffer,
+            read_directory_names, rename_directory_handle_child_no_replace, verify_owner_only_acl,
+            verify_thread_token_fallback_error, verify_windows_elevation_value,
+            verify_windows_immutable_security_descriptor, verify_windows_local_fixed_device_info,
+            verify_windows_local_fixed_volume, EffectiveTokenSource, OpenedChildKind, ProcessToken,
+            WindowsImmutableAclProfile,
         };
         use std::ffi::OsString;
         use std::mem::{offset_of, size_of};
@@ -2539,6 +2592,125 @@ mod tests {
             let handle = create_owner_only_file(&private).unwrap();
 
             verify_owner_only_acl(&handle).unwrap();
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn owner_only_file_child_is_created_through_its_retained_parent() {
+            use std::io::Write;
+
+            let root = unique_temp_root("owner-only-file-child");
+            fs::create_dir_all(&root).unwrap();
+            let parent = open_directory_nofollow(&root).unwrap();
+
+            let mut handle =
+                create_owner_only_file_child(&parent, std::ffi::OsStr::new("effective.yaml"))
+                    .unwrap();
+
+            handle.write_all(b"private").unwrap();
+            verify_owner_only_acl(&handle).unwrap();
+            drop(handle);
+            drop(parent);
+            assert_eq!(fs::read(root.join("effective.yaml")).unwrap(), b"private");
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn owner_only_directory_child_can_be_reopened_for_delete() {
+            let root = unique_temp_root("owner-only-directory-delete-reopen");
+            fs::create_dir_all(&root).unwrap();
+            let root_handle = open_directory_nofollow(&root).unwrap();
+            let parent =
+                create_owner_only_directory_child(&root_handle, std::ffi::OsStr::new("parent"))
+                    .unwrap();
+            let created =
+                create_owner_only_directory_child(&parent, std::ffi::OsStr::new("private"))
+                    .unwrap();
+            let retained_file =
+                create_owner_only_file_child(&created, std::ffi::OsStr::new("retained.txt"))
+                    .unwrap();
+            let expected_identity = file_identity(&created).unwrap();
+
+            let reopened =
+                open_any_child_for_delete(&parent, std::ffi::OsStr::new("private")).unwrap();
+
+            assert_eq!(
+                opened_child_kind(&reopened).unwrap(),
+                OpenedChildKind::Directory
+            );
+            assert_eq!(file_identity(&reopened).unwrap(), expected_identity);
+            drop(reopened);
+            drop(retained_file);
+            drop(created);
+            drop(parent);
+            drop(root_handle);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn populated_child_moves_between_live_owner_only_parent_handles() {
+            use std::io::Write;
+
+            let root = unique_temp_root("owner-only-directory-rename");
+            fs::create_dir_all(&root).unwrap();
+            let root_handle = open_directory_nofollow(&root).unwrap();
+            let source_parent = create_owner_only_directory_child(
+                &root_handle,
+                std::ffi::OsStr::new("source-parent"),
+            )
+            .unwrap();
+            let destination_parent = create_owner_only_directory_child(
+                &root_handle,
+                std::ffi::OsStr::new("destination-parent"),
+            )
+            .unwrap();
+            let mut effective =
+                create_owner_only_file_child(&source_parent, std::ffi::OsStr::new("config.yaml"))
+                    .unwrap();
+            effective.write_all(b"private").unwrap();
+            let source =
+                create_owner_only_directory_child(&source_parent, std::ffi::OsStr::new("payload"))
+                    .unwrap();
+            let mut payload =
+                create_owner_only_file_child(&source, std::ffi::OsStr::new("new.txt")).unwrap();
+            payload.write_all(b"new").unwrap();
+            drop(payload);
+            drop(source);
+            let source_for_rename =
+                open_directory_child_for_rename(&source_parent, std::ffi::OsStr::new("payload"))
+                    .unwrap();
+
+            rename_directory_handle_child_no_replace(
+                &source_for_rename,
+                &destination_parent,
+                std::ffi::OsStr::new("payload"),
+            )
+            .unwrap();
+            let effective_for_delete =
+                open_any_child_for_delete(&source_parent, std::ffi::OsStr::new("config.yaml"))
+                    .unwrap();
+            delete_open_child(&effective_for_delete).unwrap();
+            drop(effective_for_delete);
+            drop(effective);
+            let source_parent_for_delete =
+                open_any_child_for_delete(&root_handle, std::ffi::OsStr::new("source-parent"))
+                    .unwrap();
+
+            assert!(!root.join("source-parent").join("payload").exists());
+            assert_eq!(
+                fs::read(
+                    root.join("destination-parent")
+                        .join("payload")
+                        .join("new.txt")
+                )
+                .unwrap(),
+                b"new"
+            );
+            drop(source_parent_for_delete);
+            drop(source_for_rename);
+            drop(destination_parent);
+            drop(source_parent);
+            drop(root_handle);
             fs::remove_dir_all(root).unwrap();
         }
 

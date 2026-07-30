@@ -26,10 +26,10 @@ use crate::infrastructure::platform::filesystem::hard_link_count;
 #[cfg(windows)]
 use crate::infrastructure::platform::filesystem::{
     capture_windows_immutable_entry_evidence, create_owner_only_directory_child,
-    create_owner_only_file_child, delete_open_child, discard_created_child,
-    open_any_child_for_delete, open_any_child_nofollow, open_directory_child_for_rename,
-    open_directory_child_nofollow, open_directory_nofollow, open_regular_child_nofollow,
-    opened_child_kind, rename_directory_handle_child_no_replace, verify_owner_only_acl,
+    create_owner_only_file_child, delete_open_child, open_any_child_for_delete,
+    open_any_child_nofollow, open_directory_child_for_rename, open_directory_child_nofollow,
+    open_directory_nofollow, open_regular_child_nofollow, opened_child_kind,
+    rename_directory_handle_child_no_replace, verify_owner_only_acl,
     verify_unprivileged_windows_platform_caller, verify_windows_local_fixed_volume,
     OpenedChildKind, WindowsImmutableAclProfile,
 };
@@ -85,7 +85,7 @@ mod windows_anchor_tests {
         capture_windows_immutable_platform_children, parse_windows_local_platform_path,
         remove_bound_directory_child, rename_child_no_replace, secure_path_is_absent,
         secure_read_regular_file_snapshot, unlink_bound_regular_child, with_secure_read_hook,
-        with_tree_open_hook, DirectoryAnchor, TreeEntryKind, TreeSnapshot,
+        with_tree_open_hook, DirectoryAnchor, PrivateDumpStage, TreeEntryKind, TreeSnapshot,
     };
     use crate::infrastructure::platform::filesystem::{
         file_identity, open_directory_nofollow, verify_owner_only_acl,
@@ -646,6 +646,21 @@ mod windows_anchor_tests {
     }
 
     #[test]
+    fn windows_private_stage_cleanup_closes_retained_anchors_before_deleting_root() {
+        let root = unique_temp_root("private-stage-cleanup-lifecycle");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let target_parent = DirectoryAnchor::capture_exact(&workspace).unwrap();
+        let mut stage = PrivateDumpStage::create(&target_parent).unwrap();
+        let private_root = stage.root.clone();
+
+        stage.cleanup_now().unwrap();
+
+        assert!(!private_root.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn windows_handle_cleanup_leaves_an_identity_replacement_untouched() {
         let root = unique_temp_root("handle-cleanup-replacement");
         let parent_path = root.join("parent");
@@ -1157,21 +1172,6 @@ struct PreparedDump {
 }
 
 impl PreparedDump {
-    #[cfg(windows)]
-    fn prepare(
-        _args: &Map<String, Value>,
-        _context: &WorkspaceContext,
-        _platform_resolver: &dyn PlatformResolver,
-        _runner: &dyn ProcessRunner,
-        _cancellation: &CancellationToken,
-    ) -> Result<Self, String> {
-        Err(
-            "verified applied full dump is fail-closed on Windows until owner-only ACLs and handle-safe no-clobber directory publication are implemented"
-                .to_string(),
-        )
-    }
-
-    #[cfg(not(windows))]
     fn prepare(
         args: &Map<String, Value>,
         context: &WorkspaceContext,
@@ -3089,21 +3089,21 @@ impl DirectoryAnchor {
                     display_path.display()
                 )
             })?;
-        let cleanup_error = |error: String| {
-            match discard_created_child(&directory) {
-            Ok(()) => error,
-            Err(cleanup) => format!(
-                "{error}; failed to remove private directory created through the retained parent anchor {}: {cleanup}",
-                display_path.display()
-            ),
-        }
-        };
         let identity = file_identity(&directory).map_err(|error| {
-            cleanup_error(format!(
-                "failed to inspect private directory identity {}: {error}",
+            format!(
+                "failed to inspect private directory identity {}; the unverified directory was left untouched: {error}",
                 display_path.display()
-            ))
+            )
         })?;
+        let cleanup_error = |error: String| {
+            match remove_bound_directory_child(&self.directory, name, identity, display_path) {
+                Ok(()) => error,
+                Err(cleanup) => format!(
+                    "{error}; failed to remove private directory created through the retained parent anchor {}: {cleanup}",
+                    display_path.display()
+                ),
+            }
+        };
         if let Err(error) = verify_owner_only_acl(&directory) {
             return Err(cleanup_error(format!(
                 "failed to verify private directory ACL {}: {error}",
@@ -3237,13 +3237,23 @@ impl DirectoryAnchor {
 
 struct PrivateDumpStage {
     parent_anchor: DirectoryAnchor,
-    root_anchor: DirectoryAnchor,
+    root_anchor: Option<DirectoryAnchor>,
     root_name: OsString,
     root: PathBuf,
     execution: PathBuf,
     recovery: PathBuf,
-    execution_anchor: DirectoryAnchor,
-    recovery_anchor: DirectoryAnchor,
+    execution_anchor: Option<DirectoryAnchor>,
+    recovery_anchor: Option<DirectoryAnchor>,
+    root_identity: FileIdentity,
+    execution_identity: FileIdentity,
+    #[cfg(windows)]
+    recovery_identity: FileIdentity,
+    #[cfg(windows)]
+    root_removed: bool,
+    #[cfg(windows)]
+    execution_removed: bool,
+    #[cfg(windows)]
+    recovery_removed: bool,
     staged_tree: PathBuf,
     effective_config: PathBuf,
     effective_config_handle: Option<File>,
@@ -3293,29 +3303,61 @@ impl PrivateDumpStage {
                 error,
             ));
         };
+        let root_identity = root_anchor.identity;
+        let execution_identity = execution_anchor.identity;
+        #[cfg(windows)]
+        let recovery_identity = recovery_anchor.identity;
         Ok(Self {
             staged_tree: execution.join("staged-source"),
             effective_config: execution.join(EFFECTIVE_CONFIG_NAME),
             parent_anchor,
-            root_anchor,
+            root_anchor: Some(root_anchor),
             root_name,
             root,
             execution,
             recovery,
-            execution_anchor,
-            recovery_anchor,
+            execution_anchor: Some(execution_anchor),
+            recovery_anchor: Some(recovery_anchor),
+            root_identity,
+            execution_identity,
+            #[cfg(windows)]
+            recovery_identity,
+            #[cfg(windows)]
+            root_removed: false,
+            #[cfg(windows)]
+            execution_removed: false,
+            #[cfg(windows)]
+            recovery_removed: false,
             effective_config_handle: None,
             effective_config_secret_present: false,
             cleanup_on_drop: true,
         })
     }
 
+    fn root_anchor(&self) -> &DirectoryAnchor {
+        self.root_anchor
+            .as_ref()
+            .expect("private root anchor remains open before cleanup")
+    }
+
+    fn execution_anchor(&self) -> &DirectoryAnchor {
+        self.execution_anchor
+            .as_ref()
+            .expect("private execution anchor remains open before cleanup")
+    }
+
+    fn recovery_anchor(&self) -> &DirectoryAnchor {
+        self.recovery_anchor
+            .as_ref()
+            .expect("private recovery anchor remains open before cleanup")
+    }
+
     fn write_effective_config(&mut self, value: &YamlValue) -> Result<(), String> {
         let bytes = serde_yaml::to_string(value)
             .map_err(|error| format!("failed to serialize effective dump config: {error}"))?;
-        self.execution_anchor.verify_path_binding()?;
+        self.execution_anchor().verify_path_binding()?;
         let file = create_regular_child_owner_only(
-            &self.execution_anchor.directory,
+            &self.execution_anchor().directory,
             OsStr::new(EFFECTIVE_CONFIG_NAME),
             &self.effective_config,
         )
@@ -3353,7 +3395,7 @@ impl PrivateDumpStage {
                     self.effective_config.display()
                 )
             })?;
-        self.execution_anchor
+        self.execution_anchor()
             .verify_path_binding()
             .map_err(|error| {
                 format!(
@@ -3385,10 +3427,10 @@ impl PrivateDumpStage {
                 "private effective config scrub sync failed for {}: {error}; secret-bearing private data may remain",
                 self.effective_config.display()
             )
-        })?;
+            })?;
         self.effective_config_secret_present = false;
         let unlink = unlink_bound_regular_child(
-            &self.execution_anchor.directory,
+            &self.execution_anchor().directory,
             OsStr::new(EFFECTIVE_CONFIG_NAME),
             identity,
         )
@@ -3402,15 +3444,16 @@ impl PrivateDumpStage {
         unlink
     }
 
+    #[cfg(not(windows))]
     fn preserve_for_recovery(&mut self) -> Result<(), String> {
         let mut errors = Vec::new();
         if let Err(error) = self.remove_effective_config() {
             errors.push(error);
         }
         if let Err(error) = remove_bound_directory_child(
-            &self.root_anchor.directory,
+            &self.root_anchor().directory,
             OsStr::new("execution"),
-            self.execution_anchor.identity,
+            self.execution_identity,
             &self.execution,
         ) {
             errors.push(format!(
@@ -3418,12 +3461,12 @@ impl PrivateDumpStage {
                 self.execution.display()
             ));
         }
-        if let Err(error) = self.root_anchor.verify_path_binding() {
+        if let Err(error) = self.root_anchor().verify_path_binding() {
             errors.push(format!(
                 "private recovery root is no longer bound to its visible path: {error}"
             ));
         }
-        if let Err(error) = self.recovery_anchor.verify_path_binding() {
+        if let Err(error) = self.recovery_anchor().verify_path_binding() {
             errors.push(format!(
                 "private recovery directory is no longer bound to its visible path: {error}"
             ));
@@ -3435,6 +3478,51 @@ impl PrivateDumpStage {
         Ok(())
     }
 
+    #[cfg(windows)]
+    fn preserve_for_recovery(&mut self) -> Result<(), String> {
+        let mut errors = Vec::new();
+        if let Err(error) = self.remove_effective_config() {
+            errors.push(error);
+        }
+        let root_directory =
+            self.root_anchor().directory.try_clone().map_err(|error| {
+                format!("failed to clone private root anchor for cleanup: {error}")
+            })?;
+        if let Err(error) = release_anchor_and_remove_private_child(
+            &root_directory,
+            &mut self.execution_anchor,
+            &mut self.execution_removed,
+            OsStr::new("execution"),
+            self.execution_identity,
+            &self.execution,
+        ) {
+            errors.push(format!(
+                "private execution cleanup failed before retaining recovery {}: {error}",
+                self.execution.display()
+            ));
+        }
+        if let Some(root_anchor) = self.root_anchor.as_ref() {
+            if let Err(error) = root_anchor.verify_path_binding() {
+                errors.push(format!(
+                    "private recovery root is no longer bound to its visible path: {error}"
+                ));
+            }
+        }
+        if let Some(recovery_anchor) = self.recovery_anchor.as_ref() {
+            if let Err(error) = recovery_anchor.verify_path_binding() {
+                errors.push(format!(
+                    "private recovery directory is no longer bound to its visible path: {error}"
+                ));
+            }
+        }
+        if !errors.is_empty() {
+            return Err(errors.join("; "));
+        }
+        self.cleanup_on_drop = false;
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
     fn cleanup_now(&mut self) -> Result<(), String> {
         if !self.cleanup_on_drop {
             return Ok(());
@@ -3444,7 +3532,7 @@ impl PrivateDumpStage {
             errors.push(error);
         }
         if let Err(error) =
-            remove_directory_contents_nofollow(&self.root_anchor.directory, &self.root)
+            remove_directory_contents_nofollow(&self.root_anchor().directory, &self.root)
         {
             errors.push(format!(
                 "private dump contents cleanup failed for {}: {error}",
@@ -3454,7 +3542,7 @@ impl PrivateDumpStage {
         if let Err(error) = remove_bound_directory_child(
             &self.parent_anchor.directory,
             &self.root_name,
-            self.root_anchor.identity,
+            self.root_identity,
             &self.root,
         ) {
             errors.push(format!(
@@ -3469,6 +3557,109 @@ impl PrivateDumpStage {
             Err(errors.join("; "))
         }
     }
+
+    #[cfg(windows)]
+    fn cleanup_now(&mut self) -> Result<(), String> {
+        if !self.cleanup_on_drop {
+            return Ok(());
+        }
+        let mut errors = Vec::new();
+        if let Err(error) = self.remove_effective_config() {
+            errors.push(error);
+        }
+
+        if self.root_anchor.is_none() && (!self.execution_removed || !self.recovery_removed) {
+            errors.push(
+                "private root anchor closed before its child directories were removed".to_string(),
+            );
+        } else if let Some(root_anchor) = self.root_anchor.as_ref() {
+            let root_directory = root_anchor.directory.try_clone().map_err(|error| {
+                format!("failed to clone private root anchor for cleanup: {error}")
+            })?;
+            if let Err(error) = release_anchor_and_remove_private_child(
+                &root_directory,
+                &mut self.execution_anchor,
+                &mut self.execution_removed,
+                OsStr::new("execution"),
+                self.execution_identity,
+                &self.execution,
+            ) {
+                errors.push(format!(
+                    "private execution cleanup failed for {}: {error}",
+                    self.execution.display()
+                ));
+            }
+            if let Err(error) = release_anchor_and_remove_private_child(
+                &root_directory,
+                &mut self.recovery_anchor,
+                &mut self.recovery_removed,
+                OsStr::new("recovery"),
+                self.recovery_identity,
+                &self.recovery,
+            ) {
+                errors.push(format!(
+                    "private recovery cleanup failed for {}: {error}",
+                    self.recovery.display()
+                ));
+            }
+        }
+
+        if errors.is_empty() && !self.root_removed {
+            if let Some(root_anchor) = self.root_anchor.as_ref() {
+                if let Err(error) =
+                    remove_directory_contents_nofollow(&root_anchor.directory, &self.root)
+                {
+                    errors.push(format!(
+                        "private dump contents cleanup failed for {}: {error}",
+                        self.root.display()
+                    ));
+                }
+            }
+            if errors.is_empty() {
+                self.root_anchor.take();
+                match remove_bound_directory_child(
+                    &self.parent_anchor.directory,
+                    &self.root_name,
+                    self.root_identity,
+                    &self.root,
+                ) {
+                    Ok(()) => self.root_removed = true,
+                    Err(error) => errors.push(format!(
+                        "private dump root cleanup failed for {}: {error}",
+                        self.root.display()
+                    )),
+                }
+            }
+        }
+
+        if errors.is_empty() && self.root_removed {
+            self.cleanup_on_drop = false;
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
+    }
+}
+
+#[cfg(windows)]
+fn release_anchor_and_remove_private_child(
+    parent: &File,
+    anchor: &mut Option<DirectoryAnchor>,
+    removed: &mut bool,
+    name: &OsStr,
+    expected_identity: FileIdentity,
+    display_path: &Path,
+) -> Result<(), String> {
+    if *removed {
+        return Ok(());
+    }
+    if let Some(retained) = anchor.as_ref() {
+        remove_directory_contents_nofollow(&retained.directory, display_path)?;
+    }
+    anchor.take();
+    remove_bound_directory_child(parent, name, expected_identity, display_path)?;
+    *removed = true;
+    Ok(())
 }
 
 fn private_creation_error(
@@ -4883,10 +5074,10 @@ fn publish_staged_tree(
 
     run_publication_failpoint(PublicationCheckpoint::BeforeStageInstall)?;
     rename_prechecked_directory_child_no_replace(
-        &private.execution_anchor,
+        private.execution_anchor(),
         OsStr::new("staged-source"),
         staged_identity,
-        &private.recovery_anchor,
+        private.recovery_anchor(),
         &sealed_name,
     )
     .map_err(|error| {
@@ -4897,7 +5088,7 @@ fn publish_staged_tree(
         )
     })?;
     let sealed_snapshot = private
-        .recovery_anchor
+        .recovery_anchor()
         .capture_child(&sealed_name, &sealed)?;
     if &sealed_snapshot != staged {
         return Err(format!(
@@ -4910,7 +5101,7 @@ fn publish_staged_tree(
         rename_child_no_replace(
             target_parent,
             target_name,
-            &private.recovery_anchor,
+            private.recovery_anchor(),
             &backup_name,
         )
         .map_err(|error| {
@@ -4926,7 +5117,10 @@ fn publish_staged_tree(
                 format!("dump target parent changed after the atomic backup move: {error}"),
             ));
         }
-        let moved = match private.recovery_anchor.capture_child(&backup_name, &backup) {
+        let moved = match private
+            .recovery_anchor()
+            .capture_child(&backup_name, &backup)
+        {
             Ok(moved) => moved,
             Err(error) => {
                 return Err(retain_recovery_error(
@@ -4982,7 +5176,7 @@ fn publish_staged_tree(
     // name-swapped source is atomically removed from the Git-visible target into
     // private quarantine before rollback or lock release.
     if let Err(error) = rename_child_no_replace(
-        &private.recovery_anchor,
+        private.recovery_anchor(),
         &sealed_name,
         target_parent,
         target_name,
@@ -5154,7 +5348,7 @@ fn publish_staged_tree(
             if let Err(move_error) = rename_child_no_replace(
                 target_parent,
                 target_name,
-                &private.recovery_anchor,
+                private.recovery_anchor(),
                 &failed_name,
             ) {
                 return Err(retain_recovery_error(
@@ -5166,7 +5360,9 @@ fn publish_staged_tree(
                     ),
                 ));
             }
-            let failed_snapshot = match private.recovery_anchor.capture_child(&failed_name, &failed)
+            let failed_snapshot = match private
+                .recovery_anchor()
+                .capture_child(&failed_name, &failed)
             {
                 Ok(snapshot) => snapshot,
                 Err(snapshot_error) => {
@@ -5272,7 +5468,7 @@ fn quarantine_unverified_install(
     rename_child_no_replace(
         target_parent,
         target_name,
-        &private.recovery_anchor,
+        private.recovery_anchor(),
         quarantine_name,
     )
     .map_err(|error| {
@@ -5284,7 +5480,7 @@ fn quarantine_unverified_install(
     })?;
     if let Some(installed) = installed {
         let quarantined = private
-            .recovery_anchor
+            .recovery_anchor()
             .capture_child(quarantine_name, quarantine_path)
             .map_err(|error| {
                 format!(
@@ -5363,7 +5559,7 @@ fn rollback_before_stage_install(
 ) -> Result<Vec<String>, String> {
     let backup = private.recovery.join(backup_name);
     if let Err(error) = rename_child_no_replace(
-        &private.recovery_anchor,
+        private.recovery_anchor(),
         backup_name,
         target_parent,
         target_name,
@@ -5432,7 +5628,7 @@ fn rollback_before_stage_install(
             let quarantine = rename_child_no_replace(
                 target_parent,
                 target_name,
-                &private.recovery_anchor,
+                private.recovery_anchor(),
                 backup_name,
             );
             let detail = match quarantine {
@@ -6789,10 +6985,13 @@ mod tests {
 
         let normalized = normalize_key_value_connection(connection, config_dir).unwrap();
 
-        assert_eq!(
-            normalized,
-            r#"File="/workspace/project/build/ib;archive";Usr=O'Brien;Pwd="secret;with:semicolon""#
-        );
+        #[cfg(windows)]
+        let expected =
+            r#"File="/workspace/project\build/ib;archive";Usr=O'Brien;Pwd="secret;with:semicolon""#;
+        #[cfg(not(windows))]
+        let expected =
+            r#"File="/workspace/project/build/ib;archive";Usr=O'Brien;Pwd="secret;with:semicolon""#;
+        assert_eq!(normalized, expected);
     }
 
     struct FixedPlatform {
@@ -7051,9 +7250,10 @@ mod tests {
     }
 
     fn fixed_platform(root: &Path) -> FixedPlatform {
-        let executable = root.join("8.3.27.2074/1cv8");
+        let install = root.join("8.3.27.2074");
+        let executable = install.join(PlatformUtility::Designer.executable_name());
         make_platform_executable(&executable);
-        make_platform_executable(&executable.parent().unwrap().join("ibcmd"));
+        make_platform_executable(&install.join(PlatformUtility::Ibcmd.executable_name()));
         FixedPlatform {
             executable,
             version: "8.3.27.2074".to_string(),
@@ -7113,6 +7313,22 @@ mod tests {
         invoke_with_args(runner, platform, invocation, context, &args())
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_applied_full_dump_reaches_runner_and_commits_validated_tree() {
+        let (root, context, _) = workspace("windows-applied-full-dump");
+        let target = context.cwd.join("src");
+        let platform = fixed_platform(&root);
+        let runner = DumpRunner::valid();
+
+        let result = invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context);
+
+        assert!(result.ok, "{result:?}");
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 1);
+        assert!(target.join("Configuration.xml").is_file());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn selected_source_set_target_must_be_relative_and_physically_contained_in_workspace() {
         for case in [
@@ -7130,7 +7346,10 @@ mod tests {
                 "symlink-parent" => {
                     #[cfg(unix)]
                     std::os::unix::fs::symlink(&outside, context.cwd.join("linked")).unwrap();
-                    #[cfg(not(unix))]
+                    #[cfg(windows)]
+                    std::os::windows::fs::symlink_dir(&outside, context.cwd.join("linked"))
+                        .unwrap();
+                    #[cfg(not(any(unix, windows)))]
                     std::fs::create_dir_all(context.cwd.join("linked")).unwrap();
                     "linked/symlink-src".to_string()
                 }
@@ -7139,7 +7358,10 @@ mod tests {
                     std::fs::create_dir_all(&real_target).unwrap();
                     #[cfg(unix)]
                     std::os::unix::fs::symlink(&real_target, context.cwd.join("src")).unwrap();
-                    #[cfg(not(unix))]
+                    #[cfg(windows)]
+                    std::os::windows::fs::symlink_dir(&real_target, context.cwd.join("src"))
+                        .unwrap();
+                    #[cfg(not(any(unix, windows)))]
                     std::fs::create_dir_all(context.cwd.join("src")).unwrap();
                     "src".to_string()
                 }
@@ -7759,7 +7981,6 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    #[ignore = "enabled when Task 4 removes the Windows preparation guard"]
     fn windows_destination_race_after_backup_survives_rollback() {
         let (root, context, _) = workspace("windows-destination-race");
         let target = context.cwd.join("src");
