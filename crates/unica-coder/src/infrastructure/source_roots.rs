@@ -3,6 +3,7 @@ use crate::domain::source_roots::{select_default_source_set, ResolvedSourceRoot}
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform::filesystem::strip_windows_extended_length_prefix;
 use crate::infrastructure::project_sources::discover_project_source_map;
+use std::fmt;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
@@ -10,8 +11,40 @@ use std::path::{Component, Path, PathBuf};
 #[allow(dead_code)]
 pub(crate) struct ResolvedNamedSourceSet {
     pub(crate) source_set: ProjectSourceSet,
+    pub(crate) lexical_path: PathBuf,
     pub(crate) path: PathBuf,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NamedSourceSetErrorKind {
+    NotFound,
+    Ambiguous,
+    Containment,
+    Discovery,
+}
+
+#[derive(Debug)]
+pub(crate) struct NamedSourceSetError {
+    pub(crate) kind: NamedSourceSetErrorKind,
+    detail: String,
+}
+
+impl NamedSourceSetError {
+    fn new(kind: NamedSourceSetErrorKind, detail: impl Into<String>) -> Self {
+        Self {
+            kind,
+            detail: detail.into(),
+        }
+    }
+}
+
+impl fmt::Display for NamedSourceSetError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.detail)
+    }
+}
+
+impl std::error::Error for NamedSourceSetError {}
 
 pub(crate) fn resolve_source_root(
     context: &WorkspaceContext,
@@ -29,27 +62,108 @@ pub(crate) fn resolve_source_root(
 pub(crate) fn resolve_named_source_set(
     context: &WorkspaceContext,
     name: &str,
-) -> Result<ResolvedNamedSourceSet, String> {
+) -> Result<ResolvedNamedSourceSet, NamedSourceSetError> {
     if name.is_empty() {
-        return Err("source set name must not be empty".to_string());
+        return Err(NamedSourceSetError::new(
+            NamedSourceSetErrorKind::NotFound,
+            "source set name must not be empty",
+        ));
     }
-    let map = discover_project_source_map(&context.workspace_root)?;
+    let map = discover_project_source_map(&context.workspace_root)
+        .map_err(|error| NamedSourceSetError::new(NamedSourceSetErrorKind::Discovery, error))?;
     let mut matches = map
         .source_sets
         .into_iter()
         .filter(|source_set| source_set.name == name)
         .collect::<Vec<_>>();
     if matches.len() > 1 {
-        return Err(format!(
-            "project source set name `{name}` is ambiguous across {} exact entries",
-            matches.len()
+        return Err(NamedSourceSetError::new(
+            NamedSourceSetErrorKind::Ambiguous,
+            format!(
+                "project source set name `{name}` is ambiguous across {} exact entries",
+                matches.len()
+            ),
         ));
     }
-    let source_set = matches
-        .pop()
-        .ok_or_else(|| format!("project source set `{name}` was not found"))?;
-    let path = normalize_contained_source_root(&context.workspace_root, &source_set.path)?;
-    Ok(ResolvedNamedSourceSet { source_set, path })
+    let source_set = matches.pop().ok_or_else(|| {
+        NamedSourceSetError::new(
+            NamedSourceSetErrorKind::NotFound,
+            format!("project source set `{name}` was not found"),
+        )
+    })?;
+    let lexical_path = lexical_contained_source_root(&context.workspace_root, &source_set.path)
+        .map_err(|error| NamedSourceSetError::new(NamedSourceSetErrorKind::Containment, error))?;
+    reject_linked_source_root_route(&context.workspace_root, &lexical_path)
+        .map_err(|error| NamedSourceSetError::new(NamedSourceSetErrorKind::Containment, error))?;
+    let path = normalize_contained_source_root(&context.workspace_root, &source_set.path)
+        .map_err(|error| NamedSourceSetError::new(NamedSourceSetErrorKind::Containment, error))?;
+    Ok(ResolvedNamedSourceSet {
+        source_set,
+        lexical_path,
+        path,
+    })
+}
+
+fn lexical_contained_source_root(
+    workspace_root: &Path,
+    configured_path: impl AsRef<Path>,
+) -> Result<PathBuf, String> {
+    let workspace_root = absolute_lexical(workspace_root)?;
+    let configured_path = configured_path.as_ref();
+    let candidate = if configured_path.is_absolute() {
+        normalize_lexically(configured_path)
+    } else {
+        normalize_lexically(&workspace_root.join(configured_path))
+    };
+    if !candidate.starts_with(&workspace_root) {
+        return Err(format!(
+            "configured source root is outside workspace root {}: {}",
+            workspace_root.display(),
+            candidate.display()
+        ));
+    }
+    Ok(candidate)
+}
+
+fn reject_linked_source_root_route(
+    workspace_root: &Path,
+    source_root: &Path,
+) -> Result<(), String> {
+    let workspace_root = absolute_lexical(workspace_root)?;
+    let relative = source_root.strip_prefix(&workspace_root).map_err(|_| {
+        format!(
+            "configured source root is outside workspace root {}",
+            workspace_root.display()
+        )
+    })?;
+    let mut current = workspace_root;
+    for component in relative.components() {
+        current.push(component.as_os_str());
+        let metadata = fs::symlink_metadata(&current).map_err(|error| {
+            format!(
+                "failed to inspect configured source-root route {}: {error}",
+                current.display()
+            )
+        })?;
+        if crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point(&metadata)
+        {
+            return Err(format!(
+                "configured source-root route contains a symbolic link or reparse point: {}",
+                current.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn absolute_lexical(path: &Path) -> Result<PathBuf, String> {
+    if path.is_absolute() {
+        Ok(normalize_lexically(path))
+    } else {
+        std::env::current_dir()
+            .map(|cwd| normalize_lexically(&cwd.join(path)))
+            .map_err(|error| format!("failed to determine current directory: {error}"))
+    }
 }
 
 pub(crate) fn normalize_path_identity(path: &Path) -> Result<PathBuf, String> {

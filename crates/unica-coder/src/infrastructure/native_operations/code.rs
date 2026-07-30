@@ -434,7 +434,8 @@ fn resolve_target(
         .strip_prefix(&source_root.path)
         .map_err(|_| "failed to derive BSL module identity".to_string())?;
     let identity = module_identity(source_relative)?;
-    validate_platform_xml_module_descriptors(context, &source_root.path, &identity.descriptors)?;
+    validate_platform_xml_module_descriptors(context, &source_root.path, &identity.descriptors)
+        .map_err(|error| error.to_string())?;
     let workspace_identity = normalize_path_identity(&context.workspace_root)?;
     let workspace_relative = target_identity
         .strip_prefix(&workspace_identity)
