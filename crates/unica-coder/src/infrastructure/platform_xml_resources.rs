@@ -46,6 +46,9 @@ const MAX_LIVE_SNAPSHOTS: usize = 64;
 #[cfg(test)]
 type ConstructionObserver = Box<dyn FnMut(usize) + Send>;
 
+#[cfg(test)]
+type PostValidationHook = Box<dyn FnOnce() -> Result<(), String> + Send>;
+
 pub(crate) trait SourceResourceClock: Send + Sync {
     fn now(&self) -> Duration;
 }
@@ -100,6 +103,8 @@ pub(crate) struct PlatformXmlResourceProvider {
     #[cfg(test)]
     phase_hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     #[cfg(test)]
+    post_validation_hook: Mutex<Option<PostValidationHook>>,
+    #[cfg(test)]
     construction_observer: Mutex<Option<ConstructionObserver>>,
 }
 
@@ -117,6 +122,8 @@ impl PlatformXmlResourceProvider {
             snapshots: Mutex::new(HashMap::new()),
             #[cfg(test)]
             phase_hook: Mutex::new(None),
+            #[cfg(test)]
+            post_validation_hook: Mutex::new(None),
             #[cfg(test)]
             construction_observer: Mutex::new(None),
         }
@@ -378,29 +385,31 @@ impl PlatformXmlResourceProvider {
         authorize_support(&revalidated, context)?;
         self.run_phase_hook();
         self.check_cancelled(cancellation)?;
-        let report = transaction.commit().map_err(map_transaction_error)?;
+        let report = transaction
+            .commit_with_post_validation(|| {
+                self.run_post_validation_hook_for_test()?;
+                let published = read_root_relative_regular_file(
+                    &evidence.source_root,
+                    &evidence.target_path,
+                    postimage.len(),
+                    |_| {},
+                )
+                .map_err(|_| {
+                    "published source resource could not be securely verified".to_string()
+                })?;
+                if published.bytes != postimage {
+                    return Err(
+                        "published source resource bytes do not match the mutation plan"
+                            .to_string(),
+                    );
+                }
+                Ok(())
+            })
+            .map_err(map_transaction_error)?;
         if report.updated != [evidence.target_path.clone()] || !report.created.is_empty() {
             return Err(public_error(
                 SourceResourceErrorCode::IntegrityFailed,
                 "source resource transaction reported an unexpected publication set",
-            ));
-        }
-        let published = read_root_relative_regular_file(
-            &evidence.source_root,
-            &evidence.target_path,
-            postimage.len(),
-            |_| {},
-        )
-        .map_err(|_| {
-            public_error(
-                SourceResourceErrorCode::IntegrityFailed,
-                "published source resource could not be verified",
-            )
-        })?;
-        if published.bytes != postimage {
-            return Err(public_error(
-                SourceResourceErrorCode::IntegrityFailed,
-                "published source resource hash does not match the mutation plan",
             ));
         }
         Ok(SourceApplyExecution {
@@ -752,6 +761,35 @@ impl PlatformXmlResourceProvider {
 
     #[cfg(not(test))]
     fn run_phase_hook(&self) {}
+
+    #[cfg(test)]
+    fn set_post_validation_hook_for_test(
+        &self,
+        hook: impl FnOnce() -> Result<(), String> + Send + 'static,
+    ) {
+        let previous = self
+            .post_validation_hook
+            .lock()
+            .unwrap()
+            .replace(Box::new(hook));
+        assert!(
+            previous.is_none(),
+            "source resource post-validation hook leaked"
+        );
+    }
+
+    #[cfg(test)]
+    fn run_post_validation_hook_for_test(&self) -> Result<(), String> {
+        match self.post_validation_hook.lock().unwrap().take() {
+            Some(hook) => hook(),
+            None => Ok(()),
+        }
+    }
+
+    #[cfg(not(test))]
+    fn run_post_validation_hook_for_test(&self) -> Result<(), String> {
+        Ok(())
+    }
 
     #[cfg(test)]
     fn set_construction_observer_for_test(&self, observer: impl FnMut(usize) + Send + 'static) {
@@ -2365,6 +2403,48 @@ mod tests {
             )
             .unwrap(),
             b"Procedure Run()\nEndProcedure\n"
+        );
+    }
+
+    #[test]
+    fn source_apply_post_publication_validation_failure_rolls_back_before_returning_error() {
+        let fixture = Fixture::new(b"Procedure Run()\nEndProcedure\n");
+        let module = fixture.root.join("src/CommonModules/Shared/Ext/Module.bsl");
+        let before = fs::read(&module).unwrap();
+        let replacement = b"Procedure Changed()\nEndProcedure\n".to_vec();
+        let (provider, _) = provider();
+        let page = provider
+            .resources(
+                fixture.module_request(ResourceScope::SelfOnly, 50),
+                &fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let module_during_validation = module.clone();
+        let replacement_during_validation = replacement.clone();
+        provider.set_post_validation_hook_for_test(move || {
+            assert_eq!(
+                fs::read(&module_during_validation).unwrap(),
+                replacement_during_validation,
+                "post-validation must run after publication"
+            );
+            Err("injected source.apply post-publication validation failure".to_string())
+        });
+
+        let error = provider
+            .apply(
+                apply_request(&page, std::str::from_utf8(&replacement).unwrap()),
+                &fixture.context,
+                false,
+                &CancellationToken::new(),
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code, SourceResourceErrorCode::IntegrityFailed);
+        assert_eq!(
+            fs::read(&module).unwrap(),
+            before,
+            "a reported post-validation failure must restore the snapshot preimage"
         );
     }
 }
