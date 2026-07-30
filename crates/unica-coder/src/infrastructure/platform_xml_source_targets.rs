@@ -310,10 +310,10 @@ pub(crate) fn locate_platform_xml_source_path(
 
     let raw = Path::new(request.path.trim());
     let Some(relative) = source_set_relative_path(context, &selected, raw) else {
-        return Ok(reject(
-            portable_relative(raw),
-            LocateRejection::OutsideSourceSet,
-        ));
+        // There is no source-set-relative form for a path outside the set, and
+        // echoing a stripped one back would read as relative while naming
+        // somewhere else entirely.
+        return Ok(reject(String::new(), LocateRejection::OutsideSourceSet));
     };
     check_navigation_cancellation(cancellation)?;
     let relative_text = portable_relative(&relative);
@@ -484,7 +484,7 @@ fn resolve_prefix_by_scoped_scan(
     .map_err(|error| error.to_string())?;
     let query = prefix.as_str().to_string();
     let parts = query.split('.').collect::<Vec<_>>();
-    if parts.len() > 3 {
+    if parts.len() > 5 {
         return Ok(None);
     }
     let selected = resolve_named_source_set(context, &request.source_set)
@@ -549,19 +549,61 @@ fn resolve_prefix_by_scoped_scan(
             }
             for terminal in crate::domain::source_target::module_terminals() {
                 check_navigation_cancellation(cancellation)?;
-                let candidate = format!("{object}.{terminal}");
-                if !candidate.starts_with(&query) {
-                    continue;
+                push_module_candidate(
+                    context,
+                    &selected,
+                    &format!("{object}.{terminal}"),
+                    &query,
+                    terminal,
+                    &mut matches,
+                )?;
+            }
+            // A nested Form or Command is addressable in its own right, so a
+            // prefix that can reach one must not be answered without it. The
+            // descent is affordable only once a name prefix bounds the outer
+            // loop; a bare-kind query says so instead of claiming completeness.
+            if parts.len() < 2 {
+                continue;
+            }
+            for (child_kind, child_directory) in [("Form", "Forms"), ("Command", "Commands")] {
+                check_navigation_cancellation(cancellation)?;
+                if !supports_nested_form_or_command(kind.tag) {
+                    break;
                 }
-                if rendered_module_node(context, &selected, &candidate)?.is_some() {
-                    if let Ok(address) = MetadataAddress::parse(
-                        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-                        &candidate,
-                    ) {
-                        matches.push((address, TargetKind::Module, (*terminal).to_string()));
+                for child in proven_child_names(
+                    &selected.path,
+                    kind,
+                    &name,
+                    child_kind,
+                    child_directory,
+                    &mut partial,
+                    cancellation,
+                )? {
+                    check_navigation_cancellation(cancellation)?;
+                    let nested = format!("{object}.{child_kind}.{child}");
+                    if nested.starts_with(&query) {
+                        if let Ok(address) = MetadataAddress::parse(
+                            crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                            &nested,
+                        ) {
+                            matches.push((address, TargetKind::MetadataObject, child.clone()));
+                        }
                     }
+                    let terminal = format!("{child_kind}Module");
+                    push_module_candidate(
+                        context,
+                        &selected,
+                        &format!("{nested}.{terminal}"),
+                        &query,
+                        &terminal,
+                        &mut matches,
+                    )?;
                 }
             }
+        }
+        if parts.len() < 2 {
+            // Nested descendants were not enumerated for this query shape.
+            partial = true;
         }
     }
     if parts.len() == 1 {
@@ -625,6 +667,76 @@ fn resolve_prefix_by_scoped_scan(
         completeness,
         next_cursor,
     }))
+}
+
+fn push_module_candidate(
+    context: &WorkspaceContext,
+    selected: &ResolvedNamedSourceSet,
+    candidate: &str,
+    query: &str,
+    display_name: &str,
+    matches: &mut Vec<(MetadataAddress, TargetKind, String)>,
+) -> Result<(), String> {
+    if !candidate.starts_with(query) {
+        return Ok(());
+    }
+    if rendered_module_node(context, selected, candidate)?.is_none() {
+        return Ok(());
+    }
+    if let Ok(address) = MetadataAddress::parse(
+        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+        candidate,
+    ) {
+        matches.push((address, TargetKind::Module, display_name.to_string()));
+    }
+    Ok(())
+}
+
+/// Reads one nested `Forms`/`Commands` collection of a proven owner and returns
+/// the child names whose own descriptor proves them.
+fn proven_child_names(
+    source_root: &Path,
+    kind: &MetadataKind,
+    owner: &str,
+    child_kind: &str,
+    child_directory: &str,
+    partial: &mut bool,
+    cancellation: &CancellationToken,
+) -> Result<Vec<String>, String> {
+    let directory = source_root
+        .join(kind.directory)
+        .join(owner)
+        .join(child_directory);
+    let entries = match fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => {
+            *partial = true;
+            return Ok(Vec::new());
+        }
+    };
+    let mut names = Vec::new();
+    for entry in entries {
+        check_navigation_cancellation(cancellation)?;
+        let Ok(entry) = entry else {
+            *partial = true;
+            continue;
+        };
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("xml") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+            *partial = true;
+            continue;
+        };
+        match descriptor_name(&path, child_kind) {
+            Ok(name) if name == stem => names.push(name),
+            Ok(_) => *partial = true,
+            Err(()) => *partial = true,
+        }
+    }
+    Ok(names)
 }
 
 /// Reads one collection directory and returns the names whose descriptor
@@ -4001,6 +4113,82 @@ mod tests {
     }
 
     #[test]
+    fn prefix_scan_reaches_nested_children_and_says_when_it_did_not() {
+        let context = fixture(
+            "navigation-prefix-nested",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_configuration_descriptor(&root, false);
+        fs::create_dir_all(root.join("Catalogs/Items/Forms/Order/Ext/Form")).unwrap();
+        fs::write(
+            root.join("Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Items</Name></Properties></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("Catalogs/Items/Forms/Order.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form><Properties><Name>Order</Name></Properties></Form></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("Catalogs/Items/Forms/Order/Ext/Form/Module.bsl"),
+            "Procedure Run()\nEndProcedure\n",
+        )
+        .unwrap();
+
+        let resolve = |query: &str| {
+            resolve_platform_xml_source_navigation(
+                &context,
+                &SourceResolveRequest {
+                    source_set: "main".to_string(),
+                    query: query.to_string(),
+                    mode: SourceNavigationMode::Prefix,
+                    target_kind: None,
+                    limit: 50,
+                    cursor: None,
+                },
+            )
+            .unwrap()
+        };
+
+        // A prefix that can reach a nested Form must return it.
+        let owner = resolve("Catalog.Items");
+        let found = owner
+            .candidates
+            .iter()
+            .map(|candidate| candidate.metadata_path.as_str())
+            .collect::<Vec<_>>();
+        assert!(found.contains(&"Catalog.Items.Form.Order"), "{found:?}");
+        assert!(
+            found.contains(&"Catalog.Items.Form.Order.FormModule"),
+            "{found:?}"
+        );
+        assert_eq!(owner.completeness, NavigationCompleteness::Complete);
+
+        let nested = resolve("Catalog.Items.Form.Ord");
+        assert_eq!(
+            nested
+                .candidates
+                .iter()
+                .map(|candidate| candidate.metadata_path.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "Catalog.Items.Form.Order",
+                "Catalog.Items.Form.Order.FormModule"
+            ]
+        );
+
+        // A bare-kind prefix does not descend, and says so instead of claiming
+        // its answer is complete.
+        assert_eq!(
+            resolve("Catalog").completeness,
+            NavigationCompleteness::Partial
+        );
+        cleanup(&context);
+    }
+
+    #[test]
     fn locate_recovers_the_address_that_owns_a_source_path() {
         let context = fixture(
             "navigation-locate",
@@ -4055,7 +4243,12 @@ mod tests {
             outside.rejection,
             Some(crate::application::source_navigation::LocateRejection::OutsideSourceSet)
         );
-        assert!(!outside.relative_path.contains("etc/passwd") || outside.metadata_path.is_none());
+        assert!(outside.metadata_path.is_none());
+        assert!(outside.owner_metadata_path.is_none());
+        assert_eq!(
+            outside.relative_path, "",
+            "a path outside the source set has no relative form to echo"
+        );
         cleanup(&context);
     }
 
