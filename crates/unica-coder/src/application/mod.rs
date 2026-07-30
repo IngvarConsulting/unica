@@ -232,19 +232,6 @@ pub fn tools() -> Vec<ToolSpec> {
             },
         },
         ToolSpec {
-            name: "unica.source.apply",
-            description:
-                "Preview or replace one existing BSL resource from a complete immutable snapshot.",
-            mutating: true,
-            cache_access: CacheAccess {
-                reads: &[],
-                writes: &["bsl_index", "bsl_diagnostics"],
-            },
-            handler: ToolHandler::SourceResources {
-                operation: SourceResourceOperation::Apply,
-            },
-        },
-        ToolSpec {
             name: "unica.build.dump",
             description: "Dump source set through the internal build/runtime adapter.",
             mutating: true,
@@ -1937,18 +1924,12 @@ mod tests {
             ));
         }
 
-        let apply = tools()
+        // The bounded resource surface is read-only: BSL mutation belongs to
+        // `unica.code.patch`, which edits the selected method or anchor instead
+        // of rewriting a whole module.
+        assert!(tools()
             .into_iter()
-            .find(|tool| tool.name == "unica.source.apply")
-            .unwrap();
-        assert!(apply.mutating);
-        assert_eq!(apply.cache_access.writes, ["bsl_index", "bsl_diagnostics"]);
-        assert!(matches!(
-            apply.handler,
-            ToolHandler::SourceResources {
-                operation: SourceResourceOperation::Apply
-            }
-        ));
+            .all(|tool| tool.name != "unica.source.apply"));
     }
 
     #[test]

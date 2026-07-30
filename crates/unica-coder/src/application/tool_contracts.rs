@@ -5,9 +5,7 @@ use super::{
     SourceResourceOperation, ToolHandler, ToolSpec,
 };
 use crate::domain::form_edit::{form_edit_definition_schema, validate_form_edit_definition};
-use crate::domain::source_resources::{
-    SOURCE_READ_LIMIT_MAX, SOURCE_REPLACEMENT_MAX_BYTES, SOURCE_RESOURCE_PAGE_LIMIT_MAX,
-};
+use crate::domain::source_resources::{SOURCE_READ_LIMIT_MAX, SOURCE_RESOURCE_PAGE_LIMIT_MAX};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use uuid::Uuid;
@@ -43,14 +41,6 @@ const SOURCE_RESOURCES_ARGS: &[&str] = &[
     "limit",
 ];
 const SOURCE_READ_ARGS: &[&str] = &["snapshotId", "resourceId", "offset", "limit"];
-const SOURCE_APPLY_ARGS: &[&str] = &[
-    "snapshotId",
-    "resourceId",
-    "expectedHash",
-    "content",
-    "contentEncoding",
-];
-
 pub(crate) const DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS: u64 = 30;
 pub(crate) const DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS: u64 = 3600;
 
@@ -784,39 +774,6 @@ fn validate_source_resource_arguments(
         }
         SourceResourceOperation::Read => {
             validate_integer_bound(tool.name, args, "limit", 1, SOURCE_READ_LIMIT_MAX as u64)?;
-        }
-        SourceResourceOperation::Apply => {
-            for required in ["snapshotId", "resourceId", "expectedHash"] {
-                if args
-                    .get(required)
-                    .and_then(Value::as_str)
-                    .is_none_or(|value| value.trim().is_empty())
-                {
-                    return Err(format!(
-                        "{} argument `{required}` must be a non-empty string",
-                        tool.name
-                    ));
-                }
-            }
-            let content = args
-                .get("content")
-                .and_then(Value::as_str)
-                .ok_or_else(|| format!("{} argument `content` must be a string", tool.name))?;
-            if content.len() > SOURCE_REPLACEMENT_MAX_BYTES {
-                return Err(format!(
-                    "{} argument `content` exceeds {} decoded UTF-8 bytes",
-                    tool.name, SOURCE_REPLACEMENT_MAX_BYTES
-                ));
-            }
-            if args
-                .get("contentEncoding")
-                .is_some_and(|value| value.as_str() != Some("utf-8"))
-            {
-                return Err(format!(
-                    "{} argument `contentEncoding` must be `utf-8`",
-                    tool.name
-                ));
-            }
         }
     }
     Ok(())
@@ -1714,7 +1671,6 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
         ToolHandler::SourceResources { operation } => names.extend(match operation {
             SourceResourceOperation::Resources => SOURCE_RESOURCES_ARGS,
             SourceResourceOperation::Read => SOURCE_READ_ARGS,
-            SourceResourceOperation::Apply => SOURCE_APPLY_ARGS,
         }),
         ToolHandler::CodeAdapter { .. } => names.extend(code_args_for(tool.name)),
         ToolHandler::StandardsAdapter { .. } => names.extend(STANDARDS_ARGS),
@@ -1765,9 +1721,6 @@ fn required_args(tool: &ToolSpec) -> Vec<&'static str> {
         ToolHandler::SourceResources { operation } => match operation {
             SourceResourceOperation::Resources => Vec::new(),
             SourceResourceOperation::Read => vec!["snapshotId", "resourceId"],
-            SourceResourceOperation::Apply => {
-                vec!["snapshotId", "resourceId", "expectedHash", "content"]
-            }
         },
         ToolHandler::CodeAdapter { .. } => match tool.name {
             "unica.code.graph" => vec!["mode"],
@@ -2066,11 +2019,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "content",
-        "BSL text: unica.code.patch inserts non-empty content at its selector, while unica.source.apply replaces one snapshotted BSL module and preserves its observed BOM and uniform EOL",
-    ),
-    (
-        "contentEncoding",
-        "unica.source.apply replacement encoding; the first contract accepts only utf-8",
+        "BSL text for unica.code.patch: inserted at the selector for operation insert, or written over the selected method or anchor for operation replace",
     ),
     (
         "context",
@@ -2381,11 +2330,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "operation",
-        "Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` for unica.code.patch; the metadata edit verbs for unica.meta.edit — read the enum published in the tool's own schema.",
-    ),
-    (
-        "expectedHash",
-        "Exact SHA-256 hash returned for the resource by source.resources; source.apply fails closed when either the argument or current preimage differs",
+        "Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; the metadata edit verbs for unica.meta.edit — read the enum published in the tool's own schema.",
     ),
     (
         "output",
@@ -2770,18 +2715,6 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
                 "minimum": 0,
                 "description": "Zero-based byte offset inside the immutable resource snapshot"
             }),
-            (SourceResourceOperation::Apply, "content") => json!({
-                "type": "string",
-                "maxLength": SOURCE_REPLACEMENT_MAX_BYTES,
-                "description": "Complete UTF-8 BSL replacement text; decoded bytes are capped again by the provider"
-            }),
-            (SourceResourceOperation::Apply, "contentEncoding") => json!({
-                "type": "string",
-                "const": "utf-8"
-            }),
-            (SourceResourceOperation::Apply, "expectedHash") => {
-                json!({ "type": "string", "minLength": 1, "pattern": r"^sha256:[0-9a-f]{64}$" })
-            }
             (_, "sourceSet" | "metadataPath" | "snapshotId" | "resourceId" | "cursor") => {
                 json!({ "type": "string", "minLength": 1, "pattern": r"\S" })
             }
@@ -4049,13 +3982,13 @@ mod tests {
             .into_iter()
             .find(|tool| tool.name == "unica.source.read")
             .expect("source.read is registered");
-        let apply = crate::application::tools()
+        // The bounded resource surface is read-only; BSL mutation lives in
+        // `unica.code.patch`.
+        assert!(crate::application::tools()
             .into_iter()
-            .find(|tool| tool.name == "unica.source.apply")
-            .expect("source.apply is registered");
+            .all(|tool| tool.name != "unica.source.apply"));
         let resources_schema = input_schema_for_tool(&resources);
         let read_schema = input_schema_for_tool(&read);
-        let apply_schema = input_schema_for_tool(&apply);
 
         assert_eq!(resources_schema["additionalProperties"], false);
         assert_eq!(
@@ -4067,19 +4000,6 @@ mod tests {
         assert_eq!(read_schema["required"], json!(["snapshotId", "resourceId"]));
         assert_eq!(read_schema["properties"]["offset"]["minimum"], 0);
         assert_eq!(read_schema["properties"]["limit"]["maximum"], 65_536);
-        assert_eq!(
-            apply_schema["required"],
-            json!(["snapshotId", "resourceId", "expectedHash", "content"])
-        );
-        assert_eq!(apply_schema["properties"]["content"]["type"], "string");
-        assert_eq!(
-            apply_schema["properties"]["content"]["maxLength"],
-            1024 * 1024
-        );
-        assert_eq!(
-            apply_schema["properties"]["contentEncoding"]["const"],
-            "utf-8"
-        );
         for forbidden in [
             "path",
             "sourceDir",
@@ -4089,33 +4009,15 @@ mod tests {
             "expectedHash",
             "content",
         ] {
-            assert!(
-                resources_schema["properties"].get(forbidden).is_none(),
-                "source.resources must not publish {forbidden}"
-            );
-            if forbidden != "content" {
+            for (name, schema) in [
+                ("source.resources", &resources_schema),
+                ("source.read", &read_schema),
+            ] {
                 assert!(
-                    read_schema["properties"].get(forbidden).is_none(),
-                    "source.read must not publish {forbidden}"
+                    schema["properties"].get(forbidden).is_none(),
+                    "{name} must not publish {forbidden}"
                 );
             }
-            assert!(
-                apply_schema["properties"].get(forbidden).is_none()
-                    || matches!(forbidden, "expectedHash" | "content"),
-                "source.apply must not publish {forbidden}"
-            );
-        }
-        for forbidden in [
-            "path",
-            "sourceDir",
-            "handle",
-            "provider",
-            "providerRevision",
-        ] {
-            assert!(
-                apply_schema["properties"].get(forbidden).is_none(),
-                "source.apply must not publish {forbidden}"
-            );
         }
     }
 

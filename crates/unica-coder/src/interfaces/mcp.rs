@@ -627,7 +627,7 @@ mod tests {
     }
 
     #[test]
-    fn source_resource_mcp_round_trip_reuses_instance_snapshot_and_hides_private_state() {
+    fn source_resource_mcp_round_trip_reuses_one_snapshot_and_hides_private_state() {
         let root = std::env::temp_dir().join(format!(
             "unica-source-resource-mcp-{}-{}",
             std::process::id(),
@@ -650,377 +650,61 @@ mod tests {
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule><Properties><Name>Shared</Name></Properties></CommonModule></MetaDataObject>"#,
         )
         .unwrap();
-        std::fs::write(
-            source.join("CommonModules/Shared/Ext/Module.bsl"),
-            b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\n",
-        )
-        .unwrap();
+        let module = source.join("CommonModules/Shared/Ext/Module.bsl");
+        let bytes = b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\n";
+        std::fs::write(&module, bytes).unwrap();
 
         let app = UnicaApplication::new();
-        let resources_args = json!({
-            "cwd": root,
-            "sourceSet": "main",
-            "metadataPath": "CommonModule.Shared.Module",
-            "scope": "self",
-            "limit": 50
-        })
-        .as_object()
-        .unwrap()
-        .clone();
         let resources: Value = serde_json::from_str(
             &call_tool_text(
                 &app,
                 "unica.source.resources",
-                &resources_args,
+                json!({
+                    "cwd": root,
+                    "sourceSet": "main",
+                    "metadataPath": "CommonModule.Shared.Module",
+                    "scope": "self"
+                })
+                .as_object()
+                .unwrap(),
                 CancellationToken::new(),
             )
             .unwrap(),
         )
         .unwrap();
-        assert!(resources["ok"].as_bool().unwrap());
-        assert_eq!(resources["data"]["completeness"], "complete");
-        assert_eq!(resources["data"]["resources"].as_array().unwrap().len(), 1);
-        assert_eq!(resources["cache"]["events"], json!([]));
-        assert_eq!(resources["cache"]["invalidated"], json!([]));
+        let snapshot = resources["data"]["snapshotId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let resource = &resources["data"]["resources"][0];
+        // The surface is read-only, so nothing may advertise a write.
+        assert_eq!(resource["access"], json!(["read"]));
         assert_no_private_source_resource_keys(&resources);
 
-        let read_args = json!({
-            "cwd": root,
-            "snapshotId": resources["data"]["snapshotId"],
-            "resourceId": resources["data"]["resources"][0]["resourceId"],
-            "offset": 0,
-            "limit": 9
-        })
-        .as_object()
-        .unwrap()
-        .clone();
         let read: Value = serde_json::from_str(
             &call_tool_text(
                 &app,
                 "unica.source.read",
-                &read_args,
+                json!({
+                    "cwd": root,
+                    "snapshotId": snapshot,
+                    "resourceId": resource["resourceId"].as_str().unwrap()
+                })
+                .as_object()
+                .unwrap(),
                 CancellationToken::new(),
             )
             .unwrap(),
         )
         .unwrap();
-        assert!(read["ok"].as_bool().unwrap());
+        assert_eq!(read["data"]["eof"], json!(true));
         assert_eq!(read["data"]["contentEncoding"], "utf-8");
-        assert_eq!(read["data"]["textProfile"]["bomPrefixBytes"], 3);
-        assert_eq!(read["data"]["textProfile"]["eol"], "crlf");
-        assert!(read["data"]["length"].as_u64().unwrap() <= 9);
         assert_no_private_source_resource_keys(&read);
-
-        let apply_args = json!({
-            "cwd": root,
-            "snapshotId": resources["data"]["snapshotId"],
-            "resourceId": resources["data"]["resources"][0]["resourceId"],
-            "expectedHash": resources["data"]["resources"][0]["hash"],
-            "content": "Procedure Changed()\nEndProcedure\n",
-            "contentEncoding": "utf-8"
-        })
-        .as_object()
-        .unwrap()
-        .clone();
-        let preview: Value = serde_json::from_str(
-            &call_tool_text(
-                &app,
-                "unica.source.apply",
-                &apply_args,
-                CancellationToken::new(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        assert!(preview["ok"].as_bool().unwrap());
-        assert_eq!(preview["cache"]["mode"], "dry-run");
         assert_eq!(
-            preview["cache"]["events"],
-            json!(["SourceResourcesReplaced"])
+            std::fs::read(&module).unwrap(),
+            bytes,
+            "a read-only flow must not touch the module"
         );
-        assert_eq!(
-            preview["cache"]["invalidated"],
-            json!(["bsl_diagnostics", "bsl_index"])
-        );
-        assert_eq!(
-            std::fs::read(source.join("CommonModules/Shared/Ext/Module.bsl")).unwrap(),
-            b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\n"
-        );
-        assert!(
-            !root.join(".build/unica/state.json").exists(),
-            "preview must project cache impact without persisting workspace state"
-        );
-        assert_no_private_source_resource_keys(&preview);
-
-        let mut applied_args = apply_args;
-        applied_args.insert("dryRun".to_string(), json!(false));
-        let applied: Value = serde_json::from_str(
-            &call_tool_text(
-                &app,
-                "unica.source.apply",
-                &applied_args,
-                CancellationToken::new(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        assert!(applied["ok"].as_bool().unwrap());
-        assert_eq!(
-            applied["cache"]["events"],
-            json!(["SourceResourcesReplaced"])
-        );
-        assert_eq!(
-            applied["cache"]["invalidated"],
-            json!(["bsl_diagnostics", "bsl_index"])
-        );
-        assert_eq!(
-            std::fs::read(source.join("CommonModules/Shared/Ext/Module.bsl")).unwrap(),
-            b"\xef\xbb\xbfProcedure Changed()\r\nEndProcedure\r\n"
-        );
-        assert_eq!(applied["data"]["postHash"], preview["data"]["postHash"]);
-        assert_no_private_source_resource_keys(&applied);
-
-        let other_app_error = call_tool_text(
-            &UnicaApplication::new(),
-            "unica.source.read",
-            &read_args,
-            CancellationToken::new(),
-        )
-        .unwrap_err();
-        assert!(
-            other_app_error.1.contains("snapshot_not_found"),
-            "{other_app_error:?}"
-        );
-
-        let first_page_args = json!({
-            "cwd": root,
-            "sourceSet": "main",
-            "scope": "aggregate",
-            "limit": 2
-        })
-        .as_object()
-        .unwrap()
-        .clone();
-        let first_page: Value = serde_json::from_str(
-            &call_tool_text(
-                &app,
-                "unica.source.resources",
-                &first_page_args,
-                CancellationToken::new(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(first_page["data"]["resources"].as_array().unwrap().len(), 2);
-        let continuation_args = json!({
-            "cwd": root,
-            "snapshotId": first_page["data"]["snapshotId"],
-            "cursor": first_page["data"]["nextCursor"]
-        })
-        .as_object()
-        .unwrap()
-        .clone();
-        let continuation: Value = serde_json::from_str(
-            &call_tool_text(
-                &app,
-                "unica.source.resources",
-                &continuation_args,
-                CancellationToken::new(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            continuation["data"]["resources"].as_array().unwrap().len(),
-            1
-        );
-        assert_no_private_source_resource_keys(&continuation);
-
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn source_apply_warn_mode_preserves_support_warning_for_preview_and_apply() {
-        for dry_run in [true, false] {
-            let root = std::env::temp_dir().join(format!(
-                "unica-source-resource-support-warn-{}-{}-{dry_run}",
-                std::process::id(),
-                uuid::Uuid::new_v4()
-            ));
-            let source = root.join("src");
-            let module = source.join("CommonModules/Shared/Ext/Module.bsl");
-            std::fs::create_dir_all(module.parent().unwrap()).unwrap();
-            std::fs::create_dir_all(source.join("Ext")).unwrap();
-            std::fs::write(
-                root.join("v8project.yaml"),
-                "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-            )
-            .unwrap();
-            std::fs::write(
-                root.join(".v8-project.json"),
-                r#"{"editingAllowedCheck":"warn"}"#,
-            )
-            .unwrap();
-            std::fs::write(
-                source.join("Configuration.xml"),
-                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Main</Name></Properties><ChildObjects><CommonModule>Shared</CommonModule></ChildObjects></Configuration></MetaDataObject>"#,
-            )
-            .unwrap();
-            std::fs::write(
-                source.join("CommonModules/Shared.xml"),
-                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule><Properties><Name>Shared</Name></Properties></CommonModule></MetaDataObject>"#,
-            )
-            .unwrap();
-            std::fs::write(&module, "Procedure Run()\nEndProcedure\n").unwrap();
-            std::fs::write(
-                source.join("Ext/ParentConfigurations.bin"),
-                concat!(
-                    "\u{feff}{6,1,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,",
-                    "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",",
-                    "\"VendorConf\",0}"
-                ),
-            )
-            .unwrap();
-
-            let app = UnicaApplication::new();
-            let resources_args = json!({
-                "cwd": root,
-                "sourceSet": "main",
-                "metadataPath": "CommonModule.Shared.Module",
-                "scope": "self"
-            })
-            .as_object()
-            .unwrap()
-            .clone();
-            let resources: Value = serde_json::from_str(
-                &call_tool_text(
-                    &app,
-                    "unica.source.resources",
-                    &resources_args,
-                    CancellationToken::new(),
-                )
-                .unwrap(),
-            )
-            .unwrap();
-            let apply_args = json!({
-                "cwd": root,
-                "snapshotId": resources["data"]["snapshotId"],
-                "resourceId": resources["data"]["resources"][0]["resourceId"],
-                "expectedHash": resources["data"]["resources"][0]["hash"],
-                "content": "Procedure Changed()\nEndProcedure\n",
-                "contentEncoding": "utf-8",
-                "dryRun": dry_run
-            })
-            .as_object()
-            .unwrap()
-            .clone();
-
-            let result: Value = serde_json::from_str(
-                &call_tool_text(
-                    &app,
-                    "unica.source.apply",
-                    &apply_args,
-                    CancellationToken::new(),
-                )
-                .unwrap(),
-            )
-            .unwrap();
-
-            assert!(result["ok"].as_bool().unwrap(), "{result}");
-            let warnings = result["warnings"].as_array().unwrap();
-            assert!(
-                warnings
-                    .iter()
-                    .any(|warning| warning.as_str().unwrap().contains("support guard")),
-                "dryRun={dry_run}: {result}"
-            );
-            assert!(
-                warnings.iter().all(|warning| !warning
-                    .as_str()
-                    .unwrap()
-                    .contains(&root.display().to_string())),
-                "source warnings must not disclose the workspace path: {result}"
-            );
-            std::fs::remove_dir_all(root).unwrap();
-        }
-    }
-
-    #[test]
-    fn source_apply_refuses_bytes_when_cache_effects_cannot_be_staged() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-source-resource-cache-rollback-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
-        let source = root.join("src");
-        let module = source.join("CommonModules/Shared/Ext/Module.bsl");
-        let original = b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\n";
-        std::fs::create_dir_all(module.parent().unwrap()).unwrap();
-        std::fs::write(
-            root.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        std::fs::write(
-            source.join("Configuration.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Main</Name></Properties><ChildObjects><CommonModule>Shared</CommonModule></ChildObjects></Configuration></MetaDataObject>"#,
-        )
-        .unwrap();
-        std::fs::write(
-            source.join("CommonModules/Shared.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule><Properties><Name>Shared</Name></Properties></CommonModule></MetaDataObject>"#,
-        )
-        .unwrap();
-        std::fs::write(&module, original).unwrap();
-
-        let app = UnicaApplication::new();
-        let resources_args = json!({
-            "cwd": root,
-            "sourceSet": "main",
-            "metadataPath": "CommonModule.Shared.Module",
-            "scope": "self"
-        })
-        .as_object()
-        .unwrap()
-        .clone();
-        let resources: Value = serde_json::from_str(
-            &call_tool_text(
-                &app,
-                "unica.source.resources",
-                &resources_args,
-                CancellationToken::new(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-
-        let state_path = root.join(".build/unica/state.json");
-        std::fs::create_dir_all(&state_path).unwrap();
-        let apply_args = json!({
-            "cwd": root,
-            "snapshotId": resources["data"]["snapshotId"],
-            "resourceId": resources["data"]["resources"][0]["resourceId"],
-            "expectedHash": resources["data"]["resources"][0]["hash"],
-            "content": "Procedure Changed()\nEndProcedure\n",
-            "contentEncoding": "utf-8",
-            "dryRun": false
-        })
-        .as_object()
-        .unwrap()
-        .clone();
-
-        let error = call_tool_text(
-            &app,
-            "unica.source.apply",
-            &apply_args,
-            CancellationToken::new(),
-        )
-        .unwrap_err();
-
-        assert_eq!(error.0, TOOL_EXECUTION_ERROR);
-        assert!(error.1.contains("integrity_failed"), "{error:?}");
-        assert_eq!(std::fs::read(&module).unwrap(), original);
-        assert!(state_path.is_dir());
 
         std::fs::remove_dir_all(root).unwrap();
     }

@@ -267,10 +267,10 @@ Unica. Каждая запись формулирует одно нормати�
 
 - **Rule:** Публичная группа источников содержит читающие
   `unica.source.resolve`, `unica.source.children`, `unica.source.locate`,
-  `unica.source.resources`, `unica.source.read` и мутирующий
-  `unica.source.apply`; их схемы принимают
-  логические цели и непрозрачные снимки, не принимают физический путь или
-  закрытую ручку и удерживают объявленные пределы.
+  `unica.source.resources` и `unica.source.read`; группа не содержит мутирующих
+  инструментов, её схемы принимают логические цели и непрозрачные снимки, не
+  принимают физический путь или закрытую ручку и удерживают объявленные
+  пределы. Изменение BSL выполняет `unica.code.patch`.
 - **Decision:** ADR-0021, ADR-0022
 - **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
@@ -358,9 +358,9 @@ Unica. Каждая запись формулирует одно нормати�
 
 - **Rule:** Скилл ресурсного доступа сначала выбирает существующий предметный
   инструмент записи, использует `unica.source.resources` и `unica.source.read`
-  для исследования, а `unica.source.apply` вызывает только с явным
-  обоснованием отсутствия предметного writer-а, через предпросмотр до
-  применения.
+  для исследования, а изменение BSL вносит через `unica.code.patch` с
+  предпросмотром до применения; ресурсная группа мутирующих инструментов не
+  содержит.
 - **Decision:** ADR-0022
 - **Check:** `ci-test` — `tests/ci/test_unica_skills.py`
 - **Scope:** source, packaged
@@ -630,17 +630,6 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs`
 - **Scope:** source, runtime
 
-### INV-SOURCE-HANDLE-REAUTH — Закрытая ручка не является правом записи
-
-- **Rule:** `unica.source.apply` перед планированием и перед публикацией заново
-  разрешает закрытую ручку и повторно доказывает рабочее пространство, набор
-  исходников, логического владельца, ограничение пути, профиль формата,
-  поддержку и точный преобраз; расхождение означает отказ до публикации.
-- **Decision:** ADR-0022
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_resources.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs`
-- **Scope:** runtime
-
 ### INV-SOURCE-SNAPSHOT-BINDING — Ресурс действует только внутри своего снимка
 
 - **Rule:** Непрозрачные `snapshotId` и `resourceId` связаны с экземпляром
@@ -661,27 +650,6 @@ Unica. Каждая запись формулирует одно нормати�
 - **Decision:** ADR-0022
 - **Check:** `ci-test` — `crates/unica-coder/src/domain/source_resources.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_resources.rs`
-- **Scope:** runtime
-
-### INV-SOURCE-PLAN-EVENT-PARITY — План, байты и событие описывают одну замену
-
-- **Rule:** Предпросмотр и применение `unica.source.apply` строятся одним
-  планировщиком из точного преобраза; то же внутреннее типизированное событие
-  определяет проекцию влияния на кеш для предпросмотра и применённую
-  инвалидацию.
-  Публичный предпросмотр сообщает только имя события в `cache.events` и имена
-  затрагиваемых кешей без сериализации полей события и без сохранения, а
-  успешное непустое применение тех же байтов порождает ровно одно внутреннее
-  событие `SourceResourcesReplaced`; его проекция устаревшего состояния
-  публикуется одной транзакцией с исходником и инвалидирует только индекс и
-  диагностику BSL.
-- **Decision:** ADR-0022
-- **Check:** `ci-test` — `crates/unica-coder/src/application/source_resources.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/application_ports.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_resources.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace_state.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/domain/events.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/domain/cache.rs`
 - **Scope:** runtime
 
 ### INV-SOURCE-OBSERVED-EOL — Перевод строки наблюдается в источнике, а не назначается

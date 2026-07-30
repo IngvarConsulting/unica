@@ -1361,10 +1361,6 @@ class LogicalSourceContractTests(unittest.TestCase):
                 "ADR-0021",
                 "crates/unica-coder/src/domain/source_target.rs",
             ),
-            "INV-SOURCE-HANDLE-REAUTH": (
-                "ADR-0022",
-                "crates/unica-coder/src/infrastructure/platform_xml_resources.rs",
-            ),
             "INV-SOURCE-SNAPSHOT-BINDING": (
                 "ADR-0022",
                 "crates/unica-coder/src/infrastructure/platform_xml_resources.rs",
@@ -1372,10 +1368,6 @@ class LogicalSourceContractTests(unittest.TestCase):
             "INV-SOURCE-ROLE-ALLOWLIST": (
                 "ADR-0022",
                 "crates/unica-coder/src/domain/source_resources.rs",
-            ),
-            "INV-SOURCE-PLAN-EVENT-PARITY": (
-                "ADR-0022",
-                "crates/unica-coder/src/infrastructure/platform_xml_resources.rs",
             ),
             "INV-MCP-SOURCE-SURFACE": (
                 "ADR-0021, ADR-0022",
@@ -1474,11 +1466,9 @@ class LogicalSourceContractTests(unittest.TestCase):
             "providerRevision",
             "partial",
             "snapshot_expired",
-            "metadataDescriptor",
-            "symlink",
+            "locate",
+            "replace",
             "owner",
-            "побайт",
-            "SourceResourcesReplaced",
         ):
             with self.subTest(evidence=evidence):
                 self.assertIn(evidence, text)

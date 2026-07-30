@@ -32,8 +32,11 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                 "unica.source.children",
                 "unica.source.resources",
                 "unica.source.read",
-                "unica.source.apply",
             }.issubset(module.REQUIRED_TOOLS)
+        )
+        # The bounded resource surface is read-only; BSL mutation belongs to
+        # unica.code.patch, so the smoke must not demand a writer.
+        self.assertNotIn("unica.source.apply", module.REQUIRED_TOOLS
         )
 
     def run_smoke(
@@ -44,8 +47,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         schema_drift: bool = False,
         result_drift: bool = False,
         provider_revision: bool = False,
-        preview_writes: bool = False,
-        reuse_snapshot: bool = False,
+        read_writes: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         module = load_module()
         source_schemas = json.loads(
@@ -55,9 +57,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             json.dumps(module.EXPECTED_SOURCE_FLOW_PROJECTIONS)
         )
         if schema_drift:
-            source_schemas["unica.source.apply"]["required"].remove(
-                "expectedHash"
-            )
+            source_schemas["unica.source.read"]["required"].remove("resourceId")
         if result_drift:
             source_flows["main"]["resolve"]["summary"] = (
                 "source.resolve returned a drifted result"
@@ -74,9 +74,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             tools = __TOOLS__
             source_schemas = json.loads(r'''__SOURCE_SCHEMAS__''')
             source_flows = json.loads(r'''__SOURCE_FLOWS__''')
-            preview_writes = __PREVIEW_WRITES__
-            reuse_snapshot = __REUSE_SNAPSHOT__
-            applied = {"main": False, "extension": False}
+            read_writes = __READ_WRITES__
 
             def materialize(value, cwd):
                 if isinstance(value, dict):
@@ -98,63 +96,30 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                     operation = name.rsplit(".", 1)[1]
                 elif name == "unica.source.resources":
                     source_set = args["sourceSet"]
-                    operation = "current" if applied[source_set] else "resources"
+                    operation = "resources"
                 else:
                     source_set = args["snapshotId"].rsplit("-", 1)[0]
-                    if name == "unica.source.read":
-                        operation = (
-                            "postimage"
-                            if args["snapshotId"].endswith("-new")
-                            else "read"
-                        )
-                    else:
-                        operation = (
-                            "applied"
-                            if args.get("dryRun") is False
-                            else "preview"
-                        )
+                    operation = "read"
 
                 payload = materialize(
                     source_flows[source_set][operation],
                     args["cwd"],
                 )
-                old_snapshot = source_set + "-old"
-                new_snapshot = source_set + "-new"
-                old_resource = source_set + "-resource-old"
-                new_resource = source_set + "-resource-new"
-
                 if name == "unica.source.resources":
-                    postimage = applied[source_set]
-                    payload["data"]["snapshotId"] = (
-                        old_snapshot
-                        if postimage and reuse_snapshot
-                        else new_snapshot if postimage else old_snapshot
-                    )
+                    payload["data"]["snapshotId"] = source_set + "-old"
                     payload["data"]["resources"][0]["resourceId"] = (
-                        new_resource if postimage else old_resource
+                        source_set + "-resource-old"
                     )
                 elif name == "unica.source.read":
                     payload["data"]["snapshotId"] = args["snapshotId"]
                     payload["data"]["resourceId"] = args["resourceId"]
-                elif name == "unica.source.apply":
-                    payload["data"]["snapshotId"] = args["snapshotId"]
-                    payload["data"]["resourceId"] = args["resourceId"]
-                    relative = "src" if source_set == "main" else "ext"
-                    module_path = Path(
-                        args["cwd"],
-                        relative,
-                        "CommonModules/Shared/Ext/Module.bsl",
-                    )
-                    if args.get("dryRun") is False:
-                        module_path.write_bytes(
-                            (
-                                "\\ufeff"
-                                + args["content"].replace("\\n", "\\r\\n")
-                            ).encode("utf-8")
-                        )
-                        applied[source_set] = True
-                    elif preview_writes:
-                        module_path.write_bytes(b"preview mutated bytes")
+                    if read_writes:
+                        relative = "src" if source_set == "main" else "ext"
+                        Path(
+                            args["cwd"],
+                            relative,
+                            "CommonModules/Shared/Ext/Module.bsl",
+                        ).write_bytes(b"a read must never write")
                 return payload
 
             for line in sys.stdin:
@@ -192,8 +157,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                 "__SOURCE_FLOWS__",
                 json.dumps(source_flows, ensure_ascii=False),
             )
-            .replace("__PREVIEW_WRITES__", repr(preview_writes))
-            .replace("__REUSE_SNAPSHOT__", repr(reuse_snapshot))
+            .replace("__READ_WRITES__", repr(read_writes))
             .replace("__NAME__", repr(server_name))
         )
         with tempfile.TemporaryDirectory() as directory:
@@ -227,10 +191,10 @@ class SmokeUnicaMcpTests(unittest.TestCase):
 
     def test_rejects_runtime_missing_a_required_tool(self) -> None:
         module = load_module()
-        result = self.run_smoke(module.REQUIRED_TOOLS - {"unica.source.apply"})
+        result = self.run_smoke(module.REQUIRED_TOOLS - {"unica.source.read"})
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("unica.source.apply", result.stderr)
+        self.assertIn("unica.source.read", result.stderr)
 
     def test_rejects_runtime_exposing_a_removed_dcs_alias(self) -> None:
         module = load_module()
@@ -269,19 +233,13 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("providerRevision", result.stderr)
 
-    def test_rejects_preview_workspace_writes(self) -> None:
+    def test_rejects_a_read_that_writes(self) -> None:
+        """The whole source surface is read-only, so any byte it changes fails."""
         module = load_module()
-        result = self.run_smoke(module.REQUIRED_TOOLS, preview_writes=True)
+        result = self.run_smoke(module.REQUIRED_TOOLS, read_writes=True)
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("preview", result.stderr)
-
-    def test_rejects_reused_postimage_snapshot(self) -> None:
-        module = load_module()
-        result = self.run_smoke(module.REQUIRED_TOOLS, reuse_snapshot=True)
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("fresh", result.stderr)
+        self.assertIn("read-only", result.stderr)
 
 
 if __name__ == "__main__":

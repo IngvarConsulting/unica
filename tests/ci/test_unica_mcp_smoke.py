@@ -312,16 +312,24 @@ class UnicaMcpSmokeTests(unittest.TestCase):
                     "unica.source.children",
                     "unica.source.resources",
                     "unica.source.read",
-                    "unica.source.apply",
+                    "unica.source.locate",
                 }
                 self.assertTrue(source_tools.issubset(tools))
                 for name in source_tools:
                     schema = tools[name]["inputSchema"]
-                    self.assertFalse({"path", "sourceDir", "provider", "handle"} & set(schema["properties"]))
-                    assert_no_physical_source_selectors(schema)
+                    # `unica.source.locate` takes a path as the subject it
+                    # translates, not as a target selector; every other source
+                    # tool selects its target logically.
+                    forbidden = {"sourceDir", "provider", "handle"}
+                    if name != "unica.source.locate":
+                        forbidden.add("path")
+                    self.assertFalse(forbidden & set(schema["properties"]), name)
+                    if name != "unica.source.locate":
+                        assert_no_physical_source_selectors(schema)
 
                 for source_set in ("main", "extension"):
                     target = "CommonModule.Shared.Module"
+                    before_flow = snapshot_workspace_files(root)
                     resolve = tool(
                         "unica.source.resolve",
                         {"cwd": str(root), "sourceSet": source_set, "query": target, "mode": "exact", "targetKind": "module"},
@@ -345,54 +353,19 @@ class UnicaMcpSmokeTests(unittest.TestCase):
                     )
                     self.assertEqual(read["data"]["textProfile"]["bomPrefixBytes"], 3)
                     self.assertEqual(read["data"]["textProfile"]["eol"], "crlf")
-                    content = "Procedure Changed()\nEndProcedure\n"
-                    apply_args = {
-                        "cwd": str(root), "snapshotId": resources["data"]["snapshotId"], "resourceId": resource["resourceId"],
-                        "expectedHash": resource["hash"], "content": content, "contentEncoding": "utf-8",
-                    }
-                    before_preview = snapshot_workspace_files(root)
-                    preview = tool("unica.source.apply", apply_args)
+                    # The whole source surface is read-only, so the session must
+                    # leave every byte of the workspace in place.
                     self.assertEqual(
                         snapshot_workspace_files(root),
-                        before_preview,
-                        f"{source_set} preview changed workspace bytes",
+                        before_flow,
+                        f"{source_set} read-only flow changed workspace bytes",
                     )
-                    expected_after_apply = dict(before_preview)
-                    source_root = "src" if source_set == "main" else "ext"
-                    module_path = (
-                        f"{source_root}/CommonModules/Shared/Ext/Module.bsl"
+                    located = tool(
+                        "unica.source.locate",
+                        {"cwd": str(root), "sourceSet": source_set,
+                         "path": f"{'src' if source_set == 'main' else 'ext'}/CommonModules/Shared/Ext/Module.bsl"},
                     )
-                    expected_after_apply[module_path] = (
-                        b"\xef\xbb\xbfProcedure Changed()\r\nEndProcedure\r\n"
-                    )
-                    applied = tool("unica.source.apply", {**apply_args, "dryRun": False})
-                    self.assertEqual(
-                        snapshot_workspace_files(root),
-                        expected_after_apply,
-                        f"{source_set} apply changed an unexpected workspace byte",
-                    )
-                    self.assertEqual(preview["data"]["postHash"], applied["data"]["postHash"])
-                    self.assertEqual(preview["cache"]["mode"], "dry-run")
-                    self.assertEqual(applied["cache"]["mode"], "applied")
-                    self.assertEqual(preview["cache"]["events"], ["SourceResourcesReplaced"])
-                    self.assertEqual(applied["cache"]["events"], ["SourceResourcesReplaced"])
-                    self.assertEqual(preview["cache"]["invalidated"], ["bsl_diagnostics", "bsl_index"])
-                    self.assertEqual(applied["cache"]["invalidated"], ["bsl_diagnostics", "bsl_index"])
-                    current = tool(
-                        "unica.source.resources",
-                        {"cwd": str(root), "sourceSet": source_set, "metadataPath": target, "scope": "self"},
-                    )
-                    self.assertNotEqual(
-                        current["data"]["snapshotId"],
-                        resources["data"]["snapshotId"],
-                        f"{source_set} postimage reused the preimage snapshot",
-                    )
-                    current_resource = current["data"]["resources"][0]
-                    postimage = tool(
-                        "unica.source.read",
-                        {"cwd": str(root), "snapshotId": current["data"]["snapshotId"], "resourceId": current_resource["resourceId"]},
-                    )
-                    self.assertEqual(postimage["data"]["content"], "\ufeffProcedure Changed()\r\nEndProcedure\r\n")
+                    self.assertEqual(located["data"]["metadataPath"], target)
                     self.assertEqual(
                         oracle.source_flow_projection(
                             source_set,
@@ -401,22 +374,12 @@ class UnicaMcpSmokeTests(unittest.TestCase):
                             children,
                             resources,
                             read,
-                            preview,
-                            applied,
-                            current,
-                            postimage,
                         ),
                         oracle.expected_source_flow_projection(source_set),
                     )
 
-            after = snapshot_workspace_files(root)
-            expected = dict(before)
-            expected_module = (
-                b"\xef\xbb\xbfProcedure Changed()\r\nEndProcedure\r\n"
-            )
-            expected["src/CommonModules/Shared/Ext/Module.bsl"] = expected_module
-            expected["ext/CommonModules/Shared/Ext/Module.bsl"] = expected_module
-            self.assertEqual(after, expected)
+            # The public source surface is read-only end to end.
+            self.assertEqual(snapshot_workspace_files(root), before)
 
     def test_source_transport_rejects_legacy_patch_selectors_and_descriptor_replacement(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -488,19 +451,10 @@ class UnicaMcpSmokeTests(unittest.TestCase):
                 descriptors = [item for item in payload["data"]["resources"] if item["role"] == "configurationDescriptor"]
                 self.assertEqual(len(descriptors), 1, payload)
                 descriptor = descriptors[0]
-                result = raw_tool(
-                    "unica.source.apply",
-                    {
-                        "cwd": str(root), "snapshotId": payload["data"]["snapshotId"],
-                        "resourceId": descriptor["resourceId"], "expectedHash": descriptor["hash"],
-                        "content": "<replacement/>", "contentEncoding": "utf-8", "dryRun": False,
-                    },
-                )
-                assert_rpc_error(
-                    result,
-                    prefix="resource_not_replaceable",
-                    hint="the snapshotted resource role is not replaceable",
-                )
+                # Every snapshotted descriptor stays read-only: nothing in the
+                # manifest may advertise a write the surface cannot perform.
+                for resource in payload["data"]["resources"]:
+                    self.assertEqual(resource["access"], ["read"], resource)
                 partial_response = raw_tool(
                     "unica.source.resources",
                     {"cwd": str(root), "sourceSet": "main", "scope": "aggregate", "limit": 1},
@@ -510,19 +464,12 @@ class UnicaMcpSmokeTests(unittest.TestCase):
                     partial_response["result"]["content"][0]["text"]
                 )
                 self.assertEqual(partial_payload["data"]["completeness"], "partial")
-                partial_resource = partial_payload["data"]["resources"][0]
-                partial_apply = raw_tool(
-                    "unica.source.apply",
-                    {
-                        "cwd": str(root), "snapshotId": partial_payload["data"]["snapshotId"],
-                        "resourceId": partial_resource["resourceId"], "expectedHash": partial_resource["hash"],
-                        "content": "<replacement/>", "contentEncoding": "utf-8", "dryRun": False,
-                    },
-                )
+                # The writer is gone from the public surface entirely.
+                removed = raw_tool("unica.source.apply", {"cwd": str(root)})
                 assert_rpc_error(
-                    partial_apply,
-                    prefix="snapshot_incomplete",
-                    hint="source.apply requires a complete resource snapshot",
+                    removed,
+                    prefix="unknown unica tool",
+                    hint="unica.source.apply",
                 )
 
     def test_notifications_do_not_count_as_responses(self) -> None:

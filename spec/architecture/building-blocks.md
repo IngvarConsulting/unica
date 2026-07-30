@@ -142,9 +142,8 @@ runtime для операций платформы, поставляемый а�
 - `source_navigation` — запросы и результаты
   `unica.source.resolve`/`unica.source.children`, ограничение выдачи и
   типизированные адресуемые либо наблюдаемые местоположения.
-- `source_resources` — оркестрация `resources/read/apply`, разбор ограниченных
-  аргументов и разделение опубликованных и только проектируемых событий
-  предпросмотра (INV-SOURCE-PLAN-EVENT-PARITY).
+- `source_resources` — оркестрация читающих `resources/read` и разбор
+  ограниченных аргументов (INV-MCP-SOURCE-SURFACE).
 - `tool_contracts` — входные JSON-схемы, нормализация алиасов путей и проверка
   аргументов для каждого зарегистрированного инструмента (INV-MCP-DATA-DRIVEN-SCHEMA).
 - `operation_descriptors` — описатели нативных операций, включая политики
@@ -242,9 +241,9 @@ runtime для операций платформы, поставляемый а�
   инвентаризации.
 - `source_roots` — `resolve_source_root` и `normalize_path_identity`,
   детерминированный выбор корня исходников для анализатора и индекса.
-- `platform_xml_source_targets` — канонический обход Platform XML и закрытые
-  ручки, которые каждый writer обязан повторно авторизовать
-  (INV-SOURCE-HANDLE-REAUTH).
+- `platform_xml_source_targets` — отрисовка кандидата по логическому адресу,
+  восстановление адреса по пути и закрытые ручки, которые каждый writer обязан
+  повторно авторизовать (INV-SOURCE-LOGICAL-IDENTITY).
 - `platform_xml_resources` — хранилище ограниченных снимков на срок жизни
   приложения, чтение точного диапазона байтов и безопасная замена одного
   BSL-ресурса (REQ-PERF-SOURCE-BOUNDS).

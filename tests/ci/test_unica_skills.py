@@ -222,7 +222,7 @@ SCENARIO_SKILLS = {
         "unica.source.children",
         "unica.source.resources",
         "unica.source.read",
-        "unica.source.apply",
+        "unica.source.locate",
     ],
 }
 
@@ -261,10 +261,10 @@ SCENARIO_REQUIRED_TOKENS = {
     "release-support": ["сравнение/объединение", "Поставка", "поддержка", "совместимость"],
     "source-access": [
         "предметн",
-        "fallback",
         "dryRun",
         "unica.code.patch",
-        "resource_not_replaceable",
+        "unica.source.locate",
+        "только `read`",
     ],
 }
 
@@ -1457,22 +1457,22 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertIn("sourceSet", text)
         self.assertIn("metadataPath", text)
 
-    def test_source_access_skill_prioritizes_specialized_writers_and_safe_fallback(
+    def test_source_access_skill_routes_reads_and_sends_writes_to_code_patch(
         self,
     ) -> None:
         path = self.skill_root() / "source-access" / "SKILL.md"
         text = path.read_text(encoding="utf-8")
         writer = text.index("unica.code.patch")
         inspect = text.index("unica.source.resources")
-        apply = text.index("unica.source.apply")
 
-        self.assertLess(writer, inspect)
-        self.assertLess(inspect, apply)
-        self.assertRegex(text, r"(?is)fallback.{0,240}(?:причин|обоснован)")
+        self.assertLess(writer, inspect, "the specialized writer is named first")
+        # The resource surface is read-only, so the skill must not promise a
+        # write through it and must send edits to unica.code.patch.
+        self.assertNotIn("unica.source.apply", text)
         self.assertRegex(text, r"(?s)dryRun.{0,80}true.{0,400}dryRun.{0,80}false")
-        self.assertIn("complete", text)
-        self.assertIn("expectedHash", text)
-        self.assertIn("resource_not_replaceable", text)
+        self.assertIn("только `read`", text)
+        self.assertIn("unica.source.locate", text)
+        self.assertIn("replace", text)
 
     def test_package_readme_documents_code_patch_target_migration(self) -> None:
         text = (

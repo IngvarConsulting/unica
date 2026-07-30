@@ -3526,7 +3526,7 @@ fn none_impact_rejects_any_xml_map_change() {
 }
 
 #[test]
-fn source_resource_snapshot_chains_preserve_all_corpus_bytes_except_selected_bsl_modules() {
+fn source_resource_reads_preserve_every_corpus_byte() {
     let root = unique_temp_dir("source-resource-snapshot-chain");
     let workspace = root.join("workspace");
     // No `UNICA_CACHE_DIR` override: setting it would mutate process-global
@@ -3586,102 +3586,20 @@ fn source_resource_snapshot_chains_preserve_all_corpus_bytes_except_selected_bsl
             .unwrap();
         let page = resources.data.unwrap();
         let resource = &page["resources"][0];
-        let read = app
-            .call_tool(
-                "unica.source.read",
-                &Map::from_iter([
-                    (
-                        "cwd".to_string(),
-                        Value::String(workspace.display().to_string()),
-                    ),
-                    ("snapshotId".to_string(), page["snapshotId"].clone()),
-                    ("resourceId".to_string(), resource["resourceId"].clone()),
-                ]),
-            )
-            .unwrap();
-        assert_eq!(read.data.unwrap()["textProfile"]["bomPrefixBytes"], 3);
-        let mut apply_args = common_args(&workspace);
-        apply_args.insert("snapshotId".to_string(), page["snapshotId"].clone());
-        apply_args.insert("resourceId".to_string(), resource["resourceId"].clone());
-        apply_args.insert("expectedHash".to_string(), resource["hash"].clone());
-        apply_args.insert(
-            "content".to_string(),
-            json!("Procedure Changed()\nEndProcedure\n"),
-        );
-        apply_args.insert("contentEncoding".to_string(), json!("utf-8"));
-        apply_args.insert("dryRun".to_string(), json!(true));
-        let before_preview = capture_workspace_payloads_for_source_test(&workspace);
-        let preview = app.call_tool("unica.source.apply", &apply_args).unwrap();
-        assert_eq!(
-            capture_workspace_payloads_for_source_test(&workspace),
-            before_preview,
-            "{source_set} preview changed workspace bytes"
-        );
-        let mut expected_after_apply = before_preview.clone();
-        expected_after_apply.insert(
-            format!(
-                "{}/CommonModules/Shared/Ext/Module.bsl",
-                if source_set == "main" { "src" } else { "ext" }
-            ),
-            b"\xef\xbb\xbfProcedure Changed()\r\nEndProcedure\r\n".to_vec(),
-        );
-        apply_args.insert("dryRun".to_string(), json!(false));
-        let applied = app.call_tool("unica.source.apply", &apply_args).unwrap();
-        assert_eq!(
-            capture_workspace_payloads_for_source_test(&workspace),
-            expected_after_apply,
-            "{source_set} apply changed an unexpected workspace byte"
-        );
-        assert_eq!(
-            preview.data.unwrap()["postHash"],
-            applied.data.unwrap()["postHash"]
-        );
-        let fresh = app
-            .call_tool("unica.source.resources", &resources_args)
-            .unwrap();
-        let fresh_page = fresh.data.unwrap();
-        assert_ne!(
-            fresh_page["snapshotId"], page["snapshotId"],
-            "{source_set} postimage reused the preimage snapshot"
-        );
-        let fresh_resource = &fresh_page["resources"][0];
-        let postimage = app
-            .call_tool(
-                "unica.source.read",
-                &Map::from_iter([
-                    (
-                        "cwd".to_string(),
-                        Value::String(workspace.display().to_string()),
-                    ),
-                    ("snapshotId".to_string(), fresh_page["snapshotId"].clone()),
-                    (
-                        "resourceId".to_string(),
-                        fresh_resource["resourceId"].clone(),
-                    ),
-                ]),
-            )
-            .unwrap();
-        assert_eq!(
-            postimage.data.unwrap()["content"],
-            json!("\u{feff}Procedure Changed()\r\nEndProcedure\r\n")
-        );
+        assert_eq!(resource["access"], json!(["read"]));
+        let mut read_args = common_args(&workspace);
+        read_args.insert("snapshotId".to_string(), page["snapshotId"].clone());
+        read_args.insert("resourceId".to_string(), resource["resourceId"].clone());
+        let read = app.call_tool("unica.source.read", &read_args).unwrap();
+        assert_eq!(read.data.unwrap()["eof"], json!(true));
     }
-    let after = capture_workspace_payloads_for_source_test(&workspace);
-    let mut expected = before;
-    let changed_module = b"\xef\xbb\xbfProcedure Changed()\r\nEndProcedure\r\n".to_vec();
-    expected.insert(
-        "src/CommonModules/Shared/Ext/Module.bsl".to_string(),
-        changed_module.clone(),
+    // The whole public resource surface is read-only, so the corpus must come
+    // out byte-identical.
+    assert_eq!(
+        capture_workspace_payloads_for_source_test(&workspace),
+        before
     );
-    expected.insert(
-        "ext/CommonModules/Shared/Ext/Module.bsl".to_string(),
-        changed_module,
-    );
-    assert_eq!(after, expected);
-    assert!(!MUTATOR_REGISTRY
-        .iter()
-        .any(|entry| entry.tool == "unica.source.apply"));
-    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(&root).unwrap();
 }
 
 fn capture_workspace_payloads_for_source_test(root: &Path) -> BTreeMap<String, Vec<u8>> {

@@ -27,7 +27,6 @@ REQUIRED_TOOLS = REQUIRED_DCS_TOOLS | {
     "unica.source.children",
     "unica.source.resources",
     "unica.source.read",
-    "unica.source.apply",
 }
 REMOVED_DCS_TOOL_ALIASES = {
     name.replace(".dcs.", ".s" + "kd.") for name in REQUIRED_DCS_TOOLS
@@ -37,63 +36,10 @@ SOURCE_TOOL_NAMES = {
     "unica.source.children",
     "unica.source.resources",
     "unica.source.read",
-    "unica.source.apply",
 }
 EXPECTED_SOURCE_INPUT_SCHEMAS = json.loads(
     r'''
 {
-  "unica.source.apply": {
-    "additionalProperties": false,
-    "properties": {
-      "confirm": {
-        "description": "Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does",
-        "type": "boolean"
-      },
-      "content": {
-        "description": "Complete UTF-8 BSL replacement text; decoded bytes are capped again by the provider",
-        "maxLength": 1048576,
-        "type": "string"
-      },
-      "contentEncoding": {
-        "const": "utf-8",
-        "description": "unica.source.apply replacement encoding; the first contract accepts only utf-8",
-        "type": "string"
-      },
-      "cwd": {
-        "description": "Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it",
-        "type": "string"
-      },
-      "dryRun": {
-        "description": "Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution.",
-        "type": "boolean"
-      },
-      "expectedHash": {
-        "description": "Exact SHA-256 hash returned for the resource by source.resources; source.apply fails closed when either the argument or current preimage differs",
-        "minLength": 1,
-        "pattern": "^sha256:[0-9a-f]{64}$",
-        "type": "string"
-      },
-      "resourceId": {
-        "description": "Opaque resource identifier returned inside one source.resources snapshot; valid only together with the snapshotId that issued it",
-        "minLength": 1,
-        "pattern": "\\S",
-        "type": "string"
-      },
-      "snapshotId": {
-        "description": "Opaque application-instance and workspace-bound identifier returned by source.resources; expires after five minutes",
-        "minLength": 1,
-        "pattern": "\\S",
-        "type": "string"
-      }
-    },
-    "required": [
-      "snapshotId",
-      "resourceId",
-      "expectedHash",
-      "content"
-    ],
-    "type": "object"
-  },
   "unica.source.children": {
     "additionalProperties": false,
     "properties": {
@@ -359,62 +305,6 @@ EXPECTED_SOURCE_FLOW_PROJECTIONS = json.loads(
     r'''
 {
   "extension": {
-    "applied": {
-      "artifacts": [],
-      "cache": {
-        "events": [
-          "SourceResourcesReplaced"
-        ],
-        "fresh": [],
-        "invalidated": [
-          "bsl_diagnostics",
-          "bsl_index"
-        ],
-        "lazy_rebuilt": [],
-        "mode": "applied",
-        "refreshed": [],
-        "root": "<cache-root>",
-        "stale": [
-          "bsl_diagnostics",
-          "bsl_index"
-        ],
-        "workspace_epoch": "<workspace-epoch>"
-      },
-      "changes": [
-        "extension + CommonModule.Shared.Module: replaced BSL resource"
-      ],
-      "data": {
-        "changedRanges": [
-          {
-            "endByte": 20,
-            "endColumn": 19,
-            "endLine": 1,
-            "startByte": 13,
-            "startColumn": 12,
-            "startLine": 1
-          }
-        ],
-        "diff": "--- a/CommonModule.Shared.Module\n+++ b/CommonModule.Shared.Module\n@@ -1,2 +1,2 @@\n-\ufeffProcedure RunExtension()\r\n+\ufeffProcedure Changed()\r\n EndProcedure\r\n",
-        "noOp": false,
-        "postHash": "sha256:524a90a52def76c469ea1bc6a7dcf3b3524249e9b52cbc48caba768a186de762",
-        "preHash": "sha256:41e8d685fd708f331f099494d36fe1a0059ae144da2de497c8dc3f5629c900ea",
-        "role": "bslModule",
-        "sourceSet": "extension",
-        "target": {
-          "metadataPath": "CommonModule.Shared.Module",
-          "sourceSet": "extension",
-          "targetKind": "module"
-        },
-        "validation": {
-          "kind": "bsl-analyzer-parser",
-          "status": "passed"
-        }
-      },
-      "errors": [],
-      "ok": true,
-      "summary": "unica.source.apply replaced one BSL resource",
-      "warnings": []
-    },
     "children": {
       "artifacts": [],
       "cache": {
@@ -425,10 +315,7 @@ EXPECTED_SOURCE_FLOW_PROJECTIONS = json.loads(
         "mode": "read",
         "refreshed": [],
         "root": "<cache-root>",
-        "stale": [
-          "bsl_diagnostics",
-          "bsl_index"
-        ],
+        "stale": [],
         "workspace_epoch": "<workspace-epoch>"
       },
       "changes": [],
@@ -456,149 +343,6 @@ EXPECTED_SOURCE_FLOW_PROJECTIONS = json.loads(
       "summary": "source.children returned 1 immediate child node(s)",
       "warnings": []
     },
-    "current": {
-      "artifacts": [],
-      "cache": {
-        "events": [],
-        "fresh": [],
-        "invalidated": [],
-        "lazy_rebuilt": [],
-        "mode": "read",
-        "refreshed": [],
-        "root": "<cache-root>",
-        "stale": [
-          "bsl_diagnostics",
-          "bsl_index"
-        ],
-        "workspace_epoch": "<workspace-epoch>"
-      },
-      "changes": [],
-      "data": {
-        "completeness": "complete",
-        "resources": [
-          {
-            "access": [
-              "read",
-              "replace"
-            ],
-            "hash": "sha256:524a90a52def76c469ea1bc6a7dcf3b3524249e9b52cbc48caba768a186de762",
-            "limits": {
-              "maxReadBytes": 65536
-            },
-            "mediaType": "text/x-bsl",
-            "role": "bslModule",
-            "size": 38,
-            "textProfile": {
-              "bomPrefixBytes": 3,
-              "encoding": "utf-8",
-              "eol": "crlf"
-            }
-          }
-        ],
-        "scope": "self",
-        "sourceSet": "extension",
-        "target": {
-          "metadataPath": "CommonModule.Shared.Module",
-          "sourceSet": "extension",
-          "targetKind": "module"
-        }
-      },
-      "errors": [],
-      "ok": true,
-      "summary": "source.resources returned 1 resource(s)",
-      "warnings": []
-    },
-    "postimage": {
-      "artifacts": [],
-      "cache": {
-        "events": [],
-        "fresh": [],
-        "invalidated": [],
-        "lazy_rebuilt": [],
-        "mode": "read",
-        "refreshed": [],
-        "root": "<cache-root>",
-        "stale": [
-          "bsl_diagnostics",
-          "bsl_index"
-        ],
-        "workspace_epoch": "<workspace-epoch>"
-      },
-      "changes": [],
-      "data": {
-        "appliedLimit": 65536,
-        "content": "\ufeffProcedure Changed()\r\nEndProcedure\r\n",
-        "contentEncoding": "utf-8",
-        "eof": true,
-        "hash": "sha256:524a90a52def76c469ea1bc6a7dcf3b3524249e9b52cbc48caba768a186de762",
-        "length": 38,
-        "offset": 0,
-        "size": 38,
-        "textProfile": {
-          "bomPrefixBytes": 3,
-          "encoding": "utf-8",
-          "eol": "crlf"
-        }
-      },
-      "errors": [],
-      "ok": true,
-      "summary": "source.read returned 38 byte(s)",
-      "warnings": []
-    },
-    "preview": {
-      "artifacts": [],
-      "cache": {
-        "events": [
-          "SourceResourcesReplaced"
-        ],
-        "fresh": [],
-        "invalidated": [
-          "bsl_diagnostics",
-          "bsl_index"
-        ],
-        "lazy_rebuilt": [],
-        "mode": "dry-run",
-        "refreshed": [],
-        "root": "<cache-root>",
-        "stale": [
-          "bsl_diagnostics",
-          "bsl_index"
-        ],
-        "workspace_epoch": "<workspace-epoch>"
-      },
-      "changes": [],
-      "data": {
-        "changedRanges": [
-          {
-            "endByte": 20,
-            "endColumn": 19,
-            "endLine": 1,
-            "startByte": 13,
-            "startColumn": 12,
-            "startLine": 1
-          }
-        ],
-        "diff": "--- a/CommonModule.Shared.Module\n+++ b/CommonModule.Shared.Module\n@@ -1,2 +1,2 @@\n-\ufeffProcedure RunExtension()\r\n+\ufeffProcedure Changed()\r\n EndProcedure\r\n",
-        "noOp": false,
-        "postHash": "sha256:524a90a52def76c469ea1bc6a7dcf3b3524249e9b52cbc48caba768a186de762",
-        "preHash": "sha256:41e8d685fd708f331f099494d36fe1a0059ae144da2de497c8dc3f5629c900ea",
-        "role": "bslModule",
-        "sourceSet": "extension",
-        "target": {
-          "metadataPath": "CommonModule.Shared.Module",
-          "sourceSet": "extension",
-          "targetKind": "module"
-        },
-        "validation": {
-          "kind": "bsl-analyzer-parser",
-          "status": "passed"
-        }
-      },
-      "errors": [],
-      "ok": true,
-      "summary": "dry run: unica.source.apply planned one BSL resource replacement",
-      "warnings": []
-    },
     "read": {
       "artifacts": [],
       "cache": {
@@ -609,10 +353,7 @@ EXPECTED_SOURCE_FLOW_PROJECTIONS = json.loads(
         "mode": "read",
         "refreshed": [],
         "root": "<cache-root>",
-        "stale": [
-          "bsl_diagnostics",
-          "bsl_index"
-        ],
+        "stale": [],
         "workspace_epoch": "<workspace-epoch>"
       },
       "changes": [],
@@ -646,10 +387,7 @@ EXPECTED_SOURCE_FLOW_PROJECTIONS = json.loads(
         "mode": "read",
         "refreshed": [],
         "root": "<cache-root>",
-        "stale": [
-          "bsl_diagnostics",
-          "bsl_index"
-        ],
+        "stale": [],
         "workspace_epoch": "<workspace-epoch>"
       },
       "changes": [],
@@ -685,10 +423,7 @@ EXPECTED_SOURCE_FLOW_PROJECTIONS = json.loads(
         "mode": "read",
         "refreshed": [],
         "root": "<cache-root>",
-        "stale": [
-          "bsl_diagnostics",
-          "bsl_index"
-        ],
+        "stale": [],
         "workspace_epoch": "<workspace-epoch>"
       },
       "changes": [],
@@ -697,8 +432,7 @@ EXPECTED_SOURCE_FLOW_PROJECTIONS = json.loads(
         "resources": [
           {
             "access": [
-              "read",
-              "replace"
+              "read"
             ],
             "hash": "sha256:41e8d685fd708f331f099494d36fe1a0059ae144da2de497c8dc3f5629c900ea",
             "limits": {
@@ -730,62 +464,6 @@ EXPECTED_SOURCE_FLOW_PROJECTIONS = json.loads(
     "sourceSet": "extension"
   },
   "main": {
-    "applied": {
-      "artifacts": [],
-      "cache": {
-        "events": [
-          "SourceResourcesReplaced"
-        ],
-        "fresh": [],
-        "invalidated": [
-          "bsl_diagnostics",
-          "bsl_index"
-        ],
-        "lazy_rebuilt": [],
-        "mode": "applied",
-        "refreshed": [],
-        "root": "<cache-root>",
-        "stale": [
-          "bsl_diagnostics",
-          "bsl_index"
-        ],
-        "workspace_epoch": "<workspace-epoch>"
-      },
-      "changes": [
-        "main + CommonModule.Shared.Module: replaced BSL resource"
-      ],
-      "data": {
-        "changedRanges": [
-          {
-            "endByte": 20,
-            "endColumn": 19,
-            "endLine": 1,
-            "startByte": 13,
-            "startColumn": 12,
-            "startLine": 1
-          }
-        ],
-        "diff": "--- a/CommonModule.Shared.Module\n+++ b/CommonModule.Shared.Module\n@@ -1,2 +1,2 @@\n-\ufeffProcedure Run()\r\n+\ufeffProcedure Changed()\r\n EndProcedure\r\n",
-        "noOp": false,
-        "postHash": "sha256:524a90a52def76c469ea1bc6a7dcf3b3524249e9b52cbc48caba768a186de762",
-        "preHash": "sha256:87c24a6da821b5f96a884b7210133a30d7ee2c66cf281934bae1afc8281a8cbb",
-        "role": "bslModule",
-        "sourceSet": "main",
-        "target": {
-          "metadataPath": "CommonModule.Shared.Module",
-          "sourceSet": "main",
-          "targetKind": "module"
-        },
-        "validation": {
-          "kind": "bsl-analyzer-parser",
-          "status": "passed"
-        }
-      },
-      "errors": [],
-      "ok": true,
-      "summary": "unica.source.apply replaced one BSL resource",
-      "warnings": []
-    },
     "children": {
       "artifacts": [],
       "cache": {
@@ -822,146 +500,6 @@ EXPECTED_SOURCE_FLOW_PROJECTIONS = json.loads(
       "errors": [],
       "ok": true,
       "summary": "source.children returned 1 immediate child node(s)",
-      "warnings": []
-    },
-    "current": {
-      "artifacts": [],
-      "cache": {
-        "events": [],
-        "fresh": [],
-        "invalidated": [],
-        "lazy_rebuilt": [],
-        "mode": "read",
-        "refreshed": [],
-        "root": "<cache-root>",
-        "stale": [
-          "bsl_diagnostics",
-          "bsl_index"
-        ],
-        "workspace_epoch": "<workspace-epoch>"
-      },
-      "changes": [],
-      "data": {
-        "completeness": "complete",
-        "resources": [
-          {
-            "access": [
-              "read",
-              "replace"
-            ],
-            "hash": "sha256:524a90a52def76c469ea1bc6a7dcf3b3524249e9b52cbc48caba768a186de762",
-            "limits": {
-              "maxReadBytes": 65536
-            },
-            "mediaType": "text/x-bsl",
-            "role": "bslModule",
-            "size": 38,
-            "textProfile": {
-              "bomPrefixBytes": 3,
-              "encoding": "utf-8",
-              "eol": "crlf"
-            }
-          }
-        ],
-        "scope": "self",
-        "sourceSet": "main",
-        "target": {
-          "metadataPath": "CommonModule.Shared.Module",
-          "sourceSet": "main",
-          "targetKind": "module"
-        }
-      },
-      "errors": [],
-      "ok": true,
-      "summary": "source.resources returned 1 resource(s)",
-      "warnings": []
-    },
-    "postimage": {
-      "artifacts": [],
-      "cache": {
-        "events": [],
-        "fresh": [],
-        "invalidated": [],
-        "lazy_rebuilt": [],
-        "mode": "read",
-        "refreshed": [],
-        "root": "<cache-root>",
-        "stale": [
-          "bsl_diagnostics",
-          "bsl_index"
-        ],
-        "workspace_epoch": "<workspace-epoch>"
-      },
-      "changes": [],
-      "data": {
-        "appliedLimit": 65536,
-        "content": "\ufeffProcedure Changed()\r\nEndProcedure\r\n",
-        "contentEncoding": "utf-8",
-        "eof": true,
-        "hash": "sha256:524a90a52def76c469ea1bc6a7dcf3b3524249e9b52cbc48caba768a186de762",
-        "length": 38,
-        "offset": 0,
-        "size": 38,
-        "textProfile": {
-          "bomPrefixBytes": 3,
-          "encoding": "utf-8",
-          "eol": "crlf"
-        }
-      },
-      "errors": [],
-      "ok": true,
-      "summary": "source.read returned 38 byte(s)",
-      "warnings": []
-    },
-    "preview": {
-      "artifacts": [],
-      "cache": {
-        "events": [
-          "SourceResourcesReplaced"
-        ],
-        "fresh": [],
-        "invalidated": [
-          "bsl_diagnostics",
-          "bsl_index"
-        ],
-        "lazy_rebuilt": [],
-        "mode": "dry-run",
-        "refreshed": [],
-        "root": "<cache-root>",
-        "stale": [],
-        "workspace_epoch": "<workspace-epoch>"
-      },
-      "changes": [],
-      "data": {
-        "changedRanges": [
-          {
-            "endByte": 20,
-            "endColumn": 19,
-            "endLine": 1,
-            "startByte": 13,
-            "startColumn": 12,
-            "startLine": 1
-          }
-        ],
-        "diff": "--- a/CommonModule.Shared.Module\n+++ b/CommonModule.Shared.Module\n@@ -1,2 +1,2 @@\n-\ufeffProcedure Run()\r\n+\ufeffProcedure Changed()\r\n EndProcedure\r\n",
-        "noOp": false,
-        "postHash": "sha256:524a90a52def76c469ea1bc6a7dcf3b3524249e9b52cbc48caba768a186de762",
-        "preHash": "sha256:87c24a6da821b5f96a884b7210133a30d7ee2c66cf281934bae1afc8281a8cbb",
-        "role": "bslModule",
-        "sourceSet": "main",
-        "target": {
-          "metadataPath": "CommonModule.Shared.Module",
-          "sourceSet": "main",
-          "targetKind": "module"
-        },
-        "validation": {
-          "kind": "bsl-analyzer-parser",
-          "status": "passed"
-        }
-      },
-      "errors": [],
-      "ok": true,
-      "summary": "dry run: unica.source.apply planned one BSL resource replacement",
       "warnings": []
     },
     "read": {
@@ -1053,8 +591,7 @@ EXPECTED_SOURCE_FLOW_PROJECTIONS = json.loads(
         "resources": [
           {
             "access": [
-              "read",
-              "replace"
+              "read"
             ],
             "hash": "sha256:87c24a6da821b5f96a884b7210133a30d7ee2c66cf281934bae1afc8281a8cbb",
             "limits": {
@@ -1185,10 +722,6 @@ def source_flow_projection(
     children: dict,
     resources: dict,
     read: dict,
-    preview: dict,
-    applied: dict,
-    current: dict,
-    postimage: dict,
 ) -> dict:
     return {
         "sourceSet": source_set,
@@ -1196,10 +729,6 @@ def source_flow_projection(
         "children": canonical_source_projection(children, cache_root),
         "resources": canonical_source_projection(resources, cache_root),
         "read": canonical_source_projection(read, cache_root),
-        "preview": canonical_source_projection(preview, cache_root),
-        "applied": canonical_source_projection(applied, cache_root),
-        "current": canonical_source_projection(current, cache_root),
-        "postimage": canonical_source_projection(postimage, cache_root),
     }
 
 
@@ -1343,6 +872,7 @@ def _exercise_source_set(
     source_set: str,
 ) -> tuple[int, dict]:
     target = "CommonModule.Shared.Module"
+    before_flow = _workspace_snapshot(workspace)
     resolve = _call(session, request_id, "unica.source.resolve", {
         "cwd": str(workspace), "sourceSet": source_set, "query": target, "mode": "exact", "targetKind": "module",
     })
@@ -1370,48 +900,10 @@ def _exercise_source_set(
     text_profile = read["data"]["textProfile"]
     if text_profile.get("bomPrefixBytes") != 3 or text_profile.get("eol") != "crlf":
         raise SystemExit(f"source.read lost the observed BSL text profile: {read}")
-    content = "Procedure Changed()\nEndProcedure\n"
-    apply_args = {
-        "cwd": str(workspace), "snapshotId": resources["data"]["snapshotId"], "resourceId": resource["resourceId"],
-        "expectedHash": resource["hash"], "content": content, "contentEncoding": "utf-8",
-    }
-    before_preview = _workspace_snapshot(workspace)
-    preview = _call(session, request_id, "unica.source.apply", apply_args)
-    request_id += 1
-    after_preview = _workspace_snapshot(workspace)
-    if after_preview != before_preview:
-        raise SystemExit("source.apply preview changed workspace bytes")
-    expected_after_apply = dict(before_preview)
-    module_root = "src" if source_set == "main" else "ext"
-    module_path = f"{module_root}/CommonModules/Shared/Ext/Module.bsl"
-    expected_after_apply[module_path] = (
-        "\ufeff" + content.replace("\n", "\r\n")
-    ).encode("utf-8")
-    applied = _call(session, request_id, "unica.source.apply", {**apply_args, "dryRun": False})
-    request_id += 1
-    after_apply = _workspace_snapshot(workspace)
-    if after_apply != expected_after_apply:
-        raise SystemExit("source.apply changed bytes outside its complete expected workspace map")
-    if preview["data"]["postHash"] != applied["data"]["postHash"]:
-        raise SystemExit("source.apply preview and apply plans differ")
-    for payload, mode in ((preview, "dry-run"), (applied, "applied")):
-        if (
-            payload["cache"]["mode"] != mode
-            or payload["cache"]["events"] != ["SourceResourcesReplaced"]
-            or payload["cache"]["invalidated"] != ["bsl_diagnostics", "bsl_index"]
-        ):
-            raise SystemExit(f"source.apply did not publish logical cache impact: {payload}")
-    current = _call(session, request_id, "unica.source.resources", {
-        "cwd": str(workspace), "sourceSet": source_set, "metadataPath": target, "scope": "self",
-    })
-    request_id += 1
-    if current["data"]["snapshotId"] == resources["data"]["snapshotId"]:
-        raise SystemExit("source.resources did not issue a fresh postimage snapshot")
-    current_resource = current["data"]["resources"][0]
-    postimage = _call(session, request_id, "unica.source.read", {
-        "cwd": str(workspace), "snapshotId": current["data"]["snapshotId"], "resourceId": current_resource["resourceId"],
-    })
-    request_id += 1
+    # The bounded resource surface is read-only: BSL mutation belongs to
+    # unica.code.patch, so the whole flow must leave every byte in place.
+    if _workspace_snapshot(workspace) != before_flow:
+        raise SystemExit("the read-only source flow changed workspace bytes")
     projection = source_flow_projection(
         source_set,
         cache_root,
@@ -1419,10 +911,6 @@ def _exercise_source_set(
         children,
         resources,
         read,
-        preview,
-        applied,
-        current,
-        postimage,
     )
     if projection != expected_source_flow_projection(source_set):
         raise SystemExit(f"packaged source flow differs from the stable oracle: {projection}")
@@ -1467,10 +955,9 @@ def smoke(command: list[str], plugin_root: Path, timeout_seconds: float) -> None
         finally:
             session.close()
         after = _workspace_snapshot(workspace)
+        # The whole public source surface is read-only, so the packaged smoke
+        # must end with the byte map it started from.
         expected = dict(before)
-        final_module = b"\xef\xbb\xbfProcedure Changed()\r\nEndProcedure\r\n"
-        expected["src/CommonModules/Shared/Ext/Module.bsl"] = final_module
-        expected["ext/CommonModules/Shared/Ext/Module.bsl"] = final_module
         if after != expected:
             changed = {
                 path

@@ -4861,67 +4861,10 @@ source-set:
                 dry_run_message_for_example(example, index + 1, workspace)
                 for index, example in enumerate(examples)
             ]
-            independent_messages = [
-                message
-                for example, message in zip(examples, messages)
-                if example.skill != "source-access"
-            ]
-            responses = self.call_mcp_messages(
-                independent_messages,
-                temp_root / "cache",
-            )
-            stateful_examples = [
-                (example, message)
-                for example, message in zip(examples, messages)
-                if example.skill == "source-access"
-            ]
-            self.assertEqual(len(stateful_examples), 1)
-            env = os.environ.copy()
-            env["UNICA_PLUGIN_ROOT"] = str(PLUGIN_ROOT)
-            env["UNICA_CACHE_DIR"] = str(temp_root / "cache")
-            for example, message in stateful_examples:
-                def prepare_source_snapshot(
-                    request: Callable[[dict[str, Any]], dict[str, Any]],
-                ) -> None:
-                    response = request(
-                        {
-                            "jsonrpc": "2.0",
-                            "id": -example.line,
-                            "method": "tools/call",
-                            "params": {
-                                "name": "unica.source.resources",
-                                "arguments": {
-                                    "cwd": str(workspace),
-                                    "sourceSet": "main",
-                                    "metadataPath": (
-                                        "CommonModule.SourceAccessExample.Module"
-                                    ),
-                                    "scope": "self",
-                                },
-                            },
-                        }
-                    )
-                    self.assertNotIn("error", response, response)
-                    payload = json.loads(
-                        response["result"]["content"][0]["text"]
-                    )
-                    self.assertTrue(payload["ok"], payload)
-                    resource = payload["data"]["resources"][0]
-                    arguments = message["params"]["arguments"]
-                    arguments["snapshotId"] = payload["data"]["snapshotId"]
-                    arguments["resourceId"] = resource["resourceId"]
-                    arguments["expectedHash"] = resource["hash"]
-                    arguments["content"] = (
-                        "Procedure AfterReplacement()\nEndProcedure\n"
-                    )
-
-                response = self.run_mcp_messages(
-                    [message],
-                    env,
-                    setup=prepare_source_snapshot,
-                )[0]
-                responses[message["id"]] = response
-
+            # No example needs a live snapshot any more: the source surface is
+            # read-only and the source-access skill previews through
+            # unica.code.patch like every other writer example.
+            responses = self.call_mcp_messages(messages, temp_root / "cache")
         self.assertEqual(len(responses), len(examples))
         for example, message in zip(examples, messages):
             with self.subTest(skill=example.skill, line=example.line):

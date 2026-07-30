@@ -1,13 +1,13 @@
 ---
 name: source-access
-description: Найти логическую цель 1С, безопасно исследовать её снимок ресурсов и как fallback полностью заменить один существующий BSL-модуль через MCP Unica
-argument-hint: <sourceSet> [metadataPath] <inspect|replace-bsl>
+description: Найти логическую цель 1С, восстановить адрес по пути в исходнике и безопасно исследовать снимок ресурсов через MCP Unica
+argument-hint: <sourceSet> [metadataPath|path] <resolve|inspect|locate>
 allowed-tools:
   - Read
   - Glob
 ---
 
-# /source-access — логическая навигация и ограниченный fallback
+# /source-access — логическая навигация и чтение исходников
 
 ## MCP routing
 
@@ -24,10 +24,11 @@ allowed-tools:
   файла: для модуля это его объект метаданных, для содержимого формы — сама
   форма. Отказ типизирован: `outsideSourceSet`, `notAddressable` или
   `ownerUnproven`.
-- `unica.source.apply` — только fallback, когда ни один предметный writer не
-  выражает нужную полную замену существующего BSL-модуля. До вызова явно назови
-  причину fallback и почему `unica.code.patch` либо другой предметный
-  инструмент не подходит.
+- Ресурсная группа доступна только на чтение. Изменение BSL выполняет
+  `unica.code.patch`: `operation: "insert"` добавляет текст у селектора,
+  `operation: "replace"` переписывает выбранный метод либо вхождение якоря.
+  Он правит выбранный участок, а не переписывает модуль целиком, поэтому
+  подходит и для модулей, которые не поместились бы в один запрос.
 - Не вызывай внутренние MCP/CLI-адаптеры и не подменяй логическую цель
   физическим путём. Все операции идут через один MCP `unica`.
 
@@ -46,9 +47,8 @@ allowed-tools:
      неполный псевдоним вроде `Док` отклоняется — у него нет единственной
      канонической формы.
 2. Открой `unica.source.resources` с точным `sourceSet` и `metadataPath`, когда
-   выбранная цель находится ниже корня набора исходников. Для записи требуй
-   `scope: "self"`, `completeness: "complete"`, ровно один ресурс
-   `role: "bslModule"` и `access`, содержащий `replace`.
+   выбранная цель находится ниже корня набора исходников. Манифест сообщает
+   роль, размер, хеш и профиль текста; `access` всегда содержит только `read`.
 3. Читай ресурс через `unica.source.read` фрагментами до объявленного
    `limits.maxReadBytes`. Сохрани `snapshotId`, `resourceId`, полный `hash`,
    `bomPrefixBytes` и профиль EOL. Продвигайся на возвращённый `length`, а не
@@ -59,39 +59,29 @@ allowed-tools:
    и где `offset` задан внутри многобайтового символа: `offset` адресует байты,
    а не символы. Всегда смотри на возвращённый `contentEncoding`, а не
    предполагай его.
-4. Если предметного writer-а действительно нет, сформулируй причину fallback.
-   Не пытайся заменить `metadataDescriptor`, регистрации, формы, DCS, MXL,
-   права, двоичный или `unknown` ресурс: ожидаемый отказ —
-   `resource_not_replaceable`.
-5. Всегда сначала вызови `unica.source.apply` с теми же `snapshotId`,
-   `resourceId`, `expectedHash`, полным UTF-8 содержимым и `dryRun: true`.
-   Проверь `preHash`, `postHash`, diff, диапазоны, BSL-валидацию и
-   проектируемое влияние на кеш.
-6. Вызывай тот же план с `dryRun: false` только когда пользователь попросил
-   применить именно эту полную замену и предпросмотр всё ещё актуален. При
-   `snapshot_expired`, `stale_revision` или `hash_mismatch` открой новый снимок
-   и повтори чтение и preview; не обходи отказ.
+4. Изменение вноси через `unica.code.patch` с `dryRun: true`, проверь diff,
+   диапазоны и BSL-валидацию, и только затем повтори с `dryRun: false`.
 
-## Preview fallback
+## Предпросмотр правки
 
 ```json
 {
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.source.apply",
+    "name": "unica.code.patch",
     "arguments": {
       "cwd": "<workspace>",
-      "snapshotId": "<snapshotId from unica.source.resources>",
-      "resourceId": "<bsl resourceId>",
-      "expectedHash": "<sha256 from the same snapshot>",
-      "content": "<full replacement BSL>",
-      "contentEncoding": "utf-8",
+      "sourceSet": "main",
+      "metadataPath": "CommonModule.SourceAccessExample.Module",
+      "operation": "replace",
+      "selector": { "method": "BeforeReplacement" },
+      "content": "Procedure BeforeReplacement()\n\t// новое тело\nEndProcedure",
       "dryRun": true
     }
   }
 }
 ```
 
-После подтверждения используйте те же аргументы с `dryRun: false`; изменение
-содержимого, снимка или хеша требует нового preview.
+После подтверждения повтори те же аргументы с `dryRun: false`; изменение
+селектора или содержимого требует нового предпросмотра.

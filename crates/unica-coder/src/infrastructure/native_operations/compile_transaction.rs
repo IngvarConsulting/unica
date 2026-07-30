@@ -723,23 +723,6 @@ impl CompileTransaction {
             .collect()
     }
 
-    /// Every exact replacement preimage bound to this transaction, including
-    /// a byte-identical replacement that still participates in locking and
-    /// revalidation.
-    pub(crate) fn planned_replacement_paths(&self) -> Vec<PathBuf> {
-        self.registrations
-            .values()
-            .map(|registration| registration.path.clone())
-            .collect()
-    }
-
-    pub(crate) fn planned_removed_paths(&self) -> Vec<PathBuf> {
-        self.removals
-            .iter()
-            .map(|removal| removal.path.clone())
-            .collect()
-    }
-
     pub(crate) fn registration_diffs(&self) -> Vec<RegistrationDiff> {
         self.registrations
             .values()

@@ -47,37 +47,6 @@ struct PlannedWorkspaceReport {
     metadata: Vec<PlannedWorkspaceStateFile>,
 }
 
-pub(crate) struct StagedCacheEffects {
-    report: CacheReport,
-    publication_paths: Vec<PathBuf>,
-}
-
-#[derive(Debug)]
-pub(crate) struct CacheEffectsStagingError {
-    message: String,
-    publication_paths: Vec<PathBuf>,
-}
-
-impl StagedCacheEffects {
-    pub(crate) fn publication_paths(&self) -> &[PathBuf] {
-        &self.publication_paths
-    }
-
-    pub(crate) fn into_report(self) -> CacheReport {
-        self.report
-    }
-}
-
-impl CacheEffectsStagingError {
-    pub(crate) fn message(&self) -> &str {
-        &self.message
-    }
-
-    pub(crate) fn publication_paths(&self) -> &[PathBuf] {
-        &self.publication_paths
-    }
-}
-
 impl PlannedWorkspaceReport {
     fn publication_paths(&self) -> Vec<PathBuf> {
         self.metadata
@@ -159,37 +128,6 @@ impl WorkspaceStateRepository {
             }
         }
         unreachable!("bounded cache state retry loop always returns")
-    }
-
-    pub(crate) fn stage_event_effects(
-        &self,
-        transaction: &mut CompileTransaction,
-        context: &WorkspaceContext,
-        events: &[DomainEvent],
-    ) -> Result<StagedCacheEffects, CacheEffectsStagingError> {
-        if events.is_empty() {
-            return Err(CacheEffectsStagingError {
-                message: "cannot stage cache effects without a domain event".to_string(),
-                publication_paths: Vec::new(),
-            });
-        }
-        let plan = self
-            .plan_report(context, events, false, CacheAccess::default())
-            .map_err(|message| CacheEffectsStagingError {
-                message,
-                publication_paths: Vec::new(),
-            })?;
-        let publication_paths = plan.publication_paths();
-        let report = plan
-            .stage(transaction)
-            .map_err(|message| CacheEffectsStagingError {
-                message,
-                publication_paths: publication_paths.clone(),
-            })?;
-        Ok(StagedCacheEffects {
-            report,
-            publication_paths,
-        })
     }
 
     fn plan_report(
@@ -490,76 +428,6 @@ mod tests {
             .unwrap();
         assert!(reported.lazy_rebuilt.is_empty());
         assert!(reported.stale.contains(&"bsl_index".to_string()));
-
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn stale_cache_plan_cannot_overwrite_a_concurrent_event_projection() {
-        let root = temp_root("unica-cache-concurrent-plan");
-        fs::create_dir_all(&root).unwrap();
-        let context = WorkspaceContext {
-            cwd: root.clone(),
-            workspace_root: root.clone(),
-            cache_root: root.join(".cache"),
-            workspace_epoch: 1,
-        };
-        let repo = WorkspaceStateRepository::new(&context);
-        let module_event = DomainEvent::new(DomainEventKind::ModuleChanged, "Module.bsl");
-        let form_event = DomainEvent::new(DomainEventKind::FormChanged, "Form.xml");
-        let mut module_transaction = CompileTransaction::new();
-        repo.stage_event_effects(
-            &mut module_transaction,
-            &context,
-            std::slice::from_ref(&module_event),
-        )
-        .unwrap();
-        let mut stale_form_transaction = CompileTransaction::new();
-        repo.stage_event_effects(
-            &mut stale_form_transaction,
-            &context,
-            std::slice::from_ref(&form_event),
-        )
-        .unwrap();
-
-        module_transaction.commit().unwrap();
-        let conflict = stale_form_transaction
-            .commit()
-            .expect_err("a stale cache plan must not overwrite the first event");
-        assert!(
-            conflict.contains("exists") || conflict.contains("changed"),
-            "{conflict}"
-        );
-
-        let mut retried_form_transaction = CompileTransaction::new();
-        repo.stage_event_effects(
-            &mut retried_form_transaction,
-            &context,
-            std::slice::from_ref(&form_event),
-        )
-        .unwrap();
-        retried_form_transaction.commit().unwrap();
-
-        let (state, _) = repo.load_snapshot(&context).unwrap();
-        assert_eq!(
-            state.caches.get("bsl_index").map(|entry| entry.status),
-            Some(CacheStatus::Stale)
-        );
-        assert_eq!(
-            state.caches.get("form_graph").map(|entry| entry.status),
-            Some(CacheStatus::Stale)
-        );
-        assert_eq!(
-            state.caches.get("metadata_graph").map(|entry| entry.status),
-            Some(CacheStatus::Fresh)
-        );
-        assert_eq!(
-            state
-                .caches
-                .get("bsl_diagnostics")
-                .map(|entry| entry.status),
-            Some(CacheStatus::Stale)
-        );
 
         let _ = fs::remove_dir_all(root);
     }

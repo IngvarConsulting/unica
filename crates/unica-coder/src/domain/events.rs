@@ -69,7 +69,7 @@ impl DomainEvent {
     pub fn source_resources_replaced(details: SourceResourcesReplaced) -> Self {
         Self {
             kind: DomainEventKind::SourceResourcesReplaced,
-            artifact: "unica.source.apply".to_string(),
+            artifact: "unica.code.patch".to_string(),
             details: Some(details),
         }
     }
@@ -90,9 +90,7 @@ pub fn runtime_event_kind(operation: &str) -> Option<DomainEventKind> {
 
 #[cfg(test)]
 mod tests {
-    use super::{runtime_event_kind, DomainEvent, DomainEventKind, SourceResourcesReplaced};
-    use crate::domain::source_resources::ResourceRole;
-    use serde_json::json;
+    use super::{runtime_event_kind, DomainEventKind};
 
     #[test]
     fn runtime_job_and_synchronous_runtime_share_event_mapping() {
@@ -105,33 +103,5 @@ mod tests {
             Some(DomainEventKind::BuildCompleted)
         );
         assert_eq!(runtime_event_kind("make"), None);
-    }
-
-    #[test]
-    fn source_apply_event_serializes_verified_logical_replacement_details() {
-        let event = DomainEvent::source_resources_replaced(SourceResourcesReplaced {
-            source_set: "main".to_string(),
-            owner: "CommonModule.Shared".to_string(),
-            roles: vec![ResourceRole::BslModule],
-            preimage_hashes: vec!["sha256:before".to_string()],
-            postimage_hashes: vec!["sha256:after".to_string()],
-            affected_targets: vec!["CommonModule.Shared.Module".to_string()],
-        });
-
-        assert_eq!(
-            serde_json::to_value(event).unwrap(),
-            json!({
-                "kind": "SourceResourcesReplaced",
-                "artifact": "unica.source.apply",
-                "details": {
-                    "sourceSet": "main",
-                    "owner": "CommonModule.Shared",
-                    "roles": ["bslModule"],
-                    "preimageHashes": ["sha256:before"],
-                    "postimageHashes": ["sha256:after"],
-                    "affectedTargets": ["CommonModule.Shared.Module"]
-                }
-            })
-        );
     }
 }

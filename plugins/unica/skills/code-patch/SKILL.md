@@ -19,9 +19,9 @@ allowed-tools:
 
 If the requested BSL change cannot be expressed as one safe insertion and needs
 a full existing-module replacement, stop this route and use the
-`source-access` skill. It must explain why the specialized
-`unica.code.patch` writer is insufficient, inspect the issued snapshot, and
-preview `unica.source.apply` before any applying call.
+`source-access` skill to inspect the target through the read-only
+`unica.source.resources` and `unica.source.read`, then come back with a
+narrower `insert` or `replace`.
 
 ## Parameters
 

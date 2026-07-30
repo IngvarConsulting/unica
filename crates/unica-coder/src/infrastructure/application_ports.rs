@@ -5,9 +5,7 @@ use crate::application::source_navigation::{
     SourceChildrenRequest, SourceChildrenResult, SourceLocateRequest, SourceLocateResult,
     SourceResolveRequest, SourceResolveResult,
 };
-use crate::application::source_resources::{
-    SourceApplyExecution, SourceApplyRequest, SourceReadRequest, SourceResourcesRequest,
-};
+use crate::application::source_resources::{SourceReadRequest, SourceResourcesRequest};
 use crate::application::{project_map, project_status, AdapterOutcome, ToolHandler, ToolSpec};
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
@@ -163,28 +161,6 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         cancellation: &CancellationToken,
     ) -> Result<SourceReadResult, SourceResourceError> {
         self.source_resources.read(request, context, cancellation)
-    }
-
-    fn apply_source_resource(
-        &self,
-        request: SourceApplyRequest,
-        context: &WorkspaceContext,
-        dry_run: bool,
-        cancellation: &CancellationToken,
-    ) -> Result<SourceApplyExecution, SourceResourceError> {
-        self.source_resources.apply_with_cache_effect_staging(
-            request,
-            context,
-            dry_run,
-            cancellation,
-            |transaction, event| {
-                WorkspaceStateRepository::new(context).stage_event_effects(
-                    transaction,
-                    context,
-                    std::slice::from_ref(event),
-                )
-            },
-        )
     }
 
     fn evaluate_support_guard(
