@@ -18,6 +18,7 @@ pub(crate) mod code_intelligence;
 pub(crate) mod operation_descriptors;
 mod outcome;
 pub(crate) mod ports;
+pub(crate) mod source_navigation;
 pub(crate) mod tool_contracts;
 pub use tool_contracts::input_schema_for_tool;
 
@@ -49,6 +50,9 @@ pub enum ToolHandler {
     CodeIntelligence {
         operation: CodeIntelligenceOperation,
     },
+    SourceNavigation {
+        operation: SourceNavigationOperation,
+    },
     CodeAdapter {
         command: &'static [&'static str],
     },
@@ -56,6 +60,8 @@ pub enum ToolHandler {
         operation: &'static str,
     },
 }
+
+pub use source_navigation::SourceNavigationOperation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeJobAction {
@@ -160,6 +166,32 @@ pub fn tools() -> Vec<ToolSpec> {
                 writes: &[],
             },
             handler: ToolHandler::ProjectMap,
+        },
+        ToolSpec {
+            name: "unica.source.resolve",
+            description:
+                "Resolve an exact or prefix logical metadata query inside one named source set.",
+            mutating: false,
+            cache_access: CacheAccess {
+                reads: &["workspace_graph", "metadata_graph"],
+                writes: &[],
+            },
+            handler: ToolHandler::SourceNavigation {
+                operation: SourceNavigationOperation::Resolve,
+            },
+        },
+        ToolSpec {
+            name: "unica.source.children",
+            description:
+                "List exactly one level below a logical source-set root or metadata address.",
+            mutating: false,
+            cache_access: CacheAccess {
+                reads: &["workspace_graph", "metadata_graph"],
+                writes: &[],
+            },
+            handler: ToolHandler::SourceNavigation {
+                operation: SourceNavigationOperation::Children,
+            },
         },
         ToolSpec {
             name: "unica.build.dump",
@@ -494,6 +526,9 @@ fn call_tool(
             dry_run,
             cancellation,
         )?,
+        ToolHandler::SourceNavigation { operation } => {
+            source_navigation::invoke(operation, ports, args, &context, cancellation)?
+        }
         _ => ports.invoke_handler(spec, args, &context, dry_run, cancellation)?,
     };
     let mut outcome = handler_outcome.adapter;
@@ -1068,6 +1103,7 @@ fn domain_events(spec: ToolSpec, args: &Map<String, Value>) -> Vec<DomainEvent> 
             .map(|event| vec![DomainEvent::new(event, spec.name)])
             .unwrap_or_default(),
         ToolHandler::RuntimeJob { .. } => Vec::new(),
+        ToolHandler::SourceNavigation { .. } => Vec::new(),
         _ => Vec::new(),
     }
 }
@@ -1764,6 +1800,25 @@ mod tests {
             assert!(matches!(
                 tool.handler,
                 ToolHandler::CodeIntelligence {
+                    operation: actual
+                } if actual == operation
+            ));
+        }
+    }
+
+    #[test]
+    fn source_navigation_tools_use_provider_neutral_application_handlers() {
+        let expected = [
+            ("unica.source.resolve", SourceNavigationOperation::Resolve),
+            ("unica.source.children", SourceNavigationOperation::Children),
+        ];
+
+        for (name, operation) in expected {
+            let tool = tools().into_iter().find(|tool| tool.name == name).unwrap();
+            assert!(!tool.mutating, "{name} must remain read-only");
+            assert!(matches!(
+                tool.handler,
+                ToolHandler::SourceNavigation {
                     operation: actual
                 } if actual == operation
             ));

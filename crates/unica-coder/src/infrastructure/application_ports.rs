@@ -1,6 +1,9 @@
 use crate::application::ports::{
     ApplicationPorts, FormatGuardCheck, HandlerOutcome, SupportGuardCheck,
 };
+use crate::application::source_navigation::{
+    SourceChildrenRequest, SourceChildrenResult, SourceResolveRequest, SourceResolveResult,
+};
 use crate::application::{project_map, project_status, AdapterOutcome, ToolHandler, ToolSpec};
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
@@ -84,6 +87,26 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
             Arc::new(GitGrepProvider::new()),
         ];
         CodeIntelligenceRegistry::new(providers)
+    }
+
+    fn resolve_source_navigation(
+        &self,
+        request: SourceResolveRequest,
+        context: &WorkspaceContext,
+    ) -> Result<SourceResolveResult, String> {
+        crate::infrastructure::platform_xml_source_targets::resolve_platform_xml_source_navigation(
+            context, &request,
+        )
+    }
+
+    fn children_source_navigation(
+        &self,
+        request: SourceChildrenRequest,
+        context: &WorkspaceContext,
+    ) -> Result<SourceChildrenResult, String> {
+        crate::infrastructure::platform_xml_source_targets::children_platform_xml_source_navigation(
+            context, &request,
+        )
     }
 
     fn evaluate_support_guard(
@@ -219,6 +242,10 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
             }),
             ToolHandler::CodeIntelligence { .. } => Err(format!(
                 "{} must be dispatched through the provider-neutral code intelligence registry",
+                spec.name
+            )),
+            ToolHandler::SourceNavigation { .. } => Err(format!(
+                "{} must be dispatched through the provider-neutral source navigation port",
                 spec.name
             )),
             ToolHandler::CodeAdapter {

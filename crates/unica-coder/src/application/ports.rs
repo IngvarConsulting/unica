@@ -1,4 +1,7 @@
 use super::{AdapterOutcome, ToolSpec};
+use crate::application::source_navigation::{
+    SourceChildrenRequest, SourceChildrenResult, SourceResolveRequest, SourceResolveResult,
+};
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::{
@@ -83,6 +86,22 @@ pub(crate) trait ApplicationPorts: Send + Sync {
 
     fn code_intelligence_registry(&self) -> Result<CodeIntelligenceRegistry, String> {
         Err("code intelligence provider registry is not configured".to_string())
+    }
+
+    fn resolve_source_navigation(
+        &self,
+        _request: SourceResolveRequest,
+        _context: &WorkspaceContext,
+    ) -> Result<SourceResolveResult, String> {
+        Err("source navigation resolver is not configured".to_string())
+    }
+
+    fn children_source_navigation(
+        &self,
+        _request: SourceChildrenRequest,
+        _context: &WorkspaceContext,
+    ) -> Result<SourceChildrenResult, String> {
+        Err("source navigation traversal is not configured".to_string())
     }
 
     fn evaluate_format_guard(

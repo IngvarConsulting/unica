@@ -529,6 +529,129 @@ mod tests {
         }
     }
 
+    #[test]
+    fn source_navigation_mcp_results_are_bounded_and_hide_provider_state() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-source-navigation-mcp-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let source = root.join("src");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Main</Name></Properties></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        for name in ["Alpha", "Alpine", "Algebra"] {
+            let directory = source.join("CommonModules").join(name);
+            std::fs::create_dir_all(directory.join("Ext")).unwrap();
+            std::fs::write(
+                source.join("CommonModules").join(format!("{name}.xml")),
+                format!(
+                    r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule><Properties><Name>{name}</Name></Properties></CommonModule></MetaDataObject>"#
+                ),
+            )
+            .unwrap();
+            std::fs::write(
+                directory.join("Ext/Module.bsl"),
+                "Procedure Run()\nEndProcedure\n",
+            )
+            .unwrap();
+        }
+        std::fs::create_dir_all(source.join("Catalogs")).unwrap();
+        std::fs::write(
+            source.join("Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Items</Name></Properties></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+
+        let resolve_args = json!({
+            "cwd": root,
+            "sourceSet": "main",
+            "query": "CommonModule.Al",
+            "mode": "prefix",
+            "limit": 2
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let resolve: Value = serde_json::from_str(
+            &call_tool_text(
+                &UnicaApplication::new(),
+                "unica.source.resolve",
+                &resolve_args,
+                CancellationToken::new(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(resolve["data"]["candidates"].as_array().unwrap().len(), 2);
+        assert_eq!(resolve["data"]["completeness"], "partial");
+        assert!(resolve["data"]["nextCursor"].is_string());
+        assert_no_private_source_navigation_keys(&resolve);
+
+        let children_args = json!({
+            "cwd": root,
+            "sourceSet": "main",
+            "limit": 1
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let children: Value = serde_json::from_str(
+            &call_tool_text(
+                &UnicaApplication::new(),
+                "unica.source.children",
+                &children_args,
+                CancellationToken::new(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(children["data"]["children"].as_array().unwrap().len(), 1);
+        assert!(children["data"]["nextCursor"].is_string());
+        assert_no_private_source_navigation_keys(&children);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn assert_no_private_source_navigation_keys(value: &Value) {
+        match value {
+            Value::Object(object) => {
+                for key in object.keys() {
+                    assert!(
+                        !matches!(
+                            key.as_str(),
+                            "path"
+                                | "sourceDir"
+                                | "provider"
+                                | "providerId"
+                                | "providerRevision"
+                                | "handle"
+                                | "private"
+                        ),
+                        "private source-navigation key leaked: {key}"
+                    );
+                }
+                for child in object.values() {
+                    assert_no_private_source_navigation_keys(child);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    assert_no_private_source_navigation_keys(item);
+                }
+            }
+            _ => {}
+        }
+    }
+
     #[tokio::test]
     async fn tool_execution_failure_keeps_json_rpc_error_shape() {
         let (mut client, _) = spawn_server(application_handler());

@@ -1,5 +1,8 @@
 use super::operation_descriptors::{native_operation_descriptor, native_path_alias_groups};
-use super::{CodeIntelligenceOperation, RuntimeJobAction, ToolHandler, ToolSpec};
+use super::source_navigation::SOURCE_NAVIGATION_LIMIT_MAX;
+use super::{
+    CodeIntelligenceOperation, RuntimeJobAction, SourceNavigationOperation, ToolHandler, ToolSpec,
+};
 use crate::domain::form_edit::{form_edit_definition_schema, validate_form_edit_definition};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
@@ -17,6 +20,15 @@ const CODE_PATCH_ARGS: &[&str] = &[
 const RUNTIME_JOB_STATUS_ARGS: &[&str] = &["jobId"];
 const RUNTIME_JOB_WAIT_ARGS: &[&str] = &["jobId", "timeoutSeconds"];
 const RUNTIME_JOB_LOGS_ARGS: &[&str] = &["jobId", "tailChars"];
+const SOURCE_RESOLVE_ARGS: &[&str] = &[
+    "sourceSet",
+    "query",
+    "mode",
+    "targetKind",
+    "limit",
+    "cursor",
+];
+const SOURCE_CHILDREN_ARGS: &[&str] = &["sourceSet", "metadataPath", "limit", "cursor"];
 
 pub(crate) const DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS: u64 = 30;
 pub(crate) const DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS: u64 = 3600;
@@ -683,6 +695,7 @@ pub fn validate_tool_arguments(
         validate_runtime_job_arguments(tool.name, action, args, dry_run)?;
     }
     validate_code_arguments(tool, args, dry_run)?;
+    validate_source_navigation_arguments(tool, args)?;
     validate_code_patch_arguments(tool, args)?;
     validate_meta_edit_arguments(tool, args)?;
     validate_form_add_arguments(tool, args)?;
@@ -700,6 +713,77 @@ pub fn validate_tool_arguments(
         }
     }
 
+    Ok(())
+}
+
+fn validate_source_navigation_arguments(
+    tool: ToolSpec,
+    args: &Map<String, Value>,
+) -> Result<(), String> {
+    let ToolHandler::SourceNavigation { operation } = tool.handler else {
+        return Ok(());
+    };
+    for required in match operation {
+        SourceNavigationOperation::Resolve => &["sourceSet", "query"][..],
+        SourceNavigationOperation::Children => &["sourceSet"][..],
+    } {
+        let value = args
+            .get(*required)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("{} requires `{required}` argument", tool.name))?;
+        debug_assert!(!value.is_empty());
+    }
+    if let Some(value) = args.get("mode") {
+        let mode = value
+            .as_str()
+            .ok_or_else(|| format!("{} argument `mode` must be a string", tool.name))?;
+        if !matches!(mode, "exact" | "prefix") {
+            return Err(format!(
+                "{} argument `mode` must be `exact` or `prefix`",
+                tool.name
+            ));
+        }
+    }
+    if let Some(value) = args.get("targetKind") {
+        let target_kind = value
+            .as_str()
+            .ok_or_else(|| format!("{} argument `targetKind` must be a string", tool.name))?;
+        if !matches!(target_kind, "metadataObject" | "module") {
+            return Err(format!(
+                "{} argument `targetKind` must be `metadataObject` or `module`",
+                tool.name
+            ));
+        }
+    }
+    if let Some(value) = args.get("limit") {
+        let limit = value
+            .as_u64()
+            .ok_or_else(|| format!("{} argument `limit` must be a positive integer", tool.name))?;
+        if !(1..=u64::try_from(SOURCE_NAVIGATION_LIMIT_MAX).expect("small constant"))
+            .contains(&limit)
+        {
+            return Err(format!(
+                "{} argument `limit` must be between 1 and {SOURCE_NAVIGATION_LIMIT_MAX}",
+                tool.name
+            ));
+        }
+    }
+    for optional in ["metadataPath", "cursor"] {
+        if let Some(value) = args.get(optional) {
+            let non_empty = value
+                .as_str()
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty());
+            if !non_empty {
+                return Err(format!(
+                    "{} argument `{optional}` must be a non-empty string",
+                    tool.name
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1505,6 +1589,10 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
         ToolHandler::CodeIntelligence { operation } => {
             names.extend(code_intelligence_args(operation))
         }
+        ToolHandler::SourceNavigation { operation } => names.extend(match operation {
+            SourceNavigationOperation::Resolve => SOURCE_RESOLVE_ARGS,
+            SourceNavigationOperation::Children => SOURCE_CHILDREN_ARGS,
+        }),
         ToolHandler::CodeAdapter { .. } => names.extend(code_args_for(tool.name)),
         ToolHandler::StandardsAdapter { .. } => names.extend(STANDARDS_ARGS),
         ToolHandler::ProjectStatus | ToolHandler::ProjectMap => {}
@@ -1545,6 +1633,10 @@ fn required_args(tool: &ToolSpec) -> Vec<&'static str> {
                 vec!["name"]
             }
             CodeIntelligenceOperation::Outline => vec!["path"],
+        },
+        ToolHandler::SourceNavigation { operation } => match operation {
+            SourceNavigationOperation::Resolve => vec!["sourceSet", "query"],
+            SourceNavigationOperation::Children => vec!["sourceSet"],
         },
         ToolHandler::CodeAdapter { .. } => match tool.name {
             "unica.code.graph" => vec!["mode"],
@@ -1852,6 +1944,10 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "createIfMissing",
         "`unica.interface.edit` only: boolean, create `CommandInterface.xml` when it does not exist yet instead of failing",
+    ),
+    (
+        "cursor",
+        "Opaque continuation token returned by the same `unica.source.resolve` or `unica.source.children` request; do not inspect or reuse it with another source set, query, mode, target kind, or parent address",
     ),
     (
         "cwd",
@@ -2309,6 +2405,10 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
         "String forwarded to unica.build.* as --target; the skills document no behaviour for it beyond the flag name",
     ),
     (
+        "targetKind",
+        "Optional `unica.source.resolve` filter: `metadataObject` or `module`; it narrows exact or prefix matches without changing their canonical metadataPath",
+    ),
+    (
         "targetPath",
         "Alias of `path` for `unica.support.edit`: the dump directory, object XML or form XML whose support state is being changed",
     ),
@@ -2470,6 +2570,24 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
                     { "required": ["method"] },
                     { "required": ["anchor"] }
                 ]
+            }),
+            _ => property_schema(name),
+        };
+    }
+    if matches!(tool.handler, ToolHandler::SourceNavigation { .. }) {
+        return match name {
+            "sourceSet" | "query" | "metadataPath" | "cursor" => {
+                json!({ "type": "string", "minLength": 1, "pattern": r"\S" })
+            }
+            "mode" => json!({ "type": "string", "enum": ["exact", "prefix"] }),
+            "targetKind" => json!({
+                "type": "string",
+                "enum": ["metadataObject", "module"]
+            }),
+            "limit" => json!({
+                "type": "integer",
+                "minimum": 1,
+                "maximum": SOURCE_NAVIGATION_LIMIT_MAX
             }),
             _ => property_schema(name),
         };
@@ -3676,6 +3794,77 @@ mod tests {
         assert_eq!(schema["properties"]["ignoreTags"]["type"], "array");
         assert_eq!(schema["properties"]["scenarioFilters"]["type"], "array");
         assert_eq!(schema["properties"]["projects"]["type"], "array");
+    }
+
+    #[test]
+    fn source_navigation_schemas_are_logical_exact_and_bounded() {
+        let resolve = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.source.resolve")
+            .expect("source.resolve is registered");
+        let children = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.source.children")
+            .expect("source.children is registered");
+
+        let resolve_schema = input_schema_for_tool(&resolve);
+        assert_eq!(resolve_schema["required"], json!(["sourceSet", "query"]));
+        assert_eq!(
+            resolve_schema["properties"]["mode"]["enum"],
+            json!(["exact", "prefix"])
+        );
+        assert_eq!(
+            resolve_schema["properties"]["targetKind"]["enum"],
+            json!(["metadataObject", "module"])
+        );
+        assert_eq!(resolve_schema["properties"]["limit"]["minimum"], 1);
+        assert_eq!(resolve_schema["properties"]["limit"]["maximum"], 50);
+        for forbidden in ["path", "sourceDir", "provider", "handle"] {
+            assert!(
+                resolve_schema["properties"].get(forbidden).is_none(),
+                "source.resolve must not publish {forbidden}"
+            );
+        }
+
+        let children_schema = input_schema_for_tool(&children);
+        assert_eq!(children_schema["required"], json!(["sourceSet"]));
+        assert_eq!(
+            children_schema["properties"]["metadataPath"]["type"],
+            "string"
+        );
+        assert_eq!(children_schema["properties"]["cursor"]["type"], "string");
+        assert_eq!(children_schema["properties"]["limit"]["minimum"], 1);
+        assert_eq!(children_schema["properties"]["limit"]["maximum"], 50);
+        for forbidden in ["path", "sourceDir", "provider", "handle", "collection"] {
+            assert!(
+                children_schema["properties"].get(forbidden).is_none(),
+                "source.children must not publish {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn source_navigation_arguments_reject_fuzzy_modes_and_unbounded_limits() {
+        let resolve = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.source.resolve")
+            .unwrap();
+        for args in [
+            json!({"sourceSet": "main", "query": "Catalog.Items", "mode": "fuzzy"}),
+            json!({"sourceSet": "main", "query": "Catalog.Items", "mode": 1}),
+            json!({"sourceSet": "main", "query": "Catalog.Items", "targetKind": "sourceRoot"}),
+            json!({"sourceSet": "main", "query": "Catalog.Items", "targetKind": 1}),
+            json!({"sourceSet": "main", "query": "Catalog.Items", "limit": -1}),
+            json!({"sourceSet": "main", "query": "Catalog.Items", "limit": 0}),
+            json!({"sourceSet": "main", "query": "Catalog.Items", "limit": 51}),
+        ] {
+            let error = validate_tool_arguments(resolve, args.as_object().unwrap(), false)
+                .expect_err("invalid source navigation input must be rejected");
+            assert!(
+                error.contains("mode") || error.contains("limit") || error.contains("targetKind"),
+                "unexpected error: {error}"
+            );
+        }
     }
 
     #[test]
