@@ -1,8 +1,9 @@
 use crate::domain::cancellation::{cancelled_error, CancellationToken, CANCELLED_PREFIX};
 use crate::domain::code_intelligence::{
-    CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadRequest,
-    ProviderCapability, ProviderDeadline, ProviderId, ProviderReadOutcome, ProviderSearchHit,
-    ProviderSearchSection, ProviderSectionStatus, SearchRequest,
+    CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadData,
+    CodeIntelligenceReadRequest, ProviderCapability, ProviderDeadline, ProviderId,
+    ProviderReadOutcome, ProviderSearchHit, ProviderSearchSection, ProviderSectionStatus,
+    SearchRequest,
 };
 use crate::infrastructure::bsl_outline::render_current_source_outline;
 use crate::infrastructure::internal_adapters::{
@@ -211,10 +212,11 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
             artifacts: vec![path.clone()],
             stdout: None,
             stderr: None,
+            data: None,
         };
         match render_current_source_outline(path, *include_methods, context, deadline, cancellation)
         {
-            Ok(section) => outcome.stdout = Some(section),
+            Ok(result) => outcome.data = Some(CodeIntelligenceReadData::Outline(result)),
             Err(error) => {
                 outcome.ok = false;
                 outcome.summary = if error.starts_with(CANCELLED_PREFIX) {
@@ -450,6 +452,7 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
             artifacts: outcome.artifacts,
             stdout: outcome.stdout,
             stderr: outcome.stderr,
+            data: None,
         })
     }
 }

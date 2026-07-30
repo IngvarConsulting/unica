@@ -645,7 +645,13 @@ fn invoke_code_intelligence_read(
             ),
         );
     }
-    Ok(ports::HandlerOutcome::plain(AdapterOutcome {
+    let data = outcome
+        .data
+        .take()
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|error| format!("failed to serialize code intelligence read result: {error}"))?;
+    let adapter = AdapterOutcome {
         ok: outcome.ok,
         summary: outcome.summary,
         changes: Vec::new(),
@@ -655,7 +661,11 @@ fn invoke_code_intelligence_read(
         stdout: outcome.stdout,
         stderr: outcome.stderr,
         command: None,
-    }))
+    };
+    Ok(match data {
+        Some(data) => ports::HandlerOutcome::with_data(adapter, data),
+        None => ports::HandlerOutcome::plain(adapter),
+    })
 }
 
 fn code_intelligence_read_request(

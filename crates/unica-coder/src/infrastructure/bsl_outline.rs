@@ -1,13 +1,18 @@
 //! Module outline built from the BSL file that is on disk right now.
 //!
-//! ADR-0020: the outline describes the current source, not an index snapshot, so
-//! the only source of truth here is one syntax tree of one file. Nothing in this
-//! module reads `bsl_index`, starts a hidden service, or writes workspace state.
+//! ADR-0021: the outline describes the current source as typed data, not an
+//! index snapshot or a text report. The only source of truth here is one syntax
+//! tree of one file. Nothing in this module reads `bsl_index`, starts a hidden
+//! service, or writes workspace state.
 
 use crate::domain::cancellation::{cancelled_error, CancellationToken};
-use crate::domain::code_intelligence::{CodeIntelligenceContext, ProviderDeadline};
+use crate::domain::code_intelligence::{
+    CodeIntelligenceContext, CodeOutlineIdentity, CodeOutlineMethod, CodeOutlineMethodKind,
+    CodeOutlineParameter, CodeOutlineRegion, CodeOutlineResult, CodeOutlineTotals,
+    ProviderDeadline,
+};
 use crate::infrastructure::source_roots::normalize_path_identity;
-use bsl_syntax::ast::{AstNode, FunctionDef, ProcedureDef};
+use bsl_syntax::ast::{AstNode, FunctionDef, Param, ProcedureDef};
 use bsl_syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
 use std::fs;
 use std::path::Path;
@@ -63,22 +68,6 @@ const MODULE_TYPES: &[(&str, &str)] = &[
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct OutlineMethod {
-    name: String,
-    kind: String,
-    params: Vec<String>,
-    is_export: bool,
-    line: usize,
-    end_line: usize,
-}
-
-impl OutlineMethod {
-    fn loc(&self) -> usize {
-        self.end_line.saturating_sub(self.line) + 1
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 struct OutlineRegion {
     name: Option<String>,
     line: usize,
@@ -107,11 +96,10 @@ struct ModuleIdentity {
     module_type: Option<String>,
 }
 
-/// Renders the compact outline body for `path` inside the selected source root.
+/// Builds the typed outline for `path` inside the selected source root.
 ///
-/// The grammar of the returned text is the established one; only its source
-/// changed. Any condition that prevents proving the outline — a read error, a
-/// path outside the source root, a parser diagnostic — fails the call instead of
+/// Any condition that prevents proving the outline — a read error, a path
+/// outside the source root, a parser diagnostic — fails the call instead of
 /// publishing a partial tree, because callers use the outline as a map for
 /// further reads.
 pub(crate) fn render_current_source_outline(
@@ -120,7 +108,7 @@ pub(crate) fn render_current_source_outline(
     context: &CodeIntelligenceContext,
     deadline: ProviderDeadline,
     cancellation: &CancellationToken,
-) -> Result<String, String> {
+) -> Result<CodeOutlineResult, String> {
     if cancellation.is_cancelled() {
         return Err(cancelled_error("unica.code.outline stopped before reading"));
     }
@@ -138,14 +126,13 @@ pub(crate) fn render_current_source_outline(
     if deadline.remaining().is_zero() {
         return Err("unica.code.outline provider deadline exceeded after parsing".to_string());
     }
-    let body = render(
+    Ok(build_result(
         path,
         &module_identity(path),
         &methods,
         &regions,
         include_methods,
-    );
-    Ok(format!("=== bsl-outline ===\n{}", body.trim_end()))
+    ))
 }
 
 fn read_module(path: &str, context: &CodeIntelligenceContext) -> Result<String, String> {
@@ -164,7 +151,7 @@ fn read_module(path: &str, context: &CodeIntelligenceContext) -> Result<String, 
     fs::read_to_string(&module).map_err(|error| format!("could not read module `{path}`: {error}"))
 }
 
-fn parse_module(text: &str) -> Result<(Vec<OutlineMethod>, Vec<OutlineRegion>), String> {
+fn parse_module(text: &str) -> Result<(Vec<CodeOutlineMethod>, Vec<OutlineRegion>), String> {
     if text.len() > u32::MAX as usize {
         return Err("BSL module is too large for the analyzer parser".to_string());
     }
@@ -192,6 +179,7 @@ fn parse_module(text: &str) -> Result<(Vec<OutlineMethod>, Vec<OutlineRegion>), 
                     .name_or_keyword()
                     .map(|token| token.text().to_string()),
                 procedure.export_keyword().is_some(),
+                CodeOutlineMethodKind::Procedure,
                 SyntaxKind::KW_PROCEDURE,
                 SyntaxKind::KW_END_PROCEDURE,
             )?);
@@ -203,6 +191,7 @@ fn parse_module(text: &str) -> Result<(Vec<OutlineMethod>, Vec<OutlineRegion>), 
                     .name_or_keyword()
                     .map(|token| token.text().to_string()),
                 function.export_keyword().is_some(),
+                CodeOutlineMethodKind::Function,
                 SyntaxKind::KW_FUNCTION,
                 SyntaxKind::KW_END_FUNCTION,
             )?);
@@ -217,36 +206,59 @@ fn method_outline(
     lines: &LineIndex,
     name: Option<String>,
     is_export: bool,
+    kind: CodeOutlineMethodKind,
     start_kind: SyntaxKind,
     end_kind: SyntaxKind,
-) -> Result<OutlineMethod, String> {
+) -> Result<CodeOutlineMethod, String> {
     let name = name.ok_or_else(|| "BSL method is missing a name".to_string())?;
     let start = first_token(syntax, start_kind)
         .ok_or_else(|| format!("BSL method `{name}` is missing its opening keyword"))?;
     let end = first_token(syntax, end_kind)
         .ok_or_else(|| format!("BSL method `{name}` is missing its closing keyword"))?;
-    Ok(OutlineMethod {
+    Ok(CodeOutlineMethod {
         name,
-        kind: start.text().to_string(),
-        params: params(syntax),
+        kind,
+        parameters: parameters(syntax)?,
         is_export,
         line: lines.line_of(usize::from(start.text_range().start())),
         end_line: lines.line_of(usize::from(end.text_range().start())),
     })
 }
 
-fn params(syntax: &SyntaxNode) -> Vec<String> {
-    syntax
+fn parameters(syntax: &SyntaxNode) -> Result<Vec<CodeOutlineParameter>, String> {
+    let Some(list) = syntax
         .children()
         .find(|child| child.kind() == SyntaxKind::PARAM_LIST)
-        .map(|list| {
-            list.children()
-                .filter(|child| child.kind() == SyntaxKind::PARAM)
-                .map(|param| param.text().to_string().trim().to_string())
-                .filter(|param| !param.is_empty())
-                .collect()
+    else {
+        return Ok(Vec::new());
+    };
+    list.children()
+        .filter_map(Param::cast)
+        .map(|parameter| {
+            let name = parameter
+                .name()
+                .map(|token| token.text().to_string())
+                .ok_or_else(|| "BSL method parameter is missing a name".to_string())?;
+            let default_value = parameter
+                .default_value_expr()
+                .map(|expression| inline_expression(&expression));
+            Ok(CodeOutlineParameter {
+                name,
+                by_value: parameter.val_keyword().is_some(),
+                default_value,
+            })
         })
-        .unwrap_or_default()
+        .collect()
+}
+
+fn inline_expression(expression: &SyntaxNode) -> String {
+    expression
+        .descendants_with_tokens()
+        .filter_map(|element| element.into_token())
+        .filter(|token| !token.kind().is_trivia())
+        .map(|token| token.text().to_string())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn first_token(syntax: &SyntaxNode, kind: SyntaxKind) -> Option<SyntaxToken> {
@@ -376,39 +388,42 @@ fn module_identity(path: &str) -> ModuleIdentity {
     identity
 }
 
-fn render(
+fn build_result(
     path: &str,
     identity: &ModuleIdentity,
-    methods: &[OutlineMethod],
+    methods: &[CodeOutlineMethod],
     regions: &[OutlineRegion],
     include_methods: bool,
-) -> String {
-    let mut lines = vec![format!("module: {path}")];
-    push_identity(&mut lines, "object", identity.object_name.as_deref());
-    push_identity(&mut lines, "category", identity.category.as_deref());
-    push_identity(&mut lines, "moduleType", identity.module_type.as_deref());
-    lines.push(format!(
-        "totals: methods={} exports={} regions={} loc={}",
-        methods.len(),
-        methods.iter().filter(|method| method.is_export).count(),
-        regions.len(),
-        methods.iter().map(OutlineMethod::loc).sum::<usize>()
-    ));
+) -> CodeOutlineResult {
     let (nodes, roots, orphans) = build_tree(regions, methods);
-    for root in roots {
-        render_region(&nodes, root, 0, methods, include_methods, &mut lines);
-    }
-    if include_methods {
-        for index in orphans {
-            lines.push(render_method(&methods[index], 0));
-        }
-    }
-    lines.join("\n")
-}
-
-fn push_identity(lines: &mut Vec<String>, label: &str, value: Option<&str>) {
-    if let Some(value) = value.filter(|value| !value.is_empty()) {
-        lines.push(format!("{label}: {value}"));
+    CodeOutlineResult {
+        module: path.to_string(),
+        identity: CodeOutlineIdentity {
+            category: identity.category.clone(),
+            object: identity.object_name.clone(),
+            module_type: identity.module_type.clone(),
+        },
+        totals: CodeOutlineTotals {
+            methods: methods.len(),
+            exports: methods.iter().filter(|method| method.is_export).count(),
+            regions: regions.len(),
+            loc: methods
+                .iter()
+                .map(|method| method.end_line.saturating_sub(method.line) + 1)
+                .sum(),
+        },
+        regions: roots
+            .into_iter()
+            .map(|root| materialize_region(&nodes, root, methods, include_methods))
+            .collect(),
+        methods: if include_methods {
+            orphans
+                .into_iter()
+                .map(|index| methods[index].clone())
+                .collect()
+        } else {
+            Vec::new()
+        },
     }
 }
 
@@ -417,7 +432,7 @@ fn push_identity(lines: &mut Vec<String>, label: &str, value: Option<&str>) {
 /// without nesting degrade to roots, deterministically.
 fn build_tree(
     regions: &[OutlineRegion],
-    methods: &[OutlineMethod],
+    methods: &[CodeOutlineMethod],
 ) -> (Vec<RegionNode>, Vec<usize>, Vec<usize>) {
     let mut nodes: Vec<RegionNode> = regions
         .iter()
@@ -474,60 +489,47 @@ fn build_tree(
     (nodes, roots, orphans)
 }
 
-fn render_region(
+fn materialize_region(
     nodes: &[RegionNode],
     index: usize,
-    depth: usize,
-    methods: &[OutlineMethod],
+    methods: &[CodeOutlineMethod],
     include_methods: bool,
-    lines: &mut Vec<String>,
-) {
+) -> CodeOutlineRegion {
     let node = &nodes[index];
-    let name = node.region.name.as_deref().unwrap_or("<unnamed>");
-    let end_line = node
-        .region
-        .end_line
-        .map(|line| line.to_string())
-        .unwrap_or_else(|| "?".to_string());
-    lines.push(format!(
-        "{}region {name}: {}-{end_line}",
-        "  ".repeat(depth),
-        node.region.line
-    ));
-    if include_methods {
-        for method in &node.methods {
-            lines.push(render_method(&methods[*method], depth + 1));
-        }
+    CodeOutlineRegion {
+        name: node.region.name.clone(),
+        line: node.region.line,
+        end_line: node.region.end_line,
+        regions: node
+            .children
+            .iter()
+            .map(|child| materialize_region(nodes, *child, methods, include_methods))
+            .collect(),
+        methods: if include_methods {
+            node.methods
+                .iter()
+                .map(|method| methods[*method].clone())
+                .collect()
+        } else {
+            Vec::new()
+        },
     }
-    for child in &node.children {
-        render_region(nodes, *child, depth + 1, methods, include_methods, lines);
-    }
-}
-
-fn render_method(method: &OutlineMethod, depth: usize) -> String {
-    format!(
-        "{}{} {}({}){} at {}-{}",
-        "  ".repeat(depth),
-        method.kind,
-        method.name,
-        method.params.join(", "),
-        if method.is_export { " export" } else { "" },
-        method.line,
-        method.end_line
-    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        module_identity, pair_regions, parse_module, render, render_current_source_outline,
+        build_result, module_identity, pair_regions, parse_module, render_current_source_outline,
         LineIndex, ModuleIdentity,
     };
     use crate::domain::cancellation::CancellationToken;
-    use crate::domain::code_intelligence::{CodeIntelligenceContext, ProviderDeadline};
+    use crate::domain::code_intelligence::{
+        CodeIntelligenceContext, CodeOutlineResult, ProviderDeadline,
+    };
     use crate::domain::source_roots::ResolvedSourceRoot;
     use crate::domain::workspace::WorkspaceContext;
     use bsl_syntax::SyntaxKind;
+    use serde_json::json;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
@@ -568,7 +570,11 @@ mod tests {
         Workspace { root, context }
     }
 
-    fn outline(workspace: &Workspace, path: &str, include_methods: bool) -> Result<String, String> {
+    fn outline(
+        workspace: &Workspace,
+        path: &str,
+        include_methods: bool,
+    ) -> Result<CodeOutlineResult, String> {
         render_current_source_outline(
             path,
             include_methods,
@@ -578,9 +584,9 @@ mod tests {
         )
     }
 
-    fn body(text: &str, include_methods: bool) -> String {
+    fn body(text: &str, include_methods: bool) -> CodeOutlineResult {
         let (methods, regions) = parse_module(text).unwrap();
-        render(
+        build_result(
             "CommonModules/X/Ext/Module.bsl",
             &ModuleIdentity::default(),
             &methods,
@@ -623,35 +629,57 @@ mod tests {
             "#КонецОбласти\n",
         );
 
-        let rendered = body(text, true);
+        let result = body(text, true);
 
-        assert!(
-            !rendered.contains("ОпределитьНастройки"),
-            "commented-out declaration leaked into the outline:\n{rendered}"
-        );
         assert_eq!(
-            rendered,
-            concat!(
-                "module: CommonModules/X/Ext/Module.bsl\n",
-                "totals: methods=1 exports=1 regions=1 loc=3\n",
-                "region ПрограммныйИнтерфейс: 1-13\n",
-                "  Процедура НастроитьВарианты(Настройки) export at 9-11"
-            )
+            serde_json::to_value(&result).unwrap(),
+            json!({
+                "module": "CommonModules/X/Ext/Module.bsl",
+                "identity": {
+                    "category": null,
+                    "object": null,
+                    "moduleType": null
+                },
+                "totals": {
+                    "methods": 1,
+                    "exports": 1,
+                    "regions": 1,
+                    "loc": 3
+                },
+                "regions": [{
+                    "name": "ПрограммныйИнтерфейс",
+                    "line": 1,
+                    "endLine": 13,
+                    "regions": [],
+                    "methods": [{
+                        "name": "НастроитьВарианты",
+                        "kind": "procedure",
+                        "parameters": [{
+                            "name": "Настройки",
+                            "byValue": false,
+                            "defaultValue": null
+                        }],
+                        "export": true,
+                        "line": 9,
+                        "endLine": 11
+                    }]
+                }],
+                "methods": []
+            })
         );
     }
 
     #[test]
     fn declaration_inside_a_string_literal_is_not_a_method() {
-        let rendered = body(
+        let result = body(
             "Процедура Настоящая() Экспорт\n\tТ = \"Процедура Призрак()\";\nКонецПроцедуры\n",
             true,
         );
 
-        assert!(!rendered.contains("Призрак"), "{rendered}");
-        assert!(
-            rendered.contains("Процедура Настоящая() export at 1-3"),
-            "{rendered}"
-        );
+        assert_eq!(result.methods.len(), 1);
+        assert_eq!(result.methods[0].name, "Настоящая");
+        assert_eq!(result.methods[0].line, 1);
+        assert_eq!(result.methods[0].end_line, 3);
     }
 
     #[test]
@@ -715,7 +743,10 @@ mod tests {
             regions_of("#Область\n#КонецОбласти\n"),
             vec![(None, 1, Some(2))]
         );
-        assert!(body("#Область\n#КонецОбласти\n", true).contains("region <unnamed>: 1-2"));
+        let result = body("#Область\n#КонецОбласти\n", true);
+        assert_eq!(result.regions[0].name, None);
+        assert_eq!(result.regions[0].line, 1);
+        assert_eq!(result.regions[0].end_line, Some(2));
     }
 
     #[test]
@@ -735,16 +766,67 @@ mod tests {
         );
 
         assert_eq!(
-            body(text, true),
-            concat!(
-                "module: CommonModules/X/Ext/Module.bsl\n",
-                "totals: methods=3 exports=2 regions=2 loc=7\n",
-                "region Внешняя: 3-11\n",
-                "  Процедура Внешний() export at 4-5\n",
-                "  region Внутренняя: 6-10\n",
-                "    Функция Внутренний(Знач А, Б = 1) export at 7-9\n",
-                "Процедура Сирота() at 1-2"
-            )
+            serde_json::to_value(body(text, true)).unwrap(),
+            json!({
+                "module": "CommonModules/X/Ext/Module.bsl",
+                "identity": {
+                    "category": null,
+                    "object": null,
+                    "moduleType": null
+                },
+                "totals": {
+                    "methods": 3,
+                    "exports": 2,
+                    "regions": 2,
+                    "loc": 7
+                },
+                "regions": [{
+                    "name": "Внешняя",
+                    "line": 3,
+                    "endLine": 11,
+                    "regions": [{
+                        "name": "Внутренняя",
+                        "line": 6,
+                        "endLine": 10,
+                        "regions": [],
+                        "methods": [{
+                            "name": "Внутренний",
+                            "kind": "function",
+                            "parameters": [
+                                {
+                                    "name": "А",
+                                    "byValue": true,
+                                    "defaultValue": null
+                                },
+                                {
+                                    "name": "Б",
+                                    "byValue": false,
+                                    "defaultValue": "1"
+                                }
+                            ],
+                            "export": true,
+                            "line": 7,
+                            "endLine": 9
+                        }]
+                    }],
+                    "methods": [{
+                        "name": "Внешний",
+                        "kind": "procedure",
+                        "parameters": [],
+                        "export": true,
+                        "line": 4,
+                        "endLine": 5
+                    }]
+                }],
+                "methods": [{
+                    "name": "Сирота",
+                    "kind": "procedure",
+                    "parameters": [],
+                    "export": false,
+                    "line": 1,
+                    "endLine": 2
+                }]
+            })
         );
     }
 
@@ -759,25 +841,19 @@ mod tests {
             "КонецПроцедуры\n",
         );
 
-        assert_eq!(
-            body(text, false),
-            concat!(
-                "module: CommonModules/X/Ext/Module.bsl\n",
-                "totals: methods=2 exports=1 regions=1 loc=4\n",
-                "region Р: 1-4"
-            )
-        );
+        let result = body(text, false);
+        assert_eq!(result.totals.methods, 2);
+        assert_eq!(result.totals.exports, 1);
+        assert_eq!(result.totals.regions, 1);
+        assert_eq!(result.totals.loc, 4);
+        assert!(result.methods.is_empty());
+        assert!(result.regions[0].methods.is_empty());
     }
 
     #[test]
     fn bom_and_lf_crlf_cr_line_endings_yield_the_same_coordinates() {
         let base = "#Область Р\nПроцедура П() Экспорт\nКонецПроцедуры\n#КонецОбласти\n";
-        let expected = concat!(
-            "module: CommonModules/X/Ext/Module.bsl\n",
-            "totals: methods=1 exports=1 regions=1 loc=2\n",
-            "region Р: 1-4\n",
-            "  Процедура П() export at 2-3"
-        );
+        let expected = body(base, true);
         for text in [
             base.to_string(),
             format!("\u{feff}{base}"),
@@ -797,10 +873,9 @@ mod tests {
             "#Область Р\nПроцедура Старый() Экспорт\nКонецПроцедуры\n#КонецОбласти\n",
         );
         let first = outline(&workspace, "CommonModules/X/Ext/Module.bsl", true).unwrap();
-        assert!(
-            first.contains("Процедура Старый() export at 2-3"),
-            "{first}"
-        );
+        assert_eq!(first.regions[0].methods[0].name, "Старый");
+        assert_eq!(first.regions[0].methods[0].line, 2);
+        assert_eq!(first.regions[0].methods[0].end_line, 3);
 
         fs::write(
             workspace.context.source_root.path.join("CommonModules/X/Ext/Module.bsl"),
@@ -809,11 +884,11 @@ mod tests {
         .unwrap();
 
         let second = outline(&workspace, "CommonModules/X/Ext/Module.bsl", true).unwrap();
-        assert!(
-            second.contains("Процедура Новый() export at 4-5"),
-            "{second}"
-        );
-        assert!(second.contains("totals: methods=2 exports=2"), "{second}");
+        assert_eq!(second.regions[0].methods[1].name, "Новый");
+        assert_eq!(second.regions[0].methods[1].line, 4);
+        assert_eq!(second.regions[0].methods[1].end_line, 5);
+        assert_eq!(second.totals.methods, 2);
+        assert_eq!(second.totals.exports, 2);
     }
 
     #[test]
@@ -932,10 +1007,31 @@ mod tests {
         let identity = module_identity("Неизвестно/Что/Ext/Странный.bsl");
 
         assert_eq!(identity, ModuleIdentity::default());
-        let rendered = render("Неизвестно/Что/Ext/Странный.bsl", &identity, &[], &[], true);
         assert_eq!(
-            rendered,
-            "module: Неизвестно/Что/Ext/Странный.bsl\ntotals: methods=0 exports=0 regions=0 loc=0"
+            serde_json::to_value(build_result(
+                "Неизвестно/Что/Ext/Странный.bsl",
+                &identity,
+                &[],
+                &[],
+                true,
+            ))
+            .unwrap(),
+            json!({
+                "module": "Неизвестно/Что/Ext/Странный.bsl",
+                "identity": {
+                    "category": null,
+                    "object": null,
+                    "moduleType": null
+                },
+                "totals": {
+                    "methods": 0,
+                    "exports": 0,
+                    "regions": 0,
+                    "loc": 0
+                },
+                "regions": [],
+                "methods": []
+            })
         );
     }
 

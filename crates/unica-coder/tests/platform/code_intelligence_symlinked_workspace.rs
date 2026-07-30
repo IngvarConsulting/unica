@@ -158,16 +158,17 @@ fn code_intelligence_rejects_a_source_path_through_a_symlink_outside_the_source_
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// ADR-0020: the public envelope of `unica.code.outline` describes the file on
-/// disk and claims no cache. Nothing here builds an index, so a passing outline
-/// also proves the tool never needed one.
-#[test]
-fn code_outline_answers_from_the_current_file_without_touching_the_index() {
-    use serde_json::{Map, Value};
-    use unica_coder::application::UnicaApplication;
+fn current_source_outline_fixture(
+    label: &str,
+) -> (
+    std::path::PathBuf,
+    std::path::PathBuf,
+    serde_json::Map<String, serde_json::Value>,
+) {
+    use serde_json::Value;
 
     let root = std::env::temp_dir().join(format!(
-        "unica-code-outline-current-source-{}-{}",
+        "unica-code-outline-{label}-{}-{}",
         std::process::id(),
         uuid::Uuid::new_v4()
     ));
@@ -180,7 +181,8 @@ fn code_outline_answers_from_the_current_file_without_touching_the_index() {
     )
     .unwrap();
     // The BSP header shape that the shipped index reads as a real exported
-    // method while losing the real one.
+    // method while losing the real one. The real declaration also proves that
+    // source spelling and line wrapping do not leak into the public contract.
     std::fs::write(
         &module,
         concat!(
@@ -189,7 +191,11 @@ fn code_outline_answers_from_the_current_file_without_touching_the_index() {
             "// Пример вызова:\n",
             "// Процедура ОпределитьНастройки(Форма) Экспорт\n",
             "// КонецПроцедуры\n",
-            "Процедура НастроитьВарианты(Настройки) Экспорт\n",
+            "пРоЦеДуРа НастроитьВарианты(\n",
+            "    Знач\n",
+            "    Настройки,\n",
+            "    Необязательный =\n",
+            "        1 + 2) Экспорт\n",
             "\tВозврат;\n",
             "КонецПроцедуры\n",
             "\n",
@@ -198,7 +204,7 @@ fn code_outline_answers_from_the_current_file_without_touching_the_index() {
     )
     .unwrap();
 
-    let mut args = Map::new();
+    let mut args = serde_json::Map::new();
     args.insert(
         "cwd".to_string(),
         Value::String(workspace.display().to_string()),
@@ -207,6 +213,18 @@ fn code_outline_answers_from_the_current_file_without_touching_the_index() {
         "path".to_string(),
         Value::String("CommonModules/Демо/Ext/Module.bsl".to_string()),
     );
+    (root, workspace, args)
+}
+
+/// ADR-0021: the public envelope of `unica.code.outline` describes the file on
+/// disk as typed data and claims no cache. Nothing here builds an index, so a
+/// passing outline also proves the tool never needed one.
+#[test]
+fn code_outline_answers_from_the_current_file_without_touching_the_index() {
+    use serde_json::json;
+    use unica_coder::application::UnicaApplication;
+
+    let (root, workspace, args) = current_source_outline_fixture("typed-data");
 
     let outcome = UnicaApplication::new()
         .call_tool("unica.code.outline", &args)
@@ -214,23 +232,53 @@ fn code_outline_answers_from_the_current_file_without_touching_the_index() {
 
     assert!(outcome.ok, "{:?}", outcome.errors);
     assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
-    let stdout = outcome.stdout.clone().expect("outline stdout");
-    assert_eq!(
-        stdout,
-        concat!(
-            "=== bsl-outline ===\n",
-            "module: CommonModules/Демо/Ext/Module.bsl\n",
-            "object: Демо\n",
-            "category: CommonModules\n",
-            "moduleType: Module\n",
-            "totals: methods=1 exports=1 regions=1 loc=3\n",
-            "region ПрограммныйИнтерфейс: 1-10\n",
-            "  Процедура НастроитьВарианты(Настройки) export at 6-8"
-        )
-    );
     assert!(
-        !stdout.contains("ОпределитьНастройки"),
-        "a commented-out declaration reached the public outline:\n{stdout}"
+        outcome.stdout.is_none(),
+        "typed outline must not be duplicated in stdout: {:?}",
+        outcome.stdout
+    );
+    assert_eq!(
+        outcome.data,
+        Some(json!({
+            "module": "CommonModules/Демо/Ext/Module.bsl",
+            "identity": {
+                "category": "CommonModules",
+                "object": "Демо",
+                "moduleType": "Module"
+            },
+            "totals": {
+                "methods": 1,
+                "exports": 1,
+                "regions": 1,
+                "loc": 7
+            },
+            "regions": [{
+                "name": "ПрограммныйИнтерфейс",
+                "line": 1,
+                "endLine": 14,
+                "regions": [],
+                "methods": [{
+                    "name": "НастроитьВарианты",
+                    "kind": "procedure",
+                    "parameters": [
+                        {
+                            "name": "Настройки",
+                            "byValue": true,
+                            "defaultValue": null
+                        },
+                        {
+                            "name": "Необязательный",
+                            "byValue": false,
+                            "defaultValue": "1 + 2"
+                        }
+                    ],
+                    "export": true,
+                    "line": 6,
+                    "endLine": 12
+                }]
+            }],
+            "methods": []
+        }))
     );
     assert!(
         !outcome.cache.fresh.iter().any(|name| name == "bsl_index"),
@@ -240,6 +288,61 @@ fn code_outline_answers_from_the_current_file_without_touching_the_index() {
     assert!(
         !workspace.join(".build/unica/rlm-tools-bsl").exists(),
         "the outline must not create index state"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn code_outline_without_methods_keeps_totals_in_typed_data() {
+    use serde_json::{json, Value};
+    use unica_coder::application::UnicaApplication;
+
+    let (root, _workspace, mut args) =
+        current_source_outline_fixture("typed-data-without-methods");
+    args.insert("includeMethods".to_string(), Value::Bool(false));
+
+    let outcome = UnicaApplication::new()
+        .call_tool("unica.code.outline", &args)
+        .expect("the outline is proved from the current file");
+
+    assert!(outcome.ok, "{:?}", outcome.errors);
+    assert!(outcome.stdout.is_none(), "{:?}", outcome.stdout);
+    let data = outcome.data.expect("typed outline data");
+    assert_eq!(data["totals"]["methods"], json!(1));
+    assert_eq!(data["totals"]["exports"], json!(1));
+    assert_eq!(data["regions"][0]["methods"], json!([]));
+    assert_eq!(data["methods"], json!([]));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn code_outline_failure_publishes_neither_typed_nor_text_partial_result() {
+    use unica_coder::application::UnicaApplication;
+
+    let (root, workspace, args) = current_source_outline_fixture("typed-data-failure");
+    std::fs::write(
+        workspace.join("src/CommonModules/Демо/Ext/Module.bsl"),
+        "Процедура Сломана(\nКонецПроцедуры\nЕсли Тогда\n",
+    )
+    .unwrap();
+
+    let outcome = UnicaApplication::new()
+        .call_tool("unica.code.outline", &args)
+        .expect("a proved provider failure uses the public result envelope");
+
+    assert!(!outcome.ok);
+    assert!(outcome.data.is_none(), "{:?}", outcome.data);
+    assert!(outcome.stdout.is_none(), "{:?}", outcome.stdout);
+    assert!(
+        outcome.errors.iter().any(|error| error.contains("parser reported")),
+        "{:?}",
+        outcome.errors
+    );
+    assert!(
+        !workspace.join(".build/unica").exists(),
+        "a failed outline must not create workspace state"
     );
 
     let _ = std::fs::remove_dir_all(&root);
