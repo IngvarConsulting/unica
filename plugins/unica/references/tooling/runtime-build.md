@@ -127,7 +127,7 @@
 > Unica. Не направляй incremental/partial/CDFI-only команды прямо в
 > Git-visible source root: они допустимы только во временный private staging,
 > принадлежащий runtime-слою. Синхронный applied `mode=full` для DESIGNER
-> configuration/extension проходит через внешний private stage Unica:
+> `CONFIGURATION`/`EXTENSION` проходит через внешний private stage Unica:
 > платформа независимо фиксируется на exact 8.3.27.x, XML проверяется на raw
 > `version="2.20"` до целой публикации. На Windows, macOS и Linux verified
 > transactional publication поддерживает этот synchronous applied full dump
@@ -420,7 +420,7 @@ Legitimate metadata descriptor (включая external EPF/ERF) объекта 
 Платформа предоставляет параметры для использования вспомогательного CDFI при
 сравнении, но управление приватным CDFI для пары `source-set + ИБ` относится к
 runtime-слою. На Windows, macOS и Linux синхронный applied `mode=full` для
-DESIGNER configuration/extension выполняется через verified transactional
+DESIGNER `CONFIGURATION`/`EXTENSION` выполняется через verified transactional
 publication Unica: выбранный source-set перенаправляется во внешний private
 stage, платформа проверяется как exact 8.3.27.x, а version-bearing XML roots —
 как raw `2.20`; только затем целое дерево публикуется с проверкой preimage и
