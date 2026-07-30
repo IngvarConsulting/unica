@@ -19,6 +19,8 @@
 | Вид цели по числу сегментов | Вид определяется арностью адреса, поэтому объект с прикладным именем `Module` остаётся `metadataObject`, а не читается как роль модуля | `cargo test -p unica-coder source_target -- --test-threads=1` |
 | Частичный корень префикса | Неполный сегмент сопоставляется с каноническим английским токеном, а неполный псевдоним отклоняется отдельной ошибкой вместо непредсказуемого частичного совпадения | `cargo test -p unica-coder source_target -- --test-threads=1` |
 | Непосредственные дети | `children` принимает цель, обходит один уровень, а коллекции возвращаются как узлы без вымышленного адреса | `cargo test -p unica-coder source_navigation -- --test-threads=1` |
+| Ответ не зависит от размера набора | `exact` и `children` отвечают, отрисовывая кандидата по адресу, а не перечисляя набор исходников; префикс сканирует только коллекции, закреплённые ведущими сегментами, и фильтрует по имени файла до чтения дескриптора | `cargo test -p unica-coder platform_xml_source_targets -- --test-threads=1` |
+| Усечение отличимо от отсутствия | Недоказуемый кандидат даёт `partial` либо отдельную ошибку, а отсутствующий — `complete` либо `was not found`; перечисление, до которого не дошёл обход, не выдаётся за отсутствие | `cargo test -p unica-coder platform_xml_source_targets -- --test-threads=1` |
 | Снятые селекторы `unica.code.patch` | `path` и `sourceDir` отклоняются кодом `legacy_target_removed` с подсказкой `sourceSet + metadataPath` | `cargo test -p unica-coder code_patch -- --test-threads=1` |
 | Частные поля поставщика | `providerRevision`, закрытая ручка, абсолютный путь и строка соединения отсутствуют в MCP-ответе | `cargo test -p unica-coder interfaces::mcp::tests -- --test-threads=1` |
 

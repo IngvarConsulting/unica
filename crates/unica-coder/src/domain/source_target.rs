@@ -582,6 +582,16 @@ pub(crate) fn is_module_terminal(value: &str) -> bool {
     MODULE_TERMINALS.contains(&value)
 }
 
+/// Every module role of the profile, so a provider can probe an owner's roles
+/// instead of enumerating the source set to discover which ones exist.
+pub(crate) fn module_terminals() -> &'static [&'static str] {
+    MODULE_TERMINALS
+}
+
+pub(crate) fn root_module_terminals() -> &'static [&'static str] {
+    ROOT_MODULE_TERMINALS
+}
+
 fn is_root_module_terminal(value: &str) -> bool {
     ROOT_MODULE_TERMINALS.contains(&value)
 }

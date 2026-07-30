@@ -94,6 +94,13 @@ pub(crate) fn resolve_platform_xml_source_navigation(
     cancellation: &CancellationToken,
 ) -> Result<SourceResolveResult, String> {
     check_navigation_cancellation(cancellation)?;
+    if request.mode == SourceNavigationMode::Exact {
+        if let Some(result) = resolve_exact_by_rendering(context, request, cancellation)? {
+            return Ok(result);
+        }
+    } else if let Some(result) = resolve_prefix_by_scoped_scan(context, request, cancellation)? {
+        return Ok(result);
+    }
     let inventory = navigation_inventory(context, &request.source_set, cancellation)?;
     let query = match request.mode {
         SourceNavigationMode::Exact => MetadataAddress::parse(
@@ -182,12 +189,663 @@ pub(crate) fn resolve_platform_xml_source_navigation(
     })
 }
 
+/// Exact resolution never needs an inventory: a canonical address already names
+/// its own physical candidate through the layout table, so the provider renders
+/// that one path and proves it. Enumerating the source set first made the answer
+/// depend on how far a bounded walk happened to get, which on a production-size
+/// configuration stops long before most collections. Returns `None` for source
+/// sets whose roots are virtual rather than a metadata layout, so those keep the
+/// enumerating path.
+fn resolve_exact_by_rendering(
+    context: &WorkspaceContext,
+    request: &SourceResolveRequest,
+    cancellation: &CancellationToken,
+) -> Result<Option<SourceResolveResult>, String> {
+    let address = MetadataAddress::parse(
+        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+        request.query.trim(),
+    )
+    .map_err(|error| error.to_string())?;
+    let selected = resolve_named_source_set(context, &request.source_set)
+        .map_err(|error| public_source_set_error(&request.source_set, error).to_string())?;
+    if selected.source_set.source_format != SourceFormat::PlatformXml {
+        return Err(format!(
+            "sourceSet `{}` is not addressable by the Platform XML source provider",
+            request.source_set
+        ));
+    }
+    if matches!(
+        selected.source_set.kind,
+        SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+    ) {
+        return Ok(None);
+    }
+    check_navigation_cancellation(cancellation)?;
+    validate_navigation_owner(context, &selected)?;
+    check_navigation_cancellation(cancellation)?;
+
+    let target_kind = address.target_kind();
+    let outcome = if request
+        .target_kind
+        .is_some_and(|requested| requested != target_kind)
+    {
+        ExactCandidate::Absent
+    } else {
+        match target_kind {
+            TargetKind::Module => {
+                exact_module_outcome(context, &selected, &request.source_set, &address)?
+            }
+            TargetKind::MetadataObject => {
+                exact_object_outcome(&selected.path, &address, cancellation)?
+            }
+            TargetKind::SourceRoot => ExactCandidate::Absent,
+        }
+    };
+    check_navigation_cancellation(cancellation)?;
+
+    // An address whose candidate exists but cannot be proven keeps `partial`:
+    // the provider saw something it could not classify, so its empty answer is
+    // not authoritative. Only a candidate that is simply not there is reported
+    // as a complete absence.
+    if outcome == ExactCandidate::Unproven {
+        return Ok(Some(SourceResolveResult {
+            candidates: Vec::new(),
+            completeness: NavigationCompleteness::Partial,
+            next_cursor: None,
+        }));
+    }
+
+    let candidates = if outcome == ExactCandidate::Proven {
+        let display_name = address
+            .as_str()
+            .split('.')
+            .next_back()
+            .unwrap_or(address.as_str())
+            .to_string();
+        vec![SourceResolveCandidate {
+            metadata_path: address.clone(),
+            target_kind,
+            display_name,
+            match_kind: SourceMatchKind::Exact,
+            location: addressed_location(&selected.source_set.name, Some(address), target_kind),
+        }]
+    } else {
+        Vec::new()
+    };
+    Ok(Some(SourceResolveResult {
+        candidates,
+        completeness: NavigationCompleteness::Complete,
+        next_cursor: None,
+    }))
+}
+
+/// A prefix query pins its leading segments, so the scan is scoped to the
+/// collections those segments select instead of walking the whole source set.
+/// Names are filtered by file name before any descriptor is parsed, so the cost
+/// tracks the answer rather than the size of the configuration. Returns `None`
+/// when the shape is not one of the scoped forms, which keeps the enumerating
+/// path for the remainder.
+fn resolve_prefix_by_scoped_scan(
+    context: &WorkspaceContext,
+    request: &SourceResolveRequest,
+    cancellation: &CancellationToken,
+) -> Result<Option<SourceResolveResult>, String> {
+    let prefix = MetadataAddressPrefix::parse(
+        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+        request.query.trim(),
+    )
+    .map_err(|error| error.to_string())?;
+    let query = prefix.as_str().to_string();
+    let parts = query.split('.').collect::<Vec<_>>();
+    if parts.len() > 3 {
+        return Ok(None);
+    }
+    let selected = resolve_named_source_set(context, &request.source_set)
+        .map_err(|error| public_source_set_error(&request.source_set, error).to_string())?;
+    if selected.source_set.source_format != SourceFormat::PlatformXml {
+        return Err(format!(
+            "sourceSet `{}` is not addressable by the Platform XML source provider",
+            request.source_set
+        ));
+    }
+    if matches!(
+        selected.source_set.kind,
+        SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+    ) {
+        return Ok(None);
+    }
+    check_navigation_cancellation(cancellation)?;
+    validate_navigation_owner(context, &selected)?;
+    // The scoped scan is the traversal for a prefix query, so it carries the
+    // provider-entry observation the enumerating path used to own.
+    #[cfg(test)]
+    run_navigation_provider_entry_hook_for_test();
+    check_navigation_cancellation(cancellation)?;
+
+    // A leading segment that is already a complete kind pins one collection;
+    // otherwise it is a partial canonical token that can only select whole
+    // collections whose tag it prefixes.
+    let kinds = match metadata_kind(parts[0]) {
+        Some(kind) if parts.len() >= 2 => vec![kind],
+        _ if parts.len() == 1 => METADATA_KINDS
+            .iter()
+            .filter(|kind| kind.tag.starts_with(parts[0]))
+            .collect::<Vec<_>>(),
+        _ => return Ok(None),
+    };
+
+    let mut partial = false;
+    let mut matches = Vec::new();
+    for kind in kinds {
+        check_navigation_cancellation(cancellation)?;
+        let name_filter = if parts.len() >= 2 {
+            Some(parts[1])
+        } else {
+            None
+        };
+        for name in proven_object_names(
+            &selected.path,
+            kind,
+            name_filter,
+            &mut partial,
+            cancellation,
+        )? {
+            check_navigation_cancellation(cancellation)?;
+            let object = format!("{}.{name}", kind.tag);
+            if parts.len() < 3 && object.starts_with(&query) {
+                if let Ok(address) = MetadataAddress::parse(
+                    crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                    &object,
+                ) {
+                    matches.push((address, TargetKind::MetadataObject, name.clone()));
+                }
+            }
+            for terminal in crate::domain::source_target::module_terminals() {
+                check_navigation_cancellation(cancellation)?;
+                let candidate = format!("{object}.{terminal}");
+                if !candidate.starts_with(&query) {
+                    continue;
+                }
+                if rendered_module_node(context, &selected, &candidate)?.is_some() {
+                    if let Ok(address) = MetadataAddress::parse(
+                        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                        &candidate,
+                    ) {
+                        matches.push((address, TargetKind::Module, (*terminal).to_string()));
+                    }
+                }
+            }
+        }
+    }
+    if parts.len() == 1 {
+        for terminal in crate::domain::source_target::root_module_terminals() {
+            check_navigation_cancellation(cancellation)?;
+            if !terminal.starts_with(&query) {
+                continue;
+            }
+            if rendered_module_node(context, &selected, terminal)?.is_some() {
+                if let Ok(address) = MetadataAddress::parse(
+                    crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                    terminal,
+                ) {
+                    matches.push((address, TargetKind::Module, (*terminal).to_string()));
+                }
+            }
+        }
+    }
+
+    matches.retain(|(_, target_kind, _)| {
+        request
+            .target_kind
+            .is_none_or(|requested| requested == *target_kind)
+    });
+    matches.sort_by(|left, right| left.0.as_str().cmp(right.0.as_str()));
+    check_navigation_cancellation(cancellation)?;
+
+    let cursor_key = format!(
+        "resolve:{}:{:?}:{:?}:{query}",
+        selected.source_set.name, request.mode, request.target_kind
+    );
+    let (start, end, next_cursor) = page_bounds(
+        request.cursor.as_deref(),
+        &cursor_key,
+        request.limit,
+        matches.len(),
+    )?;
+    let candidates = matches[start..end]
+        .iter()
+        .map(
+            |(address, target_kind, display_name)| SourceResolveCandidate {
+                metadata_path: address.clone(),
+                target_kind: *target_kind,
+                display_name: display_name.clone(),
+                match_kind: SourceMatchKind::Prefix,
+                location: addressed_location(
+                    &selected.source_set.name,
+                    Some(address.clone()),
+                    *target_kind,
+                ),
+            },
+        )
+        .collect();
+    let completeness = if partial || next_cursor.is_some() {
+        NavigationCompleteness::Partial
+    } else {
+        NavigationCompleteness::Complete
+    };
+    Ok(Some(SourceResolveResult {
+        candidates,
+        completeness,
+        next_cursor,
+    }))
+}
+
+/// Reads one collection directory and returns the names whose descriptor
+/// identity is proven. The file-name filter runs before the descriptor is read,
+/// so a narrow query never pays to parse the whole collection.
+fn proven_object_names(
+    source_root: &Path,
+    kind: &MetadataKind,
+    name_prefix: Option<&str>,
+    partial: &mut bool,
+    cancellation: &CancellationToken,
+) -> Result<Vec<String>, String> {
+    let directory = source_root.join(kind.directory);
+    let metadata = match fs::symlink_metadata(&directory) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => {
+            *partial = true;
+            return Ok(Vec::new());
+        }
+    };
+    if metadata_is_link_or_reparse_point(&metadata) || !metadata.is_dir() {
+        *partial = true;
+        return Ok(Vec::new());
+    }
+    let entries = match fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(_) => {
+            *partial = true;
+            return Ok(Vec::new());
+        }
+    };
+    let mut names = Vec::new();
+    let mut inspected = 0_usize;
+    for entry in entries {
+        check_navigation_cancellation(cancellation)?;
+        let Ok(entry) = entry else {
+            *partial = true;
+            continue;
+        };
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("xml") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+            *partial = true;
+            continue;
+        };
+        if name_prefix.is_some_and(|prefix| !stem.starts_with(prefix)) {
+            continue;
+        }
+        // Only a candidate that survives the cheap filters counts against the
+        // bound: skipping a sibling directory costs nothing and must not make
+        // the provider claim its answer is truncated.
+        if inspected >= MAX_NAVIGATION_INVENTORY_ENTRIES {
+            *partial = true;
+            break;
+        }
+        inspected += 1;
+        match descriptor_name(&path, kind.tag) {
+            Ok(name) if name == stem => names.push(name),
+            Ok(_) => *partial = true,
+            Err(()) => *partial = true,
+        }
+    }
+    Ok(names)
+}
+
+/// `children` descends exactly one level, so it reads the directory the target
+/// maps to instead of materialising a recursive inventory of the whole source
+/// set. Returns `None` for source sets whose roots are virtual, which keep the
+/// enumerating path.
+fn children_by_rendering(
+    context: &WorkspaceContext,
+    request: &SourceChildrenRequest,
+    cancellation: &CancellationToken,
+) -> Result<Option<SourceChildrenResult>, String> {
+    let selected = resolve_named_source_set(context, &request.source_set)
+        .map_err(|error| public_source_set_error(&request.source_set, error).to_string())?;
+    if selected.source_set.source_format != SourceFormat::PlatformXml {
+        return Err(format!(
+            "sourceSet `{}` is not addressable by the Platform XML source provider",
+            request.source_set
+        ));
+    }
+    if matches!(
+        selected.source_set.kind,
+        SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+    ) {
+        return Ok(None);
+    }
+    check_navigation_cancellation(cancellation)?;
+    validate_navigation_owner(context, &selected)?;
+    check_navigation_cancellation(cancellation)?;
+
+    let mut children = match request.metadata_path.as_ref() {
+        None => rendered_root_children(context, &selected, cancellation)?,
+        Some(parent) => rendered_address_children(
+            context,
+            &selected,
+            &request.source_set,
+            parent,
+            cancellation,
+        )?,
+    };
+    check_navigation_cancellation(cancellation)?;
+    children.sort_by(|left, right| {
+        left.display_name.cmp(&right.display_name).then_with(|| {
+            left.metadata_path
+                .as_ref()
+                .map(MetadataAddress::as_str)
+                .cmp(&right.metadata_path.as_ref().map(MetadataAddress::as_str))
+        })
+    });
+    let parent_key = request
+        .metadata_path
+        .as_ref()
+        .map(MetadataAddress::as_str)
+        .unwrap_or("<root>");
+    let cursor_key = format!("children:{}:{parent_key}", selected.source_set.name);
+    let (start, end, next_cursor) = page_bounds(
+        request.cursor.as_deref(),
+        &cursor_key,
+        request.limit,
+        children.len(),
+    )?;
+    let completeness = if next_cursor.is_none() {
+        NavigationCompleteness::Complete
+    } else {
+        NavigationCompleteness::Partial
+    };
+    Ok(Some(SourceChildrenResult {
+        children: children[start..end].to_vec(),
+        completeness,
+        next_cursor,
+    }))
+}
+
+fn rendered_root_children(
+    context: &WorkspaceContext,
+    selected: &ResolvedNamedSourceSet,
+    cancellation: &CancellationToken,
+) -> Result<Vec<SourceNode>, String> {
+    let mut children = Vec::new();
+    for kind in METADATA_KINDS {
+        check_navigation_cancellation(cancellation)?;
+        let directory = selected.path.join(kind.directory);
+        let Ok(metadata) = fs::symlink_metadata(&directory) else {
+            continue;
+        };
+        if metadata_is_link_or_reparse_point(&metadata) || !metadata.is_dir() {
+            continue;
+        }
+        children.push(collection_node(kind.directory.to_string()));
+    }
+    for terminal in crate::domain::source_target::root_module_terminals() {
+        check_navigation_cancellation(cancellation)?;
+        if let Some(node) = rendered_module_node(context, selected, terminal)? {
+            children.push(node);
+        }
+    }
+    Ok(children)
+}
+
+fn rendered_address_children(
+    context: &WorkspaceContext,
+    selected: &ResolvedNamedSourceSet,
+    source_set: &str,
+    parent: &MetadataAddress,
+    cancellation: &CancellationToken,
+) -> Result<Vec<SourceNode>, String> {
+    if parent.target_kind() == TargetKind::Module {
+        return Ok(Vec::new());
+    }
+    match exact_object_outcome(&selected.path, parent, cancellation)? {
+        ExactCandidate::Proven => {}
+        ExactCandidate::Unproven => {
+            return Err(format!(
+                "metadataPath `{}` in sourceSet `{source_set}` could not be proven; its descriptor identity does not match",
+                parent.as_str()
+            ))
+        }
+        ExactCandidate::Absent => {
+            return Err(format!(
+                "metadataPath `{}` was not found in sourceSet `{source_set}`",
+                parent.as_str()
+            ))
+        }
+    }
+
+    let parts = parent.segments().collect::<Vec<_>>();
+    let mut children = Vec::new();
+    for terminal in crate::domain::source_target::module_terminals() {
+        check_navigation_cancellation(cancellation)?;
+        let candidate = format!("{}.{terminal}", parent.as_str());
+        if let Some(node) = rendered_module_node(context, selected, &candidate)? {
+            children.push(node);
+        }
+    }
+    if let [kind, name] = parts.as_slice() {
+        if let Some(kind) = metadata_kind(kind) {
+            if supports_nested_form_or_command(kind.tag) {
+                for child_directory in ["Forms", "Commands"] {
+                    check_navigation_cancellation(cancellation)?;
+                    let directory = selected
+                        .path
+                        .join(kind.directory)
+                        .join(name)
+                        .join(child_directory);
+                    let Ok(metadata) = fs::symlink_metadata(&directory) else {
+                        continue;
+                    };
+                    if metadata_is_link_or_reparse_point(&metadata) || !metadata.is_dir() {
+                        continue;
+                    }
+                    children.push(collection_node(child_directory.to_string()));
+                }
+            }
+        }
+    }
+    Ok(children)
+}
+
+/// Renders one candidate module address and returns its node only when the
+/// provider can prove it, so probing never invents a child.
+fn rendered_module_node(
+    context: &WorkspaceContext,
+    selected: &ResolvedNamedSourceSet,
+    candidate: &str,
+) -> Result<Option<SourceNode>, String> {
+    let Ok(address) = MetadataAddress::parse(
+        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+        candidate,
+    ) else {
+        return Ok(None);
+    };
+    // Most probed roles do not exist for a given owner. One stat rules them out
+    // before paying for the full containment and descriptor proof.
+    let Ok(relative) = module_path_for_address(&address) else {
+        return Ok(None);
+    };
+    if fs::symlink_metadata(selected.path.join(&relative)).is_err() {
+        return Ok(None);
+    }
+    if exact_module_outcome(context, selected, &selected.source_set.name, &address)?
+        != ExactCandidate::Proven
+    {
+        return Ok(None);
+    }
+    let display_name = address
+        .as_str()
+        .split('.')
+        .next_back()
+        .unwrap_or(address.as_str())
+        .to_string();
+    Ok(Some(SourceNode {
+        display_name,
+        node_kind: SourceNodeKind::Item,
+        addressability: SourceNodeAddressability::Addressable,
+        completeness: NavigationCompleteness::Complete,
+        metadata_path: Some(address.clone()),
+        target_kind: Some(TargetKind::Module),
+        location: Some(addressed_location(
+            &selected.source_set.name,
+            Some(address),
+            TargetKind::Module,
+        )),
+    }))
+}
+
+fn collection_node(display_name: String) -> SourceNode {
+    SourceNode {
+        display_name,
+        node_kind: SourceNodeKind::Collection,
+        addressability: SourceNodeAddressability::Unaddressable,
+        completeness: NavigationCompleteness::Complete,
+        metadata_path: None,
+        target_kind: None,
+        location: None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExactCandidate {
+    /// The rendered candidate exists and its descriptor identity is proven.
+    Proven,
+    /// Something occupies the rendered candidate but it cannot be classified.
+    Unproven,
+    /// Nothing occupies the rendered candidate.
+    Absent,
+}
+
+/// Proves a module address through the same resolver `unica.source.resources`
+/// uses, so navigation and access agree on what exists. A containment denial is
+/// surfaced rather than reported as a plain absence.
+fn exact_module_outcome(
+    context: &WorkspaceContext,
+    selected: &ResolvedNamedSourceSet,
+    source_set: &str,
+    address: &MetadataAddress,
+) -> Result<ExactCandidate, String> {
+    let target = SourceTarget {
+        source_set: source_set.to_string(),
+        metadata_path: Some(address.clone()),
+    };
+    match resolve_platform_xml_target(context, &target) {
+        Ok(_) => Ok(ExactCandidate::Proven),
+        Err(error) if error.code == SourceTargetErrorCode::ContainmentDenied => {
+            Err(error.to_string())
+        }
+        Err(_) => {
+            let occupied = module_path_for_address(address)
+                .ok()
+                .map(|relative| selected.path.join(relative))
+                .is_some_and(|path| fs::symlink_metadata(path).is_ok());
+            Ok(if occupied {
+                ExactCandidate::Unproven
+            } else {
+                ExactCandidate::Absent
+            })
+        }
+    }
+}
+
+fn exact_object_outcome(
+    source_root: &Path,
+    address: &MetadataAddress,
+    cancellation: &CancellationToken,
+) -> Result<ExactCandidate, String> {
+    check_navigation_cancellation(cancellation)?;
+    let parts = address.segments().collect::<Vec<_>>();
+    match parts.as_slice() {
+        [kind, name] => {
+            let Some(kind) = metadata_kind(kind) else {
+                return Ok(ExactCandidate::Absent);
+            };
+            Ok(descriptor_outcome(
+                source_root,
+                &metadata_descriptor(kind.directory, name),
+                kind.tag,
+                name,
+            ))
+        }
+        [kind, name, child_kind, child_name] if matches!(*child_kind, "Form" | "Command") => {
+            let Some(kind) = metadata_kind(kind) else {
+                return Ok(ExactCandidate::Absent);
+            };
+            let owner = descriptor_outcome(
+                source_root,
+                &metadata_descriptor(kind.directory, name),
+                kind.tag,
+                name,
+            );
+            if owner != ExactCandidate::Proven {
+                return Ok(owner);
+            }
+            check_navigation_cancellation(cancellation)?;
+            let child_directory = if *child_kind == "Form" {
+                "Forms"
+            } else {
+                "Commands"
+            };
+            let descriptor = PathBuf::from(kind.directory)
+                .join(name)
+                .join(child_directory)
+                .join(child_name)
+                .join("Ext")
+                .join(format!("{child_kind}.xml"));
+            Ok(descriptor_outcome(
+                source_root,
+                &descriptor,
+                child_kind,
+                child_name,
+            ))
+        }
+        _ => Ok(ExactCandidate::Absent),
+    }
+}
+
+fn descriptor_outcome(
+    source_root: &Path,
+    descriptor: &Path,
+    expected_kind: &str,
+    expected_name: &str,
+) -> ExactCandidate {
+    let path = source_root.join(descriptor);
+    match descriptor_name(&path, expected_kind) {
+        Ok(name) if name == expected_name => ExactCandidate::Proven,
+        Ok(_) => ExactCandidate::Unproven,
+        Err(()) => {
+            if fs::symlink_metadata(&path).is_ok() {
+                ExactCandidate::Unproven
+            } else {
+                ExactCandidate::Absent
+            }
+        }
+    }
+}
+
 pub(crate) fn children_platform_xml_source_navigation(
     context: &WorkspaceContext,
     request: &SourceChildrenRequest,
     cancellation: &CancellationToken,
 ) -> Result<SourceChildrenResult, String> {
     check_navigation_cancellation(cancellation)?;
+    if let Some(result) = children_by_rendering(context, request, cancellation)? {
+        return Ok(result);
+    }
     let inventory = navigation_inventory(context, &request.source_set, cancellation)?;
     let external_artifact_children_unscanned = request.metadata_path.is_some()
         && matches!(
@@ -3051,6 +3709,177 @@ mod tests {
         .unwrap_err();
         assert!(resolve_error.contains("ambiguous descriptor identity"));
         assert!(!resolve_error.contains("First.xml"));
+        cleanup(&context);
+    }
+
+    #[test]
+    fn exact_resolution_answers_without_enumerating_the_source_set() {
+        let context = fixture(
+            "navigation-exact-no-walk",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_configuration_descriptor(&root, false);
+        write_real_module_fixture(&root, "CommonModule", "Shared");
+
+        let enumerated = std::rc::Rc::new(std::cell::Cell::new(false));
+        let observer = std::rc::Rc::clone(&enumerated);
+        set_navigation_provider_entry_hook_for_test(move || observer.set(true));
+
+        for (query, expected) in [
+            ("CommonModule.Shared.Module", 1),
+            ("CommonModule.Shared", 1),
+        ] {
+            let result = resolve_platform_xml_source_navigation(
+                &context,
+                &SourceResolveRequest {
+                    source_set: "main".to_string(),
+                    query: query.to_string(),
+                    mode: SourceNavigationMode::Exact,
+                    target_kind: None,
+                    limit: 50,
+                    cursor: None,
+                },
+            )
+            .unwrap();
+            assert_eq!(result.candidates.len(), expected, "{query}");
+            assert_eq!(
+                result.completeness,
+                NavigationCompleteness::Complete,
+                "{query}"
+            );
+        }
+
+        assert!(
+            !enumerated.get(),
+            "exact resolution must render its candidate, not enumerate the source set"
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn children_answer_one_level_without_enumerating_the_source_set() {
+        let context = fixture(
+            "navigation-children-no-walk",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_configuration_descriptor(&root, false);
+        write_real_module_fixture(&root, "CommonModule", "Shared");
+
+        let enumerated = std::rc::Rc::new(std::cell::Cell::new(false));
+        let observer = std::rc::Rc::clone(&enumerated);
+        set_navigation_provider_entry_hook_for_test(move || observer.set(true));
+
+        let result = children_platform_xml_source_navigation(
+            &context,
+            &SourceChildrenRequest {
+                source_set: "main".to_string(),
+                metadata_path: Some(
+                    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "CommonModule.Shared")
+                        .unwrap(),
+                ),
+                limit: 50,
+                cursor: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.completeness, NavigationCompleteness::Complete);
+        assert_eq!(
+            result
+                .children
+                .iter()
+                .filter_map(|child| child.metadata_path.as_ref().map(MetadataAddress::as_str))
+                .collect::<Vec<_>>(),
+            ["CommonModule.Shared.Module"]
+        );
+        assert!(
+            !enumerated.get(),
+            "children descends one level and must not enumerate the source set"
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn children_separate_an_absent_parent_from_an_unprovable_one() {
+        let context = fixture(
+            "navigation-children-absent",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_configuration_descriptor(&root, false);
+        write_real_module_fixture(&root, "CommonModule", "Shared");
+
+        let absent = children_platform_xml_source_navigation(
+            &context,
+            &SourceChildrenRequest {
+                source_set: "main".to_string(),
+                metadata_path: Some(
+                    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "CommonModule.Missing")
+                        .unwrap(),
+                ),
+                limit: 50,
+                cursor: None,
+            },
+        )
+        .unwrap_err();
+        assert!(absent.contains("was not found"), "{absent}");
+
+        fs::write(
+            root.join("CommonModules/Shared.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule><Properties><Name>Different</Name></Properties></CommonModule></MetaDataObject>"#,
+        )
+        .unwrap();
+        let unproven = children_platform_xml_source_navigation(
+            &context,
+            &SourceChildrenRequest {
+                source_set: "main".to_string(),
+                metadata_path: Some(
+                    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "CommonModule.Shared")
+                        .unwrap(),
+                ),
+                limit: 50,
+                cursor: None,
+            },
+        )
+        .unwrap_err();
+        assert!(
+            unproven.contains("could not be proven"),
+            "an unprovable parent must not be reported as absent: {unproven}"
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn exact_resolution_reports_a_missing_address_as_a_complete_absence() {
+        let context = fixture(
+            "navigation-exact-absent",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_configuration_descriptor(&root, false);
+        write_real_module_fixture(&root, "CommonModule", "Shared");
+
+        let result = resolve_platform_xml_source_navigation(
+            &context,
+            &SourceResolveRequest {
+                source_set: "main".to_string(),
+                query: "CommonModule.Missing.Module".to_string(),
+                mode: SourceNavigationMode::Exact,
+                target_kind: None,
+                limit: 50,
+                cursor: None,
+            },
+        )
+        .unwrap();
+
+        assert!(result.candidates.is_empty());
+        assert_eq!(
+            result.completeness,
+            NavigationCompleteness::Complete,
+            "an address that is simply not there is a definitive answer"
+        );
         cleanup(&context);
     }
 
