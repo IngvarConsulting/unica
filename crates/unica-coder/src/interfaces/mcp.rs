@@ -293,8 +293,8 @@ impl Drop for InFlightGuard {
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::cell::Cell;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::time::timeout;
 
@@ -937,28 +937,53 @@ mod tests {
 
     #[test]
     fn eof_cleanup_shares_one_aggregate_grace_between_calls_and_provider_workers() {
+        // The call is released by a channel rather than by a sleep, and the
+        // budget is compared against the *measured* time the call stayed
+        // tracked. A loaded runner moves both sides of that comparison
+        // together, so the aggregate grace only has to outlast the test, not
+        // the scheduler.
+        const AGGREGATE_GRACE: Duration = Duration::from_secs(30);
+
         let registry = Arc::new(InFlightRegistry::default());
         let guard = registry.admit().unwrap();
         let cancellation = guard.token();
+        let (cancelled_tx, cancelled_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
         let guard_thread = std::thread::spawn(move || {
             while !cancellation.is_cancelled() {
                 std::thread::yield_now();
             }
-            std::thread::sleep(Duration::from_millis(80));
+            cancelled_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
             drop(guard);
         });
-        let provider_budget = Cell::new(None);
 
-        assert!(drain_mcp_shutdown_with(
-            &registry,
-            Duration::from_millis(200),
-            |remaining| {
-                provider_budget.set(Some(remaining));
+        let drain_registry = Arc::clone(&registry);
+        let drain_thread = std::thread::spawn(move || {
+            let mut provider_budget = None;
+            let drained = drain_mcp_shutdown_with(&drain_registry, AGGREGATE_GRACE, |remaining| {
+                provider_budget = Some(remaining);
                 true
-            }
-        ));
+            });
+            (drained, provider_budget)
+        });
+
+        // Cancellation only reaches the call from inside the drain, so the
+        // deadline was already running when this arrives: everything measured
+        // from here is budget the call spent before provider cleanup starts.
+        cancelled_rx.recv().unwrap();
+        let held = Instant::now();
+        std::thread::sleep(Duration::from_millis(20));
+        release_tx.send(()).unwrap();
+        let held = held.elapsed();
+
+        let (drained, provider_budget) = drain_thread.join().unwrap();
         assert!(
-            provider_budget.get().unwrap() < Duration::from_millis(150),
+            drained,
+            "the drain gave up while the call was still tracked"
+        );
+        assert!(
+            provider_budget.unwrap() <= AGGREGATE_GRACE - held,
             "provider cleanup received a fresh grace instead of the aggregate remainder"
         );
 
