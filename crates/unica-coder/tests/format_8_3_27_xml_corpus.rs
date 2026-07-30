@@ -3527,6 +3527,207 @@ fn none_impact_rejects_any_xml_map_change() {
     assert!(error.contains("complete XML map"), "{error}");
 }
 
+struct ScopedEnvironmentVariable {
+    key: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl ScopedEnvironmentVariable {
+    fn set(key: &'static str, value: &Path) -> Self {
+        let previous = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, previous }
+    }
+}
+
+impl Drop for ScopedEnvironmentVariable {
+    fn drop(&mut self) {
+        if let Some(previous) = &self.previous {
+            std::env::set_var(self.key, previous);
+        } else {
+            std::env::remove_var(self.key);
+        }
+    }
+}
+
+#[test]
+fn source_resource_snapshot_chains_preserve_all_corpus_bytes_except_selected_bsl_modules() {
+    let root = unique_temp_dir("source-resource-snapshot-chain");
+    let workspace = root.join("workspace");
+    let _cache_guard = ScopedEnvironmentVariable::set("UNICA_CACHE_DIR", &root.join("cache"));
+    fs::create_dir_all(&workspace).unwrap();
+    write_designer_project(
+        &workspace,
+        &[
+            ("main", "CONFIGURATION", "src"),
+            ("extension", "EXTENSION", "ext"),
+        ],
+    )
+    .unwrap();
+    for (source_root, name, method, extension) in [
+        ("src", "Main", "Run", false),
+        ("ext", "Extension", "RunExtension", true),
+    ] {
+        let source = workspace.join(source_root);
+        fs::create_dir_all(source.join("CommonModules/Shared/Ext")).unwrap();
+        let extension_property = extension
+            .then_some(
+                "<ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose>",
+            )
+            .unwrap_or("");
+        fs::write(
+            source.join("Configuration.xml"),
+            format!(
+                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><Configuration><Properties><Name>{name}</Name>{extension_property}</Properties><ChildObjects><CommonModule>Shared</CommonModule></ChildObjects></Configuration></MetaDataObject>"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            source.join("CommonModules/Shared.xml"),
+            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><CommonModule><Properties><Name>Shared</Name></Properties></CommonModule></MetaDataObject>",
+        )
+        .unwrap();
+        fs::write(
+            source.join("CommonModules/Shared/Ext/Module.bsl"),
+            format!("\u{feff}Procedure {method}()\r\nEndProcedure\r\n"),
+        )
+        .unwrap();
+    }
+    let before = capture_workspace_payloads_for_source_test(&workspace);
+    let app = UnicaApplication::new();
+    for source_set in ["main", "extension"] {
+        let mut resources_args = common_args(&workspace);
+        resources_args.insert("sourceSet".to_string(), json!(source_set));
+        resources_args.insert(
+            "metadataPath".to_string(),
+            json!("CommonModule.Shared.Module"),
+        );
+        resources_args.insert("scope".to_string(), json!("self"));
+        let resources = app
+            .call_tool("unica.source.resources", &resources_args)
+            .unwrap();
+        let page = resources.data.unwrap();
+        let resource = &page["resources"][0];
+        let read = app
+            .call_tool(
+                "unica.source.read",
+                &Map::from_iter([
+                    (
+                        "cwd".to_string(),
+                        Value::String(workspace.display().to_string()),
+                    ),
+                    ("snapshotId".to_string(), page["snapshotId"].clone()),
+                    ("resourceId".to_string(), resource["resourceId"].clone()),
+                ]),
+            )
+            .unwrap();
+        assert_eq!(read.data.unwrap()["textProfile"]["bomPrefixBytes"], 3);
+        let mut apply_args = common_args(&workspace);
+        apply_args.insert("snapshotId".to_string(), page["snapshotId"].clone());
+        apply_args.insert("resourceId".to_string(), resource["resourceId"].clone());
+        apply_args.insert("expectedHash".to_string(), resource["hash"].clone());
+        apply_args.insert(
+            "content".to_string(),
+            json!("Procedure Changed()\nEndProcedure\n"),
+        );
+        apply_args.insert("contentEncoding".to_string(), json!("utf-8"));
+        apply_args.insert("dryRun".to_string(), json!(true));
+        let before_preview = capture_workspace_payloads_for_source_test(&workspace);
+        let preview = app.call_tool("unica.source.apply", &apply_args).unwrap();
+        assert_eq!(
+            capture_workspace_payloads_for_source_test(&workspace),
+            before_preview,
+            "{source_set} preview changed workspace bytes"
+        );
+        let mut expected_after_apply = before_preview.clone();
+        expected_after_apply.insert(
+            format!(
+                "{}/CommonModules/Shared/Ext/Module.bsl",
+                if source_set == "main" { "src" } else { "ext" }
+            ),
+            b"\xef\xbb\xbfProcedure Changed()\r\nEndProcedure\r\n".to_vec(),
+        );
+        apply_args.insert("dryRun".to_string(), json!(false));
+        let applied = app.call_tool("unica.source.apply", &apply_args).unwrap();
+        assert_eq!(
+            capture_workspace_payloads_for_source_test(&workspace),
+            expected_after_apply,
+            "{source_set} apply changed an unexpected workspace byte"
+        );
+        assert_eq!(
+            preview.data.unwrap()["postHash"],
+            applied.data.unwrap()["postHash"]
+        );
+        let fresh = app
+            .call_tool("unica.source.resources", &resources_args)
+            .unwrap();
+        let fresh_page = fresh.data.unwrap();
+        assert_ne!(
+            fresh_page["snapshotId"], page["snapshotId"],
+            "{source_set} postimage reused the preimage snapshot"
+        );
+        let fresh_resource = &fresh_page["resources"][0];
+        let postimage = app
+            .call_tool(
+                "unica.source.read",
+                &Map::from_iter([
+                    (
+                        "cwd".to_string(),
+                        Value::String(workspace.display().to_string()),
+                    ),
+                    ("snapshotId".to_string(), fresh_page["snapshotId"].clone()),
+                    (
+                        "resourceId".to_string(),
+                        fresh_resource["resourceId"].clone(),
+                    ),
+                ]),
+            )
+            .unwrap();
+        assert_eq!(
+            postimage.data.unwrap()["content"],
+            json!("\u{feff}Procedure Changed()\r\nEndProcedure\r\n")
+        );
+    }
+    let after = capture_workspace_payloads_for_source_test(&workspace);
+    let mut expected = before;
+    let changed_module = b"\xef\xbb\xbfProcedure Changed()\r\nEndProcedure\r\n".to_vec();
+    expected.insert(
+        "src/CommonModules/Shared/Ext/Module.bsl".to_string(),
+        changed_module.clone(),
+    );
+    expected.insert(
+        "ext/CommonModules/Shared/Ext/Module.bsl".to_string(),
+        changed_module,
+    );
+    assert_eq!(after, expected);
+    assert!(!MUTATOR_REGISTRY
+        .iter()
+        .any(|entry| entry.tool == "unica.source.apply"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+fn capture_workspace_payloads_for_source_test(root: &Path) -> BTreeMap<String, Vec<u8>> {
+    let mut payloads = BTreeMap::new();
+    fn visit(root: &Path, directory: &Path, payloads: &mut BTreeMap<String, Vec<u8>>) {
+        for entry in fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                visit(root, &path, payloads);
+            } else {
+                payloads.insert(
+                    path.strip_prefix(root)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                    fs::read(path).unwrap(),
+                );
+            }
+        }
+    }
+    visit(root, root, &mut payloads);
+    payloads
+}
+
 #[test]
 fn sequential_execution_invariant_rejects_overlap() {
     let mut gate = SequentialCallGate::default();
