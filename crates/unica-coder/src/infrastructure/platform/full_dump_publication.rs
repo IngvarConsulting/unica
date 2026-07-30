@@ -26,7 +26,8 @@ use crate::infrastructure::platform::filesystem::hard_link_count;
 #[cfg(windows)]
 use crate::infrastructure::platform::filesystem::{
     create_owner_only_directory_child, create_owner_only_file_child, discard_created_child,
-    open_directory_child_nofollow, open_directory_nofollow, verify_owner_only_acl,
+    open_directory_child_nofollow, open_directory_nofollow,
+    rename_directory_handle_child_no_replace, verify_owner_only_acl,
 };
 use crate::infrastructure::platform::filesystem::{
     file_identity, metadata_is_link_or_reparse_point, restrict_stage_to_owner, FileIdentity,
@@ -75,7 +76,7 @@ pub(crate) enum FullDumpInvocation {
 
 #[cfg(all(test, windows))]
 mod windows_anchor_tests {
-    use super::DirectoryAnchor;
+    use super::{rename_child_no_replace, DirectoryAnchor};
     use crate::infrastructure::platform::filesystem::verify_owner_only_acl;
     use std::ffi::OsStr;
     use std::fs;
@@ -127,6 +128,56 @@ mod windows_anchor_tests {
 
         assert!(error.contains("does not match anchored child"), "{error}");
         assert!(!outside.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn no_clobber_directory_move_preserves_an_existing_destination() {
+        let root = unique_temp_root("no-clobber");
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("new.txt"), b"new").unwrap();
+        fs::write(destination.join("old.txt"), b"old").unwrap();
+
+        let source_parent = DirectoryAnchor::capture_exact(&root).unwrap();
+        let destination_parent = source_parent.try_clone().unwrap();
+        let error = rename_child_no_replace(
+            &source_parent,
+            OsStr::new("source"),
+            &destination_parent,
+            OsStr::new("destination"),
+        )
+        .unwrap_err();
+
+        assert!(destination.join("old.txt").is_file());
+        assert!(!destination.join("new.txt").exists());
+        assert!(source.join("new.txt").is_file());
+        assert!(!error.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn directory_move_installs_when_destination_is_absent() {
+        let root = unique_temp_root("rename-success");
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("new.txt"), b"new").unwrap();
+
+        let source_parent = DirectoryAnchor::capture_exact(&root).unwrap();
+        let destination_parent = source_parent.try_clone().unwrap();
+        rename_child_no_replace(
+            &source_parent,
+            OsStr::new("source"),
+            &destination_parent,
+            OsStr::new("destination"),
+        )
+        .unwrap();
+
+        assert!(!source.exists());
+        assert_eq!(fs::read(destination.join("new.txt")).unwrap(), b"new");
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -3995,7 +4046,28 @@ fn rename_prechecked_directory_child_no_replace(
     )
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn rename_prechecked_directory_child_no_replace(
+    source_parent: &DirectoryAnchor,
+    source_name: &OsStr,
+    expected_identity: FileIdentity,
+    destination_parent: &DirectoryAnchor,
+    destination_name: &OsStr,
+) -> Result<(), String> {
+    let source =
+        open_directory_child_nofollow(&source_parent.directory, source_name).map_err(|error| {
+            format!(
+                "failed to open staged child {}: {error}",
+                source_parent.path.join(source_name).display()
+            )
+        })?;
+    if file_identity(&source).map_err(|error| error.to_string())? != expected_identity {
+        return Err("staged directory identity changed".to_string());
+    }
+    rename_open_directory_child_no_replace(source, destination_parent, destination_name)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn rename_prechecked_directory_child_no_replace(
     _source_parent: &DirectoryAnchor,
     _source_name: &OsStr,
@@ -4073,7 +4145,62 @@ fn rename_child_no_replace(
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn rename_child_no_replace(
+    source_parent: &DirectoryAnchor,
+    source_name: &OsStr,
+    destination_parent: &DirectoryAnchor,
+    destination_name: &OsStr,
+) -> Result<(), String> {
+    let source =
+        open_directory_child_nofollow(&source_parent.directory, source_name).map_err(|error| {
+            format!(
+                "failed to bind source directory {}: {error}",
+                source_parent.path.join(source_name).display()
+            )
+        })?;
+    rename_open_directory_child_no_replace(source, destination_parent, destination_name)
+}
+
+#[cfg(windows)]
+fn rename_open_directory_child_no_replace(
+    source: File,
+    destination_parent: &DirectoryAnchor,
+    destination_name: &OsStr,
+) -> Result<(), String> {
+    let expected_identity = file_identity(&source)
+        .map_err(|error| format!("failed to inspect source directory identity: {error}"))?;
+    rename_directory_handle_child_no_replace(
+        &source,
+        &destination_parent.directory,
+        destination_name,
+    )
+    .map_err(|error| error.to_string())?;
+    let destination =
+        open_directory_child_nofollow(&destination_parent.directory, destination_name).map_err(
+            |error| {
+                format!(
+                    "failed to reopen renamed destination {}: {error}",
+                    destination_parent.path.join(destination_name).display()
+                )
+            },
+        )?;
+    let actual_identity = file_identity(&destination).map_err(|error| {
+        format!(
+            "failed to inspect renamed destination identity {}: {error}",
+            destination_parent.path.join(destination_name).display()
+        )
+    })?;
+    if actual_identity != expected_identity {
+        return Err(format!(
+            "renamed destination identity does not match source: {}",
+            destination_parent.path.join(destination_name).display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
 fn rename_child_no_replace(
     _source_parent: &DirectoryAnchor,
     _source_name: &OsStr,
@@ -5182,8 +5309,9 @@ fn parse_exact_platform_version(value: &str) -> Option<[u32; 4]> {
     (parts.len() == 4).then(|| [parts[0], parts[1], parts[2], parts[3]])
 }
 
-#[cfg(all(test, not(windows)))]
+#[cfg(test)]
 mod tests {
+    #[cfg_attr(windows, allow(unused_imports))]
     use super::{
         normalize_key_value_connection, staged_root_version_policy, validate_staged_dump,
         with_private_create_hook, with_publication_failpoint, with_publication_hook,
@@ -6173,6 +6301,31 @@ mod tests {
             std::fs::read_to_string(target.join("Configuration.xml")).unwrap(),
             valid_configuration_owner()
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "enabled when Task 4 removes the Windows preparation guard"]
+    fn windows_destination_race_after_backup_survives_rollback() {
+        let (root, context, _) = workspace("windows-destination-race");
+        let target = context.cwd.join("src");
+        seed_valid_target(&target);
+        let platform = fixed_platform(&root);
+        let runner = DumpRunner::valid();
+        let raced_target = target.clone();
+
+        let result = with_publication_hook(
+            PublicationCheckpoint::BeforeStageInstall,
+            move || {
+                std::fs::create_dir_all(&raced_target).unwrap();
+                std::fs::write(raced_target.join("racer.txt"), b"racer").unwrap();
+            },
+            || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
+        );
+
+        assert!(!result.ok, "{result:?}");
+        assert_eq!(std::fs::read(target.join("racer.txt")).unwrap(), b"racer");
         std::fs::remove_dir_all(root).unwrap();
     }
 

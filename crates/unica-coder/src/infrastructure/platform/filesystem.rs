@@ -633,13 +633,13 @@ pub(crate) fn open_directory_child_nofollow(
     const FILE_DIRECTORY_FILE: u32 = 0x0000_0001;
     const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
     use windows_sys::Win32::Storage::FileSystem::{
-        FILE_READ_ATTRIBUTES, READ_CONTROL, SYNCHRONIZE,
+        DELETE, FILE_READ_ATTRIBUTES, READ_CONTROL, SYNCHRONIZE,
     };
 
     let file = open_relative_child(
         parent,
         name,
-        FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
+        DELETE | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
         0,
         FILE_OPEN,
         FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
@@ -647,6 +647,80 @@ pub(crate) fn open_directory_child_nofollow(
     )?;
     validate_directory_handle(&file)?;
     Ok(file)
+}
+
+#[cfg(windows)]
+pub(crate) fn rename_directory_handle_child_no_replace(
+    source: &fs::File,
+    destination_parent: &fs::File,
+    destination_name: &std::ffi::OsStr,
+) -> io::Result<()> {
+    use std::mem::{offset_of, size_of};
+    use std::os::windows::io::AsRawHandle;
+    use std::ptr;
+
+    #[repr(C)]
+    union RenameFlags {
+        replace_if_exists: u8,
+        flags: u32,
+    }
+
+    #[repr(C)]
+    struct RenameInformation {
+        anonymous: RenameFlags,
+        root_directory: windows_sys::Win32::Foundation::HANDLE,
+        file_name_length: u32,
+        file_name: [u16; 1],
+    }
+
+    const FILE_RENAME_INFORMATION_CLASS: u32 = 10;
+
+    let name = relative_child_name(destination_name)?;
+    let name_bytes = name
+        .len()
+        .checked_mul(size_of::<u16>())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "child name is too long"))?;
+    let information_length = offset_of!(RenameInformation, file_name)
+        .checked_add(name_bytes)
+        .and_then(|length| u32::try_from(length).ok())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "child name is too long"))?;
+    let word_count = (information_length as usize).div_ceil(size_of::<usize>());
+    let mut storage = vec![0usize; word_count];
+    let information = storage.as_mut_ptr().cast::<RenameInformation>();
+    // SAFETY: storage is pointer-aligned and large enough for the fixed header plus the complete
+    // UTF-16 name. All fields are initialized before NtSetInformationFile reads the buffer.
+    unsafe {
+        ptr::addr_of_mut!((*information).anonymous).write(RenameFlags {
+            replace_if_exists: 0,
+        });
+        ptr::addr_of_mut!((*information).root_directory).write(destination_parent.as_raw_handle());
+        ptr::addr_of_mut!((*information).file_name_length).write(name_bytes as u32);
+        ptr::copy_nonoverlapping(
+            name.as_ptr(),
+            ptr::addr_of_mut!((*information).file_name).cast::<u16>(),
+            name.len(),
+        );
+    }
+    let mut status = NtIoStatusBlock {
+        status: NtIoStatusStatus { status: 0 },
+        information: 0,
+    };
+    // SAFETY: source is an owned directory handle opened with DELETE access, destination_parent
+    // remains live, and the initialized buffer describes one relative destination name.
+    let result = unsafe {
+        NtSetInformationFile(
+            source.as_raw_handle(),
+            &mut status,
+            information.cast(),
+            information_length,
+            FILE_RENAME_INFORMATION_CLASS,
+        )
+    };
+    if result < 0 {
+        Err(nt_status_error(result))
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(windows)]
