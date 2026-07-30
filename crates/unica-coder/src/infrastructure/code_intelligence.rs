@@ -5,7 +5,7 @@ use crate::domain::code_intelligence::{
     ProviderReadOutcome, ProviderSearchHit, ProviderSearchSection, ProviderSectionStatus,
     SearchRequest,
 };
-use crate::infrastructure::bsl_outline::{render_current_source_outline, resolve_module_path};
+use crate::infrastructure::bsl_outline::render_current_source_outline;
 use crate::infrastructure::internal_adapters::{
     system_process_runner, ProcessCommand, ProcessOutput, ProcessRunner,
 };
@@ -203,27 +203,26 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
             ));
         };
         let tool_name = request.tool_name();
-        // The artifact of this call is the module file it read, named the way
-        // every other adapter names a filesystem artifact: as a resolved path a
-        // caller can open. A path that does not resolve leaves the list empty
-        // rather than echoing the argument back as if it were a location.
-        let artifacts = resolve_module_path(path, context)
-            .map(|module| vec![module.display().to_string()])
-            .unwrap_or_default();
         let mut outcome = ProviderReadOutcome {
             provider: ProviderId::BslAnalyzer,
             ok: true,
             summary: format!("{tool_name} completed from the current BSL source"),
             warnings: Vec::new(),
             errors: Vec::new(),
-            artifacts,
+            artifacts: Vec::new(),
             stdout: None,
             stderr: None,
             data: None,
         };
         match render_current_source_outline(path, *include_methods, context, deadline, cancellation)
         {
-            Ok(result) => outcome.data = Some(CodeIntelligenceReadData::Outline(result)),
+            Ok((result, module)) => {
+                // The successful renderer returns the identity of the same file
+                // it read. Resolving the argument independently here could
+                // claim a missing path or race a symlink change.
+                outcome.artifacts = vec![module.display().to_string()];
+                outcome.data = Some(CodeIntelligenceReadData::Outline(result));
+            }
             Err(error) if error.starts_with(CANCELLED_PREFIX) => {
                 // Same shape as `AdapterOutcome::cancelled`: the prefixed error
                 // is the summary, and a stopped call claims no artifacts.
@@ -1660,6 +1659,89 @@ mod tests {
         assert_eq!(stopped.errors, vec![stopped.summary.clone()]);
         assert!(stopped.artifacts.is_empty(), "{:?}", stopped.artifacts);
         assert!(stopped.data.is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_unsuccessful_outline_claims_no_module_artifact() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-outline-failed-artifacts-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let source_root = root.join("src");
+        let valid_module = source_root.join("CommonModules/Valid/Ext/Module.bsl");
+        let invalid_module = source_root.join("CommonModules/Invalid/Ext/Module.bsl");
+        std::fs::create_dir_all(valid_module.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(invalid_module.parent().unwrap()).unwrap();
+        std::fs::write(
+            &valid_module,
+            "Процедура Проверить() Экспорт\nКонецПроцедуры\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &invalid_module,
+            "Процедура Сломана(\nКонецПроцедуры\nЕсли Тогда\n",
+        )
+        .unwrap();
+        let context = CodeIntelligenceContext::new(
+            WorkspaceContext {
+                cwd: root.clone(),
+                workspace_root: root.clone(),
+                cache_root: root.join(".build/unica"),
+                workspace_epoch: 1,
+            },
+            ResolvedSourceRoot {
+                source_set: Some("main".to_string()),
+                path: source_root,
+            },
+        );
+        let cancellation = CancellationToken::new();
+        let cases = [
+            (
+                "missing module",
+                "CommonModules/Missing/Ext/Module.bsl",
+                ProviderDeadline::new(Instant::now() + Duration::from_secs(30)),
+            ),
+            (
+                "directory instead of module",
+                "CommonModules",
+                ProviderDeadline::new(Instant::now() + Duration::from_secs(30)),
+            ),
+            (
+                "parser diagnostic",
+                "CommonModules/Invalid/Ext/Module.bsl",
+                ProviderDeadline::new(Instant::now() + Duration::from_secs(30)),
+            ),
+            (
+                "deadline before reading",
+                "CommonModules/Valid/Ext/Module.bsl",
+                ProviderDeadline::new(Instant::now()),
+            ),
+        ];
+
+        for (label, path, deadline) in cases {
+            let outcome = BslAnalyzerProvider::new()
+                .read(
+                    &CodeIntelligenceReadRequest::Outline {
+                        path: path.to_string(),
+                        include_methods: true,
+                    },
+                    &context,
+                    deadline,
+                    &cancellation,
+                )
+                .unwrap();
+
+            assert!(!outcome.ok, "{label}: {outcome:?}");
+            assert!(
+                outcome.artifacts.is_empty(),
+                "{label} claimed artifacts: {:?}",
+                outcome.artifacts
+            );
+            assert!(outcome.data.is_none(), "{label}: {:?}", outcome.data);
+        }
 
         let _ = std::fs::remove_dir_all(&root);
     }

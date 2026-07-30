@@ -108,14 +108,14 @@ pub(crate) fn render_current_source_outline(
     context: &CodeIntelligenceContext,
     deadline: ProviderDeadline,
     cancellation: &CancellationToken,
-) -> Result<CodeOutlineResult, String> {
+) -> Result<(CodeOutlineResult, PathBuf), String> {
     if cancellation.is_cancelled() {
         return Err(cancelled_error("unica.code.outline stopped before reading"));
     }
     if deadline.remaining().is_zero() {
         return Err("unica.code.outline provider deadline exceeded before reading".to_string());
     }
-    let text = read_module(path, context)?;
+    let (module, text) = read_module(path, context)?;
     if cancellation.is_cancelled() {
         return Err(cancelled_error("unica.code.outline stopped after reading"));
     }
@@ -126,12 +126,15 @@ pub(crate) fn render_current_source_outline(
     if deadline.remaining().is_zero() {
         return Err("unica.code.outline provider deadline exceeded after parsing".to_string());
     }
-    Ok(build_result(
-        path,
-        &module_identity(path),
-        &methods,
-        &regions,
-        include_methods,
+    Ok((
+        build_result(
+            path,
+            &module_identity(path),
+            &methods,
+            &regions,
+            include_methods,
+        ),
+        module,
     ))
 }
 
@@ -156,7 +159,7 @@ pub(crate) fn resolve_module_path(
     Ok(module)
 }
 
-fn read_module(path: &str, context: &CodeIntelligenceContext) -> Result<String, String> {
+fn read_module(path: &str, context: &CodeIntelligenceContext) -> Result<(PathBuf, String), String> {
     let module = resolve_module_path(path, context)?;
     // `path` names one module file. A directory or a missing entry is a caller
     // mistake, and the raw OS message ("Is a directory") does not say which
@@ -171,7 +174,9 @@ fn read_module(path: &str, context: &CodeIntelligenceContext) -> Result<String, 
             "module `{path}` does not exist in the selected source root; `path` expects a source-root-relative path to a BSL module file"
         ));
     }
-    fs::read_to_string(&module).map_err(|error| format!("could not read module `{path}`: {error}"))
+    let text = fs::read_to_string(&module)
+        .map_err(|error| format!("could not read module `{path}`: {error}"))?;
+    Ok((module, text))
 }
 
 fn parse_module(text: &str) -> Result<(Vec<CodeOutlineMethod>, Vec<OutlineRegion>), String> {
@@ -607,6 +612,7 @@ mod tests {
             ProviderDeadline::new(Instant::now() + Duration::from_secs(30)),
             &CancellationToken::new(),
         )
+        .map(|(result, _)| result)
     }
 
     fn body(text: &str, include_methods: bool) -> CodeOutlineResult {
