@@ -18,7 +18,7 @@
 - `includeMethods=false` empties every method array without changing totals.
 - Any mandatory-field, read, containment, parse, cancellation, or deadline failure publishes neither `data` nor `stdout`.
 - Outline keeps empty cache reads and writes and does not start RLM or write workspace state.
-- ADR-0020 is superseded only when ADR-0021 and its executable checks become effective in the same verified change set.
+- ADR-0020 becomes effective only with its executable checks in the same verified change set; the unmerged intermediate text contract is not preserved as a separate superseded ADR.
 
 ---
 
@@ -295,29 +295,24 @@ git commit -m "fix(code): return outline as typed data"
 ### Task 4: Activate the architecture contract
 
 **Files:**
-- Modify: `spec/decisions/0020-current-source-bsl-outline.md`
-- Modify: `spec/decisions/0021-structured-bsl-outline-result.md`
+- Modify: `spec/decisions/0020-structured-bsl-outline-result.md`
 - Modify: `spec/architecture/invariants.md`
 - Modify: `docs/design/2026-07-30-structured-bsl-outline-result-design.md`
 
 **Interfaces:**
 - Consumes: executable behavior from Tasks 2 and 3.
-- Produces: active ADR-0021 and registry checks matching the delivered public contract.
+- Produces: active ADR-0020 and registry checks matching the delivered public contract.
 
-- [ ] **Step 1: Transition decision lifecycle**
+- [ ] **Step 1: Activate the combined decision**
 
-Change only ADR-0020's status line to:
-
-```markdown
-- Статус: `superseded` — заменено ADR-0021
-```
-
-Change ADR-0021's status from `proposed` to `accepted`. Do not rewrite the body
-of accepted ADR-0020.
+Keep one ADR-0020 with status `accepted`, combining the current-file source
+choice and the typed result contract. The intermediate text contract existed
+only inside the unmerged PR, so it is rewritten rather than introduced as a
+separate `superseded` decision.
 
 - [ ] **Step 2: Update registry ownership**
 
-Change `INV-APP-OUTLINE-SOURCE` to reference ADR-0021. Add
+Change `INV-APP-OUTLINE-SOURCE` to reference ADR-0020. Add
 `INV-MCP-OUTLINE-DATA` with a single rule: successful `unica.code.outline`
 publishes its proven module structure only in `data`, with canonical method
 kinds and structural parameters, never duplicating it in `stdout`. Name the
@@ -344,7 +339,7 @@ Expected: all tests PASS and the strict guard reports contract-sync evidence.
 - [ ] **Step 5: Commit the active contract**
 
 ```sh
-git add spec/decisions/0020-current-source-bsl-outline.md spec/decisions/0021-structured-bsl-outline-result.md spec/architecture/invariants.md docs/design/2026-07-30-structured-bsl-outline-result-design.md
+git add spec/decisions/0020-structured-bsl-outline-result.md spec/architecture/invariants.md docs/design/2026-07-30-structured-bsl-outline-result-design.md
 git commit -m "docs(architecture): activate structured outline contract"
 ```
 
@@ -396,7 +391,7 @@ git push origin codex/issue-262-stale-outline
 
 Replace the obsolete claim that compact `stdout` grammar is preserved. State
 that outline now returns a typed `data` object without `stdout`, method kinds
-are canonical, parameters are structural, ADR-0021 supersedes ADR-0020, and
+are canonical, parameters are structural, ADR-0020 owns the combined contract, and
 include the final verification evidence.
 
 - [ ] **Step 5: Re-read live review threads and checks**

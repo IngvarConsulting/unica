@@ -2,7 +2,7 @@
 
 - Date: `2026-07-30`
 - Status: `superseded`
-- Decision: `ADR-0021`
+- Decision: `ADR-0020`
 
 Проект заменён запиской
 [`2026-07-30-structured-bsl-outline-result-design.md`](2026-07-30-structured-bsl-outline-result-design.md):
@@ -12,7 +12,7 @@
 Статусы проектной записки и ADR имеют разные жизненные циклы. Первый проект был
 согласован до поставки реализации, но до слияния его контракт результата
 переработан. Итоговый выбор текущего источника и типизированного результата
-принят одной ADR-0021, а следствия закреплены записями реестра
+принят одной ADR-0020, а следствия закреплены записями реестра
 `INV-APP-OUTLINE-SOURCE` и `INV-MCP-OUTLINE-DATA`.
 
 ## Задача
@@ -202,7 +202,7 @@ definition и object profile остаются у RLM. Новый публичн�
   локального stale-состояния, добавленного первым вариантом;
 - `crates/unica-coder/src/application/mod.rs` — точное описание и
   `CacheAccess` outline;
-- `spec/decisions/0021-structured-bsl-outline-result.md` — владелец
+- `spec/decisions/0020-structured-bsl-outline-result.md` — владелец
   объединённого выбора;
 - `spec/architecture/invariants.md` — при реализации добавляется проверяемое
   следствие с запланированным ID `INV-APP-OUTLINE-SOURCE`.
@@ -236,7 +236,7 @@ definition и object profile остаются у RLM. Новый публичн�
   `CacheAccess`.
 
 Полные Rust- и CI-наборы выполнены, конкретные команды перечислены в разделе
-«Верификация» ADR-0021.
+«Верификация» ADR-0020.
 
 ## Отдельная последующая работа
 

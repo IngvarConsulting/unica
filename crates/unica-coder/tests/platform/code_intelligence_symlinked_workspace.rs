@@ -40,7 +40,7 @@ fn code_intelligence_accepts_source_paths_reached_through_a_symlinked_workspace(
 
     match result {
         Ok(outcome) => {
-            // The outline is proved from the current file (ADR-0021), so the point
+            // The outline is proved from the current file (ADR-0020), so the point
             // of this test is only that it never fails on path containment.
             let rendered = format!("{} {:?}", outcome.summary, outcome.errors);
             assert!(
@@ -216,7 +216,7 @@ fn current_source_outline_fixture(
     (root, workspace, args)
 }
 
-/// ADR-0021: the public envelope of `unica.code.outline` describes the file on
+/// ADR-0020: the public envelope of `unica.code.outline` describes the file on
 /// disk as typed data and claims no cache. Nothing here builds an index, so a
 /// passing outline also proves the tool never needed one.
 #[test]

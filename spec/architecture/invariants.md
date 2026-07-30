@@ -281,7 +281,7 @@ Unica. Каждая запись формулирует одно нормати�
   метода имеет каноническое значение `procedure` или `function`, а каждый
   параметр представлен отдельными полями имени, передачи по значению и
   выражения по умолчанию вместо сырого текста объявления.
-- **Decision:** ADR-0021
+- **Decision:** ADR-0020
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/bsl_outline.rs`
 - **Check:** `ci-test` — `crates/unica-coder/tests/platform/code_intelligence_symlinked_workspace.rs`
 - **Scope:** source, runtime
@@ -437,7 +437,7 @@ Unica. Каждая запись формулирует одно нормати�
   не проверяет готовность индекса, не запускает его скрытый сервис и не меняет
   состояние рабочего пространства, а недоказуемая структура завершает вызов
   отказом вместо частичного дерева.
-- **Decision:** ADR-0021
+- **Decision:** ADR-0020
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/bsl_outline.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/code_intelligence.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/rlm_navigation.rs`

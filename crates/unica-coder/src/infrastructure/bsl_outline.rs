@@ -1,6 +1,6 @@
 //! Module outline built from the BSL file that is on disk right now.
 //!
-//! ADR-0021: the outline describes the current source as typed data, not an
+//! ADR-0020: the outline describes the current source as typed data, not an
 //! index snapshot or a text report. The only source of truth here is one syntax
 //! tree of one file. Nothing in this module reads `bsl_index`, starts a hidden
 //! service, or writes workspace state.
@@ -641,7 +641,7 @@ mod tests {
 
     #[test]
     fn commented_out_declaration_in_a_bsp_header_is_not_a_method() {
-        // The regression retained by ADR-0021: the shipped index reads
+        // The regression retained by ADR-0020: the shipped index reads
         // `// Процедура ОпределитьНастройки(...)` as a real exported method and
         // loses the real one. A syntax tree cannot make that mistake.
         let text = concat!(
