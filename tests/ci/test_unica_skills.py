@@ -1403,10 +1403,10 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertNotRegex(v8project, r"(?m)^connection:")
         self.assertNotIn("mode=load|merge|update", v8project)
 
-    def test_verified_applied_full_dump_documents_windows_fail_closed_policy(
+    def test_verified_applied_full_dump_documents_supported_hosts_and_verified_publication(
         self,
     ) -> None:
-        docs = "\n".join(
+        combined = "\n".join(
             path.read_text(encoding="utf-8")
             for path in [
                 self.skill_root() / "v8-runner" / "SKILL.md",
@@ -1420,16 +1420,18 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         )
 
         self.assertRegex(
-            docs,
+            combined,
             re.compile(
-                r"Windows.{0,240}(?:fail-closed|blocked|unsupported)",
+                r"Windows.{0,240}(?:verified|transactional|no-clobber).{0,240}"
+                r"(?:full dump|mode.?=.?full)",
                 re.IGNORECASE | re.DOTALL,
             ),
         )
-        self.assertRegex(
-            docs,
+        self.assertNotRegex(
+            combined,
             re.compile(
-                r"(?:ACL|access control).{0,240}(?:implemented|available|support)",
+                r"Windows.{0,240}(?:fail-closed|blocked|unsupported).{0,240}"
+                r"(?:full dump|mode.?=.?full)",
                 re.IGNORECASE | re.DOTALL,
             ),
         )

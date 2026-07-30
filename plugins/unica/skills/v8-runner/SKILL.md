@@ -286,25 +286,30 @@ preview-only. Если исходники уже есть, не выполняй
 и не используй как XML-исходник. Это правило не относится к metadata-файлу
 реального объекта: legitimate metadata descriptor (включая external EPF/ERF)
 с именем `ConfigDumpInfo.xml` remains source и должен храниться в Git.
-Синхронный applied `mode=full` разрешён только для DESIGNER source-set типа
-`CONFIGURATION` или `EXTENSION`: Unica независимо проверяет установленную
+На Windows, macOS и Linux verified transactional publication поддерживает
+синхронный applied full dump (`mode=full`) только для DESIGNER source-set типа
+`CONFIGURATION` или `EXTENSION`. Unica независимо проверяет установленную
 платформу 8.3.27, подменяет выбранный target на private staging, проверяет
-владелец и все XML version-bearing roots на exact raw `2.20`, затем атомарно с
-rollback публикует целое дерево. Асинхронный full dump и external source-set
-пока доступны только как preview. `incremental` и `partial` также preview-only:
-до private CDFI, точного receipt и divergence-safe merge
-(alkoleft/v8-runner-rust#30) им нельзя писать в Git-visible root.
+владельца и все XML version-bearing roots на exact raw `2.20`, затем атомарно с
+rollback публикует целое дерево. Контракт публикации принадлежит ADR-0016:
+привязку preimage и обязательный видимый отказ rollback уточняют
+`INV-SOURCE-BOUND-PREIMAGES` и `INV-SOURCE-ROLLBACK-VISIBLE`, а OS-зависимая
+реализация остаётся за `INV-PLATFORM-OS-BEHIND-FACADE`.
 
-На Windows synchronous applied full dump сейчас fail-closed: owner-only ACL и
-handle-safe no-clobber публикация каталогов ещё не реализованы. Preview остаётся
-read-only. На поддерживаемой POSIX-ветке Unica сверяет физические маркеры
-DESIGNER, получает exact 8.3.27.x через sibling `ibcmd --version`, а recovery
+Асинхронный full dump и applied dump для external source-set пока доступны
+только как preview. `incremental` и `partial` также preview-only: до private
+CDFI, точного receipt и divergence-safe merge (alkoleft/v8-runner-rust#30) им
+нельзя писать в Git-visible root.
+
+На Windows Unica проверяет локальную системную установку через no-follow
+handles: доверенный владелец и DACL должны защищать install tree от изменения
+вызывающим non-elevated пользователем, а ancestry — от удаления, замены или
+перенаправления компонентов пути. На macOS и Linux Unica сверяет физические
+маркеры DESIGNER, получает exact 8.3.27.x через sibling `ibcmd --version` и
+требует root-owned, link-free install tree без group/world write и ACL; recovery
 хранится отдельно от effective config и не содержит credentials.
-Установка платформы должна быть системной и неизменяемой вызывающим
-пользователем: весь install tree и его предки принадлежат root, не имеют
-group/world write, ACL и ссылок; сам Unica запускается не от root. Пользовательская
-или изменяемая установка отклоняется до запуска `ibcmd`/`v8-runner`. Проверка
-ACL реализована для macOS и Linux; остальные Unix пока fail-closed.
+Пользовательская или изменяемая установка отклоняется до запуска
+`ibcmd`/`v8-runner`; остальные Unix пока fail-closed.
 
 ### Incremental dump
 

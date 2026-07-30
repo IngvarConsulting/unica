@@ -7,13 +7,20 @@ For an applied dump:
 - use synchronous `mode=full` for a DESIGNER `CONFIGURATION` or `EXTENSION`;
 - select an extension with matching `sourceSet` and `extension` names.
 
-Unica independently resolves an exact 8.3.27 installation, redirects the
-selected source-set to a private stage, validates the required owner and every
-XML version-bearing root as the raw literal 2.20, then publishes the complete
-tree with preimage checks and rollback. Async full dumps and external
-source-sets remain preview-only. `mode=incremental` and `mode=partial` are also
-available only as read-only previews with `dryRun=true`; they need
-shadow/staging publication with exact path/hash receipts.
+On Windows, macOS, and Linux, verified transactional publication supports the
+synchronous applied full dump (`mode=full`) described above. Unica independently
+resolves an exact 8.3.27 installation, redirects the selected source-set to a
+private stage, validates the required owner and every XML version-bearing root
+as the raw literal 2.20, then publishes the complete tree with preimage checks
+and rollback. ADR-0016 owns this publication contract;
+`INV-SOURCE-BOUND-PREIMAGES` and `INV-SOURCE-ROLLBACK-VISIBLE` describe its
+verified transaction behavior, while OS-specific mechanics stay behind
+`INV-PLATFORM-OS-BEHIND-FACADE`.
+
+Async full dumps and applied dumps for external source-sets remain preview-only.
+`mode=incremental` and `mode=partial` are also available only as read-only
+previews with `dryRun=true`; they need shadow/staging publication with exact
+path/hash receipts.
 Partial preview also requires `object` or `objects`.
 
 The final stage-to-target move is tentative, not a source-identity CAS. Unica
@@ -28,16 +35,15 @@ continuously hostile same-UID process can still race pathname cleanup;
 excluding that actor requires a stronger OS trust boundary, such as a separate
 identity or immutable parent directory.
 
-On Windows, synchronous applied full dump is fail-closed until owner-only ACL
-enforcement and handle-safe no-clobber directory publication are implemented;
-preview remains read-only. On the supported POSIX path, Unica verifies physical
-DESIGNER markers, probes the exact sibling `ibcmd --version`, and keeps
-secret-bearing effective configuration outside retained recovery.
-The platform install must be system-owned and immutable to the invoking
-non-root user: every install entry and ancestor is root-owned, not group/world
-writable, link-free, and ACL-free. User-owned or otherwise mutable installs are
-rejected before `ibcmd` or `v8-runner` starts. ACL proof is implemented on
-macOS and Linux; other Unix hosts fail closed.
+On Windows, Unica verifies a local system installation through no-follow
+handles: its trusted owner and DACL must prevent the invoking non-elevated user
+from mutating the install tree, while the ancestry must prevent deletion,
+replacement, or retargeting of path components. On macOS and Linux, Unica
+verifies physical DESIGNER markers, probes the exact sibling `ibcmd --version`,
+and requires a root-owned, link-free install tree without group/world write or
+ACLs. Secret-bearing effective configuration stays outside retained recovery.
+User-owned or otherwise mutable installs are rejected before `ibcmd` or
+`v8-runner` starts; other Unix hosts fail closed.
 
 `convert` is repository-aware and does not require an infobase, but applied
 conversion is currently fail-closed because it can publish Designer XML outside

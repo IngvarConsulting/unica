@@ -129,17 +129,23 @@
 > принадлежащий runtime-слою. Синхронный applied `mode=full` для DESIGNER
 > configuration/extension проходит через внешний private stage Unica:
 > платформа независимо фиксируется на exact 8.3.27.x, XML проверяется на raw
-> `version="2.20"` до целой публикации. Async full и external source-set пока
-> preview-only. Неполные режимы дополнительно не имеют безопасного merge receipt.
-> На Windows applied full dump пока fail-closed: owner-only ACL и handle-safe
-> no-clobber публикация каталогов ещё не реализованы; preview остаётся
-> read-only. Поддерживаемый POSIX-маршрут проверяет физические DESIGNER-маркеры,
-> exact sibling `ibcmd --version` и отделяет secret-bearing effective config от
-> сохраняемого recovery. Установка платформы должна целиком принадлежать root,
-> не иметь group/world write, ACL и ссылок и быть неизменяемой для запускающего
-> non-root пользователя. Пользовательская установка отклоняется до `ibcmd` и
-> `v8-runner`; ACL-доказательство поддержано на macOS/Linux, прочие Unix
-> fail-closed.
+> `version="2.20"` до целой публикации. На Windows, macOS и Linux verified
+> transactional publication поддерживает этот synchronous applied full dump
+> (`mode=full`). Владельцем контракта публикации остаётся ADR-0016;
+> `INV-SOURCE-BOUND-PREIMAGES` и `INV-SOURCE-ROLLBACK-VISIBLE` описывают
+> проверяемую транзакцию, а OS-зависимая реализация остаётся за
+> `INV-PLATFORM-OS-BEHIND-FACADE`.
+>
+> Async full и applied external source-set пока preview-only. Неполные режимы
+> дополнительно не имеют безопасного merge receipt. На Windows Unica через
+> no-follow handles проверяет локальную системную установку: trusted owner и DACL
+> защищают install tree от изменения запускающим non-elevated пользователем, а
+> ancestry — от удаления, замены и перенаправления компонентов пути. На macOS и
+> Linux проверяются физические DESIGNER-маркеры, exact sibling
+> `ibcmd --version` и root-owned, link-free install tree без group/world write и
+> ACL. Secret-bearing effective config отделён от сохраняемого recovery.
+> Пользовательская или изменяемая установка отклоняется до `ibcmd` и
+> `v8-runner`; прочие Unix fail-closed.
 
 **Полная выгрузка** — все объекты конфигурации:
 ```
@@ -413,17 +419,17 @@ Legitimate metadata descriptor (включая external EPF/ERF) объекта 
 
 Платформа предоставляет параметры для использования вспомогательного CDFI при
 сравнении, но управление приватным CDFI для пары `source-set + ИБ` относится к
-runtime-слою. Синхронный applied `mode=full` для DESIGNER
-configuration/extension безопасно оборачивается Unica: выбранный source-set
-перенаправляется во внешний private stage, платформа проверяется как exact
-8.3.27.x, а version-bearing XML roots — как raw `2.20`; только затем целое
-дерево публикуется с проверкой preimage и rollback. До реализации private state
-и shadow publication в `alkoleft/v8-runner-rust#30`
+runtime-слою. На Windows, macOS и Linux синхронный applied `mode=full` для
+DESIGNER configuration/extension выполняется через verified transactional
+publication Unica: выбранный source-set перенаправляется во внешний private
+stage, платформа проверяется как exact 8.3.27.x, а version-bearing XML roots —
+как raw `2.20`; только затем целое дерево публикуется с проверкой preimage и
+rollback (ADR-0016, `INV-PLATFORM-OS-BEHIND-FACADE`). До реализации private
+state и shadow publication в `alkoleft/v8-runner-rust#30`
 `mode=incremental|partial` остаётся preview-only: закреплённый runner не
 возвращает точные processed paths/hashes и не выполняет divergence-safe merge.
-Applied-маршрут принимает только системную root-owned установку платформы,
-неизменяемую для вызывающего non-root пользователя; user-owned install не
-исполняется.
+Applied-маршрут принимает только системную установку платформы, неизменяемую для
+вызывающего пользователя; user-owned install не исполняется.
 
 ## Переменные окружения
 
