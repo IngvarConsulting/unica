@@ -1,9 +1,11 @@
-use crate::domain::cancellation::{cancelled_error, CancellationToken};
+use crate::domain::cancellation::{cancelled_error, CancellationToken, CANCELLED_PREFIX};
 use crate::domain::code_intelligence::{
-    CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadRequest,
-    ProviderCapability, ProviderDeadline, ProviderId, ProviderReadOutcome, ProviderSearchHit,
-    ProviderSearchSection, ProviderSectionStatus, SearchRequest,
+    CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadData,
+    CodeIntelligenceReadRequest, ProviderCapability, ProviderDeadline, ProviderId,
+    ProviderReadOutcome, ProviderSearchHit, ProviderSearchSection, ProviderSectionStatus,
+    SearchRequest,
 };
+use crate::infrastructure::bsl_outline::render_current_source_outline;
 use crate::infrastructure::internal_adapters::{
     system_process_runner, ProcessCommand, ProcessOutput, ProcessRunner,
 };
@@ -17,10 +19,13 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 const SEARCH_CAPABILITIES: &[ProviderCapability] = &[ProviderCapability::Search];
+/// ADR-0020: the outline is built from the current BSL file by the pinned
+/// `bsl-parser`, so it belongs to this provider and not to the index.
+const BSL_ANALYZER_CAPABILITIES: &[ProviderCapability] =
+    &[ProviderCapability::Search, ProviderCapability::Outline];
 const RLM_CAPABILITIES: &[ProviderCapability] = &[
     ProviderCapability::Search,
     ProviderCapability::Definition,
-    ProviderCapability::Outline,
     ProviderCapability::ObjectProfile,
 ];
 const GIT_GREP_TIMEOUT: Duration = Duration::from_secs(15);
@@ -176,7 +181,63 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
     }
 
     fn capabilities(&self) -> &[ProviderCapability] {
-        SEARCH_CAPABILITIES
+        BSL_ANALYZER_CAPABILITIES
+    }
+
+    fn read(
+        &self,
+        request: &CodeIntelligenceReadRequest,
+        context: &CodeIntelligenceContext,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<ProviderReadOutcome, String> {
+        let CodeIntelligenceReadRequest::Outline {
+            path,
+            include_methods,
+        } = request
+        else {
+            return Err(format!(
+                "provider {} does not implement {:?}",
+                ProviderId::BslAnalyzer.as_str(),
+                request.capability()
+            ));
+        };
+        let tool_name = request.tool_name();
+        let mut outcome = ProviderReadOutcome {
+            provider: ProviderId::BslAnalyzer,
+            ok: true,
+            summary: format!("{tool_name} completed from the current BSL source"),
+            warnings: Vec::new(),
+            errors: Vec::new(),
+            artifacts: Vec::new(),
+            stdout: None,
+            stderr: None,
+            data: None,
+        };
+        match render_current_source_outline(path, *include_methods, context, deadline, cancellation)
+        {
+            Ok((result, module)) => {
+                // The successful renderer returns the identity of the same file
+                // it read. Resolving the argument independently here could
+                // claim a missing path or race a symlink change.
+                outcome.artifacts = vec![module.display().to_string()];
+                outcome.data = Some(CodeIntelligenceReadData::Outline(result));
+            }
+            Err(error) if error.starts_with(CANCELLED_PREFIX) => {
+                // Same shape as `AdapterOutcome::cancelled`: the prefixed error
+                // is the summary, and a stopped call claims no artifacts.
+                outcome.ok = false;
+                outcome.summary = error.clone();
+                outcome.errors = vec![error];
+                outcome.artifacts = Vec::new();
+            }
+            Err(error) => {
+                outcome.ok = false;
+                outcome.summary = format!("{tool_name} could not outline the current module");
+                outcome.errors = vec![error];
+            }
+        }
+        Ok(outcome)
     }
 
     fn search(
@@ -397,6 +458,7 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
             artifacts: outcome.artifacts,
             stdout: outcome.stdout,
             stderr: outcome.stderr,
+            data: None,
         })
     }
 }
@@ -804,9 +866,11 @@ mod tests {
         GitGrepProvider, RlmProvider, RlmSearchClient,
     };
     use crate::domain::cancellation::CancellationToken;
+    use crate::domain::cancellation::CANCELLED_PREFIX;
     use crate::domain::code_intelligence::{
-        CodeIntelligenceContext, CodeIntelligenceProvider, ProviderCapability, ProviderDeadline,
-        ProviderId, ProviderSectionStatus, SearchRequest,
+        CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadRequest,
+        CodeIntelligenceRegistry, ProviderCapability, ProviderDeadline, ProviderId,
+        ProviderSectionStatus, SearchRequest,
     };
     use crate::domain::source_roots::ResolvedSourceRoot;
     use crate::domain::workspace::WorkspaceContext;
@@ -815,7 +879,7 @@ mod tests {
     use crate::infrastructure::workspace_services::WorkspaceServiceBslOutput;
     use serde_json::Value;
     use std::path::PathBuf;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
     struct FakeRunner {
@@ -1519,9 +1583,192 @@ mod tests {
             &[
                 ProviderCapability::Search,
                 ProviderCapability::Definition,
-                ProviderCapability::Outline,
                 ProviderCapability::ObjectProfile,
             ]
+        );
+    }
+
+    #[test]
+    fn an_outline_names_the_module_it_read_as_an_absolute_artifact() {
+        // Every other adapter reports a filesystem artifact as a path a caller
+        // can open, so echoing the relative argument back would name no location.
+        let root = std::env::temp_dir().join(format!(
+            "unica-outline-artifacts-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let source_root = root.join("src");
+        let module = source_root.join("CommonModules/X/Ext/Module.bsl");
+        std::fs::create_dir_all(module.parent().unwrap()).unwrap();
+        std::fs::write(&module, "Процедура П() Экспорт\nКонецПроцедуры\n").unwrap();
+        let context = CodeIntelligenceContext::new(
+            WorkspaceContext {
+                cwd: root.clone(),
+                workspace_root: root.clone(),
+                cache_root: root.join(".build/unica"),
+                workspace_epoch: 1,
+            },
+            ResolvedSourceRoot {
+                source_set: Some("main".to_string()),
+                path: source_root,
+            },
+        );
+        let request = CodeIntelligenceReadRequest::Outline {
+            path: "CommonModules/X/Ext/Module.bsl".to_string(),
+            include_methods: true,
+        };
+
+        let outcome = BslAnalyzerProvider::new()
+            .read(
+                &request,
+                &context,
+                ProviderDeadline::new(Instant::now() + Duration::from_secs(30)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        assert!(outcome.ok, "{:?}", outcome.errors);
+        assert_eq!(outcome.artifacts.len(), 1);
+        let artifact = PathBuf::from(&outcome.artifacts[0]);
+        assert!(artifact.is_absolute(), "{artifact:?}");
+        assert!(artifact.is_file(), "{artifact:?}");
+        assert!(
+            artifact.ends_with("CommonModules/X/Ext/Module.bsl"),
+            "{artifact:?}"
+        );
+
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        let stopped = BslAnalyzerProvider::new()
+            .read(
+                &request,
+                &context,
+                ProviderDeadline::new(Instant::now() + Duration::from_secs(30)),
+                &cancelled,
+            )
+            .unwrap();
+
+        // Same shape as `AdapterOutcome::cancelled`: the prefixed error is the
+        // summary and a stopped call claims no artifacts.
+        assert!(!stopped.ok);
+        assert!(
+            stopped.summary.starts_with(CANCELLED_PREFIX),
+            "{}",
+            stopped.summary
+        );
+        assert_eq!(stopped.errors, vec![stopped.summary.clone()]);
+        assert!(stopped.artifacts.is_empty(), "{:?}", stopped.artifacts);
+        assert!(stopped.data.is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_unsuccessful_outline_claims_no_module_artifact() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-outline-failed-artifacts-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let source_root = root.join("src");
+        let valid_module = source_root.join("CommonModules/Valid/Ext/Module.bsl");
+        let invalid_module = source_root.join("CommonModules/Invalid/Ext/Module.bsl");
+        std::fs::create_dir_all(valid_module.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(invalid_module.parent().unwrap()).unwrap();
+        std::fs::write(
+            &valid_module,
+            "Процедура Проверить() Экспорт\nКонецПроцедуры\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &invalid_module,
+            "Процедура Сломана(\nКонецПроцедуры\nЕсли Тогда\n",
+        )
+        .unwrap();
+        let context = CodeIntelligenceContext::new(
+            WorkspaceContext {
+                cwd: root.clone(),
+                workspace_root: root.clone(),
+                cache_root: root.join(".build/unica"),
+                workspace_epoch: 1,
+            },
+            ResolvedSourceRoot {
+                source_set: Some("main".to_string()),
+                path: source_root,
+            },
+        );
+        let cancellation = CancellationToken::new();
+        let cases = [
+            (
+                "missing module",
+                "CommonModules/Missing/Ext/Module.bsl",
+                ProviderDeadline::new(Instant::now() + Duration::from_secs(30)),
+            ),
+            (
+                "directory instead of module",
+                "CommonModules",
+                ProviderDeadline::new(Instant::now() + Duration::from_secs(30)),
+            ),
+            (
+                "parser diagnostic",
+                "CommonModules/Invalid/Ext/Module.bsl",
+                ProviderDeadline::new(Instant::now() + Duration::from_secs(30)),
+            ),
+            (
+                "deadline before reading",
+                "CommonModules/Valid/Ext/Module.bsl",
+                ProviderDeadline::new(Instant::now()),
+            ),
+        ];
+
+        for (label, path, deadline) in cases {
+            let outcome = BslAnalyzerProvider::new()
+                .read(
+                    &CodeIntelligenceReadRequest::Outline {
+                        path: path.to_string(),
+                        include_methods: true,
+                    },
+                    &context,
+                    deadline,
+                    &cancellation,
+                )
+                .unwrap();
+
+            assert!(!outcome.ok, "{label}: {outcome:?}");
+            assert!(
+                outcome.artifacts.is_empty(),
+                "{label} claimed artifacts: {:?}",
+                outcome.artifacts
+            );
+            assert!(outcome.data.is_none(), "{label}: {:?}", outcome.data);
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_outline_capability_belongs_to_the_current_source_provider() {
+        // ADR-0020: the outline is proved from the BSL file on disk, so the
+        // index-backed provider must not claim it and the registry must not be
+        // able to route it there.
+        assert!(!RlmProvider::new()
+            .capabilities()
+            .contains(&ProviderCapability::Outline));
+        assert!(BslAnalyzerProvider::new()
+            .capabilities()
+            .contains(&ProviderCapability::Outline));
+
+        let registry = CodeIntelligenceRegistry::new(vec![
+            Arc::new(RlmProvider::new()) as Arc<dyn CodeIntelligenceProvider>,
+            Arc::new(BslAnalyzerProvider::new()),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            registry
+                .provider_for(ProviderCapability::Outline)
+                .map(|provider| provider.id()),
+            Some(ProviderId::BslAnalyzer)
         );
     }
 

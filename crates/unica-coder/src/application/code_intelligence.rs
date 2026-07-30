@@ -1151,6 +1151,7 @@ mod tests {
                 artifacts: Vec::new(),
                 stdout: None,
                 stderr: None,
+                data: None,
             })
         }
     }

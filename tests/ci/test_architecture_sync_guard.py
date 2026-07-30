@@ -183,6 +183,33 @@ class CommandLineTests(unittest.TestCase):
     def test_explicit_base_wins_over_discovery(self) -> None:
         self.assertEqual(self.guard.resolve_base("release/1.2"), "release/1.2")
 
+    def test_the_base_resolution_pins_utf_8_as_well(self) -> None:
+        """A resolved ref is ASCII; the fatal git may print alongside it is not.
+
+        `capture_output` decodes stderr whether or not this function reads it,
+        and git localises its fatal messages. Leaving this one call on the locale
+        would turn "no base ref resolved" -- a skip the guard knows how to report
+        -- into a decode error on a runner whose `LC_MESSAGES` and `LC_CTYPE`
+        disagree.
+        """
+        from unittest.mock import patch
+
+        recorded: list[dict] = []
+
+        def fake_run(command, **kwargs):
+            recorded.append(kwargs)
+            return subprocess_result(returncode=1)
+
+        with patch.dict(self.guard.os.environ, {}, clear=True), patch.object(
+            self.guard.subprocess, "run", fake_run
+        ):
+            self.assertIsNone(self.guard.resolve_base(None))
+
+        self.assertTrue(recorded)
+        for kwargs in recorded:
+            self.assertEqual(kwargs.get("encoding"), "utf-8")
+            self.assertEqual(kwargs.get("errors"), "replace")
+
     def test_unresolvable_base_skips_instead_of_failing(self) -> None:
         from unittest.mock import patch
 
@@ -393,12 +420,101 @@ class DecisionRecordImmutabilityTests(unittest.TestCase):
         self.assertIn("status moved backwards", violations[0])
 
     def test_superseding_a_record_is_allowed(self) -> None:
+        """The transition every rule here exists to leave open.
+
+        The replacing record is named on the status line, so the chain stays
+        walkable from the record that stopped applying.
+        """
+        diff = diff_for(
+            "spec/decisions/0011-canonical-dcs-domain.md",
+            "@@ -3 +3 @@\n-- Статус: `accepted`\n"
+            "+- Статус: `superseded` — заменено ADR-0021\n",
+        )
+
+        self.assertEqual(self.guard.analyze_decision_records(diff), [])
+
+    def test_superseding_without_naming_the_replacement_is_a_violation(self) -> None:
+        """`superseded` is half a statement until it says by what.
+
+        A status flip alone leaves the reader with a record that no longer
+        applies and no way to find the one that does.
+        """
         diff = diff_for(
             "spec/decisions/0011-canonical-dcs-domain.md",
             "@@ -3 +3 @@\n-- Статус: `accepted`\n+- Статус: `superseded`\n",
         )
+        violations = self.guard.analyze_decision_records(diff)
+
+        self.assertEqual(len(violations), 1, violations)
+        self.assertIn("without naming the replacing record", violations[0])
+
+    def test_a_link_to_the_replacing_record_also_names_it(self) -> None:
+        """A file link resolves for a reader as well as the `ADR-NNNN` form."""
+        diff = diff_for(
+            "spec/decisions/0011-canonical-dcs-domain.md",
+            "@@ -3 +3,2 @@\n-- Статус: `accepted`\n+- Статус: `superseded`\n"
+            "+- Обновлено: `2026-07-30` — заменено "
+            "[ADR-0021](0021-dcs-domain-split.md)\n",
+        )
 
         self.assertEqual(self.guard.analyze_decision_records(diff), [])
+
+    def test_citing_only_its_own_id_does_not_name_a_replacement(self) -> None:
+        """A record cannot be the record that replaced it."""
+        diff = diff_for(
+            "spec/decisions/0011-canonical-dcs-domain.md",
+            "@@ -3 +3 @@\n-- Статус: `accepted`\n"
+            "+- Статус: `superseded` — см. ADR-0011\n",
+        )
+        violations = self.guard.analyze_decision_records(diff)
+
+        self.assertEqual(len(violations), 1, violations)
+        self.assertIn("without naming the replacing record", violations[0])
+
+    def test_superseding_a_never_accepted_record_is_a_violation(self) -> None:
+        """`proposed -> superseded` files a history the branch never had.
+
+        The status ranking alone reads this as progress, because `superseded`
+        outranks `proposed`. A record nobody could cite has nothing to replace:
+        it is withdrawn, not superseded.
+        """
+        diff = diff_for(
+            "spec/decisions/0020-proposed-record.md",
+            "@@ -3 +3 @@\n-- Статус: `proposed`\n"
+            "+- Статус: `superseded` — заменено ADR-0021\n",
+        )
+        violations = self.guard.analyze_decision_records(diff)
+
+        self.assertEqual(len(violations), 1, violations)
+        self.assertIn("from proposed", violations[0])
+
+    def test_editing_an_already_superseded_record_needs_no_replacement(self) -> None:
+        """The reference is asked of the transition, not of every later edit."""
+        diff = diff_for(
+            "spec/decisions/0011-canonical-dcs-domain.md",
+            "@@ -3 +3 @@\n-- Статус: `superseded`\n"
+            "+- Статус: `superseded`\n",
+        )
+
+        self.assertEqual(self.guard.analyze_decision_records(diff), [])
+
+    def test_a_record_born_superseded_is_a_violation(self) -> None:
+        """A first appearance cannot be a transition.
+
+        Adding a record that is already `superseded` states that this repository
+        accepted the decision and later replaced it. Nothing in the history says
+        so: the record was replaced inside its own pull request, where the
+        answer is to delete, rewrite or merge it.
+        """
+        diff = created_diff_for(
+            "spec/decisions/0020-replaced-before-merge.md",
+            "@@ -0,0 +1,3 @@\n+# ADR-0020\n+- Статус: `superseded`\n"
+            "+- Дата: `2026-07-30`\n",
+        )
+        violations = self.guard.analyze_decision_records(diff)
+
+        self.assertEqual(len(violations), 1, violations)
+        self.assertIn("enters the catalogue already", violations[0])
 
     def test_editorial_changes_are_allowed(self) -> None:
         """Translations and typo fixes keep the date and the status."""
@@ -630,6 +746,251 @@ class DecisionRecordImmutabilityTests(unittest.TestCase):
         self.assertIn("without an Updated field", violations[0])
 
 
+class TargetBranchLifecycleTests(unittest.TestCase):
+    """Immutability starts at the target branch, not at the word `accepted`.
+
+    A record living only in an unfinished pull request is the author's to fix,
+    renumber, merge or drop; review asked it to be edited and the guard has no
+    business calling that a rewritten decision. What the pull request may not do
+    is write a history the target branch never had.
+    """
+
+    def setUp(self) -> None:
+        self.guard = load_guard()
+        # The target branch carries ADR-0011 and nothing numbered 0020 or 0021.
+        self.base = self.guard.BaseCatalogue(
+            {"0008": "accepted", "0011": "accepted", "0018": "proposed"}
+        )
+
+    def test_editing_an_unmerged_record_is_not_a_rewrite(self) -> None:
+        """The scenario the invariant used to read both ways.
+
+        A second commit in the same pull request rewrites the record it added in
+        the first. Against the merge base this is a creation, but a per-commit
+        diff shows it as an edit of an existing file -- and the target branch
+        settles it: no ADR-0020 there, so nothing was rewritten.
+        """
+        diff = diff_for(
+            "spec/decisions/0020-unmerged.md",
+            "@@ -3,2 +3,2 @@\n-- Статус: `accepted`\n-- Дата: `2026-07-29`\n"
+            "+- Статус: `accepted`\n+- Дата: `2026-07-30`\n",
+        )
+
+        self.assertEqual(self.guard.analyze_decision_records(diff, self.base), [])
+
+    def test_rewriting_the_prose_of_an_unmerged_record_needs_no_stamp(self) -> None:
+        """`Обновлено` marks an editorial change to history, and this is not one."""
+        diff = diff_for(
+            "spec/decisions/0020-unmerged.md",
+            "@@ -20 +20 @@\n-Мы выбираем прежний вариант.\n"
+            "+Мы выбираем вариант, о котором договорились на ревью.\n",
+        )
+
+        self.assertEqual(self.guard.analyze_decision_records(diff, self.base), [])
+
+    def test_deleting_an_unmerged_record_is_allowed(self) -> None:
+        """Dropping a record the branch never carried breaks no citation."""
+        diff = deleted_diff_for(
+            "spec/decisions/0020-unmerged.md",
+            "@@ -1,3 +0,0 @@\n-# ADR-0020\n-- Статус: `accepted`\n"
+            "-- Дата: `2026-07-30`\n",
+        )
+
+        self.assertEqual(self.guard.analyze_decision_records(diff, self.base), [])
+
+    def test_renumbering_an_unmerged_record_is_allowed(self) -> None:
+        """Two open pull requests reach for the same number; one has to move.
+
+        A number that exists only in a parallel pull request is not spent yet, so
+        the pull request that merges second renumbers its records instead of
+        colliding.
+        """
+        diff = renamed_diff_for(
+            "spec/decisions/0020-unmerged.md",
+            "spec/decisions/0021-unmerged.md",
+        )
+
+        self.assertEqual(self.guard.analyze_decision_records(diff, self.base), [])
+
+    def test_taking_a_number_the_branch_already_spent_is_a_violation(self) -> None:
+        """The other half of the renumbering rule.
+
+        A free number is free only until it merges. A pull request that adds a
+        record under a number the target branch already carries leaves two
+        records answering to one citation.
+        """
+        diff = created_diff_for(
+            "spec/decisions/0011-another-decision.md",
+            "@@ -0,0 +1,2 @@\n+# ADR-0011\n+- Статус: `accepted`\n",
+        )
+        violations = self.guard.analyze_decision_records(diff, self.base)
+
+        self.assertEqual(len(violations), 1, violations)
+        self.assertIn("already spent", violations[0])
+
+    def test_a_merged_record_is_still_immutable(self) -> None:
+        """The leniency is scoped to what the branch does not carry."""
+        diff = diff_for(
+            "spec/decisions/0008-public-marketplace-thin-runtime.md",
+            "@@ -3 +3 @@\n-- Дата: `2026-07-19`\n+- Дата: `2026-07-28`\n",
+        )
+        violations = self.guard.analyze_decision_records(diff, self.base)
+
+        self.assertEqual(len(violations), 1, violations)
+        self.assertIn("acceptance date rewritten", violations[0])
+
+    def test_superseding_an_unmerged_record_is_a_violation(self) -> None:
+        """Replaced before it merged, so it is deleted rather than filed.
+
+        The diff shows a legal-looking `accepted -> superseded` transition. The
+        target branch never accepted ADR-0020, so the record would enter the
+        catalogue as history of a decision this repository never took.
+        """
+        diff = diff_for(
+            "spec/decisions/0020-unmerged.md",
+            "@@ -3 +3 @@\n-- Статус: `accepted`\n"
+            "+- Статус: `superseded` — заменено ADR-0021\n",
+        )
+        violations = self.guard.analyze_decision_records(diff, self.base)
+
+        self.assertEqual(len(violations), 1, violations)
+        self.assertIn("enters the catalogue already", violations[0])
+
+    def test_superseding_a_merged_record_is_allowed(self) -> None:
+        diff = diff_for(
+            "spec/decisions/0011-canonical-dcs-domain.md",
+            "@@ -3 +3 @@\n-- Статус: `accepted`\n"
+            "+- Статус: `superseded` — заменено ADR-0021\n",
+        )
+
+        self.assertEqual(self.guard.analyze_decision_records(diff, self.base), [])
+
+    def test_the_target_branch_supplies_the_status_the_diff_omits(self) -> None:
+        """A one-sided header edit still has a `before` to compare against.
+
+        A diff that adds `- Статус: proposed` without showing the line it
+        replaced states no transition at all. The target branch does.
+        """
+        diff = diff_for(
+            "spec/decisions/0011-canonical-dcs-domain.md",
+            "@@ -3,0 +4 @@\n+- Статус: `proposed`\n",
+        )
+        violations = self.guard.analyze_decision_records(diff, self.base)
+
+        self.assertEqual(len(violations), 1, violations)
+        self.assertIn("status moved backwards", violations[0])
+
+    def test_a_proposed_record_in_the_branch_may_be_withdrawn(self) -> None:
+        """A 100% rename states no status; the target branch states it instead.
+
+        Without a base ref this is judged binding on purpose. With one it is a
+        lookup rather than an assumption, and a record the branch carries as
+        `proposed` was never citable.
+        """
+        diff = renamed_diff_for(
+            "spec/decisions/0018-proposed.md",
+            "docs/attic/0018-proposed.md",
+        )
+
+        self.assertEqual(self.guard.analyze_decision_records(diff, self.base), [])
+        self.assertEqual(len(self.guard.analyze_decision_records(diff)), 1)
+
+
+class BaseCatalogueReadTests(unittest.TestCase):
+    """Reading the target branch is what makes the lifecycle checkable."""
+
+    def setUp(self) -> None:
+        self.guard = load_guard()
+
+    def test_the_status_of_a_record_file_is_read_from_its_header(self) -> None:
+        text = (
+            "# ADR-0011: Каноническое имя\n\n- Статус: `accepted`\n"
+            "- Дата: `2026-07-21`\n\n## Контекст\n"
+        )
+
+        self.assertEqual(self.guard.base_status(text), "accepted")
+
+    def test_a_record_without_a_status_reads_as_none(self) -> None:
+        self.assertIsNone(self.guard.base_status("# ADR-0011\n\n## Контекст\n"))
+
+    def test_the_real_repository_reports_its_own_records(self) -> None:
+        """Membership and status are asserted, the status value is not.
+
+        ADR-0011 is here because a record never leaves the catalogue and `0007`
+        never re-enters it, so both answers are stable. Which status ADR-0011
+        holds is not: superseding it is the transition these rules exist to
+        allow, and a test that pins the value would fail on the day someone
+        uses it.
+        """
+        catalogue = self.guard.read_base_records("HEAD")
+
+        self.assertIsNotNone(catalogue)
+        self.assertTrue(catalogue.has("0011"))
+        self.assertIn(catalogue.status("0011"), self.guard.STATUS_ORDER)
+        self.assertFalse(catalogue.has("0007"))
+
+    def test_the_reads_pin_utf_8_instead_of_trusting_the_locale(self) -> None:
+        """A record body is Russian, so the decoding cannot be the locale's call.
+
+        `text=True` on its own decodes with the runner's preferred encoding. On a
+        host with no `LANG` that is ASCII, and the guard would die on a decode
+        error rather than report a catalogue -- the loudest possible version of
+        the failure it exists to avoid, but a failure all the same.
+        """
+        from unittest.mock import patch
+
+        recorded: list[dict] = []
+
+        def fake_run(command, **kwargs):
+            recorded.append(kwargs)
+            return subprocess_result(returncode=0, stdout="spec/decisions/0011-a.md")
+
+        with patch.object(self.guard.subprocess, "run", fake_run):
+            self.guard.read_base_records("origin/main")
+
+        self.assertEqual(len(recorded), 2, recorded)
+        for kwargs in recorded:
+            self.assertEqual(kwargs.get("encoding"), "utf-8")
+
+    def test_an_unresolvable_ref_reads_as_no_catalogue(self) -> None:
+        """None means "judge the diff alone", which is the stricter reading."""
+        self.assertIsNone(
+            self.guard.read_base_records("refs/heads/no-such-branch-here")
+        )
+
+    def test_a_piped_diff_consults_the_named_base(self) -> None:
+        """`--base` with `-` is what makes a piped diff base-aware.
+
+        Auto-resolving a ref for piped input would judge the change against a
+        branch nobody named, so the lookup happens only when the caller names it.
+        """
+        import io
+        import sys
+        from unittest.mock import patch
+
+        diff = diff_for(
+            "spec/decisions/0020-unmerged.md",
+            "@@ -3 +3 @@\n-- Дата: `2026-07-29`\n+- Дата: `2026-07-30`\n",
+        )
+        requested: list[str] = []
+
+        def fake_read_base_records(base: str):
+            requested.append(base)
+            return self.guard.BaseCatalogue({"0011": "accepted"})
+
+        original = sys.stdin
+        sys.stdin = io.StringIO(diff)
+        try:
+            with patch.object(
+                self.guard, "read_base_records", fake_read_base_records
+            ):
+                self.assertEqual(self.guard.main(["--base", "origin/release", "-"]), 0)
+        finally:
+            sys.stdin = original
+
+        self.assertEqual(requested, ["origin/release"])
+
+
 class QuotedPathTests(unittest.TestCase):
     """A path git had to quote still names the file it names.
 
@@ -774,6 +1135,29 @@ class BinarySectionTests(unittest.TestCase):
         self.assertIn("--text", command)
         self.assertIn("--no-ext-diff", command)
         self.assertIn("core.quotePath=false", command)
+
+    def test_the_diff_read_pins_utf_8_instead_of_trusting_the_locale(self) -> None:
+        """The diff carries Russian record bodies, so decoding is not the locale's call.
+
+        `text=True` on its own decodes with the runner's preferred encoding. On a
+        host with no `LANG` that is ASCII, and the read raises `UnicodeDecodeError`
+        the moment a `spec/decisions/` body appears in the diff -- the guard dies
+        instead of judging the change or reporting itself unusable, which is the
+        one outcome this module is written to avoid.
+        """
+        from unittest.mock import patch
+
+        recorded: dict[str, dict] = {}
+
+        def fake_run(command, **kwargs):
+            recorded["kwargs"] = kwargs
+            return subprocess_result(returncode=0, stdout="")
+
+        with patch.object(self.guard.subprocess, "run", fake_run):
+            self.guard.read_diff("origin/main")
+
+        self.assertEqual(recorded["kwargs"].get("encoding"), "utf-8")
+        self.assertEqual(recorded["kwargs"].get("errors"), "replace")
 
 
 class AnchorTests(unittest.TestCase):

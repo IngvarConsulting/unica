@@ -148,8 +148,11 @@
 границ слоёв — обязано принести с собой документацию в том же изменении.
 
 - [ ] Запись-владелец решения в каталоге [`../decisions/`](../decisions/README.md)
-  добавлена, обновлена или заменена новой (`INV-MCP-SURFACE-SYNC`); принятая запись при
-  этом не переписывается под изменившийся код (`INV-DOC-SUPERSEDE-NOT-EDIT`).
+  добавлена, обновлена или заменена новой (`INV-MCP-SURFACE-SYNC`); запись, уже
+  попавшая в целевую ветку, при этом не переписывается под изменившийся код, а
+  запись, которой в целевой ветке ещё нет, правится и перенумеровывается внутри
+  своего pull request и статуса `superseded` не получает
+  (`INV-DOC-SUPERSEDE-NOT-EDIT`).
 - [ ] Затронутая запись в [`invariants.md`](invariants.md) обновлена вместе с
   проверкой, которую она называет (`INV-DOC-REAL-CHECKS`).
 - [ ] Индексы остались синхронными: [`../decisions/README.md`](../decisions/README.md)
@@ -186,7 +189,7 @@ python3.12 -m unittest discover -s tests/dev --durations 20
 python3.12 -m py_compile scripts/ci/*.py tests/ci/*.py
 python3.12 -m py_compile scripts/dev/*.py tests/dev/*.py
 python3.12 scripts/ci/check-version-contract.py
-python3.12 scripts/ci/check-architecture-sync.py --base "$(git merge-base HEAD origin/main)"
+python3.12 scripts/ci/check-architecture-sync.py --base origin/main
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace -- --test-threads=1
@@ -195,8 +198,14 @@ git diff --check
 
 Первая строка — предусловие задания: без установленных зависимостей часть тестов
 `tests/ci` падает на отсутствующем модуле, а не на разбираемом изменении.
-`check-architecture-sync.py` CI выполняет только для pull request и от merge-base
-с базовой веткой; локально базу задаёт та же `git merge-base`.
+`check-architecture-sync.py` CI выполняет только для pull request и передаёт ему
+целевую ветку самого pull request. Ветка нужна стражу дважды: изменение он мерит
+от merge-base с ней (это делает сам `git diff` с тремя точками), а состав
+каталога решений читает на её вершине — так он отличает уже влитую запись от
+записи, живущей только в этом pull request. Поэтому локально указывается сама
+ветка, а не коммит merge-base: diff получается тот же, но каталог виден
+настоящий. Релизный поток, целящийся в другую ветку, передаёт её тем же
+`--base`.
 
 `git diff --check` — локальная гигиена пробелов, а не шаг конвейера; исключение
 для parity-фикстур описано в

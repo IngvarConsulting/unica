@@ -274,6 +274,18 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `tests/ci/test_release_assessment.py`
 - **Scope:** runtime, packaged
 
+### INV-MCP-OUTLINE-DATA — Outline возвращает типизированные данные
+
+- **Rule:** Успешный `unica.code.outline` публикует доказанную структуру модуля
+  только как типизированный объект `data` общего конверта без `stdout`, вид
+  метода имеет каноническое значение `procedure` или `function`, а каждый
+  параметр представлен отдельными полями имени, передачи по значению и
+  выражения по умолчанию вместо сырого текста объявления.
+- **Decision:** ADR-0020
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/bsl_outline.rs`
+- **Check:** `ci-test` — `crates/unica-coder/tests/platform/code_intelligence_symlinked_workspace.rs`
+- **Scope:** source, runtime
+
 ## SKILL — маршрутизация скиллов
 
 ### INV-SKILL-DECLARED-ROUTING — Скиллы маршрутизируются через MCP `unica`
@@ -416,6 +428,21 @@ Unica. Каждая запись формулирует одно нормати�
 - **Decision:** ADR-0017
 - **Check:** `ci-test` — `crates/unica-coder/src/application/code_intelligence.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/code_intelligence.rs`
+- **Scope:** source, runtime
+
+### INV-APP-OUTLINE-SOURCE — Структура модуля берётся из текущего файла
+
+- **Rule:** `unica.code.outline` строит результат из BSL-файла, лежащего в
+  выбранном корне исходников на момент вызова: он не читает снимок `bsl_index`,
+  не проверяет готовность индекса, не запускает его скрытый сервис и не меняет
+  состояние рабочего пространства, а недоказуемая структура завершает вызов
+  отказом вместо частичного дерева.
+- **Decision:** ADR-0020
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/bsl_outline.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/code_intelligence.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/rlm_navigation.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
+- **Check:** `ci-test` — `crates/unica-coder/tests/platform/code_intelligence_symlinked_workspace.rs`
 - **Scope:** source, runtime
 
 ### INV-APP-LAZY-HIDDEN-SERVICES — Внутренние сервисы скрыты и привязаны к рабочему пространству
@@ -1042,12 +1069,17 @@ Unica. Каждая запись формулирует одно нормати�
 
 ### INV-DOC-SUPERSEDE-NOT-EDIT — Принятое решение не переписывают
 
-- **Rule:** Принятая запись решения не правится под изменившийся код: вместо
+- **Rule:** Запись решения становится неизменяемой историей в момент попадания в
+  целевую ветку изменения — обычный поток целится в `main`, и ветка задаётся
+  проверке явно: содержание и поле `Дата` такой записи не переписываются, вместо
   правки заводится новая запись, прежняя получает статус `superseded` и называет
-  заменяющую, поле `Дата` уже принятой записи не переписывается никогда, а
-  редакционное изменение её текста отмечается полем `Обновлено`. Запись,
-  недоступную стражу для чтения — бинарный рендер содержимого или путь,
-  который он не разобрал, — считают непроверенной, а не чистой.
+  заменяющую разрешимой ссылкой, редакционная правка её текста отмечается полем
+  `Обновлено`, а её номер повторно не выдаётся. Запись, которой в целевой ветке
+  ещё нет, внутри своего pull request правится, перенумеровывается, объединяется
+  и удаляется свободно, но статуса `superseded` не получает и не занимает номер,
+  уже израсходованный в целевой ветке. Запись, недоступную стражу для чтения —
+  бинарный рендер содержимого или путь, который он не разобрал, — считают
+  непроверенной, а не чистой.
 - **Decision:** n/a
 - **Check:** `guard-script` — `scripts/ci/check-architecture-sync.py`
 - **Check:** `ci-test` — `tests/ci/test_architecture_sync_guard.py`

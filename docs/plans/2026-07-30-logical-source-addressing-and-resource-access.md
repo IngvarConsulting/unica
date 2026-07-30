@@ -5,7 +5,7 @@
 > Every production change starts with a failing test, records the observed RED
 > reason, and ends with the narrow GREEN command before broader verification.
 
-**Goal:** Deliver ADR-0020 and ADR-0021 in PR #266: logical source addressing,
+**Goal:** Deliver ADR-0021 and ADR-0022 in PR #266: logical source addressing,
 read-only navigation, bounded snapshot-backed resource access, full replacement
 of one existing BSL module, and migration of `unica.code.patch` from physical
 paths to `sourceSet + metadataPath`.
@@ -27,7 +27,7 @@ patterns, Python CI contract tests, Markdown ADR/invariant/acceptance corpus.
 - Keep one public MCP server named `unica`; add only `unica.source.*` tools.
 - Keep `unica.source.resources`, `unica.source.read`, and
   `unica.source.apply`; their removal was explicitly rejected.
-- Implement both ADR-0020 and ADR-0021 in this PR, but preserve the dependency
+- Implement both ADR-0021 and ADR-0022 in this PR, but preserve the dependency
   order: address core, `code.patch`, navigation, snapshot/read, then apply.
 - `sourceSet` is mandatory for every exact target. `metadataPath` may be absent
   only for the selected source-set root.
@@ -69,7 +69,7 @@ patterns, Python CI contract tests, Markdown ADR/invariant/acceptance corpus.
   per page, 64 KiB per read response, 1 MiB replacement text, and a five-minute
   in-memory snapshot lifetime. These values become a checked quality
   requirement; tests use deterministic clocks or explicit expiry seams.
-- Accept ADR-0020 and ADR-0021, supersede ADR-0015, and activate derived
+- Accept ADR-0021 and ADR-0022, supersede ADR-0015, and activate derived
   invariants only in the final contract-sync task after their executable tests
   exist. Intermediate task commits are implementation slices, not published
   architecture states.
@@ -342,8 +342,8 @@ patterns, Python CI contract tests, Markdown ADR/invariant/acceptance corpus.
 **Files:**
 
 - Modify: `spec/decisions/0015-narrow-boundaries-for-code-patch-v1.md`
-- Modify: `spec/decisions/0020-logical-source-addressing.md`
-- Modify: `spec/decisions/0021-bounded-source-resource-access.md`
+- Modify: `spec/decisions/0021-logical-source-addressing.md`
+- Modify: `spec/decisions/0022-bounded-source-resource-access.md`
 - Modify: `spec/decisions/README.md`
 - Modify: `spec/architecture/invariants.md`
 - Modify: `spec/architecture/quality-requirements.md`
@@ -363,8 +363,9 @@ patterns, Python CI contract tests, Markdown ADR/invariant/acceptance corpus.
 
 **Contract:**
 
-- Mark ADR-0020 and ADR-0021 `accepted`; mark ADR-0015 `superseded by
-  ADR-0020`; update the decision index without reusing or renaming IDs.
+- Mark ADR-0021 and ADR-0022 `accepted`; mark ADR-0015 `superseded by
+  ADR-0021`; update the decision index after renumbering both unmerged records
+  around the ADR-0020 already accepted in the target branch.
 - Mark both design documents `approved`.
 - Add derived invariant rules with real CI checks for canonical logical
   addressing, closed-handle reauthorization, snapshot/resource binding,
