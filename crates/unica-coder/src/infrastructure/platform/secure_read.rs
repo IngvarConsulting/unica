@@ -187,11 +187,33 @@ mod tests {
     }
 
     impl Fixture {
+        /// The root is canonicalized because the walk opens every component
+        /// with `O_NOFOLLOW`: on macOS `std::env::temp_dir()` sits under the
+        /// `/var` symlink, so an uncanonicalized root fails on its first
+        /// component and every negative assertion below would pass without
+        /// ever reaching the guard it names.
         fn new() -> Self {
-            let root = std::env::temp_dir().join(format!("unica-secure-read-{}", Uuid::new_v4()));
+            let root = fs::canonicalize(std::env::temp_dir())
+                .unwrap()
+                .join(format!("unica-secure-read-{}", Uuid::new_v4()));
             fs::create_dir_all(root.join("parent")).unwrap();
             fs::write(root.join("parent/resource.xml"), b"trusted").unwrap();
-            Self { root }
+            let fixture = Self { root };
+            fixture.assert_undisturbed_read_succeeds();
+            fixture
+        }
+
+        /// Proves the fixture itself is readable, so a later `is_err()` can
+        /// only come from the disturbance the test performs.
+        fn assert_undisturbed_read_succeeds(&self) {
+            let read = read_root_relative_regular_file(
+                &self.root,
+                &self.root.join("parent/resource.xml"),
+                1024,
+                |_| {},
+            )
+            .expect("undisturbed fixture read must succeed");
+            assert_eq!(read.bytes, b"trusted");
         }
     }
 
@@ -199,6 +221,11 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn reads_normal_root_relative_file() {
+        Fixture::new().assert_undisturbed_read_succeeds();
     }
 
     #[test]
@@ -213,7 +240,10 @@ mod tests {
                 symlink(&outside, &path).unwrap();
             }
         });
-        assert!(result.is_err());
+        assert!(
+            result.is_err(),
+            "a swapped final component must never be read"
+        );
     }
 
     #[test]
@@ -233,21 +263,28 @@ mod tests {
                 symlink(&outside, fixture.root.join("parent")).unwrap();
             }
         });
-        assert!(result.is_err());
+        assert!(
+            result.is_err(),
+            "a swapped parent component must never be read"
+        );
     }
 
     #[test]
     fn rejects_file_growth_during_bounded_read() {
         let fixture = Fixture::new();
         let path = fixture.root.join("parent/resource.xml");
-        let result = read_root_relative_regular_file(&fixture.root, &path, 1024, |phase| {
+        let error = read_root_relative_regular_file(&fixture.root, &path, 1024, |phase| {
             if phase == SecureReadPhase::BeforeRead {
                 use std::io::Write;
                 let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
                 file.write_all(b"-changed").unwrap();
             }
-        });
-        assert!(result.is_err());
+        })
+        .expect_err("a file that grows mid-read must not be returned");
+        assert!(
+            error.to_string().contains("changed while reading"),
+            "{error}"
+        );
     }
 
     #[test]
