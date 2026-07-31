@@ -74,6 +74,14 @@ impl NativeOperationAdapter {
                             "support edit",
                         );
                     }
+                    "cfe-patch-method" => {
+                        let execution = cfe::patch_extension_method_with_data(args, context);
+                        return typed_operation_result(
+                            execution.outcome,
+                            execution.data,
+                            "cfe patch method",
+                        );
+                    }
                     "cfe-borrow" => {
                         let execution = cfe::borrow_cfe_with_data(args, context);
                         return typed_operation_result(

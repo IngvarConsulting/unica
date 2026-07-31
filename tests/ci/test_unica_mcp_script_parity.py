@@ -178,110 +178,6 @@ SUCCESS_SCENARIOS = [
         expect_ok=True,
     ),
     ParityScenario(
-        name="cfe-patch-method-before-borrowed-common-module",
-        tool="unica.cfe.patch_method",
-        skill="cfe-patch-method",
-        script="cfe-patch-method.py",
-        arguments={
-            "ExtensionPath": "src-cfe",
-            "ModulePath": "CommonModule.GoogleПереводчик",
-            "MethodName": "ОбновитьДанные",
-            "InterceptorType": "Before",
-            "Context": "НаСервере",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="cfe-init",
-                script="cfe-init.py",
-                arguments={
-                    "Name": "ParityExtension",
-                    "NamePrefix": "PE_",
-                    "OutputDir": "src-cfe",
-                    "Purpose": "Customization",
-                    "Version": "1.0.0.1",
-                    "Vendor": "Unica",
-                    "CompatibilityMode": "Version8_3_24",
-                    "NoRole": True,
-                },
-            ),
-            SetupStep(
-                skill="cfe-borrow",
-                script="cfe-borrow.py",
-                tool="unica.cfe.borrow",
-                arguments={
-                    "ExtensionPath": "src-cfe",
-                    "ConfigPath": "src",
-                    "Object": "CommonModule.GoogleПереводчик",
-                },
-            ),
-        ),
-        fixtures=(
-            FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),
-            FileFixture(
-                BSP_META_COMMON_MODULE_FIXTURE,
-                "src/CommonModules/GoogleПереводчик.xml",
-            ),
-            FileFixture(
-                "cfe-patch-method/base-common-module.bsl",
-                "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
-            ),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="cfe-patch-method-after-borrowed-common-module",
-        tool="unica.cfe.patch_method",
-        skill="cfe-patch-method",
-        script="cfe-patch-method.py",
-        arguments={
-            "ExtensionPath": "src-cfe",
-            "ModulePath": "CommonModule.GoogleПереводчик",
-            "MethodName": "ОбновитьДанные",
-            "InterceptorType": "After",
-            "Context": "НаСервере",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="cfe-init",
-                script="cfe-init.py",
-                arguments={
-                    "Name": "ParityExtension",
-                    "NamePrefix": "PE_",
-                    "OutputDir": "src-cfe",
-                    "Purpose": "Customization",
-                    "Version": "1.0.0.1",
-                    "Vendor": "Unica",
-                    "CompatibilityMode": "Version8_3_24",
-                    "NoRole": True,
-                },
-            ),
-            SetupStep(
-                skill="cfe-borrow",
-                script="cfe-borrow.py",
-                tool="unica.cfe.borrow",
-                arguments={
-                    "ExtensionPath": "src-cfe",
-                    "ConfigPath": "src",
-                    "Object": "CommonModule.GoogleПереводчик",
-                },
-            ),
-        ),
-        fixtures=(
-            FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),
-            FileFixture(
-                BSP_META_COMMON_MODULE_FIXTURE,
-                "src/CommonModules/GoogleПереводчик.xml",
-            ),
-            FileFixture(
-                "cfe-patch-method/base-common-module.bsl",
-                "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
-            ),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
         name="cf-validate-detailed-outfile",
         tool="unica.cf.validate",
         skill="cf-validate",
@@ -3147,7 +3043,6 @@ MIN_NATIVE_PARITY_COVERAGE = 1.0
 
 NATIVE_PARITY_TOOLS = {
     "unica.cf.validate",
-    "unica.cfe.patch_method",
     "unica.cfe.validate",
     "unica.form.validate",
     "unica.meta.compile",
@@ -3192,6 +3087,7 @@ TYPED_RESULT_TOOLS = {
     "unica.cfe.borrow",
     "unica.cfe.diff",
     "unica.cfe.init",
+    "unica.cfe.patch_method",
     "unica.form.remove",
     "unica.help.add",
     "unica.interface.edit",
@@ -3206,7 +3102,6 @@ TYPED_RESULT_TOOLS = {
 
 EXPECTED_TOOLS = {
     "unica.cf.validate",
-    "unica.cfe.patch_method",
     "unica.cfe.validate",
     "unica.meta.compile",
     "unica.meta.info",
@@ -3358,37 +3253,11 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
         self.assertGreaterEqual(coverage, MIN_NATIVE_PARITY_COVERAGE)
         self.assertEqual(NATIVE_PARITY_TOOLS - covered, set())
 
-    def test_cfe_patch_method_parity_uses_only_the_supported_v1_contract(self) -> None:
-        scenarios = [
-            scenario
-            for scenario in SUCCESS_SCENARIOS
-            if scenario.tool == "unica.cfe.patch_method"
-        ]
-        self.assertGreater(len(scenarios), 0)
-        for scenario in scenarios:
-            with self.subTest(scenario=scenario.name):
-                self.assertIn(
-                    scenario.arguments.get("InterceptorType"),
-                    {"Before", "After"},
-                )
-                self.assertFalse(scenario.arguments.get("IsFunction", False))
-                self.assertEqual(
-                    scenario.arguments.get("MethodName"),
-                    "ОбновитьДанные",
-                    "the fixture exposes this caller-verified zero-parameter procedure",
-                )
-                self.assertTrue(
-                    any(step.tool == "unica.cfe.borrow" for step in scenario.setup_steps),
-                    "the target must be registered and adopted through the public borrow tool",
-                )
-                self.assertTrue(
-                    any(
-                        fixture.source
-                        == "cfe-patch-method/base-common-module.bsl"
-                        for fixture in scenario.fixtures
-                    ),
-                    "the base source must prove the documented procedure signature",
-                )
+    # The v1 interception contract (Before/After only, never a function) is
+    # asserted directly against the tool by the Rust test
+    # `cfe_patch_method_rejects_unsupported_v1_interception_shapes_atomically`.
+    # This guard checked the retired parity scenarios' arguments instead, so it
+    # left the stand with unica.cfe.patch_method (ADR-0023).
 
     def test_rust_registry_parity_list_matches_python_parity_harness(self) -> None:
         app_mod = (REPO_ROOT / "crates" / "unica-coder" / "src" / "application" / "mod.rs").read_text(

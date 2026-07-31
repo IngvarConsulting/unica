@@ -5832,11 +5832,50 @@ fn cfe_patch_borrowed_snapshots(
     })
 }
 
+/// Typed answer of `unica.cfe.patch_method` (ADR-0023): the interceptor that
+/// was written and where it landed.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfePatchMethodData {
+    pub(crate) module: String,
+    /// True when the module file did not exist and was created by this call.
+    pub(crate) module_created: bool,
+    pub(crate) decorator: String,
+    pub(crate) method: String,
+    pub(crate) procedure: String,
+    /// The compilation directive on the generated procedure; `null` when it
+    /// carries none.
+    pub(crate) compilation_directive: Option<String>,
+    /// The descriptor switched to `Extended` for this method; `null` when the
+    /// descriptor already carried the right state.
+    pub(crate) descriptor: Option<CfePatchDescriptorData>,
+    pub(crate) mutation: MutationData,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfePatchDescriptorData {
+    pub(crate) path: String,
+    pub(crate) property: String,
+}
+
+pub(crate) struct CfePatchMethodExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<CfePatchMethodData>,
+}
+
 pub(crate) fn patch_extension_method(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
-    let write_result = (|| -> Result<(String, CommitReport), String> {
+    patch_extension_method_with_data(args, context).outcome
+}
+
+pub(crate) fn patch_extension_method_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> CfePatchMethodExecution {
+    let write_result = (|| -> Result<(CfePatchMethodData, CommitReport), String> {
         let mut extension_path =
             required_path(args, &["extensionPath", "ExtensionPath"], "ExtensionPath")
                 .map(|path| absolutize(path, &context.cwd))?;
@@ -5994,7 +6033,6 @@ pub(crate) fn patch_extension_method(
         ]);
         let bsl_text = format!("{}\r\n", bsl_code.join("\r\n"));
 
-        let mut stdout = String::new();
         let mut transaction = CompileTransaction::new();
         let created = if bsl_file.is_file() {
             let original = fs::read(&bsl_file)
@@ -6039,34 +6077,32 @@ pub(crate) fn patch_extension_method(
         )?;
         let report = transaction.commit()?;
 
-        if created {
-            stdout.push_str("[OK] Создан файл модуля\n");
-        } else {
-            stdout.push_str("[OK] Добавлен перехватчик в существующий файл\n");
+        let mut mutation = MutationData::new(true);
+        for path in &report.created {
+            mutation = mutation.created(path);
         }
-        stdout.push_str(&format!("     Файл:         {}\n", bsl_file.display()));
-        stdout.push_str(&format!(
-            "     Декоратор:    {decorator}(\"{method_name}\")\n"
-        ));
-        stdout.push_str(&format!("     Процедура:    {proc_name}()\n"));
-        if let Some(context_annotation) = context_annotation {
-            stdout.push_str(&format!("     Контекст:     {context_annotation}\n"));
-        } else {
-            stdout.push_str("     Контекст:     без директивы компиляции\n");
+        for path in &report.updated {
+            mutation = mutation.updated(path);
         }
-        if descriptor_changed {
-            stdout.push_str(&format!(
-                "     XML-состояние: {} = Extended ({})\n",
-                target.role.extended_property(),
-                property_state_descriptor.display()
-            ));
-        }
+        let data = CfePatchMethodData {
+            module: bsl_file.display().to_string(),
+            module_created: created,
+            decorator: decorator.to_string(),
+            method: method_name.to_string(),
+            procedure: proc_name.to_string(),
+            compilation_directive: context_annotation.map(str::to_string),
+            descriptor: descriptor_changed.then(|| CfePatchDescriptorData {
+                path: property_state_descriptor.display().to_string(),
+                property: target.role.extended_property().to_string(),
+            }),
+            mutation,
+        };
 
-        Ok((stdout, report))
+        Ok((data, report))
     })();
 
     match write_result {
-        Ok((stdout, report)) => {
+        Ok((data, report)) => {
             let mut changes = report
                 .created
                 .iter()
@@ -6084,29 +6120,38 @@ pub(crate) fn patch_extension_method(
                 .chain(&report.updated)
                 .map(|path| path.display().to_string())
                 .collect();
-            AdapterOutcome {
-                ok: true,
-                summary: "unica.cfe.patch_method completed with native BSL/XML interceptor writer"
-                    .to_string(),
-                changes,
-                warnings: report.cleanup_warnings,
-                errors: Vec::new(),
-                artifacts,
-                stdout: Some(stdout),
-                stderr: None,
-                command: None,
+            CfePatchMethodExecution {
+                outcome: AdapterOutcome {
+                    ok: true,
+                    summary: format!(
+                        "unica.cfe.patch_method added {}(\"{}\") to {}",
+                        data.decorator, data.method, data.module
+                    ),
+                    changes,
+                    warnings: report.cleanup_warnings,
+                    errors: Vec::new(),
+                    artifacts,
+                    stdout: None,
+                    stderr: None,
+                    command: None,
+                },
+                data: Some(data),
             }
         }
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.cfe.patch_method failed in native BSL interceptor writer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-            command: None,
+        Err(error) => CfePatchMethodExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.cfe.patch_method failed in native BSL interceptor writer"
+                    .to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.clone()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{error}\n")),
+                command: None,
+            },
+            data: None,
         },
     }
 }
