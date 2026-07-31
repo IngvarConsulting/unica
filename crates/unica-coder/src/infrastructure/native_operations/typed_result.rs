@@ -74,6 +74,14 @@ impl NativeOperationAdapter {
                             "support edit",
                         );
                     }
+                    "cfe-borrow" => {
+                        let execution = cfe::borrow_cfe_with_data(args, context);
+                        return typed_operation_result(
+                            execution.outcome,
+                            execution.data,
+                            "cfe borrow",
+                        );
+                    }
                     "cf-init" => {
                         let execution = cf::create_configuration_scaffold_with_data(args, context);
                         return typed_operation_result(

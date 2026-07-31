@@ -282,196 +282,6 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
-        name="cfe-borrow-catalog-object",
-        tool="unica.cfe.borrow",
-        skill="cfe-borrow",
-        script="cfe-borrow.py",
-        arguments={
-            "ExtensionPath": "src-cfe",
-            "ConfigPath": "src",
-            "Object": "Catalog.ParityCatalog",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="cfe-init",
-                script="cfe-init.py",
-                arguments={
-                    "Name": "ParityExtension",
-                    "Synonym": "Parity extension",
-                    "NamePrefix": "PE_",
-                    "OutputDir": "src-cfe",
-                    "Purpose": "Customization",
-                    "Version": "1.0.0.1",
-                    "Vendor": "Unica",
-                    "CompatibilityMode": "Version8_3_24",
-                    "NoRole": True,
-                },
-            ),
-        ),
-        fixtures=(
-            FileFixture("cfe-borrow/Configuration.xml", "src/Configuration.xml"),
-            FileFixture("cfe-borrow/Catalogs/ParityCatalog.xml", "src/Catalogs/ParityCatalog.xml"),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-cfe-borrow-real-catalog-object",
-        tool="unica.cfe.borrow",
-        skill="cfe-borrow",
-        script="cfe-borrow.py",
-        arguments={
-            "ExtensionPath": "src-cfe",
-            "ConfigPath": "src",
-            "Object": "Catalog.Валюты",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="cfe-init",
-                script="cfe-init.py",
-                tool="unica.cfe.init",
-                arguments={
-                    "Name": "ParityExtension",
-                    "Synonym": "Parity extension",
-                    "NamePrefix": "PE_",
-                    "OutputDir": "src-cfe",
-                    "Purpose": "Customization",
-                    "Version": "1.0.0.1",
-                    "Vendor": "Unica",
-                    "CompatibilityMode": "Version8_3_24",
-                    "NoRole": True,
-                },
-            ),
-        ),
-        fixtures=(
-            FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),
-            FileFixture(BSP_META_CATALOG_FIXTURE, "src/Catalogs/Валюты.xml"),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-cfe-borrow-russian-types-batch",
-        tool="unica.cfe.borrow",
-        skill="cfe-borrow",
-        script="cfe-borrow.py",
-        arguments={
-            "ExtensionPath": "src-cfe",
-            "ConfigPath": "src",
-            "Object": "Справочник.Валюты;;Документ.АктОбУничтоженииПерсональныхДанных",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="cfe-init",
-                script="cfe-init.py",
-                tool="unica.cfe.init",
-                arguments={
-                    "Name": "ParityExtension",
-                    "Synonym": "Parity extension",
-                    "NamePrefix": "PE_",
-                    "OutputDir": "src-cfe",
-                    "Purpose": "Customization",
-                    "Version": "1.0.0.1",
-                    "Vendor": "Unica",
-                    "CompatibilityMode": "Version8_3_24",
-                    "NoRole": True,
-                },
-            ),
-        ),
-        fixtures=(
-            FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),
-            FileFixture(BSP_META_CATALOG_FIXTURE, "src/Catalogs/Валюты.xml"),
-            FileFixture(
-                BSP_META_DOCUMENT_FIXTURE,
-                "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
-            ),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-cfe-borrow-real-document-object",
-        tool="unica.cfe.borrow",
-        skill="cfe-borrow",
-        script="cfe-borrow.py",
-        arguments={
-            "ExtensionPath": "src-cfe",
-            "ConfigPath": "src",
-            "Object": "Document.АктОбУничтоженииПерсональныхДанных",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="cfe-init",
-                script="cfe-init.py",
-                tool="unica.cfe.init",
-                arguments={
-                    "Name": "ParityExtension",
-                    "Synonym": "Parity extension",
-                    "NamePrefix": "PE_",
-                    "OutputDir": "src-cfe",
-                    "Purpose": "Customization",
-                    "Version": "1.0.0.1",
-                    "Vendor": "Unica",
-                    "CompatibilityMode": "Version8_3_24",
-                    "NoRole": True,
-                },
-            ),
-        ),
-        fixtures=(
-            FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),
-            FileFixture(BSP_META_DOCUMENT_FIXTURE, "src/Documents/АктОбУничтоженииПерсональныхДанных.xml"),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-cfe-borrow-business-process-form-main-attribute",
-        tool="unica.cfe.borrow",
-        skill="cfe-borrow",
-        script="cfe-borrow.py",
-        arguments={
-            "ExtensionPath": "src-cfe",
-            "ConfigPath": "src",
-            "Object": "BusinessProcess.Задание.Form.ФормаБизнесПроцесса",
-            "BorrowMainAttribute": "Form",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="cfe-init",
-                script="cfe-init.py",
-                tool="unica.cfe.init",
-                arguments={
-                    "Name": "ParityExtension",
-                    "Synonym": "Parity extension",
-                    "NamePrefix": "PE_",
-                    "OutputDir": "src-cfe",
-                    "Purpose": "Customization",
-                    "Version": "1.0.0.1",
-                    "Vendor": "Unica",
-                    "CompatibilityMode": "Version8_3_24",
-                    "NoRole": True,
-                },
-            ),
-        ),
-        fixtures=(
-            FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),
-            FileFixture(
-                "cfe-borrow-bsp-form/BusinessProcesses/Задание.xml",
-                "src/BusinessProcesses/Задание.xml",
-            ),
-            FileFixture(
-                "cfe-borrow-bsp-form/BusinessProcesses/Задание/Forms/ФормаБизнесПроцесса.xml",
-                "src/BusinessProcesses/Задание/Forms/ФормаБизнесПроцесса.xml",
-            ),
-            FileFixture(
-                BSP_FORM_BUSINESS_PROCESS_FIXTURE,
-                "src/BusinessProcesses/Задание/Forms/ФормаБизнесПроцесса/Ext/Form.xml",
-            ),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
         name="cf-validate-detailed-outfile",
         tool="unica.cf.validate",
         skill="cf-validate",
@@ -1025,6 +835,22 @@ SUCCESS_SCENARIOS = [
                 "bsp/forms/BusinessProcesses__Задание__ФормаСписка/Form.xml",
                 "src/Form.xml",
             ),
+        ),
+        expect_ok=True,
+    ),
+    ParityScenario(
+        # Re-homed from the retired cfe-borrow scenarios so this real BSP form
+        # stays under parity coverage (ADR-0023 retires tools, not fixtures).
+        name="bsp-form-validate-business-process-main-form",
+        tool="unica.form.validate",
+        skill="form-validate",
+        script="form-validate.py",
+        arguments={
+            "FormPath": "src/Form.xml",
+            "Detailed": True,
+        },
+        fixtures=(
+            FileFixture(BSP_FORM_BUSINESS_PROCESS_FIXTURE, "src/Form.xml"),
         ),
         expect_ok=True,
     ),
@@ -3177,18 +3003,6 @@ MISSING_INPUT_SCENARIOS = [
         False,
     ),
     ParityScenario(
-        "cfe-borrow-missing-inputs",
-        "unica.cfe.borrow",
-        "cfe-borrow",
-        "cfe-borrow.py",
-        {
-            "ExtensionPath": "missing-extension",
-            "ConfigPath": "missing-config",
-            "Object": "Catalog.ParityCatalog",
-        },
-        False,
-    ),
-    ParityScenario(
         "cfe-validate-missing-extension",
         "unica.cfe.validate",
         "cfe-validate",
@@ -3333,7 +3147,6 @@ MIN_NATIVE_PARITY_COVERAGE = 1.0
 
 NATIVE_PARITY_TOOLS = {
     "unica.cf.validate",
-    "unica.cfe.borrow",
     "unica.cfe.patch_method",
     "unica.cfe.validate",
     "unica.form.validate",
@@ -3376,6 +3189,7 @@ TYPED_RESULT_TOOLS = {
     "unica.cf.edit",
     "unica.cf.info",
     "unica.cf.init",
+    "unica.cfe.borrow",
     "unica.cfe.diff",
     "unica.cfe.init",
     "unica.form.remove",
@@ -3392,7 +3206,6 @@ TYPED_RESULT_TOOLS = {
 
 EXPECTED_TOOLS = {
     "unica.cf.validate",
-    "unica.cfe.borrow",
     "unica.cfe.patch_method",
     "unica.cfe.validate",
     "unica.meta.compile",
@@ -3420,7 +3233,6 @@ EXPECTED_TOOLS = {
 
 BSP_PARITY_REQUIRED_TOOLS = {
     "unica.cf.validate",
-    "unica.cfe.borrow",
     "unica.meta.info",
     "unica.meta.validate",
     "unica.form.info",
@@ -3438,7 +3250,6 @@ BSP_PARITY_REQUIRED_TOOLS = {
 }
 
 BSP_MUTATING_REQUIRED_TOOLS = {
-    "unica.cfe.borrow",
     "unica.form.edit",
     "unica.dcs.edit",
     "unica.mxl.compile",
@@ -4128,6 +3939,14 @@ source-set:
         relations = load_donor_relations()
         self.assertEqual(set(relations), cases)
 
+    def test_retired_donor_cases_are_not_compared(self) -> None:
+        # A retired case keeps its files in the snapshot but leaves the
+        # comparison, so it must not come back through the case iterator.
+        retired = set(load_donor_registry().get("retired", {}))
+        self.assertTrue(retired, "the retirement list records what left the stand")
+        cases = {case.case_id for case in iter_cc_1c_skill_cases()}
+        self.assertEqual(retired & cases, set())
+
     def test_donor_snapshot_integrity_and_provenance(self) -> None:
         errors = donor_contract.validate_repository_contract(REPO_ROOT)
         self.assertEqual(errors, [])
@@ -4505,12 +4324,15 @@ def run_cc_python_script(
     )
 
 
+# Donor cases compare tool stdout against the cc-1c reference scripts. A tool
+# that migrated to typed data (ADR-0023) has no prose left to compare, so it
+# leaves this stand the same way it leaves the scenario stand. `cfe-borrow`
+# left with unica.cfe.borrow; the donor snapshot itself is untouched.
 CC_CASE_TOOLS = {
     "meta-compile": "unica.meta.compile",
     "skd-compile": "unica.dcs.compile",
     "form-compile": "unica.form.compile",
     "form-compile-from-object": "unica.form.compile",
-    "cfe-borrow": "unica.cfe.borrow",
 }
 
 
@@ -4541,8 +4363,12 @@ def iter_cc_1c_skill_cases() -> list[CcSkillCase]:
     return cases
 
 
+def load_donor_registry() -> dict[str, Any]:
+    return donor_contract.load_json(DONOR_RELATIONS_PATH)
+
+
 def load_donor_relations() -> dict[str, dict[str, Any]]:
-    registry = donor_contract.load_json(DONOR_RELATIONS_PATH)
+    registry = load_donor_registry()
     relations = registry.get("relations")
     if not isinstance(relations, dict):
         raise AssertionError("donor relation registry must contain an object")

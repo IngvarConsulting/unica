@@ -311,7 +311,9 @@ struct PreparedCfeBorrow {
     cfg_dir: PathBuf,
     ext_dir: PathBuf,
     write_plan: CfeBorrowWritePlan,
-    stdout: String,
+    name_prefix: String,
+    log: CfeBorrowLog,
+    borrowed: Vec<CfeBorrowedItem>,
     artifacts: Vec<PathBuf>,
     borrowed_count: usize,
     registered_format_dependencies: Vec<PathBuf>,
@@ -404,27 +406,24 @@ fn prepare_cfe_borrow_with_trace(
         }
     }
 
-    let mut stdout = format!("[INFO] Extension NamePrefix: {name_prefix}\n");
+    let mut log = CfeBorrowLog::default();
+    let mut borrowed = Vec::<CfeBorrowedItem>::new();
     let mut artifacts = Vec::<PathBuf>::new();
     let mut borrowed_count = 0usize;
     for item in &items {
         let spec = cfe_borrow_parse_object_spec(item)?;
         if spec.form_name.is_some() {
-            stdout.push_str(&format!(
-                "[INFO] Borrowing form {}.{}.Form.{}...\n",
-                spec.type_name,
-                spec.object_name,
-                spec.form_name.as_deref().unwrap_or_default()
-            ));
+            borrowed.push(CfeBorrowedItem {
+                kind: spec.type_name.clone(),
+                name: spec.object_name.clone(),
+                form: spec.form_name.clone(),
+            });
             if !write_plan.exists(&cfe_borrow_target_object(
                 &ext_dir,
                 &spec.type_name,
                 &spec.object_name,
             )) {
-                stdout.push_str(&format!(
-                    "[INFO]   Parent object {}.{} not yet borrowed — borrowing first...\n",
-                    spec.type_name, spec.object_name
-                ));
+                log.auto_borrowed(format!("{}.{}", spec.type_name, spec.object_name));
                 let object_artifact = cfe_borrow_object_shell(
                     &cfg_dir,
                     &ext_dir,
@@ -433,7 +432,7 @@ fn prepare_cfe_borrow_with_trace(
                     &spec.object_name,
                     &format_version,
                     &mut ext_text,
-                    &mut stdout,
+                    &mut log,
                 )?;
                 artifacts.push(object_artifact);
             }
@@ -444,7 +443,7 @@ fn prepare_cfe_borrow_with_trace(
                 &spec,
                 &format_version,
                 borrow_main_attribute.is_some(),
-                &mut stdout,
+                &mut log,
             )?;
             cfe_borrow_register_form(
                 &ext_dir,
@@ -452,7 +451,7 @@ fn prepare_cfe_borrow_with_trace(
                 &spec.type_name,
                 &spec.object_name,
                 spec.form_name.as_deref().unwrap_or_default(),
-                &mut stdout,
+                &mut log,
             )?;
             artifacts.extend(form_artifacts);
             artifacts.extend(cfe_borrow_main_attribute_artifacts(
@@ -463,14 +462,15 @@ fn prepare_cfe_borrow_with_trace(
                 borrow_main_attribute.as_deref(),
                 &format_version,
                 &mut ext_text,
-                &mut stdout,
+                &mut log,
             )?);
             borrowed_count += 1;
         } else {
-            stdout.push_str(&format!(
-                "[INFO] Borrowing {}.{}...\n",
-                spec.type_name, spec.object_name
-            ));
+            borrowed.push(CfeBorrowedItem {
+                kind: spec.type_name.clone(),
+                name: spec.object_name.clone(),
+                form: None,
+            });
             let artifact = cfe_borrow_object_shell(
                 &cfg_dir,
                 &ext_dir,
@@ -479,7 +479,7 @@ fn prepare_cfe_borrow_with_trace(
                 &spec.object_name,
                 &format_version,
                 &mut ext_text,
-                &mut stdout,
+                &mut log,
             )?;
             artifacts.push(artifact);
             borrowed_count += 1;
@@ -500,7 +500,9 @@ fn prepare_cfe_borrow_with_trace(
         cfg_dir,
         ext_dir,
         write_plan,
-        stdout,
+        name_prefix,
+        log,
+        borrowed,
         artifacts,
         borrowed_count,
         registered_format_dependencies,
@@ -536,15 +538,91 @@ pub(crate) fn cfe_borrow_format_dependency_inspection(
     }
 }
 
+/// Typed answer of `unica.cfe.borrow` (ADR-0023). The prose narrated each step;
+/// the data keeps only the facts a caller cannot recover elsewhere: what was
+/// borrowed, what the borrow pulled in on its own, and what it left alone.
+#[derive(Debug, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfeBorrowData {
+    pub(crate) name_prefix: String,
+    pub(crate) extension: String,
+    pub(crate) configuration: String,
+    /// Objects and forms named in the request.
+    pub(crate) borrowed: Vec<CfeBorrowedItem>,
+    /// Objects the borrow had to pull in to satisfy a reference or a deep path.
+    pub(crate) auto_borrowed: Vec<String>,
+    /// Files deliberately left as they were, with the reason.
+    pub(crate) skipped: Vec<CfeBorrowSkip>,
+    pub(crate) mutation: MutationData,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfeBorrowedItem {
+    pub(crate) kind: String,
+    pub(crate) name: String,
+    /// The form that was borrowed; `null` when the whole object was.
+    pub(crate) form: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfeBorrowSkip {
+    pub(crate) target: String,
+    pub(crate) reason: String,
+}
+
+/// Collects the borrow facts the helpers used to print. Replaces the `&mut
+/// String` that was threaded through them.
+#[derive(Debug, Default)]
+pub(crate) struct CfeBorrowLog {
+    pub(crate) auto_borrowed: Vec<String>,
+    pub(crate) skipped: Vec<CfeBorrowSkip>,
+    pub(crate) warnings: Vec<String>,
+}
+
+impl CfeBorrowLog {
+    fn auto_borrowed(&mut self, reference: String) {
+        if !self.auto_borrowed.contains(&reference) {
+            self.auto_borrowed.push(reference);
+        }
+    }
+
+    fn skipped(&mut self, target: String, reason: &str) {
+        self.skipped.push(CfeBorrowSkip {
+            target,
+            reason: reason.to_string(),
+        });
+    }
+
+    fn warn(&mut self, message: String) {
+        self.warnings.push(message);
+    }
+}
+
+pub(crate) struct CfeBorrowExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<CfeBorrowData>,
+}
+
 pub(crate) fn borrow_cfe(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
-    let result = (|| -> Result<(String, Vec<PathBuf>, Vec<String>), String> {
+    borrow_cfe_with_data(args, context).outcome
+}
+
+pub(crate) fn borrow_cfe_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> CfeBorrowExecution {
+    let result = (|| -> Result<(CfeBorrowData, Vec<PathBuf>, Vec<String>), String> {
         let PreparedCfeBorrow {
             cfg_path,
             ext_path,
             cfg_dir,
             ext_dir,
             write_plan,
-            mut stdout,
+            name_prefix,
+            log,
+            borrowed,
             mut artifacts,
             borrowed_count,
             registered_format_dependencies,
@@ -557,46 +635,70 @@ pub(crate) fn borrow_cfe(args: &Map<String, Value>, context: &WorkspaceContext) 
             write_plan.commit_with_post_validation(&format_owner_targets, context, || {
                 cfe_borrow_validate_extension(&ext_path, context)
             })?;
-        stdout.push_str(&format!("[INFO] Saved: {}\n\n", ext_path.display()));
-        stdout.push_str("=== cfe-borrow summary ===\n");
-        stdout.push_str(&format!("  Extension:  {}\n", ext_dir.display()));
-        stdout.push_str(&format!("  Config:     {}\n", cfg_dir.display()));
-        stdout.push_str(&format!("  Borrowed:   {borrowed_count} object(s)\n"));
+        let _ = borrowed_count;
+        let mut mutation = MutationData::new(true);
         for artifact in &artifacts {
-            stdout.push_str(&format!("    - {}\n", artifact.display()));
+            mutation = mutation.updated(artifact);
         }
+        mutation = mutation.updated(&ext_path);
+        let CfeBorrowLog {
+            auto_borrowed,
+            skipped,
+            warnings: borrow_warnings,
+        } = log;
+        let data = CfeBorrowData {
+            name_prefix,
+            extension: ext_dir.display().to_string(),
+            configuration: cfg_dir.display().to_string(),
+            borrowed,
+            auto_borrowed,
+            skipped,
+            mutation,
+        };
         artifacts.push(ext_path);
-        Ok((stdout, artifacts, cleanup_warnings))
+        let mut warnings = borrow_warnings;
+        warnings.extend(cleanup_warnings);
+        Ok((data, artifacts, warnings))
     })();
 
     match result {
-        Ok((stdout, artifacts, warnings)) => AdapterOutcome {
-            ok: true,
-            summary: "unica.cfe.borrow completed with native extension borrower".to_string(),
-            changes: artifacts
-                .iter()
-                .map(|path| format!("updated {}", path.display()))
-                .collect(),
-            warnings,
-            errors: Vec::new(),
-            artifacts: artifacts
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect(),
-            stdout: Some(stdout),
-            stderr: None,
-            command: None,
+        Ok((data, artifacts, warnings)) => CfeBorrowExecution {
+            outcome: AdapterOutcome {
+                ok: true,
+                summary: format!(
+                    "unica.cfe.borrow borrowed {} item(s) into {}",
+                    data.borrowed.len(),
+                    data.extension
+                ),
+                changes: artifacts
+                    .iter()
+                    .map(|path| format!("updated {}", path.display()))
+                    .collect(),
+                warnings,
+                errors: Vec::new(),
+                artifacts: artifacts
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect(),
+                stdout: None,
+                stderr: None,
+                command: None,
+            },
+            data: Some(data),
         },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.cfe.borrow failed in native extension borrower".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-            command: None,
+        Err(error) => CfeBorrowExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.cfe.borrow failed in native extension borrower".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.clone()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{error}\n")),
+                command: None,
+            },
+            data: None,
         },
     }
 }
@@ -1147,7 +1249,7 @@ pub(crate) fn cfe_borrow_object_shell(
     object_name: &str,
     format_version: &str,
     ext_text: &mut String,
-    stdout: &mut String,
+    log: &mut CfeBorrowLog,
 ) -> Result<PathBuf, String> {
     let dir_name =
         cfe_borrow_type_dir(type_name).ok_or_else(|| format!("Unknown type '{type_name}'"))?;
@@ -1170,14 +1272,13 @@ pub(crate) fn cfe_borrow_object_shell(
     let source_uuid = source_el
         .attribute("uuid")
         .expect("validated source descriptor has uuid");
-    stdout.push_str(&format!("[INFO]   Source UUID: {source_uuid}\n"));
     let target_file = cfe_borrow_target_object(ext_dir, type_name, object_name);
     if write_plan.is_planned(&target_file) {
-        stdout.push_str(&format!(
-            "[SKIP]   Object already planned in this batch: {}\n",
-            target_file.display()
-        ));
-        cfe_borrow_add_to_child_objects(ext_text, type_name, object_name, stdout)?;
+        log.skipped(
+            target_file.display().to_string(),
+            "уже запланирован к переносу в этом пакете",
+        );
+        cfe_borrow_add_to_child_objects(ext_text, type_name, object_name, log)?;
         return Ok(target_file);
     }
     let source_props = meta_info_child(source_el, "Properties");
@@ -1189,8 +1290,7 @@ pub(crate) fn cfe_borrow_object_shell(
         format_version,
     )?;
     write_plan.write_utf8_bom(&target_file, &xml)?;
-    stdout.push_str(&format!("[INFO]   Created: {}\n", target_file.display()));
-    cfe_borrow_add_to_child_objects(ext_text, type_name, object_name, stdout)?;
+    cfe_borrow_add_to_child_objects(ext_text, type_name, object_name, log)?;
     Ok(target_file)
 }
 
@@ -1377,7 +1477,7 @@ pub(crate) fn cfe_borrow_main_attribute_artifacts(
     mode: Option<&str>,
     format_version: &str,
     ext_text: &mut String,
-    stdout: &mut String,
+    log: &mut CfeBorrowLog,
 ) -> Result<Vec<PathBuf>, String> {
     let Some(mode) = mode else {
         return Ok(Vec::new());
@@ -1387,9 +1487,6 @@ pub(crate) fn cfe_borrow_main_attribute_artifacts(
     let form_name = spec.form_name.as_deref().unwrap_or_default();
     let dir_name =
         cfe_borrow_type_dir(type_name).ok_or_else(|| format!("Unknown type '{type_name}'"))?;
-    stdout.push_str(&format!(
-        "[INFO] Borrowing main attribute for {type_name}.{object_name} (mode: {mode})...\n"
-    ));
 
     let form_paths = if mode == "Form" {
         let form_xml_path = cfg_dir
@@ -1400,36 +1497,20 @@ pub(crate) fn cfe_borrow_main_attribute_artifacts(
             .join("Ext")
             .join("Form.xml");
         let paths = cfe_borrow_collect_form_object_paths(write_plan, &form_xml_path)?;
-        stdout.push_str(&format!(
-            "[INFO]   Collected {} first-level DataPath references, {} deep paths\n",
-            paths.first_level.len(),
-            paths.deep_paths.len()
-        ));
         if paths.first_level.is_empty() && paths.deep_paths.is_empty() {
-            stdout.push_str("[INFO]   No main-attribute object paths found in form\n");
             return Ok(Vec::new());
         }
         Some(paths)
     } else {
-        stdout.push_str("[INFO]   Mode All: borrowing all attributes and tabular sections\n");
         None
     };
 
     let wanted = form_paths.as_ref().map(|paths| &paths.first_level);
     let resolved =
         cfe_borrow_resolve_source_attributes(write_plan, cfg_dir, type_name, object_name, wanted)?;
-    stdout.push_str(&format!(
-        "[INFO]   Resolved: {} attributes, {} tabular section(s)\n",
-        resolved.attributes.len(),
-        resolved.tabular_sections.len()
-    ));
 
     let object_file = cfe_borrow_target_object(ext_dir, type_name, object_name);
     cfe_borrow_merge_resolved_into_object(write_plan, &object_file, &resolved)?;
-    stdout.push_str(&format!(
-        "[INFO]   Enriched object: {}\n",
-        object_file.display()
-    ));
     let mut artifacts = Vec::new();
 
     let mut type_xmls = Vec::<String>::new();
@@ -1441,11 +1522,6 @@ pub(crate) fn cfe_borrow_main_attribute_artifacts(
             type_xmls.push(attr.type_xml.clone());
         }
     }
-    let ref_types = cfe_borrow_collect_reference_types(&type_xmls);
-    stdout.push_str(&format!(
-        "[INFO]   Reference types to borrow: {}\n",
-        ref_types.len()
-    ));
     artifacts.extend(cfe_borrow_ensure_reference_shells(
         cfg_dir,
         ext_dir,
@@ -1453,7 +1529,7 @@ pub(crate) fn cfe_borrow_main_attribute_artifacts(
         &type_xmls,
         format_version,
         ext_text,
-        stdout,
+        log,
     )?);
 
     if let Some(paths) = &form_paths {
@@ -1465,11 +1541,10 @@ pub(crate) fn cfe_borrow_main_attribute_artifacts(
             &paths.deep_paths,
             format_version,
             ext_text,
-            stdout,
+            log,
         )?);
     }
 
-    stdout.push_str("[INFO]   Main attribute borrowing complete\n");
     Ok(artifacts)
 }
 
@@ -1792,7 +1867,7 @@ pub(crate) fn cfe_borrow_ensure_reference_shells(
     type_xmls: &[String],
     format_version: &str,
     ext_text: &mut String,
-    stdout: &mut String,
+    log: &mut CfeBorrowLog,
 ) -> Result<Vec<PathBuf>, String> {
     let mut artifacts = Vec::new();
     let mut seen = HashSet::<String>::new();
@@ -1808,9 +1883,7 @@ pub(crate) fn cfe_borrow_ensure_reference_shells(
             .join(cfe_borrow_type_dir(&type_name).unwrap_or(&type_name))
             .join(format!("{object_name}.xml"));
         if !source_file.exists() {
-            stdout.push_str(&format!(
-                "[WARN]   Source not found: {type_name}.{object_name}\n"
-            ));
+            log.warn(format!("источник не найден: {type_name}.{object_name}"));
             continue;
         }
         let artifact = cfe_borrow_object_shell(
@@ -1821,11 +1894,9 @@ pub(crate) fn cfe_borrow_ensure_reference_shells(
             &object_name,
             format_version,
             ext_text,
-            stdout,
+            log,
         )?;
-        stdout.push_str(&format!(
-            "[INFO]   Auto-borrowed: {type_name}.{object_name}\n"
-        ));
+        log.auto_borrowed(format!("{type_name}.{object_name}"));
         artifacts.push(artifact);
     }
     Ok(artifacts)
@@ -1873,7 +1944,7 @@ pub(crate) fn cfe_borrow_process_deep_paths(
     deep_paths: &[CfeBorrowDeepPath],
     format_version: &str,
     ext_text: &mut String,
-    stdout: &mut String,
+    log: &mut CfeBorrowLog,
 ) -> Result<Vec<PathBuf>, String> {
     let mut artifacts = Vec::new();
     let attrs_by_name = resolved
@@ -1926,11 +1997,9 @@ pub(crate) fn cfe_borrow_process_deep_paths(
                 &target_object,
                 format_version,
                 ext_text,
-                stdout,
+                log,
             )?;
-            stdout.push_str(&format!(
-                "[INFO]   Auto-borrowed for deep path: {target_type}.{target_object}\n"
-            ));
+            log.auto_borrowed(format!("{target_type}.{target_object}"));
             artifacts.push(artifact);
         }
         let mut wanted = HashSet::new();
@@ -1961,7 +2030,7 @@ pub(crate) fn cfe_borrow_process_deep_paths(
                 &sub_type_xmls,
                 format_version,
                 ext_text,
-                stdout,
+                log,
             )?);
         }
     }
@@ -1980,24 +2049,22 @@ pub(crate) fn cfe_borrow_add_to_child_objects(
     ext_text: &mut String,
     type_name: &str,
     object_name: &str,
-    stdout: &mut String,
+    log: &mut CfeBorrowLog,
 ) -> Result<(), String> {
     let mut children = cf_edit_child_objects(ext_text)?;
     if children
         .iter()
         .any(|(child_type, child_name)| child_type == type_name && child_name == object_name)
     {
-        stdout.push_str(&format!(
-            "[WARN] Already in ChildObjects: {type_name}.{object_name}\n"
-        ));
+        log.skipped(
+            format!("{type_name}.{object_name}"),
+            "уже в составе расширения",
+        );
         return Ok(());
     }
     children.push((type_name.to_string(), object_name.to_string()));
     children.sort_by(cf_edit_child_object_cmp);
     *ext_text = cf_edit_replace_child_objects(ext_text, &children)?;
-    stdout.push_str(&format!(
-        "[INFO] Added to ChildObjects: {type_name}.{object_name}\n"
-    ));
     Ok(())
 }
 
@@ -2026,7 +2093,7 @@ pub(crate) fn cfe_borrow_form_shell(
     spec: &CfeBorrowSpec,
     format_version: &str,
     borrow_main_attr: bool,
-    stdout: &mut String,
+    log: &mut CfeBorrowLog,
 ) -> Result<Vec<PathBuf>, String> {
     let type_name = spec.type_name.as_str();
     let object_name = spec.object_name.as_str();
@@ -2064,7 +2131,6 @@ pub(crate) fn cfe_borrow_form_shell(
             form_meta_source.display()
         ));
     }
-    stdout.push_str(&format!("[INFO]   Source form UUID: {source_uuid}\n"));
     let source_form_xml = cfg_dir
         .join(dir_name)
         .join(object_name)
@@ -2087,10 +2153,6 @@ pub(crate) fn cfe_borrow_form_shell(
         &form_meta_target,
         &cfe_borrow_form_metadata_xml(form_name, source_uuid, &form_wrapper_uuid, format_version),
     )?;
-    stdout.push_str(&format!(
-        "[INFO]   Created: {}\n",
-        form_meta_target.display()
-    ));
 
     let form_xml_target = form_meta_dir.join(form_name).join("Ext").join("Form.xml");
     let source_form_content = write_plan.read_dependency_utf8_sig(&source_form_xml)?;
@@ -2101,13 +2163,9 @@ pub(crate) fn cfe_borrow_form_shell(
         object_name,
         borrow_main_attr,
         format_version,
-        stdout,
+        log,
     );
     write_plan.write_utf8_bom(&form_xml_target, &borrowed_form_xml)?;
-    stdout.push_str(&format!(
-        "[INFO]   Created: {}\n",
-        form_xml_target.display()
-    ));
 
     let module_file = form_meta_dir
         .join(form_name)
@@ -2116,15 +2174,15 @@ pub(crate) fn cfe_borrow_form_shell(
         .join("Module.bsl");
     let artifacts = vec![form_meta_target, form_xml_target];
     if write_plan.exists(&module_file) {
-        stdout.push_str(&format!(
-            "[SKIP] Module.bsl already exists: {} - not overwriting\n",
-            module_file.display()
-        ));
+        log.skipped(
+            module_file.display().to_string(),
+            "модуль уже существует и не перезаписан",
+        );
     } else {
-        stdout.push_str(&format!(
-            "[INFO]   Module.bsl omitted because the borrowed form defines no extension module: {}\n",
-            module_file.display()
-        ));
+        log.skipped(
+            module_file.display().to_string(),
+            "перенесённая форма не объявляет модуль расширения",
+        );
     }
     Ok(artifacts)
 }
@@ -2158,7 +2216,7 @@ pub(crate) fn cfe_borrow_form_xml(
     object_name: &str,
     borrow_main_attr: bool,
     _format_version: &str,
-    stdout: &mut String,
+    log: &mut CfeBorrowLog,
 ) -> String {
     let source = source_form_content.trim_start_matches('\u{feff}');
     let version = ACTIVE_FORMAT_PROFILE.export_format.to_string();
@@ -2254,8 +2312,8 @@ pub(crate) fn cfe_borrow_form_xml(
             {
                 borrowed_pictures.insert(picture_name.clone());
             } else {
-                stdout.push_str(&format!(
-                    "[WARN]   CommonPicture.{picture_name} not found in source config — will strip from form\n"
+                log.warn(format!(
+                    "CommonPicture.{picture_name} не найдена в исходной конфигурации — будет вырезана из формы"
                 ));
             }
         }
@@ -2273,8 +2331,8 @@ pub(crate) fn cfe_borrow_form_xml(
                 .join(format!("{style_name}.xml"))
                 .is_file()
             {
-                stdout.push_str(&format!(
-                    "[WARN]   StyleItem.{style_name} not found in source config\n"
+                log.warn(format!(
+                    "StyleItem.{style_name} не найден в исходной конфигурации"
                 ));
             }
         }
@@ -3011,12 +3069,12 @@ pub(crate) fn cfe_borrow_register_form(
     type_name: &str,
     object_name: &str,
     form_name: &str,
-    stdout: &mut String,
+    log: &mut CfeBorrowLog,
 ) -> Result<(), String> {
     let object_file = cfe_borrow_target_object(ext_dir, type_name, object_name);
     if !write_plan.exists(&object_file) {
-        stdout.push_str(&format!(
-            "[WARN] Parent object file not found: {} - form not registered in ChildObjects\n",
+        log.warn(format!(
+            "файл объекта-владельца не найден: {} — форма не зарегистрирована в составе",
             object_file.display()
         ));
         return Ok(());
@@ -3024,9 +3082,10 @@ pub(crate) fn cfe_borrow_register_form(
     let mut text = write_plan.read_utf8_sig(&object_file)?;
     let tag = format!("<Form>{}</Form>", escape_xml(form_name));
     if text.contains(&tag) {
-        stdout.push_str(&format!(
-            "[WARN] Form '{form_name}' already in ChildObjects of {type_name}.{object_name}\n"
-        ));
+        log.skipped(
+            format!("{type_name}.{object_name}.Form.{form_name}"),
+            "форма уже в составе объекта",
+        );
         return Ok(());
     }
     if text.contains("<ChildObjects/>") {
@@ -3052,10 +3111,6 @@ pub(crate) fn cfe_borrow_register_form(
     }
     cfe_borrow_normalize_lxml_config_serialization(&mut text);
     write_plan.write_utf8_bom(&object_file, &text)?;
-    stdout.push_str(&format!(
-        "[INFO]   Registered form in: {}\n",
-        object_file.display()
-    ));
     Ok(())
 }
 
@@ -7582,7 +7637,7 @@ mod tests {
 	<Configuration><Properties><Name>Extension</Name></Properties><ChildObjects/></Configuration>
 </MetaDataObject>"#
                     .to_string();
-            let mut stdout = String::new();
+            let mut log = CfeBorrowLog::default();
 
             cfe_borrow_object_shell(
                 &cfg,
@@ -7592,19 +7647,12 @@ mod tests {
                 "Items",
                 "2.20",
                 &mut extension,
-                &mut stdout,
+                &mut log,
             )
             .unwrap();
             if form_first {
-                cfe_borrow_register_form(
-                    &ext,
-                    &mut plan,
-                    "Catalog",
-                    "Items",
-                    "MainForm",
-                    &mut stdout,
-                )
-                .unwrap();
+                cfe_borrow_register_form(&ext, &mut plan, "Catalog", "Items", "MainForm", &mut log)
+                    .unwrap();
                 cfe_borrow_object_shell(
                     &cfg,
                     &ext,
@@ -7613,19 +7661,12 @@ mod tests {
                     "Items",
                     "2.20",
                     &mut extension,
-                    &mut stdout,
+                    &mut log,
                 )
                 .unwrap();
             } else {
-                cfe_borrow_register_form(
-                    &ext,
-                    &mut plan,
-                    "Catalog",
-                    "Items",
-                    "MainForm",
-                    &mut stdout,
-                )
-                .unwrap();
+                cfe_borrow_register_form(&ext, &mut plan, "Catalog", "Items", "MainForm", &mut log)
+                    .unwrap();
             }
 
             let object = plan.read_utf8_sig(&ext.join("Catalogs/Items.xml")).unwrap();
@@ -7651,7 +7692,7 @@ mod tests {
                 r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" conversionversion="keep" version = '2.20'></Form>"#,
             ),
         ] {
-            let mut stdout = String::new();
+            let mut log = CfeBorrowLog::default();
             let generated = cfe_borrow_form_xml(
                 source,
                 Path::new("."),
@@ -7659,7 +7700,7 @@ mod tests {
                 "Items",
                 false,
                 "2.20",
-                &mut stdout,
+                &mut log,
             );
             let document = Document::parse(&generated).unwrap();
             let root = document.root_element();
@@ -7678,7 +7719,7 @@ mod tests {
     #[test]
     fn cfe_borrow_form_adds_exact_required_namespace_prefixes() {
         let source = r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:cfgExtra="urn:cfg-extra" version="2.20"><Attributes/></Form>"#;
-        let mut stdout = String::new();
+        let mut log = CfeBorrowLog::default();
 
         let generated = cfe_borrow_form_xml(
             source,
@@ -7687,7 +7728,7 @@ mod tests {
             "Items",
             true,
             "2.20",
-            &mut stdout,
+            &mut log,
         );
 
         let document = Document::parse(&generated).expect("borrowed form must remain valid XML");
@@ -7705,7 +7746,7 @@ mod tests {
     #[test]
     fn cfe_borrow_form_rebinds_required_prefixes_with_wrong_source_uris() {
         let source = r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:v8="urn:wrong-v8" xmlns:cfg="urn:wrong-cfg" version="2.20"><Attributes/></Form>"#;
-        let mut stdout = String::new();
+        let mut log = CfeBorrowLog::default();
 
         let generated = cfe_borrow_form_xml(
             source,
@@ -7714,7 +7755,7 @@ mod tests {
             "Items",
             true,
             "2.20",
-            &mut stdout,
+            &mut log,
         );
 
         let document = Document::parse(&generated).expect("borrowed form must remain valid XML");
@@ -8396,7 +8437,8 @@ mod tests {
         );
         args.insert("BorrowMainAttribute".to_string(), json!("Form"));
 
-        let outcome = borrow_cfe(&args, &context);
+        let execution = borrow_cfe_with_data(&args, &context);
+        let outcome = &execution.outcome;
 
         assert!(outcome.ok, "{:?}", outcome.errors);
         assert_eq!(fs::read_to_string(&module_path).unwrap(), existing_module);
@@ -8406,10 +8448,17 @@ mod tests {
                 .contains(existing_form_meta_uuid),
             "existing form metadata uuid must survive re-borrow"
         );
-        let stdout = outcome.stdout.as_deref().unwrap_or_default();
+        let data = execution
+            .data
+            .as_ref()
+            .expect("cfe.borrow answers with data");
         assert!(
-            stdout.contains("[SKIP] Module.bsl already exists"),
-            "{stdout}"
+            data.skipped.iter().any(|item| {
+                item.target == module_path.display().to_string()
+                    && item.reason.contains("не перезаписан")
+            }),
+            "the preserved module must be reported as skipped: {:?}",
+            data.skipped
         );
         let module_artifact = module_path.display().to_string();
         assert!(!outcome.artifacts.contains(&module_artifact));

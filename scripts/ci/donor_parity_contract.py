@@ -343,9 +343,24 @@ def validate_relations(
     if not isinstance(relations, dict):
         return [*errors, "donor relations must be an object"]
 
+    # A tool that answers with typed data (ADR-0023) has no prose left to
+    # compare against the donor script, so its cases carry a retirement reason
+    # instead of a relation. The donor snapshot itself is never edited.
+    retired = registry.get("retired", {})
+    if not isinstance(retired, dict):
+        return [*errors, "donor retired cases must be an object"]
+
     discovered = set(discover_case_ids(snapshot_root))
     recorded = set(relations)
-    for case_id in sorted(discovered - recorded):
+    retired_ids = set(retired)
+    for case_id in sorted(retired_ids & recorded):
+        errors.append(f"case {case_id} is both recorded and retired")
+    for case_id in sorted(retired_ids - discovered):
+        errors.append(f"retired case {case_id} is not in the donor snapshot")
+    for case_id in sorted(retired):
+        if not isinstance(retired[case_id], str) or not retired[case_id].strip():
+            errors.append(f"retired case {case_id} must carry a reason")
+    for case_id in sorted(discovered - recorded - retired_ids):
         errors.append(f"missing relation for {case_id}")
     for case_id in sorted(recorded - discovered):
         errors.append(f"relation for unknown case {case_id}")
