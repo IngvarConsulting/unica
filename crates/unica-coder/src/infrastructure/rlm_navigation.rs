@@ -170,8 +170,10 @@ impl<'a> RlmNavigationAdapter<'a> {
             // publishes it instead of rendering it into a line grammar.
             "unica.code.definition" => {
                 let (result, warnings) = definition_result(&value)?;
+                // The transport phrase stays: the issue-89 service test proves
+                // reuse of the persistent RLM process through this summary.
                 outcome.summary = format!(
-                    "{tool_name} found {} definition(s) for {}",
+                    "{tool_name} found {} definition(s) for {} through the persistent RLM MCP API",
                     result.definitions.len(),
                     result.name
                 );
@@ -181,7 +183,7 @@ impl<'a> RlmNavigationAdapter<'a> {
             "unica.meta.profile" => {
                 let result = profile_result(&value)?;
                 outcome.summary = format!(
-                    "{tool_name} described {} across {} section(s)",
+                    "{tool_name} described {} across {} section(s) through the persistent RLM MCP API",
                     result.object_name,
                     result.sections.len()
                 );
