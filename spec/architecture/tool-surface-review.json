@@ -663,9 +663,9 @@
  },
  "unica.standards.search": {
   "result": {
-   "contract": "prose",
-   "now": "текст в `stdout`",
-   "target": "`data`: попадания со стандартом, идентификатором и фрагментом"
+   "contract": "typed",
+   "now": "`data`: результат удалённого MCP стандартов как есть, без JSON-RPC конверта (ADR-0023)",
+   "target": "достигнут"
   },
   "scenarios": [
    "Найти стандарт 1С по теме перед проектированием API",
@@ -675,9 +675,9 @@
  },
  "unica.standards.explain": {
   "result": {
-   "contract": "prose",
-   "now": "текст в `stdout`",
-   "target": "`data`: стандарт или диагностика с телом страницы и источником"
+   "contract": "typed",
+   "now": "`data`: стандарт или диагностика из удалённого MCP как есть (ADR-0023)",
+   "target": "достигнут"
   },
   "scenarios": [
    "Раскрыть смысл кода диагностики из отчёта проверки",

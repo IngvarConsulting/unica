@@ -2065,7 +2065,7 @@ impl StandardsAdapter {
         }
     }
 
-    pub fn invoke(operation: &str, args: &Map<String, Value>) -> AdapterOutcome {
+    pub fn invoke(operation: &str, args: &Map<String, Value>) -> StandardsOutcome {
         Self::invoke_with_client(operation, args, &UREQ_HTTP_CLIENT)
     }
 
@@ -2073,13 +2073,13 @@ impl StandardsAdapter {
         operation: &str,
         args: &Map<String, Value>,
         http: &dyn HttpClient,
-    ) -> AdapterOutcome {
+    ) -> StandardsOutcome {
         let endpoint = env::var("UNICA_STANDARDS_MCP_URL")
             .unwrap_or_else(|_| "https://ai.v8std.ru/mcp".to_string());
         let request = match Self::request_for(operation, args) {
             Ok(request) => request,
             Err(error) => {
-                return AdapterOutcome {
+                return StandardsOutcome::plain(AdapterOutcome {
                     ok: false,
                     summary: format!("unica.standards.{operation} rejected invalid arguments"),
                     changes: Vec::new(),
@@ -2089,7 +2089,7 @@ impl StandardsAdapter {
                     stdout: None,
                     stderr: None,
                     command: None,
-                }
+                })
             }
         };
 
@@ -2105,7 +2105,7 @@ impl StandardsAdapter {
 
         match http.post_json(&endpoint, &payload) {
             Ok(text) => Self::outcome_from_http_body(operation, &endpoint, request.method, &text),
-            Err(err) => AdapterOutcome {
+            Err(err) => StandardsOutcome::plain(AdapterOutcome {
                 ok: false,
                 summary: format!(
                     "unica.standards.{operation} failed through internal v8std MCP proxy"
@@ -2117,7 +2117,7 @@ impl StandardsAdapter {
                 stdout: None,
                 stderr: None,
                 command: None,
-            },
+            }),
         }
     }
 
@@ -2126,11 +2126,11 @@ impl StandardsAdapter {
         endpoint: &str,
         remote_method: &str,
         text: &str,
-    ) -> AdapterOutcome {
+    ) -> StandardsOutcome {
         let normalized = match normalize_mcp_http_body(text) {
             Ok(text) => text,
             Err(error) => {
-                return AdapterOutcome {
+                return StandardsOutcome::plain(AdapterOutcome {
                     ok: false,
                     summary: format!(
                         "unica.standards.{operation} received invalid v8std MCP response"
@@ -2142,7 +2142,7 @@ impl StandardsAdapter {
                     stdout: None,
                     stderr: None,
                     command: None,
-                }
+                })
             }
         };
 
@@ -2153,7 +2153,7 @@ impl StandardsAdapter {
                     .and_then(|error| error.get("message"))
                     .and_then(Value::as_str)
                     .unwrap_or("remote JSON-RPC error");
-                AdapterOutcome {
+                StandardsOutcome::plain(AdapterOutcome {
                     ok: false,
                     summary: format!(
                         "unica.standards.{operation} failed through internal v8std MCP proxy"
@@ -2165,22 +2165,27 @@ impl StandardsAdapter {
                     stdout: None,
                     stderr: None,
                     command: None,
-                }
+                })
             }
-            Ok(Value::Object(object)) if object.contains_key("result") => AdapterOutcome {
-                ok: true,
-                summary: format!(
-                    "unica.standards.{operation} completed through internal v8std MCP proxy"
-                ),
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: Vec::new(),
-                artifacts: vec![endpoint.to_string(), remote_method.to_string()],
-                stdout: Some(normalized),
-                stderr: None,
-                command: None,
+            // ADR-0023: the JSON-RPC envelope is transport. The tool publishes
+            // the `result` payload it carried, not the envelope as a string.
+            Ok(Value::Object(mut object)) if object.contains_key("result") => StandardsOutcome {
+                outcome: AdapterOutcome {
+                    ok: true,
+                    summary: format!(
+                        "unica.standards.{operation} completed through internal v8std MCP proxy"
+                    ),
+                    changes: Vec::new(),
+                    warnings: Vec::new(),
+                    errors: Vec::new(),
+                    artifacts: vec![endpoint.to_string(), remote_method.to_string()],
+                    stdout: None,
+                    stderr: None,
+                    command: None,
+                },
+                data: object.remove("result"),
             },
-            Ok(_) => AdapterOutcome {
+            Ok(_) => StandardsOutcome::plain(AdapterOutcome {
                 ok: false,
                 summary: format!(
                     "unica.standards.{operation} received non-JSON-RPC v8std MCP response"
@@ -2192,8 +2197,8 @@ impl StandardsAdapter {
                 stdout: None,
                 stderr: None,
                 command: None,
-            },
-            Err(error) => AdapterOutcome {
+            }),
+            Err(error) => StandardsOutcome::plain(AdapterOutcome {
                 ok: false,
                 summary: format!("unica.standards.{operation} received invalid v8std MCP JSON"),
                 changes: Vec::new(),
@@ -2203,7 +2208,23 @@ impl StandardsAdapter {
                 stdout: None,
                 stderr: None,
                 command: None,
-            },
+            }),
+        }
+    }
+}
+
+/// A standards answer plus the `result` payload the remote MCP returned.
+#[derive(Debug)]
+pub struct StandardsOutcome {
+    pub outcome: AdapterOutcome,
+    pub data: Option<Value>,
+}
+
+impl StandardsOutcome {
+    fn plain(outcome: AdapterOutcome) -> Self {
+        Self {
+            outcome,
+            data: None,
         }
     }
 }
@@ -5368,9 +5389,14 @@ source-set:
             r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"bad id"}}"#,
         );
 
-        assert!(!outcome.ok);
-        assert!(outcome.errors.iter().any(|error| error.contains("bad id")));
-        assert!(outcome.stdout.is_none());
+        assert!(!outcome.outcome.ok);
+        assert!(outcome
+            .outcome
+            .errors
+            .iter()
+            .any(|error| error.contains("bad id")));
+        assert!(outcome.outcome.stdout.is_none());
+        assert!(outcome.data.is_none());
     }
 
     #[test]
@@ -5382,11 +5408,11 @@ source-set:
             "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}\n\n",
         );
 
-        assert!(outcome.ok);
-        assert_eq!(
-            outcome.stdout.as_deref(),
-            Some(r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#)
-        );
+        assert!(outcome.outcome.ok);
+        // ADR-0023: the JSON-RPC envelope is transport; the tool publishes the
+        // result it carried.
+        assert!(outcome.outcome.stdout.is_none());
+        assert_eq!(outcome.data.unwrap(), json!({"ok": true}));
     }
 
     #[test]
@@ -5398,8 +5424,9 @@ source-set:
             r#"{"not":"json-rpc"}"#,
         );
 
-        assert!(!outcome.ok);
+        assert!(!outcome.outcome.ok);
         assert!(outcome
+            .outcome
             .errors
             .iter()
             .any(|error| error.contains("missing JSON-RPC")));
@@ -5417,7 +5444,8 @@ source-set:
 
         let outcome = StandardsAdapter::invoke_with_client("search", &args, &client);
 
-        assert!(outcome.ok);
+        assert!(outcome.outcome.ok);
+        assert_eq!(outcome.data.unwrap(), json!({"content": []}));
         let payloads = client.payloads.borrow();
         assert_eq!(payloads.len(), 1);
         assert_eq!(payloads[0]["method"], "tools/call");

@@ -7,15 +7,15 @@
 ## Итог
 
 - Инструментов: **71**
-- Отвечают типизированным `data`: **17**
+- Отвечают типизированным `data`: **19**
 - Типизированы частично: часть результата всё ещё текст: **3**
 - Отвечают снимком задания в `job`: **6**
-- Отвечают прозой в `stdout`: **45**
+- Отвечают прозой в `stdout`: **43**
 
 - В границах типизации: **43**
 - Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`): **16**
 - Вне границ: семейство runtime и build изучается отдельно: **12**
-- Осталось перевести на типизированный `data` в границах работы: **26**
+- Осталось перевести на типизированный `data` в границах работы: **24**
 - Публикуют больше 20 аргументов из общего списка: **38**
 
 ## build — сборка и запуск платформы
@@ -1369,9 +1369,9 @@ Explain 1C diagnostics or standards through the internal standards adapter.
 | `snippet` | string | нет | Literal BSL source text for standards.explain to explain against standards, sent with language and limit; codes outranks it when both are passed, and standards.search ignores it. |
 | `types` | array | нет | Array of strings forwarded unchanged as the types parameter of the standards search; honoured only by standards.search and by standards.explain given query alone, with no allowed values declared. |
 
-**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
+**Результат сейчас:** `data`: стандарт или диагностика из удалённого MCP как есть (ADR-0023) (отвечают типизированным `data`)
 
-**Целевой контракт:** `data`: стандарт или диагностика с телом страницы и источником
+**Целевой контракт:** достигнут
 
 **Сценарии:**
 
@@ -1399,9 +1399,9 @@ Search 1C standards through the internal standards adapter.
 | `snippet` | string | нет | Literal BSL source text for standards.explain to explain against standards, sent with language and limit; codes outranks it when both are passed, and standards.search ignores it. |
 | `types` | array | нет | Array of strings forwarded unchanged as the types parameter of the standards search; honoured only by standards.search and by standards.explain given query alone, with no allowed values declared. |
 
-**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
+**Результат сейчас:** `data`: результат удалённого MCP стандартов как есть, без JSON-RPC конверта (ADR-0023) (отвечают типизированным `data`)
 
-**Целевой контракт:** `data`: попадания со стандартом, идентификатором и фрагментом
+**Целевой контракт:** достигнут
 
 **Сценарии:**
 

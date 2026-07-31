@@ -329,9 +329,13 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     )
                     .map(HandlerOutcome::plain)
             }
-            ToolHandler::StandardsAdapter { operation } => Ok(HandlerOutcome::plain(
-                StandardsAdapter::invoke(operation, args),
-            )),
+            ToolHandler::StandardsAdapter { operation } => {
+                let standards = StandardsAdapter::invoke(operation, args);
+                Ok(match standards.data {
+                    Some(data) => HandlerOutcome::with_data(standards.outcome, data),
+                    None => HandlerOutcome::plain(standards.outcome),
+                })
+            }
         }
     }
 
