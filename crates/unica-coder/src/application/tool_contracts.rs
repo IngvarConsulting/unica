@@ -29,6 +29,19 @@ const ROLE_INFO_ARGS: &[&str] = &["RightsPath", "rightsPath", "Path", "path"];
 /// `subsystem.info` answers with typed data: its `Mode` picked which slice of
 /// one subsystem to print, and the tree projection belongs to a separate ask.
 const SUBSYSTEM_INFO_ARGS: &[&str] = &["SubsystemPath", "subsystemPath", "Path", "path"];
+/// `mxl.info` answers with typed data. `WithText` stays: it selects cell
+/// content, the way `includeMethods` selects methods in ADR-0020. `Format`,
+/// `MaxParams`, `Limit` and `Offset` only shaped a printed report.
+const MXL_INFO_ARGS: &[&str] = &[
+    "TemplatePath",
+    "templatePath",
+    "Path",
+    "path",
+    "SrcDir",
+    "srcDir",
+    "WithText",
+    "withText",
+];
 /// `meta.info` publishes only what it reads. The shared `NATIVE_XML_DSL_ARGS`
 /// list would also accept arguments no `meta.info` code path consults, and an
 /// accepted argument that changes nothing is a promise the tool cannot keep.
@@ -1688,6 +1701,7 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
                 "cf-info" => names.extend(CF_INFO_ARGS),
                 "role-info" => names.extend(ROLE_INFO_ARGS),
                 "subsystem-info" => names.extend(SUBSYSTEM_INFO_ARGS),
+                "mxl-info" => names.extend(MXL_INFO_ARGS),
                 "meta-info" => names.extend(META_INFO_ARGS),
                 _ => names.extend(native_args_for(operation)),
             }

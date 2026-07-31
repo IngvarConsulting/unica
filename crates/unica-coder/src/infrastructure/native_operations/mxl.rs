@@ -166,11 +166,67 @@ impl MxlValidationReporter {
     }
 }
 
+/// Typed answer of `unica.mxl.info` (ADR-0023).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MxlInfoData {
+    pub(crate) name: String,
+    pub(crate) support: SupportData,
+    pub(crate) rows: i64,
+    pub(crate) columns: i64,
+    pub(crate) column_sets: Vec<MxlColumnSetData>,
+    pub(crate) areas: Vec<MxlAreaData>,
+    pub(crate) outside: MxlOutsideData,
+    pub(crate) merge_count: usize,
+    pub(crate) drawing_count: usize,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MxlColumnSetData {
+    pub(crate) id: String,
+    pub(crate) size: i64,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MxlAreaData {
+    pub(crate) name: String,
+    /// `Rows`, `Columns`, `Rectangle` or `Drawing`.
+    pub(crate) kind: String,
+    pub(crate) begin_row: i64,
+    pub(crate) end_row: i64,
+    pub(crate) begin_col: i64,
+    pub(crate) end_col: i64,
+    pub(crate) columns_id: Option<String>,
+    pub(crate) drawing_id: Option<String>,
+    pub(crate) params: Vec<String>,
+    pub(crate) details: Vec<String>,
+    /// `null` unless `WithText` asked for cell content, which stays a genuine
+    /// content selector rather than a print-size lever.
+    pub(crate) texts: Option<Vec<String>>,
+    pub(crate) templates: Option<Vec<String>>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MxlOutsideData {
+    pub(crate) params: Vec<String>,
+    pub(crate) details: Vec<String>,
+    pub(crate) texts: Option<Vec<String>>,
+    pub(crate) templates: Option<Vec<String>>,
+}
+
+pub(crate) struct MxlInfoExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<MxlInfoData>,
+}
+
 pub(crate) fn analyze_mxl_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
-    let result = (|| -> Result<(String, PathBuf), String> {
+) -> MxlInfoExecution {
+    let result = (|| -> Result<(MxlInfoData, PathBuf), String> {
         let template_path = resolve_mxl_info_path(args, context)?;
         if !template_path.is_file() {
             return Err(format!("File not found: {}", template_path.display()));
@@ -182,7 +238,6 @@ pub(crate) fn analyze_mxl_info(
         let root = doc.root_element();
         require_mxl_document_root(root)?;
         let include_text = bool_arg(args, &["withText", "WithText"]);
-        let max_params = int_arg(args, &["maxParams", "MaxParams"]).unwrap_or(10) as usize;
 
         let mut column_sets = Vec::<(String, i64)>::new();
         let mut default_col_count = 0i64;
@@ -318,261 +373,97 @@ pub(crate) fn analyze_mxl_info(
             .unwrap_or("")
             .to_string();
 
-        if string_arg(args, &["format", "Format"]).unwrap_or("text") == "json" {
-            let mut areas = Vec::<Value>::new();
-            for item in &area_data {
-                let mut area = json!({
-                    "name": item.area.name,
-                    "type": item.area.area_type,
-                    "beginRow": item.area.begin_row,
-                    "endRow": item.area.end_row,
-                    "beginCol": item.area.begin_col,
-                    "endCol": item.area.end_col,
-                    "params": item.params,
-                });
-                if let Some(columns_id) = &item.area.columns_id {
-                    area["columnsID"] = json!(columns_id);
-                }
-                if include_text {
-                    area["texts"] = json!(item.texts);
-                    area["templates"] = json!(item.templates);
-                }
-                areas.push(area);
-            }
-            for (name, drawing_id) in &named_drawings {
-                areas.push(json!({
-                    "name": name,
-                    "type": "Drawing",
-                    "drawingID": drawing_id,
-                }));
-            }
-            let mut output = json!({
-                "name": template_name,
-                "rows": doc_height,
-                "columns": default_col_count,
-                "columnSets": column_sets.iter().map(|(id, size)| json!({"id": id, "size": size})).collect::<Vec<_>>(),
-                "areas": areas,
-                "outsideParams": outside_params,
-                "mergeCount": merge_count,
-                "drawingCount": drawing_count,
-            });
-            if include_text {
-                output["outsideTexts"] = json!(outside_texts);
-                output["outsideTemplates"] = json!(outside_templates);
-            }
-            let stdout = format!(
-                "{}\n",
-                serde_json::to_string_pretty(&output).unwrap_or_else(|_| output.to_string())
-            );
-            return Ok((stdout, template_path));
-        }
-
-        let mut lines = Vec::<String>::new();
-        lines.push(format!("=== {template_name} ==="));
-        lines.push(format!(
-            "Поддержка: {}",
-            support_status_for_path(&template_path)
-        ));
-        lines.push(format!(
-            "  Rows: {doc_height}, Columns: {default_col_count}"
-        ));
-        if column_sets.is_empty() {
-            lines.push("  Column sets: 1 (default only)".to_string());
-        } else {
-            lines.push(format!(
-                "  Column sets: {} (default={default_col_count} cols + {} additional)",
-                column_sets.len() + 1,
-                column_sets.len()
-            ));
-            for (id, size) in &column_sets {
-                let prefix = id.chars().take(8).collect::<String>();
-                lines.push(format!("    {prefix}...: {size} cols"));
-            }
-        }
-        lines.push(String::new());
-        lines.push("--- Named areas ---".to_string());
-        for item in &area_data {
-            let range = match item.area.area_type.as_str() {
-                "Rows" => format!("rows {}-{}", item.area.begin_row, item.area.end_row),
-                "Columns" => format!("cols {}-{}", item.area.begin_col, item.area.end_col),
-                "Rectangle" => format!(
-                    "rows {}-{}, cols {}-{}",
-                    item.area.begin_row, item.area.end_row, item.area.begin_col, item.area.end_col
-                ),
-                _ => String::new(),
-            };
-            let cols_info = item
-                .area
-                .columns_id
-                .as_ref()
-                .map(|columns_id| {
-                    let size = column_sets
-                        .iter()
-                        .find(|(id, _)| id == columns_id)
-                        .map(|(_, size)| format!(" {size}cols"))
-                        .unwrap_or_default();
-                    format!(" [colset{size}]")
-                })
-                .unwrap_or_default();
-            lines.push(format!(
-                "  {:<25} {:<12} {range}  ({} params){cols_info}",
-                item.area.name,
-                item.area.area_type,
-                item.params.len()
-            ));
-        }
-        for (name, drawing_id) in &named_drawings {
-            lines.push(format!(
-                "  {:<25} Drawing      drawingID={drawing_id}",
-                name
-            ));
-        }
-
-        let row_area_names = area_data
+        // Both branches described the same template: one as prose, the other as
+        // a JSON string inside the JSON envelope. Data replaces both.
+        let areas = area_data
             .iter()
-            .filter(|item| item.area.area_type == "Rows")
-            .map(|item| item.area.name.clone())
+            .map(|item| MxlAreaData {
+                name: item.area.name.clone(),
+                kind: item.area.area_type.clone(),
+                begin_row: item.area.begin_row,
+                end_row: item.area.end_row,
+                begin_col: item.area.begin_col,
+                end_col: item.area.end_col,
+                columns_id: item.area.columns_id.clone(),
+                drawing_id: None,
+                params: item.params.clone(),
+                details: item.details.clone(),
+                texts: include_text.then(|| item.texts.clone()),
+                templates: include_text.then(|| item.templates.clone()),
+            })
+            .chain(named_drawings.iter().map(|(name, drawing_id)| MxlAreaData {
+                name: name.clone(),
+                kind: "Drawing".to_string(),
+                begin_row: 0,
+                end_row: 0,
+                begin_col: 0,
+                end_col: 0,
+                columns_id: None,
+                drawing_id: Some(drawing_id.clone()),
+                params: Vec::new(),
+                details: Vec::new(),
+                texts: include_text.then(Vec::new),
+                templates: include_text.then(Vec::new),
+            }))
             .collect::<Vec<_>>();
-        let col_area_names = area_data
-            .iter()
-            .filter(|item| item.area.area_type == "Columns")
-            .map(|item| item.area.name.clone())
-            .collect::<Vec<_>>();
-        if !row_area_names.is_empty() && !col_area_names.is_empty() {
-            lines.push(String::new());
-            lines.push("--- Intersections (use with GetArea) ---".to_string());
-            for row in &row_area_names {
-                for col in &col_area_names {
-                    lines.push(format!("  {row}|{col}"));
-                }
-            }
-        }
 
-        if area_data.iter().any(|item| !item.params.is_empty()) || !outside_params.is_empty() {
-            lines.push(String::new());
-            lines.push("--- Parameters by area ---".to_string());
-            for item in &area_data {
-                if !item.params.is_empty() {
-                    lines.push(format!(
-                        "  {}: {}",
-                        item.area.name,
-                        truncate_mxl_list(&item.params, max_params)
-                    ));
-                    if !item.details.is_empty() {
-                        lines.push(format!(
-                            "    detail: {}",
-                            truncate_mxl_list(&item.details, max_params)
-                        ));
-                    }
-                }
-            }
-            if !outside_params.is_empty() {
-                lines.push(format!(
-                    "  (outside areas): {}",
-                    truncate_mxl_list(&outside_params, max_params)
-                ));
-                if !outside_details.is_empty() {
-                    lines.push(format!(
-                        "    detail: {}",
-                        truncate_mxl_list(&outside_details, max_params)
-                    ));
-                }
-            }
-        }
-
-        if include_text {
-            let has_text = area_data
+        let data = MxlInfoData {
+            name: template_name,
+            support: support_state_data(&template_path, false),
+            rows: doc_height,
+            columns: default_col_count,
+            column_sets: column_sets
                 .iter()
-                .any(|item| !item.texts.is_empty() || !item.templates.is_empty())
-                || !outside_texts.is_empty()
-                || !outside_templates.is_empty();
-            if has_text {
-                lines.push(String::new());
-                lines.push("--- Text content ---".to_string());
-                for item in &area_data {
-                    if !item.texts.is_empty() || !item.templates.is_empty() {
-                        lines.push(format!("  {}:", item.area.name));
-                        if !item.texts.is_empty() {
-                            let quoted = item
-                                .texts
-                                .iter()
-                                .map(|value| format!("\"{value}\""))
-                                .collect::<Vec<_>>();
-                            lines.push(format!(
-                                "    Text: {}",
-                                truncate_mxl_list(&quoted, max_params)
-                            ));
-                        }
-                        if !item.templates.is_empty() {
-                            let quoted = item
-                                .templates
-                                .iter()
-                                .map(|value| format!("\"{value}\""))
-                                .collect::<Vec<_>>();
-                            lines.push(format!(
-                                "    Templates: {}",
-                                truncate_mxl_list(&quoted, max_params)
-                            ));
-                        }
-                    }
-                }
-                if !outside_texts.is_empty() || !outside_templates.is_empty() {
-                    lines.push("  (outside areas):".to_string());
-                    if !outside_texts.is_empty() {
-                        let quoted = outside_texts
-                            .iter()
-                            .map(|value| format!("\"{value}\""))
-                            .collect::<Vec<_>>();
-                        lines.push(format!(
-                            "    Text: {}",
-                            truncate_mxl_list(&quoted, max_params)
-                        ));
-                    }
-                    if !outside_templates.is_empty() {
-                        let quoted = outside_templates
-                            .iter()
-                            .map(|value| format!("\"{value}\""))
-                            .collect::<Vec<_>>();
-                        lines.push(format!(
-                            "    Templates: {}",
-                            truncate_mxl_list(&quoted, max_params)
-                        ));
-                    }
-                }
-            }
-        }
-
-        lines.push(String::new());
-        lines.push("--- Stats ---".to_string());
-        lines.push(format!("  Merges: {merge_count}"));
-        lines.push(format!("  Drawings: {drawing_count}"));
-
-        let stdout = paginate_mxl_info(lines, args);
-        Ok((stdout, template_path))
+                .map(|(id, size)| MxlColumnSetData {
+                    id: id.clone(),
+                    size: *size,
+                })
+                .collect(),
+            areas,
+            outside: MxlOutsideData {
+                params: outside_params,
+                details: outside_details,
+                texts: include_text.then_some(outside_texts),
+                templates: include_text.then_some(outside_templates),
+            },
+            merge_count,
+            drawing_count,
+        };
+        Ok((data, template_path))
     })();
 
     match result {
-        Ok((stdout, artifact)) => AdapterOutcome {
-            ok: true,
-            summary: "unica.mxl.info completed with native spreadsheet analyzer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: Vec::new(),
-            artifacts: vec![artifact.display().to_string()],
-            stdout: Some(stdout),
-            stderr: Some(String::new()),
-            command: None,
+        Ok((data, artifact)) => MxlInfoExecution {
+            outcome: AdapterOutcome {
+                ok: true,
+                summary: format!(
+                    "unica.mxl.info described {} with {} named area(s)",
+                    data.name,
+                    data.areas.len()
+                ),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: Vec::new(),
+                artifacts: vec![artifact.display().to_string()],
+                stdout: None,
+                stderr: Some(String::new()),
+                command: None,
+            },
+            data: Some(data),
         },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.mxl.info failed in native spreadsheet analyzer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-            command: None,
+        Err(error) => MxlInfoExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.mxl.info failed in native spreadsheet analyzer".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.clone()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{error}\n")),
+                command: None,
+            },
+            data: None,
         },
     }
 }
@@ -3233,7 +3124,8 @@ pub(crate) fn invoke_read(
     context: &WorkspaceContext,
 ) -> Option<Result<AdapterOutcome, String>> {
     match operation {
-        "mxl-info" => Some(Ok(analyze_mxl_info(args, context))),
+        // Typed answer; the data reaches the envelope through typed_result.rs.
+        "mxl-info" => Some(Ok(analyze_mxl_info(args, context).outcome)),
         "mxl-validate" => Some(Ok(validate_mxl(args, context))),
         "mxl-decompile" => Some(Ok(decompile_mxl(args, context))),
         _ => None,
@@ -3350,12 +3242,11 @@ mod tests {
         let context = test_context("info-platform-empty");
         let fixture = platform_mxl_fixture();
         let mut args = path_args(&fixture);
-        args.insert("format".to_string(), json!("json"));
+        let execution = analyze_mxl_info(&args, &context);
 
-        let outcome = analyze_mxl_info(&args, &context);
-
-        assert!(outcome.ok, "{outcome:?}");
-        let report: Value = serde_json::from_str(outcome.stdout.as_deref().unwrap()).unwrap();
+        assert!(execution.outcome.ok, "{:?}", execution.outcome);
+        // ADR-0023: the template description is data, not a JSON string in stdout.
+        let report = serde_json::to_value(execution.data.unwrap()).unwrap();
         assert_eq!(report["rows"], 0);
         let _ = fs::remove_dir_all(&context.cwd);
     }
@@ -3368,12 +3259,11 @@ mod tests {
         );
         let (context, template_path) = write_test_mxl("info-first-empty-row", &xml);
         let mut args = path_args(&template_path);
-        args.insert("format".to_string(), json!("json"));
+        let execution = analyze_mxl_info(&args, &context);
 
-        let outcome = analyze_mxl_info(&args, &context);
-
-        assert!(outcome.ok, "{outcome:?}");
-        let report: Value = serde_json::from_str(outcome.stdout.as_deref().unwrap()).unwrap();
+        assert!(execution.outcome.ok, "{:?}", execution.outcome);
+        // ADR-0023: the template description is data, not a JSON string in stdout.
+        let report = serde_json::to_value(execution.data.unwrap()).unwrap();
         assert_eq!(report["rows"], 1);
         let _ = fs::remove_dir_all(&context.cwd);
     }
@@ -3386,12 +3276,11 @@ mod tests {
         );
         let (context, template_path) = write_test_mxl("info-height-zero-lookalike", &xml);
         let mut args = path_args(&template_path);
-        args.insert("format".to_string(), json!("json"));
+        let execution = analyze_mxl_info(&args, &context);
 
-        let outcome = analyze_mxl_info(&args, &context);
-
-        assert!(outcome.ok, "{outcome:?}");
-        let report: Value = serde_json::from_str(outcome.stdout.as_deref().unwrap()).unwrap();
+        assert!(execution.outcome.ok, "{:?}", execution.outcome);
+        // ADR-0023: the template description is data, not a JSON string in stdout.
+        let report = serde_json::to_value(execution.data.unwrap()).unwrap();
         assert_eq!(report["rows"], 1);
         let _ = fs::remove_dir_all(&context.cwd);
     }
@@ -3401,9 +3290,11 @@ mod tests {
         let (context, template_path) =
             write_test_mxl("info-namespace", "<document xmlns=\"urn:not-mxl\"/>");
 
-        let outcome = analyze_mxl_info(&path_args(&template_path), &context);
+        let execution = analyze_mxl_info(&path_args(&template_path), &context);
 
+        let outcome = execution.outcome;
         assert!(!outcome.ok, "{outcome:?}");
+        assert!(execution.data.is_none());
         assert!(outcome.artifacts.is_empty());
         assert!(outcome
             .errors

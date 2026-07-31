@@ -3198,7 +3198,6 @@ mod tests {
             "unica.dcs.validate",
             "unica.mxl.compile",
             "unica.mxl.decompile",
-            "unica.mxl.info",
             "unica.mxl.validate",
             "unica.role.compile",
             "unica.role.validate",
@@ -3207,8 +3206,12 @@ mod tests {
         // A tool that answers with typed data has no prose left for the parity
         // stand to compare, so it is covered by its own crate tests instead
         // (ADR-0023).
-        const TYPED_RESULT_TOOLS: &[&str] =
-            &["unica.cf.info", "unica.role.info", "unica.subsystem.info"];
+        const TYPED_RESULT_TOOLS: &[&str] = &[
+            "unica.cf.info",
+            "unica.role.info",
+            "unica.subsystem.info",
+            "unica.mxl.info",
+        ];
 
         for tool in tools() {
             if !tool.name.starts_with("unica.cf.")

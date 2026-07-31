@@ -3362,28 +3362,6 @@ SUCCESS_SCENARIOS = [
         expect_ok=True,
     ),
     ParityScenario(
-        name="mxl-info-text",
-        tool="unica.mxl.info",
-        skill="mxl-info",
-        script="mxl-info.py",
-        arguments={
-            "TemplatePath": "src/Reports/ParityReport/Templates/Main/Ext/Template.xml",
-            "WithText": True,
-        },
-        setup_steps=(
-            SetupStep(
-                skill="mxl-compile",
-                script="mxl-compile.py",
-                arguments={
-                    "JsonPath": "fixtures/mxl-simple.json",
-                    "OutputPath": "src/Reports/ParityReport/Templates/Main/Ext/Template.xml",
-                },
-            ),
-        ),
-        fixtures=(FileFixture("mxl-simple.json", "fixtures/mxl-simple.json"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
         name="mxl-validate-detailed",
         tool="unica.mxl.validate",
         skill="mxl-validate",
@@ -3403,24 +3381,6 @@ SUCCESS_SCENARIOS = [
             ),
         ),
         fixtures=(FileFixture("mxl-simple.json", "fixtures/mxl-simple.json"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-mxl-info-real-template",
-        tool="unica.mxl.info",
-        skill="mxl-info",
-        script="mxl-info.py",
-        arguments={
-            "TemplatePath": "src/Reports/ParityReport/Templates/Receipt/Ext/Template.xml",
-            "WithText": True,
-            "Limit": 200,
-        },
-        fixtures=(
-            FileFixture(
-                BSP_MXL_RECEIPT_FIXTURE,
-                "src/Reports/ParityReport/Templates/Receipt/Ext/Template.xml",
-            ),
-        ),
         expect_ok=True,
     ),
     ParityScenario(
@@ -3957,14 +3917,6 @@ MISSING_INPUT_SCENARIOS = [
         False,
     ),
     ParityScenario(
-        "mxl-info-missing-template",
-        "unica.mxl.info",
-        "mxl-info",
-        "mxl-info.py",
-        {"TemplatePath": "missing/Template.xml", "Format": "text"},
-        False,
-    ),
-    ParityScenario(
         "mxl-validate-missing-template",
         "unica.mxl.validate",
         "mxl-validate",
@@ -4020,7 +3972,6 @@ NATIVE_PARITY_TOOLS = {
     "unica.dcs.validate",
     "unica.mxl.compile",
     "unica.mxl.decompile",
-    "unica.mxl.info",
     "unica.mxl.validate",
     "unica.role.compile",
     "unica.role.validate",
@@ -4043,6 +3994,7 @@ TYPED_RESULT_TOOLS = {
     "unica.cf.info",
     "unica.role.info",
     "unica.subsystem.info",
+    "unica.mxl.info",
 }
 
 EXPECTED_TOOLS = {
@@ -4079,7 +4031,6 @@ EXPECTED_TOOLS = {
     "unica.dcs.validate",
     "unica.mxl.compile",
     "unica.mxl.decompile",
-    "unica.mxl.info",
     "unica.mxl.validate",
     "unica.role.compile",
     "unica.role.validate",
@@ -4096,7 +4047,6 @@ BSP_PARITY_REQUIRED_TOOLS = {
     "unica.dcs.info",
     "unica.dcs.validate",
     "unica.dcs.edit",
-    "unica.mxl.info",
     "unica.mxl.validate",
     "unica.mxl.decompile",
     "unica.mxl.compile",

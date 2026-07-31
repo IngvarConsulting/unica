@@ -7,16 +7,16 @@
 ## Итог
 
 - Инструментов: **71**
-- Отвечают типизированным `data`: **12**
+- Отвечают типизированным `data`: **13**
 - Типизированы частично: часть результата всё ещё текст: **4**
 - Отвечают снимком задания в `job`: **6**
-- Отвечают прозой в `stdout`: **49**
+- Отвечают прозой в `stdout`: **48**
 
 - В границах типизации: **43**
 - Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`): **16**
 - Вне границ: семейство runtime и build изучается отдельно: **12**
-- Осталось перевести на типизированный `data` в границах работы: **31**
-- Публикуют больше 20 аргументов из общего списка: **39**
+- Осталось перевести на типизированный `data` в границах работы: **30**
+- Публикуют больше 20 аргументов из общего списка: **38**
 
 ## build — сборка и запуск платформы
 
@@ -955,17 +955,23 @@ Inspect spreadsheet Template.xml.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
+| `SrcDir` | string | нет | Directory holding `<objectName>.xml`, default `src`; for `unica.form.remove` and `unica.template.add`/`remove` point it at the type folder such as `src/Reports`, and `unica.mxl.info`/`help.add` use it too |
 | `TemplatePath` | string | да | Path to a `Template.xml`, or its directory which auto-resolves to `Ext/Template.xml`, for `unica.dcs.edit`/`info`/`validate` and `unica.mxl.info`/`validate`/`decompile`, relative to `cwd`; `unica.dcs.compile` writes through `outputPath` and ignores this argument. |
+| `WithText` | boolean | нет | `unica.mxl.info` only: boolean including static cell text and template strings with `[Parameter]` substitutions in the report |
+| `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
+| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
+| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
+| `withText` | boolean | нет | `unica.mxl.info` only: boolean including static cell text and template strings with `[Parameter]` substitutions in the report |
 
-Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+**Результат сейчас:** `data`: области с границами и параметрами, наборы колонок, содержимое вне областей и счётчики (ADR-0023) (отвечают типизированным `data`)
 
-**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
-
-**Целевой контракт:** `data`: области, параметры и наборы колонок макета
+**Целевой контракт:** достигнут
 
 **Сценарии:**
 
-- Узнать заполняемые параметры печатной формы
+- Узнать заполняемые параметры печатной формы перед написанием печати
+- Построить пересечения строчных и колоночных областей для `ПолучитьОбласть`
+- Достать текст ячеек макета вместе с параметрами через `WithText`
 
 ### `unica.mxl.validate`
 

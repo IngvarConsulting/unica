@@ -359,7 +359,7 @@ SCENARIO_PRESERVING_MIN_MCP_CALLS = {
     "dcs-compile": 5,
     "dcs-info": 12,
     "dcs-validate": 2,
-    "mxl-info": 6,
+    "mxl-info": 3,
     "mxl-validate": 2,
     "role-info": 2,
     "dcs-edit": 4,
@@ -530,12 +530,9 @@ SCENARIO_PRESERVING_TOKENS = {
         '"Mode": "trace"',
     ],
     "mxl-info": [
-        '"ProcessorName": "<Имя>"',
-        '"TemplateName": "<Макет>"',
         '"WithText": true',
-        '"Format": "json"',
-        '"MaxParams": 20',
-        '"Offset": 150',
+        "`columnSets`",
+        "`outside`",
     ],
     "role-info": ["`data.denied`", "`restrictedObjects`"],
 }
@@ -548,6 +545,7 @@ SCENARIO_RETIRED_TOKENS = {
     "cf-info": ['"Mode"', '"Section"', '"Limit"', '"Offset"'],
     "role-info": ['"ShowDenied"', '"Limit"', '"Offset"'],
     "subsystem-info": ['"Mode"', '"Name"', '"Limit"', '"Offset"'],
+    "mxl-info": ['"Format"', '"MaxParams"', '"Limit"', '"Offset"'],
     # A published example that still selects by path shows a call the server
     # now rejects with `legacy_target_removed`.
     "meta-info": ['"ObjectPath"', '"objectPath"', '"Detailed"', '"detailed"'],
