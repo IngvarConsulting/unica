@@ -6,7 +6,9 @@ use crate::application::source_navigation::{
     SourceResolveRequest, SourceResolveResult,
 };
 use crate::application::source_resources::{SourceReadRequest, SourceResourcesRequest};
-use crate::application::{project_map, project_status, AdapterOutcome, ToolHandler, ToolSpec};
+use crate::application::{
+    project_map, project_status, AdapterOutcome, ToolHandler, ToolSpec, TypedReadOutcome,
+};
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::{
@@ -235,9 +237,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                         )));
                     }
                 };
-                Ok(HandlerOutcome::plain(project_status(
-                    context, source_map, warning,
-                )))
+                Ok(typed_read(project_status(context, source_map, warning)))
             }
             ToolHandler::ProjectMap => {
                 let source_map =
@@ -259,7 +259,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                         )));
                     }
                 };
-                Ok(HandlerOutcome::plain(project_map(source_map, warning)))
+                Ok(typed_read(project_map(source_map, warning)))
             }
             ToolHandler::BuildRuntime { command, .. } => {
                 CliAdapter::new("v8-runner", command, "build/runtime")
@@ -670,5 +670,14 @@ mod tests {
             );
         }
         let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+/// Publishes a typed read through the envelope: `data` when the handler proved
+/// a payload, plain outcome when it refused.
+fn typed_read(read: TypedReadOutcome) -> HandlerOutcome {
+    match read.data {
+        Some(data) => HandlerOutcome::with_data(read.outcome, data),
+        None => HandlerOutcome::plain(read.outcome),
     }
 }

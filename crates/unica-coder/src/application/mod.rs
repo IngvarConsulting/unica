@@ -1187,11 +1187,28 @@ fn runtime_event(args: &Map<String, Value>) -> Option<DomainEventKind> {
         .and_then(runtime_event_kind)
 }
 
+/// A read whose result is data: ADR-0023 keeps the typed payload out of
+/// `stdout`, so the caller reads fields instead of parsing a rendered report.
+pub(crate) struct TypedReadOutcome {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<Value>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectStatusData {
+    workspace_root: String,
+    cache_root: String,
+    /// `null` when discovery failed: the caller must not read an empty list as
+    /// a workspace that has no source sets.
+    source_sets: Option<Vec<crate::domain::project_sources::ProjectSourceSet>>,
+}
+
 pub(crate) fn project_status(
     context: &WorkspaceContext,
     source_map: Result<crate::domain::project_sources::ProjectSourceMap, String>,
     tracked_config_dump_info_warning: Option<String>,
-) -> AdapterOutcome {
+) -> TypedReadOutcome {
     let mut outcome = AdapterOutcome::ok(format!(
         "workspace root: {}; cache root: {}",
         context.workspace_root.display(),
@@ -1203,29 +1220,39 @@ pub(crate) fn project_status(
     outcome
         .artifacts
         .push(context.cache_root.display().to_string());
-    match source_map {
+    let source_sets = match source_map {
         Ok(source_map) => {
             outcome
                 .summary
                 .push_str(&format!("; source sets: {}", source_map.source_sets.len()));
-            if !source_map.source_sets.is_empty() {
-                outcome.stdout = Some(source_set_summary(&source_map));
-            }
+            Some(source_map.source_sets)
         }
-        Err(error) => outcome
-            .warnings
-            .push(format!("source-set discovery failed: {error}")),
-    }
+        Err(error) => {
+            outcome
+                .warnings
+                .push(format!("source-set discovery failed: {error}"));
+            None
+        }
+    };
     if let Some(warning) = tracked_config_dump_info_warning {
         outcome.warnings.push(warning);
     }
-    outcome
+    let data = serde_json::to_value(ProjectStatusData {
+        workspace_root: context.workspace_root.display().to_string(),
+        cache_root: context.cache_root.display().to_string(),
+        source_sets,
+    })
+    .expect("project status data serializes");
+    TypedReadOutcome {
+        outcome,
+        data: Some(data),
+    }
 }
 
 pub(crate) fn project_map(
     source_map: Result<crate::domain::project_sources::ProjectSourceMap, String>,
     tracked_config_dump_info_warning: Option<String>,
-) -> AdapterOutcome {
+) -> TypedReadOutcome {
     match source_map {
         Ok(source_map) => {
             let mut outcome = AdapterOutcome::ok(format!(
@@ -1238,36 +1265,30 @@ pub(crate) fn project_map(
             if let Some(warning) = tracked_config_dump_info_warning {
                 outcome.warnings.push(warning);
             }
-            outcome.stdout =
-                Some(serde_json::to_string_pretty(&source_map).expect("source map serializes"));
-            outcome
+            // The map used to be serialized into `stdout`, which put a JSON
+            // string inside the JSON envelope -- exactly the shape ADR-0020
+            // rejected.
+            let data = serde_json::to_value(&source_map).expect("source map serializes");
+            TypedReadOutcome {
+                outcome,
+                data: Some(data),
+            }
         }
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "project map discovery failed".to_string(),
-            changes: Vec::new(),
-            warnings: tracked_config_dump_info_warning.into_iter().collect(),
-            errors: vec![error],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: None,
-            command: None,
+        Err(error) => TypedReadOutcome {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "project map discovery failed".to_string(),
+                changes: Vec::new(),
+                warnings: tracked_config_dump_info_warning.into_iter().collect(),
+                errors: vec![error],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: None,
+                command: None,
+            },
+            data: None,
         },
     }
-}
-
-fn source_set_summary(source_map: &crate::domain::project_sources::ProjectSourceMap) -> String {
-    source_map
-        .source_sets
-        .iter()
-        .map(|source_set| {
-            format!(
-                "{}: {:?} {:?} {}",
-                source_set.name, source_set.kind, source_set.source_format, source_set.path
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 fn configuration_tools() -> Vec<ToolSpec> {
@@ -3282,6 +3303,12 @@ mod tests {
         assert!(result.ok);
         assert_eq!(result.cache.mode, "read");
         assert!(result.summary.contains("workspace root"));
+        let data = result.data.unwrap();
+        assert!(data["workspaceRoot"].is_string());
+        assert!(data["cacheRoot"].is_string());
+        // Discovery either proves the sets or says it could not: an empty list
+        // must never stand in for "we did not look".
+        assert!(data["sourceSets"].is_array() || data["sourceSets"].is_null());
     }
 
     #[test]
@@ -3307,13 +3334,17 @@ mod tests {
 
         assert!(result.ok);
         assert_eq!(result.cache.mode, "read");
-        let stdout = result.stdout.unwrap();
-        assert!(stdout.contains("\"sourceSets\""));
-        assert!(stdout.contains("\"sourceFormat\": \"platform_xml\""));
-        assert!(stdout.contains("\"kind\": \"configuration\""));
-        assert!(stdout.contains(r#""effectiveSourceSet": "main""#));
-        assert!(stdout.contains(r#""effectiveSourceRoot""#));
-        assert!(!stdout.contains("sourceSelectionError"));
+        // ADR-0023: the map is the result, so it rides in `data` instead of
+        // being serialized into a JSON string inside the JSON envelope.
+        assert!(result.stdout.is_none(), "{:?}", result.stdout);
+        let data = result.data.unwrap();
+        let source_sets = data["sourceSets"].as_array().unwrap();
+        assert_eq!(source_sets.len(), 1);
+        assert_eq!(source_sets[0]["kind"], "configuration");
+        assert_eq!(source_sets[0]["sourceFormat"], "platform_xml");
+        assert_eq!(data["effectiveSourceSet"], "main");
+        assert!(data["effectiveSourceRoot"].is_string());
+        assert!(data.get("sourceSelectionError").is_none());
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -3416,12 +3447,16 @@ mod tests {
             .unwrap();
 
         assert!(result.ok);
+        let source_sets = result.data.as_ref().unwrap()["sourceSets"]
+            .as_array()
+            .unwrap()
+            .clone();
         assert_eq!(
-            result
-                .stdout
-                .as_deref()
-                .map(|stdout| stdout.matches(r#""sourceFormat": "platform_xml""#).count()),
-            Some(2)
+            source_sets
+                .iter()
+                .filter(|entry| entry["sourceFormat"] == "platform_xml")
+                .count(),
+            2
         );
         assert!(
             result
@@ -3640,11 +3675,18 @@ mod tests {
 
         assert!(result.ok);
         assert!(result.warnings.join("\n").contains("sourceDir"));
-        let stdout = result.stdout.unwrap();
-        assert!(stdout.contains(r#""name": "app""#));
-        assert!(stdout.contains(r#""name": "tests""#));
-        assert!(stdout.contains(r#""sourceSelectionError""#));
-        assert!(stdout.contains("sourceDir"));
+        let data = result.data.unwrap();
+        let names = data["sourceSets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["name"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["app".to_string(), "tests".to_string()]);
+        assert!(data["sourceSelectionError"]
+            .as_str()
+            .unwrap()
+            .contains("sourceDir"));
 
         let _ = std::fs::remove_dir_all(root);
     }

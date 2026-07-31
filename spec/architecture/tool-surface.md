@@ -7,7 +7,7 @@
 ## Итог
 
 - Инструментов: **71**
-- Возвращают результат прозой в `stdout`: **54** — это объём миграции на типизированный `data`
+- Возвращают результат прозой в `stdout`: **52** — это объём миграции на типизированный `data`
 - Публикуют больше 20 аргументов из общего списка: **42**
 
 ## build — сборка и запуск платформы
@@ -988,9 +988,9 @@ Inspect configured source sets and effective source format per source set.
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
 | `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** `data`: карта наборов исходников (ADR-0023)
 
-**Целевой контракт:** `data`: набор исходников (имя, вид, формат, доказательства формата, выбранный по умолчанию)
+**Целевой контракт:** достигнут
 
 **Сценарии:**
 
@@ -1008,9 +1008,9 @@ Inspect current Unica workspace, source set, and cache state.
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
 | `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** `data`: корни рабочего пространства и наборы исходников (ADR-0023)
 
-**Целевой контракт:** `data`: рабочее пространство, выбранный набор, состояние кеша и индексов
+**Целевой контракт:** достигнут
 
 **Сценарии:**
 
