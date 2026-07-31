@@ -3209,7 +3209,6 @@ mod tests {
             "unica.subsystem.compile",
             "unica.subsystem.validate",
             "unica.dcs.compile",
-            "unica.dcs.info",
             "unica.dcs.validate",
             "unica.mxl.compile",
             "unica.mxl.decompile",
@@ -3245,6 +3244,7 @@ mod tests {
             "unica.form.edit",
             "unica.form.info",
             "unica.meta.info",
+            "unica.dcs.info",
         ];
 
         for tool in tools() {

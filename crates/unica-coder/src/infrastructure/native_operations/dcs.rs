@@ -116,14 +116,270 @@ impl DcsValidationReporter {
     }
 }
 
+/// Typed answer of `unica.dcs.info` (ADR-0023). Eleven `Mode` values each
+/// rendered its own report; the data carries every section at once and a caller
+/// projects what it needs, so `Limit` and `Offset` go away with the line layout.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DcsInfoData {
+    pub(crate) data_sets: Vec<DcsInfoDataSet>,
+    pub(crate) links: Vec<DcsInfoLink>,
+    pub(crate) calculated_fields: Vec<DcsInfoCalculatedField>,
+    pub(crate) total_fields: Vec<DcsInfoTotalField>,
+    pub(crate) parameters: Vec<DcsInfoParameter>,
+    pub(crate) variants: Vec<DcsInfoVariant>,
+    pub(crate) templates: Vec<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DcsInfoDataSet {
+    pub(crate) name: String,
+    /// `Query`, `Object`, `Union` or the raw `xsi:type` when it is none of them.
+    pub(crate) kind: String,
+    /// The dataset query; `null` for kinds that carry none.
+    pub(crate) query: Option<String>,
+    pub(crate) fields: Vec<DcsInfoField>,
+    /// Nested datasets of a union; empty for every other kind.
+    pub(crate) items: Vec<DcsInfoDataSet>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DcsInfoField {
+    pub(crate) data_path: String,
+    /// The query column behind the field; `null` when the field declares none.
+    pub(crate) field: Option<String>,
+    pub(crate) title: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DcsInfoLink {
+    pub(crate) source: String,
+    pub(crate) destination: String,
+    pub(crate) source_expression: Option<String>,
+    pub(crate) destination_expression: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DcsInfoCalculatedField {
+    pub(crate) data_path: String,
+    pub(crate) expression: Option<String>,
+    pub(crate) title: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DcsInfoTotalField {
+    pub(crate) data_path: String,
+    pub(crate) expression: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DcsInfoParameter {
+    pub(crate) name: String,
+    #[serde(rename = "type")]
+    pub(crate) type_name: Option<String>,
+    pub(crate) value: Option<String>,
+    pub(crate) expression: Option<String>,
+    /// True when `useRestriction` hides the parameter from the user.
+    pub(crate) restricted: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DcsInfoVariant {
+    pub(crate) name: String,
+    pub(crate) presentation: Option<String>,
+    pub(crate) selection: Vec<String>,
+    pub(crate) order: Vec<String>,
+    /// Structure item kinds in order: `group`, `table`, `chart`, …
+    pub(crate) structure: Vec<String>,
+}
+
+pub(crate) struct DcsInfoExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<DcsInfoData>,
+}
+
+fn dcs_info_opt(value: String) -> Option<String> {
+    (!value.is_empty()).then_some(value)
+}
+
+fn dcs_info_child_text(
+    node: roxmltree::Node<'_, '_>,
+    tag: &str,
+    ns_schema: &str,
+) -> Option<String> {
+    dcs_child(node, tag, ns_schema)
+        .map(dcs_text_of)
+        .and_then(dcs_info_opt)
+}
+
+fn dcs_info_data_set(data_set: roxmltree::Node<'_, '_>, ns_schema: &str) -> DcsInfoDataSet {
+    let kind = dcs_info_dataset_type(data_set);
+    DcsInfoDataSet {
+        name: dcs_child(data_set, "name", ns_schema)
+            .map(dcs_text_of)
+            .unwrap_or_default(),
+        // `dcs_inner_text`, not `dcs_all_text`: a 1C query carries meaningful
+        // leading whitespace in its `|` continuation lines, and the retired
+        // `Raw` mode existed precisely to hand it back untrimmed.
+        query: dcs_child(data_set, "query", ns_schema)
+            .map(dcs_inner_text)
+            .and_then(dcs_info_opt),
+        fields: dcs_children(data_set, "field", ns_schema)
+            .into_iter()
+            .filter_map(|field| {
+                Some(DcsInfoField {
+                    data_path: dcs_info_child_text(field, "dataPath", ns_schema)?,
+                    field: dcs_info_child_text(field, "field", ns_schema),
+                    title: dcs_child(field, "title", ns_schema)
+                        .map(dcs_info_multilang_or_inner_text)
+                        .and_then(dcs_info_opt),
+                })
+            })
+            .collect(),
+        items: if kind == "Union" {
+            dcs_children(data_set, "item", ns_schema)
+                .into_iter()
+                .map(|item| dcs_info_data_set(item, ns_schema))
+                .collect()
+        } else {
+            Vec::new()
+        },
+        kind,
+    }
+}
+
+fn dcs_info_collect(
+    root: roxmltree::Node<'_, '_>,
+    ns_schema: &str,
+    ns_settings: &str,
+) -> DcsInfoData {
+    DcsInfoData {
+        data_sets: dcs_children(root, "dataSet", ns_schema)
+            .into_iter()
+            .map(|data_set| dcs_info_data_set(data_set, ns_schema))
+            .collect(),
+        links: dcs_children(root, "dataSetLink", ns_schema)
+            .into_iter()
+            .map(|link| DcsInfoLink {
+                source: dcs_child(link, "sourceDataSet", ns_schema)
+                    .map(dcs_text_of)
+                    .unwrap_or_default(),
+                destination: dcs_child(link, "destinationDataSet", ns_schema)
+                    .map(dcs_text_of)
+                    .unwrap_or_default(),
+                source_expression: dcs_info_child_text(link, "sourceExpression", ns_schema),
+                destination_expression: dcs_info_child_text(
+                    link,
+                    "destinationExpression",
+                    ns_schema,
+                ),
+            })
+            .collect(),
+        calculated_fields: dcs_children(root, "calculatedField", ns_schema)
+            .into_iter()
+            .filter_map(|field| {
+                Some(DcsInfoCalculatedField {
+                    data_path: dcs_info_child_text(field, "dataPath", ns_schema)?,
+                    expression: dcs_child(field, "expression", ns_schema)
+                        .map(dcs_all_text)
+                        .and_then(dcs_info_opt),
+                    title: dcs_child(field, "title", ns_schema)
+                        .map(dcs_info_multilang_or_inner_text)
+                        .and_then(dcs_info_opt),
+                })
+            })
+            .collect(),
+        total_fields: dcs_children(root, "totalField", ns_schema)
+            .into_iter()
+            .filter_map(|total| {
+                Some(DcsInfoTotalField {
+                    data_path: dcs_info_child_text(total, "dataPath", ns_schema)?,
+                    expression: dcs_child(total, "expression", ns_schema)
+                        .map(dcs_all_text)
+                        .and_then(dcs_info_opt),
+                })
+            })
+            .collect(),
+        parameters: dcs_children(root, "parameter", ns_schema)
+            .into_iter()
+            .map(|param| DcsInfoParameter {
+                name: dcs_child(param, "name", ns_schema)
+                    .map(dcs_text_of)
+                    .unwrap_or_default(),
+                type_name: dcs_child(param, "valueType", ns_schema)
+                    .map(dcs_info_compact_type)
+                    .and_then(dcs_info_opt),
+                value: dcs_child(param, "value", ns_schema)
+                    .map(dcs_info_param_default)
+                    .and_then(dcs_info_opt),
+                expression: dcs_child(param, "expression", ns_schema)
+                    .map(dcs_all_text)
+                    .and_then(dcs_info_opt),
+                restricted: dcs_child(param, "useRestriction", ns_schema)
+                    .map(dcs_text_of)
+                    .as_deref()
+                    == Some("true"),
+            })
+            .collect(),
+        variants: dcs_children(root, "settingsVariant", ns_schema)
+            .into_iter()
+            .map(|variant| {
+                let settings = dcs_child(variant, "settings", ns_schema);
+                DcsInfoVariant {
+                    name: dcs_child(variant, "name", ns_schema)
+                        .map(dcs_text_of)
+                        .unwrap_or_default(),
+                    presentation: dcs_child(variant, "presentation", ns_schema)
+                        .map(dcs_info_multilang_or_inner_text)
+                        .and_then(dcs_info_opt),
+                    selection: settings
+                        .and_then(|node| dcs_child(node, "selection", ns_settings))
+                        .map(|node| dcs_info_selection_fields(node, ns_settings))
+                        .unwrap_or_default(),
+                    order: settings
+                        .and_then(|node| dcs_child(node, "order", ns_settings))
+                        .map(|node| dcs_info_group_fields(node, ns_settings))
+                        .unwrap_or_default(),
+                    structure: settings
+                        .map(|node| {
+                            dcs_children(node, "item", ns_settings)
+                                .into_iter()
+                                .map(|item| dcs_info_structure_item_type(item).to_string())
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                }
+            })
+            .collect(),
+        templates: dcs_children(root, "template", ns_schema)
+            .into_iter()
+            .filter_map(|template| dcs_info_child_text(template, "name", ns_schema))
+            .collect(),
+    }
+}
+
 pub(crate) fn analyze_dcs_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
+    analyze_dcs_info_with_data(args, context).outcome
+}
+
+pub(crate) fn analyze_dcs_info_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> DcsInfoExecution {
     const NS_SCHEMA: &str = DCS_SCHEMA_NS;
     const NS_SETTINGS: &str = "http://v8.1c.ru/8.1/data-composition-system/settings";
 
-    let result = (|| -> Result<(String, PathBuf), String> {
+    let result = (|| -> Result<(DcsInfoData, PathBuf), String> {
         let template_path = resolve_dcs_info_path_for_script(args, context)?;
         let resolved_path = template_path
             .canonicalize()
@@ -133,122 +389,63 @@ pub(crate) fn analyze_dcs_info(
             .map_err(|err| format!("XML parse error in {}: {err}", resolved_path.display()))?;
         let root = doc.root_element();
         require_dcs_root(root)?;
+        // Eleven modes sliced one schema into eleven reports. Data answers
+        // with every section at once; a caller projects what it needs.
         let mode = string_arg(args, &["mode", "Mode"]).unwrap_or("overview");
-        let raw = bool_arg(args, &["raw", "Raw"]);
-        if raw && mode != "query" {
-            return Err("Raw is only supported with Mode=query".to_string());
+        const MODES: &[&str] = &[
+            "overview",
+            "query",
+            "fields",
+            "links",
+            "calculated",
+            "resources",
+            "params",
+            "variant",
+            "trace",
+            "templates",
+            "full",
+        ];
+        if !MODES.contains(&mode) {
+            return Err(format!(
+                "argument -Mode: invalid choice: '{mode}' (choose from 'overview', 'query', 'fields', 'links', 'calculated', 'resources', 'params', 'variant', 'trace', 'templates', 'full')"
+            ));
         }
-        let limit = int_arg(args, &["limit", "Limit"]).unwrap_or(150).max(0) as usize;
-        let offset = int_arg(args, &["offset", "Offset"]).unwrap_or(0).max(0) as usize;
-        let mut lines = Vec::<String>::new();
-
-        match mode {
-            "overview" => {
-                dcs_info_overview(
-                    root,
-                    &resolved_path,
-                    &text,
-                    &mut lines,
-                    NS_SCHEMA,
-                    NS_SETTINGS,
-                );
-                dcs_info_overview_hints(root, &mut lines, NS_SCHEMA, NS_SETTINGS);
-            }
-            "query" => {
-                let name = string_arg(args, &["name", "Name"]);
-                if raw {
-                    return Ok((dcs_info_raw_query(root, NS_SCHEMA, name)?, resolved_path));
-                }
-                dcs_info_query(root, &mut lines, NS_SCHEMA, name)?;
-            }
-            "fields" => dcs_info_fields(root, &mut lines, NS_SCHEMA),
-            "links" => dcs_info_links(root, &mut lines, NS_SCHEMA),
-            "calculated" => {
-                let name = string_arg(args, &["name", "Name"]);
-                dcs_info_calculated(root, &mut lines, NS_SCHEMA, name)?;
-            }
-            "resources" => {
-                let name = string_arg(args, &["name", "Name"]);
-                dcs_info_resources(root, &mut lines, NS_SCHEMA, name)?;
-            }
-            "params" => {
-                dcs_info_params(root, &mut lines, NS_SCHEMA);
-            }
-            "variant" => dcs_info_variant(root, &mut lines, NS_SCHEMA, NS_SETTINGS),
-            "templates" => dcs_info_templates(root, &mut lines, NS_SCHEMA),
-            "trace" => {
-                let name = string_arg(args, &["name", "Name"]).unwrap_or("");
-                if name.is_empty() {
-                    return Err("Trace mode requires -Name <field_name_or_title>".to_string());
-                }
-                dcs_info_trace(root, &mut lines, NS_SCHEMA, name)?;
-            }
-            "full" => {
-                dcs_info_full(
-                    root,
-                    &resolved_path,
-                    &text,
-                    &mut lines,
-                    NS_SCHEMA,
-                    NS_SETTINGS,
-                )?;
-            }
-            other => {
-                return Err(format!(
-                    "argument -Mode: invalid choice: '{other}' (choose from 'overview', 'query', 'fields', 'links', 'calculated', 'resources', 'params', 'variant', 'trace', 'templates', 'full')"
-                ));
-            }
-        }
-
-        let total_lines = lines.len();
-        let mut result = if offset > 0 {
-            if offset >= total_lines {
-                return Ok((
-                    format!(
-                        "[INFO] Offset {offset} exceeds total lines ({total_lines}). Nothing to show.\n"
-                    ),
-                    resolved_path,
-                ));
-            }
-            lines[offset..].to_vec()
-        } else {
-            lines
-        };
-        let stdout = if result.len() > limit {
-            result.truncate(limit);
-            format!(
-                "{}\n\n[TRUNCATED] Shown {limit} of {total_lines} lines. Use -Offset {} to continue.\n",
-                result.join("\n"),
-                offset + limit
-            )
-        } else {
-            format!("{}\n", result.join("\n"))
-        };
-        Ok((stdout, resolved_path))
+        let data = dcs_info_collect(root, NS_SCHEMA, NS_SETTINGS);
+        Ok((data, resolved_path))
     })();
 
     match result {
-        Ok((stdout, artifact)) => AdapterOutcome {
-            ok: true,
-            summary: "unica.dcs.info completed with native DCS inspector".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: Vec::new(),
-            artifacts: vec![artifact.display().to_string()],
-            stdout: Some(stdout),
-            stderr: None,
-            command: None,
+        Ok((data, artifact)) => DcsInfoExecution {
+            outcome: AdapterOutcome {
+                ok: true,
+                summary: format!(
+                    "unica.dcs.info described {} data set(s) and {} parameter(s)",
+                    data.data_sets.len(),
+                    data.parameters.len()
+                ),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: Vec::new(),
+                artifacts: vec![artifact.display().to_string()],
+                stdout: None,
+                stderr: None,
+                command: None,
+            },
+            data: Some(data),
         },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.dcs.info failed in native DCS inspector".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-            command: None,
+        Err(error) => DcsInfoExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.dcs.info failed in native DCS inspector".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.clone()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{error}\n")),
+                command: None,
+            },
+            data: None,
         },
     }
 }
@@ -10408,30 +10605,19 @@ mod tests {
             ("Offset".to_string(), json!(100)),
         ]);
 
-        let outcome = analyze_dcs_info(&args, &context);
+        let execution = analyze_dcs_info_with_data(&args, &context);
 
-        assert!(outcome.ok, "{outcome:?}");
-        assert_eq!(outcome.stdout.as_deref(), Some(query));
-        let _ = fs::remove_dir_all(&context.cwd);
-    }
-
-    #[test]
-    fn dcs_info_raw_rejects_non_query_mode() {
-        let context = temp_context("dcs-info-raw-non-query");
-        fs::write(context.cwd.join("Template.xml"), base_dcs_xml()).unwrap();
-        let args = Map::from_iter([
-            ("TemplatePath".to_string(), json!("Template.xml")),
-            ("Mode".to_string(), json!("overview")),
-            ("Raw".to_string(), json!(true)),
-        ]);
-
-        let outcome = analyze_dcs_info(&args, &context);
-
-        assert!(!outcome.ok, "{outcome:?}");
-        assert!(outcome
-            .errors
+        assert!(execution.outcome.ok, "{:?}", execution.outcome);
+        // `Raw` existed because pagination mangled the query; data carries the
+        // exact text always, so Limit and Offset cannot truncate it and the
+        // flag has nothing left to switch on.
+        let data = execution.data.expect("dcs.info answers with data");
+        let queries = data
+            .data_sets
             .iter()
-            .any(|error| error.contains("Raw") && error.contains("Mode=query")));
+            .filter_map(|data_set| data_set.query.as_deref())
+            .collect::<Vec<_>>();
+        assert_eq!(queries, vec![query], "{data:?}");
         let _ = fs::remove_dir_all(&context.cwd);
     }
 

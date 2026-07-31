@@ -492,6 +492,65 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
+        # Re-homed from the retired dcs.info scenarios so this real BSP schema
+        # stays under parity coverage (ADR-0023 retires tools, not fixtures).
+        name="bsp-dcs-validate-enterprise-data-exchange",
+        tool="unica.dcs.validate",
+        skill="dcs-validate",
+        script="dcs-validate.py",
+        arguments={"TemplatePath": "src/Template.xml"},
+        fixtures=(
+            FileFixture(
+                "bsp/dcs/DataProcessors__ВыгрузкаЗагрузкаEnterpriseData__СхемаКомпоновкиДанных/Template.xml",
+                "src/Template.xml",
+            ),
+        ),
+        expect_ok=True,
+    ),
+    ParityScenario(
+        # Re-homed from the retired dcs.info scenarios so this real BSP schema
+        # stays under parity coverage (ADR-0023 retires tools, not fixtures).
+        name="bsp-dcs-validate-email-processing-rules",
+        tool="unica.dcs.validate",
+        skill="dcs-validate",
+        script="dcs-validate.py",
+        arguments={"TemplatePath": "src/Template.xml"},
+        fixtures=(
+            FileFixture(
+                "bsp/dcs/Catalogs__ПравилаОбработкиЭлектроннойПочты__СхемаПравилаОбработкиЭлектроннойПочты/Template.xml",
+                "src/Template.xml",
+            ),
+        ),
+        expect_ok=True,
+    ),
+    ParityScenario(
+        # Re-homed from the retired dcs.info scenarios so this real BSP schema
+        # stays under parity coverage (ADR-0023 retires tools, not fixtures).
+        name="bsp-dcs-validate-object-versions-report",
+        tool="unica.dcs.validate",
+        skill="dcs-validate",
+        script="dcs-validate.py",
+        # The descriptor rides along at its platform-relative path so the schema
+        # is validated in the layout the platform actually writes.
+        arguments={
+            "TemplatePath": (
+                "src/Reports/АнализВерсийОбъектов/Templates"
+                "/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml"
+            )
+        },
+        fixtures=(
+            FileFixture(
+                "bsp/meta/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных.xml",
+                "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных.xml",
+            ),
+            FileFixture(
+                "bsp/meta/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+                "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+            ),
+        ),
+        expect_ok=True,
+    ),
+    ParityScenario(
         # Re-homed from the retired form.info scenarios so this real BSP form
         # stays under parity coverage (ADR-0023 retires tools, not fixtures).
         name="bsp-form-validate-business-process-action-form",
@@ -712,175 +771,6 @@ SUCCESS_SCENARIOS = [
         fixtures=(FileFixture("dcs-bsp-data-usage.json", "fixtures/dcs-bsp-data-usage.json"),),
         expect_ok=True,
         compare_files=True,
-    ),
-    ParityScenario(
-        name="dcs-info-overview-outfile",
-        tool="unica.dcs.info",
-        skill="dcs-info",
-        script="dcs-info.py",
-        arguments={
-            "TemplatePath": "templates/DCS.xml",
-            "Mode": "overview",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="dcs-compile",
-                script="dcs-compile.py",
-                arguments={
-                    "DefinitionFile": "fixtures/dcs-simple.json",
-                    "OutputPath": "templates/DCS.xml",
-                },
-            ),
-        ),
-        fixtures=(FileFixture("dcs-simple.json", "fixtures/dcs-simple.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        # The report template fixtures were read only by the retired
-        # template.remove scenarios; dcs.info keeps them under test.
-        name="bsp-dcs-info-report-main-schema",
-        tool="unica.dcs.info",
-        skill="dcs-info",
-        script="dcs-info.py",
-        arguments={
-            "TemplatePath": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
-            "Mode": "overview",
-        },
-        fixtures=(
-            FileFixture(
-                BSP_META_REPORT_TEMPLATE_FIXTURE,
-                "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных.xml",
-            ),
-            FileFixture(
-                BSP_META_REPORT_TEMPLATE_CONTENT_FIXTURE,
-                "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-info-overview",
-        tool="unica.dcs.info",
-        skill="dcs-info",
-        script="dcs-info.py",
-        arguments={"TemplatePath": "src/Template.xml", "Mode": "overview", "Limit": 200},
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-info-query",
-        tool="unica.dcs.info",
-        skill="dcs-info",
-        script="dcs-info.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Mode": "query",
-            "Name": "ОсновнойНаборДанных",
-            "Limit": 200,
-        },
-        fixtures=(FileFixture(BSP_DCS_QUERY_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-info-query-named-nested-union",
-        tool="unica.dcs.info",
-        skill="dcs-info",
-        script="dcs-info.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Mode": "query",
-            "Name": "ОпределениеПолей",
-            "Limit": 200,
-        },
-        fixtures=(FileFixture(BSP_DCS_UNION_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-info-fields",
-        tool="unica.dcs.info",
-        skill="dcs-info",
-        script="dcs-info.py",
-        arguments={"TemplatePath": "src/Template.xml", "Mode": "fields", "Limit": 200},
-        fixtures=(FileFixture(BSP_DCS_UNION_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-info-links",
-        tool="unica.dcs.info",
-        skill="dcs-info",
-        script="dcs-info.py",
-        arguments={"TemplatePath": "src/Template.xml", "Mode": "links", "Limit": 200},
-        fixtures=(FileFixture(BSP_DCS_UNION_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-info-calculated",
-        tool="unica.dcs.info",
-        skill="dcs-info",
-        script="dcs-info.py",
-        arguments={"TemplatePath": "src/Template.xml", "Mode": "calculated", "Limit": 200},
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-info-resources",
-        tool="unica.dcs.info",
-        skill="dcs-info",
-        script="dcs-info.py",
-        arguments={"TemplatePath": "src/Template.xml", "Mode": "resources", "Limit": 200},
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-info-params",
-        tool="unica.dcs.info",
-        skill="dcs-info",
-        script="dcs-info.py",
-        arguments={"TemplatePath": "src/Template.xml", "Mode": "params", "Limit": 200},
-        fixtures=(FileFixture(BSP_DCS_UNION_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-info-variant",
-        tool="unica.dcs.info",
-        skill="dcs-info",
-        script="dcs-info.py",
-        arguments={"TemplatePath": "src/Template.xml", "Mode": "variant", "Limit": 200},
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-info-trace",
-        tool="unica.dcs.info",
-        skill="dcs-info",
-        script="dcs-info.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Mode": "trace",
-            "Name": "КоличествоДанных",
-            "Limit": 200,
-        },
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-info-templates",
-        tool="unica.dcs.info",
-        skill="dcs-info",
-        script="dcs-info.py",
-        arguments={"TemplatePath": "src/Template.xml", "Mode": "templates", "Limit": 200},
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-info-full",
-        tool="unica.dcs.info",
-        skill="dcs-info",
-        script="dcs-info.py",
-        arguments={"TemplatePath": "src/Template.xml", "Mode": "full", "Limit": 200},
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
     ),
     ParityScenario(
         name="bsp-dcs-validate-real-template-detailed",
@@ -1229,19 +1119,6 @@ VALIDATION_FAILURE_SCENARIOS = [
             ),
         ),
     ),
-    ParityScenario(
-        name="bsp-dcs-info-query-named-union-fails",
-        tool="unica.dcs.info",
-        skill="dcs-info",
-        script="dcs-info.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Mode": "query",
-            "Name": "ОбщееКоличествоЭлементов",
-        },
-        expect_ok=False,
-        fixtures=(FileFixture(BSP_DCS_UNION_FIXTURE, "src/Template.xml"),),
-    ),
 ]
 
 
@@ -1313,14 +1190,6 @@ MISSING_INPUT_SCENARIOS = [
         False,
     ),
     ParityScenario(
-        "dcs-info-missing-template",
-        "unica.dcs.info",
-        "dcs-info",
-        "dcs-info.py",
-        {"TemplatePath": "missing/Template.xml", "Mode": "overview"},
-        False,
-    ),
-    ParityScenario(
         "dcs-validate-missing-template",
         "unica.dcs.validate",
         "dcs-validate",
@@ -1369,7 +1238,6 @@ NATIVE_PARITY_TOOLS = {
     "unica.subsystem.validate",
     "unica.interface.validate",
     "unica.dcs.compile",
-    "unica.dcs.info",
     "unica.dcs.validate",
     "unica.mxl.compile",
     "unica.mxl.decompile",
@@ -1396,6 +1264,7 @@ TYPED_RESULT_TOOLS = {
     "unica.cfe.init",
     "unica.cfe.patch_method",
     "unica.dcs.edit",
+    "unica.dcs.info",
     "unica.form.add",
     "unica.form.edit",
     "unica.form.info",
@@ -1424,7 +1293,6 @@ EXPECTED_TOOLS = {
     "unica.subsystem.compile",
     "unica.subsystem.validate",
     "unica.dcs.compile",
-    "unica.dcs.info",
     "unica.dcs.validate",
     "unica.mxl.compile",
     "unica.mxl.decompile",
@@ -1437,7 +1305,6 @@ BSP_PARITY_REQUIRED_TOOLS = {
     "unica.cf.validate",
     "unica.meta.validate",
     "unica.form.validate",
-    "unica.dcs.info",
     "unica.dcs.validate",
     "unica.mxl.validate",
     "unica.mxl.decompile",

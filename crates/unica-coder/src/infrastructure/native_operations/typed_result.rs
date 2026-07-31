@@ -205,6 +205,10 @@ impl NativeOperationAdapter {
                     let execution = cfe::diff_cfe(args, context);
                     return typed_operation_result(execution.outcome, execution.data, "cfe diff");
                 }
+                "dcs-info" => {
+                    let execution = super::dcs::analyze_dcs_info_with_data(args, context);
+                    return typed_operation_result(execution.outcome, execution.data, "dcs info");
+                }
                 "form-info" => {
                     let execution = form::analyze_form_info_with_data(args, context);
                     return typed_operation_result(execution.outcome, execution.data, "form info");
