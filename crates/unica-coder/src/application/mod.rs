@@ -3162,9 +3162,10 @@ mod tests {
 
     #[test]
     fn xml_dsl_tools_route_to_parity_covered_native_handlers() {
+        // `unica.cf.info` left the parity stand when it started answering with
+        // typed data: there is no prose left to compare (ADR-0023).
         const PARITY_COVERED_TOOLS: &[&str] = &[
             "unica.cf.edit",
-            "unica.cf.info",
             "unica.cf.init",
             "unica.cf.validate",
             "unica.cfe.borrow",
@@ -3205,6 +3206,10 @@ mod tests {
             "unica.role.validate",
         ];
         const REPO_OWNED_NATIVE_TOOLS: &[&str] = &["unica.support.edit"];
+        // A tool that answers with typed data has no prose left for the parity
+        // stand to compare, so it is covered by its own crate tests instead
+        // (ADR-0023).
+        const TYPED_RESULT_TOOLS: &[&str] = &["unica.cf.info"];
 
         for tool in tools() {
             if !tool.name.starts_with("unica.cf.")
@@ -3230,7 +3235,8 @@ mod tests {
                 ToolHandler::NativeOperation { operation, .. } => {
                     assert!(
                         PARITY_COVERED_TOOLS.contains(&tool.name)
-                            || REPO_OWNED_NATIVE_TOOLS.contains(&tool.name),
+                            || REPO_OWNED_NATIVE_TOOLS.contains(&tool.name)
+                            || TYPED_RESULT_TOOLS.contains(&tool.name),
                         "{} routes to native operation {} without a parity fixture or repo-owned native contract exception",
                         tool.name,
                         operation
@@ -3729,10 +3735,14 @@ mod tests {
             .unwrap();
 
         assert!(result.ok);
-        let stdout = result.stdout.unwrap();
-        assert!(stdout.contains("Поддержка:      на поддержке"));
-        assert!(stdout.contains("Возможность изменения: включена"));
-        assert!(stdout.contains("Объектов: на замке 1 / редактируется 1 / снято 1"));
+        // ADR-0023: the support state is four typed values plus counts, not a
+        // sentence a consumer has to match.
+        let support = &result.data.unwrap()["support"];
+        assert_eq!(support["state"], "supported");
+        assert_eq!(support["editingEnabled"], true);
+        assert_eq!(support["objects"]["locked"], 1);
+        assert_eq!(support["objects"]["editable"], 1);
+        assert_eq!(support["objects"]["removed"], 1);
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -4677,24 +4687,15 @@ mod tests {
             .call_tool("unica.cf.info", &args)
             .unwrap();
         assert!(overview.ok, "{overview:?}");
-        let overview_stdout = overview.stdout.unwrap();
-        assert!(
-            overview_stdout
-                .lines()
-                .any(|line| line.starts_with("  Боты") && line.ends_with('1')),
-            "{overview_stdout}"
-        );
+        let data = overview.data.unwrap();
+        let bots = data["childObjects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["kind"] == "Bot")
+            .expect("the configuration registers a Bot");
+        assert_eq!(bots["count"], 1);
 
-        args.insert("Mode".to_string(), Value::String("full".to_string()));
-        let full = UnicaApplication::new()
-            .call_tool("unica.cf.info", &args)
-            .unwrap();
-        assert!(full.ok, "{full:?}");
-        let full_stdout = full.stdout.unwrap();
-        assert!(full_stdout.contains("Боты (Bot): 1"), "{full_stdout}");
-        assert!(full_stdout.contains("    Assistant"), "{full_stdout}");
-
-        args.remove("Mode");
         let validation = UnicaApplication::new()
             .call_tool("unica.cf.validate", &args)
             .unwrap();
@@ -7390,10 +7391,7 @@ mod tests {
         let info = UnicaApplication::new()
             .call_tool("unica.cf.info", &info_args)
             .unwrap();
-        assert!(info
-            .stdout
-            .unwrap()
-            .contains("Возможность изменения: включена"));
+        assert_eq!(info.data.unwrap()["support"]["editingEnabled"], true);
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -7441,10 +7439,7 @@ mod tests {
         let info = UnicaApplication::new()
             .call_tool("unica.cf.info", &info_args)
             .unwrap();
-        assert!(info
-            .stdout
-            .unwrap()
-            .contains("Возможность изменения: выключена"));
+        assert_eq!(info.data.unwrap()["support"]["editingEnabled"], false);
 
         let mut set_args = Map::new();
         set_args.insert(

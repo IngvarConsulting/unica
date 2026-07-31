@@ -1,4 +1,4 @@
-use super::{code, form, meta, registry, NativeOperationAdapter};
+use super::{cf, code, form, meta, registry, NativeOperationAdapter};
 use crate::{application::AdapterOutcome, domain::workspace::WorkspaceContext};
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -40,10 +40,19 @@ impl NativeOperationAdapter {
             }
         }
         // A dry run keeps its placeholder outcome: previewing a read must not
-        // perform it, even though this particular read changes nothing.
-        if operation == "meta-info" && !dry_run {
-            let execution = meta::analyze_meta_info_with_data(args, context);
-            return typed_operation_result(execution.outcome, execution.data, "meta info");
+        // perform it, even though these reads change nothing.
+        if !dry_run {
+            match operation {
+                "meta-info" => {
+                    let execution = meta::analyze_meta_info_with_data(args, context);
+                    return typed_operation_result(execution.outcome, execution.data, "meta info");
+                }
+                "cf-info" => {
+                    let execution = cf::analyze_cf_info(args, context);
+                    return typed_operation_result(execution.outcome, execution.data, "cf info");
+                }
+                _ => {}
+            }
         }
 
         Self::invoke(operation, tool_name, args, context, dry_run, mutating).map(|adapter| {

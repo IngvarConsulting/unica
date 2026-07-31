@@ -866,13 +866,106 @@ pub(crate) fn cf_validate_form_ref(config_dir: &Path, form_ref: &str) -> bool {
     false
 }
 
+/// Typed answer of `unica.cf.info` (ADR-0023). Every declared property is
+/// present: an absent value is `null`, never a missing key, so "not set" and
+/// "not reported" stay different facts.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfInfoData {
+    pub(crate) format: String,
+    pub(crate) name: String,
+    pub(crate) synonym: Option<String>,
+    pub(crate) version: Option<String>,
+    pub(crate) vendor: Option<String>,
+    pub(crate) extension_purpose: Option<String>,
+    pub(crate) support: SupportData,
+    pub(crate) properties: CfInfoProperties,
+    pub(crate) child_objects: Vec<CfChildObjectCount>,
+    pub(crate) total_objects: usize,
+    pub(crate) home_page: Option<CfHomePageData>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfInfoProperties {
+    pub(crate) compatibility_mode: Option<String>,
+    pub(crate) default_run_mode: Option<String>,
+    pub(crate) script_variant: Option<String>,
+    pub(crate) default_language: Option<String>,
+    pub(crate) data_lock_control_mode: Option<String>,
+    pub(crate) modality_use_mode: Option<String>,
+    pub(crate) interface_compatibility_mode: Option<String>,
+    pub(crate) extension_compatibility_mode: Option<String>,
+    pub(crate) object_autonumeration_mode: Option<String>,
+    pub(crate) synchronous_call_use_mode: Option<String>,
+    pub(crate) database_tablespaces_use_mode: Option<String>,
+    pub(crate) main_window_mode: Option<String>,
+    pub(crate) comment: Option<String>,
+    pub(crate) name_prefix: Option<String>,
+    pub(crate) update_catalog_address: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfChildObjectCount {
+    pub(crate) kind: String,
+    pub(crate) count: usize,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfHomePageData {
+    pub(crate) template: String,
+    pub(crate) left: Vec<CfHomePageItemData>,
+    pub(crate) right: Vec<CfHomePageItemData>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfHomePageItemData {
+    pub(crate) form: String,
+    pub(crate) height: i64,
+    pub(crate) common: bool,
+    pub(crate) roles: Vec<CfHomePageRoleData>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfHomePageRoleData {
+    pub(crate) role: String,
+    pub(crate) visible: bool,
+}
+
+fn optional(value: String) -> Option<String> {
+    (!value.is_empty()).then_some(value)
+}
+
+fn cf_home_page_item_data(items: &[CfHomePageItem]) -> Vec<CfHomePageItemData> {
+    items
+        .iter()
+        .map(|item| CfHomePageItemData {
+            form: item.form.clone(),
+            height: item.height,
+            common: item.common,
+            roles: item
+                .roles
+                .iter()
+                .map(|(role, visible)| CfHomePageRoleData {
+                    role: role.clone(),
+                    visible: *visible,
+                })
+                .collect(),
+        })
+        .collect()
+}
+
 pub(crate) fn analyze_cf_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
+) -> CfInfoExecution {
     const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
-    let result = (|| -> Result<(String, PathBuf), String> {
+    let result = (|| -> Result<(CfInfoData, PathBuf), String> {
         let config_path = resolve_cf_read_config_path(args, context)?;
 
         let text = fs::read_to_string(&config_path)
@@ -898,157 +991,105 @@ pub(crate) fn analyze_cf_info(
             return Err("[ERROR] No <Configuration>/<Properties> element found".to_string());
         };
 
-        let mode = string_arg(args, &["mode", "Mode"]).unwrap_or("overview");
-        let section = string_arg(args, &["section", "Section", "name", "Name"]).unwrap_or("");
-
         let version = root.attribute("version").unwrap_or("");
-        let cfg_name = cf_prop_text(props, "Name");
-        let cfg_synonym = cf_prop_ml(props, "Synonym");
-        let cfg_version = cf_prop_text(props, "Version");
-        let cfg_vendor = cf_prop_text(props, "Vendor");
-        let cfg_compat = cf_prop_text(props, "CompatibilityMode");
-        let cfg_default_run = cf_prop_text(props, "DefaultRunMode");
-        let cfg_script = cf_prop_text(props, "ScriptVariant");
-        let cfg_default_lang = cf_prop_text(props, "DefaultLanguage");
-        let cfg_data_lock = cf_prop_text(props, "DataLockControlMode");
-        let cfg_modality = cf_prop_text(props, "ModalityUseMode");
-        let cfg_intf_compat = cf_prop_text(props, "InterfaceCompatibilityMode");
-        let cfg_ext_purpose = cf_prop_text(props, "ConfigurationExtensionPurpose");
-        let support_lines =
-            support_state_lines_for_configuration(&config_path, !cfg_ext_purpose.is_empty());
-
+        let config_dir = config_path.parent().unwrap_or(context.cwd.as_path());
+        let extension_purpose = optional(cf_prop_text(props, "ConfigurationExtensionPurpose"));
         let counts = cf_child_object_counts(cfg);
         let total_objects = counts.iter().map(|(_, count)| *count).sum::<usize>();
-        let mut lines = Vec::<String>::new();
-
-        let config_dir = config_path.parent().unwrap_or(context.cwd.as_path());
-
-        if section == "home-page" {
-            cf_append_home_page_section(&mut lines, config_dir, &cfg_name);
-        } else if mode == "brief" {
-            let syn_part = if cfg_synonym.is_empty() {
-                String::new()
-            } else {
-                format!(" — \"{cfg_synonym}\"")
-            };
-            let ver_part = if cfg_version.is_empty() {
-                String::new()
-            } else {
-                format!(" v{cfg_version}")
-            };
-            let compat_part = if cfg_compat.is_empty() {
-                String::new()
-            } else {
-                format!(" | {cfg_compat}")
-            };
-            lines.push(format!(
-                "Конфигурация: {cfg_name}{syn_part}{ver_part} | {total_objects} объектов{compat_part}"
-            ));
-        } else if mode == "overview" {
-            let syn_part = if cfg_synonym.is_empty() {
-                String::new()
-            } else {
-                format!(" — \"{cfg_synonym}\"")
-            };
-            let ver_part = if cfg_version.is_empty() {
-                String::new()
-            } else {
-                format!(" v{cfg_version}")
-            };
-            lines.push(format!(
-                "=== Конфигурация: {cfg_name}{syn_part}{ver_part} ==="
-            ));
-            lines.push(String::new());
-            lines.push(format!("Формат:         {version}"));
-            if !cfg_vendor.is_empty() {
-                lines.push(format!("Поставщик:      {cfg_vendor}"));
-            }
-            if !cfg_version.is_empty() {
-                lines.push(format!("Версия:         {cfg_version}"));
-            }
-            lines.extend(support_lines.clone());
-            lines.push(format!("Совместимость:  {cfg_compat}"));
-            lines.push(format!("Режим запуска:  {cfg_default_run}"));
-            lines.push(format!("Язык скриптов:  {cfg_script}"));
-            lines.push(format!("Язык:           {cfg_default_lang}"));
-            lines.push(format!("Блокировки:     {cfg_data_lock}"));
-            lines.push(format!("Модальность:    {cfg_modality}"));
-            lines.push(format!("Интерфейс:      {cfg_intf_compat}"));
-            lines.push(String::new());
-            cf_append_counts(&mut lines, &counts, total_objects);
-        } else if mode == "full" {
-            let cfg_ext_compat = cf_prop_text(props, "ConfigurationExtensionCompatibilityMode");
-            let cfg_auto_num = cf_prop_text(props, "ObjectAutonumerationMode");
-            let cfg_sync_calls =
-                cf_prop_text(props, "SynchronousPlatformExtensionAndAddInCallUseMode");
-            let cfg_db_spaces = cf_prop_text(props, "DatabaseTablespacesUseMode");
-            let cfg_window_mode = cf_prop_text(props, "MainClientApplicationWindowMode");
-            let cfg_comment = cf_prop_text(props, "Comment");
-            let cfg_prefix = cf_prop_text(props, "NamePrefix");
-            let cfg_update_addr = cf_prop_text(props, "UpdateCatalogAddress");
-            cf_append_full_info(
-                &mut lines,
-                cfg,
-                props,
-                version,
-                &cfg_name,
-                &cfg_synonym,
-                &cfg_version,
-                &cfg_vendor,
-                &cfg_compat,
-                &cfg_ext_compat,
-                &cfg_default_run,
-                &cfg_script,
-                &cfg_default_lang,
-                &cfg_data_lock,
-                &cfg_modality,
-                &cfg_intf_compat,
-                &cfg_auto_num,
-                &cfg_sync_calls,
-                &cfg_db_spaces,
-                &cfg_window_mode,
-                &cfg_comment,
-                &cfg_prefix,
-                &cfg_update_addr,
-                config_dir,
-                &support_lines,
-                &counts,
-                total_objects,
-            );
-        } else {
-            return Err(format!(
-                "argument -Mode: invalid choice: '{mode}' (choose from 'overview', 'brief', 'full')"
-            ));
-        }
-
-        let result_text = cf_paginate(lines, args);
-        Ok((format!("{result_text}\n"), config_path))
+        // Every mode used to trade completeness for printed size. Typed data
+        // needs no such lever: the caller keeps the fields it wants.
+        let data = CfInfoData {
+            format: version.to_string(),
+            name: cf_prop_text(props, "Name"),
+            synonym: optional(cf_prop_ml(props, "Synonym")),
+            version: optional(cf_prop_text(props, "Version")),
+            vendor: optional(cf_prop_text(props, "Vendor")),
+            support: support_state_data(&config_path, extension_purpose.is_some()),
+            extension_purpose,
+            properties: CfInfoProperties {
+                compatibility_mode: optional(cf_prop_text(props, "CompatibilityMode")),
+                default_run_mode: optional(cf_prop_text(props, "DefaultRunMode")),
+                script_variant: optional(cf_prop_text(props, "ScriptVariant")),
+                default_language: optional(cf_prop_text(props, "DefaultLanguage")),
+                data_lock_control_mode: optional(cf_prop_text(props, "DataLockControlMode")),
+                modality_use_mode: optional(cf_prop_text(props, "ModalityUseMode")),
+                interface_compatibility_mode: optional(cf_prop_text(
+                    props,
+                    "InterfaceCompatibilityMode",
+                )),
+                extension_compatibility_mode: optional(cf_prop_text(
+                    props,
+                    "ConfigurationExtensionCompatibilityMode",
+                )),
+                object_autonumeration_mode: optional(cf_prop_text(
+                    props,
+                    "ObjectAutonumerationMode",
+                )),
+                synchronous_call_use_mode: optional(cf_prop_text(
+                    props,
+                    "SynchronousPlatformExtensionAndAddInCallUseMode",
+                )),
+                database_tablespaces_use_mode: optional(cf_prop_text(
+                    props,
+                    "DatabaseTablespacesUseMode",
+                )),
+                main_window_mode: optional(cf_prop_text(props, "MainClientApplicationWindowMode")),
+                comment: optional(cf_prop_text(props, "Comment")),
+                name_prefix: optional(cf_prop_text(props, "NamePrefix")),
+                update_catalog_address: optional(cf_prop_text(props, "UpdateCatalogAddress")),
+            },
+            child_objects: counts
+                .into_iter()
+                .map(|(kind, count)| CfChildObjectCount { kind, count })
+                .collect(),
+            total_objects,
+            home_page: cf_read_home_page(config_dir).map(|layout| CfHomePageData {
+                template: layout.template,
+                left: cf_home_page_item_data(&layout.left),
+                right: cf_home_page_item_data(&layout.right),
+            }),
+        };
+        Ok((data, config_path))
     })();
 
     match result {
-        Ok((stdout, artifact)) => AdapterOutcome {
-            ok: true,
-            summary: "unica.cf.info completed with native configuration analyzer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: Vec::new(),
-            artifacts: vec![artifact.display().to_string()],
-            stdout: Some(stdout),
-            stderr: Some(String::new()),
-            command: None,
+        Ok((data, artifact)) => CfInfoExecution {
+            outcome: AdapterOutcome {
+                ok: true,
+                summary: format!(
+                    "unica.cf.info described {} with {} object(s)",
+                    data.name, data.total_objects
+                ),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: Vec::new(),
+                artifacts: vec![artifact.display().to_string()],
+                stdout: None,
+                stderr: Some(String::new()),
+                command: None,
+            },
+            data: Some(data),
         },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.cf.info failed in native configuration analyzer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-            command: None,
+        Err(error) => CfInfoExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.cf.info failed in native configuration analyzer".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.clone()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{error}\n")),
+                command: None,
+            },
+            data: None,
         },
     }
+}
+
+pub(crate) struct CfInfoExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<CfInfoData>,
 }
 
 pub(crate) fn cf_prop_text(props: roxmltree::Node<'_, '_>, local_name: &str) -> String {
@@ -4737,7 +4778,9 @@ pub(crate) fn invoke_read(
     context: &WorkspaceContext,
 ) -> Option<Result<AdapterOutcome, String>> {
     match operation {
-        "cf-info" => Some(Ok(analyze_cf_info(args, context))),
+        // `cf-info` answers with typed data; the registry keeps only the
+        // prose-shaped path, so the typed route reaches it in typed_result.rs.
+        "cf-info" => Some(Ok(analyze_cf_info(args, context).outcome)),
         "cf-validate" => Some(Ok(validate_cf(args, context))),
         _ => None,
     }

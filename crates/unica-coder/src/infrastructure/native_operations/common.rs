@@ -2259,6 +2259,62 @@ pub(crate) fn format_compatibility_warning(compatibility: &FormatCompatibility) 
     }
 }
 
+/// Typed support state for ADR-0023 readers. It lives beside `SupportState`
+/// because the counts are private there, and every reader needs the same
+/// four-state answer rather than its own rendering of it.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SupportData {
+    /// `notSupported`, `extension`, `removed` or `supported`.
+    pub(crate) state: &'static str,
+    pub(crate) editing_enabled: Option<bool>,
+    pub(crate) objects: Option<SupportCounts>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SupportCounts {
+    pub(crate) locked: u64,
+    pub(crate) editable: u64,
+    pub(crate) removed: u64,
+}
+
+pub(crate) fn support_state_data(config_path: &Path, is_extension: bool) -> SupportData {
+    let config_dir = if config_path.is_dir() {
+        config_path
+    } else {
+        config_path.parent().unwrap_or_else(|| Path::new(""))
+    };
+    let bin_path = config_dir.join("Ext").join("ParentConfigurations.bin");
+    let Some(state) = read_support_state(&bin_path) else {
+        return SupportData {
+            state: if is_extension {
+                "extension"
+            } else {
+                "notSupported"
+            },
+            editing_enabled: None,
+            objects: None,
+        };
+    };
+    if state.removed {
+        return SupportData {
+            state: "removed",
+            editing_enabled: None,
+            objects: None,
+        };
+    }
+    SupportData {
+        state: "supported",
+        editing_enabled: Some(state.global_editing_enabled),
+        objects: Some(SupportCounts {
+            locked: state.counts[0] as u64,
+            editable: state.counts[1] as u64,
+            removed: state.counts[2] as u64,
+        }),
+    }
+}
+
 pub(crate) fn support_state_lines_for_configuration(
     config_path: &Path,
     is_extension: bool,

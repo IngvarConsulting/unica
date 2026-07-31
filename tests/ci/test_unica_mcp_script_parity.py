@@ -632,61 +632,6 @@ SUCCESS_SCENARIOS = [
         expect_ok=True,
     ),
     ParityScenario(
-        name="cf-info-overview-outfile",
-        tool="unica.cf.info",
-        skill="cf-info",
-        script="cf-info.py",
-        arguments={
-            "ConfigPath": "src/Configuration.xml",
-            "Mode": "overview",
-        },
-        fixtures=(FileFixture("cf-info/Configuration.xml", "src/Configuration.xml"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="cf-info-full-with-interface-ext",
-        tool="unica.cf.info",
-        skill="cf-info",
-        script="cf-info.py",
-        arguments={
-            "ConfigPath": "src/Configuration.xml",
-            "Mode": "full",
-            "Limit": 120,
-        },
-        fixtures=(
-            FileFixture("cf-info/Configuration.xml", "src/Configuration.xml"),
-            FileFixture(
-                "cf-info/Ext/ClientApplicationInterface.xml",
-                "src/Ext/ClientApplicationInterface.xml",
-            ),
-            FileFixture(
-                "cf-info/Ext/HomePageWorkArea.xml",
-                "src/Ext/HomePageWorkArea.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="cf-info-home-page-section",
-        tool="unica.cf.info",
-        skill="cf-info",
-        script="cf-info.py",
-        arguments={
-            "ConfigPath": "src/Configuration.xml",
-            "Section": "home-page",
-            "Limit": 120,
-        },
-        fixtures=(
-            FileFixture("cf-info/Configuration.xml", "src/Configuration.xml"),
-            FileFixture(
-                "cf-info/Ext/HomePageWorkArea.xml",
-                "src/Ext/HomePageWorkArea.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
         name="cf-validate-detailed-outfile",
         tool="unica.cf.validate",
         skill="cf-validate",
@@ -701,32 +646,6 @@ SUCCESS_SCENARIOS = [
         ),
         expect_ok=True,
         compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-cf-info-brief",
-        tool="unica.cf.info",
-        skill="cf-info",
-        script="cf-info.py",
-        arguments={
-            "ConfigPath": "src/Configuration.xml",
-            "Mode": "brief",
-            "Limit": 200,
-        },
-        fixtures=(FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-cf-info-full",
-        tool="unica.cf.info",
-        skill="cf-info",
-        script="cf-info.py",
-        arguments={
-            "ConfigPath": "src/Configuration.xml",
-            "Mode": "full",
-            "Limit": 200,
-        },
-        fixtures=(FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),),
-        expect_ok=True,
     ),
     ParityScenario(
         name="bsp-cf-validate-detailed",
@@ -3926,14 +3845,6 @@ MISSING_INPUT_SCENARIOS = [
         False,
     ),
     ParityScenario(
-        "cf-info-missing-config",
-        "unica.cf.info",
-        "cf-info",
-        "cf-info.py",
-        {"ConfigPath": "missing/Configuration.xml", "Mode": "brief"},
-        False,
-    ),
-    ParityScenario(
         "cf-validate-missing-config",
         "unica.cf.validate",
         "cf-validate",
@@ -4183,7 +4094,6 @@ MIN_NATIVE_PARITY_COVERAGE = 1.0
 
 NATIVE_PARITY_TOOLS = {
     "unica.cf.edit",
-    "unica.cf.info",
     "unica.cf.init",
     "unica.cf.validate",
     "unica.cfe.borrow",
@@ -4234,9 +4144,16 @@ MUTATING_FORM_DCS_PARITY_TOOLS = {
     "unica.dcs.edit",
 }
 
+# A tool that answers with typed data has no prose to compare against the
+# reference model, so it leaves this stand as it migrates (ADR-0023). The stand
+# itself is scheduled for redesign; until then this list records what left and
+# why, instead of scenarios quietly disappearing.
+TYPED_RESULT_TOOLS = {
+    "unica.cf.info",
+}
+
 EXPECTED_TOOLS = {
     "unica.cf.edit",
-    "unica.cf.info",
     "unica.cf.init",
     "unica.cf.validate",
     "unica.cfe.borrow",
@@ -4278,7 +4195,6 @@ EXPECTED_TOOLS = {
 }
 
 BSP_PARITY_REQUIRED_TOOLS = {
-    "unica.cf.info",
     "unica.cf.validate",
     "unica.cfe.borrow",
     "unica.meta.info",
@@ -4395,6 +4311,10 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
     def test_every_in_scope_tool_has_a_parity_scenario(self) -> None:
         covered = {scenario.tool for scenario in SCENARIOS}
         self.assertEqual(covered, EXPECTED_TOOLS)
+        # A migrated tool must be gone from the stand, not merely unscheduled:
+        # a leftover scenario would compare a stdout that no longer exists.
+        self.assertEqual(covered & TYPED_RESULT_TOOLS, set())
+        self.assertEqual(NATIVE_PARITY_TOOLS & TYPED_RESULT_TOOLS, set())
         covered_by_success_snapshot = {
             scenario.tool
             for scenario in SCENARIOS

@@ -173,16 +173,22 @@ fn read_only_native_dispatch_does_not_honor_legacy_outfile() {
     }))
     .unwrap();
 
-    let result =
-        NativeOperationAdapter::invoke("cf-info", "unica.cf.info", &args, &context, false, false)
-            .unwrap();
+    let result = NativeOperationAdapter::invoke_with_data(
+        "cf-info",
+        "unica.cf.info",
+        &args,
+        &context,
+        false,
+        false,
+    )
+    .unwrap();
 
-    assert!(result.ok, "{result:?}");
+    assert!(result.adapter.ok, "{:?}", result.adapter);
     assert_eq!(fs::read(&config_path).unwrap(), original);
-    assert!(result
-        .stdout
-        .as_deref()
-        .is_some_and(|stdout| stdout.contains("ReadOnlyContract")));
+    // ADR-0023: the answer is data, and a legacy output sink still changes
+    // nothing on disk.
+    assert_eq!(result.data.unwrap()["name"], "ReadOnlyContract");
+    assert!(result.adapter.stdout.is_none());
 
     fs::remove_dir_all(root).unwrap();
 }

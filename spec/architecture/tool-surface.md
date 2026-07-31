@@ -7,16 +7,16 @@
 ## Итог
 
 - Инструментов: **71**
-- Отвечают типизированным `data`: **9**
+- Отвечают типизированным `data`: **10**
 - Типизированы частично: часть результата всё ещё текст: **4**
 - Отвечают снимком задания в `job`: **6**
-- Отвечают прозой в `stdout`: **52**
+- Отвечают прозой в `stdout`: **51**
 
 - В границах типизации: **43**
 - Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`): **16**
 - Вне границ: семейство runtime и build изучается отдельно: **12**
-- Осталось перевести на типизированный `data` в границах работы: **34**
-- Публикуют больше 20 аргументов из общего списка: **42**
+- Осталось перевести на типизированный `data` в границах работы: **33**
+- Публикуют больше 20 аргументов из общего списка: **41**
 
 ## build — сборка и запуск платформы
 
@@ -204,12 +204,13 @@ Inspect root Configuration.xml.
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
 | `ConfigPath` | string | да | Path to `Configuration.xml` or the dump directory for `unica.cf.edit`, `unica.cf.info` and `unica.cf.validate`, and the path of the base configuration for `unica.cfe.init`/`borrow`/`diff`; relative to `cwd`. `unica.cf.init` ignores it and writes to `outputDir`. |
+| `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
+| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
+| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 
-Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+**Результат сейчас:** `data`: идентичность, поддержка, свойства корня, состав и начальная страница (ADR-0023) (отвечают типизированным `data`)
 
-**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
-
-**Целевой контракт:** `data`: свойства конфигурации, счётчики состава, панели и стартовая страница
+**Целевой контракт:** достигнут
 
 **Сценарии:**
 

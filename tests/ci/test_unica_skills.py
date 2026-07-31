@@ -389,12 +389,13 @@ SCENARIO_PRESERVING_TOKENS = {
         '"Operation": "add-defaultRole"',
         '"Operation": "set-defaultRoles"',
     ],
+    # ADR-0023: cf.info answers with typed data, so the prose-size levers are
+    # gone from the skill and the documented fields take their place.
     "cf-info": [
-        '"Mode": "brief"',
-        '"Mode": "full"',
-        '"Limit": 50',
-        '"Offset": 100',
-        '"Section": "home-page"',
+        '"ConfigPath": "src"',
+        "`support`",
+        "`childObjects`",
+        "`homePage`",
     ],
     "cf-init": [
         '"Name": "МояКонфигурация"',
@@ -546,6 +547,7 @@ SCENARIO_PRESERVING_TOKENS = {
 # "does not accept argument", so a leftover example is a broken instruction.
 SCENARIO_RETIRED_TOKENS = {
     "meta-remove": ['"KeepFiles"', '"keepFiles"'],
+    "cf-info": ['"Mode"', '"Section"', '"Limit"', '"Offset"'],
     # A published example that still selects by path shows a call the server
     # now rejects with `legacy_target_removed`.
     "meta-info": ['"ObjectPath"', '"objectPath"', '"Detailed"', '"detailed"'],
