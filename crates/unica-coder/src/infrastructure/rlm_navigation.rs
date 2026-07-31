@@ -1,7 +1,8 @@
 use crate::application::AdapterOutcome;
 use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
 use crate::domain::code_intelligence::{
-    CodeIntelligenceContext, CodeIntelligenceReadRequest, ProviderDeadline,
+    CodeDefinition, CodeDefinitionResult, CodeIntelligenceContext, CodeIntelligenceReadData,
+    CodeIntelligenceReadRequest, ProviderDeadline,
 };
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::workspace_index::IndexReadiness;
@@ -96,12 +97,12 @@ impl<'a> RlmNavigationAdapter<'a> {
         context: &CodeIntelligenceContext,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
-    ) -> Result<AdapterOutcome, String> {
+    ) -> Result<RlmNavigationOutcome, String> {
         let tool_name = request.tool_name();
         let operation = operation_for_request(request)?;
         if cancellation.is_cancelled() {
-            return Ok(AdapterOutcome::cancelled(format!(
-                "{tool_name} cancelled before provider work"
+            return Ok(RlmNavigationOutcome::plain(AdapterOutcome::cancelled(
+                format!("{tool_name} cancelled before provider work"),
             )));
         }
         let readiness_timeout = deadline.remaining().min(RLM_NAVIGATION_TIMEOUT);
@@ -118,13 +119,19 @@ impl<'a> RlmNavigationAdapter<'a> {
         ) {
             Ok(readiness) => readiness,
             Err(error) if error.starts_with(CANCELLED_PREFIX) => {
-                return Ok(cancelled_client_outcome(tool_name, &error));
+                return Ok(RlmNavigationOutcome::plain(cancelled_client_outcome(
+                    tool_name, &error,
+                )));
             }
             Err(error) => return Err(error),
         };
         let db_path = match readiness {
             IndexReadiness::Ready { db_path } => db_path,
-            other => return Ok(index_unavailable_outcome(request, other)),
+            other => {
+                return Ok(RlmNavigationOutcome::plain(index_unavailable_outcome(
+                    request, other,
+                )))
+            }
         };
         let timeout = deadline.remaining().min(RLM_NAVIGATION_TIMEOUT);
         if timeout.is_zero() {
@@ -139,7 +146,9 @@ impl<'a> RlmNavigationAdapter<'a> {
         ) {
             Ok(output) => output,
             Err(error) if error.starts_with(CANCELLED_PREFIX) => {
-                return Ok(cancelled_client_outcome(tool_name, &error));
+                return Ok(RlmNavigationOutcome::plain(cancelled_client_outcome(
+                    tool_name, &error,
+                )));
             }
             Err(error) => return Err(error),
         };
@@ -152,26 +161,56 @@ impl<'a> RlmNavigationAdapter<'a> {
         {
             return Err(format!("{tool_name} RLM helper failed: {error}"));
         }
-        let (section, body) = match tool_name {
-            "unica.code.definition" => ("rlm-definition", render_definition(&value)?),
-            "unica.meta.profile" => ("rlm-meta-profile", render_profile(&value)?),
-            _ => return Err(format!("unsupported RLM navigation tool: {tool_name}")),
-        };
         let mut outcome = AdapterOutcome::ok(format!(
             "{tool_name} completed through the persistent RLM MCP API"
         ));
+        let mut data = None;
+        match tool_name {
+            // ADR-0023: the index already answers with structure, so the tool
+            // publishes it instead of rendering it into a line grammar.
+            "unica.code.definition" => {
+                let (result, warnings) = definition_result(&value)?;
+                outcome.summary = format!(
+                    "{tool_name} found {} definition(s) for {}",
+                    result.definitions.len(),
+                    result.name
+                );
+                outcome.warnings.extend(warnings);
+                data = Some(CodeIntelligenceReadData::Definition(result));
+            }
+            "unica.meta.profile" => {
+                outcome.stdout = Some(format_section("rlm-meta-profile", &render_profile(&value)?));
+            }
+            _ => return Err(format!("unsupported RLM navigation tool: {tool_name}")),
+        }
         outcome.artifacts = vec![
             context.source_root.path.display().to_string(),
             db_path.display().to_string(),
         ];
-        outcome.stdout = Some(format_section(section, &body));
         if !output.stderr.trim().is_empty() {
             outcome
                 .warnings
                 .push(format!("RLM stderr: {}", output.stderr.trim()));
             outcome.stderr = Some(output.stderr);
         }
-        Ok(outcome)
+        Ok(RlmNavigationOutcome { outcome, data })
+    }
+}
+
+/// A navigation answer plus the typed payload the tool publishes, when its
+/// contract has one.
+#[derive(Debug)]
+pub(crate) struct RlmNavigationOutcome {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<CodeIntelligenceReadData>,
+}
+
+impl RlmNavigationOutcome {
+    fn plain(outcome: AdapterOutcome) -> Self {
+        Self {
+            outcome,
+            data: None,
+        }
     }
 }
 
@@ -209,6 +248,81 @@ fn operation_for_request(
     })
 }
 
+/// Reads the index answer as data. A malformed entry becomes a warning instead
+/// of a `diagnostic:` line mixed into the report, so the caller can tell a
+/// dropped definition from one that was never there.
+fn definition_result(value: &Value) -> Result<(CodeDefinitionResult, Vec<String>), String> {
+    let name = value
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let definitions = value
+        .get("definitions")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "RLM definition response is missing definitions".to_string())?;
+    let mut warnings = Vec::new();
+    let mut typed = Vec::new();
+    for (index, definition) in definitions.iter().enumerate() {
+        let Some(file) = definition
+            .get("file")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        else {
+            warnings.push(format!(
+                "ignored malformed RLM definition #{}: missing file",
+                index + 1
+            ));
+            continue;
+        };
+        let optional = |key: &str| {
+            definition
+                .get(key)
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        };
+        typed.push(CodeDefinition {
+            file: file.to_string(),
+            line: definition
+                .get("line")
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+            kind: definition
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("method")
+                .to_string(),
+            params: definition
+                .get("params")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default(),
+            export: definition
+                .get("is_export")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            category: optional("category"),
+            object_name: optional("object_name"),
+            module_type: optional("module_type"),
+        });
+    }
+    Ok((
+        CodeDefinitionResult {
+            name,
+            definitions: typed,
+        },
+        warnings,
+    ))
+}
+
+#[cfg(test)]
 fn render_definition(value: &Value) -> Result<String, String> {
     let name = value
         .get("name")
@@ -444,6 +558,7 @@ mod tests {
     };
     use crate::application::AdapterOutcome;
     use crate::domain::cancellation::CancellationToken;
+    use crate::domain::code_intelligence::CodeIntelligenceReadData;
     use crate::domain::code_intelligence::{
         CodeIntelligenceContext, CodeIntelligenceReadRequest, ProviderDeadline,
     };
@@ -671,6 +786,42 @@ mod tests {
         }
     }
 
+    /// The index answers with structure; the tool must publish it rather than
+    /// render a line grammar the caller parses back.
+    #[test]
+    fn a_definition_answer_carries_every_field_the_index_reported() {
+        let value = json!({
+            "name": "ОбщегоНазначенияКлиентСервер",
+            "definitions": [
+                {
+                    "file": "src/CommonModules/Общий/Ext/Module.bsl",
+                    "line": 42,
+                    "type": "function",
+                    "params": ["Параметр1", "Параметр2 = Неопределено"],
+                    "is_export": true,
+                    "category": "CommonModule",
+                    "object_name": "Общий",
+                    "module_type": "Module"
+                },
+                {"line": 7}
+            ]
+        });
+
+        let (result, warnings) = super::definition_result(&value).unwrap();
+
+        assert_eq!(result.definitions.len(), 1);
+        let definition = &result.definitions[0];
+        assert_eq!(definition.line, 42);
+        assert_eq!(definition.kind, "function");
+        assert_eq!(definition.params.len(), 2);
+        assert!(definition.export);
+        assert_eq!(definition.object_name.as_deref(), Some("Общий"));
+        // A dropped entry is a warning, not a `diagnostic:` line mixed into the
+        // report where it reads like a definition.
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("missing file"), "{:?}", warnings);
+    }
+
     #[test]
     fn adapter_normalizes_client_cancellation_from_readiness_and_call() {
         let request = CodeIntelligenceReadRequest::Definition {
@@ -700,7 +851,8 @@ mod tests {
                         ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
                         &CancellationToken::new(),
                     )
-                    .expect("client cancellation must be normalized into an outcome");
+                    .expect("client cancellation must be normalized into an outcome")
+                    .outcome;
 
             assert!(!outcome.ok);
             assert!(outcome.summary.contains("cancelled"));
@@ -746,6 +898,7 @@ mod tests {
                 &CancellationToken::new(),
             )
             .expect("a not-ready index must be reported as an outcome")
+            .outcome
     }
 
     fn unready_index_context() -> CodeIntelligenceContext {
@@ -921,12 +1074,15 @@ mod tests {
             )
             .unwrap();
 
-        assert!(outcome.ok);
-        assert!(outcome
-            .stdout
-            .as_deref()
-            .unwrap()
-            .contains("No RLM definitions found"));
+        assert!(outcome.outcome.ok);
+        // ADR-0023: an empty answer is an empty list, not a sentence.
+        assert!(outcome.outcome.stdout.is_none());
+        let Some(CodeIntelligenceReadData::Definition(result)) = outcome.data else {
+            panic!("code.definition must answer with typed data");
+        };
+        assert_eq!(result.name, "Найти");
+        assert!(result.definitions.is_empty());
+        assert!(outcome.outcome.summary.contains("0 definition(s)"));
         assert_eq!(
             client.operations.lock().unwrap().as_slice(),
             &[WorkspaceRlmOperation::Definition {

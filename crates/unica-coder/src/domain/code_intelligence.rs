@@ -222,6 +222,31 @@ pub struct CodeOutlineParameter {
 #[serde(untagged)]
 pub enum CodeIntelligenceReadData {
     Outline(CodeOutlineResult),
+    Definition(CodeDefinitionResult),
+}
+
+/// Typed answer of `unica.code.definition` (ADR-0023). The index already
+/// returns structured definitions; the tool used to render them into a line
+/// grammar the caller then had to parse back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeDefinitionResult {
+    pub name: String,
+    pub definitions: Vec<CodeDefinition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeDefinition {
+    pub file: String,
+    pub line: u64,
+    /// Platform kind reported by the index, `method` when it says nothing.
+    pub kind: String,
+    pub params: Vec<String>,
+    pub export: bool,
+    pub category: Option<String>,
+    pub object_name: Option<String>,
+    pub module_type: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

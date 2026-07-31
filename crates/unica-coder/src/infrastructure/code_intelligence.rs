@@ -443,12 +443,13 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<ProviderReadOutcome, String> {
-        let outcome = RlmNavigationAdapter::new().invoke_resolved_cancellable(
+        let navigation = RlmNavigationAdapter::new().invoke_resolved_cancellable(
             request,
             context,
             deadline,
             cancellation,
         )?;
+        let outcome = navigation.outcome;
         Ok(ProviderReadOutcome {
             provider: ProviderId::Rlm,
             ok: outcome.ok,
@@ -458,7 +459,7 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
             artifacts: outcome.artifacts,
             stdout: outcome.stdout,
             stderr: outcome.stderr,
-            data: None,
+            data: navigation.data,
         })
     }
 }
