@@ -2171,13 +2171,17 @@ mod tests {
                 {"name": "FirstInput", "kind": "InputField", "reason": "contained"},
                 {"name": "FirstInputContextMenu", "kind": "ContextMenu", "reason": "contained"}
             ],
+            "addedElements": [],
+            "addedAttributes": [],
+            "addedCommands": [],
+            "addedEvents": [],
             "validation": "passed"
         });
 
         let preview = app.call_tool("unica.form.edit", &args).unwrap();
         assert!(preview.ok, "{:?}", preview.errors);
         assert_eq!(preview.data, Some(expected_data.clone()));
-        assert!(preview.stdout.is_some());
+        assert!(preview.stdout.is_none(), "{preview:?}");
         assert!(preview.cache.events.is_empty());
         assert_eq!(std::fs::read(&form_path).unwrap(), original);
 
@@ -2186,7 +2190,7 @@ mod tests {
         assert!(applied.ok, "{:?}", applied.errors);
         assert_eq!(applied.data, Some(expected_data));
         assert_eq!(applied.cache.events, vec!["FormChanged"]);
-        assert!(applied.stdout.is_some());
+        assert!(applied.stdout.is_none(), "{applied:?}");
 
         let validation_args = json!({
             "cwd": workspace,
@@ -2227,7 +2231,22 @@ mod tests {
         assert!(non_removal.ok, "{:?}", non_removal.errors);
         assert_eq!(
             non_removal.data,
-            Some(json!({"changed": true, "removed": [], "validation": "passed"}))
+            Some(json!({
+                "changed": true,
+                "removed": [],
+                // The addition now shows up as data, not as a printed line.
+                "addedElements": [{
+                    "kind": "InputField",
+                    "name": "Added",
+                    "path": null,
+                    "representation": null,
+                    "autoInsertNewRow": null
+                }],
+                "addedAttributes": [],
+                "addedCommands": [],
+                "addedEvents": [],
+                "validation": "passed"
+            }))
         );
         assert_eq!(non_removal.cache.events, vec!["FormChanged"]);
 
@@ -2254,7 +2273,15 @@ mod tests {
         assert!(no_op.ok, "{:?}", no_op.errors);
         assert_eq!(
             no_op.data,
-            Some(json!({"changed": false, "removed": [], "validation": "passed"}))
+            Some(json!({
+                "changed": false,
+                "removed": [],
+                "addedElements": [],
+                "addedAttributes": [],
+                "addedCommands": [],
+                "addedEvents": [],
+                "validation": "passed"
+            }))
         );
         assert!(no_op.cache.events.is_empty());
         assert_eq!(
@@ -2363,6 +2390,10 @@ mod tests {
                 {"name": "TargetContextMenu", "kind": "ContextMenu", "reason": "contained"},
                 {"name": "TargetExtendedTooltip", "kind": "ExtendedTooltip", "reason": "contained"}
             ],
+            "addedElements": [],
+            "addedAttributes": [],
+            "addedCommands": [],
+            "addedEvents": [],
             "validation": "passed"
         });
         let app = UnicaApplication::new();
@@ -3174,7 +3205,6 @@ mod tests {
             "unica.meta.info",
             "unica.meta.validate",
             "unica.form.compile",
-            "unica.form.edit",
             "unica.form.info",
             "unica.form.validate",
             "unica.interface.validate",
@@ -3214,6 +3244,7 @@ mod tests {
             "unica.subsystem.edit",
             "unica.form.add",
             "unica.dcs.edit",
+            "unica.form.edit",
         ];
 
         for tool in tools() {

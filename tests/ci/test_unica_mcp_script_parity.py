@@ -662,61 +662,6 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
-        name="form-edit-additions",
-        tool="unica.form.edit",
-        skill="form-edit",
-        script="form-edit.py",
-        arguments={
-            "FormPath": "forms/Form.xml",
-            "JsonPath": "fixtures/form-edit-additions.json",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="form-compile",
-                script="form-compile.py",
-                arguments={
-                    "JsonPath": "fixtures/form-simple.json",
-                    "OutputPath": "forms/Form.xml",
-                },
-            ),
-        ),
-        fixtures=(
-            FileFixture("form-simple.json", "fixtures/form-simple.json"),
-            FileFixture("form-edit/additions.json", "fixtures/form-edit-additions.json"),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="form-edit-valuetable-attribute-columns",
-        tool="unica.form.edit",
-        skill="form-edit",
-        script="form-edit.py",
-        arguments={
-            "FormPath": "forms/Form.xml",
-            "JsonPath": "fixtures/form-edit-valuetable-columns.json",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="form-compile",
-                script="form-compile.py",
-                arguments={
-                    "JsonPath": "fixtures/form-simple.json",
-                    "OutputPath": "forms/Form.xml",
-                },
-            ),
-        ),
-        fixtures=(
-            FileFixture("form-simple.json", "fixtures/form-simple.json"),
-            FileFixture(
-                "form-edit/valuetable-columns.json",
-                "fixtures/form-edit-valuetable-columns.json",
-            ),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
         name="bsp-form-info-real-form-full",
         tool="unica.form.info",
         skill="form-info",
@@ -821,28 +766,6 @@ SUCCESS_SCENARIOS = [
             ),
         ),
         expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-form-edit-add-attribute-command-element",
-        tool="unica.form.edit",
-        skill="form-edit",
-        script="form-edit.py",
-        arguments={
-            "FormPath": "src/Form.xml",
-            "JsonPath": "fixtures/form-edit-bsp-additions.json",
-        },
-        fixtures=(
-            FileFixture(
-                "bsp/forms/BusinessProcesses__Задание__ФормаСписка/Form.xml",
-                "src/Form.xml",
-            ),
-            FileFixture(
-                "form-edit/bsp-additions.json",
-                "fixtures/form-edit-bsp-additions.json",
-            ),
-        ),
-        expect_ok=True,
-        compare_files=True,
     ),
     ParityScenario(
         name="form-info-main-form",
@@ -1573,14 +1496,6 @@ MISSING_INPUT_SCENARIOS = [
         False,
     ),
     ParityScenario(
-        "form-edit-missing-form",
-        "unica.form.edit",
-        "form-edit",
-        "form-edit.py",
-        {"FormPath": "missing/Form.xml", "JsonPath": "missing/form-edit.json"},
-        False,
-    ),
-    ParityScenario(
         "form-info-missing-form",
         "unica.form.info",
         "form-info",
@@ -1679,7 +1594,6 @@ NATIVE_PARITY_TOOLS = {
     "unica.meta.info",
     "unica.meta.validate",
     "unica.form.compile",
-    "unica.form.edit",
     "unica.form.info",
     "unica.form.validate",
     "unica.subsystem.compile",
@@ -1697,7 +1611,6 @@ NATIVE_PARITY_TOOLS = {
 
 MUTATING_FORM_DCS_PARITY_TOOLS = {
     "unica.form.compile",
-    "unica.form.edit",
     "unica.dcs.compile",
 }
 
@@ -1715,6 +1628,7 @@ TYPED_RESULT_TOOLS = {
     "unica.cfe.patch_method",
     "unica.dcs.edit",
     "unica.form.add",
+    "unica.form.edit",
     "unica.form.remove",
     "unica.help.add",
     "unica.interface.edit",
@@ -1735,7 +1649,6 @@ EXPECTED_TOOLS = {
     "unica.meta.info",
     "unica.meta.validate",
     "unica.form.compile",
-    "unica.form.edit",
     "unica.form.info",
     "unica.form.validate",
     "unica.interface.validate",
@@ -1757,7 +1670,6 @@ BSP_PARITY_REQUIRED_TOOLS = {
     "unica.meta.validate",
     "unica.form.info",
     "unica.form.validate",
-    "unica.form.edit",
     "unica.dcs.info",
     "unica.dcs.validate",
     "unica.mxl.validate",
@@ -1769,7 +1681,6 @@ BSP_PARITY_REQUIRED_TOOLS = {
 }
 
 BSP_MUTATING_REQUIRED_TOOLS = {
-    "unica.form.edit",
     "unica.mxl.compile",
     "unica.template.remove",
 }

@@ -4268,7 +4268,58 @@ pub(crate) struct FormEditExecution {
 pub(crate) struct FormEditData {
     changed: bool,
     removed: Vec<FormEditRemovedElement>,
+    /// Elements added to the form layout.
+    added_elements: Vec<FormEditAddedElement>,
+    /// Attributes added to the form.
+    added_attributes: Vec<FormEditAddedAttribute>,
+    /// Commands added to the form.
+    added_commands: Vec<FormEditAddedCommand>,
+    /// Event handlers wired up, on the form itself or on an element.
+    added_events: Vec<FormEditAddedEvent>,
     validation: FormEditValidation,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FormEditAddedElement {
+    kind: String,
+    name: String,
+    /// The data path the element is bound to; `null` when it binds nothing.
+    path: Option<String>,
+    /// How a table renders its rows; `null` for anything but a table, or when
+    /// the definition leaves it at the platform default.
+    representation: Option<String>,
+    /// Whether a table auto-inserts a new row; `null` when unset.
+    auto_insert_new_row: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FormEditAddedAttribute {
+    name: String,
+    #[serde(rename = "type")]
+    type_name: String,
+    id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FormEditAddedCommand {
+    name: String,
+    /// The command's action handler; `null` when it has none.
+    action: Option<String>,
+    id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FormEditAddedEvent {
+    /// The element the handler belongs to; `null` for a form-level event.
+    element: Option<String>,
+    name: String,
+    handler: String,
+    /// The `[client]`/`[server]` call type, when the definition sets one.
+    call_type: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -4278,7 +4329,7 @@ struct FormEditRemovedElement {
     reason: FormEditRemovalReason,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 enum FormEditRemovalReason {
     Requested,
@@ -4292,7 +4343,10 @@ enum FormEditValidation {
 }
 
 struct FormEditSuccess {
-    stdout: String,
+    added_elements: Vec<FormEditAddedElement>,
+    added_attributes: Vec<FormEditAddedAttribute>,
+    added_commands: Vec<FormEditAddedCommand>,
+    added_events: Vec<FormEditAddedEvent>,
     form_path: PathBuf,
     changed: bool,
     warnings: Vec<String>,
@@ -4372,7 +4426,7 @@ fn form_edit_with_mode_data(
             cmd_ids.next = cmd_ids.next.max(999_999);
         }
 
-        let mut added_elements = Vec::<String>::new();
+        let mut added_elements = Vec::<FormEditAddedElement>::new();
         let mut emitted_fragments = String::new();
         let mut companion_count = 0usize;
         if let Some(elements) = defn.get("elements").and_then(Value::as_array) {
@@ -4395,10 +4449,10 @@ fn form_edit_with_mode_data(
                     let start = elem_ids.next;
                     let mut lines = Vec::<String>::new();
                     for element in elements {
-                        let summary = form_edit_element_summary(element);
+                        let record = form_edit_element_record(element);
                         emit_form_element(&mut lines, element, &element_indent, &mut elem_ids)?;
-                        if let Some(summary) = summary {
-                            added_elements.push(summary);
+                        if let Some(record) = record {
+                            added_elements.push(record);
                         }
                     }
                     emitted_fragments.push_str(&lines.join("\n"));
@@ -4408,7 +4462,7 @@ fn form_edit_with_mode_data(
             }
         }
 
-        let mut added_attrs = Vec::<String>::new();
+        let mut added_attrs = Vec::<FormEditAddedAttribute>::new();
         if let Some(attrs) = defn.get("attributes").and_then(Value::as_array) {
             if !attrs.is_empty() {
                 form_edit_validate_attribute_columns(attrs)?;
@@ -4426,14 +4480,18 @@ fn form_edit_with_mode_data(
                         .get("type")
                         .and_then(Value::as_str)
                         .unwrap_or("(no type)");
-                    added_attrs.push(format!("  + {name}: {type_name} (id={id})"));
+                    added_attrs.push(FormEditAddedAttribute {
+                        name: name.to_string(),
+                        type_name: type_name.to_string(),
+                        id: id.to_string(),
+                    });
                 }
                 emitted_fragments.push_str(&lines.join("\n"));
                 form_edit_insert_section_items(&mut xml_text, "Attributes", &lines)?;
             }
         }
 
-        let mut added_cmds = Vec::<String>::new();
+        let mut added_cmds = Vec::<FormEditAddedCommand>::new();
         if let Some(commands) = defn.get("commands").and_then(Value::as_array) {
             if !commands.is_empty() {
                 let mut lines = Vec::<String>::new();
@@ -4446,25 +4504,39 @@ fn form_edit_with_mode_data(
                     };
                     let id = cmd_ids.next();
                     emit_form_edit_command_item(&mut lines, object, name, id, "\t\t");
-                    let action = object
-                        .get("action")
-                        .and_then(Value::as_str)
-                        .map(|value| format!(" -> {value}"))
-                        .unwrap_or_default();
-                    added_cmds.push(format!("  + {name}{action} (id={id})"));
+                    added_cmds.push(FormEditAddedCommand {
+                        name: name.to_string(),
+                        action: object
+                            .get("action")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                        id: id.to_string(),
+                    });
                 }
                 emitted_fragments.push_str(&lines.join("\n"));
                 form_edit_insert_section_items(&mut xml_text, "Commands", &lines)?;
             }
         }
 
-        let mut added_form_events = Vec::<String>::new();
-        let mut added_element_events = Vec::<String>::new();
+        let mut added_form_events = Vec::<FormEditAddedEvent>::new();
+        let mut added_element_events = Vec::<FormEditAddedEvent>::new();
         for event in &planned_events {
             form_edit_apply_planned_event(&mut xml_text, event)?;
             match &event.owner {
-                FormEditEventOwner::Form => added_form_events.push(event.summary()),
-                FormEditEventOwner::Element(_) => added_element_events.push(event.summary()),
+                FormEditEventOwner::Form => added_form_events.push(FormEditAddedEvent {
+                    element: None,
+                    name: event.name.clone(),
+                    handler: event.handler.clone(),
+                    call_type: event.call_type.clone(),
+                }),
+                FormEditEventOwner::Element(element) => {
+                    added_element_events.push(FormEditAddedEvent {
+                        element: Some(element.clone()),
+                        name: event.name.clone(),
+                        handler: event.handler.clone(),
+                        call_type: event.call_type.clone(),
+                    })
+                }
             }
         }
 
@@ -4494,124 +4566,16 @@ fn form_edit_with_mode_data(
             )?;
         }
 
-        let mut stdout = format!("=== form-edit: {form_name} ===\n\n");
-        if !planned_removals.is_empty() {
-            stdout.push_str(if mode.is_preview() {
-                "Planned removals:\n"
-            } else {
-                "Removed elements:\n"
-            });
-            for removal in &planned_removals {
-                stdout.push_str(&format!("  - {} ({})\n", removal.name, removal.kind));
-                if !removal.contained.is_empty() {
-                    stdout.push_str("    contained: ");
-                    stdout.push_str(
-                        &removal
-                            .contained
-                            .iter()
-                            .map(|node| format!("{} ({})", node.name, node.kind))
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                    );
-                    stdout.push('\n');
-                }
-            }
-            stdout.push('\n');
-        }
-        if !added_form_events.is_empty() {
-            stdout.push_str(if mode.is_preview() {
-                "Planned form events:\n"
-            } else {
-                "Added form events:\n"
-            });
-            stdout.push_str(&added_form_events.join("\n"));
-            stdout.push_str("\n\n");
-        }
-        if !added_element_events.is_empty() {
-            stdout.push_str(if mode.is_preview() {
-                "Planned element events:\n"
-            } else {
-                "Added element events:\n"
-            });
-            stdout.push_str(&added_element_events.join("\n"));
-            stdout.push_str("\n\n");
-        }
-        if !added_elements.is_empty() {
-            stdout.push_str(if mode.is_preview() {
-                "Planned elements:\n"
-            } else {
-                "Added elements:\n"
-            });
-            stdout.push_str(&added_elements.join("\n"));
-            stdout.push_str("\n\n");
-        }
-        if !added_attrs.is_empty() {
-            stdout.push_str(if mode.is_preview() {
-                "Planned attributes:\n"
-            } else {
-                "Added attributes:\n"
-            });
-            stdout.push_str(&added_attrs.join("\n"));
-            stdout.push_str("\n\n");
-        }
-        if !added_cmds.is_empty() {
-            stdout.push_str(if mode.is_preview() {
-                "Planned commands:\n"
-            } else {
-                "Added commands:\n"
-            });
-            stdout.push_str(&added_cmds.join("\n"));
-            stdout.push_str("\n\n");
-        }
-        let mut total_parts = Vec::new();
-        if !added_form_events.is_empty() {
-            total_parts.push(format!("{} form event(s)", added_form_events.len()));
-        }
-        if !added_element_events.is_empty() {
-            total_parts.push(format!("{} element event(s)", added_element_events.len()));
-        }
-        if !planned_removals.is_empty() {
-            let contained = planned_removals
-                .iter()
-                .map(|removal| removal.contained.len())
-                .sum::<usize>();
-            if contained > 0 {
-                total_parts.push(format!(
-                    "{} element removal(s) (+{} contained)",
-                    planned_removals.len(),
-                    contained
-                ));
-            } else {
-                total_parts.push(format!("{} element removal(s)", planned_removals.len()));
-            }
-        }
-        if !added_elements.is_empty() {
-            if companion_count > 0 {
-                total_parts.push(format!(
-                    "{} element(s) (+{} companions)",
-                    added_elements.len(),
-                    companion_count
-                ));
-            } else {
-                total_parts.push(format!("{} element(s)", added_elements.len()));
-            }
-        }
-        if !added_attrs.is_empty() {
-            total_parts.push(format!("{} attribute(s)", added_attrs.len()));
-        }
-        if !added_cmds.is_empty() {
-            total_parts.push(format!("{} command(s)", added_cmds.len()));
-        }
-        stdout.push_str("---\n");
-        if changed {
-            stdout.push_str(&format!("Total: {}\n", total_parts.join(", ")));
-        } else {
-            stdout.push_str("Total: idempotent no-op; source bytes preserved.\n");
-        }
-        stdout.push_str("Run /form-validate to verify.\n");
-
+        let _ = &form_name;
+        let _ = companion_count;
         Ok(FormEditSuccess {
-            stdout,
+            added_elements,
+            added_attributes: added_attrs,
+            added_commands: added_cmds,
+            added_events: added_form_events
+                .into_iter()
+                .chain(added_element_events)
+                .collect(),
             form_path,
             changed,
             warnings,
@@ -4621,7 +4585,10 @@ fn form_edit_with_mode_data(
 
     match edit_result {
         Ok(FormEditSuccess {
-            stdout,
+            added_elements,
+            added_attributes,
+            added_commands,
+            added_events,
             form_path,
             changed,
             warnings,
@@ -4654,13 +4621,17 @@ fn form_edit_with_mode_data(
                 warnings,
                 errors: Vec::new(),
                 artifacts: vec![form_path.display().to_string()],
-                stdout: Some(stdout),
+                stdout: None,
                 stderr: None,
                 command: None,
             },
             data: Some(FormEditData {
                 changed,
                 removed: form_edit_removed_elements(&removals),
+                added_elements,
+                added_attributes,
+                added_commands,
+                added_events,
                 validation: FormEditValidation::Passed,
             }),
         },
@@ -6402,6 +6373,37 @@ pub(crate) fn form_edit_element_display_name(element: &Value) -> Option<String> 
     let object = element.as_object()?;
     let kind = FormEditElementDefinitionKind::from_object(object).ok()?;
     kind.name(object).ok().map(ToOwned::to_owned)
+}
+
+/// Typed counterpart of [`form_edit_element_summary`] (ADR-0023): the same
+/// element identity, as fields rather than a rendered line.
+fn form_edit_element_record(element: &Value) -> Option<FormEditAddedElement> {
+    let object = element.as_object()?;
+    let kind = FormEditElementDefinitionKind::from_object(object).ok()?;
+    if kind == FormEditElementDefinitionKind::AutoCommandBar {
+        return None;
+    }
+    let is_table = kind == FormEditElementDefinitionKind::Table;
+    Some(FormEditAddedElement {
+        kind: format!("{kind:?}"),
+        name: form_edit_element_display_name(element)?,
+        path: object
+            .get("path")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        representation: is_table
+            .then(|| {
+                object
+                    .get("representation")
+                    .and_then(Value::as_str)
+                    .and_then(form_compile_table_representation)
+                    .map(str::to_string)
+            })
+            .flatten(),
+        auto_insert_new_row: is_table
+            .then(|| object.get("autoInsertNewRow").and_then(Value::as_bool))
+            .flatten(),
+    })
 }
 
 pub(crate) fn form_edit_element_summary(element: &Value) -> Option<String> {
@@ -11835,7 +11837,8 @@ mod tests {
             ),
         ]);
 
-        let outcome = preview_form_edit(&args, &context);
+        let execution = preview_with_data(&args, &context);
+        let outcome = &execution.outcome;
 
         assert!(outcome.ok, "{outcome:?}");
         assert!(
@@ -11845,16 +11848,36 @@ mod tests {
                 .any(|change| change.contains("would update")),
             "{outcome:?}"
         );
-        let stdout = outcome.stdout.unwrap_or_default();
-        assert!(stdout.contains("Planned removals:"), "{stdout}");
-        assert!(stdout.contains("  - Target (InputField)"), "{stdout}");
-        assert!(
-            stdout.contains(
-                "    contained: TargetContextMenu (ContextMenu), TargetExtendedTooltip (ExtendedTooltip)"
-            ),
-            "{stdout}"
+        let data = execution
+            .data
+            .as_ref()
+            .expect("form.edit answers with data");
+        let removed = data
+            .removed
+            .iter()
+            .map(|item| (item.name.as_str(), item.kind.as_str(), &item.reason))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            removed,
+            vec![
+                ("Target", "InputField", &FormEditRemovalReason::Requested),
+                (
+                    "TargetContextMenu",
+                    "ContextMenu",
+                    &FormEditRemovalReason::Contained
+                ),
+                (
+                    "TargetExtendedTooltip",
+                    "ExtendedTooltip",
+                    &FormEditRemovalReason::Contained
+                ),
+            ],
+            "{data:?}"
         );
-        assert!(!stdout.contains("TargetDetails"), "{stdout}");
+        assert!(
+            !data.removed.iter().any(|item| item.name == "TargetDetails"),
+            "a sibling subtree must stay: {data:?}"
+        );
         assert_eq!(fs::read(&form_path).unwrap(), original);
 
         let outcome = edit_form(&args, &context);
@@ -18440,11 +18463,17 @@ mod tests {
                 json!({"elements": [{"input": "Name"}]}),
             ),
         ]);
-        let outcome = preview_form_edit(&args, &context);
+        let execution = preview_with_data(&args, &context);
+        let outcome = &execution.outcome;
         assert!(outcome.ok, "{outcome:?}");
-        let stdout = outcome.stdout.unwrap_or_default();
-        assert!(stdout.contains("Planned elements:"), "{stdout}");
-        assert!(!stdout.contains("Added elements:"), "{stdout}");
+        // A preview plans the element and writes nothing; the summary, not a
+        // printed heading, is what marks it as a dry run.
+        assert!(outcome.summary.starts_with("dry run:"), "{outcome:?}");
+        let data = execution
+            .data
+            .as_ref()
+            .expect("form.edit answers with data");
+        assert!(!data.added_elements.is_empty(), "{data:?}");
         assert_eq!(fs::read(&form_path).unwrap(), original);
         let _ = fs::remove_dir_all(&context.cwd);
     }
@@ -18472,12 +18501,21 @@ mod tests {
             ),
         ]);
 
-        let outcome = preview_form_edit(&args, &context);
+        let execution = preview_with_data(&args, &context);
+        let outcome = &execution.outcome;
 
         assert!(outcome.ok, "{outcome:?}");
-        let stdout = outcome.stdout.unwrap_or_default();
-        assert!(stdout.contains("representation=List"), "{stdout}");
-        assert!(stdout.contains("autoInsertNewRow=true"), "{stdout}");
+        let data = execution
+            .data
+            .as_ref()
+            .expect("form.edit answers with data");
+        let table = data
+            .added_elements
+            .iter()
+            .find(|element| element.kind == "Table")
+            .expect("the planned table is reported");
+        assert_eq!(table.representation.as_deref(), Some("List"), "{table:?}");
+        assert_eq!(table.auto_insert_new_row, Some(true), "{table:?}");
         assert_eq!(fs::read(&form_path).unwrap(), original);
 
         let _ = fs::remove_dir_all(&context.cwd);
