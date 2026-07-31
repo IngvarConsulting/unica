@@ -400,23 +400,17 @@ def response_output_size(stdout: str, stderr: str, payload: dict[str, Any] | Non
     return len(stdout.encode("utf-8")) + len(stderr.encode("utf-8")) + payload_size
 
 
-def parsed_stdout_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
-    if not payload:
-        return {}
-    stdout = payload.get("stdout")
-    if not isinstance(stdout, str) or not stdout.strip():
-        return {}
-    try:
-        parsed = json.loads(stdout)
-    except json.JSONDecodeError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
-
-
 def project_source_sets(payload: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Read the source sets from the typed result.
+
+    ADR-0023 moved the map out of `stdout`, where it used to be a JSON string
+    inside the JSON envelope; `data` is the only place it lives now.
+    """
+
     if not payload:
         return []
-    for candidate in (payload, parsed_stdout_payload(payload)):
+    data = payload.get("data")
+    for candidate in (data if isinstance(data, dict) else {}, payload):
         source_sets = candidate.get("sourceSets")
         if source_sets is None:
             source_sets = candidate.get("source_sets")
