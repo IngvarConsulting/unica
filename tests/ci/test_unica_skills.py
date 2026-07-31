@@ -1455,14 +1455,15 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             if not support_paragraphs(text):
                 errors.append("missing complete applied full dump support paragraph")
             for paragraph in markdown_paragraphs(text):
-                if (
-                    required["Windows"].search(paragraph)
-                    and required["full dump"].search(paragraph)
-                    and stale_restriction.search(paragraph)
-                ):
-                    errors.append(
-                        "Windows applied full dump is documented as restricted"
-                    )
+                for sentence in re.split(r"(?<=[.!?])\s+", paragraph):
+                    if (
+                        required["Windows"].search(sentence)
+                        and required["full dump"].search(sentence)
+                        and stale_restriction.search(sentence)
+                    ):
+                        errors.append(
+                            "Windows applied full dump is documented as restricted"
+                        )
             return errors
 
         document_texts = {
@@ -1472,6 +1473,18 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         for path in docs:
             with self.subTest(document=path.name):
                 self.assertEqual([], contract_errors(document_texts[path]))
+
+        mixed_claims = (
+            "Windows, macOS, and Linux support synchronous applied full dump "
+            "for CONFIGURATION and EXTENSION through verified transactional "
+            "publication. Incremental dump without receipts remains fail-closed "
+            "on Linux."
+        )
+        self.assertEqual(
+            [],
+            contract_errors(mixed_claims),
+            "a restriction on a different operation is not a Windows full-dump restriction",
+        )
 
         for path, text in document_texts.items():
             complete_paragraphs = support_paragraphs(text)

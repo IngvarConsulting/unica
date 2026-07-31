@@ -254,8 +254,10 @@ is intentionally unavailable on Windows from:
 
 - `plugins/unica/skills/v8-runner/SKILL.md`;
 - `plugins/unica/skills/v8-runner/references/file-and-artifact-workflows.md`;
-- `plugins/unica/references/tooling/v8project.md`.
+- `plugins/unica/references/tooling/v8project.md`;
+- `plugins/unica/references/tooling/runtime-build.md`.
 
 The replacement text states that applied full dump uses verified transactional
 publication on all supported hosts. It references the owning invariants instead
-of restating them as a new architectural rule.
+of restating them as a new architectural rule. The documentation contract is
+enforced by `tests/ci/test_unica_skills.py`.

@@ -1340,12 +1340,10 @@ pub(crate) fn open_regular_child_nofollow(
 pub(crate) fn open_any_child_nofollow(
     parent: &fs::File,
     name: &std::ffi::OsStr,
-) -> io::Result<fs::File> {
+) -> io::Result<(fs::File, OpenedChildKind)> {
     const FILE_OPEN: u32 = 0x0000_0001;
     const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-    use windows_sys::Win32::Storage::FileSystem::{
-        FILE_ATTRIBUTE_REPARSE_POINT, FILE_READ_ATTRIBUTES, SYNCHRONIZE,
-    };
+    use windows_sys::Win32::Storage::FileSystem::{FILE_READ_ATTRIBUTES, SYNCHRONIZE};
 
     let file = open_relative_child(
         parent,
@@ -1356,13 +1354,8 @@ pub(crate) fn open_any_child_nofollow(
         FILE_OPEN_REPARSE_POINT,
         None,
     )?;
-    if windows_file_information(&file)?.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "child resolves to a reparse point",
-        ));
-    }
-    Ok(file)
+    let kind = opened_child_kind(&file)?;
+    Ok((file, kind))
 }
 
 #[cfg(windows)]
@@ -2346,7 +2339,7 @@ mod tests {
             capture_windows_immutable_entry_evidence, create_owner_only_directory,
             create_owner_only_directory_child, create_owner_only_file,
             create_owner_only_file_child, delete_open_child, directory_query_is_end, file_identity,
-            nt_create_options_for_std_file, open_any_child_for_delete,
+            nt_create_options_for_std_file, open_any_child_for_delete, open_any_child_nofollow,
             open_directory_child_for_rename, open_directory_child_nofollow,
             open_directory_nofollow, open_regular_child_nofollow, opened_child_kind,
             parse_directory_information_buffer, read_directory_names,
@@ -2857,6 +2850,25 @@ mod tests {
             drop(created);
             drop(parent);
             drop(root_handle);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn windows_open_any_child_nofollow_classifies_a_reparse_point() {
+            let root = unique_temp_root("open-any-reparse");
+            fs::create_dir_all(&root).unwrap();
+            let target = root.join("target.txt");
+            fs::write(&target, b"target").unwrap();
+            std::os::windows::fs::symlink_file(&target, root.join("link.txt")).unwrap();
+            let parent = open_directory_nofollow(&root).unwrap();
+
+            let (opened, kind) = open_any_child_nofollow(&parent, std::ffi::OsStr::new("link.txt"))
+                .expect("a no-follow open must return the reparse point itself");
+
+            assert_eq!(kind, OpenedChildKind::ReparsePoint);
+            assert_eq!(opened_child_kind(&opened).unwrap(), kind);
+            drop(opened);
+            drop(parent);
             fs::remove_dir_all(root).unwrap();
         }
 

@@ -961,6 +961,32 @@ mod windows_anchor_tests {
     }
 
     #[test]
+    fn windows_effective_config_cleanup_without_execution_anchor_returns_an_error() {
+        let root = unique_temp_root("private-stage-missing-execution-anchor");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let target_parent = DirectoryAnchor::capture_exact(&workspace).unwrap();
+        let mut stage = PrivateDumpStage::create(&target_parent).unwrap();
+        stage
+            .write_effective_config(&serde_yaml::Value::String("secret".to_string()))
+            .unwrap();
+        let execution_anchor = stage.execution_anchor.take().unwrap();
+
+        let cleanup =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| stage.cleanup_now()));
+        let error = cleanup
+            .expect("cleanup must return an error instead of panicking")
+            .expect_err("cleanup without the execution anchor must fail");
+
+        assert!(error.contains("execution anchor"), "{error}");
+        assert!(!stage.effective_config_secret_present);
+        assert!(stage.effective_config_handle.is_some());
+        stage.execution_anchor = Some(execution_anchor);
+        stage.cleanup_now().unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn windows_private_stage_cleanup_requires_parent_relative_root_absence() {
         let root = unique_temp_root("private-stage-root-absence");
         let workspace = root.join("workspace");
@@ -3029,7 +3055,8 @@ fn secure_path_is_absent(path: &Path) -> Result<bool, String> {
         )
     })?;
     match open_any_child_nofollow(&parent, &name) {
-        Ok(_) => Ok(false),
+        Ok((_child, OpenedChildKind::ReparsePoint)) => Ok(false),
+        Ok((_child, _kind)) => Ok(false),
         Err(error)
             if matches!(
                 error.raw_os_error(),
@@ -3039,12 +3066,6 @@ fn secure_path_is_absent(path: &Path) -> Result<bool, String> {
             ) =>
         {
             Ok(true)
-        }
-        Err(error)
-            if error.kind() == ErrorKind::InvalidInput
-                && error.to_string().contains("reparse point") =>
-        {
-            Ok(false)
         }
         Err(error) => Err(format!(
             "failed to securely inspect {}: {error}",
@@ -3923,10 +3944,16 @@ impl PrivateDumpStage {
                 "private effective config scrub sync failed for {}: {error}; secret-bearing private data may remain",
                 self.effective_config.display()
             )
-            })?;
+        })?;
         self.effective_config_secret_present = false;
+        let execution_anchor = self.execution_anchor.as_ref().ok_or_else(|| {
+            format!(
+                "private effective config cleanup cannot unlink {} because the execution anchor is closed; the scrubbed private file may remain",
+                self.effective_config.display()
+            )
+        })?;
         let unlink = unlink_bound_regular_child(
-            &self.execution_anchor().directory,
+            &execution_anchor.directory,
             OsStr::new(EFFECTIVE_CONFIG_NAME),
             identity,
         )
@@ -4151,7 +4178,7 @@ fn prove_windows_child_absent(
 ) -> Result<(), String> {
     match open_any_child_nofollow(parent, name) {
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-        Ok(child) => {
+        Ok((child, _kind)) => {
             drop(child);
             Err(format!(
                 "private path is still present after cleanup; absence was not proven: {}",
@@ -4957,7 +4984,7 @@ fn capture_directory_snapshot_recursive(
     for name in &initial_names {
         let relative = relative_root.join(name);
         let display_path = display_root.join(&relative);
-        let opened = open_any_child_nofollow(directory, name).map_err(|error| {
+        let (opened, opened_kind) = open_any_child_nofollow(directory, name).map_err(|error| {
             format!(
                 "dump tree contains an unsupported entry {}: {error}",
                 display_path.display()
@@ -4969,14 +4996,7 @@ fn capture_directory_snapshot_recursive(
                 display_path.display()
             )
         })?;
-        let metadata = opened.metadata().map_err(|error| {
-            format!(
-                "failed to inspect opened entry {}: {error}",
-                display_path.display()
-            )
-        })?;
-
-        if metadata.is_dir() {
+        if opened_kind == OpenedChildKind::Directory {
             let child = open_directory_child_nofollow(directory, name).map_err(|error| {
                 format!(
                     "failed to securely bind directory {}: {error}",
@@ -5021,7 +5041,7 @@ fn capture_directory_snapshot_recursive(
             continue;
         }
 
-        if !metadata.is_file() {
+        if opened_kind != OpenedChildKind::RegularFile {
             return Err(format!(
                 "dump tree contains an unsupported entry kind: {}",
                 display_path.display()
@@ -8846,10 +8866,35 @@ mod tests {
         let platform = fixed_platform(&root);
         let runner = DumpRunner::valid();
         let raced_target = target.clone();
+        let hook_workspace = context.cwd.clone();
 
         let result = with_publication_hook(
-            PublicationCheckpoint::BeforeStageInstall,
+            PublicationCheckpoint::AfterBackup,
             move || {
+                assert!(
+                    !raced_target.exists(),
+                    "the original destination must already be moved to backup"
+                );
+                let private_root = std::fs::read_dir(&hook_workspace)
+                    .unwrap()
+                    .flatten()
+                    .map(|entry| entry.path())
+                    .find(|path| {
+                        path.file_name().is_some_and(|name| {
+                            name.to_string_lossy().starts_with(".unica-dump-guard-")
+                        })
+                    })
+                    .expect("private dump root");
+                assert!(
+                    std::fs::read_dir(private_root.join("recovery"))
+                        .unwrap()
+                        .flatten()
+                        .any(|entry| entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with("target-backup-")),
+                    "the original destination backup must be retained for rollback"
+                );
                 std::fs::create_dir_all(&raced_target).unwrap();
                 std::fs::write(raced_target.join("racer.txt"), b"racer").unwrap();
             },
