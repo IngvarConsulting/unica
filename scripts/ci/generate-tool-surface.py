@@ -39,6 +39,14 @@ CONTRACT_STATES = {
     "prose": "Отвечают прозой в `stdout`",
 }
 
+# Граница работы по типизации. Инструмент, который планируется снять, не
+# получает нового контракта: вложение в него оплачивается дважды.
+SCOPE_TITLES = {
+    "in": "В границах типизации",
+    "retiring": "Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`)",
+    "runtime": "Вне границ: семейство runtime и build изучается отдельно",
+}
+
 GROUP_TITLES = {
     "build": "build — сборка и запуск платформы",
     "cf": "cf — корень конфигурации",
@@ -150,8 +158,14 @@ def render(tools: list[dict], review: dict) -> str:
         raise SystemExit(f"данные ревью для снятых инструментов: {', '.join(stale)}")
 
     states = {state: 0 for state in CONTRACT_STATES}
+    scopes = {scope: 0 for scope in SCOPE_TITLES}
+    remaining = 0
     for name in published:
-        states[review[name]["result"]["contract"]] += 1
+        entry = review[name]
+        states[entry["result"]["contract"]] += 1
+        scopes[entry["scope"]] += 1
+        if entry["scope"] == "in" and entry["result"]["contract"] != "typed":
+            remaining += 1
     wide = sum(
         1
         for tool in tools
@@ -183,9 +197,12 @@ def render(tools: list[dict], review: dict) -> str:
     out.append(f"- Инструментов: **{len(tools)}**")
     for state, title in CONTRACT_STATES.items():
         out.append(f"- {title}: **{states[state]}**")
+    out.append("")
+    for scope, title in SCOPE_TITLES.items():
+        out.append(f"- {title}: **{scopes[scope]}**")
     out.append(
-        f"- Осталось перевести на типизированный `data`:"
-        f" **{states['prose'] + states['partial']}**"
+        f"- Осталось перевести на типизированный `data` в границах работы:"
+        f" **{remaining}**"
     )
     out.append(
         f"- Публикуют больше {SHARED_ARGUMENT_THRESHOLD} аргументов из общего"
@@ -214,7 +231,10 @@ def render(tools: list[dict], review: dict) -> str:
                 f" ({CONTRACT_STATES[entry['result']['contract']].lower()})"
             )
             out.append("")
-            out.append(f"**Целевой контракт:** {entry['result']['target']}")
+            if entry["scope"] == "in":
+                out.append(f"**Целевой контракт:** {entry['result']['target']}")
+            else:
+                out.append(f"**{SCOPE_TITLES[entry['scope']]}.**")
             out.append("")
             out.append("**Сценарии:**")
             out.append("")

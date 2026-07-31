@@ -54,6 +54,7 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
                 # note beside it: counting progress by matching substrings in
                 # prose is the very mistake ADR-0023 removes from the tools.
                 self.assertIn(entry["result"]["contract"], self.module.CONTRACT_STATES)
+                self.assertIn(entry["scope"], self.module.SCOPE_TITLES)
                 self.assertTrue(entry["result"]["now"].strip(), name)
                 self.assertTrue(entry["result"]["target"].strip(), name)
                 # One scenario documents a tool nobody reviewed against real
@@ -80,8 +81,27 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
         self.assertEqual(sum(states.values()), len(self.tools))
         for state, title in self.module.CONTRACT_STATES.items():
             self.assertIn(f"- {title}: **{states[state]}**", text)
-        remaining = states["prose"] + states["partial"]
-        self.assertIn(f"типизированный `data`: **{remaining}**", text)
+        remaining = sum(
+            1
+            for entry in self.review.values()
+            if entry["scope"] == "in" and entry["result"]["contract"] != "typed"
+        )
+        self.assertIn(f"в границах работы: **{remaining}**", text)
+
+    def test_retiring_and_runtime_tools_stay_outside_the_typing_work(self) -> None:
+        """A tool slated for removal is not worth a new contract, and the
+        runtime family is decided separately: both must be excluded by an
+        explicit field, not by whoever remembers the conversation."""
+
+        for name, entry in sorted(self.review.items()):
+            operation = name.rsplit(".", 1)[-1]
+            with self.subTest(tool=name):
+                if operation in {"validate", "compile", "decompile"}:
+                    self.assertEqual(entry["scope"], "retiring")
+                elif name.startswith(("unica.runtime.", "unica.build.")):
+                    self.assertEqual(entry["scope"], "runtime")
+                else:
+                    self.assertEqual(entry["scope"], "in")
 
     def test_a_partially_typed_tool_is_not_counted_as_migrated(self) -> None:
         """meta.info puts its resolved address in `data` and its report in
