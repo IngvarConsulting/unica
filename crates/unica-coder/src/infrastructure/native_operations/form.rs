@@ -1427,7 +1427,7 @@ pub(crate) struct FormInfoData {
     /// `BaseForm` version for an extension form; `null` when the form declares
     /// no base form, empty string when it declares one without a version.
     pub(crate) base_form_version: Option<String>,
-    pub(crate) support: SupportData,
+    pub(crate) support: ObjectSupportData,
     pub(crate) properties: Vec<FormInfoProperty>,
     pub(crate) events: Vec<FormInfoEvent>,
     /// Items of the form's own command bar; empty when it has none or when
@@ -1759,7 +1759,7 @@ pub(crate) fn analyze_form_info_with_data(
             is_extension,
             base_form_version: base_form
                 .map(|node| node.attribute("version").unwrap_or("").to_string()),
-            support: support_state_data(&form_path, false),
+            support: object_support_state(&form_path),
             properties,
             events: form_child(root, "Events")
                 .map(form_info_events_section)

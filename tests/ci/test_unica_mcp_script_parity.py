@@ -217,34 +217,6 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
-        name="meta-info-catalog-overview-outfile",
-        tool="unica.meta.info",
-        skill="meta-info",
-        script="meta-info.py",
-        arguments={
-            "sourceSet": "main",
-            "metadataPath": "Catalog.ParityCatalog",
-            "Mode": "overview",
-        },
-        reference_arguments={
-            "ObjectPath": "src/Catalogs/ParityCatalog.xml",
-            "Mode": "overview",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="meta-compile",
-                script="meta-compile.py",
-                arguments={"JsonPath": "fixtures/meta-catalog.json", "OutputDir": "src"},
-            ),
-        ),
-        fixtures=(
-            FileFixture("meta-catalog.json", "fixtures/meta-catalog.json"),
-            FileFixture("meta-info/v8project.yaml", "v8project.yaml"),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
         name="meta-validate-catalog-detailed-outfile",
         tool="unica.meta.validate",
         skill="meta-validate",
@@ -324,28 +296,6 @@ SUCCESS_SCENARIOS = [
         expect_ok=True,
     ),
     ParityScenario(
-        name="bsp-meta-info-catalog-full",
-        tool="unica.meta.info",
-        skill="meta-info",
-        script="meta-info.py",
-        arguments={
-            "sourceSet": "main",
-            "metadataPath": "Catalog.Валюты",
-            "Mode": "full",
-            "Limit": 200,
-        },
-        reference_arguments={
-            "ObjectPath": "src/Catalogs/Валюты.xml",
-            "Mode": "full",
-            "Limit": 200,
-        },
-        fixtures=(
-            FileFixture(BSP_META_CATALOG_FIXTURE, "src/Catalogs/Валюты.xml"),
-            FileFixture("meta-info/v8project.yaml", "v8project.yaml"),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
         name="bsp-meta-validate-catalog-detailed",
         tool="unica.meta.validate",
         skill="meta-validate",
@@ -357,31 +307,6 @@ SUCCESS_SCENARIOS = [
         },
         fixtures=BSP_META_VALIDATE_OWNER_FIXTURES
         + (FileFixture(BSP_META_CATALOG_FIXTURE, "src/Catalogs/Валюты.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-meta-info-document-full",
-        tool="unica.meta.info",
-        skill="meta-info",
-        script="meta-info.py",
-        arguments={
-            "sourceSet": "main",
-            "metadataPath": "Document.АктОбУничтоженииПерсональныхДанных",
-            "Mode": "full",
-            "Limit": 200,
-        },
-        reference_arguments={
-            "ObjectPath": "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
-            "Mode": "full",
-            "Limit": 200,
-        },
-        fixtures=(
-            FileFixture(
-                BSP_META_DOCUMENT_FIXTURE,
-                "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
-            ),
-            FileFixture("meta-info/v8project.yaml", "v8project.yaml"),
-        ),
         expect_ok=True,
     ),
     ParityScenario(
@@ -404,28 +329,6 @@ SUCCESS_SCENARIOS = [
         expect_ok=True,
     ),
     ParityScenario(
-        name="bsp-meta-info-report-full",
-        tool="unica.meta.info",
-        skill="meta-info",
-        script="meta-info.py",
-        arguments={
-            "sourceSet": "main",
-            "metadataPath": "Report.АнализВерсийОбъектов",
-            "Mode": "full",
-            "Limit": 200,
-        },
-        reference_arguments={
-            "ObjectPath": "src/Reports/АнализВерсийОбъектов.xml",
-            "Mode": "full",
-            "Limit": 200,
-        },
-        fixtures=(
-            FileFixture(BSP_META_REPORT_FIXTURE, "src/Reports/АнализВерсийОбъектов.xml"),
-            FileFixture("meta-info/v8project.yaml", "v8project.yaml"),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
         name="bsp-meta-validate-report-detailed",
         tool="unica.meta.validate",
         skill="meta-validate",
@@ -437,32 +340,6 @@ SUCCESS_SCENARIOS = [
         },
         fixtures=BSP_META_VALIDATE_OWNER_FIXTURES
         + (FileFixture(BSP_META_REPORT_FIXTURE, "src/Reports/АнализВерсийОбъектов.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-meta-info-common-module-full",
-        tool="unica.meta.info",
-        skill="meta-info",
-        script="meta-info.py",
-        arguments={
-            "sourceSet": "main",
-            "metadataPath": "CommonModule.GoogleПереводчик",
-            "Mode": "full",
-            "Limit": 200,
-        },
-        reference_arguments={
-            "ObjectPath": "src/CommonModules/GoogleПереводчик.xml",
-            "Mode": "full",
-            "Limit": 200,
-        },
-        fixtures=(
-            FileFixture(BSP_META_COMMON_MODULE_FIXTURE, "src/CommonModules/GoogleПереводчик.xml"),
-            FileFixture(
-                BSP_META_COMMON_MODULE_BSL_FIXTURE,
-                "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
-            ),
-            FileFixture("meta-info/v8project.yaml", "v8project.yaml"),
-        ),
         expect_ok=True,
     ),
     ParityScenario(
@@ -486,28 +363,6 @@ SUCCESS_SCENARIOS = [
         expect_ok=True,
     ),
     ParityScenario(
-        name="bsp-meta-info-enum-full",
-        tool="unica.meta.info",
-        skill="meta-info",
-        script="meta-info.py",
-        arguments={
-            "sourceSet": "main",
-            "metadataPath": "Enum.ВажностьПроблемыУчета",
-            "Mode": "full",
-            "Limit": 200,
-        },
-        reference_arguments={
-            "ObjectPath": "src/Enums/ВажностьПроблемыУчета.xml",
-            "Mode": "full",
-            "Limit": 200,
-        },
-        fixtures=(
-            FileFixture(BSP_META_ENUM_FIXTURE, "src/Enums/ВажностьПроблемыУчета.xml"),
-            FileFixture("meta-info/v8project.yaml", "v8project.yaml"),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
         name="bsp-meta-validate-enum-detailed",
         tool="unica.meta.validate",
         skill="meta-validate",
@@ -519,31 +374,6 @@ SUCCESS_SCENARIOS = [
         },
         fixtures=BSP_META_VALIDATE_OWNER_FIXTURES
         + (FileFixture(BSP_META_ENUM_FIXTURE, "src/Enums/ВажностьПроблемыУчета.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-meta-info-information-register-full",
-        tool="unica.meta.info",
-        skill="meta-info",
-        script="meta-info.py",
-        arguments={
-            "sourceSet": "main",
-            "metadataPath": "InformationRegister.АдминистративнаяИерархия",
-            "Mode": "full",
-            "Limit": 200,
-        },
-        reference_arguments={
-            "ObjectPath": "src/InformationRegisters/АдминистративнаяИерархия.xml",
-            "Mode": "full",
-            "Limit": 200,
-        },
-        fixtures=(
-            FileFixture(
-                BSP_META_INFORMATION_REGISTER_FIXTURE,
-                "src/InformationRegisters/АдминистративнаяИерархия.xml",
-            ),
-            FileFixture("meta-info/v8project.yaml", "v8project.yaml"),
-        ),
         expect_ok=True,
     ),
     ParityScenario(
@@ -1532,7 +1362,6 @@ NATIVE_PARITY_TOOLS = {
     "unica.cfe.validate",
     "unica.form.validate",
     "unica.meta.compile",
-    "unica.meta.info",
     "unica.meta.validate",
     "unica.form.compile",
     "unica.form.validate",
@@ -1574,6 +1403,7 @@ TYPED_RESULT_TOOLS = {
     "unica.help.add",
     "unica.interface.edit",
     "unica.meta.edit",
+    "unica.meta.info",
     "unica.meta.remove",
     "unica.mxl.info",
     "unica.role.info",
@@ -1587,7 +1417,6 @@ EXPECTED_TOOLS = {
     "unica.cf.validate",
     "unica.cfe.validate",
     "unica.meta.compile",
-    "unica.meta.info",
     "unica.meta.validate",
     "unica.form.compile",
     "unica.form.validate",
@@ -1606,7 +1435,6 @@ EXPECTED_TOOLS = {
 
 BSP_PARITY_REQUIRED_TOOLS = {
     "unica.cf.validate",
-    "unica.meta.info",
     "unica.meta.validate",
     "unica.form.validate",
     "unica.dcs.info",

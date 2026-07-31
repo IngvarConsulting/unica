@@ -7831,9 +7831,116 @@ pub(crate) fn meta_validate_forbidden_properties(md_type: &str) -> Option<&'stat
     }
 }
 
+/// Typed answer of `unica.meta.info` (ADR-0023). The report translated platform
+/// properties into Russian prose (`Номер: Строка(9), помесячно, авто`); the data
+/// carries the platform's own property names and values instead, so the twenty
+/// three metadata kinds need one shape rather than fifteen bespoke sections.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MetaInfoData {
+    /// The logical address this call resolved (ADR-0021).
+    pub(crate) target: ResolvedTarget,
+    /// The platform's metadata kind: `Catalog`, `Document`, `CommonModule`, …
+    pub(crate) kind: String,
+    pub(crate) name: String,
+    /// The object's synonym; `null` when it declares none.
+    pub(crate) synonym: Option<String>,
+    pub(crate) support: ObjectSupportData,
+    /// Scalar properties under `Properties`, by their platform names.
+    pub(crate) properties: Vec<MetaInfoProperty>,
+    /// Owners of a subordinate catalog; empty for everything else.
+    pub(crate) owners: Vec<String>,
+    pub(crate) attributes: Vec<MetaInfoAttrData>,
+    /// Register dimensions; empty for every other kind.
+    pub(crate) dimensions: Vec<MetaInfoAttrData>,
+    /// Register resources; empty for every other kind.
+    pub(crate) resources: Vec<MetaInfoAttrData>,
+    pub(crate) tabular_sections: Vec<MetaInfoTabularSectionData>,
+    /// Enumeration values; empty for every other kind.
+    pub(crate) enum_values: Vec<String>,
+    pub(crate) forms: Vec<String>,
+    pub(crate) templates: Vec<String>,
+    pub(crate) commands: Vec<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MetaInfoProperty {
+    pub(crate) name: String,
+    pub(crate) value: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MetaInfoAttrData {
+    pub(crate) name: String,
+    #[serde(rename = "type")]
+    pub(crate) type_name: Option<String>,
+    /// Platform flags the report rendered inline, one entry each.
+    pub(crate) flags: Vec<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MetaInfoTabularSectionData {
+    pub(crate) name: String,
+    pub(crate) columns: Vec<MetaInfoAttrData>,
+}
+
+fn meta_info_attr_data(attrs: Vec<MetaInfoAttr<'_, '_>>) -> Vec<MetaInfoAttrData> {
+    attrs
+        .into_iter()
+        .map(|attr| MetaInfoAttrData {
+            name: attr.name,
+            type_name: (!attr.type_name.is_empty()).then_some(attr.type_name),
+            flags: attr
+                .flags
+                .split(',')
+                .map(str::trim)
+                .filter(|flag| !flag.is_empty())
+                .map(str::to_string)
+                .collect(),
+        })
+        .collect()
+}
+
+/// Scalar `Properties` children, by their platform names. Composite children
+/// (`Synonym`, `Type`, `Owners`, …) have their own typed places and are skipped
+/// here so the map stays flat.
+fn meta_info_properties(props: Option<roxmltree::Node<'_, '_>>) -> Vec<MetaInfoProperty> {
+    let Some(props) = props else {
+        return Vec::new();
+    };
+    props
+        .children()
+        .filter(|child| child.is_element())
+        .filter(|child| child.children().all(|node| !node.is_element()))
+        .filter_map(|child| {
+            let name = child.tag_name().name().to_string();
+            if matches!(name.as_str(), "Name") {
+                return None;
+            }
+            let value = child.text().unwrap_or("").trim().to_string();
+            (!value.is_empty()).then_some(MetaInfoProperty { name, value })
+        })
+        .collect()
+}
+
+fn meta_info_owner_names(props: Option<roxmltree::Node<'_, '_>>) -> Vec<String> {
+    let Some(owners_node) = props.and_then(|node| meta_info_child(node, "Owners")) else {
+        return Vec::new();
+    };
+    meta_info_children(owners_node, "Item")
+        .into_iter()
+        .map(meta_info_inner_text)
+        .map(|owner| owner.trim().to_string())
+        .filter(|owner| !owner.is_empty())
+        .collect()
+}
+
 pub(crate) struct MetaInfoExecution {
     pub(crate) outcome: AdapterOutcome,
-    pub(crate) data: Option<ResolvedTarget>,
+    pub(crate) data: Option<MetaInfoData>,
 }
 
 pub(crate) fn analyze_meta_info(
@@ -7853,7 +7960,7 @@ pub(crate) fn analyze_meta_info_with_data(
 ) -> MetaInfoExecution {
     const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
-    let result = (|| -> Result<(String, PathBuf, ResolvedTarget), String> {
+    let result = (|| -> Result<(MetaInfoData, PathBuf), String> {
         let (resolved, object_path) = resolve_metadata_object_descriptor(args, context)?;
         let text = read_utf8_sig(&object_path)?;
         let doc = Document::parse(text.trim_start_matches('\u{feff}'))
@@ -7879,38 +7986,73 @@ pub(crate) fn analyze_meta_info_with_data(
             .and_then(|node| meta_info_child(node, "Synonym"))
             .map(meta_info_ml_text)
             .unwrap_or_default();
+        // Mode and Name sliced one object into shorter reports. Data answers
+        // with the whole object once; a caller projects what it needs.
         let mode = string_arg(args, &["mode", "Mode"]).unwrap_or("overview");
-        let drill_name = string_arg(args, &["name", "Name"]).unwrap_or("");
-
-        let mut lines = if drill_name.is_empty() {
-            meta_info_main_lines(md_type, props, child_objs, &obj_name, &synonym, mode)?
-        } else {
-            meta_info_drill_lines(md_type, child_objs, drill_name, &obj_name)?
-        };
-        if drill_name.is_empty() {
-            lines.insert(
-                1,
-                format!("Поддержка: {}", support_status_for_path(&object_path)),
-            );
+        if !matches!(mode, "overview" | "brief" | "full") {
+            return Err(format!(
+                "argument -Mode: invalid choice: '{mode}' (choose from 'overview', 'brief', 'full')"
+            ));
         }
-        let output_text = meta_info_paginate(lines, args);
-        Ok((format!("{output_text}\n"), object_path, resolved))
+
+        let is_register = md_type.ends_with("Register");
+        let data = MetaInfoData {
+            target: resolved,
+            kind: md_type.to_string(),
+            name: obj_name,
+            synonym: (!synonym.is_empty()).then_some(synonym),
+            support: object_support_state(&object_path),
+            properties: meta_info_properties(props),
+            owners: meta_info_owner_names(props),
+            attributes: if md_type == "Enum" {
+                Vec::new()
+            } else {
+                meta_info_attr_data(meta_info_attributes(child_objs, "Attribute", false))
+            },
+            dimensions: if is_register {
+                meta_info_attr_data(meta_info_attributes(child_objs, "Dimension", true))
+            } else {
+                Vec::new()
+            },
+            resources: if is_register {
+                meta_info_attr_data(meta_info_attributes(child_objs, "Resource", false))
+            } else {
+                Vec::new()
+            },
+            tabular_sections: meta_info_tabular_sections(child_objs)
+                .into_iter()
+                .map(|section| MetaInfoTabularSectionData {
+                    name: section.name,
+                    columns: meta_info_attr_data(section.columns),
+                })
+                .collect(),
+            enum_values: meta_info_enum_values(child_objs),
+            forms: meta_info_simple_children(child_objs, "Form"),
+            templates: meta_info_simple_children(child_objs, "Template"),
+            commands: meta_info_simple_children(child_objs, "Command"),
+        };
+        Ok((data, object_path))
     })();
 
     match result {
-        Ok((stdout, artifact, resolved)) => MetaInfoExecution {
+        Ok((data, artifact)) => MetaInfoExecution {
             outcome: AdapterOutcome {
                 ok: true,
-                summary: "unica.meta.info completed with native metadata analyzer".to_string(),
+                summary: format!(
+                    "unica.meta.info described {} {} with {} attribute(s)",
+                    data.kind,
+                    data.name,
+                    data.attributes.len()
+                ),
                 changes: Vec::new(),
                 warnings: Vec::new(),
                 errors: Vec::new(),
                 artifacts: vec![artifact.display().to_string()],
-                stdout: Some(stdout),
+                stdout: None,
                 stderr: Some(String::new()),
                 command: None,
             },
-            data: Some(resolved),
+            data: Some(data),
         },
         Err(error) => MetaInfoExecution {
             outcome: AdapterOutcome {
@@ -7920,8 +8062,8 @@ pub(crate) fn analyze_meta_info_with_data(
                 warnings: Vec::new(),
                 errors: vec![error.clone()],
                 artifacts: Vec::new(),
-                stdout: Some(format!("{error}\n")),
-                stderr: Some(String::new()),
+                stdout: None,
+                stderr: Some(format!("{error}\n")),
                 command: None,
             },
             data: None,
@@ -20154,12 +20296,12 @@ mod meta_info_logical_target_tests {
         let execution = analyze_meta_info_with_data(&info_args("Catalog.Items"), &context);
 
         assert!(execution.outcome.ok, "{:?}", execution.outcome);
-        let stdout = execution.outcome.stdout.unwrap();
-        assert!(stdout.contains("Справочник: Items"), "{stdout}");
-        let resolved = execution.data.expect("a resolved target is reported");
-        assert_eq!(resolved.source_set, "main");
+        let data = execution.data.expect("a resolved target is reported");
+        assert_eq!(data.kind, "Catalog");
+        assert_eq!(data.name, "Items");
+        assert_eq!(data.target.source_set, "main");
         assert_eq!(
-            resolved.metadata_path.as_ref().map(|path| path.as_str()),
+            data.target.metadata_path.as_ref().map(|path| path.as_str()),
             Some("Catalog.Items")
         );
         let _ = fs::remove_dir_all(&context.workspace_root);
@@ -20177,7 +20319,7 @@ mod meta_info_logical_target_tests {
         assert_eq!(
             execution
                 .data
-                .and_then(|resolved| resolved.metadata_path)
+                .and_then(|data| data.target.metadata_path)
                 .map(|path| path.as_str().to_string()),
             Some("Catalog.Items".to_string())
         );
@@ -20201,16 +20343,24 @@ mod meta_info_logical_target_tests {
         )
         .unwrap();
 
-        let subordinate = analyze_meta_info(&info_args("Catalog.Series"), &context);
-        let plain = analyze_meta_info(&info_args("Catalog.Plain"), &context);
+        let subordinate = analyze_meta_info_with_data(&info_args("Catalog.Series"), &context);
+        let plain = analyze_meta_info_with_data(&info_args("Catalog.Plain"), &context);
 
-        assert!(subordinate.ok, "{subordinate:?}");
-        assert!(subordinate
-            .stdout
-            .unwrap()
-            .contains("Владельцы (2): Catalog.Items, Catalog.Kinds"),);
-        assert!(plain.ok, "{plain:?}");
-        assert!(plain.stdout.unwrap().contains("Владельцы: нет"));
+        assert!(subordinate.outcome.ok, "{:?}", subordinate.outcome);
+        assert_eq!(
+            subordinate
+                .data
+                .expect("meta.info answers with data")
+                .owners,
+            vec!["Catalog.Items".to_string(), "Catalog.Kinds".to_string()]
+        );
+        assert!(plain.outcome.ok, "{:?}", plain.outcome);
+        // An empty list is the answer: the catalog is not subordinate.
+        assert!(plain
+            .data
+            .expect("meta.info answers with data")
+            .owners
+            .is_empty());
         let _ = fs::remove_dir_all(&context.workspace_root);
     }
 
@@ -20225,16 +20375,24 @@ mod meta_info_logical_target_tests {
         )
         .unwrap();
 
-        let outcome = analyze_meta_info(&info_args("Catalog.Flat"), &context);
+        let execution = analyze_meta_info_with_data(&info_args("Catalog.Flat"), &context);
 
-        assert!(outcome.ok, "{outcome:?}");
-        let stdout = outcome.stdout.unwrap();
-        assert!(stdout.contains("Иерархический: нет"), "{stdout}");
-        assert!(stdout.contains("Код: нет"), "{stdout}");
-        assert!(stdout.contains("Наименование(150)"), "{stdout}");
-        assert!(stdout.contains("Основное представление: код"), "{stdout}");
+        assert!(execution.outcome.ok, "{:?}", execution.outcome);
+        let data = execution.data.expect("meta.info answers with data");
+        // Properties keep the platform's own names and values, so a negative is
+        // stated rather than left out.
+        let property = |name: &str| {
+            data.properties
+                .iter()
+                .find(|property| property.name == name)
+                .map(|property| property.value.as_str())
+        };
+        assert_eq!(property("Hierarchical"), Some("false"), "{data:?}");
+        assert_eq!(property("CodeLength"), Some("0"), "{data:?}");
+        assert_eq!(property("DescriptionLength"), Some("150"), "{data:?}");
+        assert_eq!(property("DefaultPresentation"), Some("AsCode"), "{data:?}");
         // Forms used to appear in overview only for reports and data processors.
-        assert!(stdout.contains("Формы: ФормаЭлемента"), "{stdout}");
+        assert_eq!(data.forms, vec!["ФормаЭлемента".to_string()]);
         let _ = fs::remove_dir_all(&context.workspace_root);
     }
 

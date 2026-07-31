@@ -3202,7 +3202,6 @@ mod tests {
             "unica.cf.validate",
             "unica.cfe.validate",
             "unica.meta.compile",
-            "unica.meta.info",
             "unica.meta.validate",
             "unica.form.compile",
             "unica.form.validate",
@@ -3245,6 +3244,7 @@ mod tests {
             "unica.dcs.edit",
             "unica.form.edit",
             "unica.form.info",
+            "unica.meta.info",
         ];
 
         for tool in tools() {
@@ -5074,10 +5074,20 @@ mod tests {
             .unwrap();
 
         assert!(result.ok);
-        let stdout = result.stdout.unwrap();
-        assert!(stdout.contains("Поддержка: на замке"));
-        assert!(stdout.contains("cfe-*"));
-        assert!(!stdout.contains("powershell.exe"));
+        // The locked rule is a per-object fact: the configuration is on
+        // support, but this object must not be edited directly.
+        let data = result.data.as_ref().expect("meta.info answers with data");
+        assert_eq!(
+            data["support"]["state"],
+            serde_json::json!("locked"),
+            "{data:?}"
+        );
+        assert_eq!(
+            data["support"]["directEditSafe"],
+            serde_json::json!(false),
+            "{data:?}"
+        );
+        assert!(result.stdout.is_none(), "{result:?}");
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -7537,10 +7547,12 @@ mod tests {
         let info = UnicaApplication::new()
             .call_tool("unica.meta.info", &info_args)
             .unwrap();
-        assert!(info
-            .stdout
-            .unwrap()
-            .contains("редактируется с сохранением поддержки"));
+        let info_data = info.data.as_ref().expect("meta.info answers with data");
+        assert_eq!(
+            info_data["support"]["state"],
+            serde_json::json!("editableWithSupport"),
+            "{info_data:?}"
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }

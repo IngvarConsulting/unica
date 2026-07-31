@@ -2398,6 +2398,52 @@ pub(crate) fn support_state_lines_for_configuration(
     lines
 }
 
+/// Per-object support state (ADR-0023). The configuration-level [`SupportData`]
+/// cannot answer this: a supported configuration still holds one rule per
+/// object, and "locked" versus "editable while supported" is the fact that
+/// decides whether a direct edit breaks vendor updates.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ObjectSupportData {
+    /// `notSupported`, `removedFromSupport`, `configurationReadOnly`, `locked`
+    /// or `editableWithSupport`.
+    pub(crate) state: &'static str,
+    /// Whether editing this object directly is safe for vendor updates.
+    /// `null` when the object is not on support at all.
+    pub(crate) direct_edit_safe: Option<bool>,
+}
+
+pub(crate) fn object_support_state(target_path: &Path) -> ObjectSupportData {
+    fn data(state: &'static str, direct_edit_safe: Option<bool>) -> ObjectSupportData {
+        ObjectSupportData {
+            state,
+            direct_edit_safe,
+        }
+    }
+    let Some(config_dir) = find_support_config_dir(target_path) else {
+        return data("notSupported", None);
+    };
+    let bin_path = config_dir.join("Ext").join("ParentConfigurations.bin");
+    let Some(state) = read_support_state(&bin_path) else {
+        return data("notSupported", None);
+    };
+    if state.removed {
+        return data("removedFromSupport", Some(true));
+    }
+    if !state.global_editing_enabled {
+        return data("configurationReadOnly", Some(false));
+    }
+    let Some(object_uuid) = support_object_uuid_for_path(target_path) else {
+        return data("notSupported", None);
+    };
+    match state.object_rule(&object_uuid) {
+        Some(0) => data("locked", Some(false)),
+        Some(1) => data("editableWithSupport", Some(true)),
+        Some(2) => data("removedFromSupport", Some(true)),
+        _ => data("notSupported", None),
+    }
+}
+
 pub(crate) fn support_status_for_path(target_path: &Path) -> String {
     let Some(config_dir) = find_support_config_dir(target_path) else {
         return "не на поддержке".to_string();
