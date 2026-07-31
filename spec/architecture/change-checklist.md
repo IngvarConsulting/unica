@@ -31,6 +31,10 @@
   решения меняются одним набором изменений (`INV-MCP-SURFACE-SYNC`).
 - [ ] Пять `unica.source.*` сохраняют логические и ограниченные схемы без
   физических путей и закрытых ручек (`INV-MCP-SOURCE-SURFACE`).
+- [ ] Ведомость [`tool-surface.md`](tool-surface.md) перегенерирована, а у
+  нового или изменённого инструмента есть запись в `tool-surface-review.json` с
+  контрактом результата и сценариями
+  (`python3.12 scripts/ci/generate-tool-surface.py`).
 - [ ] `unica.code.search` сохраняет три независимые секции, их порядок и
   политику частичного успеха (`INV-MCP-CODE-SEARCH-SECTIONS`).
 

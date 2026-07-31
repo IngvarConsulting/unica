@@ -35,7 +35,7 @@
 
 | Задача | Что читать сначала | Где менять код |
 | --- | --- | --- |
-| Новый или изменённый публичный инструмент `unica.*` | `architecture/invariants.md` (`INV-MCP-NAMESPACE`, `INV-MCP-SURFACE-SYNC`), `architecture/change-checklist.md` | `crates/unica-coder/src/application/mod.rs` (`tools()`), `crates/unica-coder/src/application/tool_contracts.rs`, `crates/unica-coder/src/application/operation_descriptors.rs`, `crates/unica-coder/src/infrastructure/native_operations/<группа>.rs`, `plugins/unica/skills/<имя>/SKILL.md` |
+| Новый или изменённый публичный инструмент `unica.*` | `architecture/invariants.md` (`INV-MCP-NAMESPACE`, `INV-MCP-SURFACE-SYNC`), `architecture/tool-surface.md` (ведомость поверхности), `architecture/change-checklist.md` | `crates/unica-coder/src/application/mod.rs` (`tools()`), `crates/unica-coder/src/application/tool_contracts.rs`, `crates/unica-coder/src/application/operation_descriptors.rs`, `crates/unica-coder/src/infrastructure/native_operations/<группа>.rs`, `plugins/unica/skills/<имя>/SKILL.md` |
 | Изменение формата XML 1С или DSL | ADR-0016, `acceptance/format-profile-8-3-27.md` и `plugins/unica/references/specs/` | `crates/unica-coder/src/infrastructure/native_operations/` |
 | Кеш, состояние рабочего пространства, доменные события | ADR-0003, область `CACHE` реестра | `crates/unica-coder/src/domain/events.rs`, `crates/unica-coder/src/domain/cache.rs`, `crates/unica-coder/src/infrastructure/workspace_state.rs`, `crates/unica-coder/src/infrastructure/workspace.rs` |
 | Скрытый сервис рабочего пространства или задание runtime | ADR-0006, `architecture/runtime.md`, `INV-APP-LAZY-HIDDEN-SERVICES` | `crates/unica-coder/src/infrastructure/workspace_services.rs`, `crates/unica-coder/src/infrastructure/runtime_jobs.rs` |
