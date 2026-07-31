@@ -2262,7 +2262,7 @@ pub(crate) fn format_compatibility_warning(compatibility: &FormatCompatibility) 
 /// Typed answer shared by the writing tools (ADR-0023). Each tool builds it
 /// from the paths it actually touched, never by re-reading its own report: the
 /// point of the decision is to stop parsing prose, including our own.
-#[derive(serde::Serialize, Default)]
+#[derive(Debug, serde::Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MutationData {
     /// `false` when the call was a preview and nothing was written.

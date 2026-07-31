@@ -66,6 +66,14 @@ impl NativeOperationAdapter {
                             "interface edit",
                         );
                     }
+                    "support-edit" => {
+                        let execution = super::support::edit_support_with_data(args, context);
+                        return typed_operation_result(
+                            execution.outcome,
+                            execution.data,
+                            "support edit",
+                        );
+                    }
                     "form-remove" => {
                         let execution = form::remove_form_with_data(args, context);
                         return typed_operation_result(
