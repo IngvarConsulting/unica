@@ -7,16 +7,16 @@
 ## Итог
 
 - Инструментов: **71**
-- Отвечают типизированным `data`: **11**
+- Отвечают типизированным `data`: **12**
 - Типизированы частично: часть результата всё ещё текст: **4**
 - Отвечают снимком задания в `job`: **6**
-- Отвечают прозой в `stdout`: **50**
+- Отвечают прозой в `stdout`: **49**
 
 - В границах типизации: **43**
 - Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`): **16**
 - Вне границ: семейство runtime и build изучается отдельно: **12**
-- Осталось перевести на типизированный `data` в границах работы: **32**
-- Публикуют больше 20 аргументов из общего списка: **40**
+- Осталось перевести на типизированный `data` в границах работы: **31**
+- Публикуют больше 20 аргументов из общего списка: **39**
 
 ## build — сборка и запуск платформы
 
@@ -1447,17 +1447,19 @@ Inspect subsystem XML and command interface.
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
 | `SubsystemPath` | string | да | Path to a subsystem's XML, its directory, or the whole `Subsystems/` folder for `Mode=tree`, used by `unica.subsystem.info`/`edit`/`validate`, relative to `cwd` |
+| `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
+| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
+| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 
-Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+**Результат сейчас:** `data`: состав, группы, дочерние подсистемы и командный интерфейс, либо дерево иерархии для каталога (ADR-0023) (отвечают типизированным `data`)
 
-**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
-
-**Целевой контракт:** `data`: состав, дочерние подсистемы и командный интерфейс
+**Целевой контракт:** достигнут
 
 **Сценарии:**
 
 - Понять границы подсистемы перед добавлением объекта
-- Построить дерево подсистем конфигурации
+- Прочитать видимость и размещение команд подсистемы
+- Построить дерево подсистем конфигурации по каталогу `Subsystems`
 
 ### `unica.subsystem.validate`
 

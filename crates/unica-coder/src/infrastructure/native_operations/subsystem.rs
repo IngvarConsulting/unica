@@ -1339,99 +1339,395 @@ pub(crate) fn validate_subsystem_owner_path(
     })
 }
 
+#[cfg(test)]
+mod subsystem_info_typed_result_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn workspace(name: &str, with_command_interface: bool) -> (WorkspaceContext, PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "unica-subsystem-info-typed-{name}-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join("src/Subsystems/Продажи/Ext")).unwrap();
+        fs::write(
+            root.join("src/Subsystems/Продажи.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Subsystem><Properties><Name>Продажи</Name><IncludeInCommandInterface>true</IncludeInCommandInterface><Content xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"><xr:Item>Catalog.Goods</xr:Item></Content></Properties></Subsystem></MetaDataObject>"#,
+        )
+        .unwrap();
+        if with_command_interface {
+            fs::write(
+                root.join("src/Subsystems/Продажи/Ext/CommandInterface.xml"),
+                r#"<CommandInterface xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"><CommandsVisibility><Command name="Catalog.Goods.Create"><Visibility xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"><xr:Common>false</xr:Common></Visibility></Command></CommandsVisibility></CommandInterface>"#,
+            )
+            .unwrap();
+        }
+        let context = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        (context, root)
+    }
+
+    fn info_args() -> Map<String, Value> {
+        Map::from_iter([(
+            "SubsystemPath".to_string(),
+            json!("src/Subsystems/Продажи.xml"),
+        )])
+    }
+
+    /// `Mode=tree` answered the hierarchy question; typing must not drop the
+    /// capability, only change how it is selected.
+    #[test]
+    fn pointing_at_the_subsystems_folder_answers_with_the_tree() {
+        let (context, root) = workspace("tree", false);
+        fs::create_dir_all(root.join("src/Subsystems/Продажи/Subsystems")).unwrap();
+        fs::write(
+            root.join("src/Subsystems/Продажи/Subsystems/Отчёты.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Subsystem><Properties><Name>Отчёты</Name></Properties></Subsystem></MetaDataObject>"#,
+        )
+        .unwrap();
+        let args = Map::from_iter([("SubsystemPath".to_string(), json!("src/Subsystems"))]);
+
+        let execution = analyze_subsystem_info(&args, &context);
+
+        assert!(execution.outcome.ok, "{:?}", execution.outcome);
+        let SubsystemInfoAnswer::Tree { tree } =
+            execution.data.expect("the folder answers with a tree")
+        else {
+            panic!("a folder must not answer as a single subsystem");
+        };
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].name, "Продажи");
+        assert_eq!(tree[0].content, 1);
+        assert_eq!(tree[0].children[0].name, "Отчёты");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn subsystem_info_answers_content_and_command_interface_at_once() {
+        let (context, root) = workspace("full", true);
+
+        let execution = analyze_subsystem_info(&info_args(), &context);
+
+        assert!(execution.outcome.ok, "{:?}", execution.outcome);
+        assert!(execution.outcome.stdout.is_none());
+        let SubsystemInfoAnswer::Subsystem(data) =
+            execution.data.expect("subsystem info answers with data")
+        else {
+            panic!("a file must answer as one subsystem");
+        };
+        assert_eq!(data.name, "Продажи");
+        assert_eq!(data.content, vec!["Catalog.Goods".to_string()]);
+        let interface = data
+            .command_interface
+            .expect("the subsystem ships a command interface");
+        assert_eq!(interface.visibility.len(), 1);
+        assert!(!interface.visibility[0].visible);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// An absent `CommandInterface.xml` and an interface that hides nothing are
+    /// different facts, so one is `null` and the other is an empty list.
+    #[test]
+    fn a_missing_command_interface_is_null_not_an_empty_interface() {
+        let (context, root) = workspace("bare", false);
+
+        let execution = analyze_subsystem_info(&info_args(), &context);
+
+        assert!(execution.outcome.ok, "{:?}", execution.outcome);
+        let SubsystemInfoAnswer::Subsystem(data) =
+            execution.data.expect("subsystem info answers with data")
+        else {
+            panic!("a file must answer as one subsystem");
+        };
+        assert!(data.command_interface.is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
 pub(crate) fn analyze_subsystem_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
-    let result = (|| -> Result<(String, PathBuf), String> {
+) -> SubsystemInfoExecution {
+    let result = (|| -> Result<(SubsystemInfoAnswer, PathBuf, String), String> {
         let raw_path = required_path(args, SUBSYSTEM_PATH, "SubsystemPath")?;
         let path = absolutize(raw_path, &context.cwd);
-        let mode = string_arg(args, &["mode", "Mode"]).unwrap_or("overview");
-        let name_filter = string_arg(args, &["name", "Name"]).unwrap_or("");
-
-        let (mut lines, artifact) = match mode {
-            "tree" => subsystem_info_tree(&path, name_filter)?,
-            "ci" => {
-                if path.is_dir() {
-                    return Err(
-                        "[ERROR] ci mode requires a subsystem .xml file, not a directory"
-                            .to_string(),
-                    );
-                }
-                let xml_path = resolve_subsystem_info_xml(path, false)?;
-                let (data, _) = load_subsystem_info_data(&xml_path)?;
-                (subsystem_info_ci_lines(&data.name, &xml_path)?, xml_path)
-            }
-            "overview" | "content" | "full" => {
-                let xml_path = resolve_subsystem_info_xml(path, true)?;
-                let (data, _) = load_subsystem_info_data(&xml_path)?;
-                let mut lines = Vec::<String>::new();
-                match mode {
-                    "overview" => {
-                        append_subsystem_overview(&mut lines, &data);
-                        lines.insert(
-                            1,
-                            format!("Поддержка: {}", support_status_for_path(&xml_path)),
-                        );
-                    }
-                    "content" => append_subsystem_content(&mut lines, &data, name_filter),
-                    "full" => {
-                        append_subsystem_overview(&mut lines, &data);
-                        lines.insert(
-                            1,
-                            format!("Поддержка: {}", support_status_for_path(&xml_path)),
-                        );
-                        lines.push(String::new());
-                        lines.push("--- content ---".to_string());
-                        lines.push(String::new());
-                        append_subsystem_content(&mut lines, &data, name_filter);
-                        lines.push(String::new());
-                        lines.push("--- ci ---".to_string());
-                        lines.push(String::new());
-                        lines.extend(subsystem_info_ci_lines(&data.name, &xml_path)?);
-                    }
-                    _ => unreachable!(),
-                }
-                (lines, xml_path)
-            }
-            other => {
-                return Err(format!(
-                    "argument -Mode: invalid choice: '{other}' (choose from 'overview', 'content', 'ci', 'tree', 'full')"
-                ));
-            }
-        };
-
-        if let Some(stdout) = paginate_subsystem_info(&mut lines, args) {
-            return Ok((stdout, artifact));
+        // A `Subsystems/` folder is the hierarchy question; a single subsystem
+        // directory resolves to its own XML like before.
+        if path.is_dir() && path.file_name().and_then(|name| name.to_str()) == Some("Subsystems") {
+            let tree = subsystem_tree_nodes(&path)?;
+            let summary = format!(
+                "unica.subsystem.info described {} root subsystem(s)",
+                tree.len()
+            );
+            return Ok((SubsystemInfoAnswer::Tree { tree }, path, summary));
         }
-
-        Ok((format!("{}\n", lines.join("\n")), artifact))
+        let xml_path = resolve_subsystem_info_xml(path, true)?;
+        let (data, _) = load_subsystem_info_data(&xml_path)?;
+        // Overview, content, ci and full were slices of one subsystem chosen to
+        // keep a printed report short. Data carries all of them at once.
+        let result = SubsystemInfoResult {
+            name: data.name,
+            synonym: subsystem_optional(data.synonym),
+            comment: subsystem_optional(data.comment),
+            explanation: subsystem_optional(data.explanation),
+            picture: subsystem_optional(data.picture),
+            include_in_command_interface: subsystem_optional(data.include_ci),
+            use_one_command: subsystem_optional(data.use_one_command),
+            support: support_state_data(&xml_path, false),
+            content: data.content_items,
+            groups: data
+                .groups
+                .into_iter()
+                .map(|(name, items)| SubsystemGroupData { name, items })
+                .collect(),
+            children: data.child_names,
+            command_interface: subsystem_command_interface_data(&xml_path)?,
+        };
+        let summary = format!(
+            "unica.subsystem.info described {} with {} content item(s)",
+            result.name,
+            result.content.len()
+        );
+        Ok((
+            SubsystemInfoAnswer::Subsystem(Box::new(result)),
+            xml_path,
+            summary,
+        ))
     })();
 
     match result {
-        Ok((stdout, artifact)) => AdapterOutcome {
-            ok: true,
-            summary: "unica.subsystem.info completed with native subsystem analyzer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: Vec::new(),
-            artifacts: vec![artifact.display().to_string()],
-            stdout: Some(stdout),
-            stderr: Some(String::new()),
-            command: None,
+        Ok((data, artifact, summary)) => SubsystemInfoExecution {
+            outcome: AdapterOutcome {
+                ok: true,
+                summary,
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: Vec::new(),
+                artifacts: vec![artifact.display().to_string()],
+                stdout: None,
+                stderr: Some(String::new()),
+                command: None,
+            },
+            data: Some(data),
         },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.subsystem.info failed in native subsystem analyzer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-            command: None,
+        Err(error) => SubsystemInfoExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.subsystem.info failed in native subsystem analyzer".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.clone()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{error}\n")),
+                command: None,
+            },
+            data: None,
         },
     }
+}
+
+/// Typed answer of `unica.subsystem.info` (ADR-0023).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SubsystemInfoResult {
+    pub(crate) name: String,
+    pub(crate) synonym: Option<String>,
+    pub(crate) comment: Option<String>,
+    pub(crate) explanation: Option<String>,
+    pub(crate) picture: Option<String>,
+    pub(crate) include_in_command_interface: Option<String>,
+    pub(crate) use_one_command: Option<String>,
+    pub(crate) support: SupportData,
+    pub(crate) content: Vec<String>,
+    pub(crate) groups: Vec<SubsystemGroupData>,
+    pub(crate) children: Vec<String>,
+    /// `null` when the subsystem ships no `CommandInterface.xml`, which is a
+    /// different fact from an interface that hides nothing.
+    pub(crate) command_interface: Option<SubsystemCommandInterfaceData>,
+}
+
+/// The tool answers about whatever it was pointed at: one subsystem for a file,
+/// the hierarchy for a `Subsystems/` folder.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase", untagged)]
+pub(crate) enum SubsystemInfoAnswer {
+    Subsystem(Box<SubsystemInfoResult>),
+    Tree { tree: Vec<SubsystemTreeNode> },
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SubsystemGroupData {
+    pub(crate) name: String,
+    pub(crate) items: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SubsystemCommandInterfaceData {
+    pub(crate) visibility: Vec<SubsystemCommandVisibilityData>,
+    pub(crate) placement: Vec<SubsystemCommandPlacementData>,
+    pub(crate) order: Vec<SubsystemGroupData>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SubsystemCommandVisibilityData {
+    pub(crate) command: String,
+    pub(crate) visible: bool,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SubsystemCommandPlacementData {
+    pub(crate) command: String,
+    pub(crate) group: Option<String>,
+    pub(crate) placement: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SubsystemTreeNode {
+    pub(crate) name: String,
+    pub(crate) content: usize,
+    pub(crate) children: Vec<SubsystemTreeNode>,
+}
+
+pub(crate) struct SubsystemInfoExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<SubsystemInfoAnswer>,
+}
+
+fn subsystem_optional(value: String) -> Option<String> {
+    (!value.is_empty()).then_some(value)
+}
+
+/// Walks a `Subsystems/` folder into a typed hierarchy. This is what `Mode=tree`
+/// answered; the projection survives the typing, only its selector changes --
+/// point the tool at a folder and it describes the tree, at a file and it
+/// describes that subsystem.
+fn subsystem_tree_nodes(directory: &Path) -> Result<Vec<SubsystemTreeNode>, String> {
+    let mut files = fs::read_dir(directory)
+        .map_err(|err| format!("failed to read {}: {err}", directory.display()))?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|entry| {
+            entry.is_file()
+                && entry
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .map(|ext| ext.eq_ignore_ascii_case("xml"))
+                    .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+    files.sort();
+    let mut nodes = Vec::new();
+    for file in files {
+        let Ok((data, _)) = load_subsystem_info_data(&file) else {
+            continue;
+        };
+        let nested = file.with_extension("").join("Subsystems");
+        let children = if nested.is_dir() {
+            subsystem_tree_nodes(&nested)?
+        } else {
+            Vec::new()
+        };
+        nodes.push(SubsystemTreeNode {
+            name: data.name,
+            content: data.content_items.len(),
+            children,
+        });
+    }
+    Ok(nodes)
+}
+
+/// Reads the command interface as data. `None` means the file is absent; an
+/// interface that declares nothing yields empty lists instead.
+pub(crate) fn subsystem_command_interface_data(
+    subsystem_path: &Path,
+) -> Result<Option<SubsystemCommandInterfaceData>, String> {
+    let ci_path = subsystem_command_interface_path(subsystem_path);
+    if !ci_path.is_file() {
+        return Ok(None);
+    }
+    let text = fs::read_to_string(&ci_path)
+        .map_err(|err| format!("failed to read {}: {err}", ci_path.display()))?;
+    let doc = Document::parse(text.trim_start_matches('\u{feff}'))
+        .map_err(|err| format!("XML parse error in {}: {err}", ci_path.display()))?;
+    let root = doc.root_element();
+    const CI_NS: &str = "http://v8.1c.ru/8.3/xcf/extrnprops";
+
+    let mut visibility = Vec::new();
+    if let Some(section) = root
+        .children()
+        .find(|node| role_info_element(*node, "CommandsVisibility", Some(CI_NS)))
+    {
+        for cmd in section
+            .children()
+            .filter(|node| role_info_element(*node, "Command", Some(CI_NS)))
+        {
+            let common = cmd
+                .descendants()
+                .find(|node| role_info_element(*node, "Common", None))
+                .and_then(|node| node.text());
+            visibility.push(SubsystemCommandVisibilityData {
+                command: cmd.attribute("name").unwrap_or("").to_string(),
+                visible: common != Some("false"),
+            });
+        }
+    }
+
+    let mut placement = Vec::new();
+    if let Some(section) = root
+        .children()
+        .find(|node| role_info_element(*node, "CommandsPlacement", Some(CI_NS)))
+    {
+        for cmd in section
+            .children()
+            .filter(|node| role_info_element(*node, "Command", Some(CI_NS)))
+        {
+            placement.push(SubsystemCommandPlacementData {
+                command: cmd.attribute("name").unwrap_or("").to_string(),
+                group: subsystem_optional(child_text(cmd, "CommandGroup", Some(CI_NS))),
+                placement: subsystem_optional(child_text(cmd, "Placement", Some(CI_NS))),
+            });
+        }
+    }
+
+    let mut order = Vec::<(String, Vec<String>)>::new();
+    if let Some(section) = root
+        .children()
+        .find(|node| role_info_element(*node, "CommandsOrder", Some(CI_NS)))
+    {
+        for cmd in section
+            .children()
+            .filter(|node| role_info_element(*node, "Command", Some(CI_NS)))
+        {
+            let group = child_text(cmd, "CommandGroup", Some(CI_NS));
+            push_group_item(
+                &mut order,
+                if group.is_empty() { "?" } else { &group },
+                cmd.attribute("name").unwrap_or("").to_string(),
+            );
+        }
+    }
+
+    Ok(Some(SubsystemCommandInterfaceData {
+        visibility,
+        placement,
+        order: order
+            .into_iter()
+            .map(|(name, items)| SubsystemGroupData { name, items })
+            .collect(),
+    }))
 }
 
 pub(crate) fn subsystem_info_ci_lines(
@@ -2330,7 +2626,8 @@ pub(crate) fn invoke_read(
     context: &WorkspaceContext,
 ) -> Option<Result<AdapterOutcome, String>> {
     match operation {
-        "subsystem-info" => Some(Ok(analyze_subsystem_info(args, context))),
+        // Typed answer; the data reaches the envelope through typed_result.rs.
+        "subsystem-info" => Some(Ok(analyze_subsystem_info(args, context).outcome)),
         "subsystem-validate" => Some(Ok(validate_subsystem(args, context))),
         _ => None,
     }

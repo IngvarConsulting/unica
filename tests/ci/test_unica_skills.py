@@ -353,7 +353,7 @@ SCENARIO_PRESERVING_MIN_MCP_CALLS = {
     "interface-validate": 2,
     "subsystem-compile": 4,
     "subsystem-edit": 6,
-    "subsystem-info": 8,
+    "subsystem-info": 5,
     "subsystem-validate": 2,
     "template-add": 2,
     "dcs-compile": 5,
@@ -490,11 +490,9 @@ SCENARIO_PRESERVING_TOKENS = {
         '"Operation": "set-property"',
     ],
     "subsystem-info": [
-        '"Mode": "content"',
-        '"Name": "Document"',
-        '"Mode": "ci"',
-        '"Mode": "tree"',
-        '"Name": "Администрирование"',
+        '"SubsystemPath": "Subsystems"',
+        "`commandInterface`",
+        "`tree`",
     ],
     "template-add": [
         '"TemplateType": "DataCompositionSchema"',
@@ -549,6 +547,7 @@ SCENARIO_RETIRED_TOKENS = {
     "meta-remove": ['"KeepFiles"', '"keepFiles"'],
     "cf-info": ['"Mode"', '"Section"', '"Limit"', '"Offset"'],
     "role-info": ['"ShowDenied"', '"Limit"', '"Offset"'],
+    "subsystem-info": ['"Mode"', '"Name"', '"Limit"', '"Offset"'],
     # A published example that still selects by path shows a call the server
     # now rejects with `legacy_target_removed`.
     "meta-info": ['"ObjectPath"', '"objectPath"', '"Detailed"', '"detailed"'],

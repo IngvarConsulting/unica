@@ -1477,31 +1477,6 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
-        name="subsystem-info-full",
-        tool="unica.subsystem.info",
-        skill="subsystem-info",
-        script="subsystem-info.py",
-        arguments={
-            "SubsystemPath": "src/Subsystems/Subsystems/ParitySubsystem.xml",
-            "Mode": "full",
-            "Limit": 0,
-        },
-        setup_steps=(
-            SetupStep(
-                skill="subsystem-compile",
-                script="subsystem-compile.py",
-                arguments={
-                    "DefinitionFile": "fixtures/subsystem-sales.json",
-                    "OutputDir": "src/Subsystems",
-                    "NoValidate": True,
-                },
-            ),
-        ),
-        fixtures=(FileFixture("subsystem-sales.json", "fixtures/subsystem-sales.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
         name="subsystem-validate-detailed",
         tool="unica.subsystem.validate",
         skill="subsystem-validate",
@@ -1524,19 +1499,6 @@ SUCCESS_SCENARIOS = [
         fixtures=(FileFixture("subsystem-sales.json", "fixtures/subsystem-sales.json"),),
         expect_ok=True,
         compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-subsystem-info-full",
-        tool="unica.subsystem.info",
-        skill="subsystem-info",
-        script="subsystem-info.py",
-        arguments={
-            "SubsystemPath": "src/Subsystems/Администрирование.xml",
-            "Mode": "full",
-            "Limit": 200,
-        },
-        fixtures=(FileFixture(BSP_SUBSYSTEM_FIXTURE, "src/Subsystems/Администрирование.xml"),),
-        expect_ok=True,
     ),
     ParityScenario(
         name="bsp-subsystem-validate-detailed",
@@ -3934,14 +3896,6 @@ MISSING_INPUT_SCENARIOS = [
         False,
     ),
     ParityScenario(
-        "subsystem-info-missing-subsystem",
-        "unica.subsystem.info",
-        "subsystem-info",
-        "subsystem-info.py",
-        {"SubsystemPath": "missing/Subsystem.xml", "Mode": "content"},
-        False,
-    ),
-    ParityScenario(
         "subsystem-validate-missing-subsystem",
         "unica.subsystem.validate",
         "subsystem-validate",
@@ -4055,7 +4009,6 @@ NATIVE_PARITY_TOOLS = {
     "unica.form.validate",
     "unica.subsystem.compile",
     "unica.subsystem.edit",
-    "unica.subsystem.info",
     "unica.subsystem.validate",
     "unica.interface.edit",
     "unica.interface.validate",
@@ -4089,6 +4042,7 @@ MUTATING_FORM_DCS_PARITY_TOOLS = {
 TYPED_RESULT_TOOLS = {
     "unica.cf.info",
     "unica.role.info",
+    "unica.subsystem.info",
 }
 
 EXPECTED_TOOLS = {
@@ -4116,7 +4070,6 @@ EXPECTED_TOOLS = {
     "unica.interface.validate",
     "unica.subsystem.compile",
     "unica.subsystem.edit",
-    "unica.subsystem.info",
     "unica.subsystem.validate",
     "unica.template.add",
     "unica.template.remove",
@@ -4148,7 +4101,6 @@ BSP_PARITY_REQUIRED_TOOLS = {
     "unica.mxl.decompile",
     "unica.mxl.compile",
     "unica.role.validate",
-    "unica.subsystem.info",
     "unica.subsystem.validate",
     "unica.interface.validate",
     "unica.interface.edit",

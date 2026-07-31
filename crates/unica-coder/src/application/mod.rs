@@ -3189,7 +3189,6 @@ mod tests {
             "unica.interface.validate",
             "unica.subsystem.compile",
             "unica.subsystem.edit",
-            "unica.subsystem.info",
             "unica.subsystem.validate",
             "unica.template.add",
             "unica.template.remove",
@@ -3208,7 +3207,8 @@ mod tests {
         // A tool that answers with typed data has no prose left for the parity
         // stand to compare, so it is covered by its own crate tests instead
         // (ADR-0023).
-        const TYPED_RESULT_TOOLS: &[&str] = &["unica.cf.info", "unica.role.info"];
+        const TYPED_RESULT_TOOLS: &[&str] =
+            &["unica.cf.info", "unica.role.info", "unica.subsystem.info"];
 
         for tool in tools() {
             if !tool.name.starts_with("unica.cf.")

@@ -26,6 +26,9 @@ const CF_INFO_ARGS: &[&str] = &["ConfigPath", "configPath", "Path", "path"];
 /// `role.info` answers with typed data: `ShowDenied` selected nothing once the
 /// denied list is always present, and pagination cut printed lines.
 const ROLE_INFO_ARGS: &[&str] = &["RightsPath", "rightsPath", "Path", "path"];
+/// `subsystem.info` answers with typed data: its `Mode` picked which slice of
+/// one subsystem to print, and the tree projection belongs to a separate ask.
+const SUBSYSTEM_INFO_ARGS: &[&str] = &["SubsystemPath", "subsystemPath", "Path", "path"];
 /// `meta.info` publishes only what it reads. The shared `NATIVE_XML_DSL_ARGS`
 /// list would also accept arguments no `meta.info` code path consults, and an
 /// accepted argument that changes nothing is a promise the tool cannot keep.
@@ -1684,6 +1687,7 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
                 "code-patch" => names.extend(CODE_PATCH_ARGS),
                 "cf-info" => names.extend(CF_INFO_ARGS),
                 "role-info" => names.extend(ROLE_INFO_ARGS),
+                "subsystem-info" => names.extend(SUBSYSTEM_INFO_ARGS),
                 "meta-info" => names.extend(META_INFO_ARGS),
                 _ => names.extend(native_args_for(operation)),
             }

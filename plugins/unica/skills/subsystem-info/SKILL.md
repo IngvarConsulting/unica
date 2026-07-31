@@ -25,10 +25,31 @@ allowed-tools:
 
 | Параметр | Описание |
 |----------|----------|
-| `SubsystemPath` | Путь к XML-файлу подсистемы, каталогу подсистемы или каталогу `Subsystems/` (для tree) |
-| `Mode` | Режим: `overview` (default), `content`, `ci`, `tree`, `full` |
-| `Name` | Drill-down: тип объекта в content, секция в ci, имя подсистемы в tree |
-| `Limit` / `Offset` | Пагинация (по умолчанию 150 строк) |
+| `SubsystemPath` | XML подсистемы, её каталог — или каталог `Subsystems` целиком |
+
+Инструмент отвечает про то, на что указали: файл или каталог подсистемы дают её
+описание, каталог `Subsystems` — дерево иерархии. `Mode`, `Name`, `Limit` и
+`Offset` сняты: они выбирали срез печатного отчёта, которого больше нет.
+
+## Поля `data`
+
+Для одной подсистемы:
+
+| Поле | Что содержит |
+|------|--------------|
+| `name`, `synonym`, `comment`, `explanation`, `picture` | Идентичность и оформление; отсутствующее — `null` |
+| `includeInCommandInterface`, `useOneCommand` | Свойства командного интерфейса подсистемы |
+| `support` | Поддержка по `Ext/ParentConfigurations.bin` |
+| `content` | Состав: полные имена объектов |
+| `groups` | Состав, сгруппированный по виду объекта |
+| `children` | Имена дочерних подсистем |
+| `commandInterface` | `visibility`, `placement` и `order`, либо `null`, если `CommandInterface.xml` нет |
+
+Для каталога `Subsystems`:
+
+| Поле | Что содержит |
+|------|--------------|
+| `tree` | Корневые подсистемы: `name`, `content` со счётчиком состава и вложенные `children` |
 
 ```json
 {
@@ -38,27 +59,37 @@ allowed-tools:
     "name": "unica.subsystem.info",
     "arguments": {
       "cwd": "<workspace>",
-      "SubsystemPath": "src/Subsystems/Продажи",
-      "Mode": "overview",
-      "Limit": 120
+      "SubsystemPath": "src/Subsystems/Продажи"
     }
   }
 }
 ```
 
-## Пять режимов
-
-| Режим | Что показывает |
-|---|---|
-| `overview` *(default)* | Компактная сводка: свойства, состав (сгруппирован по типам), дочерние подсистемы, наличие CI |
-| `content` | Список Content с группировкой по типу объекта. `-Name Catalog` — только каталоги |
-| `ci` | Разбор CommandInterface.xml: видимость, размещение, порядок команд/подсистем/групп |
-| `tree` | Рекурсивное дерево иерархии подсистем с маркерами [CI], [OneCmd], [Скрыт] |
-| `full` | Полная сводка: overview + content + ci в одном вызове |
-
 ## Примеры
 
-### Обзор подсистемы
+### Состав подсистемы
+
+`data.content` даёт полные имена объектов, `data.groups` — те же объекты по
+видам, поэтому отбор «только документы» делается по массиву.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.subsystem.info",
+    "arguments": {
+      "cwd": "<workspace>",
+      "SubsystemPath": "Subsystems/Администрирование.xml"
+    }
+  }
+}
+```
+
+### Командный интерфейс подсистемы
+
+`data.commandInterface` равен `null`, когда файла нет — это не то же самое, что
+интерфейс, который ничего не скрывает.
 
 ```json
 {
@@ -74,7 +105,7 @@ allowed-tools:
 }
 ```
 
-### Состав подсистемы
+### Дерево подсистем
 
 ```json
 {
@@ -84,14 +115,15 @@ allowed-tools:
     "name": "unica.subsystem.info",
     "arguments": {
       "cwd": "<workspace>",
-      "SubsystemPath": "Subsystems/Администрирование.xml",
-      "Mode": "content"
+      "SubsystemPath": "Subsystems"
     }
   }
 }
 ```
 
-### Только документы в составе
+### Дерево ветки
+
+Каталог `Subsystems` внутри подсистемы даёт поддерево этой ветки.
 
 ```json
 {
@@ -101,78 +133,7 @@ allowed-tools:
     "name": "unica.subsystem.info",
     "arguments": {
       "cwd": "<workspace>",
-      "SubsystemPath": "Subsystems/Продажи.xml",
-      "Mode": "content",
-      "Name": "Document"
-    }
-  }
-}
-```
-
-### Командный интерфейс подсистемы
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.subsystem.info",
-    "arguments": {
-      "cwd": "<workspace>",
-      "SubsystemPath": "Subsystems/Продажи.xml",
-      "Mode": "ci"
-    }
-  }
-}
-```
-
-### Дерево подсистем от корня
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.subsystem.info",
-    "arguments": {
-      "cwd": "<workspace>",
-      "SubsystemPath": "Subsystems",
-      "Mode": "tree"
-    }
-  }
-}
-```
-
-### Дерево от конкретной подсистемы
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.subsystem.info",
-    "arguments": {
-      "cwd": "<workspace>",
-      "SubsystemPath": "Subsystems/Администрирование.xml",
-      "Mode": "tree"
-    }
-  }
-}
-```
-
-### Дерево только для одной подсистемы
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.subsystem.info",
-    "arguments": {
-      "cwd": "<workspace>",
-      "SubsystemPath": "Subsystems",
-      "Mode": "tree",
-      "Name": "Администрирование"
+      "SubsystemPath": "Subsystems/Продажи/Subsystems"
     }
   }
 }
