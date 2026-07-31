@@ -1,6 +1,7 @@
 use super::cf::cf_validate_identifier;
 use super::common::{
     escape_xml, guard_active_format_containing_owner_for_new_output, path_arg, string_arg,
+    MutationData,
 };
 use super::compile_transaction::CompileTransaction;
 use super::form::{
@@ -101,6 +102,26 @@ pub(crate) fn apply(
     context: &WorkspaceContext,
 ) -> Option<AdapterOutcome> {
     invoke(operation, tool_name, args, context, ScaffoldMode::Apply)
+}
+
+/// Applies the scaffold and reports the files it created as typed data.
+pub(crate) fn apply_with_data(
+    operation: &str,
+    tool_name: &str,
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Option<(AdapterOutcome, Option<MutationData>)> {
+    let kind = ExternalArtifactKind::from_operation(operation)?;
+    Some(match prepare_plan(kind, args, context) {
+        Ok(plan) => match create_scaffold(&plan, context) {
+            Ok(warnings) => (
+                success_outcome(tool_name, &plan, ScaffoldMode::Apply, warnings),
+                Some(scaffold_mutation(&plan, ScaffoldMode::Apply)),
+            ),
+            Err(error) => (failure_outcome(tool_name, error), None),
+        },
+        Err(error) => (failure_outcome(tool_name, error), None),
+    })
 }
 
 fn invoke(
@@ -440,6 +461,15 @@ fn validate_xml(label: &str, text: &str) -> Result<(), String> {
         .map_err(|error| format!("generated {label} is invalid XML: {error}"))
 }
 
+/// The scaffold's answer is the set of files it created (ADR-0023).
+fn scaffold_mutation(plan: &ScaffoldPlan, mode: ScaffoldMode) -> MutationData {
+    let mut mutation = MutationData::new(matches!(mode, ScaffoldMode::Apply));
+    for path in &plan.artifacts {
+        mutation = mutation.created(path);
+    }
+    mutation
+}
+
 fn success_outcome(
     tool_name: &str,
     plan: &ScaffoldPlan,
@@ -474,12 +504,10 @@ fn success_outcome(
         warnings,
         errors: Vec::new(),
         artifacts,
-        stdout: Some(format!(
-            "{} scaffold: {}\nSource-set root: {}\nGenerated XML structure validated before publication.\nNext: ensure this root is declared in v8project.yaml and run unica.runtime.execute operation=make.\n",
-            plan.kind.label(),
-            plan.name,
-            plan.output_dir.display()
-        )),
+        // ADR-0023: the scaffold's answer is the files it created, which
+        // `artifacts` and `changes` already carry; the note about what to do
+        // next belongs to the skill, not to the result.
+        stdout: None,
         stderr: None,
         command: None,
     }

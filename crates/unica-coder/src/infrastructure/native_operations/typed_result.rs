@@ -1,5 +1,5 @@
 use super::{
-    cf, cfe, code, form, help, meta, mxl, registry, role, subsystem, template,
+    cf, cfe, code, external, form, help, meta, mxl, registry, role, subsystem, template,
     NativeOperationAdapter,
 };
 use crate::{application::AdapterOutcome, domain::workspace::WorkspaceContext};
@@ -50,6 +50,13 @@ impl NativeOperationAdapter {
                             execution.data,
                             "template add",
                         );
+                    }
+                    "epf-init" | "erf-init" => {
+                        if let Some((outcome, data)) =
+                            external::apply_with_data(operation, tool_name, args, context)
+                        {
+                            return typed_operation_result(outcome, data, "external init");
+                        }
                     }
                     "form-remove" => {
                         let execution = form::remove_form_with_data(args, context);

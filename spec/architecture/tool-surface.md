@@ -7,15 +7,15 @@
 ## Итог
 
 - Инструментов: **71**
-- Отвечают типизированным `data`: **25**
+- Отвечают типизированным `data`: **27**
 - Типизированы частично: часть результата всё ещё текст: **3**
 - Отвечают снимком задания в `job`: **6**
-- Отвечают прозой в `stdout`: **37**
+- Отвечают прозой в `stdout`: **35**
 
 - В границах типизации: **43**
 - Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`): **16**
 - Вне границ: семейство runtime и build изучается отдельно: **12**
-- Осталось перевести на типизированный `data` в границах работы: **18**
+- Осталось перевести на типизированный `data` в границах работы: **16**
 - Публикуют больше 20 аргументов из общего списка: **37**
 
 ## build — сборка и запуск платформы
@@ -589,9 +589,9 @@ Create a make-ready external data processor scaffold in a Designer/platform-XML 
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
 | `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 
-**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
+**Результат сейчас:** `data`: созданные файлы заготовки внешней обработки (ADR-0023) (отвечают типизированным `data`)
 
-**Целевой контракт:** `data`: созданная внешняя обработка и её состав
+**Целевой контракт:** достигнут
 
 **Сценарии:**
 
@@ -613,9 +613,9 @@ Create a make-ready external report scaffold in a Designer/platform-XML external
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
 | `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 
-**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
+**Результат сейчас:** `data`: созданные файлы заготовки внешнего отчёта (ADR-0023) (отвечают типизированным `data`)
 
-**Целевой контракт:** `data`: созданный внешний отчёт и его состав
+**Целевой контракт:** достигнут
 
 **Сценарии:**
 
