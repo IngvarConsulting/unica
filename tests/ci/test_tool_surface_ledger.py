@@ -7,6 +7,7 @@ the built binary or when a tool has no review entry.
 
 from __future__ import annotations
 
+import collections
 import importlib.util
 import json
 import subprocess
@@ -49,6 +50,10 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
     def test_every_review_entry_states_a_contract_and_scenarios(self) -> None:
         for name, entry in sorted(self.review.items()):
             with self.subTest(tool=name):
+                # The migration metric reads this field, never the free-text
+                # note beside it: counting progress by matching substrings in
+                # prose is the very mistake ADR-0023 removes from the tools.
+                self.assertIn(entry["result"]["contract"], self.module.CONTRACT_STATES)
                 self.assertTrue(entry["result"]["now"].strip(), name)
                 self.assertTrue(entry["result"]["target"].strip(), name)
                 # One scenario documents a tool nobody reviewed against real
@@ -69,12 +74,20 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
     def test_ledger_counts_the_migration_it_tracks(self) -> None:
         text = LEDGER.read_text(encoding="utf-8")
         self.assertIn(f"- Инструментов: **{len(self.tools)}**", text)
-        prose = sum(
-            1
-            for entry in self.review.values()
-            if "stdout" in entry["result"]["now"]
+        states = collections.Counter(
+            entry["result"]["contract"] for entry in self.review.values()
         )
-        self.assertIn(f"прозой в `stdout`: **{prose}**", text)
+        self.assertEqual(sum(states.values()), len(self.tools))
+        for state, title in self.module.CONTRACT_STATES.items():
+            self.assertIn(f"- {title}: **{states[state]}**", text)
+        remaining = states["prose"] + states["partial"]
+        self.assertIn(f"типизированный `data`: **{remaining}**", text)
+
+    def test_a_partially_typed_tool_is_not_counted_as_migrated(self) -> None:
+        """meta.info puts its resolved address in `data` and its report in
+        prose. Counting it as done hid a tool that still has to move."""
+
+        self.assertEqual(self.review["unica.meta.info"]["result"]["contract"], "partial")
 
 
 if __name__ == "__main__":

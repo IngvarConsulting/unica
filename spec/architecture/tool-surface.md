@@ -7,7 +7,11 @@
 ## Итог
 
 - Инструментов: **71**
-- Возвращают результат прозой в `stdout`: **52** — это объём миграции на типизированный `data`
+- Отвечают типизированным `data`: **9**
+- Типизированы частично: часть результата всё ещё текст: **4**
+- Отвечают снимком задания в `job`: **6**
+- Отвечают прозой в `stdout`: **52**
+- Осталось перевести на типизированный `data`: **56**
 - Публикуют больше 20 аргументов из общего списка: **42**
 
 ## build — сборка и запуск платформы
@@ -35,7 +39,7 @@ Dump source set through the internal build/runtime adapter.
 | `target` | string | нет | String forwarded to unica.build.* as --target; the skills document no behaviour for it beyond the flag name |
 | `user` | string | нет | String forwarded to unica.build.* as --user; the skills document no behaviour for it beyond the flag name |
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: параметры запуска, артефакты и итог операции
 
@@ -67,7 +71,7 @@ Load/build XML source set through the internal build/runtime adapter.
 | `target` | string | нет | String forwarded to unica.build.* as --target; the skills document no behaviour for it beyond the flag name |
 | `user` | string | нет | String forwarded to unica.build.* as --user; the skills document no behaviour for it beyond the flag name |
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: параметры запуска, артефакты и итог операции
 
@@ -99,7 +103,7 @@ Create CF/CFE artifact through the internal build/runtime adapter.
 | `target` | string | нет | String forwarded to unica.build.* as --target; the skills document no behaviour for it beyond the flag name |
 | `user` | string | нет | String forwarded to unica.build.* as --user; the skills document no behaviour for it beyond the flag name |
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: параметры запуска, артефакты и итог операции
 
@@ -131,7 +135,7 @@ Launch 1C runtime or Designer through the internal build/runtime adapter.
 | `target` | string | нет | String forwarded to unica.build.* as --target; the skills document no behaviour for it beyond the flag name |
 | `user` | string | нет | String forwarded to unica.build.* as --user; the skills document no behaviour for it beyond the flag name |
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: параметры запуска, артефакты и итог операции
 
@@ -163,7 +167,7 @@ Apply built configuration changes through the internal build/runtime adapter.
 | `target` | string | нет | String forwarded to unica.build.* as --target; the skills document no behaviour for it beyond the flag name |
 | `user` | string | нет | String forwarded to unica.build.* as --user; the skills document no behaviour for it beyond the flag name |
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: параметры запуска, артефакты и итог операции
 
@@ -180,7 +184,7 @@ Edit root Configuration.xml properties, ChildObjects, panels, and home page.
 
 Публикует **159** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: применённые изменения свойств и состава
 
@@ -199,7 +203,7 @@ Inspect root Configuration.xml.
 
 Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: свойства конфигурации, счётчики состава, панели и стартовая страница
 
@@ -214,7 +218,7 @@ Create empty 1C configuration XML scaffold.
 
 Публикует **162** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: созданный корень и его идентичность
 
@@ -232,7 +236,7 @@ Validate root configuration XML structure.
 
 Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: находки проверки корня конфигурации
 
@@ -254,7 +258,7 @@ Borrow configuration objects/forms into an extension.
 
 Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: заимствованные объекты и режимы заимствования
 
@@ -274,7 +278,7 @@ Inspect extension contents and transferred insertion blocks.
 
 Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: состав расширения, заимствования и перенесённые вставки
 
@@ -289,7 +293,7 @@ Create extension XML scaffold.
 
 Публикует **157** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: созданное расширение и его назначение
 
@@ -310,7 +314,7 @@ Generate a CFE Before/After interceptor for a caller-verified existing parameter
 
 Публикует **161** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: созданный перехватчик, его вид и целевой метод
 
@@ -328,7 +332,7 @@ Validate extension XML structure.
 
 Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: находки проверки расширения
 
@@ -352,7 +356,7 @@ Find BSL method definitions through the typed Unica code index boundary.
 | `name` | string | да | Name of the object being created (`cf.init`, `cfe.init`, `epf.init`, `erf.init`), or the drill-down target for `meta.info`, `subsystem.info` and `dcs.info`; on `cf.info` it is an alias of `section` |
 | `sourceDir` | string | нет | Workspace-relative source root to work in: on the path-based unica.code.* tools and unica.meta.profile it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
 
-**Результат сейчас:** текст в `stdout` (типизация отложена ADR-0020)
+**Результат сейчас:** текст в `stdout` (типизация отложена ADR-0020) (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: определения с адресом модуля, видом и диапазоном строк
 
@@ -384,7 +388,7 @@ Run BSL diagnostics through the internal code analysis adapter.
 | `sourceDir` | string | нет | Workspace-relative source root to work in: on the path-based unica.code.* tools and unica.meta.profile it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
 | `timeoutSeconds` | integer | нет | Only supported for mode analyze. Defaults to 120 seconds. |
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: находки с кодом, позицией, серьёзностью и правилом
 
@@ -414,7 +418,7 @@ Inspect BSL call graph through the typed Unica code analysis boundary.
 | `query` | string | нет | Search text: provider-neutral query for unica.code.search, node-lookup text for unica.code.graph mode=resolve, the required unica.standards.search string, and explain's last-resort fallback |
 | `sourceDir` | string | нет | Workspace-relative source root to work in: on the path-based unica.code.* tools and unica.meta.profile it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: узлы и рёбра графа вызовов с направлением и видом
 
@@ -436,7 +440,7 @@ Read compact BSL module outline from the current source file.
 | `path` | string | да | Workspace-relative file path whose meaning is tool-scoped: the required .cf or .cfe artifact for unica.runtime.execute operation load (.epf and .erf are rejected there), a module-relative file for the path-based unica.code.* tools — on unica.code.diagnostics only mode `file` reads one file, so every other mode rejects `path` instead of ignoring it — the canonical alias of the object/config path argument on the native XML tools, and a plain --path passthrough on unica.build.*. |
 | `sourceDir` | string | нет | Workspace-relative source root to work in: on the path-based unica.code.* tools and unica.meta.profile it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
 
-**Результат сейчас:** типизированный `data`
+**Результат сейчас:** типизированный `data` (отвечают типизированным `data`)
 
 **Целевой контракт:** без изменений (эталон ADR-0020)
 
@@ -461,7 +465,7 @@ Insert content into one logically addressed existing Platform XML Configuration 
 | `selector` | object | да | Object naming the unica.code.patch insertion point: exactly one of {"method": "Name"} for a whole procedure or function, or {"anchor": "text"} for a fragment that occurs once inside one method |
 | `sourceSet` | string | да | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 
-**Результат сейчас:** типизированный `data`
+**Результат сейчас:** типизированный `data` (отвечают типизированным `data`)
 
 **Целевой контракт:** без изменений
 
@@ -483,7 +487,7 @@ Search code concurrently through provider-local RLM, bsl-analyzer, and literal g
 | `query` | string | да | Search text: provider-neutral query for unica.code.search, node-lookup text for unica.code.graph mode=resolve, the required unica.standards.search string, and explain's last-resort fallback |
 | `sourceDir` | string | нет | Workspace-relative source root to work in: on the path-based unica.code.* tools and unica.meta.profile it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
 
-**Результат сейчас:** `data` по поставщику + текст
+**Результат сейчас:** `data` по поставщику + текст (типизированы частично: часть результата всё ещё текст)
 
 **Целевой контракт:** `data`: три секции поставщиков с попаданиями (путь/адрес, строка, фрагмент)
 
@@ -500,7 +504,7 @@ Compile Data Composition Schema XML from JSON DSL.
 
 Публикует **161** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: созданная схема и её состав
 
@@ -518,7 +522,7 @@ Edit Data Composition Schema Template.xml.
 
 Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: применённые операции над схемой
 
@@ -536,7 +540,7 @@ Inspect Data Composition Schema Template.xml.
 
 Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: наборы данных, поля, параметры и варианты СКД
 
@@ -555,7 +559,7 @@ Validate Data Composition Schema Template.xml.
 
 Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: находки проверки схемы
 
@@ -579,7 +583,7 @@ Create a make-ready external data processor scaffold in a Designer/platform-XML 
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
 | `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: созданная внешняя обработка и её состав
 
@@ -603,7 +607,7 @@ Create a make-ready external report scaffold in a Designer/platform-XML external
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
 | `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: созданный внешний отчёт и его состав
 
@@ -619,7 +623,7 @@ Add managed form metadata and files.
 
 Публикует **160** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: созданная форма и её регистрация у объекта
 
@@ -637,7 +641,7 @@ Compile managed Form.xml from JSON DSL or metadata.
 
 Публикует **158** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: созданная форма и её состав
 
@@ -655,7 +659,7 @@ Edit managed Form.xml elements, attributes, commands, and validated events.
 
 Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** `data` при типизированном payload
+**Результат сейчас:** `data` при типизированном payload (типизированы частично: часть результата всё ещё текст)
 
 **Целевой контракт:** `data`: применённые операции над элементами и реквизитами
 
@@ -674,7 +678,7 @@ Inspect managed Form.xml.
 
 Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: элементы, реквизиты, команды и обработчики формы
 
@@ -689,7 +693,7 @@ Remove a managed form and registration.
 
 Публикует **162** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: удалённые файлы и снятая регистрация
 
@@ -707,7 +711,7 @@ Validate managed Form.xml.
 
 Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: находки проверки формы
 
@@ -727,7 +731,7 @@ Add built-in help metadata and page to a 1C object.
 
 Публикует **162** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: созданная страница справки и её регистрация
 
@@ -747,7 +751,7 @@ Edit subsystem CommandInterface.xml.
 
 Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: применённые изменения командного интерфейса
 
@@ -765,7 +769,7 @@ Validate CommandInterface.xml.
 
 Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: находки проверки командного интерфейса
 
@@ -786,7 +790,7 @@ Compile metadata object XML from JSON DSL.
 
 Публикует **161** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: созданные файлы и итоговый адрес объекта
 
@@ -805,7 +809,7 @@ Edit metadata object XML.
 
 Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: применённые операции и затронутые узлы XML
 
@@ -834,7 +838,7 @@ Inspect metadata object XML.
 | `offset` | integer | нет | Number of output lines to skip in the paginating read tools, default 0; combine it with `limit` to page through a long report |
 | `sourceSet` | string | да | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 
-**Результат сейчас:** `data` (адрес) + текст сводки
+**Результат сейчас:** `data` (адрес) + текст сводки (типизированы частично: часть результата всё ещё текст)
 
 **Целевой контракт:** `data`: объект целиком — свойства, владельцы, реквизиты, ТЧ, формы
 
@@ -858,7 +862,7 @@ Read compact metadata object profile from the internal RLM index.
 | `sections` | array | нет | Array of profile sections unica.meta.profile returns, from structure, modules, roles, subscriptions, functionalOptions, predefinedItems; omit it for all sections except predefinedItems, which must be listed explicitly |
 | `sourceDir` | string | нет | Workspace-relative source root to work in: on the path-based unica.code.* tools and unica.meta.profile it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: профиль объекта по секциям индекса
 
@@ -873,7 +877,7 @@ Remove metadata object XML and registration.
 
 Публикует **162** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: удалённые файлы и снятые регистрации
 
@@ -892,7 +896,7 @@ Validate metadata object XML.
 
 Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: находки валидации с кодом, объектом и путём внутри XML
 
@@ -914,7 +918,7 @@ Compile spreadsheet Template.xml from JSON DSL.
 
 Публикует **161** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: созданный макет
 
@@ -932,7 +936,7 @@ Decompile spreadsheet Template.xml to JSON DSL.
 
 Публикует **157** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: JSON-описание существующего макета
 
@@ -950,7 +954,7 @@ Inspect spreadsheet Template.xml.
 
 Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: области, параметры и наборы колонок макета
 
@@ -968,7 +972,7 @@ Validate spreadsheet Template.xml.
 
 Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: находки проверки макета
 
@@ -988,7 +992,7 @@ Inspect configured source sets and effective source format per source set.
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
 | `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 
-**Результат сейчас:** `data`: карта наборов исходников (ADR-0023)
+**Результат сейчас:** `data`: карта наборов исходников (ADR-0023) (отвечают типизированным `data`)
 
 **Целевой контракт:** достигнут
 
@@ -1008,7 +1012,7 @@ Inspect current Unica workspace, source set, and cache state.
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
 | `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 
-**Результат сейчас:** `data`: корни рабочего пространства и наборы исходников (ADR-0023)
+**Результат сейчас:** `data`: корни рабочего пространства и наборы исходников (ADR-0023) (отвечают типизированным `data`)
 
 **Целевой контракт:** достигнут
 
@@ -1030,7 +1034,7 @@ Compile role metadata and Rights.xml from JSON DSL.
 
 Публикует **161** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: созданная роль и её права
 
@@ -1048,7 +1052,7 @@ Inspect role Rights.xml.
 
 Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: объекты, права, RLS и шаблоны ограничений роли
 
@@ -1067,7 +1071,7 @@ Validate role Rights.xml.
 
 Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: находки проверки прав
 
@@ -1087,7 +1091,7 @@ Execute typed v8-runner runtime workflows through the single Unica MCP boundary.
 
 Публикует **64** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** `data` по операции
+**Результат сейчас:** `data` по операции (типизированы частично: часть результата всё ещё текст)
 
 **Целевой контракт:** `data`: типизированный итог операции runtime
 
@@ -1107,7 +1111,7 @@ Request safe cancellation for a durable runtime job.
 | `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 | `jobId` | string | да | UUID of a durable runtime job as returned by unica.runtime.job.start; required by the job status, wait, logs and cancel tools |
 
-**Результат сейчас:** снимок задания в `job`
+**Результат сейчас:** снимок задания в `job` (отвечают снимком задания в `job`)
 
 **Целевой контракт:** без изменений
 
@@ -1125,7 +1129,7 @@ List durable runtime job snapshots in the current workspace.
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
 | `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 
-**Результат сейчас:** снимок задания в `job`
+**Результат сейчас:** снимок задания в `job` (отвечают снимком задания в `job`)
 
 **Целевой контракт:** без изменений
 
@@ -1145,7 +1149,7 @@ Read bounded redacted stdout and stderr tails for a durable runtime job.
 | `jobId` | string | да | UUID of a durable runtime job as returned by unica.runtime.job.start; required by the job status, wait, logs and cancel tools |
 | `tailChars` | integer | нет | Integer 1..32768 bounding how many trailing characters of stdout and stderr unica.runtime.job.logs returns, defaulting to 4096 |
 
-**Результат сейчас:** снимок задания в `job`
+**Результат сейчас:** снимок задания в `job` (отвечают снимком задания в `job`)
 
 **Целевой контракт:** без изменений
 
@@ -1163,7 +1167,7 @@ Start a durable typed v8-runner runtime job without changing runtime.execute.
 
 Публикует **61** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** снимок задания в `job`
+**Результат сейчас:** снимок задания в `job` (отвечают снимком задания в `job`)
 
 **Целевой контракт:** без изменений
 
@@ -1182,7 +1186,7 @@ Read a durable runtime job snapshot by jobId.
 | `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 | `jobId` | string | да | UUID of a durable runtime job as returned by unica.runtime.job.start; required by the job status, wait, logs and cancel tools |
 
-**Результат сейчас:** снимок задания в `job`
+**Результат сейчас:** снимок задания в `job` (отвечают снимком задания в `job`)
 
 **Целевой контракт:** без изменений
 
@@ -1202,7 +1206,7 @@ Wait for a durable runtime job with a caller-side bounded timeout.
 | `jobId` | string | да | UUID of a durable runtime job as returned by unica.runtime.job.start; required by the job status, wait, logs and cancel tools |
 | `timeoutSeconds` | integer | нет | Integer seconds bounding a blocking call: 1..60 (default 30) for unica.runtime.job.wait, and 30..3600 (default 120) for unica.code.diagnostics, which accepts it only with mode analyze. |
 
-**Результат сейчас:** снимок задания в `job`
+**Результат сейчас:** снимок задания в `job` (отвечают снимком задания в `job`)
 
 **Целевой контракт:** без изменений
 
@@ -1226,7 +1230,7 @@ List exactly one level below a logical source-set root or metadata address.
 | `metadataPath` | string | нет | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
 | `sourceSet` | string | да | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 
-**Результат сейчас:** типизированный `data`
+**Результат сейчас:** типизированный `data` (отвечают типизированным `data`)
 
 **Целевой контракт:** без изменений
 
@@ -1247,7 +1251,7 @@ Recover the logical metadata address that owns one source path inside a named so
 | `path` | string | да | Source file to look up, given either workspace-relative or relative to the named source set; the answer names the metadata address that owns it |
 | `sourceSet` | string | да | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 
-**Результат сейчас:** типизированный `data`
+**Результат сейчас:** типизированный `data` (отвечают типизированным `data`)
 
 **Целевой контракт:** без изменений
 
@@ -1270,7 +1274,7 @@ Read one bounded byte range from a resource in an issued immutable snapshot.
 | `resourceId` | string | да | Opaque resource identifier returned inside one source.resources snapshot; valid only together with the snapshotId that issued it |
 | `snapshotId` | string | да | Opaque application-instance and workspace-bound identifier returned by source.resources; expires after five minutes |
 
-**Результат сейчас:** типизированный `data`
+**Результат сейчас:** типизированный `data` (отвечают типизированным `data`)
 
 **Целевой контракт:** без изменений
 
@@ -1295,7 +1299,7 @@ Resolve an exact or prefix logical metadata query inside one named source set.
 | `sourceSet` | string | да | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 | `targetKind` | string | нет | Optional `unica.source.resolve` filter: `metadataObject` or `module`; it narrows exact or prefix matches without changing their canonical metadataPath |
 
-**Результат сейчас:** типизированный `data`
+**Результат сейчас:** типизированный `data` (отвечают типизированным `data`)
 
 **Целевой контракт:** без изменений
 
@@ -1321,7 +1325,7 @@ Open or page an immutable bounded manifest for one logical source target.
 | `snapshotId` | string | нет | Opaque application-instance and workspace-bound identifier returned by source.resources; expires after five minutes |
 | `sourceSet` | string | нет | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 
-**Результат сейчас:** типизированный `data`
+**Результат сейчас:** типизированный `data` (отвечают типизированным `data`)
 
 **Целевой контракт:** без изменений
 
@@ -1353,7 +1357,7 @@ Explain 1C diagnostics or standards through the internal standards adapter.
 | `snippet` | string | нет | Literal BSL source text for standards.explain to explain against standards, sent with language and limit; codes outranks it when both are passed, and standards.search ignores it. |
 | `types` | array | нет | Array of strings forwarded unchanged as the types parameter of the standards search; honoured only by standards.search and by standards.explain given query alone, with no allowed values declared. |
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: стандарт или диагностика с телом страницы и источником
 
@@ -1383,7 +1387,7 @@ Search 1C standards through the internal standards adapter.
 | `snippet` | string | нет | Literal BSL source text for standards.explain to explain against standards, sent with language and limit; codes outranks it when both are passed, and standards.search ignores it. |
 | `types` | array | нет | Array of strings forwarded unchanged as the types parameter of the standards search; honoured only by standards.search and by standards.explain given query alone, with no allowed values declared. |
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: попадания со стандартом, идентификатором и фрагментом
 
@@ -1404,7 +1408,7 @@ Compile subsystem XML from JSON DSL.
 
 Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: созданная подсистема
 
@@ -1422,7 +1426,7 @@ Edit subsystem XML content and hierarchy.
 
 Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: применённые изменения состава и иерархии
 
@@ -1440,7 +1444,7 @@ Inspect subsystem XML and command interface.
 
 Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: состав, дочерние подсистемы и командный интерфейс
 
@@ -1459,7 +1463,7 @@ Validate subsystem XML.
 
 Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: находки проверки подсистемы
 
@@ -1475,7 +1479,7 @@ Toggle 1C vendor support editing capability or per-object support rule.
 
 Публикует **160** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: прежнее и новое состояние поддержки объекта
 
@@ -1492,7 +1496,7 @@ Add a template to an object and register it.
 
 Публикует **162** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: созданный макет и его регистрация
 
@@ -1506,7 +1510,7 @@ Remove a template from an object.
 
 Публикует **162** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** текст в `stdout`
+**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: удалённый макет и снятая регистрация
 

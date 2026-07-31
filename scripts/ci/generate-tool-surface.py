@@ -29,6 +29,16 @@ DEFAULT_BINARY = REPO_ROOT / "target/debug/unica"
 # tool. The count itself is the review signal.
 SHARED_ARGUMENT_THRESHOLD = 20
 
+# Состояние контракта — явное поле ревью, а не догадка по тексту: считать
+# метрику разбором свободной прозы значит повторить ровно ту ошибку, которую
+# лечит ADR-0023.
+CONTRACT_STATES = {
+    "typed": "Отвечают типизированным `data`",
+    "partial": "Типизированы частично: часть результата всё ещё текст",
+    "job": "Отвечают снимком задания в `job`",
+    "prose": "Отвечают прозой в `stdout`",
+}
+
 GROUP_TITLES = {
     "build": "build — сборка и запуск платформы",
     "cf": "cf — корень конфигурации",
@@ -139,9 +149,9 @@ def render(tools: list[dict], review: dict) -> str:
     if stale:
         raise SystemExit(f"данные ревью для снятых инструментов: {', '.join(stale)}")
 
-    prose = sum(
-        1 for name in published if "stdout" in review[name]["result"]["now"]
-    )
+    states = {state: 0 for state in CONTRACT_STATES}
+    for name in published:
+        states[review[name]["result"]["contract"]] += 1
     wide = sum(
         1
         for tool in tools
@@ -171,9 +181,11 @@ def render(tools: list[dict], review: dict) -> str:
     out.append("## Итог")
     out.append("")
     out.append(f"- Инструментов: **{len(tools)}**")
+    for state, title in CONTRACT_STATES.items():
+        out.append(f"- {title}: **{states[state]}**")
     out.append(
-        f"- Возвращают результат прозой в `stdout`: **{prose}** —"
-        " это объём миграции на типизированный `data`"
+        f"- Осталось перевести на типизированный `data`:"
+        f" **{states['prose'] + states['partial']}**"
     )
     out.append(
         f"- Публикуют больше {SHARED_ARGUMENT_THRESHOLD} аргументов из общего"
@@ -197,7 +209,10 @@ def render(tools: list[dict], review: dict) -> str:
             out.append("")
             out.extend(render_arguments(tool))
             out.append("")
-            out.append(f"**Результат сейчас:** {entry['result']['now']}")
+            out.append(
+                f"**Результат сейчас:** {entry['result']['now']}"
+                f" ({CONTRACT_STATES[entry['result']['contract']].lower()})"
+            )
             out.append("")
             out.append(f"**Целевой контракт:** {entry['result']['target']}")
             out.append("")

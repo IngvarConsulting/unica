@@ -1,6 +1,7 @@
 {
  "unica.project.map": {
   "result": {
+   "contract": "typed",
    "now": "`data`: карта наборов исходников (ADR-0023)",
    "target": "достигнут"
   },
@@ -12,6 +13,7 @@
  },
  "unica.project.status": {
   "result": {
+   "contract": "typed",
    "now": "`data`: корни рабочего пространства и наборы исходников (ADR-0023)",
    "target": "достигнут"
   },
@@ -22,6 +24,7 @@
  },
  "unica.source.resolve": {
   "result": {
+   "contract": "typed",
    "now": "типизированный `data`",
    "target": "без изменений"
   },
@@ -33,6 +36,7 @@
  },
  "unica.source.children": {
   "result": {
+   "contract": "typed",
    "now": "типизированный `data`",
    "target": "без изменений"
   },
@@ -43,6 +47,7 @@
  },
  "unica.source.locate": {
   "result": {
+   "contract": "typed",
    "now": "типизированный `data`",
    "target": "без изменений"
   },
@@ -53,6 +58,7 @@
  },
  "unica.source.resources": {
   "result": {
+   "contract": "typed",
    "now": "типизированный `data`",
    "target": "без изменений"
   },
@@ -63,6 +69,7 @@
  },
  "unica.source.read": {
   "result": {
+   "contract": "typed",
    "now": "типизированный `data`",
    "target": "без изменений"
   },
@@ -73,6 +80,7 @@
  },
  "unica.code.search": {
   "result": {
+   "contract": "partial",
    "now": "`data` по поставщику + текст",
    "target": "`data`: три секции поставщиков с попаданиями (путь/адрес, строка, фрагмент)"
   },
@@ -83,6 +91,7 @@
  },
  "unica.code.definition": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout` (типизация отложена ADR-0020)",
    "target": "`data`: определения с адресом модуля, видом и диапазоном строк"
   },
@@ -93,6 +102,7 @@
  },
  "unica.code.outline": {
   "result": {
+   "contract": "typed",
    "now": "типизированный `data`",
    "target": "без изменений (эталон ADR-0020)"
   },
@@ -103,6 +113,7 @@
  },
  "unica.code.graph": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: узлы и рёбра графа вызовов с направлением и видом"
   },
@@ -113,6 +124,7 @@
  },
  "unica.code.diagnostics": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: находки с кодом, позицией, серьёзностью и правилом"
   },
@@ -123,6 +135,7 @@
  },
  "unica.code.patch": {
   "result": {
+   "contract": "typed",
    "now": "типизированный `data`",
    "target": "без изменений"
   },
@@ -133,6 +146,7 @@
  },
  "unica.meta.info": {
   "result": {
+   "contract": "partial",
    "now": "`data` (адрес) + текст сводки",
    "target": "`data`: объект целиком — свойства, владельцы, реквизиты, ТЧ, формы"
   },
@@ -144,6 +158,7 @@
  },
  "unica.meta.profile": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: профиль объекта по секциям индекса"
   },
@@ -154,6 +169,7 @@
  },
  "unica.meta.compile": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: созданные файлы и итоговый адрес объекта"
   },
@@ -164,6 +180,7 @@
  },
  "unica.meta.edit": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: применённые операции и затронутые узлы XML"
   },
@@ -174,6 +191,7 @@
  },
  "unica.meta.remove": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: удалённые файлы и снятые регистрации"
   },
@@ -184,6 +202,7 @@
  },
  "unica.meta.validate": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: находки валидации с кодом, объектом и путём внутри XML"
   },
@@ -194,6 +213,7 @@
  },
  "unica.cf.info": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: свойства конфигурации, счётчики состава, панели и стартовая страница"
   },
@@ -204,6 +224,7 @@
  },
  "unica.cf.edit": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: применённые изменения свойств и состава"
   },
@@ -214,6 +235,7 @@
  },
  "unica.cf.init": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: созданный корень и его идентичность"
   },
@@ -223,6 +245,7 @@
  },
  "unica.cf.validate": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: находки проверки корня конфигурации"
   },
@@ -232,6 +255,7 @@
  },
  "unica.cfe.init": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: созданное расширение и его назначение"
   },
@@ -241,6 +265,7 @@
  },
  "unica.cfe.borrow": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: заимствованные объекты и режимы заимствования"
   },
@@ -251,6 +276,7 @@
  },
  "unica.cfe.diff": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: состав расширения, заимствования и перенесённые вставки"
   },
@@ -261,6 +287,7 @@
  },
  "unica.cfe.patch_method": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: созданный перехватчик, его вид и целевой метод"
   },
@@ -270,6 +297,7 @@
  },
  "unica.cfe.validate": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: находки проверки расширения"
   },
@@ -279,6 +307,7 @@
  },
  "unica.form.info": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: элементы, реквизиты, команды и обработчики формы"
   },
@@ -289,6 +318,7 @@
  },
  "unica.form.compile": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: созданная форма и её состав"
   },
@@ -298,6 +328,7 @@
  },
  "unica.form.edit": {
   "result": {
+   "contract": "partial",
    "now": "`data` при типизированном payload",
    "target": "`data`: применённые операции над элементами и реквизитами"
   },
@@ -308,6 +339,7 @@
  },
  "unica.form.add": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: созданная форма и её регистрация у объекта"
   },
@@ -317,6 +349,7 @@
  },
  "unica.form.remove": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: удалённые файлы и снятая регистрация"
   },
@@ -326,6 +359,7 @@
  },
  "unica.form.validate": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: находки проверки формы"
   },
@@ -335,6 +369,7 @@
  },
  "unica.dcs.info": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: наборы данных, поля, параметры и варианты СКД"
   },
@@ -345,6 +380,7 @@
  },
  "unica.dcs.compile": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: созданная схема и её состав"
   },
@@ -354,6 +390,7 @@
  },
  "unica.dcs.edit": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: применённые операции над схемой"
   },
@@ -363,6 +400,7 @@
  },
  "unica.dcs.validate": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: находки проверки схемы"
   },
@@ -372,6 +410,7 @@
  },
  "unica.mxl.info": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: области, параметры и наборы колонок макета"
   },
@@ -381,6 +420,7 @@
  },
  "unica.mxl.compile": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: созданный макет"
   },
@@ -390,6 +430,7 @@
  },
  "unica.mxl.decompile": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: JSON-описание существующего макета"
   },
@@ -399,6 +440,7 @@
  },
  "unica.mxl.validate": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: находки проверки макета"
   },
@@ -408,6 +450,7 @@
  },
  "unica.role.info": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: объекты, права, RLS и шаблоны ограничений роли"
   },
@@ -418,6 +461,7 @@
  },
  "unica.role.compile": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: созданная роль и её права"
   },
@@ -427,6 +471,7 @@
  },
  "unica.role.validate": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: находки проверки прав"
   },
@@ -436,6 +481,7 @@
  },
  "unica.subsystem.info": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: состав, дочерние подсистемы и командный интерфейс"
   },
@@ -446,6 +492,7 @@
  },
  "unica.subsystem.compile": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: созданная подсистема"
   },
@@ -455,6 +502,7 @@
  },
  "unica.subsystem.edit": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: применённые изменения состава и иерархии"
   },
@@ -464,6 +512,7 @@
  },
  "unica.subsystem.validate": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: находки проверки подсистемы"
   },
@@ -473,6 +522,7 @@
  },
  "unica.interface.edit": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: применённые изменения командного интерфейса"
   },
@@ -482,6 +532,7 @@
  },
  "unica.interface.validate": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: находки проверки командного интерфейса"
   },
@@ -491,6 +542,7 @@
  },
  "unica.support.edit": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: прежнее и новое состояние поддержки объекта"
   },
@@ -501,6 +553,7 @@
  },
  "unica.template.add": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: созданный макет и его регистрация"
   },
@@ -510,6 +563,7 @@
  },
  "unica.template.remove": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: удалённый макет и снятая регистрация"
   },
@@ -519,6 +573,7 @@
  },
  "unica.help.add": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: созданная страница справки и её регистрация"
   },
@@ -528,6 +583,7 @@
  },
  "unica.epf.init": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: созданная внешняя обработка и её состав"
   },
@@ -537,6 +593,7 @@
  },
  "unica.erf.init": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: созданный внешний отчёт и его состав"
   },
@@ -546,6 +603,7 @@
  },
  "unica.standards.search": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: попадания со стандартом, идентификатором и фрагментом"
   },
@@ -556,6 +614,7 @@
  },
  "unica.standards.explain": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: стандарт или диагностика с телом страницы и источником"
   },
@@ -566,6 +625,7 @@
  },
  "unica.build.dump": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: параметры запуска, артефакты и итог операции"
   },
@@ -576,6 +636,7 @@
  },
  "unica.build.load": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: параметры запуска, артефакты и итог операции"
   },
@@ -586,6 +647,7 @@
  },
  "unica.build.make": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: параметры запуска, артефакты и итог операции"
   },
@@ -596,6 +658,7 @@
  },
  "unica.build.run": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: параметры запуска, артефакты и итог операции"
   },
@@ -606,6 +669,7 @@
  },
  "unica.build.update": {
   "result": {
+   "contract": "prose",
    "now": "текст в `stdout`",
    "target": "`data`: параметры запуска, артефакты и итог операции"
   },
@@ -616,6 +680,7 @@
  },
  "unica.runtime.execute": {
   "result": {
+   "contract": "partial",
    "now": "`data` по операции",
    "target": "`data`: типизированный итог операции runtime"
   },
@@ -626,6 +691,7 @@
  },
  "unica.runtime.job.start": {
   "result": {
+   "contract": "job",
    "now": "снимок задания в `job`",
    "target": "без изменений"
   },
@@ -635,6 +701,7 @@
  },
  "unica.runtime.job.status": {
   "result": {
+   "contract": "job",
    "now": "снимок задания в `job`",
    "target": "без изменений"
   },
@@ -644,6 +711,7 @@
  },
  "unica.runtime.job.wait": {
   "result": {
+   "contract": "job",
    "now": "снимок задания в `job`",
    "target": "без изменений"
   },
@@ -653,6 +721,7 @@
  },
  "unica.runtime.job.logs": {
   "result": {
+   "contract": "job",
    "now": "снимок задания в `job`",
    "target": "без изменений"
   },
@@ -662,6 +731,7 @@
  },
  "unica.runtime.job.cancel": {
   "result": {
+   "contract": "job",
    "now": "снимок задания в `job`",
    "target": "без изменений"
   },
@@ -671,6 +741,7 @@
  },
  "unica.runtime.job.list": {
   "result": {
+   "contract": "job",
    "now": "снимок задания в `job`",
    "target": "без изменений"
   },
