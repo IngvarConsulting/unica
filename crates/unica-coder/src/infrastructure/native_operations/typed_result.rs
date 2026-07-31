@@ -74,6 +74,14 @@ impl NativeOperationAdapter {
                             "support edit",
                         );
                     }
+                    "dcs-edit" => {
+                        let execution = super::dcs::edit_dcs_with_data(args, context);
+                        return typed_operation_result(
+                            execution.outcome,
+                            execution.data,
+                            "dcs edit",
+                        );
+                    }
                     "form-add" => {
                         let execution = form::add_form_with_data(args, context);
                         return typed_operation_result(
