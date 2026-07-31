@@ -3172,7 +3172,6 @@ mod tests {
             "unica.cf.init",
             "unica.cf.validate",
             "unica.cfe.borrow",
-            "unica.cfe.init",
             "unica.cfe.patch_method",
             "unica.cfe.validate",
             "unica.meta.compile",
@@ -3214,6 +3213,7 @@ mod tests {
             "unica.form.remove",
             "unica.interface.edit",
             "unica.meta.remove",
+            "unica.cfe.init",
         ];
 
         for tool in tools() {

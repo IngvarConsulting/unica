@@ -6056,22 +6056,85 @@ pub(crate) fn patch_extension_method(
     }
 }
 
+/// Typed answer of `unica.cfe.init` (ADR-0023). The prose mixed `[INFO]` lines
+/// about values read from the base configuration with `[WARN]` lines about
+/// values that had to be defaulted; the first become `derived`, the second
+/// become envelope warnings.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfeInitData {
+    pub(crate) name: String,
+    pub(crate) purpose: String,
+    pub(crate) name_prefix: String,
+    pub(crate) compatibility_mode: String,
+    pub(crate) interface_compatibility_mode: String,
+    /// The base configuration the properties were read from; `null` when the
+    /// scaffold was written without one.
+    pub(crate) base_config: Option<String>,
+    pub(crate) root: String,
+    pub(crate) derived: Vec<CfeInitDerivedProperty>,
+    pub(crate) mutation: MutationData,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfeInitDerivedProperty {
+    pub(crate) property: String,
+    pub(crate) value: String,
+    /// `baseConfig` when the value was read from the base configuration,
+    /// `default` when the base configuration did not carry it.
+    pub(crate) source: String,
+}
+
+impl CfeInitDerivedProperty {
+    fn from_base(property: &str, value: &str) -> Self {
+        Self {
+            property: property.to_string(),
+            value: value.to_string(),
+            source: "baseConfig".to_string(),
+        }
+    }
+
+    fn defaulted(property: &str, value: &str) -> Self {
+        Self {
+            property: property.to_string(),
+            value: value.to_string(),
+            source: "default".to_string(),
+        }
+    }
+}
+
+pub(crate) struct CfeInitExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<CfeInitData>,
+}
+
 pub(crate) fn create_extension_scaffold(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
+    create_extension_scaffold_with_data(args, context).outcome
+}
+
+pub(crate) fn create_extension_scaffold_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> CfeInitExecution {
     let name = string_arg(args, &["name", "Name"]).unwrap_or("");
     if name.is_empty() {
-        return AdapterOutcome {
-            ok: false,
-            summary: "unica.cfe.init failed in native XML scaffold writer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec!["missing required Name argument".to_string()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some("missing required Name argument\n".to_string()),
-            command: None,
+        return CfeInitExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.cfe.init failed in native XML scaffold writer".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec!["missing required Name argument".to_string()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some("missing required Name argument\n".to_string()),
+                command: None,
+            },
+            data: None,
         };
     }
     let synonym = string_arg(args, &["synonym", "Synonym"]).unwrap_or(name);
@@ -6085,7 +6148,7 @@ pub(crate) fn create_extension_scaffold(
     let role = planned.role;
     let purpose = string_arg(args, &["purpose", "Purpose"]).unwrap_or("Customization");
 
-    let write_result = (|| -> Result<(String, Vec<String>), String> {
+    let write_result = (|| -> Result<(CfeInitData, Vec<String>), String> {
         cfe_validate_metadata_name("Name", name)?;
         if !no_role {
             cfe_validate_metadata_name("RoleName", &role_name)?;
@@ -6096,7 +6159,8 @@ pub(crate) fn create_extension_scaffold(
             ));
         }
 
-        let mut stdout_prefix = String::new();
+        let mut derived: Vec<CfeInitDerivedProperty> = Vec::new();
+        let mut init_warnings: Vec<String> = Vec::new();
         let mut base_lang_uuid = "00000000-0000-0000-0000-000000000000".to_string();
         let mut compatibility = string_arg(args, &["compatibilityMode", "CompatibilityMode"])
             .unwrap_or("Version8_3_24")
@@ -6158,9 +6222,9 @@ pub(crate) fn create_extension_scaffold(
                 return Err("base config root must use the MDClasses namespace".to_string());
             }
             base_config_path = Some(config_path.clone());
-            stdout_prefix.push_str(&format!(
-                "[INFO] Base config MDClasses format version: {}\n",
-                ACTIVE_FORMAT_PROFILE.export_format
+            derived.push(CfeInitDerivedProperty::from_base(
+                "mdClassesFormatVersion",
+                ACTIVE_FORMAT_PROFILE.export_format,
             ));
             let base_lang_file = cfg_dir.join("Languages").join("Русский.xml");
             if base_lang_file.exists() {
@@ -6187,61 +6251,66 @@ pub(crate) fn create_extension_scaffold(
                                         ));
                                     }
                                     base_lang_uuid = uuid.to_string();
-                                    stdout_prefix.push_str(&format!(
-                                        "[INFO] Base config Language UUID: {base_lang_uuid}\n"
+                                    derived.push(CfeInitDerivedProperty::from_base(
+                                        "baseLanguageUuid",
+                                        &base_lang_uuid,
                                     ));
                                 }
                             }
                             None => {
-                                stdout_prefix.push_str(&format!(
-                                    "[WARN] Could not parse {}\n",
+                                init_warnings.push(format!(
+                                    "не удалось разобрать {}",
                                     base_lang_file.display()
                                 ));
                             }
                         }
                     }
                     Err(_) => {
-                        stdout_prefix.push_str(&format!(
-                            "[WARN] Could not parse {}\n",
-                            base_lang_file.display()
-                        ));
+                        init_warnings
+                            .push(format!("не удалось прочитать {}", base_lang_file.display()));
                     }
                 }
             } else {
-                stdout_prefix.push_str(&format!(
-                    "[WARN] Base config language not found: {}\n",
+                init_warnings.push(format!(
+                    "язык базовой конфигурации не найден: {}",
                     base_lang_file.display()
                 ));
             }
 
             if let Some(value) = first_text(&base_document, "CompatibilityMode") {
                 compatibility = value;
-                stdout_prefix.push_str(&format!(
-                    "[INFO] Base config CompatibilityMode: {compatibility}\n"
+                derived.push(CfeInitDerivedProperty::from_base(
+                    "compatibilityMode",
+                    &compatibility,
                 ));
             } else {
-                stdout_prefix.push_str(&format!(
-                    "[WARN] CompatibilityMode not found in base config, using default: {compatibility}\n"
+                derived.push(CfeInitDerivedProperty::defaulted(
+                    "compatibilityMode",
+                    &compatibility,
                 ));
             }
-            let interface_mode = if let Some(value) =
-                first_text(&base_document, "InterfaceCompatibilityMode")
-            {
-                stdout_prefix.push_str(&format!(
-                    "[INFO] Base config InterfaceCompatibilityMode: {value}\n"
-                ));
-                value
-            } else {
-                let value = "TaxiEnableVersion8_2".to_string();
-                stdout_prefix.push_str(&format!(
-                    "[WARN] InterfaceCompatibilityMode not found in base config, using default: {value}\n"
-                ));
-                value
-            };
+            let interface_mode =
+                if let Some(value) = first_text(&base_document, "InterfaceCompatibilityMode") {
+                    derived.push(CfeInitDerivedProperty::from_base(
+                        "interfaceCompatibilityMode",
+                        &value,
+                    ));
+                    value
+                } else {
+                    let value = "TaxiEnableVersion8_2".to_string();
+                    derived.push(CfeInitDerivedProperty::defaulted(
+                        "interfaceCompatibilityMode",
+                        &value,
+                    ));
+                    value
+                };
             base_config_preimage = Some(base_raw);
             interface_mode
         } else {
-            stdout_prefix.push_str("[WARN] Language ExtendedConfigurationObject set to zeros. Use -ConfigPath to auto-resolve from base config, or fix manually before loading.\n");
+            init_warnings.push(
+                "ExtendedConfigurationObject языка заполнен нулями: укажите ConfigPath, чтобы вывести его из базовой конфигурации, либо поправьте вручную перед загрузкой"
+                    .to_string(),
+            );
             "TaxiEnableVersion8_2".to_string()
         };
         cfe_init_validate_enum("ConfigurationExtensionCompatibilityMode", &compatibility)?;
@@ -6400,20 +6469,30 @@ pub(crate) fn create_extension_scaffold(
         let report = transaction
             .commit_with_post_validation(|| cfe_init_validate_post_state(&config, context))?;
 
-        let mut stdout = format!(
-            "{stdout_prefix}[OK] Создано расширение: {name}\n     Каталог:            {}\n     Назначение:         {purpose}\n     Префикс:           {name_prefix}\n     Совместимость:     {compatibility}\n     Configuration.xml:  {}\n     Languages:          {}\n",
-            out_dir.display(),
-            config.display(),
-            language.display()
-        );
+        let mut mutation = MutationData::new(true).created(&config).created(&language);
         if let Some(role) = &role {
-            stdout.push_str(&format!("     Role:               {}\n", role.display()));
+            mutation = mutation.created(role);
         }
-        Ok((stdout, report.cleanup_warnings))
+        let data = CfeInitData {
+            name: name.to_string(),
+            purpose: purpose.to_string(),
+            name_prefix: name_prefix.clone(),
+            compatibility_mode: compatibility.clone(),
+            interface_compatibility_mode: interface_mode.clone(),
+            base_config: base_config_path
+                .as_ref()
+                .map(|path: &PathBuf| path.display().to_string()),
+            root: out_dir.display().to_string(),
+            derived,
+            mutation,
+        };
+        let mut warnings = init_warnings;
+        warnings.extend(report.cleanup_warnings);
+        Ok((data, warnings))
     })();
 
     match write_result {
-        Ok((stdout, warnings)) => {
+        Ok((data, warnings)) => {
             let mut changes = vec![
                 format!("created {}", config.display()),
                 format!("created {}", language.display()),
@@ -6423,28 +6502,37 @@ pub(crate) fn create_extension_scaffold(
                 changes.push(format!("created {}", role.display()));
                 artifacts.push(role.display().to_string());
             }
-            AdapterOutcome {
-                ok: true,
-                summary: "unica.cfe.init completed with native XML scaffold writer".to_string(),
-                changes,
-                warnings,
-                errors: Vec::new(),
-                artifacts,
-                stdout: Some(stdout),
-                stderr: None,
-                command: None,
+            CfeInitExecution {
+                outcome: AdapterOutcome {
+                    ok: true,
+                    summary: format!(
+                        "unica.cfe.init created extension {} in {}",
+                        data.name, data.root
+                    ),
+                    changes,
+                    warnings,
+                    errors: Vec::new(),
+                    artifacts,
+                    stdout: None,
+                    stderr: None,
+                    command: None,
+                },
+                data: Some(data),
             }
         }
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.cfe.init failed in native XML scaffold writer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-            command: None,
+        Err(error) => CfeInitExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.cfe.init failed in native XML scaffold writer".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.clone()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{error}\n")),
+                command: None,
+            },
+            data: None,
         },
     }
 }

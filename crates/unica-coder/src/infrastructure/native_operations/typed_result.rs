@@ -74,6 +74,14 @@ impl NativeOperationAdapter {
                             "support edit",
                         );
                     }
+                    "cfe-init" => {
+                        let execution = cfe::create_extension_scaffold_with_data(args, context);
+                        return typed_operation_result(
+                            execution.outcome,
+                            execution.data,
+                            "cfe init",
+                        );
+                    }
                     // `DryRun` is the tool's own argument and is reported
                     // through `dryRun` in the data; the protocol dry run still
                     // keeps its placeholder and performs nothing.
