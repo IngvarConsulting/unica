@@ -3241,7 +3241,8 @@ mod tests {
     fn mxl_info_reports_zero_rows_for_platform_8_3_27_empty_fixture() {
         let context = test_context("info-platform-empty");
         let fixture = platform_mxl_fixture();
-        let mut args = path_args(&fixture);
+        let args = path_args(&fixture);
+
         let execution = analyze_mxl_info(&args, &context);
 
         assert!(execution.outcome.ok, "{:?}", execution.outcome);
@@ -3258,7 +3259,8 @@ mod tests {
             "\t<height>1</height>\n\t<vgRows>0</vgRows>",
         );
         let (context, template_path) = write_test_mxl("info-first-empty-row", &xml);
-        let mut args = path_args(&template_path);
+        let args = path_args(&template_path);
+
         let execution = analyze_mxl_info(&args, &context);
 
         assert!(execution.outcome.ok, "{:?}", execution.outcome);
@@ -3275,7 +3277,8 @@ mod tests {
             "\t<height>0</height>\n\t<vgRows>0</vgRows>",
         );
         let (context, template_path) = write_test_mxl("info-height-zero-lookalike", &xml);
-        let mut args = path_args(&template_path);
+        let args = path_args(&template_path);
+
         let execution = analyze_mxl_info(&args, &context);
 
         assert!(execution.outcome.ok, "{:?}", execution.outcome);
