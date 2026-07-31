@@ -65,10 +65,6 @@ const XDTO_EDIT_ARGS: &[&str] = &[
     "typeName",
     "propertyPath",
     "property",
-    "lowerBound",
-    "upperBound",
-    "ordered",
-    "sequenced",
 ];
 const RUNTIME_JOB_STATUS_ARGS: &[&str] = &["jobId"];
 const RUNTIME_JOB_WAIT_ARGS: &[&str] = &["jobId", "timeoutSeconds"];
@@ -786,6 +782,7 @@ pub fn validate_tool_arguments(
     validate_support_arguments(tool, args, dry_run)?;
     validate_external_init_arguments(tool, args)?;
     validate_cfe_patch_method_arguments(tool, args)?;
+    validate_xdto_arguments(tool, args)?;
 
     if !dry_run || is_external_init_tool(tool) {
         for required in required_args(&tool) {
@@ -795,6 +792,78 @@ pub fn validate_tool_arguments(
         }
     }
 
+    Ok(())
+}
+
+fn validate_xdto_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Result<(), String> {
+    if !matches!(tool.name, "unica.xdto.info" | "unica.xdto.edit") {
+        return Ok(());
+    }
+    if let Some(metadata_path) = args.get("metadataPath").and_then(Value::as_str) {
+        let valid = metadata_path
+            .strip_prefix("XDTOPackage.")
+            .or_else(|| metadata_path.strip_prefix("ПакетXDTO."))
+            .is_some_and(|name| !name.is_empty() && !name.contains(['.', '/', '\\']));
+        if !valid {
+            return Err(format!(
+                "{} argument `metadataPath` must be XDTOPackage.<name>",
+                tool.name
+            ));
+        }
+    }
+    if tool.name == "unica.xdto.edit" {
+        if let Some(operation) = args.get("operation").and_then(Value::as_str) {
+            const OPERATIONS: &[&str] = &[
+                "add-value-type",
+                "add-object-type",
+                "add-property",
+                "remove-type",
+                "remove-property",
+            ];
+            if !OPERATIONS.contains(&operation) {
+                return Err(format!(
+                    "{} argument `operation` must be one of: {}",
+                    tool.name,
+                    OPERATIONS.join(", ")
+                ));
+            }
+        }
+        if let Some(property) = args.get("property") {
+            let property = property
+                .as_object()
+                .ok_or_else(|| format!("{} argument `property` must be object", tool.name))?;
+            if property
+                .keys()
+                .any(|key| !matches!(key.as_str(), "name" | "type" | "minOccurs"))
+            {
+                return Err(format!(
+                    "{} argument `property` accepts only name, type, minOccurs",
+                    tool.name
+                ));
+            }
+            for field in ["name", "type"] {
+                if property
+                    .get(field)
+                    .and_then(Value::as_str)
+                    .is_none_or(|value| value.trim().is_empty())
+                {
+                    return Err(format!(
+                        "{} argument `property.{field}` must be non-empty string",
+                        tool.name
+                    ));
+                }
+            }
+            if property
+                .get("minOccurs")
+                .is_some_and(|value| value.as_u64().is_none())
+            {
+                return Err(format!(
+                    "{} argument `property.minOccurs` must be non-negative integer",
+                    tool.name
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -2100,14 +2169,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
         "Maximum size of the standard page body returned by unica.standards.explain in page mode (snake_case alias of bodyLimit); honoured only alongside id/idOrAliasOrUrl, and ignored by standards.search.",
     ),
     (
-        "lowerBound",
-        "Нижняя граница XDTO-свойства; для add-property обычно задаётся как property.minOccurs.",
-    ),
-    (
-        "ordered",
-        "Признак упорядоченности objectType/typeDef XDTO; v1 сохраняет существующее значение и не изменяет его.",
-    ),
-    (
         "property",
         "Объект нового XDTO-свойства для unica.xdto.edit: обязательны name и type, допустим minOccurs.",
     ),
@@ -2116,16 +2177,8 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
         "Точечный путь свойств к вложенному XDTO typeDef, например СсылкаНаОбъект.",
     ),
     (
-        "sequenced",
-        "Признак последовательности objectType/typeDef XDTO; v1 сохраняет существующее значение и не изменяет его.",
-    ),
-    (
         "typeName",
         "Имя XDTO valueType или objectType, либо целевого objectType для операции со свойством.",
-    ),
-    (
-        "upperBound",
-        "Верхняя граница XDTO-свойства; v1 не меняет её у существующего свойства.",
     ),
     (
         "borrowMainAttribute",
@@ -2830,6 +2883,33 @@ fn description_for_arg(name: &str) -> Option<&'static str> {
 }
 
 fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
+    if matches!(tool.name, "unica.xdto.info" | "unica.xdto.edit") {
+        return match name {
+            "sourceSet" | "typeName" | "propertyPath" | "name" | "base" => {
+                json!({ "type": "string", "minLength": 1, "pattern": r"\S" })
+            }
+            "metadataPath" => json!({
+                "type": "string",
+                "pattern": r"^(?:XDTOPackage|ПакетXDTO)\.[^./\\]+$",
+                "description": "Логический адрес пакета XDTO: XDTOPackage.<имя>; физический путь Package.bin не принимается."
+            }),
+            "operation" => json!({
+                "type": "string",
+                "enum": ["add-value-type", "add-object-type", "add-property", "remove-type", "remove-property"]
+            }),
+            "property" => json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "name": { "type": "string", "minLength": 1, "pattern": r"\S" },
+                    "type": { "type": "string", "minLength": 1, "pattern": r"\S" },
+                    "minOccurs": { "type": "integer", "minimum": 0 }
+                },
+                "required": ["name", "type"]
+            }),
+            _ => property_schema(name),
+        };
+    }
     if tool.name == "unica.form.edit" && name == "definition" {
         return form_edit_definition_schema();
     }
@@ -3445,6 +3525,58 @@ mod tests {
         assert!(validate_tool_arguments(tool, &args, false).is_err());
         args.insert("rawArgs".to_string(), json!(["--unsafe"]));
         assert!(validate_tool_arguments(tool, &args, false).is_err());
+    }
+
+    #[test]
+    fn xdto_contract_publishes_and_enforces_typed_arguments() {
+        let info = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.xdto.info")
+            .unwrap();
+        let edit = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.xdto.edit")
+            .unwrap();
+        let info_schema = input_schema_for_tool(&info);
+        let edit_schema = input_schema_for_tool(&edit);
+        let info_validator = jsonschema::validator_for(&info_schema).unwrap();
+        let edit_validator = jsonschema::validator_for(&edit_schema).unwrap();
+
+        assert!(info_validator.is_valid(&json!({
+            "sourceSet": "configuration",
+            "metadataPath": "XDTOPackage.EnterpriseData_1_17_3"
+        })));
+        assert!(!info_validator.is_valid(&json!({
+            "sourceSet": "configuration",
+            "metadataPath": "XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin"
+        })));
+        assert!(edit_validator.is_valid(&json!({
+            "sourceSet": "configuration",
+            "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+            "operation": "add-property",
+            "property": {"name": "Document", "type": "Document", "minOccurs": 0}
+        })));
+        assert!(!edit_validator.is_valid(&json!({
+            "sourceSet": "configuration",
+            "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+            "operation": "rename-type",
+            "property": {"name": "Document", "type": "Document", "minOccurs": -1}
+        })));
+
+        let invalid_path = json!({
+            "sourceSet": "configuration",
+            "metadataPath": "Package.bin"
+        });
+        assert!(validate_tool_arguments(info, invalid_path.as_object().unwrap(), false).is_err());
+        let invalid_property = json!({
+            "sourceSet": "configuration",
+            "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+            "operation": "add-property",
+            "property": {"name": "Document", "type": "Document", "upperBound": 1}
+        });
+        assert!(
+            validate_tool_arguments(edit, invalid_property.as_object().unwrap(), false).is_err()
+        );
     }
 
     #[test]

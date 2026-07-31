@@ -101,7 +101,7 @@ fn info(args: &Map<String, Value>, context: &WorkspaceContext) -> Result<XdtoExe
 }
 
 fn edit(args: &Map<String, Value>, context: &WorkspaceContext, preview: bool) -> XdtoExecution {
-    let planned = (|| -> Result<(Package, Vec<u8>, Vec<u8>, Value, bool), String> {
+    let planned = (|| -> Result<MutationPlan, String> {
         let package = resolve_package(args, context)?;
         let before = fs::read(&package.path)
             .map_err(|error| format!("package_resource_missing: {error}"))?;
@@ -113,9 +113,21 @@ fn edit(args: &Map<String, Value>, context: &WorkspaceContext, preview: bool) ->
         parse(&post)?;
         let no_op = before == after;
         let data = json!({"sourceSet": package.source_set, "metadataPath": package.metadata_path, "operation": operation, "noOp": no_op, "findings": if no_op { vec![json!({"code":"duplicate_or_already_applied"})] } else { Vec::new() }});
-        Ok((package, before, after, data, no_op))
+        Ok(MutationPlan {
+            package,
+            before,
+            after,
+            data,
+            no_op,
+        })
     })();
-    let (package, before, after, data, no_op) = match planned {
+    let MutationPlan {
+        package,
+        before,
+        after,
+        data,
+        no_op,
+    } = match planned {
         Ok(plan) => plan,
         Err(error) => {
             return XdtoExecution {
@@ -195,6 +207,14 @@ struct Package {
     path: PathBuf,
     source_set: String,
     metadata_path: String,
+}
+
+struct MutationPlan {
+    package: Package,
+    before: Vec<u8>,
+    after: Vec<u8>,
+    data: Value,
+    no_op: bool,
 }
 
 fn resolve_package(
@@ -318,7 +338,24 @@ fn named_type<'a>(root: Node<'a, 'a>, name: &str) -> Option<Node<'a, 'a>> {
 }
 fn remove_named(text: &str, node: Node<'_, '_>) -> Result<String, String> {
     let range = node.range();
-    Ok(format!("{}{}", &text[..range.start], &text[range.end..]))
+    let line_start = text[..range.start]
+        .rfind('\n')
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    let leading_is_whitespace = text[line_start..range.start]
+        .chars()
+        .all(|character| matches!(character, ' ' | '\t' | '\r'));
+    let start = if leading_is_whitespace {
+        line_start
+    } else {
+        range.start
+    };
+    let end = text[range.end..]
+        .strip_prefix("\r\n")
+        .map(|_| range.end + 2)
+        .or_else(|| text[range.end..].strip_prefix('\n').map(|_| range.end + 1))
+        .unwrap_or(range.end);
+    Ok(format!("{}{}", &text[..start], &text[end..]))
 }
 fn insert_before_close(text: &str, node: Node<'_, '_>, fragment: &str) -> Result<String, String> {
     let range = node.range();
@@ -328,15 +365,26 @@ fn insert_before_close(text: &str, node: Node<'_, '_>, fragment: &str) -> Result
         .ok_or_else(|| {
             "unsupported_node: insertion target must have an explicit closing tag".to_string()
         })?;
-    let indent = line_indent(text, close);
+    let parent_indent = line_indent(text, close);
+    let close_line_start = text[..close]
+        .rfind('\n')
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    let prefix_end = if text[close_line_start..close] == *parent_indent {
+        close_line_start
+    } else {
+        close
+    };
+    let child_indent = format!("{parent_indent}\t");
     let eol = if text.contains("\r\n") { "\r\n" } else { "\n" };
     Ok(format!(
-        "{}{}{}{}\t{}{}",
-        &text[..close],
-        indent,
+        "{}{}{}{}{}{}{}",
+        &text[..prefix_end],
         eol,
+        child_indent,
         fragment,
-        indent,
+        eol,
+        parent_indent,
         &text[close..]
     ))
 }
@@ -429,7 +477,15 @@ mod tests {
             ),
         ]);
         let once = mutation(PACKAGE, &args, "add-property").unwrap();
-        assert!(once.contains("name=\"Документ_Новый\""));
+        assert_eq!(
+            once,
+            r#"<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" targetNamespace="urn:test">
+	<objectType name="ЛюбаяСсылка"><property name="СсылкаНаОбъект"><typeDef xsi:type="ObjectType">
+		<property name="Документ_Новый" type="Документ_Новый" lowerBound="0"/>
+	</typeDef></property></objectType>
+	<objectType name="СоставнойЛюбойОбъект"/>
+</package>"#
+        );
         assert_eq!(mutation(&once, &args, "add-property").unwrap(), once);
     }
 
