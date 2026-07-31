@@ -3179,7 +3179,6 @@ mod tests {
             "unica.meta.info",
             "unica.meta.remove",
             "unica.meta.validate",
-            "unica.help.add",
             "unica.form.add",
             "unica.form.compile",
             "unica.form.edit",
@@ -3214,6 +3213,7 @@ mod tests {
             "unica.meta.edit",
             "unica.template.add",
             "unica.template.remove",
+            "unica.help.add",
         ];
 
         for tool in tools() {

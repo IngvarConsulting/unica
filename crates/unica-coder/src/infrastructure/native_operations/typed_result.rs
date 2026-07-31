@@ -1,5 +1,6 @@
 use super::{
-    cf, cfe, code, form, meta, mxl, registry, role, subsystem, template, NativeOperationAdapter,
+    cf, cfe, code, form, help, meta, mxl, registry, role, subsystem, template,
+    NativeOperationAdapter,
 };
 use crate::{application::AdapterOutcome, domain::workspace::WorkspaceContext};
 use serde::Serialize;
@@ -48,6 +49,14 @@ impl NativeOperationAdapter {
                             execution.outcome,
                             execution.data,
                             "template add",
+                        );
+                    }
+                    "help-add" => {
+                        let execution = help::add_help_with_data(args, context);
+                        return typed_operation_result(
+                            execution.outcome,
+                            execution.data,
+                            "help add",
                         );
                     }
                     "template-remove" => {

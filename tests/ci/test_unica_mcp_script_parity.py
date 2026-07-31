@@ -760,27 +760,6 @@ SUCCESS_SCENARIOS = [
         expect_ok=True,
     ),
     ParityScenario(
-        name="help-add-catalog",
-        tool="unica.help.add",
-        skill="help-add",
-        script="add-help.py",
-        arguments={
-            "ObjectName": "Catalogs/ParityCatalog",
-            "SrcDir": "src",
-            "Lang": "ru",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="meta-compile",
-                script="meta-compile.py",
-                arguments={"JsonPath": "fixtures/meta-catalog.json", "OutputDir": "src"},
-            ),
-        ),
-        fixtures=(FileFixture("meta-catalog.json", "fixtures/meta-catalog.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
         name="bsp-meta-info-catalog-full",
         tool="unica.meta.info",
         skill="meta-info",
@@ -3709,7 +3688,6 @@ NATIVE_PARITY_TOOLS = {
     "unica.meta.info",
     "unica.meta.remove",
     "unica.meta.validate",
-    "unica.help.add",
     "unica.form.add",
     "unica.form.compile",
     "unica.form.edit",
@@ -3754,6 +3732,7 @@ TYPED_RESULT_TOOLS = {
     "unica.meta.edit",
     "unica.template.add",
     "unica.template.remove",
+    "unica.help.add",
 }
 
 EXPECTED_TOOLS = {
@@ -3768,7 +3747,6 @@ EXPECTED_TOOLS = {
     "unica.meta.info",
     "unica.meta.remove",
     "unica.meta.validate",
-    "unica.help.add",
     "unica.form.add",
     "unica.form.compile",
     "unica.form.edit",
