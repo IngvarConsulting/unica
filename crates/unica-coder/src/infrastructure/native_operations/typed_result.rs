@@ -74,6 +74,14 @@ impl NativeOperationAdapter {
                             "support edit",
                         );
                     }
+                    "cf-init" => {
+                        let execution = cf::create_configuration_scaffold_with_data(args, context);
+                        return typed_operation_result(
+                            execution.outcome,
+                            execution.data,
+                            "cf init",
+                        );
+                    }
                     "cf-edit" => {
                         let execution = cf::edit_cf_with_data(args, context);
                         return typed_operation_result(

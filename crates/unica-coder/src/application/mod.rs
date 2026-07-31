@@ -3168,7 +3168,6 @@ mod tests {
         // `unica.cf.info` left the parity stand when it started answering with
         // typed data: there is no prose left to compare (ADR-0023).
         const PARITY_COVERED_TOOLS: &[&str] = &[
-            "unica.cf.init",
             "unica.cf.validate",
             "unica.cfe.borrow",
             "unica.cfe.patch_method",
@@ -3214,6 +3213,7 @@ mod tests {
             "unica.meta.remove",
             "unica.cfe.init",
             "unica.cf.edit",
+            "unica.cf.init",
         ];
 
         for tool in tools() {

@@ -151,22 +151,6 @@ class CcSkillCase:
 
 SUCCESS_SCENARIOS = [
     ParityScenario(
-        name="cf-init-basic",
-        tool="unica.cf.init",
-        skill="cf-init",
-        script="cf-init.py",
-        arguments={
-            "Name": "ParityConfiguration",
-            "Synonym": "Parity configuration",
-            "OutputDir": "src",
-            "Version": "1.0.0.1",
-            "Vendor": "Unica",
-            "CompatibilityMode": "Version8_3_24",
-        },
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
         name="cfe-validate-detailed-outfile",
         tool="unica.cfe.validate",
         skill="cfe-validate",
@@ -3348,7 +3332,6 @@ SCENARIOS = tuple(SUCCESS_SCENARIOS + VALIDATION_FAILURE_SCENARIOS + MISSING_INP
 MIN_NATIVE_PARITY_COVERAGE = 1.0
 
 NATIVE_PARITY_TOOLS = {
-    "unica.cf.init",
     "unica.cf.validate",
     "unica.cfe.borrow",
     "unica.cfe.patch_method",
@@ -3392,6 +3375,7 @@ MUTATING_FORM_DCS_PARITY_TOOLS = {
 TYPED_RESULT_TOOLS = {
     "unica.cf.edit",
     "unica.cf.info",
+    "unica.cf.init",
     "unica.cfe.diff",
     "unica.cfe.init",
     "unica.form.remove",
@@ -3407,7 +3391,6 @@ TYPED_RESULT_TOOLS = {
 }
 
 EXPECTED_TOOLS = {
-    "unica.cf.init",
     "unica.cf.validate",
     "unica.cfe.borrow",
     "unica.cfe.patch_method",

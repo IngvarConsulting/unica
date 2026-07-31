@@ -4288,22 +4288,46 @@ pub(crate) fn cf_init_post_validation_dependency_paths(planned: &CfInitPlannedXm
     vec![planned.output_dir.join("Ext/HomePageWorkArea.xml")]
 }
 
+/// Typed answer of `unica.cf.init` (ADR-0023): the scaffold that was written.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfInitData {
+    pub(crate) name: String,
+    pub(crate) root: String,
+    pub(crate) mutation: MutationData,
+}
+
+pub(crate) struct CfInitExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<CfInitData>,
+}
+
 pub(crate) fn create_configuration_scaffold(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
+    create_configuration_scaffold_with_data(args, context).outcome
+}
+
+pub(crate) fn create_configuration_scaffold_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> CfInitExecution {
     let name = string_arg(args, &["name", "Name"]).unwrap_or("");
     if name.is_empty() {
-        return AdapterOutcome {
-            ok: false,
-            summary: "unica.cf.init failed in native XML scaffold writer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec!["missing required Name argument".to_string()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some("missing required Name argument\n".to_string()),
-            command: None,
+        return CfInitExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.cf.init failed in native XML scaffold writer".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec!["missing required Name argument".to_string()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some("missing required Name argument\n".to_string()),
+                command: None,
+            },
+            data: None,
         };
     }
     let synonym = string_arg(args, &["synonym", "Synonym"]).unwrap_or(name);
@@ -4521,41 +4545,51 @@ pub(crate) fn create_configuration_scaffold(
     })();
 
     match write_result {
-        Ok(warnings) => AdapterOutcome {
-            ok: true,
-            summary: "unica.cf.init completed with native XML scaffold writer".to_string(),
-            changes: vec![
-                format!("created {}", config.display()),
-                format!("created {}", language.display()),
-                format!("created {}", cai.display()),
-            ],
-            warnings,
-            errors: Vec::new(),
-            artifacts: vec![
-                config.display().to_string(),
-                language.display().to_string(),
-                cai.display().to_string(),
-            ],
-            stdout: Some(format!(
-                "[OK] Создана конфигурация: {name}\n     Каталог:            {}\n     Configuration.xml:  {}\n     Languages:          {}\n     Ext/CAI:            {}\n",
-                out_dir.display(),
-                config.display(),
-                language.display(),
-                cai.display()
-            )),
-            stderr: None,
-            command: None,
+        Ok(warnings) => CfInitExecution {
+            outcome: AdapterOutcome {
+                ok: true,
+                summary: format!(
+                    "unica.cf.init created configuration {name} in {}",
+                    out_dir.display()
+                ),
+                changes: vec![
+                    format!("created {}", config.display()),
+                    format!("created {}", language.display()),
+                    format!("created {}", cai.display()),
+                ],
+                warnings,
+                errors: Vec::new(),
+                artifacts: vec![
+                    config.display().to_string(),
+                    language.display().to_string(),
+                    cai.display().to_string(),
+                ],
+                stdout: None,
+                stderr: None,
+                command: None,
+            },
+            data: Some(CfInitData {
+                name: name.to_string(),
+                root: out_dir.display().to_string(),
+                mutation: MutationData::new(true)
+                    .created(&config)
+                    .created(&language)
+                    .created(&cai),
+            }),
         },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.cf.init failed in native XML scaffold writer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-            command: None,
+        Err(error) => CfInitExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.cf.init failed in native XML scaffold writer".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.clone()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{error}\n")),
+                command: None,
+            },
+            data: None,
         },
     }
 }
