@@ -74,6 +74,14 @@ impl NativeOperationAdapter {
                             "support edit",
                         );
                     }
+                    "form-add" => {
+                        let execution = form::add_form_with_data(args, context);
+                        return typed_operation_result(
+                            execution.outcome,
+                            execution.data,
+                            "form add",
+                        );
+                    }
                     "subsystem-edit" => {
                         let execution = subsystem::edit_subsystem_with_data(args, context);
                         return typed_operation_result(

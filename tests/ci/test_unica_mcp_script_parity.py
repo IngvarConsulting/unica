@@ -946,29 +946,6 @@ SUCCESS_SCENARIOS = [
         expect_ok=True,
     ),
     ParityScenario(
-        name="form-add-catalog-list-default",
-        tool="unica.form.add",
-        skill="form-add",
-        script="form-add.py",
-        arguments={
-            "ObjectPath": "src/Catalogs/ParityCatalog.xml",
-            "FormName": "ListForm",
-            "Purpose": "List",
-            "Synonym": "List form",
-            "SetDefault": True,
-        },
-        setup_steps=(
-            SetupStep(
-                skill="meta-compile",
-                script="meta-compile.py",
-                arguments={"JsonPath": "fixtures/meta-catalog.json", "OutputDir": "src"},
-            ),
-        ),
-        fixtures=(FileFixture("meta-catalog.json", "fixtures/meta-catalog.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
         name="interface-validate-detailed",
         tool="unica.interface.validate",
         skill="interface-validate",
@@ -2891,14 +2868,6 @@ MISSING_INPUT_SCENARIOS = [
         False,
     ),
     ParityScenario(
-        "form-add-missing-object",
-        "unica.form.add",
-        "form-add",
-        "form-add.py",
-        {"ObjectPath": "missing/Catalog.xml", "FormName": "ФормаЭлемента", "Purpose": "Item"},
-        False,
-    ),
-    ParityScenario(
         "form-edit-missing-form",
         "unica.form.edit",
         "form-edit",
@@ -3012,7 +2981,6 @@ NATIVE_PARITY_TOOLS = {
     "unica.meta.compile",
     "unica.meta.info",
     "unica.meta.validate",
-    "unica.form.add",
     "unica.form.compile",
     "unica.form.edit",
     "unica.form.info",
@@ -3032,7 +3000,6 @@ NATIVE_PARITY_TOOLS = {
 }
 
 MUTATING_FORM_DCS_PARITY_TOOLS = {
-    "unica.form.add",
     "unica.form.compile",
     "unica.form.edit",
     "unica.dcs.compile",
@@ -3051,6 +3018,7 @@ TYPED_RESULT_TOOLS = {
     "unica.cfe.diff",
     "unica.cfe.init",
     "unica.cfe.patch_method",
+    "unica.form.add",
     "unica.form.remove",
     "unica.help.add",
     "unica.interface.edit",
@@ -3070,7 +3038,6 @@ EXPECTED_TOOLS = {
     "unica.meta.compile",
     "unica.meta.info",
     "unica.meta.validate",
-    "unica.form.add",
     "unica.form.compile",
     "unica.form.edit",
     "unica.form.info",

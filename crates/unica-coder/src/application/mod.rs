@@ -3173,7 +3173,6 @@ mod tests {
             "unica.meta.compile",
             "unica.meta.info",
             "unica.meta.validate",
-            "unica.form.add",
             "unica.form.compile",
             "unica.form.edit",
             "unica.form.info",
@@ -3214,6 +3213,7 @@ mod tests {
             "unica.cfe.borrow",
             "unica.cfe.patch_method",
             "unica.subsystem.edit",
+            "unica.form.add",
         ];
 
         for tool in tools() {

@@ -2227,8 +2227,36 @@ fn validate_form_metadata_path_name(argument: &str, value: &str) -> Result<(), S
     }
 }
 
+/// Typed answer of `unica.form.add` (ADR-0023): the form that was scaffolded,
+/// where it was registered, and whether it became the object's default.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FormAddData {
+    pub(crate) object_kind: String,
+    pub(crate) object_name: String,
+    pub(crate) form: String,
+    /// The object descriptor the form was registered in.
+    pub(crate) registered_in: String,
+    /// The default-form property this form was assigned to; `null` when the
+    /// call left the object's defaults alone.
+    pub(crate) default_property: Option<String>,
+    pub(crate) mutation: MutationData,
+}
+
+pub(crate) struct FormAddExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<FormAddData>,
+}
+
 pub(crate) fn add_form(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
-    let result = (|| -> Result<(String, Vec<PathBuf>, Vec<String>), String> {
+    add_form_with_data(args, context).outcome
+}
+
+pub(crate) fn add_form_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> FormAddExecution {
+    let result = (|| -> Result<(FormAddData, Vec<PathBuf>, Vec<String>), String> {
         let object_path_raw = required_path(args, OBJECT_PATH, "ObjectPath")?;
         let form_name = required_string(args, &["formName", "FormName"], "FormName")?;
         validate_form_metadata_path_name("FormName", form_name)?;
@@ -2326,60 +2354,64 @@ pub(crate) fn add_form(args: &Map<String, Value>, context: &WorkspaceContext) ->
             .file_stem()
             .and_then(|value| value.to_str())
             .unwrap_or("");
-        stdout.push_str("Created:\n");
-        stdout.push_str(&format!(
-            "  Metadata: {obj_dir_name}\\{obj_base_name}\\Forms\\{form_name}.xml\n"
-        ));
-        stdout.push_str(&format!(
-            "  Form:     {obj_dir_name}\\{obj_base_name}\\Forms\\{form_name}\\Ext\\Form.xml\n"
-        ));
-        stdout.push_str(&format!(
-            "  Module:   {obj_dir_name}\\{obj_base_name}\\Forms\\{form_name}\\Ext\\Form\\Module.bsl\n"
-        ));
-        stdout.push('\n');
-        stdout.push_str(&format!(
-            "Registered: <Form>{form_name}</Form> in ChildObjects\n"
-        ));
-        if default_updated {
-            stdout.push_str(&format!("{default_prop_name}: {default_value}\n"));
-        }
-        stdout.push('\n');
+        let _ = (stdout, obj_dir_name, obj_base_name, default_value);
+        let data = FormAddData {
+            object_kind: object_type.to_string(),
+            object_name: object_name.to_string(),
+            form: form_name.to_string(),
+            registered_in: object_xml_full.display().to_string(),
+            default_property: default_updated.then(|| default_prop_name.to_string()),
+            mutation: MutationData::new(true)
+                .updated(&object_xml_full)
+                .created(&form_meta_path)
+                .created(&form_xml_path)
+                .created(&module_path),
+        };
 
         Ok((
-            stdout,
+            data,
             vec![object_xml_full, form_meta_path, form_xml_path, module_path],
             report.cleanup_warnings,
         ))
     })();
 
     match result {
-        Ok((stdout, artifacts, warnings)) => AdapterOutcome {
-            ok: true,
-            summary: "unica.form.add completed with native form scaffold writer".to_string(),
-            changes: artifacts
-                .iter()
-                .map(|path| format!("updated {}", path.display()))
-                .collect(),
-            warnings,
-            errors: Vec::new(),
-            artifacts: artifacts
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect(),
-            stdout: Some(stdout),
-            stderr: None,
-            command: None,
+        Ok((data, artifacts, warnings)) => FormAddExecution {
+            outcome: AdapterOutcome {
+                ok: true,
+                summary: format!(
+                    "unica.form.add created form {} for {}.{}",
+                    data.form, data.object_kind, data.object_name
+                ),
+                changes: artifacts
+                    .iter()
+                    .map(|path| format!("updated {}", path.display()))
+                    .collect(),
+                warnings,
+                errors: Vec::new(),
+                artifacts: artifacts
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect(),
+                stdout: None,
+                stderr: None,
+                command: None,
+            },
+            data: Some(data),
         },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.form.add failed in native form scaffold writer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-            command: None,
+        Err(error) => FormAddExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.form.add failed in native form scaffold writer".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.clone()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{error}\n")),
+                command: None,
+            },
+            data: None,
         },
     }
 }
