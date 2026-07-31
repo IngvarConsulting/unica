@@ -3107,10 +3107,10 @@ pub(crate) fn cfe_borrow_prefixed_name(namespace: Option<&str>, local_name: &str
     }
 }
 
-pub(crate) fn diff_cfe(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
+pub(crate) fn diff_cfe(args: &Map<String, Value>, context: &WorkspaceContext) -> CfeDiffExecution {
     const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
-    let result = (|| -> Result<(String, PathBuf), String> {
+    let result = (|| -> Result<(CfeDiffData, PathBuf), String> {
         let extension_path_raw =
             required_path(args, &["extensionPath", "ExtensionPath"], "ExtensionPath")?;
         let config_path_raw = required_path(args, &["configPath", "ConfigPath"], "ConfigPath")?;
@@ -3163,75 +3163,291 @@ pub(crate) fn diff_cfe(args: &Map<String, Value>, context: &WorkspaceContext) ->
             .and_then(|props| meta_info_child_text(props, "ConfigurationExtensionPurpose"))
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "?".to_string());
-        let mode = string_arg(args, &["mode", "Mode"]).unwrap_or("A");
-        if !matches!(mode, "A" | "B") {
-            return Err(format!(
-                "argument -Mode: invalid choice: '{mode}' (choose from 'A', 'B')"
-            ));
-        }
-
-        let mut lines = vec![
-            format!("=== cfe-diff Mode {mode}: {ext_name} ({purpose}) ==="),
-            format!("    NamePrefix: {name_prefix}"),
-            String::new(),
-        ];
-
-        let child_obj_node = ext_cfg_node.and_then(|node| meta_info_child(node, "ChildObjects"));
-        let Some(child_obj_node) = child_obj_node else {
-            lines.push("[WARN] No ChildObjects in extension".to_string());
-            return Ok((format!("{}\n", lines.join("\n")), ext_cfg));
-        };
-
+        // Mode A listed contents, Mode B checked transfer. Both are facts about
+        // the same extension, so the typed answer carries them together.
         let mut objects = Vec::<CfeDiffObject>::new();
-        for child in child_obj_node.children().filter(|node| node.is_element()) {
-            let obj_type = child.tag_name().name();
-            if obj_type == "Language" {
-                continue;
+        if let Some(child_obj_node) =
+            ext_cfg_node.and_then(|node| meta_info_child(node, "ChildObjects"))
+        {
+            for child in child_obj_node.children().filter(|node| node.is_element()) {
+                let obj_type = child.tag_name().name();
+                if obj_type == "Language" {
+                    continue;
+                }
+                objects.push(CfeDiffObject {
+                    obj_type: obj_type.to_string(),
+                    name: child.text().unwrap_or("").to_string(),
+                });
             }
-            objects.push(CfeDiffObject {
-                obj_type: obj_type.to_string(),
-                name: child.text().unwrap_or("").to_string(),
-            });
         }
-
-        if objects.is_empty() {
-            lines.push("No objects (besides Language) in extension.".to_string());
-            return Ok((format!("{}\n", lines.join("\n")), ext_cfg));
-        }
-
-        if mode == "A" {
-            cfe_diff_mode_a(&mut lines, &objects, &extension_path);
-        } else {
-            cfe_diff_mode_b(&mut lines, &objects, &extension_path, &config_path);
-        }
-
-        Ok((format!("{}\n", lines.join("\n")), ext_cfg))
+        let (objects_data, totals) = cfe_diff_objects_data(&objects, &extension_path);
+        let (transfer, transfer_totals) =
+            cfe_diff_transfer_data(&objects, &extension_path, &config_path);
+        Ok((
+            CfeDiffData {
+                name: ext_name,
+                purpose,
+                name_prefix,
+                objects: objects_data,
+                totals,
+                transfer,
+                transfer_totals,
+            },
+            ext_cfg,
+        ))
     })();
 
     match result {
-        Ok((stdout, artifact)) => AdapterOutcome {
-            ok: true,
-            summary: "unica.cfe.diff completed with native extension diff analyzer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: Vec::new(),
-            artifacts: vec![artifact.display().to_string()],
-            stdout: Some(stdout),
-            stderr: Some(String::new()),
-            command: None,
+        Ok((data, artifact)) => CfeDiffExecution {
+            outcome: AdapterOutcome {
+                ok: true,
+                summary: format!(
+                    "unica.cfe.diff described {} with {} borrowed and {} own object(s)",
+                    data.name, data.totals.borrowed, data.totals.own
+                ),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: Vec::new(),
+                artifacts: vec![artifact.display().to_string()],
+                stdout: None,
+                stderr: Some(String::new()),
+                command: None,
+            },
+            data: Some(data),
         },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.cfe.diff failed in native extension diff analyzer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-            command: None,
+        Err(error) => CfeDiffExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.cfe.diff failed in native extension diff analyzer".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.clone()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{error}\n")),
+                command: None,
+            },
+            data: None,
         },
     }
+}
+
+/// Typed answer of `unica.cfe.diff` (ADR-0023). Mode A described what the
+/// extension contains and Mode B whether its insertions reached the
+/// configuration; both describe one extension, so both are reported at once.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfeDiffData {
+    pub(crate) name: String,
+    pub(crate) purpose: String,
+    pub(crate) name_prefix: String,
+    pub(crate) objects: Vec<CfeDiffObjectData>,
+    pub(crate) totals: CfeDiffTotals,
+    pub(crate) transfer: Vec<CfeDiffTransferData>,
+    pub(crate) transfer_totals: CfeDiffTransferTotals,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfeDiffObjectData {
+    pub(crate) kind: String,
+    pub(crate) name: String,
+    /// `borrowed`, `own`, `missing` or `unknownKind`.
+    pub(crate) status: String,
+    pub(crate) attributes: usize,
+    pub(crate) forms: usize,
+    pub(crate) tabular_sections: usize,
+    pub(crate) borrowed_items: usize,
+    pub(crate) form_names: Vec<String>,
+    pub(crate) modules: Vec<CfeDiffModuleData>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfeDiffModuleData {
+    pub(crate) path: String,
+    pub(crate) interceptors: Vec<CfeDiffInterceptorData>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfeDiffInterceptorData {
+    pub(crate) method: String,
+    pub(crate) kind: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfeDiffTotals {
+    pub(crate) borrowed: usize,
+    pub(crate) own: usize,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfeDiffTransferData {
+    pub(crate) kind: String,
+    pub(crate) name: String,
+    pub(crate) method: String,
+    /// `transferred`, `notTransferred` or `needsReview`.
+    pub(crate) status: String,
+    pub(crate) blocks: usize,
+    /// Why a case needs review, `null` when it does not.
+    pub(crate) reason: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfeDiffTransferTotals {
+    pub(crate) transferred: usize,
+    pub(crate) not_transferred: usize,
+    pub(crate) needs_review: usize,
+}
+
+pub(crate) struct CfeDiffExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<CfeDiffData>,
+}
+
+fn cfe_diff_objects_data(
+    objects: &[CfeDiffObject],
+    extension_path: &Path,
+) -> (Vec<CfeDiffObjectData>, CfeDiffTotals) {
+    let mut typed = Vec::new();
+    let mut totals = CfeDiffTotals {
+        borrowed: 0,
+        own: 0,
+    };
+    for object in objects {
+        let Some(info) = cfe_diff_object_info(&object.obj_type, &object.name, extension_path)
+        else {
+            typed.push(CfeDiffObjectData {
+                kind: object.obj_type.clone(),
+                name: object.name.clone(),
+                status: "unknownKind".to_string(),
+                attributes: 0,
+                forms: 0,
+                tabular_sections: 0,
+                borrowed_items: 0,
+                form_names: Vec::new(),
+                modules: Vec::new(),
+            });
+            continue;
+        };
+        let status = if !info.exists {
+            "missing"
+        } else if info.borrowed {
+            totals.borrowed += 1;
+            "borrowed"
+        } else {
+            totals.own += 1;
+            "own"
+        };
+        let modules = if info.exists {
+            cfe_diff_bsl_files(&object.obj_type, &object.name, extension_path)
+                .into_iter()
+                .map(|bsl| CfeDiffModuleData {
+                    path: cfe_diff_relative_path(&bsl, extension_path),
+                    interceptors: cfe_diff_interceptors(&bsl)
+                        .into_iter()
+                        .map(|interceptor| CfeDiffInterceptorData {
+                            method: interceptor.method,
+                            kind: interceptor.interceptor_type,
+                        })
+                        .collect(),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        typed.push(CfeDiffObjectData {
+            kind: object.obj_type.clone(),
+            name: object.name.clone(),
+            status: status.to_string(),
+            attributes: info.attrs,
+            forms: info.forms,
+            tabular_sections: info.tabular_sections,
+            borrowed_items: info.borrowed_items,
+            form_names: info.form_names,
+            modules,
+        });
+    }
+    (typed, totals)
+}
+
+fn cfe_diff_transfer_data(
+    objects: &[CfeDiffObject],
+    extension_path: &Path,
+    config_path: &Path,
+) -> (Vec<CfeDiffTransferData>, CfeDiffTransferTotals) {
+    let mut transfer = Vec::new();
+    let mut totals = CfeDiffTransferTotals {
+        transferred: 0,
+        not_transferred: 0,
+        needs_review: 0,
+    };
+    for object in objects {
+        let Some(info) = cfe_diff_object_info(&object.obj_type, &object.name, extension_path)
+        else {
+            continue;
+        };
+        if !info.exists || !info.borrowed {
+            continue;
+        }
+        for bsl in cfe_diff_bsl_files(&object.obj_type, &object.name, extension_path) {
+            let controlled = cfe_diff_interceptors(&bsl)
+                .into_iter()
+                .filter(|item| item.interceptor_type == "ИзменениеИКонтроль")
+                .collect::<Vec<_>>();
+            if controlled.is_empty() {
+                continue;
+            }
+            let insert_blocks = cfe_diff_insertion_blocks(&bsl);
+            for interceptor in controlled {
+                let mut push = |status: &str, blocks: usize, reason: Option<&str>| {
+                    match status {
+                        "transferred" => totals.transferred += 1,
+                        "notTransferred" => totals.not_transferred += 1,
+                        _ => totals.needs_review += 1,
+                    }
+                    transfer.push(CfeDiffTransferData {
+                        kind: object.obj_type.clone(),
+                        name: object.name.clone(),
+                        method: interceptor.method.clone(),
+                        status: status.to_string(),
+                        blocks,
+                        reason: reason.map(str::to_string),
+                    });
+                };
+                if insert_blocks.is_empty() {
+                    push("needsReview", 0, Some("no insertion blocks"));
+                    continue;
+                }
+                let relative = bsl.strip_prefix(extension_path).unwrap_or(&bsl);
+                let config_bsl = config_path.join(relative);
+                if !config_bsl.is_file() {
+                    push(
+                        "needsReview",
+                        insert_blocks.len(),
+                        Some("configuration module not found"),
+                    );
+                    continue;
+                }
+                let config_norm =
+                    cfe_diff_normalized_ws(&read_utf8_sig(&config_bsl).unwrap_or_default());
+                let all_transferred = insert_blocks.iter().all(|block| {
+                    block.code.is_empty()
+                        || config_norm.contains(&cfe_diff_normalized_ws(&block.code))
+                });
+                if all_transferred {
+                    push("transferred", insert_blocks.len(), None);
+                } else {
+                    push("notTransferred", insert_blocks.len(), None);
+                }
+            }
+        }
+    }
+    (transfer, totals)
 }
 
 pub(crate) fn cfe_diff_mode_a(
@@ -6248,7 +6464,8 @@ pub(crate) fn invoke_read(
 ) -> Option<Result<AdapterOutcome, String>> {
     match operation {
         "cfe-validate" => Some(Ok(validate_cfe(args, context))),
-        "cfe-diff" => Some(Ok(diff_cfe(args, context))),
+        // Typed answer; data reaches the envelope through typed_result.rs.
+        "cfe-diff" => Some(Ok(diff_cfe(args, context).outcome)),
         _ => None,
     }
 }

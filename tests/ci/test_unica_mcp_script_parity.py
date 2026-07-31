@@ -525,113 +525,6 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
-        name="cfe-diff-empty-extension-mode-a",
-        tool="unica.cfe.diff",
-        skill="cfe-diff",
-        script="cfe-diff.py",
-        arguments={
-            "ExtensionPath": "src-cfe",
-            "ConfigPath": "src",
-            "Mode": "A",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="cfe-init",
-                script="cfe-init.py",
-                arguments={
-                    "Name": "ParityExtension",
-                    "NamePrefix": "PE_",
-                    "OutputDir": "src-cfe",
-                    "NoRole": True,
-                },
-            ),
-            SetupStep(
-                skill="cf-init",
-                script="cf-init.py",
-                arguments={
-                    "Name": "ParityConfiguration",
-                    "OutputDir": "src",
-                },
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-cfe-diff-borrowed-catalog-mode-a",
-        tool="unica.cfe.diff",
-        skill="cfe-diff",
-        script="cfe-diff.py",
-        arguments={
-            "ExtensionPath": "src-cfe",
-            "ConfigPath": "src",
-            "Mode": "A",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="cfe-init",
-                script="cfe-init.py",
-                tool="unica.cfe.init",
-                arguments={
-                    "Name": "ParityExtension",
-                    "Synonym": "Parity extension",
-                    "NamePrefix": "PE_",
-                    "OutputDir": "src-cfe",
-                    "Purpose": "Customization",
-                    "Version": "1.0.0.1",
-                    "Vendor": "Unica",
-                    "CompatibilityMode": "Version8_3_24",
-                    "NoRole": True,
-                },
-            ),
-            SetupStep(
-                skill="cfe-borrow",
-                script="cfe-borrow.py",
-                tool="unica.cfe.borrow",
-                arguments={
-                    "ExtensionPath": "src-cfe",
-                    "ConfigPath": "src",
-                    "Object": "Catalog.Валюты",
-                },
-            ),
-        ),
-        fixtures=(
-            FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),
-            FileFixture(BSP_META_CATALOG_FIXTURE, "src/Catalogs/Валюты.xml"),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-cfe-diff-transfer-check-mode-b",
-        tool="unica.cfe.diff",
-        skill="cfe-diff",
-        script="cfe-diff.py",
-        arguments={
-            "ExtensionPath": "src-cfe",
-            "ConfigPath": "src",
-            "Mode": "B",
-        },
-        fixtures=(
-            FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),
-            FileFixture(
-                "cfe-diff/mode-b/src/Catalogs/Валюты/Ext/ObjectModule.bsl",
-                "src/Catalogs/Валюты/Ext/ObjectModule.bsl",
-            ),
-            FileFixture(
-                "cfe-diff/mode-b/src-cfe/Configuration.xml",
-                "src-cfe/Configuration.xml",
-            ),
-            FileFixture(
-                "cfe-diff/mode-b/src-cfe/Catalogs/Валюты.xml",
-                "src-cfe/Catalogs/Валюты.xml",
-            ),
-            FileFixture(
-                "cfe-diff/mode-b/src-cfe/Catalogs/Валюты/Ext/ObjectModule.bsl",
-                "src-cfe/Catalogs/Валюты/Ext/ObjectModule.bsl",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
         name="cf-validate-detailed-outfile",
         tool="unica.cf.validate",
         skill="cf-validate",
@@ -3734,14 +3627,6 @@ MISSING_INPUT_SCENARIOS = [
         False,
     ),
     ParityScenario(
-        "cfe-diff-missing-extension",
-        "unica.cfe.diff",
-        "cfe-diff",
-        "cfe-diff.py",
-        {"ExtensionPath": "missing-extension", "ConfigPath": "missing-config"},
-        False,
-    ),
-    ParityScenario(
         "cfe-validate-missing-extension",
         "unica.cfe.validate",
         "cfe-validate",
@@ -3943,7 +3828,6 @@ NATIVE_PARITY_TOOLS = {
     "unica.cf.validate",
     "unica.cfe.borrow",
     "unica.cfe.init",
-    "unica.cfe.diff",
     "unica.cfe.patch_method",
     "unica.cfe.validate",
     "unica.form.validate",
@@ -3995,6 +3879,7 @@ TYPED_RESULT_TOOLS = {
     "unica.role.info",
     "unica.subsystem.info",
     "unica.mxl.info",
+    "unica.cfe.diff",
 }
 
 EXPECTED_TOOLS = {
@@ -4002,7 +3887,6 @@ EXPECTED_TOOLS = {
     "unica.cf.init",
     "unica.cf.validate",
     "unica.cfe.borrow",
-    "unica.cfe.diff",
     "unica.cfe.init",
     "unica.cfe.patch_method",
     "unica.cfe.validate",

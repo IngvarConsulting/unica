@@ -7,16 +7,16 @@
 ## Итог
 
 - Инструментов: **71**
-- Отвечают типизированным `data`: **19**
+- Отвечают типизированным `data`: **20**
 - Типизированы частично: часть результата всё ещё текст: **3**
 - Отвечают снимком задания в `job`: **6**
-- Отвечают прозой в `stdout`: **43**
+- Отвечают прозой в `stdout`: **42**
 
 - В границах типизации: **43**
 - Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`): **16**
 - Вне границ: семейство runtime и build изучается отдельно: **12**
-- Осталось перевести на типизированный `data` в границах работы: **24**
-- Публикуют больше 20 аргументов из общего списка: **38**
+- Осталось перевести на типизированный `data` в границах работы: **23**
+- Публикуют больше 20 аргументов из общего списка: **37**
 
 ## build — сборка и запуск платформы
 
@@ -278,14 +278,15 @@ Inspect extension contents and transferred insertion blocks.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `ExtensionPath` | string | да | Path to the extension — its directory or its `Configuration.xml` — for every `unica.cfe.*` tool, relative to `cwd`; the base configuration goes in `configPath` instead |
 | `ConfigPath` | string | да | Path to `Configuration.xml` or the dump directory for `unica.cf.edit`, `unica.cf.info` and `unica.cf.validate`, and the path of the base configuration for `unica.cfe.init`/`borrow`/`diff`; relative to `cwd`. `unica.cf.init` ignores it and writes to `outputDir`. |
+| `ExtensionPath` | string | да | Path to the extension — its directory or its `Configuration.xml` — for every `unica.cfe.*` tool, relative to `cwd`; the base configuration goes in `configPath` instead |
+| `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
+| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
+| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 
-Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+**Результат сейчас:** `data`: состав расширения со статусом каждого объекта, перехватчики и проверка переноса вставок (ADR-0023) (отвечают типизированным `data`)
 
-**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
-
-**Целевой контракт:** `data`: состав расширения, заимствования и перенесённые вставки
+**Целевой контракт:** достигнут
 
 **Сценарии:**
 

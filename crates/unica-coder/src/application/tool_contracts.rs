@@ -42,6 +42,9 @@ const MXL_INFO_ARGS: &[&str] = &[
     "WithText",
     "withText",
 ];
+/// `cfe.diff` answers with typed data: `Mode` chose between two views of one
+/// extension, and both are now reported together.
+const CFE_DIFF_ARGS: &[&str] = &["ExtensionPath", "extensionPath", "ConfigPath", "configPath"];
 /// `meta.info` publishes only what it reads. The shared `NATIVE_XML_DSL_ARGS`
 /// list would also accept arguments no `meta.info` code path consults, and an
 /// accepted argument that changes nothing is a promise the tool cannot keep.
@@ -1702,6 +1705,7 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
                 "role-info" => names.extend(ROLE_INFO_ARGS),
                 "subsystem-info" => names.extend(SUBSYSTEM_INFO_ARGS),
                 "mxl-info" => names.extend(MXL_INFO_ARGS),
+                "cfe-diff" => names.extend(CFE_DIFF_ARGS),
                 "meta-info" => names.extend(META_INFO_ARGS),
                 _ => names.extend(native_args_for(operation)),
             }

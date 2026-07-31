@@ -1,4 +1,4 @@
-use super::{cf, code, form, meta, mxl, registry, role, subsystem, NativeOperationAdapter};
+use super::{cf, cfe, code, form, meta, mxl, registry, role, subsystem, NativeOperationAdapter};
 use crate::{application::AdapterOutcome, domain::workspace::WorkspaceContext};
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -54,6 +54,10 @@ impl NativeOperationAdapter {
                 "role-info" => {
                     let execution = role::analyze_role_info(args, context);
                     return typed_operation_result(execution.outcome, execution.data, "role info");
+                }
+                "cfe-diff" => {
+                    let execution = cfe::diff_cfe(args, context);
+                    return typed_operation_result(execution.outcome, execution.data, "cfe diff");
                 }
                 "mxl-info" => {
                     let execution = mxl::analyze_mxl_info(args, context);

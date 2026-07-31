@@ -3172,7 +3172,6 @@ mod tests {
             "unica.cf.init",
             "unica.cf.validate",
             "unica.cfe.borrow",
-            "unica.cfe.diff",
             "unica.cfe.init",
             "unica.cfe.patch_method",
             "unica.cfe.validate",
@@ -3214,6 +3213,7 @@ mod tests {
             "unica.role.info",
             "unica.subsystem.info",
             "unica.mxl.info",
+            "unica.cfe.diff",
         ];
 
         for tool in tools() {

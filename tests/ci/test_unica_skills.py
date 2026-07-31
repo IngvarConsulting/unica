@@ -414,7 +414,7 @@ SCENARIO_PRESERVING_TOKENS = {
         '"BorrowMainAttribute": "All"',
         '"name": "unica.cfe.validate"',
     ],
-    "cfe-diff": ['"Mode": "A"', '"Mode": "B"'],
+    "cfe-diff": ["`transfer[]`", "`objects[].status`"],
     "cfe-init": [
         '"ConfigPath": "C:\\\\WS\\\\tasks\\\\cfsrc\\\\erp_8.3.24"',
         '"Purpose": "Patch"',
@@ -546,6 +546,7 @@ SCENARIO_RETIRED_TOKENS = {
     "role-info": ['"ShowDenied"', '"Limit"', '"Offset"'],
     "subsystem-info": ['"Mode"', '"Name"', '"Limit"', '"Offset"'],
     "mxl-info": ['"Format"', '"MaxParams"', '"Limit"', '"Offset"'],
+    "cfe-diff": ['"Mode"'],
     # A published example that still selects by path shows a call the server
     # now rejects with `legacy_target_removed`.
     "meta-info": ['"ObjectPath"', '"objectPath"', '"Detailed"', '"detailed"'],
