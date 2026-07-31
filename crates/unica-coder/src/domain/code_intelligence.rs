@@ -218,11 +218,38 @@ pub struct CodeOutlineParameter {
     pub default_value: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+// `Eq` is gone because a profile section carries whatever the index reported,
+// and `serde_json::Value` is only `PartialEq`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum CodeIntelligenceReadData {
     Outline(CodeOutlineResult),
     Definition(CodeDefinitionResult),
+    ObjectProfile(MetaProfileResult),
+}
+
+/// Typed answer of `unica.meta.profile` (ADR-0023). Section items keep the
+/// shape the index gave them: rendering them into one line per item forced the
+/// caller to parse JSON back out of prose.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetaProfileResult {
+    pub object_name: String,
+    pub category: Option<String>,
+    pub sections: Vec<MetaProfileSection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetaProfileSection {
+    pub name: String,
+    pub status: String,
+    pub total: u64,
+    /// The index could not count this section exactly, so `total` is a floor.
+    pub total_is_lower_bound: bool,
+    pub returned: u64,
+    pub items: Vec<Value>,
+    pub error: Option<String>,
 }
 
 /// Typed answer of `unica.code.definition` (ADR-0023). The index already
@@ -249,7 +276,7 @@ pub struct CodeDefinition {
     pub module_type: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProviderReadOutcome {
     pub provider: ProviderId,
     pub ok: bool,

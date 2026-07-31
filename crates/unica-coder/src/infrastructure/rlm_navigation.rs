@@ -2,7 +2,7 @@ use crate::application::AdapterOutcome;
 use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
 use crate::domain::code_intelligence::{
     CodeDefinition, CodeDefinitionResult, CodeIntelligenceContext, CodeIntelligenceReadData,
-    CodeIntelligenceReadRequest, ProviderDeadline,
+    CodeIntelligenceReadRequest, MetaProfileResult, MetaProfileSection, ProviderDeadline,
 };
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::workspace_index::IndexReadiness;
@@ -164,7 +164,7 @@ impl<'a> RlmNavigationAdapter<'a> {
         let mut outcome = AdapterOutcome::ok(format!(
             "{tool_name} completed through the persistent RLM MCP API"
         ));
-        let mut data = None;
+        let data;
         match tool_name {
             // ADR-0023: the index already answers with structure, so the tool
             // publishes it instead of rendering it into a line grammar.
@@ -179,7 +179,13 @@ impl<'a> RlmNavigationAdapter<'a> {
                 data = Some(CodeIntelligenceReadData::Definition(result));
             }
             "unica.meta.profile" => {
-                outcome.stdout = Some(format_section("rlm-meta-profile", &render_profile(&value)?));
+                let result = profile_result(&value)?;
+                outcome.summary = format!(
+                    "{tool_name} described {} across {} section(s)",
+                    result.object_name,
+                    result.sections.len()
+                );
+                data = Some(CodeIntelligenceReadData::ObjectProfile(result));
             }
             _ => return Err(format!("unsupported RLM navigation tool: {tool_name}")),
         }
@@ -322,146 +328,58 @@ fn definition_result(value: &Value) -> Result<(CodeDefinitionResult, Vec<String>
     ))
 }
 
-#[cfg(test)]
-fn render_definition(value: &Value) -> Result<String, String> {
-    let name = value
-        .get("name")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let definitions = value
-        .get("definitions")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "RLM definition response is missing definitions".to_string())?;
-    if definitions.is_empty() {
-        return Ok(format!("No RLM definitions found for `{name}`."));
-    }
-    let mut lines = Vec::new();
-    for (index, definition) in definitions.iter().enumerate() {
-        let Some(file) = definition
-            .get("file")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-        else {
-            lines.push(format!(
-                "diagnostic: ignored malformed RLM definition #{}: missing file",
-                index + 1
-            ));
-            continue;
-        };
-        let line = definition
-            .get("line")
-            .and_then(Value::as_u64)
-            .unwrap_or_default();
-        let kind = definition
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or("method");
-        let method_name = if name.is_empty() { "<unknown>" } else { name };
-        let params = definition
-            .get("params")
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            })
-            .unwrap_or_default();
-        let export = if definition
-            .get("is_export")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
-            " export"
-        } else {
-            ""
-        };
-        let metadata = [
-            ("category", definition.get("category")),
-            ("object", definition.get("object_name")),
-            ("moduleType", definition.get("module_type")),
-        ]
-        .into_iter()
-        .filter_map(|(label, value)| {
-            value
-                .and_then(Value::as_str)
-                .filter(|value| !value.is_empty())
-                .map(|value| format!("{label}={value}"))
-        })
-        .collect::<Vec<_>>();
-        let suffix = if metadata.is_empty() {
-            String::new()
-        } else {
-            format!(" [{}]", metadata.join(", "))
-        };
-        lines.push(format!(
-            "- {file}:{line} {kind} {method_name}({params}){export}{suffix}"
-        ));
-    }
-    Ok(lines.join("\n"))
-}
-
-fn render_profile(value: &Value) -> Result<String, String> {
+/// Reads the object profile as data. Section items keep the shape the index
+/// gave them instead of being flattened to one line each.
+fn profile_result(value: &Value) -> Result<MetaProfileResult, String> {
     let object_name = required_value_string(value, "object_name", "RLM object profile")?;
     let category = value
         .get("category")
         .and_then(Value::as_str)
-        .filter(|value| !value.is_empty());
-    let mut lines = vec![format!(
-        "object: {}",
-        category
-            .map(|category| format!("{category}.{object_name}"))
-            .unwrap_or_else(|| object_name.to_string())
-    )];
-    if let Some(category) = category {
-        lines.push(format!("category: {category}"));
-    }
-    lines.push(format!("name: {object_name}"));
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
     let sections = value
         .get("sections")
         .and_then(Value::as_object)
         .ok_or_else(|| "RLM object profile response is missing sections".to_string())?;
-    for (name, section) in sections {
-        let status = section
-            .get("status")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown");
-        let total = section
-            .get("total")
-            .and_then(Value::as_u64)
-            .unwrap_or_default();
-        let returned = section
-            .get("returned")
-            .and_then(Value::as_u64)
-            .unwrap_or_default();
-        // Upstream sections compute `total` before applying their item limit, so
-        // `has_more` and `_meta.truncated` do not by themselves make that count
-        // approximate. Only composed sections that cannot obtain a count mark the
-        // value explicitly as a lower bound.
-        let total_is_lower_bound = section
-            .pointer("/_meta/total_is_lower_bound")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let more = if total_is_lower_bound { "+" } else { "" };
-        lines.push(format!(
-            "section {}: {status} total={total}{more} returned={returned}",
-            public_profile_section_name(name)
-        ));
-        if let Some(items) = section.get("items").and_then(Value::as_array) {
-            for item in items {
-                lines.push(format!("- {}", compact_json(item)?));
-            }
-        }
-        if let Some(error) = section
-            .pointer("/_meta/error")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-        {
-            lines.push(format!("  error: {error}"));
-        }
-    }
-    Ok(lines.join("\n"))
+    Ok(MetaProfileResult {
+        object_name: object_name.to_string(),
+        category,
+        sections: sections
+            .iter()
+            .map(|(name, section)| MetaProfileSection {
+                name: public_profile_section_name(name).to_string(),
+                status: section
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown")
+                    .to_string(),
+                total: section
+                    .get("total")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default(),
+                // Upstream counts `total` before applying its item limit, so
+                // only a section that cannot count marks the value as a floor.
+                total_is_lower_bound: section
+                    .pointer("/_meta/total_is_lower_bound")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                returned: section
+                    .get("returned")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default(),
+                items: section
+                    .get("items")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default(),
+                error: section
+                    .pointer("/_meta/error")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string),
+            })
+            .collect(),
+    })
 }
 
 fn public_profile_section_name(name: &str) -> &str {
@@ -469,14 +387,6 @@ fn public_profile_section_name(name: &str) -> &str {
         "functional_options" => "functionalOptions",
         "predefined_items" => "predefinedItems",
         other => other,
-    }
-}
-
-fn compact_json(value: &Value) -> Result<String, String> {
-    match value {
-        Value::String(value) => Ok(value.clone()),
-        _ => serde_json::to_string(value)
-            .map_err(|error| format!("failed to render RLM helper item: {error}")),
     }
 }
 
@@ -490,15 +400,6 @@ fn required_value_string<'a>(
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| format!("{description} response is missing {key}"))
-}
-
-fn format_section(name: &str, text: &str) -> String {
-    let body = text.trim_end();
-    if body.is_empty() {
-        format!("=== {name} ===")
-    } else {
-        format!("=== {name} ===\n{body}")
-    }
 }
 
 fn index_unavailable_outcome(
@@ -552,10 +453,7 @@ fn readiness_warning(readiness: IndexReadiness) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        operation_for_request, render_definition, render_profile, RlmNavigationAdapter,
-        RlmNavigationClient,
-    };
+    use super::{operation_for_request, profile_result, RlmNavigationAdapter, RlmNavigationClient};
     use crate::application::AdapterOutcome;
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::CodeIntelligenceReadData;
@@ -574,8 +472,8 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
-    fn definition_renderer_preserves_public_text_contract_from_helper_json() {
-        let text = render_definition(&json!({
+    fn a_definition_keeps_every_field_the_helper_reported() {
+        let (result, warnings) = super::definition_result(&json!({
             "name": "Найти",
             "definitions": [{
                 "file": "CommonModules/X/Module.bsl",
@@ -590,37 +488,37 @@ mod tests {
         }))
         .unwrap();
 
-        assert_eq!(
-            text,
-            "- CommonModules/X/Module.bsl:7 function Найти(Значение) export [category=CommonModule, object=X, moduleType=Module]"
-        );
+        assert!(warnings.is_empty());
+        let definition = &result.definitions[0];
+        assert_eq!(definition.file, "CommonModules/X/Module.bsl");
+        assert_eq!(definition.line, 7);
+        assert_eq!(definition.kind, "function");
+        assert!(definition.export);
+        assert_eq!(definition.params, vec!["Значение".to_string()]);
+        assert_eq!(definition.category.as_deref(), Some("CommonModule"));
+        assert_eq!(definition.module_type.as_deref(), Some("Module"));
     }
 
     #[test]
-    fn definition_renderer_keeps_valid_rows_and_reports_malformed_siblings() {
-        let text = render_definition(&json!({
+    fn a_malformed_definition_is_dropped_with_a_warning_not_listed_as_one() {
+        let (result, warnings) = super::definition_result(&json!({
             "name": "Найти",
             "definitions": [
-                {
-                    "file": "CommonModules/X/Module.bsl",
-                    "line": 7,
-                    "type": "function"
-                },
-                {
-                    "line": 11,
-                    "type": "procedure"
-                }
+                {"file": "CommonModules/X/Module.bsl", "line": 7, "type": "function"},
+                {"line": 11, "type": "procedure"}
             ]
         }))
         .unwrap();
 
-        assert!(text.contains("CommonModules/X/Module.bsl:7"));
-        assert!(text.contains("diagnostic: ignored malformed RLM definition #2"));
+        assert_eq!(result.definitions.len(), 1);
+        assert_eq!(result.definitions[0].line, 7);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("missing file"), "{warnings:?}");
     }
 
     #[test]
-    fn profile_renderer_maps_upstream_section_names_to_public_names() {
-        let text = render_profile(&json!({
+    fn a_profile_maps_upstream_section_names_to_public_names() {
+        let result = profile_result(&json!({
             "object_name": "Заказ",
             "category": "Document",
             "sections": {
@@ -640,14 +538,27 @@ mod tests {
         }))
         .unwrap();
 
-        assert!(text.contains("object: Document.Заказ"));
-        assert!(text.contains("section functionalOptions: ok total=1 returned=1"));
-        assert!(text.contains("section predefinedItems: empty total=0 returned=0"));
+        assert_eq!(result.object_name, "Заказ");
+        assert_eq!(result.category.as_deref(), Some("Document"));
+        let names = result
+            .sections
+            .iter()
+            .map(|section| section.name.as_str())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"functionalOptions"), "{names:?}");
+        assert!(names.contains(&"predefinedItems"), "{names:?}");
+        // Items keep their own shape rather than one line of rendered JSON.
+        let options = result
+            .sections
+            .iter()
+            .find(|section| section.name == "functionalOptions")
+            .unwrap();
+        assert_eq!(options.items[0]["name"], "ИспользоватьЗаказы");
     }
 
     #[test]
-    fn profile_renderer_reports_a_truncated_section_as_a_lower_bound() {
-        let text = render_profile(&json!({
+    fn a_section_that_cannot_count_marks_its_total_as_a_lower_bound() {
+        let result = profile_result(&json!({
             "object_name": "Заказ",
             "category": "Document",
             "sections": {
@@ -667,15 +578,15 @@ mod tests {
         }))
         .unwrap();
 
-        assert!(
-            text.contains("section predefinedItems: ok total=1+ returned=1"),
-            "{text}"
-        );
+        assert!(result.sections[0].total_is_lower_bound);
+        assert_eq!(result.sections[0].total, 1);
     }
 
+    /// Upstream counts before applying its item limit, so a limited section
+    /// still reports an exact total.
     #[test]
-    fn profile_renderer_keeps_upstream_exact_total_when_items_are_limited() {
-        let text = render_profile(&json!({
+    fn a_limited_section_keeps_its_exact_total() {
+        let result = profile_result(&json!({
             "object_name": "Заказ",
             "category": "Document",
             "sections": {
@@ -690,16 +601,14 @@ mod tests {
         }))
         .unwrap();
 
-        assert!(
-            text.contains("section structure: ok total=100 returned=20"),
-            "{text}"
-        );
-        assert!(!text.contains("total=100+"), "{text}");
+        assert_eq!(result.sections[0].total, 100);
+        assert_eq!(result.sections[0].returned, 20);
+        assert!(!result.sections[0].total_is_lower_bound);
     }
 
     #[test]
-    fn profile_renderer_keeps_an_exact_total_when_nothing_was_truncated() {
-        let text = render_profile(&json!({
+    fn an_untruncated_section_keeps_its_exact_total() {
+        let result = profile_result(&json!({
             "object_name": "Заказ",
             "category": "Document",
             "sections": {
@@ -715,11 +624,8 @@ mod tests {
         }))
         .unwrap();
 
-        assert!(
-            text.contains("section predefinedItems: ok total=1 returned=1"),
-            "{text}"
-        );
-        assert!(!text.contains("total=1+"), "{text}");
+        assert_eq!(result.sections[0].total, 1);
+        assert!(!result.sections[0].total_is_lower_bound);
     }
 
     #[test]

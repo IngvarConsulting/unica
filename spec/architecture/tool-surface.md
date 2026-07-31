@@ -7,15 +7,15 @@
 ## Итог
 
 - Инструментов: **71**
-- Отвечают типизированным `data`: **14**
+- Отвечают типизированным `data`: **15**
 - Типизированы частично: часть результата всё ещё текст: **4**
 - Отвечают снимком задания в `job`: **6**
-- Отвечают прозой в `stdout`: **47**
+- Отвечают прозой в `stdout`: **46**
 
 - В границах типизации: **43**
 - Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`): **16**
 - Вне границ: семейство runtime и build изучается отдельно: **12**
-- Осталось перевести на типизированный `data` в границах работы: **29**
+- Осталось перевести на типизированный `data` в границах работы: **28**
 - Публикуют больше 20 аргументов из общего списка: **38**
 
 ## build — сборка и запуск платформы
@@ -867,9 +867,9 @@ Read compact metadata object profile from the internal RLM index.
 | `sections` | array | нет | Array of profile sections unica.meta.profile returns, from structure, modules, roles, subscriptions, functionalOptions, predefinedItems; omit it for all sections except predefinedItems, which must be listed explicitly |
 | `sourceDir` | string | нет | Workspace-relative source root to work in: on the path-based unica.code.* tools and unica.meta.profile it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
 
-**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
+**Результат сейчас:** `data`: секции профиля со статусом, счётчиками и элементами в их собственной форме (ADR-0023) (отвечают типизированным `data`)
 
-**Целевой контракт:** `data`: профиль объекта по секциям индекса
+**Целевой контракт:** достигнут
 
 **Сценарии:**
 
