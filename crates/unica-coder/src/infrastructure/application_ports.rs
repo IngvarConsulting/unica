@@ -473,6 +473,15 @@ fn verified_full_dump_invocation(
     }
 }
 
+/// Publishes a typed read through the envelope: `data` when the handler proved
+/// a payload, plain outcome when it refused.
+fn typed_read(read: TypedReadOutcome) -> HandlerOutcome {
+    match read.data {
+        Some(data) => HandlerOutcome::with_data(read.outcome, data),
+        None => HandlerOutcome::plain(read.outcome),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{normalize_code_intelligence_read_request, verified_full_dump_invocation};
@@ -670,14 +679,5 @@ mod tests {
             );
         }
         let _ = std::fs::remove_dir_all(root);
-    }
-}
-
-/// Publishes a typed read through the envelope: `data` when the handler proved
-/// a payload, plain outcome when it refused.
-fn typed_read(read: TypedReadOutcome) -> HandlerOutcome {
-    match read.data {
-        Some(data) => HandlerOutcome::with_data(read.outcome, data),
-        None => HandlerOutcome::plain(read.outcome),
     }
 }

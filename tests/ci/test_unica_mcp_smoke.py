@@ -741,9 +741,11 @@ class UnicaMcpSmokeTests(unittest.TestCase):
             self.assertTrue((tmp_path / "epf/Import/Ext/ObjectModule.bsl").is_file())
             self.assertTrue((tmp_path / "epf/Import/Forms/MainForm/Ext/Form.xml").is_file())
             self.assertTrue((tmp_path / "erf/Balances/Ext/ObjectModule.bsl").is_file())
+            # ADR-0023: the map is typed data, not a JSON string in stdout.
+            self.assertIsNone(payloads[3].get("stdout"))
             source_sets = {
                 source_set["name"]: source_set
-                for source_set in json.loads(payloads[3]["stdout"])["sourceSets"]
+                for source_set in payloads[3]["data"]["sourceSets"]
             }
             self.assertEqual(source_sets["external-processors"]["kind"], "external_processor")
             self.assertEqual(source_sets["external-processors"]["sourceFormat"], "platform_xml")
