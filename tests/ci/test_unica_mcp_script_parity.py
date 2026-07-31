@@ -3535,45 +3535,6 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
-        name="role-info-show-denied",
-        tool="unica.role.info",
-        skill="role-info",
-        script="role-info.py",
-        arguments={
-            "RightsPath": "src/Roles/SalesReader/Ext/Rights.xml",
-            "ShowDenied": True,
-            "Limit": 0,
-        },
-        fixtures=(
-            FileFixture("role-info/SalesReader.xml", "src/Roles/SalesReader.xml"),
-            FileFixture(
-                "role-info/SalesReader/Ext/Rights.xml",
-                "src/Roles/SalesReader/Ext/Rights.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="role-info-outfile-pagination",
-        tool="unica.role.info",
-        skill="role-info",
-        script="role-info.py",
-        arguments={
-            "RightsPath": "src/Roles/SalesReader/Ext/Rights.xml",
-            "Limit": 5,
-            "Offset": 1,
-        },
-        fixtures=(
-            FileFixture("role-info/SalesReader.xml", "src/Roles/SalesReader.xml"),
-            FileFixture(
-                "role-info/SalesReader/Ext/Rights.xml",
-                "src/Roles/SalesReader/Ext/Rights.xml",
-            ),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
         name="role-validate-detailed",
         tool="unica.role.validate",
         skill="role-validate",
@@ -3593,41 +3554,6 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
-        name="bsp-role-info-full",
-        tool="unica.role.info",
-        skill="role-info",
-        script="role-info.py",
-        arguments={
-            "RightsPath": "src/Roles/АдминистраторСистемы/Ext/Rights.xml",
-            "Limit": 0,
-        },
-        fixtures=(
-            FileFixture(
-                BSP_ROLE_ADMIN_RIGHTS_FIXTURE,
-                "src/Roles/АдминистраторСистемы/Ext/Rights.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-role-info-administration-show-denied",
-        tool="unica.role.info",
-        skill="role-info",
-        script="role-info.py",
-        arguments={
-            "RightsPath": "src/Roles/Администрирование/Ext/Rights.xml",
-            "ShowDenied": True,
-            "Limit": 0,
-        },
-        fixtures=(
-            FileFixture(
-                BSP_ROLE_ADMINISTRATION_RIGHTS_FIXTURE,
-                "src/Roles/Администрирование/Ext/Rights.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
         name="bsp-role-validate-detailed",
         tool="unica.role.validate",
         skill="role-validate",
@@ -3642,6 +3568,27 @@ SUCCESS_SCENARIOS = [
             FileFixture(
                 BSP_ROLE_ADMIN_RIGHTS_FIXTURE,
                 "src/Roles/АдминистраторСистемы/Ext/Rights.xml",
+            ),
+        ),
+        expect_ok=True,
+    ),
+    ParityScenario(
+        # The Администрирование rights were only read by the retired role.info
+        # scenarios; validation keeps this real-world BSP role exercised.
+        name="bsp-role-validate-administration",
+        tool="unica.role.validate",
+        skill="role-validate",
+        script="role-validate.py",
+        arguments={
+            "RightsPath": "src/Roles/Администрирование/Ext/Rights.xml",
+            "Detailed": True,
+            "MaxErrors": 80,
+        },
+        fixtures=(
+            FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),
+            FileFixture(
+                BSP_ROLE_ADMINISTRATION_RIGHTS_FIXTURE,
+                "src/Roles/Администрирование/Ext/Rights.xml",
             ),
         ),
         expect_ok=True,
@@ -4072,14 +4019,6 @@ MISSING_INPUT_SCENARIOS = [
         False,
     ),
     ParityScenario(
-        "role-info-missing-rights",
-        "unica.role.info",
-        "role-info",
-        "role-info.py",
-        {"RightsPath": "missing/Rights.xml"},
-        False,
-    ),
-    ParityScenario(
         "role-validate-missing-rights",
         "unica.role.validate",
         "role-validate",
@@ -4131,7 +4070,6 @@ NATIVE_PARITY_TOOLS = {
     "unica.mxl.info",
     "unica.mxl.validate",
     "unica.role.compile",
-    "unica.role.info",
     "unica.role.validate",
 }
 
@@ -4150,6 +4088,7 @@ MUTATING_FORM_DCS_PARITY_TOOLS = {
 # why, instead of scenarios quietly disappearing.
 TYPED_RESULT_TOOLS = {
     "unica.cf.info",
+    "unica.role.info",
 }
 
 EXPECTED_TOOLS = {
@@ -4190,7 +4129,6 @@ EXPECTED_TOOLS = {
     "unica.mxl.info",
     "unica.mxl.validate",
     "unica.role.compile",
-    "unica.role.info",
     "unica.role.validate",
 }
 
@@ -4209,7 +4147,6 @@ BSP_PARITY_REQUIRED_TOOLS = {
     "unica.mxl.validate",
     "unica.mxl.decompile",
     "unica.mxl.compile",
-    "unica.role.info",
     "unica.role.validate",
     "unica.subsystem.info",
     "unica.subsystem.validate",

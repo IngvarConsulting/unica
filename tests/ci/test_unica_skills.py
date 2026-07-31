@@ -539,7 +539,7 @@ SCENARIO_PRESERVING_TOKENS = {
         '"MaxParams": 20',
         '"Offset": 150',
     ],
-    "role-info": ['"Offset": 150'],
+    "role-info": ["`data.denied`", "`restrictedObjects`"],
 }
 
 # Arguments the MCP contract used to publish and now rejects. The packaged skill
@@ -548,6 +548,7 @@ SCENARIO_PRESERVING_TOKENS = {
 SCENARIO_RETIRED_TOKENS = {
     "meta-remove": ['"KeepFiles"', '"keepFiles"'],
     "cf-info": ['"Mode"', '"Section"', '"Limit"', '"Offset"'],
+    "role-info": ['"ShowDenied"', '"Limit"', '"Offset"'],
     # A published example that still selects by path shows a call the server
     # now rejects with `legacy_target_removed`.
     "meta-info": ['"ObjectPath"', '"objectPath"', '"Detailed"', '"detailed"'],

@@ -3202,14 +3202,13 @@ mod tests {
             "unica.mxl.info",
             "unica.mxl.validate",
             "unica.role.compile",
-            "unica.role.info",
             "unica.role.validate",
         ];
         const REPO_OWNED_NATIVE_TOOLS: &[&str] = &["unica.support.edit"];
         // A tool that answers with typed data has no prose left for the parity
         // stand to compare, so it is covered by its own crate tests instead
         // (ADR-0023).
-        const TYPED_RESULT_TOOLS: &[&str] = &["unica.cf.info"];
+        const TYPED_RESULT_TOOLS: &[&str] = &["unica.cf.info", "unica.role.info"];
 
         for tool in tools() {
             if !tool.name.starts_with("unica.cf.")
