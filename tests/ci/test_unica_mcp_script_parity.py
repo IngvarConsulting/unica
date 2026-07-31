@@ -517,55 +517,6 @@ SUCCESS_SCENARIOS = [
         expect_ok=True,
     ),
     ParityScenario(
-        name="cf-edit-definition-file-all-ops",
-        tool="unica.cf.edit",
-        skill="cf-edit",
-        script="cf-edit.py",
-        arguments={
-            "ConfigPath": "src",
-            "DefinitionFile": "fixtures/cf-edit-ops.json",
-            "NoValidate": True,
-        },
-        setup_steps=(
-            SetupStep(
-                skill="cf-init",
-                script="cf-init.py",
-                arguments={"Name": "ParityConfiguration", "OutputDir": "src"},
-            ),
-            SetupStep(
-                skill="meta-compile",
-                script="meta-compile.py",
-                arguments={"JsonPath": "fixtures/meta-catalog.json", "OutputDir": "src"},
-            ),
-            SetupStep(
-                skill="form-add",
-                script="form-add.py",
-                arguments={
-                    "ObjectPath": "src/Catalogs/ParityCatalog.xml",
-                    "FormName": "ListForm",
-                    "Purpose": "List",
-                },
-            ),
-            SetupStep(
-                skill="form-add",
-                script="form-add.py",
-                arguments={
-                    "ObjectPath": "src/Catalogs/ParityCatalog.xml",
-                    "FormName": "ObjectForm",
-                    "Purpose": "Object",
-                },
-            ),
-        ),
-        fixtures=(
-            FileFixture("meta-catalog.json", "fixtures/meta-catalog.json"),
-            FileFixture("cf-edit/ops.json", "fixtures/cf-edit-ops.json"),
-        ),
-        expect_ok=True,
-        # Native cf.edit preserves Configuration.xml text for child-object edits;
-        # the donor script still rewrites the XML and is no longer a byte oracle.
-        compare_files=False,
-    ),
-    ParityScenario(
         name="meta-compile-catalog",
         tool="unica.meta.compile",
         skill="meta-compile",
@@ -3234,14 +3185,6 @@ VALIDATION_FAILURE_SCENARIOS = [
 
 MISSING_INPUT_SCENARIOS = [
     ParityScenario(
-        "cf-edit-missing-config",
-        "unica.cf.edit",
-        "cf-edit",
-        "cf-edit.py",
-        {"ConfigPath": "missing/Configuration.xml", "Operation": "modify-property", "Value": "Version=1.0"},
-        False,
-    ),
-    ParityScenario(
         "cf-validate-missing-config",
         "unica.cf.validate",
         "cf-validate",
@@ -3405,7 +3348,6 @@ SCENARIOS = tuple(SUCCESS_SCENARIOS + VALIDATION_FAILURE_SCENARIOS + MISSING_INP
 MIN_NATIVE_PARITY_COVERAGE = 1.0
 
 NATIVE_PARITY_TOOLS = {
-    "unica.cf.edit",
     "unica.cf.init",
     "unica.cf.validate",
     "unica.cfe.borrow",
@@ -3448,6 +3390,7 @@ MUTATING_FORM_DCS_PARITY_TOOLS = {
 # itself is scheduled for redesign; until then this list records what left and
 # why, instead of scenarios quietly disappearing.
 TYPED_RESULT_TOOLS = {
+    "unica.cf.edit",
     "unica.cf.info",
     "unica.cfe.diff",
     "unica.cfe.init",
@@ -3464,7 +3407,6 @@ TYPED_RESULT_TOOLS = {
 }
 
 EXPECTED_TOOLS = {
-    "unica.cf.edit",
     "unica.cf.init",
     "unica.cf.validate",
     "unica.cfe.borrow",

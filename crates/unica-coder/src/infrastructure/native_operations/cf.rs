@@ -2036,14 +2036,76 @@ mod metadata_kind_consumer_tests {
 }
 
 struct CfEditRun {
-    stdout: String,
+    data: CfEditData,
     config_path: PathBuf,
     artifacts: Vec<PathBuf>,
     config_updated: bool,
     warnings: Vec<String>,
 }
 
+/// Typed answer of `unica.cf.edit` (ADR-0023). Every requested operation is
+/// reported, including the ones that changed nothing: `[WARN] Already exists`
+/// becomes `applied: false` with a reason instead of a line to grep for.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfEditData {
+    pub(crate) configuration: String,
+    pub(crate) operations: Vec<CfEditOperationData>,
+    pub(crate) added: usize,
+    pub(crate) removed: usize,
+    pub(crate) modified: usize,
+    /// True when `Configuration.xml` itself was rewritten.
+    pub(crate) config_updated: bool,
+    /// The edit commits only through post-validation; this records that the
+    /// validator actually ran over the written configuration.
+    pub(crate) validated: bool,
+    pub(crate) mutation: MutationData,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfEditOperationData {
+    pub(crate) operation: String,
+    /// What the operation acted on: an object reference, a role, or a path.
+    pub(crate) target: Option<String>,
+    pub(crate) applied: bool,
+    /// Why nothing changed; `null` when the operation applied.
+    pub(crate) reason: Option<String>,
+}
+
+impl CfEditOperationData {
+    fn applied(operation: &str, target: impl Into<Option<String>>) -> Self {
+        Self {
+            operation: operation.to_string(),
+            target: target.into(),
+            applied: true,
+            reason: None,
+        }
+    }
+
+    fn skipped(operation: &str, target: impl Into<Option<String>>, reason: &str) -> Self {
+        Self {
+            operation: operation.to_string(),
+            target: target.into(),
+            applied: false,
+            reason: Some(reason.to_string()),
+        }
+    }
+}
+
+pub(crate) struct CfEditExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<CfEditData>,
+}
+
 pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
+    edit_cf_with_data(args, context).outcome
+}
+
+pub(crate) fn edit_cf_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> CfEditExecution {
     let edit_result = (|| -> Result<CfEditRun, String> {
         let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
         let operation = string_arg(args, &["operation", "Operation"]);
@@ -2080,7 +2142,8 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
         let mut add_count = 0usize;
         let mut remove_count = 0usize;
         let mut modify_count = 0usize;
-        let mut stdout = format!("[INFO] Configuration: {obj_name}\n");
+        let stdout = format!("[INFO] Configuration: {obj_name}\n");
+        let mut operation_log: Vec<CfEditOperationData> = Vec::new();
         let mut artifacts = vec![config_path.clone()];
         let mut external_files = BTreeMap::<PathBuf, Vec<u8>>::new();
         let mut config_changed = false;
@@ -2110,7 +2173,10 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                         text = cf_edit_replace_property(&text, prop_name, &replacement)?;
                         config_changed = true;
                         modify_count += 1;
-                        stdout.push_str(&format!("[INFO] Set {prop_name} = \"{prop_value}\"\n"));
+                        operation_log.push(CfEditOperationData::applied(
+                            "set-property",
+                            format!("{prop_name}={prop_value}"),
+                        ));
                     }
                 }
                 "remove-childObject" => {
@@ -2119,11 +2185,15 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                         if cf_edit_remove_child_object_text(&mut text, type_name, obj_name_val)? {
                             remove_count += 1;
                             config_changed = true;
-                            stdout
-                                .push_str(&format!("[INFO] Removed: {type_name}.{obj_name_val}\n"));
+                            operation_log.push(CfEditOperationData::applied(
+                                "remove-childObject",
+                                format!("{type_name}.{obj_name_val}"),
+                            ));
                         } else {
-                            stdout.push_str(&format!(
-                                "[WARN] Not found: {type_name}.{obj_name_val}\n"
+                            operation_log.push(CfEditOperationData::skipped(
+                                "remove-childObject",
+                                format!("{type_name}.{obj_name_val}"),
+                                "не найден в составе конфигурации",
                             ));
                         }
                     }
@@ -2162,10 +2232,15 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                         if cf_edit_add_child_object_text(&mut text, type_name, obj_name_val)? {
                             add_count += 1;
                             config_changed = true;
-                            stdout.push_str(&format!("[INFO] Added: {type_name}.{obj_name_val}\n"));
+                            operation_log.push(CfEditOperationData::applied(
+                                "add-childObject",
+                                format!("{type_name}.{obj_name_val}"),
+                            ));
                         } else {
-                            stdout.push_str(&format!(
-                                "[WARN] Already exists: {type_name}.{obj_name_val}\n"
+                            operation_log.push(CfEditOperationData::skipped(
+                                "add-childObject",
+                                format!("{type_name}.{obj_name_val}"),
+                                "уже присутствует в составе конфигурации",
                             ));
                         }
                     }
@@ -2178,25 +2253,28 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                     text = cf_edit_replace_default_roles(&text, &roles)?;
                     config_changed = true;
                     modify_count += 1;
-                    if roles.is_empty() {
-                        stdout.push_str("[INFO] Cleared DefaultRoles\n");
-                    } else {
-                        stdout
-                            .push_str(&format!("[INFO] Set DefaultRoles: {} roles\n", roles.len()));
-                    }
+                    operation_log.push(CfEditOperationData::applied(
+                        "set-defaultRoles",
+                        (!roles.is_empty()).then(|| roles.join(", ")),
+                    ));
                 }
                 "add-defaultRole" => {
                     let mut roles = cf_edit_default_roles(&text)?;
                     for role in cf_edit_batch_value(&op_value) {
                         let role_name = cf_edit_role_ref(&role);
                         if roles.contains(&role_name) {
-                            stdout.push_str(&format!(
-                                "[WARN] DefaultRole already exists: {role_name}\n"
+                            operation_log.push(CfEditOperationData::skipped(
+                                "add-defaultRole",
+                                role_name.clone(),
+                                "уже в списке ролей по умолчанию",
                             ));
                         } else {
                             roles.push(role_name.clone());
                             add_count += 1;
-                            stdout.push_str(&format!("[INFO] Added DefaultRole: {role_name}\n"));
+                            operation_log.push(CfEditOperationData::applied(
+                                "add-defaultRole",
+                                role_name.clone(),
+                            ));
                         }
                     }
                     text = cf_edit_replace_default_roles(&text, &roles)?;
@@ -2211,10 +2289,16 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                         {
                             roles.remove(index);
                             remove_count += 1;
-                            stdout.push_str(&format!("[INFO] Removed DefaultRole: {role_name}\n"));
+                            operation_log.push(CfEditOperationData::applied(
+                                "remove-defaultRole",
+                                role_name.clone(),
+                            ));
                         } else {
-                            stdout
-                                .push_str(&format!("[WARN] DefaultRole not found: {role_name}\n"));
+                            operation_log.push(CfEditOperationData::skipped(
+                                "remove-defaultRole",
+                                role_name.clone(),
+                                "не найдена в списке ролей по умолчанию",
+                            ));
                         }
                     }
                     text = cf_edit_replace_default_roles(&text, &roles)?;
@@ -2225,7 +2309,10 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                     let path = plan.path.clone();
                     external_files.insert(plan.path, plan.bytes);
                     modify_count += 1;
-                    stdout.push_str(&format!("[INFO] Wrote panel layout: {}\n", path.display()));
+                    operation_log.push(CfEditOperationData::applied(
+                        "set-panels",
+                        path.display().to_string(),
+                    ));
                     artifacts.push(path);
                 }
                 "set-home-page" => {
@@ -2233,9 +2320,9 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                     let path = plan.path.clone();
                     external_files.insert(plan.path, plan.bytes);
                     modify_count += 1;
-                    stdout.push_str(&format!(
-                        "[INFO] Wrote home page layout: {}\n",
-                        path.display()
+                    operation_log.push(CfEditOperationData::applied(
+                        "set-home-page",
+                        path.display().to_string(),
                     ));
                     artifacts.push(path);
                 }
@@ -2268,6 +2355,7 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
         )?;
         let show_validation_output = !bool_arg(args, &["noValidate", "NoValidate"]);
         let mut validation_stdout = None;
+        let mut validated = false;
         let validate_args = Map::from_iter([(
             "ConfigPath".to_string(),
             Value::String(config_path.display().to_string()),
@@ -2275,6 +2363,7 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
         let report = transaction
             .commit_with_post_validation(|| {
                 let outcome = validate_cf(&validate_args, context);
+                validated = outcome.ok;
                 if show_validation_output {
                     validation_stdout = outcome.stdout.clone();
                 }
@@ -2295,27 +2384,30 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
         let warnings = report.cleanup_warnings;
         if config_changed && report.updated.contains(&config_path) {
             config_updated = true;
-            stdout.push_str(&format!("[INFO] Saved: {}\n", config_path.display()));
-        } else {
-            stdout.push_str("[INFO] No Configuration.xml changes\n");
         }
+        let _ = (stdout, show_validation_output, validation_stdout);
 
-        if show_validation_output {
-            stdout.push('\n');
-            stdout.push_str("--- Running cf-validate ---\n");
-            if let Some(validate_stdout) = validation_stdout {
-                stdout.push_str(&validate_stdout);
+        let mut mutation = MutationData::new(true);
+        if config_updated {
+            mutation = mutation.updated(&config_path);
+        }
+        for artifact in &artifacts {
+            if artifact != &config_path {
+                mutation = mutation.updated(artifact);
             }
         }
-
-        stdout.push('\n');
-        stdout.push_str("=== cf-edit summary ===\n");
-        stdout.push_str(&format!("  Configuration: {obj_name}\n"));
-        stdout.push_str(&format!("  Added:         {add_count}\n"));
-        stdout.push_str(&format!("  Removed:       {remove_count}\n"));
-        stdout.push_str(&format!("  Modified:      {modify_count}\n"));
+        let data = CfEditData {
+            configuration: obj_name.to_string(),
+            operations: operation_log,
+            added: add_count,
+            removed: remove_count,
+            modified: modify_count,
+            config_updated,
+            validated,
+            mutation,
+        };
         Ok(CfEditRun {
-            stdout,
+            data,
             config_path,
             artifacts,
             config_updated,
@@ -2325,7 +2417,7 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
 
     match edit_result {
         Ok(CfEditRun {
-            stdout,
+            data,
             config_path,
             artifacts,
             config_updated,
@@ -2340,31 +2432,42 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                     changes.push(format!("updated {}", artifact.display()));
                 }
             }
-            AdapterOutcome {
-                ok: true,
-                summary: "unica.cf.edit completed with native Configuration.xml editor".to_string(),
-                changes,
-                warnings,
-                errors: Vec::new(),
-                artifacts: artifacts
-                    .into_iter()
-                    .map(|path| path.display().to_string())
-                    .collect(),
-                stdout: Some(stdout),
-                stderr: None,
-                command: None,
+            CfEditExecution {
+                outcome: AdapterOutcome {
+                    ok: true,
+                    summary: format!(
+                        "unica.cf.edit applied {} of {} operation(s) to {}",
+                        data.operations.iter().filter(|item| item.applied).count(),
+                        data.operations.len(),
+                        data.configuration
+                    ),
+                    changes,
+                    warnings,
+                    errors: Vec::new(),
+                    artifacts: artifacts
+                        .into_iter()
+                        .map(|path| path.display().to_string())
+                        .collect(),
+                    stdout: None,
+                    stderr: None,
+                    command: None,
+                },
+                data: Some(data),
             }
         }
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.cf.edit failed in native Configuration.xml editor".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-            command: None,
+        Err(error) => CfEditExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.cf.edit failed in native Configuration.xml editor".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.clone()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{error}\n")),
+                command: None,
+            },
+            data: None,
         },
     }
 }

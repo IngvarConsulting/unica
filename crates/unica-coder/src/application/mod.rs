@@ -3168,7 +3168,6 @@ mod tests {
         // `unica.cf.info` left the parity stand when it started answering with
         // typed data: there is no prose left to compare (ADR-0023).
         const PARITY_COVERED_TOOLS: &[&str] = &[
-            "unica.cf.edit",
             "unica.cf.init",
             "unica.cf.validate",
             "unica.cfe.borrow",
@@ -3214,6 +3213,7 @@ mod tests {
             "unica.interface.edit",
             "unica.meta.remove",
             "unica.cfe.init",
+            "unica.cf.edit",
         ];
 
         for tool in tools() {
@@ -4082,12 +4082,8 @@ mod tests {
         assert!(result.ok, "{result:?}");
         assert!(result.changes.is_empty(), "{result:?}");
         assert!(result.cache.events.is_empty(), "{result:?}");
-        let stdout = result.stdout.unwrap_or_default();
-        assert!(
-            stdout.contains("[INFO] No Configuration.xml changes"),
-            "{stdout}"
-        );
-        assert!(!stdout.contains("[INFO] Saved:"), "{stdout}");
+        let data = result.data.as_ref().expect("cf.edit answers with data");
+        assert_eq!(data["configUpdated"], serde_json::json!(false), "{data:?}");
         assert_eq!(std::fs::read(&config_path).unwrap(), before);
         assert_no_cf_edit_stage_debris(&config_path);
         std::fs::remove_dir_all(root).unwrap();
@@ -4984,12 +4980,15 @@ mod tests {
         assert!(result.ok, "{result:?}");
         assert!(result.changes.is_empty(), "{result:?}");
         assert!(result.cache.events.is_empty(), "{result:?}");
-        let stdout = result.stdout.unwrap_or_default();
-        assert!(
-            stdout.contains("[WARN] Already exists: Catalog.Валюты"),
-            "{stdout}"
-        );
-        assert!(!stdout.contains("[INFO] Saved:"), "{stdout}");
+        let data = result.data.as_ref().expect("cf.edit answers with data");
+        assert_eq!(data["configUpdated"], serde_json::json!(false), "{data:?}");
+        let skipped = data["operations"]
+            .as_array()
+            .expect("operations is a list")
+            .iter()
+            .find(|item| item["target"] == serde_json::json!("Catalog.Валюты"))
+            .expect("the duplicate add is reported");
+        assert_eq!(skipped["applied"], serde_json::json!(false), "{skipped:?}");
         assert_eq!(std::fs::read_to_string(&config_path).unwrap(), before);
 
         let _ = std::fs::remove_dir_all(root);
