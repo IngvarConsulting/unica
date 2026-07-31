@@ -2259,6 +2259,43 @@ pub(crate) fn format_compatibility_warning(compatibility: &FormatCompatibility) 
     }
 }
 
+/// Typed answer shared by the writing tools (ADR-0023). Each tool builds it
+/// from the paths it actually touched, never by re-reading its own report: the
+/// point of the decision is to stop parsing prose, including our own.
+#[derive(serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MutationData {
+    /// `false` when the call was a preview and nothing was written.
+    pub(crate) applied: bool,
+    pub(crate) created: Vec<String>,
+    pub(crate) updated: Vec<String>,
+    pub(crate) removed: Vec<String>,
+}
+
+impl MutationData {
+    pub(crate) fn new(applied: bool) -> Self {
+        Self {
+            applied,
+            ..Default::default()
+        }
+    }
+
+    pub(crate) fn created(mut self, path: &Path) -> Self {
+        self.created.push(path.display().to_string());
+        self
+    }
+
+    pub(crate) fn updated(mut self, path: &Path) -> Self {
+        self.updated.push(path.display().to_string());
+        self
+    }
+
+    pub(crate) fn removed(mut self, path: &Path) -> Self {
+        self.removed.push(path.display().to_string());
+        self
+    }
+}
+
 /// Typed support state for ADR-0023 readers. It lives beside `SupportState`
 /// because the counts are private there, and every reader needs the same
 /// four-state answer rather than its own rendering of it.

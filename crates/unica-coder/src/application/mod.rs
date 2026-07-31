@@ -3191,7 +3191,6 @@ mod tests {
             "unica.subsystem.compile",
             "unica.subsystem.edit",
             "unica.subsystem.validate",
-            "unica.template.add",
             "unica.template.remove",
             "unica.dcs.compile",
             "unica.dcs.edit",
@@ -3214,6 +3213,7 @@ mod tests {
             "unica.mxl.info",
             "unica.cfe.diff",
             "unica.meta.edit",
+            "unica.template.add",
         ];
 
         for tool in tools() {

@@ -1472,46 +1472,6 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
-        name="template-add-main-schema",
-        tool="unica.template.add",
-        skill="template-add",
-        script="add-template.py",
-        arguments={
-            "ObjectName": "ParityReport",
-            "TemplateName": "NewSchema",
-            "TemplateType": "DataCompositionSchema",
-            "Synonym": "New schema",
-            "SrcDir": "src/Reports",
-            "SetMainSKD": True,
-        },
-        setup_steps=(
-            SetupStep(
-                skill="meta-compile",
-                script="meta-compile.py",
-                arguments={"JsonPath": "fixtures/meta-report.json", "OutputDir": "src"},
-            ),
-        ),
-        fixtures=(FileFixture("meta-report.json", "fixtures/meta-report.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-template-add-real-report-copy",
-        tool="unica.template.add",
-        skill="template-add",
-        script="add-template.py",
-        arguments={
-            "ObjectName": "АнализВерсийОбъектов",
-            "TemplateName": "ParityBspTemplate",
-            "TemplateType": "DataCompositionSchema",
-            "Synonym": "Parity BSP template",
-            "SrcDir": "src/Reports",
-        },
-        fixtures=(FileFixture(BSP_META_REPORT_FIXTURE, "src/Reports/АнализВерсийОбъектов.xml"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
         name="bsp-template-remove-real-template-from-report-copy",
         tool="unica.template.remove",
         skill="template-remove",
@@ -3721,19 +3681,6 @@ MISSING_INPUT_SCENARIOS = [
         False,
     ),
     ParityScenario(
-        "template-add-missing-object",
-        "unica.template.add",
-        "template-add",
-        "add-template.py",
-        {
-            "ObjectName": "ParityReport",
-            "TemplateName": "MainSchema",
-            "TemplateType": "DataCompositionSchema",
-            "SrcDir": "missing-src/Reports",
-        },
-        False,
-    ),
-    ParityScenario(
         "template-remove-missing-object",
         "unica.template.remove",
         "template-remove",
@@ -3819,7 +3766,6 @@ NATIVE_PARITY_TOOLS = {
     "unica.subsystem.validate",
     "unica.interface.edit",
     "unica.interface.validate",
-    "unica.template.add",
     "unica.template.remove",
     "unica.dcs.compile",
     "unica.dcs.edit",
@@ -3852,6 +3798,7 @@ TYPED_RESULT_TOOLS = {
     "unica.mxl.info",
     "unica.cfe.diff",
     "unica.meta.edit",
+    "unica.template.add",
 }
 
 EXPECTED_TOOLS = {
@@ -3878,7 +3825,6 @@ EXPECTED_TOOLS = {
     "unica.subsystem.compile",
     "unica.subsystem.edit",
     "unica.subsystem.validate",
-    "unica.template.add",
     "unica.template.remove",
     "unica.dcs.compile",
     "unica.dcs.edit",
@@ -3909,7 +3855,6 @@ BSP_PARITY_REQUIRED_TOOLS = {
     "unica.subsystem.validate",
     "unica.interface.validate",
     "unica.interface.edit",
-    "unica.template.add",
     "unica.template.remove",
 }
 

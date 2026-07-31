@@ -15,6 +15,7 @@ use super::compile_transaction::CompileTransaction;
 use super::{cf::*, cfe::*, dcs::*, form::*, interface::*, meta::*, mxl::*, role::*, subsystem::*};
 
 struct TemplateAddResult {
+    mutation: MutationData,
     stdout: String,
     changes: Vec<String>,
     artifacts: Vec<String>,
@@ -25,6 +26,13 @@ pub(crate) fn add_template(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
+    add_template_with_data(args, context).outcome
+}
+
+pub(crate) fn add_template_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> TemplateExecution {
     let result = (|| -> Result<TemplateAddResult, String> {
         let object_name = required_string(
             args,
@@ -204,7 +212,16 @@ pub(crate) fn add_template(
             artifacts.insert(2, path.display().to_string());
         }
 
+        let mutation = MutationData::new(true)
+            .created(&template_meta_path)
+            .created(&template_file_path)
+            .updated(&root_xml_path);
+        let mutation = match &html_page_path {
+            Some(path) => mutation.created(path),
+            None => mutation,
+        };
         Ok(TemplateAddResult {
+            mutation,
             stdout,
             changes,
             artifacts,
@@ -213,29 +230,43 @@ pub(crate) fn add_template(
     })();
 
     match result {
-        Ok(result) => AdapterOutcome {
-            ok: true,
-            summary: "unica.template.add completed with native template writer".to_string(),
-            changes: result.changes,
-            warnings: result.warnings,
-            errors: Vec::new(),
-            artifacts: result.artifacts,
-            stdout: Some(result.stdout),
-            stderr: Some(String::new()),
-            command: None,
+        Ok(result) => TemplateExecution {
+            outcome: AdapterOutcome {
+                ok: true,
+                summary: format!(
+                    "unica.template.add created {} file(s)",
+                    result.mutation.created.len()
+                ),
+                changes: result.changes,
+                warnings: result.warnings,
+                errors: Vec::new(),
+                artifacts: result.artifacts,
+                stdout: None,
+                stderr: Some(String::new()),
+                command: None,
+            },
+            data: Some(result.mutation),
         },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.template.add failed in native template writer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-            command: None,
+        Err(error) => TemplateExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.template.add failed in native template writer".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.clone()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{error}\n")),
+                command: None,
+            },
+            data: None,
         },
     }
+}
+
+pub(crate) struct TemplateExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<MutationData>,
 }
 
 pub(crate) fn remove_template(
@@ -882,6 +913,7 @@ pub(crate) fn invoke_mutation(
     context: &WorkspaceContext,
 ) -> Option<AdapterOutcome> {
     match operation {
+        // Typed answer; data reaches the envelope through typed_result.rs.
         "template-add" => Some(add_template(args, context)),
         "template-remove" => Some(remove_template(args, context)),
         _ => None,

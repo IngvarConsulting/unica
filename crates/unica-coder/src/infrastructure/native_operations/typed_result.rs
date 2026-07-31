@@ -1,4 +1,6 @@
-use super::{cf, cfe, code, form, meta, mxl, registry, role, subsystem, NativeOperationAdapter};
+use super::{
+    cf, cfe, code, form, meta, mxl, registry, role, subsystem, template, NativeOperationAdapter,
+};
 use crate::{application::AdapterOutcome, domain::workspace::WorkspaceContext};
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -37,6 +39,10 @@ impl NativeOperationAdapter {
                 }
                 Some(registry::TypedMutationHandler::FormEdit) => {}
                 None => {}
+            }
+            if operation == "template-add" && !dry_run {
+                let execution = template::add_template_with_data(args, context);
+                return typed_operation_result(execution.outcome, execution.data, "template add");
             }
             if operation == "meta-edit" {
                 let execution = if dry_run {
