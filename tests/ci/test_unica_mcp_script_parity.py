@@ -1457,142 +1457,6 @@ SUCCESS_SCENARIOS = [
         expect_ok=True,
     ),
     ParityScenario(
-        name="bsp-interface-edit-show-real-command",
-        tool="unica.interface.edit",
-        skill="interface-edit",
-        script="interface-edit.py",
-        arguments={
-            "CIPath": "src/Subsystems/Администрирование/Ext/CommandInterface.xml",
-            "Operation": "show",
-            "Value": "Catalog.Пользователи.StandardCommand.OpenList",
-            "NoValidate": True,
-        },
-        fixtures=(
-            FileFixture(
-                BSP_SUBSYSTEM_FIXTURE,
-                "src/Subsystems/Администрирование.xml",
-            ),
-            FileFixture(
-                BSP_SUBSYSTEM_COMMAND_INTERFACE_FIXTURE,
-                "src/Subsystems/Администрирование/Ext/CommandInterface.xml",
-            ),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="interface-edit-definition-file-all-ops",
-        tool="unica.interface.edit",
-        skill="interface-edit",
-        script="interface-edit.py",
-        arguments={
-            "CIPath": "src/Subsystems/Sales/Ext/CommandInterface.xml",
-            "DefinitionFile": "fixtures/interface-edit-ops.json",
-            "NoValidate": True,
-        },
-        setup_steps=(
-            SetupStep(
-                skill="subsystem-compile",
-                script="subsystem-compile.py",
-                arguments={
-                    "Value": {"name": "Sales", "synonym": "Sales"},
-                    "OutputDir": "src",
-                    "NoValidate": True,
-                },
-            ),
-        ),
-        fixtures=(
-            FileFixture(
-                "interface-validate/Sales/Ext/CommandInterface.xml",
-                "src/Subsystems/Sales/Ext/CommandInterface.xml",
-            ),
-            FileFixture("interface-edit/ops.json", "fixtures/interface-edit-ops.json"),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="interface-edit-create-if-missing",
-        tool="unica.interface.edit",
-        skill="interface-edit",
-        script="interface-edit.py",
-        arguments={
-            "CIPath": "src/Subsystems/NewSales/Ext/CommandInterface.xml",
-            "Operation": "subsystem-order",
-            "Value": "[\"Subsystem.Sales.Subsystem.Retail\",\"Subsystem.Sales.Subsystem.Wholesale\"]",
-            "CreateIfMissing": True,
-            "NoValidate": True,
-        },
-        setup_steps=(
-            SetupStep(
-                skill="subsystem-compile",
-                script="subsystem-compile.py",
-                arguments={
-                    "Value": {"name": "NewSales", "synonym": "New sales"},
-                    "OutputDir": "src",
-                    "NoValidate": True,
-                },
-            ),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="interface-edit-create-if-missing-hide",
-        tool="unica.interface.edit",
-        skill="interface-edit",
-        script="interface-edit.py",
-        arguments={
-            "CIPath": "src/Subsystems/NewVisibility/Ext/CommandInterface.xml",
-            "Operation": "hide",
-            "Value": "Catalog.Products.StandardCommand.OpenList",
-            "CreateIfMissing": True,
-            "NoValidate": True,
-        },
-        setup_steps=(
-            SetupStep(
-                skill="subsystem-compile",
-                script="subsystem-compile.py",
-                arguments={
-                    "Value": {
-                        "name": "NewVisibility",
-                        "synonym": "New visibility",
-                    },
-                    "OutputDir": "src",
-                    "NoValidate": True,
-                },
-            ),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="interface-edit-create-if-missing-show",
-        tool="unica.interface.edit",
-        skill="interface-edit",
-        script="interface-edit.py",
-        arguments={
-            "CIPath": "src/Subsystems/NewVisible/Ext/CommandInterface.xml",
-            "Operation": "show",
-            "Value": "Catalog.Products.StandardCommand.OpenList",
-            "CreateIfMissing": True,
-            "NoValidate": True,
-        },
-        setup_steps=(
-            SetupStep(
-                skill="subsystem-compile",
-                script="subsystem-compile.py",
-                arguments={
-                    "Value": {"name": "NewVisible", "synonym": "New visible"},
-                    "OutputDir": "src",
-                    "NoValidate": True,
-                },
-            ),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
         name="dcs-compile-simple",
         tool="unica.dcs.compile",
         skill="dcs-compile",
@@ -3549,14 +3413,6 @@ MISSING_INPUT_SCENARIOS = [
         ),
     ),
     ParityScenario(
-        "interface-edit-missing-command-interface",
-        "unica.interface.edit",
-        "interface-edit",
-        "interface-edit.py",
-        {"CIPath": "missing/CommandInterface.xml", "Operation": "hide", "Value": "Catalog.ParityCatalog"},
-        False,
-    ),
-    ParityScenario(
         "interface-validate-missing-command-interface",
         "unica.interface.validate",
         "interface-validate",
@@ -3654,7 +3510,6 @@ NATIVE_PARITY_TOOLS = {
     "unica.subsystem.compile",
     "unica.subsystem.edit",
     "unica.subsystem.validate",
-    "unica.interface.edit",
     "unica.interface.validate",
     "unica.dcs.compile",
     "unica.dcs.edit",
@@ -3681,15 +3536,16 @@ MUTATING_FORM_DCS_PARITY_TOOLS = {
 # why, instead of scenarios quietly disappearing.
 TYPED_RESULT_TOOLS = {
     "unica.cf.info",
+    "unica.cfe.diff",
+    "unica.form.remove",
+    "unica.help.add",
+    "unica.interface.edit",
+    "unica.meta.edit",
+    "unica.mxl.info",
     "unica.role.info",
     "unica.subsystem.info",
-    "unica.mxl.info",
-    "unica.cfe.diff",
-    "unica.meta.edit",
     "unica.template.add",
     "unica.template.remove",
-    "unica.help.add",
-    "unica.form.remove",
 }
 
 EXPECTED_TOOLS = {
@@ -3709,7 +3565,6 @@ EXPECTED_TOOLS = {
     "unica.form.edit",
     "unica.form.info",
     "unica.form.validate",
-    "unica.interface.edit",
     "unica.interface.validate",
     "unica.subsystem.compile",
     "unica.subsystem.edit",
@@ -3742,7 +3597,6 @@ BSP_PARITY_REQUIRED_TOOLS = {
     "unica.role.validate",
     "unica.subsystem.validate",
     "unica.interface.validate",
-    "unica.interface.edit",
 }
 
 BSP_MUTATING_REQUIRED_TOOLS = {
@@ -3750,7 +3604,6 @@ BSP_MUTATING_REQUIRED_TOOLS = {
     "unica.form.edit",
     "unica.dcs.edit",
     "unica.mxl.compile",
-    "unica.interface.edit",
     "unica.template.remove",
 }
 

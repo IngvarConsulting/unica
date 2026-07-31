@@ -36,11 +36,38 @@ pub(crate) struct InterfaceEditCounters {
     pub(crate) modified: usize,
 }
 
+/// Typed answer of `unica.interface.edit` (ADR-0023): what the edit did to the
+/// command interface, beside the file it updated.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InterfaceEditData {
+    pub(crate) added: usize,
+    pub(crate) removed: usize,
+    pub(crate) modified: usize,
+    /// The edit commits only through post-validation, so this records that the
+    /// validator actually ran over the written file — not merely that the write
+    /// succeeded.
+    pub(crate) validated: bool,
+    pub(crate) mutation: MutationData,
+}
+
+pub(crate) struct InterfaceEditExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<InterfaceEditData>,
+}
+
 pub(crate) fn edit_interface(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
-    let edit_result = (|| -> Result<(String, PathBuf, Vec<String>), String> {
+    edit_interface_with_data(args, context).outcome
+}
+
+pub(crate) fn edit_interface_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> InterfaceEditExecution {
+    let edit_result = (|| -> Result<(InterfaceEditData, PathBuf, Vec<String>), String> {
         let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
         let operation = string_arg(args, &["operation", "Operation"]);
         if definition_file.is_some() && operation.is_some() {
@@ -155,9 +182,11 @@ pub(crate) fn edit_interface(
             Value::String(ci_path.display().to_string()),
         )]);
         let mut validation_stdout = None;
+        let mut validated = false;
         let report = transaction.commit_with_post_validation(|| {
             validate_metadata_owner_shape_8_3_27(&metadata_owner_path, context, "interface.edit")?;
             let outcome = validate_interface(&validate_args, context);
+            validated = outcome.ok;
             validation_stdout = outcome.stdout.clone();
             if outcome.ok {
                 return Ok(());
@@ -177,45 +206,49 @@ pub(crate) fn edit_interface(
         }
         stdout.push_str(&format!("[INFO] Saved: {}\n", ci_path.display()));
 
-        if show_validation {
-            stdout.push('\n');
-            stdout.push_str("--- Running interface-validate ---\n");
-            if let Some(validate_stdout) = validation_stdout {
-                stdout.push_str(&validate_stdout);
-            }
-        }
-
-        stdout.push('\n');
-        stdout.push_str("=== interface-edit summary ===\n");
-        stdout.push_str(&format!("  Added:    {}\n", counters.added));
-        stdout.push_str(&format!("  Removed:  {}\n", counters.removed));
-        stdout.push_str(&format!("  Modified: {}\n", counters.modified));
-        Ok((stdout, ci_path, report.cleanup_warnings))
+        let _ = (stdout, show_validation, validation_stdout);
+        let data = InterfaceEditData {
+            added: counters.added,
+            removed: counters.removed,
+            modified: counters.modified,
+            validated,
+            mutation: MutationData::new(true).updated(&ci_path),
+        };
+        Ok((data, ci_path, report.cleanup_warnings))
     })();
 
     match edit_result {
-        Ok((stdout, ci_path, warnings)) => AdapterOutcome {
-            ok: true,
-            summary: "unica.interface.edit completed with native command interface editor"
-                .to_string(),
-            changes: vec![format!("updated {}", ci_path.display())],
-            warnings,
-            errors: Vec::new(),
-            artifacts: vec![ci_path.display().to_string()],
-            stdout: Some(stdout),
-            stderr: None,
-            command: None,
+        Ok((data, ci_path, warnings)) => InterfaceEditExecution {
+            outcome: AdapterOutcome {
+                ok: true,
+                summary: format!(
+                    "unica.interface.edit added {}, removed {}, modified {}",
+                    data.added, data.removed, data.modified
+                ),
+                changes: vec![format!("updated {}", ci_path.display())],
+                warnings,
+                errors: Vec::new(),
+                artifacts: vec![ci_path.display().to_string()],
+                stdout: None,
+                stderr: None,
+                command: None,
+            },
+            data: Some(data),
         },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.interface.edit failed in native command interface editor".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-            command: None,
+        Err(error) => InterfaceEditExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.interface.edit failed in native command interface editor"
+                    .to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.clone()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{error}\n")),
+                command: None,
+            },
+            data: None,
         },
     }
 }
@@ -1668,14 +1701,12 @@ mod tests {
             );
             args.insert("CreateIfMissing".to_string(), Value::Bool(true));
 
-            let outcome = edit_interface(&args, &context);
+            let execution = edit_interface_with_data(&args, &context);
+            let outcome = &execution.outcome;
 
             assert!(outcome.ok, "{operation}: {outcome:?}");
             assert!(
-                outcome
-                    .stdout
-                    .as_deref()
-                    .is_some_and(|stdout| stdout.contains("Validation OK")),
+                execution.data.as_ref().is_some_and(|data| data.validated),
                 "{operation}: validation did not run successfully: {outcome:?}"
             );
             let text = fs::read_to_string(&ci_path).unwrap();

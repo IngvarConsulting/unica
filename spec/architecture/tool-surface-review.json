@@ -574,9 +574,9 @@
  },
  "unica.interface.edit": {
   "result": {
-   "contract": "prose",
-   "now": "текст в `stdout`",
-   "target": "`data`: применённые изменения командного интерфейса"
+   "contract": "typed",
+   "now": "`data`: `added`, `removed`, `modified` и `mutation` с обновлённым файлом",
+   "target": "достигнут"
   },
   "scenarios": [
    "Скрыть команду из интерфейса подсистемы"

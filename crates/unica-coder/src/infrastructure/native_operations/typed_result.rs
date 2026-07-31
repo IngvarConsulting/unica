@@ -58,6 +58,14 @@ impl NativeOperationAdapter {
                             return typed_operation_result(outcome, data, "external init");
                         }
                     }
+                    "interface-edit" => {
+                        let execution = super::interface::edit_interface_with_data(args, context);
+                        return typed_operation_result(
+                            execution.outcome,
+                            execution.data,
+                            "interface edit",
+                        );
+                    }
                     "form-remove" => {
                         let execution = form::remove_form_with_data(args, context);
                         return typed_operation_result(
