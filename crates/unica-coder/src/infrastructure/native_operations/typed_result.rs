@@ -74,6 +74,14 @@ impl NativeOperationAdapter {
                             "support edit",
                         );
                     }
+                    "subsystem-edit" => {
+                        let execution = subsystem::edit_subsystem_with_data(args, context);
+                        return typed_operation_result(
+                            execution.outcome,
+                            execution.data,
+                            "subsystem edit",
+                        );
+                    }
                     "cfe-patch-method" => {
                         let execution = cfe::patch_extension_method_with_data(args, context);
                         return typed_operation_result(

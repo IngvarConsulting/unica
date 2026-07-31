@@ -149,10 +149,78 @@ pub(crate) struct SubsystemEditCounters {
 }
 
 struct SubsystemEditResult {
-    stdout: String,
+    data: SubsystemEditData,
     artifacts: Vec<PathBuf>,
     changes: Vec<String>,
     warnings: Vec<String>,
+}
+
+/// Typed answer of `unica.subsystem.edit` (ADR-0023). Every requested operation
+/// is reported, including the ones that changed nothing, and a content
+/// reference that had to be normalized says so instead of printing `[NORM]`.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SubsystemEditData {
+    pub(crate) subsystem: String,
+    pub(crate) operations: Vec<SubsystemEditOperationData>,
+    pub(crate) added: usize,
+    pub(crate) removed: usize,
+    pub(crate) modified: usize,
+    /// Child subsystem descriptors created because the edit referenced them.
+    pub(crate) created_stubs: Vec<String>,
+    /// The edit commits only through post-validation; this records that the
+    /// validator actually ran over the written subsystem.
+    pub(crate) validated: bool,
+    pub(crate) mutation: MutationData,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SubsystemEditOperationData {
+    pub(crate) operation: String,
+    pub(crate) target: Option<String>,
+    pub(crate) applied: bool,
+    /// Why nothing changed; `null` when the operation applied.
+    pub(crate) reason: Option<String>,
+    /// The reference as it was requested, when it had to be normalized to the
+    /// canonical form; `null` when it was already canonical.
+    pub(crate) normalized_from: Option<String>,
+}
+
+impl SubsystemEditOperationData {
+    fn applied(operation: &str, target: impl Into<Option<String>>) -> Self {
+        Self {
+            operation: operation.to_string(),
+            target: target.into(),
+            applied: true,
+            reason: None,
+            normalized_from: None,
+        }
+    }
+
+    fn skipped(operation: &str, target: impl Into<Option<String>>, reason: &str) -> Self {
+        Self {
+            operation: operation.to_string(),
+            target: target.into(),
+            applied: false,
+            reason: Some(reason.to_string()),
+            normalized_from: None,
+        }
+    }
+
+    fn normalized_from(mut self, original: String) -> Self {
+        self.normalized_from = Some(original);
+        self
+    }
+}
+
+/// Collects what the subsystem edit did, replacing the `&mut String` the
+/// helpers used to append prose to.
+pub(crate) type SubsystemEditLog = Vec<SubsystemEditOperationData>;
+
+pub(crate) struct SubsystemEditExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<SubsystemEditData>,
 }
 
 fn validate_subsystem_metadata_name(argument: &str, value: &str) -> Result<(), String> {
@@ -387,6 +455,13 @@ pub(crate) fn edit_subsystem(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
+    edit_subsystem_with_data(args, context).outcome
+}
+
+pub(crate) fn edit_subsystem_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> SubsystemEditExecution {
     let edit_result = (|| -> Result<SubsystemEditResult, String> {
         let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
         let operation = string_arg(args, &["operation", "Operation"]);
@@ -412,33 +487,32 @@ pub(crate) fn edit_subsystem(
             &mut transaction,
         )?;
         let mut counters = SubsystemEditCounters::default();
-        let mut stdout = String::new();
+        let mut log = SubsystemEditLog::new();
         let mut child_stubs = BTreeMap::<PathBuf, String>::new();
         let mut reused_child_subsystems = BTreeMap::<PathBuf, Vec<u8>>::new();
 
-        stdout.push_str(&format!("[INFO] Subsystem: {obj_name}\n"));
         for (op_name, value) in operations {
             match op_name.as_str() {
                 "add-content" => {
-                    subsystem_edit_add_content(&mut model, &value, &mut counters, &mut stdout)?;
+                    subsystem_edit_add_content(&mut model, &value, &mut counters, &mut log)?;
                 }
                 "remove-content" => {
-                    subsystem_edit_remove_content(&mut model, &value, &mut counters, &mut stdout)?;
+                    subsystem_edit_remove_content(&mut model, &value, &mut counters, &mut log)?;
                 }
                 "add-child" => subsystem_edit_add_child(
                     &mut model,
                     &resolved_path,
                     &value,
                     &mut counters,
-                    &mut stdout,
+                    &mut log,
                     &mut child_stubs,
                     &mut reused_child_subsystems,
                 )?,
                 "remove-child" => {
-                    subsystem_edit_remove_child(&mut model, &value, &mut counters, &mut stdout)?
+                    subsystem_edit_remove_child(&mut model, &value, &mut counters, &mut log)?
                 }
                 "set-property" => {
-                    subsystem_edit_set_property(&mut model, &value, &mut counters, &mut stdout)?
+                    subsystem_edit_set_property(&mut model, &value, &mut counters, &mut log)?
                 }
                 _ => return Err(format!("Unknown operation: {op_name}")),
             }
@@ -502,35 +576,39 @@ pub(crate) fn edit_subsystem(
 
         let validation_args = subsystem_validation_args(&resolved_path);
         let mut validation_stdout = None;
+        let mut validated = false;
         let report = transaction.commit_with_post_validation(|| {
             for child_path in reused_child_subsystems.keys() {
                 let outcome = validate_subsystem(&subsystem_validation_args(child_path), context);
                 require_subsystem_validation(&outcome)?;
             }
             let outcome = validate_subsystem(&validation_args, context);
+            validated = outcome.ok;
             validation_stdout = outcome.stdout.clone();
             require_subsystem_validation(&outcome)
         })?;
 
-        stdout.push_str(&format!("[INFO] Saved: {}\n", resolved_path.display()));
-        for path in child_stubs.keys() {
-            stdout.push_str(&format!("[INFO] Created stub: {}\n", path.display()));
+        let _ = validation_stdout;
+        let mut mutation = MutationData::new(true);
+        for path in &report.created {
+            mutation = mutation.created(path);
         }
-
-        if !bool_arg(args, &["noValidate", "NoValidate"]) {
-            stdout.push('\n');
-            stdout.push_str("--- Running subsystem-validate ---\n");
-            if let Some(validate_stdout) = validation_stdout {
-                stdout.push_str(&validate_stdout);
-            }
+        for path in &report.updated {
+            mutation = mutation.updated(path);
         }
-
-        stdout.push('\n');
-        stdout.push_str("=== subsystem-edit summary ===\n");
-        stdout.push_str(&format!("  Subsystem: {obj_name}\n"));
-        stdout.push_str(&format!("  Added:     {}\n", counters.added));
-        stdout.push_str(&format!("  Removed:   {}\n", counters.removed));
-        stdout.push_str(&format!("  Modified:  {}\n", counters.modified));
+        let data = SubsystemEditData {
+            subsystem: obj_name.to_string(),
+            operations: log,
+            added: counters.added,
+            removed: counters.removed,
+            modified: counters.modified,
+            created_stubs: child_stubs
+                .keys()
+                .map(|path| path.display().to_string())
+                .collect(),
+            validated,
+            mutation,
+        };
 
         let mut changes = report
             .created
@@ -546,7 +624,7 @@ pub(crate) fn edit_subsystem(
         let mut artifacts = report.created;
         artifacts.extend(report.updated);
         Ok(SubsystemEditResult {
-            stdout,
+            data,
             artifacts,
             changes,
             warnings: report.cleanup_warnings,
@@ -554,31 +632,47 @@ pub(crate) fn edit_subsystem(
     })();
 
     match edit_result {
-        Ok(result) => AdapterOutcome {
-            ok: true,
-            summary: "unica.subsystem.edit completed with native subsystem editor".to_string(),
-            changes: result.changes,
-            warnings: result.warnings,
-            errors: Vec::new(),
-            artifacts: result
-                .artifacts
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect(),
-            stdout: Some(result.stdout),
-            stderr: None,
-            command: None,
+        Ok(result) => SubsystemEditExecution {
+            outcome: AdapterOutcome {
+                ok: true,
+                summary: format!(
+                    "unica.subsystem.edit applied {} of {} operation(s) to {}",
+                    result
+                        .data
+                        .operations
+                        .iter()
+                        .filter(|op| op.applied)
+                        .count(),
+                    result.data.operations.len(),
+                    result.data.subsystem
+                ),
+                changes: result.changes,
+                warnings: result.warnings,
+                errors: Vec::new(),
+                artifacts: result
+                    .artifacts
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect(),
+                stdout: None,
+                stderr: None,
+                command: None,
+            },
+            data: Some(result.data),
         },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.subsystem.edit failed in native subsystem editor".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-            command: None,
+        Err(error) => SubsystemEditExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.subsystem.edit failed in native subsystem editor".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.clone()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{error}\n")),
+                command: None,
+            },
+            data: None,
         },
     }
 }
@@ -716,22 +810,27 @@ pub(crate) fn subsystem_edit_add_content(
     model: &mut SubsystemEditModel,
     value: &Value,
     counters: &mut SubsystemEditCounters,
-    stdout: &mut String,
+    log: &mut SubsystemEditLog,
 ) -> Result<(), String> {
     let mut existing = model.content.iter().cloned().collect::<HashSet<_>>();
     for raw in subsystem_edit_value_list(value)? {
         let item = normalize_subsystem_content_ref(&raw);
+        let mut entry = if existing.contains(&item) {
+            SubsystemEditOperationData::skipped(
+                "add-content",
+                item.clone(),
+                "уже в составе подсистемы",
+            )
+        } else {
+            model.content.push(item.clone());
+            existing.insert(item.clone());
+            counters.added += 1;
+            SubsystemEditOperationData::applied("add-content", item.clone())
+        };
         if item != raw {
-            stdout.push_str(&format!("[NORM] Content: {raw} -> {item}\n"));
+            entry = entry.normalized_from(raw);
         }
-        if existing.contains(&item) {
-            stdout.push_str(&format!("[WARN] Content already contains: {item}\n"));
-            continue;
-        }
-        model.content.push(item.clone());
-        existing.insert(item.clone());
-        counters.added += 1;
-        stdout.push_str(&format!("[INFO] Added content: {item}\n"));
+        log.push(entry);
     }
     Ok(())
 }
@@ -740,15 +839,19 @@ pub(crate) fn subsystem_edit_remove_content(
     model: &mut SubsystemEditModel,
     value: &Value,
     counters: &mut SubsystemEditCounters,
-    stdout: &mut String,
+    log: &mut SubsystemEditLog,
 ) -> Result<(), String> {
     for item in subsystem_edit_value_list(value)? {
         if let Some(index) = model.content.iter().position(|value| value == &item) {
             model.content.remove(index);
             counters.removed += 1;
-            stdout.push_str(&format!("[INFO] Removed content: {item}\n"));
+            log.push(SubsystemEditOperationData::applied("remove-content", item));
         } else {
-            stdout.push_str(&format!("[WARN] Content item not found: {item}\n"));
+            log.push(SubsystemEditOperationData::skipped(
+                "remove-content",
+                item,
+                "не найден в составе подсистемы",
+            ));
         }
     }
     Ok(())
@@ -759,7 +862,7 @@ pub(crate) fn subsystem_edit_add_child(
     resolved_path: &Path,
     value: &Value,
     counters: &mut SubsystemEditCounters,
-    stdout: &mut String,
+    log: &mut SubsystemEditLog,
     child_stubs: &mut BTreeMap<PathBuf, String>,
     reused_child_subsystems: &mut BTreeMap<PathBuf, Vec<u8>>,
 ) -> Result<(), String> {
@@ -769,15 +872,20 @@ pub(crate) fn subsystem_edit_add_child(
         .to_string();
     validate_subsystem_metadata_name("Child subsystem name", &child_name)?;
     if model.children.iter().any(|value| value == &child_name) {
-        stdout.push_str(&format!(
-            "[WARN] ChildObjects already contains: {child_name}\n"
+        log.push(SubsystemEditOperationData::skipped(
+            "add-child",
+            child_name,
+            "уже в составе подсистемы",
         ));
         return Ok(());
     }
 
     model.children.push(child_name.clone());
     counters.added += 1;
-    stdout.push_str(&format!("[INFO] Added child subsystem: {child_name}\n"));
+    log.push(SubsystemEditOperationData::applied(
+        "add-child",
+        child_name.clone(),
+    ));
 
     let parent_dir = resolved_path.parent().unwrap_or_else(|| Path::new(""));
     let parent_base = resolved_path
@@ -795,9 +903,10 @@ pub(crate) fn subsystem_edit_add_child(
                 )
             })?;
             reused_child_subsystems.insert(child_xml.clone(), preimage);
-            stdout.push_str(&format!(
-                "[INFO] Reusing existing child subsystem: {}\n",
-                child_xml.display()
+            log.push(SubsystemEditOperationData::skipped(
+                "create-child-stub",
+                child_xml.display().to_string(),
+                "дочерняя подсистема уже существует и переиспользована",
             ));
         }
         Ok(_) => {
@@ -826,7 +935,7 @@ pub(crate) fn subsystem_edit_remove_child(
     model: &mut SubsystemEditModel,
     value: &Value,
     counters: &mut SubsystemEditCounters,
-    stdout: &mut String,
+    log: &mut SubsystemEditLog,
 ) -> Result<(), String> {
     let child_name = value
         .as_str()
@@ -836,9 +945,16 @@ pub(crate) fn subsystem_edit_remove_child(
     if let Some(index) = model.children.iter().position(|value| value == &child_name) {
         model.children.remove(index);
         counters.removed += 1;
-        stdout.push_str(&format!("[INFO] Removed child subsystem: {child_name}\n"));
+        log.push(SubsystemEditOperationData::applied(
+            "remove-child",
+            child_name,
+        ));
     } else {
-        stdout.push_str(&format!("[WARN] Child subsystem not found: {child_name}\n"));
+        log.push(SubsystemEditOperationData::skipped(
+            "remove-child",
+            child_name,
+            "не найдена в составе подсистемы",
+        ));
     }
     Ok(())
 }
@@ -847,7 +963,7 @@ pub(crate) fn subsystem_edit_set_property(
     model: &mut SubsystemEditModel,
     value: &Value,
     counters: &mut SubsystemEditCounters,
-    stdout: &mut String,
+    log: &mut SubsystemEditLog,
 ) -> Result<(), String> {
     let value = subsystem_edit_object(value)?;
     let prop_name = value
@@ -866,7 +982,10 @@ pub(crate) fn subsystem_edit_set_property(
             )?;
             model.include_ci = canonical.clone();
             counters.modified += 1;
-            stdout.push_str(&format!("[INFO] Set {prop_name} = {canonical}\n"));
+            log.push(SubsystemEditOperationData::applied(
+                "set-property",
+                format!("{prop_name}={canonical}"),
+            ));
         }
         "UseOneCommand" => {
             let canonical = canonical_subsystem_boolean(
@@ -875,7 +994,10 @@ pub(crate) fn subsystem_edit_set_property(
             )?;
             model.use_one_command = canonical.clone();
             counters.modified += 1;
-            stdout.push_str(&format!("[INFO] Set {prop_name} = {canonical}\n"));
+            log.push(SubsystemEditOperationData::applied(
+                "set-property",
+                format!("{prop_name}={canonical}"),
+            ));
         }
         "IncludeHelpInContents" => {
             let canonical = canonical_subsystem_boolean(
@@ -884,41 +1006,51 @@ pub(crate) fn subsystem_edit_set_property(
             )?;
             model.include_help = canonical.clone();
             counters.modified += 1;
-            stdout.push_str(&format!("[INFO] Set {prop_name} = {canonical}\n"));
+            log.push(SubsystemEditOperationData::applied(
+                "set-property",
+                format!("{prop_name}={canonical}"),
+            ));
         }
         "Synonym" => {
             model.synonym = prop_value.clone();
             counters.modified += 1;
-            if prop_value.is_empty() {
-                stdout.push_str("[INFO] Cleared Synonym\n");
-            } else {
-                stdout.push_str(&format!("[INFO] Set Synonym = \"{prop_value}\"\n"));
-            }
+            log.push(SubsystemEditOperationData::applied(
+                "set-property",
+                format!("Synonym={prop_value}"),
+            ));
         }
         "Explanation" => {
             model.explanation = prop_value.clone();
             counters.modified += 1;
-            if prop_value.is_empty() {
-                stdout.push_str("[INFO] Cleared Explanation\n");
-            } else {
-                stdout.push_str(&format!("[INFO] Set Explanation = \"{prop_value}\"\n"));
-            }
+            log.push(SubsystemEditOperationData::applied(
+                "set-property",
+                format!("Explanation={prop_value}"),
+            ));
         }
         "Comment" => {
             model.comment = prop_value.clone();
             counters.modified += 1;
-            stdout.push_str(&format!("[INFO] Set Comment = \"{prop_value}\"\n"));
+            log.push(SubsystemEditOperationData::applied(
+                "set-property",
+                format!("Comment={prop_value}"),
+            ));
         }
         "Picture" => {
             model.picture = prop_value.clone();
             counters.modified += 1;
-            stdout.push_str(&format!("[INFO] Set Picture = \"{prop_value}\"\n"));
+            log.push(SubsystemEditOperationData::applied(
+                "set-property",
+                format!("Picture={prop_value}"),
+            ));
         }
         "Name" => {
             validate_subsystem_metadata_name("Name", &prop_value)?;
             model.name = prop_value.clone();
             counters.modified += 1;
-            stdout.push_str(&format!("[INFO] Set Name = \"{prop_value}\"\n"));
+            log.push(SubsystemEditOperationData::applied(
+                "set-property",
+                format!("Name={prop_value}"),
+            ));
         }
         _ => {
             return Err(format!("Property '{prop_name}' not found in Properties"));

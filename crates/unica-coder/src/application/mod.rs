@@ -3180,7 +3180,6 @@ mod tests {
             "unica.form.validate",
             "unica.interface.validate",
             "unica.subsystem.compile",
-            "unica.subsystem.edit",
             "unica.subsystem.validate",
             "unica.dcs.compile",
             "unica.dcs.edit",
@@ -3214,6 +3213,7 @@ mod tests {
             "unica.cf.init",
             "unica.cfe.borrow",
             "unica.cfe.patch_method",
+            "unica.subsystem.edit",
         ];
 
         for tool in tools() {

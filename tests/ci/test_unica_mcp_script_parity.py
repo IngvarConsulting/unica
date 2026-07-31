@@ -946,34 +946,6 @@ SUCCESS_SCENARIOS = [
         expect_ok=True,
     ),
     ParityScenario(
-        name="subsystem-edit-definition-file-all-ops",
-        tool="unica.subsystem.edit",
-        skill="subsystem-edit",
-        script="subsystem-edit.py",
-        arguments={
-            "SubsystemPath": "src/Subsystems/Subsystems/ParitySubsystem.xml",
-            "DefinitionFile": "fixtures/subsystem-edit-ops.json",
-            "NoValidate": True,
-        },
-        setup_steps=(
-            SetupStep(
-                skill="subsystem-compile",
-                script="subsystem-compile.py",
-                arguments={
-                    "DefinitionFile": "fixtures/subsystem-sales.json",
-                    "OutputDir": "src/Subsystems",
-                    "NoValidate": True,
-                },
-            ),
-        ),
-        fixtures=(
-            FileFixture("subsystem-sales.json", "fixtures/subsystem-sales.json"),
-            FileFixture("subsystem-edit/ops.json", "fixtures/subsystem-edit-ops.json"),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
         name="form-add-catalog-list-default",
         tool="unica.form.add",
         skill="form-add",
@@ -2973,14 +2945,6 @@ MISSING_INPUT_SCENARIOS = [
         False,
     ),
     ParityScenario(
-        "subsystem-edit-missing-subsystem",
-        "unica.subsystem.edit",
-        "subsystem-edit",
-        "subsystem-edit.py",
-        {"SubsystemPath": "missing/Subsystem.xml", "Operation": "add-content", "Value": "Catalog.ParityCatalog"},
-        False,
-    ),
-    ParityScenario(
         "subsystem-validate-missing-subsystem",
         "unica.subsystem.validate",
         "subsystem-validate",
@@ -3054,7 +3018,6 @@ NATIVE_PARITY_TOOLS = {
     "unica.form.info",
     "unica.form.validate",
     "unica.subsystem.compile",
-    "unica.subsystem.edit",
     "unica.subsystem.validate",
     "unica.interface.validate",
     "unica.dcs.compile",
@@ -3095,6 +3058,7 @@ TYPED_RESULT_TOOLS = {
     "unica.meta.remove",
     "unica.mxl.info",
     "unica.role.info",
+    "unica.subsystem.edit",
     "unica.subsystem.info",
     "unica.template.add",
     "unica.template.remove",
@@ -3113,7 +3077,6 @@ EXPECTED_TOOLS = {
     "unica.form.validate",
     "unica.interface.validate",
     "unica.subsystem.compile",
-    "unica.subsystem.edit",
     "unica.subsystem.validate",
     "unica.dcs.compile",
     "unica.dcs.edit",
