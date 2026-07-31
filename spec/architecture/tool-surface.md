@@ -7,15 +7,15 @@
 ## Итог
 
 - Инструментов: **71**
-- Отвечают типизированным `data`: **15**
-- Типизированы частично: часть результата всё ещё текст: **4**
+- Отвечают типизированным `data`: **16**
+- Типизированы частично: часть результата всё ещё текст: **3**
 - Отвечают снимком задания в `job`: **6**
 - Отвечают прозой в `stdout`: **46**
 
 - В границах типизации: **43**
 - Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`): **16**
 - Вне границ: семейство runtime и build изучается отдельно: **12**
-- Осталось перевести на типизированный `data` в границах работы: **28**
+- Осталось перевести на типизированный `data` в границах работы: **27**
 - Публикуют больше 20 аргументов из общего списка: **38**
 
 ## build — сборка и запуск платформы
@@ -492,9 +492,9 @@ Search code concurrently through provider-local RLM, bsl-analyzer, and literal g
 | `query` | string | да | Search text: provider-neutral query for unica.code.search, node-lookup text for unica.code.graph mode=resolve, the required unica.standards.search string, and explain's last-resort fallback |
 | `sourceDir` | string | нет | Workspace-relative source root to work in: on the path-based unica.code.* tools and unica.meta.profile it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
 
-**Результат сейчас:** `data` по поставщику + текст (типизированы частично: часть результата всё ещё текст)
+**Результат сейчас:** `data`: три секции поставщиков с попаданиями, диагностикой и статусом (ADR-0023) (отвечают типизированным `data`)
 
-**Целевой контракт:** `data`: три секции поставщиков с попаданиями (путь/адрес, строка, фрагмент)
+**Целевой контракт:** достигнут
 
 **Сценарии:**
 

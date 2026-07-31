@@ -691,7 +691,10 @@ fn invoke_code_intelligence_search(
             warnings: execution.warnings,
             errors: execution.errors,
             artifacts,
-            stdout: Some(execution.text),
+            // ADR-0023: the sections are published as data, so a rendered copy
+            // of them in stdout would be the second representation the decision
+            // removes.
+            stdout: None,
             stderr: None,
             command: None,
         },

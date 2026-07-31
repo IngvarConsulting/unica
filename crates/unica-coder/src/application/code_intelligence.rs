@@ -21,7 +21,6 @@ const MAX_CONCURRENT_WORKERS_PER_PROVIDER: usize = 32;
 pub(crate) struct CodeSearchExecution {
     pub(crate) ok: bool,
     pub(crate) result: CodeSearchResult,
-    pub(crate) text: String,
     pub(crate) warnings: Vec<String>,
     pub(crate) errors: Vec<String>,
 }
@@ -233,12 +232,10 @@ impl CodeSearchCoordinator {
             }
         }
         let result = CodeSearchResult { sections };
-        let text = render_search_result(&result);
 
         Ok(CodeSearchExecution {
             ok,
             result,
-            text,
             warnings,
             errors,
         })
@@ -590,46 +587,6 @@ fn section_problem(section: &ProviderSearchSection) -> String {
         section.diagnostics.join("; ")
     };
     format!("{}: {detail}", section.provider.as_str())
-}
-
-fn render_search_result(result: &CodeSearchResult) -> String {
-    let mut lines = Vec::new();
-    for section in &result.sections {
-        lines.push(format!(
-            "=== {} ({}) ===",
-            section.provider.as_str(),
-            section.status.as_str()
-        ));
-        for hit in &section.hits {
-            let location = match hit.end_line {
-                Some(end_line) if end_line != hit.line => {
-                    format!("{}:{}-{end_line}", hit.path, hit.line)
-                }
-                _ => format!("{}:{}", hit.path, hit.line),
-            };
-            let symbol = hit
-                .symbol
-                .as_deref()
-                .map(|value| format!(" {value}"))
-                .unwrap_or_default();
-            lines.push(format!(
-                "{}. {location}{symbol} — {}",
-                hit.rank, hit.snippet
-            ));
-        }
-        if section.hits.is_empty()
-            && matches!(
-                section.status,
-                ProviderSectionStatus::Ok | ProviderSectionStatus::Empty
-            )
-        {
-            lines.push("(no hits)".to_string());
-        }
-        for diagnostic in &section.diagnostics {
-            lines.push(format!("diagnostic: {diagnostic}"));
-        }
-    }
-    lines.join("\n")
 }
 
 #[cfg(test)]
@@ -993,11 +950,16 @@ mod tests {
                 )
                 .unwrap();
 
+        // ADR-0023: the three sections are the result; there is no rendered
+        // duplicate of them to compare against.
         assert_eq!(
-            execution.text,
-            "=== rlm (empty) ===\n(no hits)\n\
-             === bsl-analyzer (empty) ===\n(no hits)\n\
-             === git-grep (empty) ===\n(no hits)"
+            execution
+                .result
+                .sections
+                .iter()
+                .map(|section| (section.provider.as_str(), section.hits.len()))
+                .collect::<Vec<_>>(),
+            vec![("rlm", 0), ("bsl-analyzer", 0), ("git-grep", 0)]
         );
         assert_eq!(
             execution
