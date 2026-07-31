@@ -102,17 +102,22 @@ Use the `v8-runner` skill and MCP `unica.runtime.execute` for runtime operations
 | Run tests | `operation=test`, `testRunner=yaxunit|va` |
 | Download configured tools | `operation=tools-download`, `tool=yaxunit|vanessa|client-mcp` |
 
-Windows applied full dump is currently fail-closed until owner-only ACL
-enforcement and handle-safe no-clobber directory publication are implemented;
-preview remains read-only. The supported POSIX route validates physical
-DESIGNER markers, attests the exact installation with sibling
-`ibcmd --version`, and never retains effective configuration or credentials in
-recovery.
-The installation must be immutable to the invoking non-root user: its complete
-tree and ancestry are root-owned, not group/world writable, link-free, and
-ACL-free. User-owned platform installs are rejected before `ibcmd` or
-`v8-runner` executes. ACL verification is supported on macOS/Linux; other Unix
-hosts fail closed.
+On Windows, macOS, and Linux, verified transactional publication supports
+synchronous applied `mode=full` for DESIGNER `CONFIGURATION` and `EXTENSION`
+source-sets. ADR-0016 owns the publication contract;
+`INV-SOURCE-BOUND-PREIMAGES` and `INV-SOURCE-ROLLBACK-VISIBLE` describe its
+preimage and rollback guarantees, while OS-specific mechanics stay behind
+`INV-PLATFORM-OS-BEHIND-FACADE`.
+
+On Windows, Unica attests a local system installation through no-follow handles:
+its trusted owner and DACL must prevent mutation of the install tree by the
+invoking non-elevated user, while the ancestry must prevent deletion,
+replacement, or retargeting of path components. On macOS and Linux, Unica
+validates physical DESIGNER markers, attests the exact installation with sibling
+`ibcmd --version`, and requires a root-owned, link-free install tree without
+group/world write or ACLs. Effective configuration and credentials are never
+retained in recovery. User-owned platform installs are rejected before `ibcmd`
+or `v8-runner` executes; other Unix hosts fail closed.
 
 ## Skill Rules
 

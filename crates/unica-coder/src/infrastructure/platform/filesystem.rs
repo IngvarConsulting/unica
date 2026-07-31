@@ -14,6 +14,25 @@ pub(crate) fn create_test_directory_link(target: &Path, link: &Path) -> io::Resu
     std::os::windows::fs::symlink_dir(target, link)
 }
 
+#[cfg(all(test, windows))]
+thread_local! {
+    static TEST_CASE_SENSITIVITY_QUERY_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(all(test, windows))]
+fn with_case_sensitivity_query_failure<T>(action: impl FnOnce() -> T) -> T {
+    struct Reset(bool);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_CASE_SENSITIVITY_QUERY_FAILURE.with(|slot| slot.set(self.0));
+        }
+    }
+
+    let previous = TEST_CASE_SENSITIVITY_QUERY_FAILURE.with(|slot| slot.replace(true));
+    let _reset = Reset(previous);
+    action()
+}
+
 #[cfg(all(test, not(any(unix, windows))))]
 pub(crate) fn create_test_directory_link(_target: &Path, _link: &Path) -> io::Result<()> {
     Err(io::Error::new(
@@ -195,6 +214,1814 @@ fn windows_api_path(path: &Path) -> io::Result<Vec<u16>> {
         ));
     }
     Ok(windows_api_path_from_utf16(encoded, true))
+}
+
+#[cfg(windows)]
+#[allow(
+    dead_code,
+    reason = "DirectoryAnchor callers are introduced by the following Windows full-dump task"
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EffectiveTokenSource {
+    Thread,
+    Process,
+}
+
+#[cfg(windows)]
+fn verify_thread_token_fallback_error(error: u32) -> io::Result<()> {
+    use windows_sys::Win32::Foundation::ERROR_NO_TOKEN;
+
+    if error == ERROR_NO_TOKEN {
+        Ok(())
+    } else {
+        Err(io::Error::from_raw_os_error(error as i32))
+    }
+}
+
+#[cfg(windows)]
+#[allow(
+    dead_code,
+    reason = "DirectoryAnchor callers are introduced by the following Windows full-dump task"
+)]
+struct ProcessToken {
+    handle: windows_sys::Win32::Foundation::HANDLE,
+    user: Vec<u8>,
+    source: EffectiveTokenSource,
+}
+
+#[cfg(windows)]
+impl ProcessToken {
+    fn current_user() -> io::Result<Self> {
+        use std::ptr;
+        use windows_sys::Win32::Foundation::{CloseHandle, ERROR_NO_TOKEN};
+        use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY};
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentProcess, GetCurrentThread, OpenProcessToken, OpenThreadToken,
+        };
+
+        let mut handle = ptr::null_mut();
+        // SAFETY: GetCurrentThread returns a valid pseudo-handle; handle is writable storage and
+        // OpenAsSelf is true so an impersonating caller can inspect its effective token.
+        let source =
+            if unsafe { OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, 1, &mut handle) } != 0 {
+                EffectiveTokenSource::Thread
+            } else {
+                let error = io::Error::last_os_error();
+                let error_code = error.raw_os_error().unwrap_or_default() as u32;
+                verify_thread_token_fallback_error(error_code)?;
+                debug_assert_eq!(error_code, ERROR_NO_TOKEN);
+                // SAFETY: GetCurrentProcess returns a valid pseudo-handle; handle is writable storage.
+                if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut handle) } == 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                EffectiveTokenSource::Process
+            };
+
+        let mut length = 0;
+        // SAFETY: the first call requests the buffer size without supplying a buffer.
+        unsafe {
+            GetTokenInformation(handle, TokenUser, ptr::null_mut(), 0, &mut length);
+        }
+        if length == 0 {
+            let error = io::Error::last_os_error();
+            // SAFETY: OpenProcessToken returned this owned handle.
+            unsafe { CloseHandle(handle) };
+            return Err(error);
+        }
+
+        let mut user = vec![0; length as usize];
+        // SAFETY: user provides the byte capacity requested by the preceding call.
+        if unsafe {
+            GetTokenInformation(
+                handle,
+                TokenUser,
+                user.as_mut_ptr().cast(),
+                length,
+                &mut length,
+            )
+        } == 0
+        {
+            let error = io::Error::last_os_error();
+            // SAFETY: OpenProcessToken returned this owned handle.
+            unsafe { CloseHandle(handle) };
+            return Err(error);
+        }
+
+        Ok(Self {
+            handle,
+            user,
+            source,
+        })
+    }
+
+    fn user_sid(&self) -> windows_sys::Win32::Security::PSID {
+        use windows_sys::Win32::Security::TOKEN_USER;
+
+        // SAFETY: GetTokenInformation initialized the buffer as TOKEN_USER, including the SID
+        // pointer, and the buffer remains owned by self for this borrow.
+        unsafe {
+            std::ptr::read_unaligned(self.user.as_ptr().cast::<TOKEN_USER>())
+                .User
+                .Sid
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ProcessToken {
+    fn drop(&mut self) {
+        use windows_sys::Win32::Foundation::CloseHandle;
+
+        // SAFETY: self.handle is an owned token handle returned by OpenThreadToken or
+        // OpenProcessToken.
+        unsafe { CloseHandle(self.handle) };
+    }
+}
+
+#[cfg(windows)]
+#[allow(
+    dead_code,
+    reason = "DirectoryAnchor callers are introduced by the following Windows full-dump task"
+)]
+struct OwnerOnlySecurityAttributes {
+    token: ProcessToken,
+    sid_string: windows_sys::core::PWSTR,
+    security_descriptor: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR,
+    attributes: windows_sys::Win32::Security::SECURITY_ATTRIBUTES,
+}
+
+#[cfg(windows)]
+impl OwnerOnlySecurityAttributes {
+    fn current_user() -> io::Result<Self> {
+        use std::mem::size_of;
+        use std::ptr;
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::Security::Authorization::{
+            ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+            SDDL_REVISION_1,
+        };
+        use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+
+        let token = ProcessToken::current_user()?;
+        let mut sid_string = ptr::null_mut();
+        // SAFETY: token.user_sid() is valid while token is live, and sid_string is writable.
+        if unsafe { ConvertSidToStringSidW(token.user_sid(), &mut sid_string) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        let mut sddl = "D:P(A;;FA;;;".encode_utf16().collect::<Vec<_>>();
+        // SAFETY: ConvertSidToStringSidW returned a NUL-terminated UTF-16 string allocated by
+        // LocalAlloc, which remains live until OwnerOnlySecurityAttributes is dropped.
+        let sid_length = unsafe {
+            let mut length = 0;
+            while *sid_string.add(length) != 0 {
+                length += 1;
+            }
+            length
+        };
+        // SAFETY: sid_length stops at the allocation's terminating NUL.
+        sddl.extend_from_slice(unsafe { std::slice::from_raw_parts(sid_string, sid_length) });
+        sddl.extend(")".encode_utf16());
+        sddl.push(0);
+
+        let mut security_descriptor = ptr::null_mut();
+        // SAFETY: sddl is NUL-terminated for the duration of the call and the descriptor output
+        // pointer is writable.
+        if unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                SDDL_REVISION_1,
+                &mut security_descriptor,
+                ptr::null_mut(),
+            )
+        } == 0
+        {
+            let error = io::Error::last_os_error();
+            // SAFETY: ConvertSidToStringSidW allocated sid_string with LocalAlloc.
+            unsafe { LocalFree(sid_string.cast()) };
+            return Err(error);
+        }
+
+        Ok(Self {
+            token,
+            sid_string,
+            security_descriptor,
+            attributes: SECURITY_ATTRIBUTES {
+                nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: security_descriptor,
+                bInheritHandle: 0,
+            },
+        })
+    }
+
+    fn as_ptr(&self) -> *const windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
+        let _ = self.token.handle;
+        &self.attributes
+    }
+
+    fn security_descriptor(&self) -> windows_sys::Win32::Security::PSECURITY_DESCRIPTOR {
+        self.security_descriptor
+    }
+}
+
+#[cfg(windows)]
+impl Drop for OwnerOnlySecurityAttributes {
+    fn drop(&mut self) {
+        use windows_sys::Win32::Foundation::LocalFree;
+
+        // SAFETY: both pointers were allocated by documented APIs with LocalAlloc semantics.
+        unsafe {
+            LocalFree(self.security_descriptor);
+            LocalFree(self.sid_string.cast());
+        }
+    }
+}
+
+#[cfg(windows)]
+#[allow(
+    dead_code,
+    reason = "DirectoryAnchor callers are introduced by the following Windows full-dump task"
+)]
+struct LocalSecurityDescriptor(windows_sys::Win32::Security::PSECURITY_DESCRIPTOR);
+
+#[cfg(windows)]
+impl Drop for LocalSecurityDescriptor {
+    fn drop(&mut self) {
+        use windows_sys::Win32::Foundation::LocalFree;
+
+        // SAFETY: GetSecurityInfo returns this descriptor through LocalAlloc.
+        unsafe { LocalFree(self.0) };
+    }
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WindowsImmutableAclProfile {
+    Ancestry,
+    Installation,
+}
+
+#[cfg(windows)]
+struct SelfRelativeSecurityDescriptor {
+    storage: Vec<usize>,
+    length: usize,
+}
+
+#[cfg(windows)]
+impl SelfRelativeSecurityDescriptor {
+    fn capture(descriptor: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR) -> io::Result<Self> {
+        use std::mem::size_of;
+        use std::ptr;
+        use windows_sys::Win32::Security::{
+            GetSecurityDescriptorControl, GetSecurityDescriptorLength, IsValidSecurityDescriptor,
+            MakeSelfRelativeSD, SE_SELF_RELATIVE,
+        };
+
+        if descriptor.is_null() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "security descriptor is absent",
+            ));
+        }
+        // SAFETY: descriptor is non-null; callers retain the allocation for this call.
+        if unsafe { IsValidSecurityDescriptor(descriptor) } == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "security descriptor is malformed",
+            ));
+        }
+        let mut control = 0;
+        let mut revision = 0;
+        // SAFETY: descriptor was validated and both output pointers are writable.
+        if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        if control & SE_SELF_RELATIVE != 0 {
+            // SAFETY: descriptor is a valid self-relative descriptor.
+            let length = unsafe { GetSecurityDescriptorLength(descriptor) } as usize;
+            if length == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "security descriptor has zero length",
+                ));
+            }
+            let mut storage = vec![0usize; length.div_ceil(size_of::<usize>())];
+            // SAFETY: storage has at least length writable bytes and descriptor has that many
+            // readable bytes according to GetSecurityDescriptorLength.
+            unsafe {
+                ptr::copy_nonoverlapping(
+                    descriptor.cast::<u8>(),
+                    storage.as_mut_ptr().cast::<u8>(),
+                    length,
+                )
+            };
+            return Ok(Self { storage, length });
+        }
+
+        let mut length = 0;
+        // SAFETY: this size query reads the validated absolute descriptor and writes length.
+        unsafe { MakeSelfRelativeSD(descriptor, ptr::null_mut(), &mut length) };
+        if length == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut storage = vec![0usize; (length as usize).div_ceil(size_of::<usize>())];
+        // SAFETY: storage is aligned and has at least length writable bytes.
+        if unsafe { MakeSelfRelativeSD(descriptor, storage.as_mut_ptr().cast(), &mut length) } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self {
+            storage,
+            length: length as usize,
+        })
+    }
+
+    fn as_ptr(&self) -> windows_sys::Win32::Security::PSECURITY_DESCRIPTOR {
+        self.storage.as_ptr().cast_mut().cast()
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        // SAFETY: storage owns at least length initialized bytes copied or written above.
+        unsafe { std::slice::from_raw_parts(self.storage.as_ptr().cast::<u8>(), self.length) }
+    }
+}
+
+#[cfg(windows)]
+pub(crate) struct WindowsImmutableEntryEvidence {
+    pub(crate) identity: FileIdentity,
+    pub(crate) security_descriptor_sha256: [u8; 32],
+    descriptor: SelfRelativeSecurityDescriptor,
+}
+
+#[cfg(windows)]
+impl WindowsImmutableEntryEvidence {
+    pub(crate) fn verify(&self, profile: WindowsImmutableAclProfile) -> io::Result<()> {
+        verify_windows_immutable_security_descriptor(self.descriptor.as_ptr(), profile)
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn capture_windows_immutable_entry_evidence(
+    file: &fs::File,
+) -> io::Result<WindowsImmutableEntryEvidence> {
+    use std::os::windows::io::AsRawHandle;
+    use std::ptr;
+    use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
+    use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION};
+
+    let mut descriptor = ptr::null_mut();
+    // SAFETY: file owns a valid handle and descriptor is writable output storage.
+    let status = unsafe {
+        GetSecurityInfo(
+            file.as_raw_handle(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            &mut descriptor,
+        )
+    };
+    if status != 0 {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    let descriptor = LocalSecurityDescriptor(descriptor);
+    let descriptor = SelfRelativeSecurityDescriptor::capture(descriptor.0)?;
+    use sha2::{Digest, Sha256};
+    Ok(WindowsImmutableEntryEvidence {
+        identity: file_identity(file)?,
+        security_descriptor_sha256: Sha256::digest(descriptor.as_bytes()).into(),
+        descriptor,
+    })
+}
+
+#[cfg(windows)]
+fn sid_string(sid: windows_sys::Win32::Security::PSID) -> io::Result<String> {
+    use std::ptr;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+
+    let mut text = ptr::null_mut();
+    // SAFETY: the caller supplies a validated SID and text is writable output storage.
+    if unsafe { ConvertSidToStringSidW(sid, &mut text) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the API returned a live NUL-terminated UTF-16 allocation.
+    let length = unsafe {
+        let mut length = 0;
+        while *text.add(length) != 0 {
+            length += 1;
+        }
+        length
+    };
+    // SAFETY: length ends before the allocation's terminating NUL.
+    let value = String::from_utf16(unsafe { std::slice::from_raw_parts(text, length) })
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error));
+    // SAFETY: ConvertSidToStringSidW allocates with LocalAlloc.
+    unsafe { LocalFree(text.cast()) };
+    value
+}
+
+#[cfg(windows)]
+fn windows_sid_is_trusted(sid: windows_sys::Win32::Security::PSID) -> io::Result<bool> {
+    const TRUSTED_INSTALLER: &str =
+        "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
+    Ok(matches!(
+        sid_string(sid)?.as_str(),
+        TRUSTED_INSTALLER | "S-1-5-18" | "S-1-5-32-544"
+    ))
+}
+
+#[cfg(windows)]
+fn windows_immutable_mutation_mask(profile: WindowsImmutableAclProfile) -> u32 {
+    use windows_sys::Win32::Foundation::{GENERIC_ALL, GENERIC_WRITE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_DELETE_CHILD, FILE_WRITE_ATTRIBUTES,
+        FILE_WRITE_DATA, FILE_WRITE_EA, WRITE_DAC, WRITE_OWNER,
+    };
+
+    let substitution =
+        DELETE | FILE_DELETE_CHILD | WRITE_DAC | WRITE_OWNER | GENERIC_WRITE | GENERIC_ALL;
+    match profile {
+        WindowsImmutableAclProfile::Ancestry => substitution,
+        WindowsImmutableAclProfile::Installation => {
+            substitution
+                | FILE_WRITE_DATA
+                | FILE_ADD_FILE
+                | FILE_ADD_SUBDIRECTORY
+                | FILE_WRITE_EA
+                | FILE_WRITE_ATTRIBUTES
+        }
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn verify_windows_immutable_security_descriptor(
+    descriptor: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR,
+    profile: WindowsImmutableAclProfile,
+) -> io::Result<()> {
+    use std::mem::{offset_of, size_of};
+    use std::ptr;
+    use windows_sys::Win32::Security::{
+        AclSizeInformation, GetAce, GetAclInformation, GetLengthSid, GetSecurityDescriptorDacl,
+        GetSecurityDescriptorOwner, IsValidAcl, IsValidSecurityDescriptor, IsValidSid,
+        ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_SIZE_INFORMATION,
+    };
+
+    const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+    const ACCESS_DENIED_ACE_TYPE: u8 = 1;
+    const VALID_INHERIT_FLAGS: u8 = 0x1f;
+    const INHERIT_ONLY_ACE: u8 = 0x08;
+
+    if descriptor.is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "security descriptor is absent",
+        ));
+    }
+    // SAFETY: descriptor is non-null and remains live for this function.
+    if unsafe { IsValidSecurityDescriptor(descriptor) } == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "security descriptor is malformed",
+        ));
+    }
+
+    let mut owner = ptr::null_mut();
+    let mut owner_defaulted = 0;
+    // SAFETY: descriptor was validated and output pointers are writable.
+    if unsafe { GetSecurityDescriptorOwner(descriptor, &mut owner, &mut owner_defaulted) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if owner.is_null() || unsafe { IsValidSid(owner) } == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "immutable platform owner SID is absent or malformed",
+        ));
+    }
+    if !windows_sid_is_trusted(owner)? {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "immutable platform owner SID is not trusted",
+        ));
+    }
+
+    let mut dacl_present = 0;
+    let mut dacl: *mut ACL = ptr::null_mut();
+    let mut dacl_defaulted = 0;
+    // SAFETY: descriptor was validated and output pointers are writable.
+    if unsafe {
+        GetSecurityDescriptorDacl(
+            descriptor,
+            &mut dacl_present,
+            &mut dacl,
+            &mut dacl_defaulted,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if dacl_present == 0 || dacl.is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "immutable platform security descriptor has an absent or null DACL",
+        ));
+    }
+    // SAFETY: dacl is non-null and points inside the validated descriptor.
+    if unsafe { IsValidAcl(dacl) } == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "immutable platform DACL is malformed",
+        ));
+    }
+
+    let mut information = ACL_SIZE_INFORMATION {
+        AceCount: 0,
+        AclBytesInUse: 0,
+        AclBytesFree: 0,
+    };
+    // SAFETY: dacl is valid and information is writable.
+    if unsafe {
+        GetAclInformation(
+            dacl,
+            (&mut information as *mut ACL_SIZE_INFORMATION).cast(),
+            size_of::<ACL_SIZE_INFORMATION>() as u32,
+            AclSizeInformation,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+
+    let mutation_mask = windows_immutable_mutation_mask(profile);
+    for index in 0..information.AceCount {
+        let mut ace = ptr::null_mut();
+        // SAFETY: index is within the validated ACL's reported ACE count.
+        if unsafe { GetAce(dacl, index, &mut ace) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: GetAce returned a pointer to a complete ACE header in the validated ACL.
+        let header = unsafe { &*ace.cast::<ACE_HEADER>() };
+        if header.AceFlags & !VALID_INHERIT_FLAGS != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "immutable platform DACL contains unsupported ACE flags",
+            ));
+        }
+        if !matches!(
+            header.AceType,
+            ACCESS_ALLOWED_ACE_TYPE | ACCESS_DENIED_ACE_TYPE
+        ) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "immutable platform DACL contains an unsupported ACE type",
+            ));
+        }
+
+        let sid_offset = offset_of!(ACCESS_ALLOWED_ACE, SidStart);
+        let minimum_sid_bytes = 8usize;
+        let ace_size = usize::from(header.AceSize);
+        if ace_size < sid_offset + minimum_sid_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "immutable platform DACL contains a truncated ACE SID",
+            ));
+        }
+        // SAFETY: the fixed ACE header and minimum SID were bounds-checked against AceSize.
+        let allowed = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
+        let sid: windows_sys::Win32::Security::PSID =
+            (&raw const allowed.SidStart).cast_mut().cast();
+        // SAFETY: the minimum SID header is contained in this ACE.
+        let subauthority_count = unsafe { *sid.cast::<u8>().add(1) } as usize;
+        let sid_length = minimum_sid_bytes
+            .checked_add(
+                subauthority_count
+                    .checked_mul(size_of::<u32>())
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "ACE SID length overflowed")
+                    })?,
+            )
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "ACE SID length overflowed")
+            })?;
+        if sid_offset + sid_length > ace_size {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "immutable platform DACL contains an out-of-bounds ACE SID",
+            ));
+        }
+        // SAFETY: the SID is fully contained in the ACE according to its own length field.
+        if unsafe { IsValidSid(sid) } == 0 || unsafe { GetLengthSid(sid) } as usize != sid_length {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "immutable platform DACL contains a malformed ACE SID",
+            ));
+        }
+
+        if header.AceType == ACCESS_DENIED_ACE_TYPE || header.AceFlags & INHERIT_ONLY_ACE != 0 {
+            continue;
+        }
+        if allowed.Mask & mutation_mask != 0 && !windows_sid_is_trusted(sid)? {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "immutable platform DACL grants mutation rights 0x{:08x} to an untrusted SID",
+                    allowed.Mask & mutation_mask
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+pub(crate) fn verify_windows_elevation_value(is_elevated: u32) -> io::Result<()> {
+    if is_elevated == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "immutable platform execution is refused for an elevated Windows caller",
+        ))
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn verify_unprivileged_windows_platform_caller() -> io::Result<()> {
+    use std::mem::size_of;
+    use windows_sys::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION};
+
+    let token = ProcessToken::current_user()?;
+    let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+    let mut returned = 0;
+    // SAFETY: token is a live process-token handle, elevation is writable storage of the exact
+    // requested type, and returned is writable.
+    if unsafe {
+        GetTokenInformation(
+            token.handle,
+            TokenElevation,
+            (&mut elevation as *mut TOKEN_ELEVATION).cast(),
+            size_of::<TOKEN_ELEVATION>() as u32,
+            &mut returned,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if returned != size_of::<TOKEN_ELEVATION>() as u32 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Windows token elevation proof returned an unexpected size",
+        ));
+    }
+    verify_windows_elevation_value(elevation.TokenIsElevated)
+}
+
+#[cfg(windows)]
+#[allow(
+    dead_code,
+    reason = "DirectoryAnchor callers are introduced by the following Windows full-dump task"
+)]
+pub(crate) fn open_directory_nofollow(path: &Path) -> io::Result<fs::File> {
+    use std::os::windows::io::FromRawHandle;
+    use std::ptr;
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY,
+        FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+        READ_CONTROL,
+    };
+
+    let path = windows_api_path(path)?;
+    // SAFETY: path is NUL-terminated and all scalar arguments are documented Win32 flags.
+    let handle = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: CreateFileW returned an owned, valid file handle.
+    let file = unsafe { fs::File::from_raw_handle(handle) };
+    let attributes = windows_file_information(&file)?.dwFileAttributes;
+    if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "directory path resolves to a reparse point",
+        ));
+    }
+    if attributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "directory path does not resolve to a directory",
+        ));
+    }
+    Ok(file)
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct NtUnicodeString {
+    length: u16,
+    maximum_length: u16,
+    buffer: windows_sys::core::PWSTR,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct NtObjectAttributes {
+    length: u32,
+    root_directory: windows_sys::Win32::Foundation::HANDLE,
+    object_name: *mut NtUnicodeString,
+    attributes: u32,
+    security_descriptor: *mut std::ffi::c_void,
+    security_quality_of_service: *mut std::ffi::c_void,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+union NtIoStatusStatus {
+    status: i32,
+    pointer: *mut std::ffi::c_void,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct NtIoStatusBlock {
+    status: NtIoStatusStatus,
+    information: usize,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct NtFileFsDeviceInformation {
+    device_type: u32,
+    characteristics: u32,
+}
+
+#[cfg(windows)]
+unsafe extern "system" {
+    fn NtCreateFile(
+        file_handle: *mut windows_sys::Win32::Foundation::HANDLE,
+        desired_access: u32,
+        object_attributes: *mut NtObjectAttributes,
+        io_status_block: *mut NtIoStatusBlock,
+        allocation_size: *mut i64,
+        file_attributes: u32,
+        share_access: u32,
+        create_disposition: u32,
+        create_options: u32,
+        ea_buffer: *mut std::ffi::c_void,
+        ea_length: u32,
+    ) -> i32;
+    fn NtSetInformationFile(
+        file_handle: windows_sys::Win32::Foundation::HANDLE,
+        io_status_block: *mut NtIoStatusBlock,
+        file_information: *mut std::ffi::c_void,
+        length: u32,
+        file_information_class: u32,
+    ) -> i32;
+    fn NtQueryVolumeInformationFile(
+        file_handle: windows_sys::Win32::Foundation::HANDLE,
+        io_status_block: *mut NtIoStatusBlock,
+        fs_information: *mut std::ffi::c_void,
+        length: u32,
+        fs_information_class: u32,
+    ) -> i32;
+    fn RtlNtStatusToDosError(status: i32) -> u32;
+}
+
+#[cfg(windows)]
+fn nt_status_error(status: i32) -> io::Error {
+    // SAFETY: RtlNtStatusToDosError accepts all NTSTATUS values and returns a Win32 error code.
+    let error = unsafe { RtlNtStatusToDosError(status) };
+    io::Error::from_raw_os_error(error as i32)
+}
+
+#[cfg(windows)]
+fn verify_windows_local_fixed_device_info(
+    device_type: u32,
+    characteristics: u32,
+) -> io::Result<()> {
+    const FILE_DEVICE_DISK: u32 = 0x0000_0007;
+    const FILE_REMOTE_DEVICE: u32 = 0x0000_0010;
+    const FILE_REMOVABLE_MEDIA: u32 = 0x0000_0001;
+    const FILE_FLOPPY_DISKETTE: u32 = 0x0000_0004;
+    const FILE_WRITE_ONCE_MEDIA: u32 = 0x0000_0008;
+    const FILE_VIRTUAL_VOLUME: u32 = 0x0000_0040;
+    const FILE_PORTABLE_DEVICE: u32 = 0x0000_4000;
+    const FILE_REMOTE_DEVICE_VSMB: u32 = 0x0008_0000;
+    const UNTRUSTED_CHARACTERISTICS: u32 = FILE_REMOTE_DEVICE
+        | FILE_REMOVABLE_MEDIA
+        | FILE_FLOPPY_DISKETTE
+        | FILE_WRITE_ONCE_MEDIA
+        | FILE_VIRTUAL_VOLUME
+        | FILE_PORTABLE_DEVICE
+        | FILE_REMOTE_DEVICE_VSMB;
+
+    if device_type != FILE_DEVICE_DISK || characteristics & UNTRUSTED_CHARACTERISTICS != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "immutable platform volume is not a local fixed disk (device type 0x{device_type:08x}, characteristics 0x{characteristics:08x})"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+pub(crate) fn verify_windows_local_fixed_volume(file: &fs::File) -> io::Result<()> {
+    use std::mem::size_of;
+    use std::os::windows::io::AsRawHandle;
+
+    const FILE_FS_DEVICE_INFORMATION_CLASS: u32 = 4;
+    let mut io_status = NtIoStatusBlock {
+        status: NtIoStatusStatus { status: 0 },
+        information: 0,
+    };
+    let mut information = NtFileFsDeviceInformation {
+        device_type: 0,
+        characteristics: 0,
+    };
+    // SAFETY: file retains a valid handle for the complete call; io_status and information are
+    // writable buffers of the exact native layouts for FileFsDeviceInformation.
+    let status = unsafe {
+        NtQueryVolumeInformationFile(
+            file.as_raw_handle(),
+            &mut io_status,
+            (&mut information as *mut NtFileFsDeviceInformation).cast(),
+            size_of::<NtFileFsDeviceInformation>() as u32,
+            FILE_FS_DEVICE_INFORMATION_CLASS,
+        )
+    };
+    if status < 0 {
+        return Err(nt_status_error(status));
+    }
+    if io_status.information != size_of::<NtFileFsDeviceInformation>() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Windows volume device proof returned an unexpected size",
+        ));
+    }
+    verify_windows_local_fixed_device_info(information.device_type, information.characteristics)
+}
+
+#[cfg(windows)]
+fn relative_child_name(name: &std::ffi::OsStr) -> io::Result<Vec<u16>> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Component;
+
+    let mut components = Path::new(name).components();
+    if !matches!(components.next(), Some(Component::Normal(component)) if component == name)
+        || components.next().is_some()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "directory child name must be exactly one normal relative component",
+        ));
+    }
+    let wide = name.encode_wide().collect::<Vec<_>>();
+    if wide.is_empty()
+        || wide.iter().any(|unit| {
+            *unit == 0 || *unit == b'\\' as u16 || *unit == b'/' as u16 || *unit == b':' as u16
+        })
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "directory child name must not contain separators, a stream name, or NUL",
+        ));
+    }
+    Ok(wide)
+}
+
+#[cfg(windows)]
+fn validate_directory_handle(file: &fs::File) -> io::Result<()> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+    };
+
+    let attributes = windows_file_information(file)?.dwFileAttributes;
+    if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "directory child resolves to a reparse point",
+        ));
+    }
+    if attributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "directory child does not resolve to a directory",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn nt_create_options_for_std_file(desired_access: u32, create_options: u32) -> io::Result<u32> {
+    use windows_sys::Win32::Foundation::{
+        GENERIC_ALL, GENERIC_EXECUTE, GENERIC_READ, GENERIC_WRITE,
+    };
+    use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
+
+    const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x0000_0020;
+    let generic_synchronous_access = GENERIC_ALL | GENERIC_EXECUTE | GENERIC_READ | GENERIC_WRITE;
+    if desired_access & SYNCHRONIZE == 0 && desired_access & generic_synchronous_access == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "std::fs::File native handles require SYNCHRONIZE-compatible access",
+        ));
+    }
+    Ok(create_options | FILE_SYNCHRONOUS_IO_NONALERT)
+}
+
+#[cfg(windows)]
+fn relative_child_object_attributes(parent: &fs::File) -> io::Result<u32> {
+    use std::mem::size_of;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileCaseSensitiveInfo, GetFileInformationByHandleEx,
+    };
+
+    #[repr(C)]
+    struct FileCaseSensitiveInformation {
+        flags: u32,
+    }
+
+    const OBJ_CASE_INSENSITIVE: u32 = 0x40;
+    const FILE_CS_FLAG_CASE_SENSITIVE_DIR: u32 = 1;
+
+    #[cfg(test)]
+    if TEST_CASE_SENSITIVITY_QUERY_FAILURE.with(|slot| slot.get()) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "failed to query parent directory case-sensitive state",
+        ));
+    }
+
+    let mut information = FileCaseSensitiveInformation { flags: 0 };
+    // SAFETY: parent retains a valid directory handle and information is a writable buffer with
+    // the exact FileCaseSensitiveInfo layout and size.
+    if unsafe {
+        GetFileInformationByHandleEx(
+            parent.as_raw_handle(),
+            FileCaseSensitiveInfo,
+            (&mut information as *mut FileCaseSensitiveInformation).cast(),
+            size_of::<FileCaseSensitiveInformation>() as u32,
+        )
+    } == 0
+    {
+        let error = io::Error::last_os_error();
+        return Err(io::Error::new(
+            error.kind(),
+            format!("failed to query parent directory case-sensitive state: {error}"),
+        ));
+    }
+    if information.flags & !FILE_CS_FLAG_CASE_SENSITIVE_DIR != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "parent directory reported unsupported case-sensitive flags 0x{:08x}",
+                information.flags
+            ),
+        ));
+    }
+    Ok(
+        if information.flags & FILE_CS_FLAG_CASE_SENSITIVE_DIR != 0 {
+            0
+        } else {
+            OBJ_CASE_INSENSITIVE
+        },
+    )
+}
+
+#[cfg(windows)]
+fn open_relative_child(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+    desired_access: u32,
+    file_attributes: u32,
+    create_disposition: u32,
+    create_options: u32,
+    security_descriptor: Option<windows_sys::Win32::Security::PSECURITY_DESCRIPTOR>,
+) -> io::Result<fs::File> {
+    use std::mem::size_of;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle};
+    use std::ptr;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    let create_options = nt_create_options_for_std_file(desired_access, create_options)?;
+    let object_attributes = relative_child_object_attributes(parent)?;
+    let mut name = relative_child_name(name)?;
+    let byte_length = name
+        .len()
+        .checked_mul(size_of::<u16>())
+        .and_then(|length| u16::try_from(length).ok())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "child name is too long"))?;
+    let mut object_name = NtUnicodeString {
+        length: byte_length,
+        maximum_length: byte_length,
+        buffer: name.as_mut_ptr(),
+    };
+    let mut attributes = NtObjectAttributes {
+        length: size_of::<NtObjectAttributes>() as u32,
+        root_directory: parent.as_raw_handle(),
+        object_name: &mut object_name,
+        attributes: object_attributes,
+        security_descriptor: security_descriptor.unwrap_or(ptr::null_mut()).cast(),
+        security_quality_of_service: ptr::null_mut(),
+    };
+    let mut status = NtIoStatusBlock {
+        status: NtIoStatusStatus { status: 0 },
+        information: 0,
+    };
+    let mut handle = ptr::null_mut();
+    // SAFETY: the root handle is borrowed from parent, and all pointers refer to valid mutable
+    // storage for the duration of NtCreateFile. The child name is validated as one relative
+    // component, so RootDirectory binds the operation to the retained parent handle.
+    let result = unsafe {
+        NtCreateFile(
+            &mut handle,
+            desired_access,
+            &mut attributes,
+            &mut status,
+            ptr::null_mut(),
+            file_attributes,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            create_disposition,
+            create_options,
+            ptr::null_mut(),
+            0,
+        )
+    };
+    if result < 0 {
+        return Err(nt_status_error(result));
+    }
+    // SAFETY: a non-error NtCreateFile result returns an owned file handle.
+    Ok(unsafe { fs::File::from_raw_handle(handle) })
+}
+
+#[cfg(windows)]
+pub(crate) fn open_directory_child_nofollow(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    const FILE_OPEN: u32 = 0x0000_0001;
+    const FILE_DIRECTORY_FILE: u32 = 0x0000_0001;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, READ_CONTROL, SYNCHRONIZE,
+    };
+
+    let file = open_relative_child(
+        parent,
+        name,
+        FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
+        0,
+        FILE_OPEN,
+        FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+        None,
+    )?;
+    validate_directory_handle(&file)?;
+    Ok(file)
+}
+
+#[cfg(windows)]
+pub(crate) fn open_regular_child_nofollow(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    const FILE_OPEN: u32 = 0x0000_0001;
+    const FILE_NON_DIRECTORY_FILE: u32 = 0x0000_0040;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    use windows_sys::Win32::Foundation::GENERIC_READ;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_READ_ATTRIBUTES, SYNCHRONIZE,
+    };
+
+    let file = open_relative_child(
+        parent,
+        name,
+        GENERIC_READ | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        0,
+        FILE_OPEN,
+        FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+        None,
+    )?;
+    let attributes = windows_file_information(&file)?.dwFileAttributes;
+    if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "regular child resolves to a reparse point",
+        ));
+    }
+    if attributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "entry is not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
+#[cfg(windows)]
+pub(crate) fn open_any_child_nofollow(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<(fs::File, OpenedChildKind)> {
+    const FILE_OPEN: u32 = 0x0000_0001;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_READ_ATTRIBUTES, SYNCHRONIZE};
+
+    let file = open_relative_child(
+        parent,
+        name,
+        FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        0,
+        FILE_OPEN,
+        FILE_OPEN_REPARSE_POINT,
+        None,
+    )?;
+    let kind = opened_child_kind(&file)?;
+    Ok((file, kind))
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OpenedChildKind {
+    Directory,
+    RegularFile,
+    ReparsePoint,
+    Unsupported,
+}
+
+#[cfg(windows)]
+pub(crate) fn opened_child_kind(file: &fs::File) -> io::Result<OpenedChildKind> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_DEVICE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+    };
+
+    let attributes = windows_file_information(file)?.dwFileAttributes;
+    if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        Ok(OpenedChildKind::ReparsePoint)
+    } else if attributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+        Ok(OpenedChildKind::Directory)
+    } else if attributes & FILE_ATTRIBUTE_DEVICE != 0 {
+        Ok(OpenedChildKind::Unsupported)
+    } else {
+        Ok(OpenedChildKind::RegularFile)
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn open_any_child_for_delete(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    const FILE_OPEN: u32 = 0x0000_0001;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    use windows_sys::Win32::Storage::FileSystem::{DELETE, FILE_READ_ATTRIBUTES, SYNCHRONIZE};
+
+    open_relative_child(
+        parent,
+        name,
+        DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        0,
+        FILE_OPEN,
+        FILE_OPEN_REPARSE_POINT,
+        None,
+    )
+}
+
+#[cfg(windows)]
+pub(crate) fn delete_open_child(file: &fs::File) -> io::Result<()> {
+    set_delete_disposition(file)
+}
+
+#[cfg(windows)]
+fn directory_query_is_end(restart: bool, error: &io::Error) -> bool {
+    use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_FILES};
+
+    matches!(
+        error.raw_os_error(),
+        Some(code)
+            if code == ERROR_NO_MORE_FILES as i32
+                || restart && code == ERROR_FILE_NOT_FOUND as i32
+    )
+}
+
+#[cfg(windows)]
+fn parse_directory_information_buffer(
+    buffer: &[u8],
+    names: &mut Vec<std::ffi::OsString>,
+) -> io::Result<()> {
+    use std::mem::{offset_of, size_of};
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ID_BOTH_DIR_INFO;
+
+    let file_name_offset = offset_of!(FILE_ID_BOTH_DIR_INFO, FileName);
+    let complete_header_size = size_of::<FILE_ID_BOTH_DIR_INFO>();
+    let mut offset = 0usize;
+    loop {
+        let complete_header_end = offset.checked_add(complete_header_size).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "directory entry complete header offset overflowed",
+            )
+        })?;
+        if complete_header_end > buffer.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "directory entry complete header exceeds the enumeration buffer",
+            ));
+        }
+        // SAFETY: the complete Rust structure was bounds-checked above; read_unaligned accepts
+        // every record offset supplied by the filesystem.
+        let entry = unsafe {
+            std::ptr::read_unaligned(buffer.as_ptr().add(offset).cast::<FILE_ID_BOTH_DIR_INFO>())
+        };
+        let name_bytes = entry.FileNameLength as usize;
+        if name_bytes == 0 || !name_bytes.is_multiple_of(size_of::<u16>()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "directory entry has an invalid UTF-16 name length",
+            ));
+        }
+        let name_start = offset.checked_add(file_name_offset).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "directory entry name offset overflowed",
+            )
+        })?;
+        let name_end = name_start.checked_add(name_bytes).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "directory entry name offset overflowed",
+            )
+        })?;
+        if name_end > buffer.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "directory entry name exceeds the enumeration buffer",
+            ));
+        }
+        let mut name = Vec::with_capacity(name_bytes / size_of::<u16>());
+        for unit_offset in (name_start..name_end).step_by(size_of::<u16>()) {
+            // SAFETY: every two-byte unit lies within the checked name range; read_unaligned
+            // accepts the byte buffer's alignment.
+            name.push(unsafe {
+                std::ptr::read_unaligned(buffer.as_ptr().add(unit_offset).cast::<u16>())
+            });
+        }
+        let name = std::ffi::OsString::from_wide(&name);
+        if name != "." && name != ".." {
+            names.push(name);
+        }
+
+        let next = entry.NextEntryOffset as usize;
+        if next == 0 {
+            break;
+        }
+        let minimum_record_bytes = file_name_offset.checked_add(name_bytes).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "directory entry record length overflowed",
+            )
+        })?;
+        if next < minimum_record_bytes || !next.is_multiple_of(8) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "directory entry next-record offset is not 8-byte-aligned or overlaps the name",
+            ));
+        }
+        offset = offset.checked_add(next).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "directory entry offset overflowed",
+            )
+        })?;
+        if offset >= buffer.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "directory entry offset exceeds the enumeration buffer",
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+#[allow(
+    dead_code,
+    reason = "the following Windows full-dump tree-inspection task consumes retained enumeration"
+)]
+pub(crate) fn read_directory_names(directory: &fs::File) -> io::Result<Vec<std::ffi::OsString>> {
+    use std::mem::size_of;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo, GetFileInformationByHandleEx,
+    };
+
+    const BUFFER_BYTES: usize = 64 * 1024;
+
+    validate_directory_handle(directory)?;
+    let word_count = BUFFER_BYTES.div_ceil(size_of::<usize>());
+    let mut storage = vec![0usize; word_count];
+    let buffer_bytes = storage.len() * size_of::<usize>();
+    let mut names = Vec::new();
+    let mut restart = true;
+    loop {
+        storage.fill(0);
+        let information_class = if restart {
+            FileIdBothDirectoryRestartInfo
+        } else {
+            FileIdBothDirectoryInfo
+        };
+        // SAFETY: storage is writable and pointer-aligned, its byte capacity is supplied exactly,
+        // and directory remains a live retained handle throughout enumeration.
+        let succeeded = unsafe {
+            GetFileInformationByHandleEx(
+                directory.as_raw_handle(),
+                information_class,
+                storage.as_mut_ptr().cast(),
+                u32::try_from(buffer_bytes).expect("fixed directory buffer fits u32"),
+            )
+        };
+        if succeeded == 0 {
+            let error = io::Error::last_os_error();
+            if directory_query_is_end(restart, &error) {
+                break;
+            }
+            return Err(error);
+        }
+        restart = false;
+
+        // SAFETY: storage owns buffer_bytes initialized bytes for this query. The parser performs
+        // complete structure, name, and next-record bounds checks before reading each field.
+        let buffer =
+            unsafe { std::slice::from_raw_parts(storage.as_ptr().cast::<u8>(), buffer_bytes) };
+        parse_directory_information_buffer(buffer, &mut names)?;
+    }
+    names.sort();
+    Ok(names)
+}
+
+#[cfg(windows)]
+pub(crate) fn open_directory_child_for_rename(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    const FILE_OPEN: u32 = 0x0000_0001;
+    const FILE_DIRECTORY_FILE: u32 = 0x0000_0001;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_READ_ATTRIBUTES, READ_CONTROL, SYNCHRONIZE,
+    };
+
+    let file = open_relative_child(
+        parent,
+        name,
+        DELETE | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
+        0,
+        FILE_OPEN,
+        FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+        None,
+    )?;
+    validate_directory_handle(&file)?;
+    Ok(file)
+}
+
+#[cfg(windows)]
+pub(crate) fn rename_directory_handle_child_no_replace(
+    source: &fs::File,
+    destination_parent: &fs::File,
+    destination_name: &std::ffi::OsStr,
+) -> io::Result<()> {
+    use std::mem::{offset_of, size_of};
+    use std::os::windows::io::AsRawHandle;
+    use std::ptr;
+
+    #[repr(C)]
+    union RenameFlags {
+        replace_if_exists: u8,
+        flags: u32,
+    }
+
+    #[repr(C)]
+    struct RenameInformation {
+        anonymous: RenameFlags,
+        root_directory: windows_sys::Win32::Foundation::HANDLE,
+        file_name_length: u32,
+        file_name: [u16; 1],
+    }
+
+    const FILE_RENAME_INFORMATION_CLASS: u32 = 10;
+
+    let name = relative_child_name(destination_name)?;
+    let name_bytes = name
+        .len()
+        .checked_mul(size_of::<u16>())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "child name is too long"))?;
+    let information_length = offset_of!(RenameInformation, file_name)
+        .checked_add(name_bytes)
+        .and_then(|length| u32::try_from(length).ok())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "child name is too long"))?;
+    let word_count = (information_length as usize).div_ceil(size_of::<usize>());
+    let mut storage = vec![0usize; word_count];
+    let information = storage.as_mut_ptr().cast::<RenameInformation>();
+    // SAFETY: storage is pointer-aligned and large enough for the fixed header plus the complete
+    // UTF-16 name. All fields are initialized before NtSetInformationFile reads the buffer.
+    unsafe {
+        ptr::addr_of_mut!((*information).anonymous).write(RenameFlags {
+            replace_if_exists: 0,
+        });
+        ptr::addr_of_mut!((*information).root_directory).write(destination_parent.as_raw_handle());
+        ptr::addr_of_mut!((*information).file_name_length).write(name_bytes as u32);
+        ptr::copy_nonoverlapping(
+            name.as_ptr(),
+            ptr::addr_of_mut!((*information).file_name).cast::<u16>(),
+            name.len(),
+        );
+    }
+    let mut status = NtIoStatusBlock {
+        status: NtIoStatusStatus { status: 0 },
+        information: 0,
+    };
+    // SAFETY: source is an owned directory handle opened with DELETE access, destination_parent
+    // remains live, and the initialized buffer describes one relative destination name.
+    let result = unsafe {
+        NtSetInformationFile(
+            source.as_raw_handle(),
+            &mut status,
+            information.cast(),
+            information_length,
+            FILE_RENAME_INFORMATION_CLASS,
+        )
+    };
+    if result < 0 {
+        Err(nt_status_error(result))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn create_owner_only_directory_child(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    const FILE_CREATE: u32 = 0x0000_0002;
+    const FILE_DIRECTORY_FILE: u32 = 0x0000_0001;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, READ_CONTROL,
+        SYNCHRONIZE,
+    };
+
+    let security = OwnerOnlySecurityAttributes::current_user()?;
+    let created = open_relative_child(
+        parent,
+        name,
+        DELETE | FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
+        FILE_ATTRIBUTE_DIRECTORY,
+        FILE_CREATE,
+        FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+        Some(security.security_descriptor()),
+    )?;
+    if let Err(error) = validate_directory_handle(&created) {
+        return match discard_created_child(&created) {
+            Ok(()) => Err(error),
+            Err(cleanup) => Err(io::Error::new(
+                error.kind(),
+                format!("{error}; failed to remove invalid created directory: {cleanup}"),
+            )),
+        };
+    }
+    let expected_identity = match file_identity(&created) {
+        Ok(identity) => identity,
+        Err(error) => {
+            return match discard_created_child(&created) {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(io::Error::new(
+                    error.kind(),
+                    format!("{error}; failed to remove unverified created directory: {cleanup}"),
+                )),
+            };
+        }
+    };
+    let reopened = match open_directory_child_nofollow(parent, name) {
+        Ok(reopened) => reopened,
+        Err(error) => {
+            return match discard_created_child(&created) {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(io::Error::new(
+                    error.kind(),
+                    format!("{error}; failed to remove unreopenable created directory: {cleanup}"),
+                )),
+            };
+        }
+    };
+    let actual_identity = match file_identity(&reopened) {
+        Ok(identity) => identity,
+        Err(error) => {
+            return match discard_created_child(&created) {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(io::Error::new(
+                    error.kind(),
+                    format!("{error}; failed to remove unverified created directory: {cleanup}"),
+                )),
+            };
+        }
+    };
+    if actual_identity != expected_identity {
+        let error = io::Error::new(
+            io::ErrorKind::InvalidData,
+            "created directory identity changed before least-privilege reopen",
+        );
+        return match discard_created_child(&created) {
+            Ok(()) => Err(error),
+            Err(cleanup) => Err(io::Error::new(
+                error.kind(),
+                format!("{error}; failed to remove replaced created directory: {cleanup}"),
+            )),
+        };
+    }
+    drop(created);
+    Ok(reopened)
+}
+
+#[cfg(windows)]
+pub(crate) fn create_owner_only_file_child(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    const FILE_CREATE: u32 = 0x0000_0002;
+    const FILE_NON_DIRECTORY_FILE: u32 = 0x0000_0040;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
+    use windows_sys::Win32::Storage::FileSystem::{DELETE, FILE_ATTRIBUTE_NORMAL, SYNCHRONIZE};
+
+    let security = OwnerOnlySecurityAttributes::current_user()?;
+    open_relative_child(
+        parent,
+        name,
+        GENERIC_READ | GENERIC_WRITE | DELETE | SYNCHRONIZE,
+        FILE_ATTRIBUTE_NORMAL,
+        FILE_CREATE,
+        FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+        Some(security.security_descriptor()),
+    )
+}
+
+#[cfg(windows)]
+pub(crate) fn discard_created_child(file: &fs::File) -> io::Result<()> {
+    set_delete_disposition(file)
+}
+
+#[cfg(windows)]
+fn set_delete_disposition(file: &fs::File) -> io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+
+    const FILE_DISPOSITION_INFORMATION: u32 = 13;
+    let mut delete_file = 1u8;
+    let mut status = NtIoStatusBlock {
+        status: NtIoStatusStatus { status: 0 },
+        information: 0,
+    };
+    // SAFETY: file is an owned handle opened with DELETE access by the child-creation helpers,
+    // and delete_file/status remain writable for the duration of the native call. Once marked,
+    // the only subsequent operation on the handle is Drop/close.
+    let result = unsafe {
+        NtSetInformationFile(
+            file.as_raw_handle(),
+            &mut status,
+            (&mut delete_file as *mut u8).cast(),
+            std::mem::size_of_val(&delete_file) as u32,
+            FILE_DISPOSITION_INFORMATION,
+        )
+    };
+    if result < 0 {
+        Err(nt_status_error(result))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+#[allow(
+    dead_code,
+    reason = "DirectoryAnchor callers are introduced by the following Windows full-dump task"
+)]
+pub(crate) fn create_owner_only_directory(path: &Path) -> io::Result<fs::File> {
+    use windows_sys::Win32::Storage::FileSystem::CreateDirectoryW;
+
+    let api_path = windows_api_path(path)?;
+    let security = OwnerOnlySecurityAttributes::current_user()?;
+    // SAFETY: path is NUL-terminated and security owns the descriptor for this call.
+    if unsafe { CreateDirectoryW(api_path.as_ptr(), security.as_ptr()) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    open_directory_nofollow(path)
+}
+
+#[cfg(windows)]
+#[allow(
+    dead_code,
+    reason = "DirectoryAnchor callers are introduced by the following Windows full-dump task"
+)]
+pub(crate) fn create_owner_only_file(path: &Path) -> io::Result<fs::File> {
+    use std::os::windows::io::FromRawHandle;
+    use std::ptr;
+    use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE,
+    };
+
+    let path = windows_api_path(path)?;
+    let security = OwnerOnlySecurityAttributes::current_user()?;
+    // SAFETY: path is NUL-terminated and security owns the descriptor for this call.
+    let handle = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_DELETE,
+            security.as_ptr(),
+            CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL,
+            ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        Err(io::Error::last_os_error())
+    } else {
+        // SAFETY: CreateFileW returned an owned, valid file handle.
+        Ok(unsafe { fs::File::from_raw_handle(handle) })
+    }
+}
+
+#[cfg(windows)]
+#[allow(
+    dead_code,
+    reason = "DirectoryAnchor callers are introduced by the following Windows full-dump task"
+)]
+pub(crate) fn verify_owner_only_acl(file: &fs::File) -> io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use std::ptr;
+    use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
+    use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
+
+    let mut dacl = ptr::null_mut();
+    let mut descriptor = ptr::null_mut();
+    // SAFETY: file owns a valid handle and all requested output pointers are writable.
+    let status = unsafe {
+        GetSecurityInfo(
+            file.as_raw_handle(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            &mut dacl,
+            ptr::null_mut(),
+            &mut descriptor,
+        )
+    };
+    if status != 0 {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    let descriptor = LocalSecurityDescriptor(descriptor);
+    verify_owner_only_security_descriptor(descriptor.0)
+}
+
+#[cfg(windows)]
+fn verify_owner_only_security_descriptor(
+    descriptor: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR,
+) -> io::Result<()> {
+    use std::mem::size_of;
+    use std::ptr;
+    use windows_sys::Win32::Security::{
+        AclSizeInformation, EqualSid, GetAce, GetAclInformation, GetSecurityDescriptorControl,
+        GetSecurityDescriptorDacl, ACCESS_ALLOWED_ACE, ACE_HEADER, ACL_SIZE_INFORMATION,
+        SE_DACL_PROTECTED,
+    };
+    use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+
+    const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+
+    if descriptor.is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "owner-only object has no security descriptor",
+        ));
+    }
+    let token = ProcessToken::current_user()?;
+    let mut dacl_present = 0;
+    let mut dacl = ptr::null_mut();
+    let mut dacl_defaulted = 0;
+    // SAFETY: descriptor is non-null and all requested output pointers are writable.
+    if unsafe {
+        GetSecurityDescriptorDacl(
+            descriptor,
+            &mut dacl_present,
+            &mut dacl,
+            &mut dacl_defaulted,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if dacl_present == 0 || dacl.is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "owner-only object has no DACL",
+        ));
+    }
+
+    let mut control = 0;
+    let mut revision = 0;
+    // SAFETY: descriptor is valid for the duration of this call.
+    if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if control & SE_DACL_PROTECTED == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "owner-only object DACL is not protected",
+        ));
+    }
+
+    let mut information = ACL_SIZE_INFORMATION {
+        AceCount: 0,
+        AclBytesInUse: 0,
+        AclBytesFree: 0,
+    };
+    // SAFETY: dacl is valid for the descriptor lifetime and information is writable storage.
+    if unsafe {
+        GetAclInformation(
+            dacl,
+            (&mut information as *mut ACL_SIZE_INFORMATION).cast(),
+            size_of::<ACL_SIZE_INFORMATION>() as u32,
+            AclSizeInformation,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if information.AceCount != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "owner-only object DACL does not contain exactly one ACE",
+        ));
+    }
+
+    let mut ace = ptr::null_mut();
+    // SAFETY: dacl is valid and ACE index zero is within the exactly-one ACE DACL.
+    if unsafe { GetAce(dacl, 0, &mut ace) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: GetAce returned a pointer to a valid ACE in dacl.
+    let header = unsafe { &*ace.cast::<ACE_HEADER>() };
+    if header.AceType != ACCESS_ALLOWED_ACE_TYPE {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "owner-only object DACL has an unexpected ACE",
+        ));
+    }
+    if header.AceFlags != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "owner-only object DACL has unexpected ACE flags",
+        ));
+    }
+    // SAFETY: the ACE type is ACCESS_ALLOWED_ACE_TYPE, so its payload has this layout.
+    let allowed = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
+    if allowed.Mask != FILE_ALL_ACCESS {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "owner-only object DACL does not grant full access",
+        ));
+    }
+    let ace_sid: windows_sys::Win32::Security::PSID =
+        (&raw const allowed.SidStart).cast_mut().cast();
+    // SAFETY: both SIDs are valid: one belongs to the ACL and the other to the current token.
+    if unsafe { EqualSid(ace_sid, token.user_sid()) } == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "owner-only object DACL grants access to a different SID",
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn install_file_no_clobber(source: &Path, target: &Path) -> io::Result<()> {
@@ -504,6 +2331,795 @@ mod tests {
 
     #[cfg(windows)]
     use super::strip_windows_extended_length_prefix;
+
+    #[cfg(windows)]
+    mod windows {
+        use super::{fs, io, unique_temp_root};
+        use crate::infrastructure::platform::filesystem::{
+            capture_windows_immutable_entry_evidence, create_owner_only_directory,
+            create_owner_only_directory_child, create_owner_only_file,
+            create_owner_only_file_child, delete_open_child, directory_query_is_end, file_identity,
+            nt_create_options_for_std_file, open_any_child_for_delete, open_any_child_nofollow,
+            open_directory_child_for_rename, open_directory_child_nofollow,
+            open_directory_nofollow, open_regular_child_nofollow, opened_child_kind,
+            parse_directory_information_buffer, read_directory_names,
+            rename_directory_handle_child_no_replace, verify_owner_only_acl,
+            verify_owner_only_security_descriptor, verify_thread_token_fallback_error,
+            verify_windows_elevation_value, verify_windows_immutable_security_descriptor,
+            verify_windows_local_fixed_device_info, verify_windows_local_fixed_volume,
+            with_case_sensitivity_query_failure, EffectiveTokenSource, OpenedChildKind,
+            OwnerOnlySecurityAttributes, ProcessToken, WindowsImmutableAclProfile,
+        };
+        use std::ffi::OsString;
+        use std::mem::{offset_of, size_of};
+        use std::ptr;
+        use windows_sys::Win32::Foundation::{LocalFree, GENERIC_ALL, GENERIC_WRITE};
+        use windows_sys::Win32::Foundation::{
+            ERROR_ACCESS_DENIED, ERROR_CANT_OPEN_ANONYMOUS, ERROR_FILE_NOT_FOUND,
+            ERROR_NO_MORE_FILES, ERROR_NO_TOKEN,
+        };
+        use windows_sys::Win32::Security::Authorization::{
+            ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+        };
+        use windows_sys::Win32::Security::PSECURITY_DESCRIPTOR;
+        use windows_sys::Win32::Security::{ImpersonateSelf, RevertToSelf, SecurityImpersonation};
+        use windows_sys::Win32::Storage::FileSystem::{
+            DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_DELETE_CHILD, FILE_ID_BOTH_DIR_INFO,
+            FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA, WRITE_DAC, WRITE_OWNER,
+        };
+
+        struct TestSecurityDescriptor(PSECURITY_DESCRIPTOR);
+
+        impl Drop for TestSecurityDescriptor {
+            fn drop(&mut self) {
+                // SAFETY: the SDDL conversion API allocated this descriptor with LocalAlloc.
+                unsafe { LocalFree(self.0) };
+            }
+        }
+
+        fn descriptor_from_sddl(sddl: &str) -> TestSecurityDescriptor {
+            let mut wide = sddl.encode_utf16().collect::<Vec<_>>();
+            wide.push(0);
+            let mut descriptor = ptr::null_mut();
+            // SAFETY: wide is NUL-terminated and descriptor is writable output storage.
+            let converted = unsafe {
+                ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    wide.as_ptr(),
+                    SDDL_REVISION_1,
+                    &mut descriptor,
+                    ptr::null_mut(),
+                )
+            };
+            assert_ne!(converted, 0, "{}", io::Error::last_os_error());
+            TestSecurityDescriptor(descriptor)
+        }
+
+        fn descriptor_with_untrusted_mask(
+            owner: &str,
+            mask: u32,
+            flags: &str,
+        ) -> TestSecurityDescriptor {
+            descriptor_from_sddl(&format!(
+                "O:{owner}D:(A;;FA;;;SY)(A;{flags};0x{mask:08x};;;BU)"
+            ))
+        }
+
+        #[test]
+        fn windows_immutable_platform_accepts_trusted_owners_and_read_execute_users() {
+            const TRUSTED_INSTALLER: &str =
+                "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
+            for owner in [TRUSTED_INSTALLER, "SY", "BA"] {
+                let descriptor = descriptor_from_sddl(&format!(
+                    "O:{owner}D:(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x001200a9;;;BU)"
+                ));
+
+                verify_windows_immutable_security_descriptor(
+                    descriptor.0,
+                    WindowsImmutableAclProfile::Installation,
+                )
+                .unwrap();
+            }
+        }
+
+        #[test]
+        fn windows_immutable_platform_rejects_an_untrusted_owner() {
+            let descriptor = descriptor_from_sddl("O:BUD:(A;;FA;;;SY)(A;;FRFX;;;BU)");
+
+            let error = verify_windows_immutable_security_descriptor(
+                descriptor.0,
+                WindowsImmutableAclProfile::Installation,
+            )
+            .unwrap_err();
+
+            assert!(error.to_string().contains("owner"), "{error}");
+        }
+
+        #[test]
+        fn windows_immutable_platform_ancestry_allows_sibling_creation_only() {
+            let descriptor =
+                descriptor_with_untrusted_mask("SY", FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY, "");
+
+            verify_windows_immutable_security_descriptor(
+                descriptor.0,
+                WindowsImmutableAclProfile::Ancestry,
+            )
+            .unwrap();
+        }
+
+        #[test]
+        fn windows_immutable_platform_ancestry_rejects_untrusted_substitution_rights() {
+            for mask in [
+                DELETE,
+                FILE_DELETE_CHILD,
+                WRITE_DAC,
+                WRITE_OWNER,
+                GENERIC_WRITE,
+                GENERIC_ALL,
+            ] {
+                let descriptor = descriptor_with_untrusted_mask("SY", mask, "");
+
+                let error = verify_windows_immutable_security_descriptor(
+                    descriptor.0,
+                    WindowsImmutableAclProfile::Ancestry,
+                )
+                .unwrap_err();
+
+                assert!(
+                    error.to_string().contains("mutation"),
+                    "mask 0x{mask:08x}: {error}"
+                );
+            }
+        }
+
+        #[test]
+        fn windows_immutable_platform_inventory_rejects_every_untrusted_mutation_right() {
+            for mask in [
+                FILE_WRITE_DATA,
+                FILE_ADD_FILE,
+                FILE_ADD_SUBDIRECTORY,
+                FILE_WRITE_EA,
+                FILE_WRITE_ATTRIBUTES,
+                FILE_DELETE_CHILD,
+                DELETE,
+                WRITE_DAC,
+                WRITE_OWNER,
+                GENERIC_WRITE,
+                GENERIC_ALL,
+            ] {
+                let descriptor = descriptor_with_untrusted_mask("BA", mask, "");
+
+                let error = verify_windows_immutable_security_descriptor(
+                    descriptor.0,
+                    WindowsImmutableAclProfile::Installation,
+                )
+                .unwrap_err();
+
+                assert!(
+                    error.to_string().contains("mutation"),
+                    "mask 0x{mask:08x}: {error}"
+                );
+            }
+        }
+
+        #[test]
+        fn windows_immutable_platform_ignores_inherit_only_capabilities_on_current_entry() {
+            let descriptor = descriptor_with_untrusted_mask("SY", GENERIC_ALL, "OICIIO");
+
+            verify_windows_immutable_security_descriptor(
+                descriptor.0,
+                WindowsImmutableAclProfile::Installation,
+            )
+            .unwrap();
+        }
+
+        #[test]
+        fn windows_immutable_platform_rejects_missing_null_and_unsupported_dacls() {
+            let absent = descriptor_from_sddl("O:SY");
+            let null = descriptor_from_sddl("O:SYD:NO_ACCESS_CONTROL");
+            let object =
+                descriptor_from_sddl("O:SYD:(OA;;FA;00112233-4455-6677-8899-aabbccddeeff;;BU)");
+            let mut malformed = [0usize; 4];
+
+            for descriptor in [
+                absent.0,
+                null.0,
+                object.0,
+                malformed.as_mut_ptr().cast(),
+                ptr::null_mut(),
+            ] {
+                assert!(verify_windows_immutable_security_descriptor(
+                    descriptor,
+                    WindowsImmutableAclProfile::Installation,
+                )
+                .is_err());
+            }
+        }
+
+        #[test]
+        fn windows_immutable_platform_rejects_an_elevated_caller() {
+            let error = verify_windows_elevation_value(1).unwrap_err();
+
+            assert!(error.to_string().contains("elevated"), "{error}");
+            verify_windows_elevation_value(0).unwrap();
+        }
+
+        #[test]
+        fn windows_immutable_platform_effective_token_falls_back_only_when_thread_has_no_token() {
+            verify_thread_token_fallback_error(ERROR_NO_TOKEN).unwrap();
+
+            for expected in [ERROR_ACCESS_DENIED, ERROR_CANT_OPEN_ANONYMOUS] {
+                let error = verify_thread_token_fallback_error(expected).unwrap_err();
+                assert_eq!(error.raw_os_error(), Some(expected as i32));
+            }
+        }
+
+        #[test]
+        fn windows_immutable_platform_effective_token_uses_process_token_without_impersonation() {
+            let token = ProcessToken::current_user().unwrap();
+
+            assert_eq!(token.source, EffectiveTokenSource::Process);
+        }
+
+        #[test]
+        fn windows_immutable_platform_effective_token_selects_an_impersonation_token() {
+            struct RevertGuard;
+
+            impl Drop for RevertGuard {
+                fn drop(&mut self) {
+                    // SAFETY: this guard is created only after ImpersonateSelf succeeds.
+                    assert_ne!(unsafe { RevertToSelf() }, 0);
+                }
+            }
+
+            // SAFETY: SecurityImpersonation is a documented impersonation level.
+            assert_ne!(
+                unsafe { ImpersonateSelf(SecurityImpersonation) },
+                0,
+                "{}",
+                io::Error::last_os_error()
+            );
+            let _guard = RevertGuard;
+
+            let token = ProcessToken::current_user().unwrap();
+
+            assert_eq!(token.source, EffectiveTokenSource::Thread);
+        }
+
+        #[test]
+        fn windows_immutable_platform_rejects_nonlocal_or_nonfixed_device_information() {
+            const FILE_DEVICE_CD_ROM: u32 = 0x0000_0002;
+            const FILE_DEVICE_DISK: u32 = 0x0000_0007;
+            const FILE_DEVICE_NETWORK_FILE_SYSTEM: u32 = 0x0000_0014;
+            const FILE_DEVICE_VIRTUAL_DISK: u32 = 0x0000_0024;
+            const FILE_PORTABLE_DEVICE: u32 = 0x0000_4000;
+            const FILE_REMOTE_DEVICE: u32 = 0x0000_0010;
+            const FILE_REMOTE_DEVICE_VSMB: u32 = 0x0008_0000;
+            const FILE_REMOVABLE_MEDIA: u32 = 0x0000_0001;
+            const FILE_DEVICE_IS_MOUNTED: u32 = 0x0000_0020;
+
+            verify_windows_local_fixed_device_info(FILE_DEVICE_DISK, FILE_DEVICE_IS_MOUNTED)
+                .unwrap();
+            for (device_type, characteristics) in [
+                (FILE_DEVICE_DISK, FILE_REMOTE_DEVICE),
+                (FILE_DEVICE_DISK, FILE_REMOTE_DEVICE_VSMB),
+                (FILE_DEVICE_DISK, FILE_PORTABLE_DEVICE),
+                (FILE_DEVICE_DISK, FILE_REMOVABLE_MEDIA),
+                (FILE_DEVICE_NETWORK_FILE_SYSTEM, FILE_DEVICE_IS_MOUNTED),
+                (FILE_DEVICE_CD_ROM, FILE_DEVICE_IS_MOUNTED),
+                (FILE_DEVICE_VIRTUAL_DISK, FILE_DEVICE_IS_MOUNTED),
+                (0xffff_ffff, 0),
+            ] {
+                assert!(
+                    verify_windows_local_fixed_device_info(device_type, characteristics).is_err(),
+                    "device type 0x{device_type:08x}, characteristics 0x{characteristics:08x}"
+                );
+            }
+        }
+
+        #[test]
+        fn windows_immutable_platform_accepts_a_real_local_fixed_volume_handle() {
+            let root = unique_temp_root("immutable-local-volume");
+            fs::create_dir_all(&root).unwrap();
+            let handle = open_directory_nofollow(&root).unwrap();
+
+            verify_windows_local_fixed_volume(&handle).unwrap();
+
+            drop(handle);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn windows_immutable_platform_attestation_handle_evidence_stays_bound_to_the_open_object() {
+            let root = unique_temp_root("immutable-handle-evidence");
+            fs::create_dir_all(&root).unwrap();
+            let original = root.join("entry");
+            let displaced = root.join("displaced");
+            let original_handle = create_owner_only_file(&original).unwrap();
+            let expected_identity = file_identity(&original_handle).unwrap();
+            fs::rename(&original, &displaced).unwrap();
+            fs::write(&original, b"decoy").unwrap();
+            let decoy_handle = fs::File::open(&original).unwrap();
+
+            let retained = capture_windows_immutable_entry_evidence(&original_handle).unwrap();
+            let decoy = capture_windows_immutable_entry_evidence(&decoy_handle).unwrap();
+
+            assert_eq!(retained.identity, expected_identity);
+            assert_ne!(retained.identity, decoy.identity);
+            assert_ne!(
+                retained.security_descriptor_sha256,
+                decoy.security_descriptor_sha256
+            );
+            drop(decoy_handle);
+            drop(original_handle);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn owner_only_directory_is_opened_without_following_reparse_points() {
+            let root = unique_temp_root("owner-only-directory");
+            fs::create_dir_all(&root).unwrap();
+            let private = root.join("private");
+
+            let handle = create_owner_only_directory(&private).unwrap();
+
+            verify_owner_only_acl(&handle).unwrap();
+            assert_eq!(
+                file_identity(&handle).unwrap(),
+                file_identity(&open_directory_nofollow(&private).unwrap()).unwrap()
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn directory_open_rejects_a_reparse_point() {
+            let root = unique_temp_root("directory-reparse");
+            let real = root.join("real");
+            let link = root.join("link");
+            fs::create_dir_all(&real).unwrap();
+            std::os::windows::fs::symlink_dir(&real, &link).unwrap();
+
+            let error = open_directory_nofollow(&link).unwrap_err();
+
+            assert!(matches!(
+                error.kind(),
+                io::ErrorKind::InvalidInput | io::ErrorKind::PermissionDenied
+            ));
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn directory_open_rejects_an_ordinary_file() {
+            let root = unique_temp_root("directory-file");
+            fs::create_dir_all(&root).unwrap();
+            let file = root.join("not-a-directory");
+            fs::write(&file, b"not a directory").unwrap();
+
+            let error = open_directory_nofollow(&file).unwrap_err();
+
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn owner_only_file_has_the_final_acl_at_creation() {
+            let root = unique_temp_root("owner-only-file");
+            fs::create_dir_all(&root).unwrap();
+            let private = root.join("effective.yaml");
+
+            let handle = create_owner_only_file(&private).unwrap();
+
+            verify_owner_only_acl(&handle).unwrap();
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn owner_only_acl_verifier_rejects_a_reduced_access_mask() {
+            use windows_sys::Win32::Security::{
+                GetAce, GetSecurityDescriptorDacl, ACCESS_ALLOWED_ACE,
+            };
+
+            let security = OwnerOnlySecurityAttributes::current_user().unwrap();
+            let mut dacl_present = 0;
+            let mut dacl = ptr::null_mut();
+            let mut dacl_defaulted = 0;
+            // SAFETY: the security owner retains a valid descriptor and all output pointers are
+            // writable for the duration of the call.
+            assert_ne!(
+                unsafe {
+                    GetSecurityDescriptorDacl(
+                        security.security_descriptor(),
+                        &mut dacl_present,
+                        &mut dacl,
+                        &mut dacl_defaulted,
+                    )
+                },
+                0
+            );
+            assert_ne!(dacl_present, 0);
+            let mut ace = ptr::null_mut();
+            // SAFETY: the owner-only descriptor contains exactly one access-allowed ACE.
+            assert_ne!(unsafe { GetAce(dacl, 0, &mut ace) }, 0);
+            // SAFETY: the SDDL fixture creates an ACCESS_ALLOWED_ACE at index zero.
+            unsafe { (*ace.cast::<ACCESS_ALLOWED_ACE>()).Mask = 0 };
+
+            let error =
+                verify_owner_only_security_descriptor(security.security_descriptor()).unwrap_err();
+
+            assert!(error.to_string().contains("full access"), "{error}");
+        }
+
+        #[test]
+        fn owner_only_acl_verifier_rejects_an_unexpected_ace_flag() {
+            use windows_sys::Win32::Security::{
+                GetAce, GetSecurityDescriptorDacl, ACE_HEADER, INHERIT_ONLY_ACE,
+            };
+
+            let security = OwnerOnlySecurityAttributes::current_user().unwrap();
+            let mut dacl_present = 0;
+            let mut dacl = ptr::null_mut();
+            let mut dacl_defaulted = 0;
+            // SAFETY: the security owner retains a valid descriptor and all output pointers are
+            // writable for the duration of the call.
+            assert_ne!(
+                unsafe {
+                    GetSecurityDescriptorDacl(
+                        security.security_descriptor(),
+                        &mut dacl_present,
+                        &mut dacl,
+                        &mut dacl_defaulted,
+                    )
+                },
+                0
+            );
+            assert_ne!(dacl_present, 0);
+            let mut ace = ptr::null_mut();
+            // SAFETY: the owner-only descriptor contains exactly one ACE.
+            assert_ne!(unsafe { GetAce(dacl, 0, &mut ace) }, 0);
+            // SAFETY: GetAce returned a valid ACE header inside the live descriptor.
+            unsafe { (*ace.cast::<ACE_HEADER>()).AceFlags = INHERIT_ONLY_ACE as u8 };
+
+            let error =
+                verify_owner_only_security_descriptor(security.security_descriptor()).unwrap_err();
+
+            assert!(error.to_string().contains("flags"), "{error}");
+        }
+
+        #[test]
+        fn owner_only_file_child_is_created_through_its_retained_parent() {
+            use std::io::Write;
+
+            let root = unique_temp_root("owner-only-file-child");
+            fs::create_dir_all(&root).unwrap();
+            let parent = open_directory_nofollow(&root).unwrap();
+
+            let mut handle =
+                create_owner_only_file_child(&parent, std::ffi::OsStr::new("effective.yaml"))
+                    .unwrap();
+
+            handle.write_all(b"private").unwrap();
+            verify_owner_only_acl(&handle).unwrap();
+            drop(handle);
+            drop(parent);
+            assert_eq!(fs::read(root.join("effective.yaml")).unwrap(), b"private");
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn windows_relative_open_fails_closed_when_parent_case_sensitivity_is_ambiguous() {
+            let root = unique_temp_root("ambiguous-parent-case-sensitivity");
+            fs::create_dir_all(&root).unwrap();
+            fs::write(root.join("entry.txt"), b"entry").unwrap();
+            let parent = open_directory_nofollow(&root).unwrap();
+
+            let error = with_case_sensitivity_query_failure(|| {
+                open_regular_child_nofollow(&parent, std::ffi::OsStr::new("entry.txt"))
+            })
+            .expect_err("an ambiguous parent case-sensitivity query must fail closed");
+
+            assert!(error.to_string().contains("case-sensitive"), "{error}");
+            drop(parent);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn owner_only_directory_child_can_be_reopened_for_delete() {
+            let root = unique_temp_root("owner-only-directory-delete-reopen");
+            fs::create_dir_all(&root).unwrap();
+            let root_handle = open_directory_nofollow(&root).unwrap();
+            let parent =
+                create_owner_only_directory_child(&root_handle, std::ffi::OsStr::new("parent"))
+                    .unwrap();
+            let created =
+                create_owner_only_directory_child(&parent, std::ffi::OsStr::new("private"))
+                    .unwrap();
+            let retained_file =
+                create_owner_only_file_child(&created, std::ffi::OsStr::new("retained.txt"))
+                    .unwrap();
+            let expected_identity = file_identity(&created).unwrap();
+
+            let reopened =
+                open_any_child_for_delete(&parent, std::ffi::OsStr::new("private")).unwrap();
+
+            assert_eq!(
+                opened_child_kind(&reopened).unwrap(),
+                OpenedChildKind::Directory
+            );
+            assert_eq!(file_identity(&reopened).unwrap(), expected_identity);
+            drop(reopened);
+            drop(retained_file);
+            drop(created);
+            drop(parent);
+            drop(root_handle);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn windows_open_any_child_nofollow_classifies_a_reparse_point() {
+            let root = unique_temp_root("open-any-reparse");
+            fs::create_dir_all(&root).unwrap();
+            let target = root.join("target.txt");
+            fs::write(&target, b"target").unwrap();
+            std::os::windows::fs::symlink_file(&target, root.join("link.txt")).unwrap();
+            let parent = open_directory_nofollow(&root).unwrap();
+
+            let (opened, kind) = open_any_child_nofollow(&parent, std::ffi::OsStr::new("link.txt"))
+                .expect("a no-follow open must return the reparse point itself");
+
+            assert_eq!(kind, OpenedChildKind::ReparsePoint);
+            assert_eq!(opened_child_kind(&opened).unwrap(), kind);
+            drop(opened);
+            drop(parent);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn populated_child_moves_between_live_owner_only_parent_handles() {
+            use std::io::Write;
+
+            let root = unique_temp_root("owner-only-directory-rename");
+            fs::create_dir_all(&root).unwrap();
+            let root_handle = open_directory_nofollow(&root).unwrap();
+            let source_parent = create_owner_only_directory_child(
+                &root_handle,
+                std::ffi::OsStr::new("source-parent"),
+            )
+            .unwrap();
+            let destination_parent = create_owner_only_directory_child(
+                &root_handle,
+                std::ffi::OsStr::new("destination-parent"),
+            )
+            .unwrap();
+            let mut effective =
+                create_owner_only_file_child(&source_parent, std::ffi::OsStr::new("config.yaml"))
+                    .unwrap();
+            effective.write_all(b"private").unwrap();
+            let source =
+                create_owner_only_directory_child(&source_parent, std::ffi::OsStr::new("payload"))
+                    .unwrap();
+            let mut payload =
+                create_owner_only_file_child(&source, std::ffi::OsStr::new("new.txt")).unwrap();
+            payload.write_all(b"new").unwrap();
+            drop(payload);
+            drop(source);
+            let source_for_rename =
+                open_directory_child_for_rename(&source_parent, std::ffi::OsStr::new("payload"))
+                    .unwrap();
+
+            rename_directory_handle_child_no_replace(
+                &source_for_rename,
+                &destination_parent,
+                std::ffi::OsStr::new("payload"),
+            )
+            .unwrap();
+            let effective_for_delete =
+                open_any_child_for_delete(&source_parent, std::ffi::OsStr::new("config.yaml"))
+                    .unwrap();
+            delete_open_child(&effective_for_delete).unwrap();
+            drop(effective_for_delete);
+            drop(effective);
+            let source_parent_for_delete =
+                open_any_child_for_delete(&root_handle, std::ffi::OsStr::new("source-parent"))
+                    .unwrap();
+
+            assert!(!root.join("source-parent").join("payload").exists());
+            assert_eq!(
+                fs::read(
+                    root.join("destination-parent")
+                        .join("payload")
+                        .join("new.txt")
+                )
+                .unwrap(),
+                b"new"
+            );
+            drop(source_parent_for_delete);
+            drop(source_for_rename);
+            drop(destination_parent);
+            drop(source_parent);
+            drop(root_handle);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn windows_handle_enumeration_uses_the_retained_directory_after_path_replacement() {
+            let root = unique_temp_root("retained-enumeration");
+            let original = root.join("directory");
+            let displaced = root.join("directory-displaced");
+            fs::create_dir_all(&original).unwrap();
+            fs::write(original.join("alpha.txt"), b"alpha").unwrap();
+            fs::write(original.join("zeta.txt"), b"zeta").unwrap();
+            let directory = open_directory_nofollow(&original).unwrap();
+            fs::rename(&original, &displaced).unwrap();
+            fs::create_dir(&original).unwrap();
+            fs::write(original.join("decoy.txt"), b"decoy").unwrap();
+
+            let names = read_directory_names(&directory).unwrap();
+
+            assert_eq!(
+                names,
+                vec![OsString::from("alpha.txt"), OsString::from("zeta.txt")]
+            );
+            drop(directory);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn windows_handle_enumeration_accepts_a_handle_relative_child() {
+            let root = unique_temp_root("child-enumeration");
+            let child_path = root.join("child");
+            fs::create_dir_all(&child_path).unwrap();
+            fs::write(child_path.join("entry.txt"), b"entry").unwrap();
+            let parent = open_directory_nofollow(&root).unwrap();
+            let child =
+                open_directory_child_nofollow(&parent, std::ffi::OsStr::new("child")).unwrap();
+
+            let names = read_directory_names(&child).unwrap();
+
+            assert_eq!(names, vec![OsString::from("entry.txt")]);
+            drop(child);
+            drop(parent);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn windows_handle_enumeration_accepts_a_new_private_child() {
+            let root = unique_temp_root("private-child-enumeration");
+            fs::create_dir_all(&root).unwrap();
+            let parent = open_directory_nofollow(&root).unwrap();
+            let child =
+                create_owner_only_directory_child(&parent, std::ffi::OsStr::new("child")).unwrap();
+            fs::write(root.join("child").join("entry.txt"), b"entry").unwrap();
+
+            let names = read_directory_names(&child).unwrap();
+
+            assert_eq!(names, vec![OsString::from("entry.txt")]);
+            drop(child);
+            drop(parent);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn windows_nt_create_options_for_std_file_are_synchronous() {
+            const FILE_DIRECTORY_FILE: u32 = 0x0000_0001;
+            const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+            const FILE_SYNCHRONOUS_IO_ALERT: u32 = 0x0000_0010;
+            const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x0000_0020;
+            use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
+
+            let options = nt_create_options_for_std_file(
+                SYNCHRONIZE,
+                FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+            )
+            .unwrap();
+
+            assert_ne!(options & FILE_SYNCHRONOUS_IO_NONALERT, 0);
+            assert_eq!(options & FILE_SYNCHRONOUS_IO_ALERT, 0);
+            assert_ne!(options & FILE_DIRECTORY_FILE, 0);
+            assert_ne!(options & FILE_OPEN_REPARSE_POINT, 0);
+        }
+
+        #[test]
+        fn windows_nt_create_options_reject_asynchronous_std_file_access() {
+            let error = nt_create_options_for_std_file(0, 0).unwrap_err();
+
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert!(error.to_string().contains("SYNCHRONIZE"), "{error}");
+        }
+
+        #[test]
+        fn windows_directory_enumeration_status_classifier_distinguishes_first_query_eos() {
+            let no_more = io::Error::from_raw_os_error(ERROR_NO_MORE_FILES as i32);
+            let no_match = io::Error::from_raw_os_error(ERROR_FILE_NOT_FOUND as i32);
+            let denied = io::Error::from_raw_os_error(ERROR_ACCESS_DENIED as i32);
+
+            assert!(directory_query_is_end(true, &no_more));
+            assert!(directory_query_is_end(false, &no_more));
+            assert!(directory_query_is_end(true, &no_match));
+            assert!(!directory_query_is_end(false, &no_match));
+            assert!(!directory_query_is_end(true, &denied));
+        }
+
+        #[test]
+        fn windows_directory_enumeration_accepts_an_empty_retained_directory() {
+            let root = unique_temp_root("empty-enumeration");
+            fs::create_dir_all(&root).unwrap();
+            let directory = open_directory_nofollow(&root).unwrap();
+
+            assert!(read_directory_names(&directory).unwrap().is_empty());
+
+            drop(directory);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn windows_directory_enumeration_reads_multiple_native_buffers() {
+            let root = unique_temp_root("multi-buffer-enumeration");
+            fs::create_dir_all(&root).unwrap();
+            let mut expected = Vec::new();
+            for index in 0..900 {
+                let name = format!("{index:04}-{}.xml", "x".repeat(80));
+                fs::write(root.join(&name), b"x").unwrap();
+                expected.push(OsString::from(name));
+            }
+            let directory = open_directory_nofollow(&root).unwrap();
+
+            let names = read_directory_names(&directory).unwrap();
+
+            assert_eq!(names, expected);
+            drop(directory);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn windows_directory_parser_rejects_an_unaligned_next_record() {
+            let mut buffer = vec![0u8; 512];
+            let name_length = 2u32;
+            let minimum_record_bytes =
+                offset_of!(FILE_ID_BOTH_DIR_INFO, FileName) + name_length as usize;
+            let next = (((minimum_record_bytes + 7) & !7) + 4) as u32;
+            assert!(next as usize >= minimum_record_bytes);
+            assert_eq!(next % 8, 4);
+            // SAFETY: the test buffer is large enough for each field and unaligned writes accept
+            // Vec<u8>'s alignment.
+            unsafe {
+                std::ptr::write_unaligned(
+                    buffer
+                        .as_mut_ptr()
+                        .add(offset_of!(FILE_ID_BOTH_DIR_INFO, NextEntryOffset))
+                        .cast::<u32>(),
+                    next,
+                );
+                std::ptr::write_unaligned(
+                    buffer
+                        .as_mut_ptr()
+                        .add(offset_of!(FILE_ID_BOTH_DIR_INFO, FileNameLength))
+                        .cast::<u32>(),
+                    name_length,
+                );
+                std::ptr::write_unaligned(
+                    buffer
+                        .as_mut_ptr()
+                        .add(offset_of!(FILE_ID_BOTH_DIR_INFO, FileName))
+                        .cast::<u16>(),
+                    b'a' as u16,
+                );
+            }
+            let mut names = Vec::new();
+
+            let error = parse_directory_information_buffer(&buffer, &mut names).unwrap_err();
+
+            assert!(error.to_string().contains("8-byte-aligned"), "{error}");
+        }
+
+        #[test]
+        fn windows_directory_parser_rejects_a_truncated_rust_header() {
+            let buffer = vec![0u8; size_of::<FILE_ID_BOTH_DIR_INFO>() - 1];
+            let mut names = Vec::new();
+
+            let error = parse_directory_information_buffer(&buffer, &mut names).unwrap_err();
+
+            assert!(error.to_string().contains("complete header"), "{error}");
+        }
+    }
 
     fn unique_temp_root(name: &str) -> PathBuf {
         let nanos = SystemTime::now()

@@ -1403,36 +1403,116 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertNotRegex(v8project, r"(?m)^connection:")
         self.assertNotIn("mode=load|merge|update", v8project)
 
-    def test_verified_applied_full_dump_documents_windows_fail_closed_policy(
+    def test_verified_applied_full_dump_documents_supported_hosts_and_verified_publication(
         self,
     ) -> None:
-        docs = "\n".join(
-            path.read_text(encoding="utf-8")
-            for path in [
-                self.skill_root() / "v8-runner" / "SKILL.md",
-                self.skill_root()
-                / "v8-runner"
-                / "references"
-                / "file-and-artifact-workflows.md",
-                self.reference_root() / "tooling" / "runtime-build.md",
-                self.reference_root() / "tooling" / "v8project.md",
-            ]
+        docs = [
+            self.skill_root() / "v8-runner" / "SKILL.md",
+            self.skill_root()
+            / "v8-runner"
+            / "references"
+            / "file-and-artifact-workflows.md",
+            self.reference_root() / "tooling" / "runtime-build.md",
+            self.reference_root() / "tooling" / "v8project.md",
+        ]
+        required = {
+            "Windows": re.compile(r"\bWindows\b", re.IGNORECASE),
+            "macOS": re.compile(r"\bmacOS\b", re.IGNORECASE),
+            "Linux": re.compile(r"\bLinux\b", re.IGNORECASE),
+            "synchronous": re.compile(
+                r"\b(?:synchronous|синхронн\w*)\b",
+                re.IGNORECASE,
+            ),
+            "applied": re.compile(r"\bapplied\b", re.IGNORECASE),
+            "full dump": re.compile(
+                r"(?:\bfull\s+dump\b|\bmode\s*=\s*full\b)",
+                re.IGNORECASE,
+            ),
+            "CONFIGURATION": re.compile(r"\bCONFIGURATION\b"),
+            "EXTENSION": re.compile(r"\bEXTENSION\b"),
+            "verified transactional publication": re.compile(
+                r"\bverified\s+transactional\s+publication\b",
+                re.IGNORECASE,
+            ),
+        }
+        stale_restriction = re.compile(
+            r"(?:fail(?:ed)?[- ]closed|blocked|unsupported)",
+            re.IGNORECASE,
         )
 
-        self.assertRegex(
-            docs,
-            re.compile(
-                r"Windows.{0,240}(?:fail-closed|blocked|unsupported)",
-                re.IGNORECASE | re.DOTALL,
-            ),
+        def markdown_paragraphs(text: str) -> list[str]:
+            return re.split(r"\n(?:[ \t]*|>[ \t]*)\n", text)
+
+        def support_paragraphs(text: str) -> list[str]:
+            return [
+                paragraph
+                for paragraph in markdown_paragraphs(text)
+                if all(pattern.search(paragraph) for pattern in required.values())
+            ]
+
+        def contract_errors(text: str) -> list[str]:
+            errors = []
+            if not support_paragraphs(text):
+                errors.append("missing complete applied full dump support paragraph")
+            for paragraph in markdown_paragraphs(text):
+                for sentence in re.split(r"(?<=[.!?])\s+", paragraph):
+                    if (
+                        required["Windows"].search(sentence)
+                        and required["full dump"].search(sentence)
+                        and stale_restriction.search(sentence)
+                    ):
+                        errors.append(
+                            "Windows applied full dump is documented as restricted"
+                        )
+            return errors
+
+        document_texts = {
+            path: path.read_text(encoding="utf-8")
+            for path in docs
+        }
+        for path in docs:
+            with self.subTest(document=path.name):
+                self.assertEqual([], contract_errors(document_texts[path]))
+
+        mixed_claims = (
+            "Windows, macOS, and Linux support synchronous applied full dump "
+            "for CONFIGURATION and EXTENSION through verified transactional "
+            "publication. Incremental dump without receipts remains fail-closed "
+            "on Linux."
         )
-        self.assertRegex(
-            docs,
-            re.compile(
-                r"(?:ACL|access control).{0,240}(?:implemented|available|support)",
-                re.IGNORECASE | re.DOTALL,
-            ),
+        self.assertEqual(
+            [],
+            contract_errors(mixed_claims),
+            "a restriction on a different operation is not a Windows full-dump restriction",
         )
+
+        for path, text in document_texts.items():
+            complete_paragraphs = support_paragraphs(text)
+            for missing, pattern in required.items():
+                mutated = text
+                for paragraph in complete_paragraphs:
+                    mutated_paragraph = pattern.sub("", paragraph)
+                    mutated = mutated.replace(paragraph, mutated_paragraph, 1)
+                with self.subTest(document=path.name, missing=missing):
+                    self.assertTrue(contract_errors(mutated), missing)
+
+        stale_mutations = {
+            "natural fail-closed wording": (
+                "Windows applied full dump is currently fail-closed."
+            ),
+            "unsupported wording": "Windows full dump is unsupported.",
+            "blocked mode wording": "Windows mode=full is blocked.",
+            "reversed fail-closed wording": (
+                "Fail-closed: Windows applied full dump."
+            ),
+        }
+        for path, text in document_texts.items():
+            for mutation, stale_claim in stale_mutations.items():
+                with self.subTest(document=path.name, mutation=mutation):
+                    self.assertTrue(
+                        contract_errors(f"{text}\n\n{stale_claim}\n"),
+                        mutation,
+                    )
 
     def test_code_patch_skill_uses_only_logical_configuration_and_extension_targets(
         self,

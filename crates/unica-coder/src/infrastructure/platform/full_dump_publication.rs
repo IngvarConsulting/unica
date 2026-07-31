@@ -21,8 +21,18 @@ use crate::infrastructure::internal_adapters::{
 use crate::infrastructure::native_operations::single_file_publisher::{
     with_publication_locks_mode, PublicationTreeLockMode,
 };
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::infrastructure::platform::filesystem::hard_link_count;
+#[cfg(windows)]
+use crate::infrastructure::platform::filesystem::{
+    capture_windows_immutable_entry_evidence, create_owner_only_directory_child,
+    create_owner_only_file_child, delete_open_child, discard_created_child,
+    open_any_child_for_delete, open_any_child_nofollow, open_directory_child_for_rename,
+    open_directory_child_nofollow, open_directory_nofollow, open_regular_child_nofollow,
+    opened_child_kind, rename_directory_handle_child_no_replace, verify_owner_only_acl,
+    verify_unprivileged_windows_platform_caller, verify_windows_local_fixed_volume,
+    OpenedChildKind, WindowsImmutableAclProfile,
+};
 use crate::infrastructure::platform::filesystem::{
     file_identity, metadata_is_link_or_reparse_point, restrict_stage_to_owner, FileIdentity,
 };
@@ -42,7 +52,7 @@ use std::env;
 use std::ffi::CString;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::io::Read;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
@@ -66,6 +76,1097 @@ const PLATFORM_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 pub(crate) enum FullDumpInvocation {
     BuildDump,
     RuntimeExecute,
+}
+
+#[cfg(all(test, windows))]
+mod windows_anchor_tests {
+    use super::{
+        capture_directory_snapshot, capture_tree_child_nofollow,
+        capture_windows_immutable_platform_children, parse_windows_local_platform_path,
+        remove_bound_directory_child, rename_child_no_replace, secure_path_is_absent,
+        secure_read_regular_file_snapshot, unlink_bound_regular_child,
+        with_private_cleanup_failpoint, with_private_creation_failpoint, with_secure_read_hook,
+        with_tree_open_hook, DirectoryAnchor, PrivateCleanupCheckpoint, PrivateCreationCheckpoint,
+        PrivateDumpStage, TreeEntryKind, TreeSnapshot,
+    };
+    use crate::infrastructure::platform::filesystem::{
+        create_owner_only_file_child, file_identity, open_directory_nofollow,
+        open_regular_child_nofollow, read_directory_names, verify_owner_only_acl,
+    };
+    use std::cell::Cell;
+    use std::ffi::{OsStr, OsString};
+    use std::fs;
+    use std::os::windows::io::AsRawHandle;
+    use std::path::{Path, PathBuf};
+    use std::rc::Rc;
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::Storage::FileSystem::SetFileTime;
+
+    fn enable_directory_case_sensitivity(path: &Path) {
+        use std::mem::size_of;
+        use std::os::windows::ffi::OsStrExt;
+        use std::os::windows::io::FromRawHandle;
+        use std::ptr;
+        use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+        use windows_sys::Win32::Storage::FileSystem::{
+            CreateFileW, SetFileInformationByHandle, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY,
+            FILE_DELETE_CHILD, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES,
+            OPEN_EXISTING, SYNCHRONIZE,
+        };
+
+        #[repr(C)]
+        struct FileCaseSensitiveInfo {
+            flags: u32,
+        }
+
+        const FILE_CASE_SENSITIVE_INFO_CLASS: i32 = 23;
+        const FILE_CS_FLAG_CASE_SENSITIVE_DIR: u32 = 1;
+
+        let mut path = path.as_os_str().encode_wide().collect::<Vec<_>>();
+        path.push(0);
+        // SAFETY: path is NUL-terminated and the requested rights are the documented rights for
+        // changing an empty directory's case-sensitivity flag.
+        let handle = unsafe {
+            CreateFileW(
+                path.as_ptr(),
+                FILE_ADD_FILE
+                    | FILE_ADD_SUBDIRECTORY
+                    | FILE_DELETE_CHILD
+                    | FILE_WRITE_ATTRIBUTES
+                    | SYNCHRONIZE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                ptr::null_mut(),
+            )
+        };
+        assert_ne!(
+            handle,
+            INVALID_HANDLE_VALUE,
+            "{}",
+            std::io::Error::last_os_error()
+        );
+        // SAFETY: CreateFileW returned an owned handle.
+        let directory = unsafe { fs::File::from_raw_handle(handle) };
+        let information = FileCaseSensitiveInfo {
+            flags: FILE_CS_FLAG_CASE_SENSITIVE_DIR,
+        };
+        // SAFETY: directory is a live empty-directory handle and information has the exact
+        // FileCaseSensitiveInfo layout and size.
+        assert_ne!(
+            unsafe {
+                SetFileInformationByHandle(
+                    directory.as_raw_handle(),
+                    FILE_CASE_SENSITIVE_INFO_CLASS,
+                    (&raw const information).cast(),
+                    size_of::<FileCaseSensitiveInfo>() as u32,
+                )
+            },
+            0,
+            "{}",
+            std::io::Error::last_os_error()
+        );
+    }
+
+    fn create_case_sensitive_file(path: &Path, contents: &[u8]) -> fs::File {
+        use std::io::Write;
+        use std::os::windows::ffi::OsStrExt;
+        use std::os::windows::io::FromRawHandle;
+        use std::ptr;
+        use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::Storage::FileSystem::{
+            CreateFileW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_POSIX_SEMANTICS,
+            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+
+        let mut path = path.as_os_str().encode_wide().collect::<Vec<_>>();
+        path.push(0);
+        // SAFETY: path is NUL-terminated. POSIX semantics make the independently prepared fixture
+        // honor the already-enabled per-directory case-sensitive state.
+        let handle = unsafe {
+            CreateFileW(
+                path.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                ptr::null(),
+                CREATE_NEW,
+                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_POSIX_SEMANTICS,
+                ptr::null_mut(),
+            )
+        };
+        assert_ne!(
+            handle,
+            INVALID_HANDLE_VALUE,
+            "{}",
+            std::io::Error::last_os_error()
+        );
+        // SAFETY: CreateFileW returned an owned handle.
+        let mut file = unsafe { fs::File::from_raw_handle(handle) };
+        file.write_all(contents).unwrap();
+        file.sync_all().unwrap();
+        file
+    }
+
+    #[test]
+    fn windows_immutable_platform_path_accepts_only_normal_or_verbatim_local_disks() {
+        for path in [
+            PathBuf::from(r"C:\Program Files\1cv8\8.3.27.1859"),
+            PathBuf::from(r"\\?\C:\Program Files\1cv8\8.3.27.1859"),
+        ] {
+            let (root, names) = parse_windows_local_platform_path(&path).unwrap();
+            assert!(
+                root.as_path() == std::path::Path::new(r"C:\")
+                    || root.as_path() == std::path::Path::new(r"\\?\C:\"),
+                "{}",
+                root.display()
+            );
+            assert_eq!(
+                names.last().unwrap(),
+                &std::ffi::OsString::from("8.3.27.1859")
+            );
+        }
+
+        for path in [
+            PathBuf::from(r"\\server\share\1cv8"),
+            PathBuf::from(r"\\?\UNC\server\share\1cv8"),
+            PathBuf::from(r"\\.\C:\Program Files\1cv8"),
+            PathBuf::from(r"\\?\Volume{01234567-89ab-cdef-0123-456789abcdef}\1cv8"),
+        ] {
+            assert!(
+                parse_windows_local_platform_path(&path).is_err(),
+                "{}",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn windows_anchor_detects_parent_name_replacement() {
+        let root = unique_temp_root("anchor-replacement");
+        let parent = root.join("parent");
+        fs::create_dir_all(&parent).unwrap();
+        let anchor = DirectoryAnchor::capture_exact(&parent).unwrap();
+        let moved = root.join("moved");
+        fs::rename(&parent, &moved).unwrap();
+        fs::create_dir(&parent).unwrap();
+
+        let error = anchor.verify_path_binding().unwrap_err();
+
+        assert!(error.contains("identity"), "{error}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_anchor_creates_a_private_bound_child() {
+        let root = unique_temp_root("anchor-child");
+        fs::create_dir_all(&root).unwrap();
+        let anchor = DirectoryAnchor::capture_exact(&root).unwrap();
+        let child_path = root.join("child");
+
+        let child = anchor
+            .create_child(OsStr::new("child"), &child_path)
+            .unwrap();
+
+        child.verify_path_binding().unwrap();
+        verify_owner_only_acl(&child.directory).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_immutable_platform_inventory_rejects_a_multiply_linked_file() {
+        let root = unique_temp_root("immutable-hard-link");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("1cv8.exe"), b"platform").unwrap();
+        fs::hard_link(root.join("1cv8.exe"), root.join("alias.exe")).unwrap();
+        let directory = open_directory_nofollow(&root).unwrap();
+        let mut entries = Vec::new();
+
+        let error = capture_windows_immutable_platform_children(&directory, &root, &mut entries)
+            .unwrap_err();
+
+        assert!(error.contains("exactly one hard link"), "{error}");
+        drop(directory);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_immutable_platform_inventory_rejects_a_reparse_point() {
+        let root = unique_temp_root("immutable-reparse");
+        let outside = unique_temp_root("immutable-reparse-outside");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&outside, b"outside").unwrap();
+        std::os::windows::fs::symlink_file(&outside, root.join("1cv8.exe")).unwrap();
+        let directory = open_directory_nofollow(&root).unwrap();
+        let mut entries = Vec::new();
+
+        let error = capture_windows_immutable_platform_children(&directory, &root, &mut entries)
+            .unwrap_err();
+
+        assert!(
+            error.contains("reparse") || error.contains("unsupported"),
+            "{error}"
+        );
+        drop(directory);
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_file(outside).unwrap();
+    }
+
+    #[test]
+    fn windows_anchor_rejects_a_display_path_outside_the_parent() {
+        let root = unique_temp_root("anchor-containment");
+        let parent = root.join("parent");
+        let outside = root.join("outside");
+        fs::create_dir_all(&parent).unwrap();
+        let anchor = DirectoryAnchor::capture_exact(&parent).unwrap();
+
+        let error = anchor
+            .create_child(OsStr::new("child"), &outside)
+            .unwrap_err();
+
+        assert!(error.contains("does not match anchored child"), "{error}");
+        assert!(!outside.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_descendant_anchor_walks_multiple_components_from_the_retained_root() {
+        let root = unique_temp_root("descendant-walk");
+        let descendant = root.join("sources").join("configuration");
+        fs::create_dir_all(&descendant).unwrap();
+        let anchor = DirectoryAnchor::capture_exact(&root).unwrap();
+
+        let captured = anchor
+            .capture_descendant(
+                PathBuf::from("sources/configuration").as_path(),
+                &descendant,
+            )
+            .unwrap();
+
+        assert_eq!(captured.path, descendant);
+        captured.verify_path_binding().unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_descendant_anchor_rejects_a_replaced_intermediate_component() {
+        let root = unique_temp_root("descendant-replacement");
+        let first = root.join("sources");
+        let descendant = first.join("configuration");
+        fs::create_dir_all(&descendant).unwrap();
+        let anchor = DirectoryAnchor::capture_exact(&root).unwrap();
+        let captured = anchor
+            .capture_descendant(
+                PathBuf::from("sources/configuration").as_path(),
+                &descendant,
+            )
+            .unwrap();
+        let captured_identity = captured.identity;
+        drop(captured);
+        let displaced = root.join("sources-displaced");
+        fs::rename(&first, &displaced).unwrap();
+        fs::create_dir_all(&descendant).unwrap();
+
+        let error = anchor
+            .verify_descendant_identity(
+                PathBuf::from("sources/configuration").as_path(),
+                captured_identity,
+                &descendant,
+            )
+            .unwrap_err();
+
+        assert!(
+            error.contains("identity") || error.contains("changed"),
+            "{error}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_descendant_anchor_captures_child_root_identity_and_absence() {
+        let root = unique_temp_root("descendant-child-root");
+        let child = root.join("source");
+        fs::create_dir_all(&child).unwrap();
+        let anchor = DirectoryAnchor::capture_exact(&root).unwrap();
+
+        let identity = anchor
+            .capture_child_root_identity(OsStr::new("source"), &child)
+            .unwrap();
+        let missing = anchor
+            .capture_child_root_identity(OsStr::new("missing"), &root.join("missing"))
+            .unwrap();
+
+        assert!(identity.is_some());
+        assert_eq!(missing, None);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn no_clobber_directory_move_preserves_an_existing_destination() {
+        let root = unique_temp_root("no-clobber");
+        let source_parent_path = root.join("source-parent");
+        let destination_parent_path = root.join("destination-parent");
+        let source = source_parent_path.join("payload");
+        let destination = destination_parent_path.join("payload");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("new.txt"), b"new").unwrap();
+        fs::write(destination.join("old.txt"), b"old").unwrap();
+
+        let source_parent = DirectoryAnchor::capture_exact(&source_parent_path).unwrap();
+        let destination_parent = DirectoryAnchor::capture_exact(&destination_parent_path).unwrap();
+        let error = rename_child_no_replace(
+            &source_parent,
+            OsStr::new("payload"),
+            &destination_parent,
+            OsStr::new("payload"),
+        )
+        .unwrap_err();
+
+        assert!(destination.join("old.txt").is_file());
+        assert!(!destination.join("new.txt").exists());
+        assert!(source.join("new.txt").is_file());
+        assert!(!error.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn directory_move_installs_when_destination_is_absent() {
+        let root = unique_temp_root("rename-success");
+        let source_parent_path = root.join("source-parent");
+        let destination_parent_path = root.join("destination-parent");
+        let source = source_parent_path.join("payload");
+        let destination = destination_parent_path.join("payload");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&destination_parent_path).unwrap();
+        fs::write(source.join("new.txt"), b"new").unwrap();
+
+        let source_parent = DirectoryAnchor::capture_exact(&source_parent_path).unwrap();
+        let destination_parent = DirectoryAnchor::capture_exact(&destination_parent_path).unwrap();
+        rename_child_no_replace(
+            &source_parent,
+            OsStr::new("payload"),
+            &destination_parent,
+            OsStr::new("payload"),
+        )
+        .unwrap();
+
+        assert!(!source.exists());
+        assert_eq!(fs::read(destination.join("new.txt")).unwrap(), b"new");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_secure_read_rejects_a_final_reparse_point() {
+        let root = unique_temp_root("secure-read-reparse");
+        fs::create_dir_all(&root).unwrap();
+        let real = root.join("real.yaml");
+        let link = root.join("v8project.yaml");
+        fs::write(&real, b"project: real").unwrap();
+        std::os::windows::fs::symlink_file(&real, &link).unwrap();
+
+        let error = secure_read_regular_file_snapshot(&link, "project config").unwrap_err();
+
+        assert!(!error.contains("unavailable"), "{error}");
+        assert!(
+            error.contains("reparse") || error.contains("link"),
+            "{error}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_secure_read_detects_child_name_identity_replacement() {
+        let root = unique_temp_root("secure-read-identity");
+        fs::create_dir_all(&root).unwrap();
+        let config = root.join("v8project.yaml");
+        let displaced = root.join("v8project.displaced.yaml");
+        let replacement = root.join("v8project.replacement.yaml");
+        fs::write(&config, b"project: original").unwrap();
+        fs::write(&replacement, b"project: replacement").unwrap();
+        let hook_config = config.clone();
+        let hook_displaced = displaced.clone();
+        let hook_replacement = replacement.clone();
+        let hook_ran = Rc::new(Cell::new(false));
+        let hook_ran_inside = Rc::clone(&hook_ran);
+
+        let result = with_secure_read_hook(
+            move |path| {
+                assert_eq!(path, hook_config);
+                hook_ran_inside.set(true);
+                fs::rename(&hook_config, &hook_displaced).unwrap();
+                fs::rename(&hook_replacement, &hook_config).unwrap();
+            },
+            || secure_read_regular_file_snapshot(&config, "project config"),
+        );
+
+        let error = result.expect_err("the retained child identity must reject replacement");
+        assert!(hook_ran.get(), "the secure-read hook must run");
+        assert!(!error.contains("unavailable"), "{error}");
+        assert!(
+            error.contains("identity") || error.contains("changed"),
+            "{error}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_secure_read_absence_treats_reparse_points_as_present() {
+        let root = unique_temp_root("secure-absence-reparse");
+        fs::create_dir_all(&root).unwrap();
+        let real = root.join("real.yaml");
+        let link = root.join("v8project.local.yaml");
+        fs::write(&real, b"project: local").unwrap();
+        std::os::windows::fs::symlink_file(&real, &link).unwrap();
+
+        assert!(!secure_path_is_absent(&link).unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_secure_read_absence_accepts_only_a_missing_child() {
+        let root = unique_temp_root("secure-absence-missing");
+        fs::create_dir_all(&root).unwrap();
+        let missing = root.join("v8project.local.yaml");
+
+        assert!(secure_path_is_absent(&missing).unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_tree_snapshot_captures_nested_identities_sizes_and_digests() {
+        let root = unique_temp_root("tree-snapshot-stable");
+        let nested = root.join("nested");
+        let payload = nested.join("payload.txt");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(&payload, b"abc").unwrap();
+        let expected_file_identity = file_identity(&fs::File::open(&payload).unwrap()).unwrap();
+        let expected_directory_identity =
+            file_identity(&open_directory_nofollow(&nested).unwrap()).unwrap();
+
+        let first = capture_directory_snapshot(&root).unwrap();
+        let second = capture_directory_snapshot(&root).unwrap();
+
+        assert_eq!(
+            first, second,
+            "a stable tree must produce a stable snapshot"
+        );
+        assert_eq!(first.len(), 2);
+        assert!(first.iter().any(|entry| {
+            entry.relative_path.as_path() == Path::new("nested")
+                && entry.kind
+                    == TreeEntryKind::Directory {
+                        identity: expected_directory_identity,
+                    }
+        }));
+        assert!(first.iter().any(|entry| {
+            entry.relative_path.as_path() == Path::new("nested/payload.txt")
+                && entry.kind
+                    == TreeEntryKind::File {
+                        identity: expected_file_identity,
+                        size: 3,
+                        sha256: [
+                            0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde,
+                            0x5d, 0xae, 0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c,
+                            0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad,
+                        ],
+                    }
+        }));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_relative_lookup_preserves_ordinary_case_insensitive_ntfs_semantics() {
+        let root = unique_temp_root("ordinary-case-insensitive-lookup");
+        fs::create_dir_all(&root).unwrap();
+        let exact = root.join("Entry.txt");
+        fs::write(&exact, b"ordinary").unwrap();
+        let expected_identity = file_identity(&fs::File::open(&exact).unwrap()).unwrap();
+        let parent = open_directory_nofollow(&root).unwrap();
+
+        let collision = create_owner_only_file_child(&parent, OsStr::new("eNTRY.TxT")).unwrap_err();
+        assert_eq!(collision.kind(), std::io::ErrorKind::AlreadyExists);
+        let differently_cased =
+            open_regular_child_nofollow(&parent, OsStr::new("eNTRY.TxT")).unwrap();
+
+        assert_eq!(
+            file_identity(&differently_cased).unwrap(),
+            expected_identity
+        );
+        drop(differently_cased);
+        drop(parent);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_case_sensitive_siblings_bind_snapshot_inventory_and_cleanup_to_exact_names() {
+        use std::io::{Read, Write};
+
+        let root = unique_temp_root("case-sensitive-siblings");
+        let target = root.join("target");
+        fs::create_dir_all(&target).unwrap();
+        enable_directory_case_sensitivity(&target);
+        let lower_path = target.join("entry.txt");
+        let lower = create_case_sensitive_file(&lower_path, b"lower-content");
+        let parent = open_directory_nofollow(&target).unwrap();
+        let mut upper = create_owner_only_file_child(&parent, OsStr::new("ENTRY.txt")).unwrap();
+        upper.write_all(b"UPPER-CONTENT").unwrap();
+        upper.sync_all().unwrap();
+        let lower_identity = file_identity(&lower).unwrap();
+        let upper_identity = file_identity(&upper).unwrap();
+        assert_ne!(lower_identity, upper_identity);
+        drop(lower);
+        drop(upper);
+
+        let ambiguous = open_regular_child_nofollow(&parent, OsStr::new("Entry.txt"))
+            .expect_err("a case-sensitive parent must reject a non-exact child spelling");
+        assert_eq!(ambiguous.kind(), std::io::ErrorKind::NotFound);
+
+        let names = read_directory_names(&parent).unwrap();
+        assert_eq!(
+            names,
+            vec![OsString::from("ENTRY.txt"), OsString::from("entry.txt")]
+        );
+        for (name, expected_identity, expected_contents) in [
+            (
+                OsStr::new("entry.txt"),
+                lower_identity,
+                b"lower-content".as_slice(),
+            ),
+            (
+                OsStr::new("ENTRY.txt"),
+                upper_identity,
+                b"UPPER-CONTENT".as_slice(),
+            ),
+        ] {
+            let mut child = open_regular_child_nofollow(&parent, name).unwrap();
+            let mut contents = Vec::new();
+            child.read_to_end(&mut contents).unwrap();
+            assert_eq!(
+                file_identity(&child).unwrap(),
+                expected_identity,
+                "{name:?}"
+            );
+            assert_eq!(contents, expected_contents, "{name:?}");
+        }
+
+        let snapshot = capture_directory_snapshot(&target).unwrap();
+        assert_eq!(snapshot.len(), 2);
+        assert!(snapshot.iter().any(|entry| {
+            entry.relative_path.as_path() == Path::new("entry.txt")
+                && entry.kind
+                    == TreeEntryKind::File {
+                        identity: lower_identity,
+                        size: 13,
+                        sha256: [
+                            0xd4, 0x82, 0x15, 0xe7, 0x47, 0xb9, 0xf0, 0x6a, 0xdc, 0x06, 0xee, 0x08,
+                            0x67, 0xdb, 0xfb, 0xf7, 0x94, 0x00, 0x67, 0x47, 0xe0, 0xf5, 0xff, 0x23,
+                            0x30, 0xaf, 0x82, 0x20, 0x9f, 0x21, 0xca, 0xa3,
+                        ],
+                    }
+        }));
+        assert!(snapshot.iter().any(|entry| {
+            entry.relative_path.as_path() == Path::new("ENTRY.txt")
+                && entry.kind
+                    == TreeEntryKind::File {
+                        identity: upper_identity,
+                        size: 13,
+                        sha256: [
+                            0xdc, 0xd4, 0x17, 0x49, 0xde, 0x8a, 0x50, 0x74, 0x7e, 0x82, 0x18, 0x46,
+                            0x4a, 0x98, 0xa8, 0xbb, 0xfc, 0xe0, 0xec, 0x85, 0xb1, 0x76, 0xae, 0x0a,
+                            0x77, 0xb8, 0x5e, 0xd5, 0x30, 0xc9, 0xe7, 0xd9,
+                        ],
+                    }
+        }));
+
+        unlink_bound_regular_child(&parent, OsStr::new("entry.txt"), lower_identity).unwrap();
+        let mut survivor = open_regular_child_nofollow(&parent, OsStr::new("ENTRY.txt")).unwrap();
+        let mut survivor_contents = Vec::new();
+        survivor.read_to_end(&mut survivor_contents).unwrap();
+        assert_eq!(file_identity(&survivor).unwrap(), upper_identity);
+        assert_eq!(survivor_contents, b"UPPER-CONTENT");
+        drop(survivor);
+        drop(parent);
+        assert!(!lower_path.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_tree_snapshot_rejects_a_reparse_target_without_traversal() {
+        let root = unique_temp_root("tree-snapshot-root-reparse");
+        let outside = root.join("outside");
+        let target = root.join("target");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("sentinel.txt"), b"outside").unwrap();
+        std::os::windows::fs::symlink_dir(&outside, &target).unwrap();
+
+        let error = TreeSnapshot::capture_target(&target).unwrap_err();
+
+        assert!(!error.contains("unavailable"), "{error}");
+        assert!(
+            error.contains("reparse") || error.contains("link") || error.contains("real directory"),
+            "{error}"
+        );
+        assert_eq!(fs::read(outside.join("sentinel.txt")).unwrap(), b"outside");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_tree_snapshot_reports_a_missing_target_as_absent() {
+        let root = unique_temp_root("tree-snapshot-absent");
+        let target = root.join("target");
+        fs::create_dir_all(&root).unwrap();
+
+        assert_eq!(
+            TreeSnapshot::capture_target(&target).unwrap(),
+            TreeSnapshot::Absent
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_tree_snapshot_rejects_a_nested_reparse_entry_without_traversal() {
+        let root = unique_temp_root("tree-snapshot-nested-reparse");
+        let target = root.join("target");
+        let outside = root.join("outside");
+        fs::create_dir_all(&target).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("sentinel.txt"), b"outside").unwrap();
+        std::os::windows::fs::symlink_dir(&outside, target.join("link")).unwrap();
+
+        let error = capture_directory_snapshot(&target).unwrap_err();
+
+        assert!(!error.contains("unavailable"), "{error}");
+        assert!(
+            error.contains("reparse") || error.contains("link") || error.contains("unsupported"),
+            "{error}"
+        );
+        assert_eq!(fs::read(outside.join("sentinel.txt")).unwrap(), b"outside");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_tree_snapshot_detects_identical_byte_name_replacement() {
+        let root = unique_temp_root("tree-snapshot-name-replacement");
+        let target = root.join("target");
+        let file = target.join("payload.txt");
+        let displaced = root.join("payload.displaced.txt");
+        let replacement = root.join("payload.replacement.txt");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(&file, b"identical").unwrap();
+        fs::write(&replacement, b"identical").unwrap();
+        let parent = open_directory_nofollow(&root).unwrap();
+        let hook_file = file.clone();
+        let hook_displaced = displaced.clone();
+        let hook_replacement = replacement.clone();
+
+        let result = with_tree_open_hook(
+            move |path| {
+                assert_eq!(path, hook_file);
+                fs::rename(&hook_file, &hook_displaced).unwrap();
+                fs::rename(&hook_replacement, &hook_file).unwrap();
+            },
+            || capture_tree_child_nofollow(&parent, OsStr::new("target"), target.as_path()),
+        );
+
+        let error = result.expect_err("snapshotting must bind each child name to its identity");
+        assert!(!error.contains("unavailable"), "{error}");
+        assert!(
+            error.contains("identity") || error.contains("changed"),
+            "{error}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_tree_snapshot_detects_a_sibling_inserted_after_enumeration() {
+        let root = unique_temp_root("tree-snapshot-sibling-insertion");
+        let target = root.join("target");
+        let original = target.join("original.txt");
+        let inserted = target.join("inserted.txt");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(&original, b"original").unwrap();
+        let parent = open_directory_nofollow(&root).unwrap();
+        let hook_original = original.clone();
+        let hook_inserted = inserted.clone();
+
+        let result = with_tree_open_hook(
+            move |path| {
+                assert_eq!(path, hook_original);
+                fs::write(&hook_inserted, b"inserted").unwrap();
+            },
+            || capture_tree_child_nofollow(&parent, OsStr::new("target"), target.as_path()),
+        );
+
+        let error = result.expect_err("snapshotting must reject a changed directory name set");
+        assert!(
+            error.contains("name") || error.contains("changed"),
+            "{error}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_tree_snapshot_rejects_multiply_linked_files() {
+        let root = unique_temp_root("tree-snapshot-hard-link");
+        let target = root.join("target");
+        let file = target.join("payload.txt");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(&file, b"payload").unwrap();
+        fs::hard_link(&file, target.join("alias.txt")).unwrap();
+
+        let error = capture_directory_snapshot(&target).unwrap_err();
+
+        assert!(!error.contains("unavailable"), "{error}");
+        assert!(error.contains("exactly one hard link"), "{error}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_tree_snapshot_detects_last_write_metadata_mutation() {
+        let root = unique_temp_root("tree-snapshot-metadata");
+        let target = root.join("target");
+        let file = target.join("payload.txt");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(&file, b"payload").unwrap();
+        set_last_write_time(&file, 0x01d9_0000, 0x1111_1111);
+        let parent = open_directory_nofollow(&root).unwrap();
+        let hook_file = file.clone();
+
+        let result = with_tree_open_hook(
+            move |path| {
+                assert_eq!(path, hook_file);
+                set_last_write_time(&hook_file, 0x01da_0000, 0x2222_2222);
+            },
+            || capture_tree_child_nofollow(&parent, OsStr::new("target"), target.as_path()),
+        );
+
+        let error = result.expect_err("snapshotting must reject last-write metadata mutation");
+        assert!(!error.contains("unavailable"), "{error}");
+        assert!(error.contains("changed"), "{error}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_handle_cleanup_removes_reparse_entries_without_traversal() {
+        let root = unique_temp_root("handle-cleanup-reparse");
+        let parent_path = root.join("parent");
+        let tree = parent_path.join("tree");
+        let nested = tree.join("nested");
+        let outside = root.join("outside");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(nested.join("inside.txt"), b"inside").unwrap();
+        fs::write(outside.join("sentinel.txt"), b"outside").unwrap();
+        std::os::windows::fs::symlink_dir(&outside, tree.join("unsupported-link")).unwrap();
+        let parent = open_directory_nofollow(&parent_path).unwrap();
+        let expected_identity = file_identity(&open_directory_nofollow(&tree).unwrap()).unwrap();
+
+        remove_bound_directory_child(&parent, OsStr::new("tree"), expected_identity, &tree)
+            .unwrap();
+
+        assert!(!tree.exists());
+        assert_eq!(fs::read(outside.join("sentinel.txt")).unwrap(), b"outside");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_private_stage_cleanup_closes_retained_anchors_before_deleting_root() {
+        let root = unique_temp_root("private-stage-cleanup-lifecycle");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let target_parent = DirectoryAnchor::capture_exact(&workspace).unwrap();
+        let mut stage = PrivateDumpStage::create(&target_parent).unwrap();
+        let private_root = stage.root.clone();
+
+        stage.cleanup_now().unwrap();
+
+        assert!(!private_root.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_effective_config_scrub_failure_keeps_cleanup_retry_and_drop_safe() {
+        let root = unique_temp_root("private-stage-scrub-cleanup-retry");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let target_parent = DirectoryAnchor::capture_exact(&workspace).unwrap();
+        let mut stage = PrivateDumpStage::create(&target_parent).unwrap();
+        stage
+            .write_effective_config(&serde_yaml::Value::String("secret".to_string()))
+            .unwrap();
+        let private_root = stage.root.clone();
+
+        let drop_result = with_private_cleanup_failpoint(
+            PrivateCleanupCheckpoint::BeforeEffectiveConfigScrub,
+            || {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    for _ in 0..2 {
+                        let error = stage.cleanup_now().expect_err(
+                            "faulted effective-config scrubbing must fail cleanup without advancing anchors",
+                        );
+                        assert!(error.contains("injected"), "{error}");
+                        assert!(stage.effective_config_handle.is_some());
+                        assert!(stage.execution_anchor.is_some());
+                    }
+                    drop(stage);
+                }))
+            },
+        );
+
+        assert!(
+            drop_result.is_ok(),
+            "Drop must retry cleanup without panicking after a scrub failure"
+        );
+        fs::remove_dir_all(private_root).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_effective_config_scrub_failure_keeps_recovery_retry_and_drop_safe() {
+        let root = unique_temp_root("private-stage-scrub-recovery-retry");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let target_parent = DirectoryAnchor::capture_exact(&workspace).unwrap();
+        let mut stage = PrivateDumpStage::create(&target_parent).unwrap();
+        stage
+            .write_effective_config(&serde_yaml::Value::String("secret".to_string()))
+            .unwrap();
+        let private_root = stage.root.clone();
+
+        let drop_result = with_private_cleanup_failpoint(
+            PrivateCleanupCheckpoint::BeforeEffectiveConfigScrub,
+            || {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    for _ in 0..2 {
+                        let error = stage.preserve_for_recovery().expect_err(
+                            "faulted effective-config scrubbing must fail recovery preservation without advancing anchors",
+                        );
+                        assert!(error.contains("injected"), "{error}");
+                        assert!(stage.effective_config_handle.is_some());
+                        assert!(stage.execution_anchor.is_some());
+                    }
+                    drop(stage);
+                }))
+            },
+        );
+
+        assert!(
+            drop_result.is_ok(),
+            "Drop must retry cleanup without panicking after recovery preservation failed"
+        );
+        fs::remove_dir_all(private_root).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_effective_config_cleanup_without_execution_anchor_returns_an_error() {
+        let root = unique_temp_root("private-stage-missing-execution-anchor");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let target_parent = DirectoryAnchor::capture_exact(&workspace).unwrap();
+        let mut stage = PrivateDumpStage::create(&target_parent).unwrap();
+        stage
+            .write_effective_config(&serde_yaml::Value::String("secret".to_string()))
+            .unwrap();
+        let execution_anchor = stage.execution_anchor.take().unwrap();
+
+        let cleanup =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| stage.cleanup_now()));
+        let error = cleanup
+            .expect("cleanup must return an error instead of panicking")
+            .expect_err("cleanup without the execution anchor must fail");
+
+        assert!(error.contains("execution anchor"), "{error}");
+        assert!(!stage.effective_config_secret_present);
+        assert!(stage.effective_config_handle.is_some());
+        stage.execution_anchor = Some(execution_anchor);
+        stage.cleanup_now().unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_private_stage_cleanup_requires_parent_relative_root_absence() {
+        let root = unique_temp_root("private-stage-root-absence");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let target_parent = DirectoryAnchor::capture_exact(&workspace).unwrap();
+        let mut stage = PrivateDumpStage::create(&target_parent).unwrap();
+        let private_root = stage.root.clone();
+        let extra_root_handle = open_directory_nofollow(&private_root).unwrap();
+
+        let error = stage
+            .cleanup_now()
+            .expect_err("a delete-pending root is not proven absent");
+
+        assert!(
+            error.contains("absen") || error.contains("pending"),
+            "{error}"
+        );
+        assert!(!stage.root_removed);
+        assert!(stage.cleanup_on_drop);
+        drop(extra_root_handle);
+
+        stage.cleanup_now().unwrap();
+
+        assert!(stage.root_removed);
+        assert!(!stage.cleanup_on_drop);
+        assert!(!private_root.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_failure_after_execution_creation_leaves_no_private_root() {
+        let root = unique_temp_root("private-stage-partial-execution");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let target_parent = DirectoryAnchor::capture_exact(&workspace).unwrap();
+
+        let result = with_private_creation_failpoint(
+            PrivateCreationCheckpoint::AfterExecutionCreation,
+            || PrivateDumpStage::create(&target_parent),
+        );
+
+        let error = match result {
+            Ok(stage) => {
+                drop(stage);
+                panic!("construction unexpectedly passed its injected execution checkpoint")
+            }
+            Err(error) => error,
+        };
+        assert!(error.contains("injected"), "{error}");
+        assert!(fs::read_dir(&workspace).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".unica-dump-guard-")));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_failure_after_recovery_creation_leaves_no_private_root() {
+        let root = unique_temp_root("private-stage-partial-recovery");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let target_parent = DirectoryAnchor::capture_exact(&workspace).unwrap();
+
+        let result = with_private_creation_failpoint(
+            PrivateCreationCheckpoint::AfterRecoveryCreation,
+            || PrivateDumpStage::create(&target_parent),
+        );
+
+        let error = match result {
+            Ok(stage) => {
+                drop(stage);
+                panic!("construction unexpectedly passed its injected recovery checkpoint")
+            }
+            Err(error) => error,
+        };
+        assert!(error.contains("injected"), "{error}");
+        assert!(fs::read_dir(&workspace).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".unica-dump-guard-")));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_handle_cleanup_leaves_an_identity_replacement_untouched() {
+        let root = unique_temp_root("handle-cleanup-replacement");
+        let parent_path = root.join("parent");
+        let tree = parent_path.join("tree");
+        let displaced = parent_path.join("tree-displaced");
+        fs::create_dir_all(&tree).unwrap();
+        fs::write(tree.join("owned.txt"), b"owned").unwrap();
+        let parent = open_directory_nofollow(&parent_path).unwrap();
+        let expected_identity = file_identity(&open_directory_nofollow(&tree).unwrap()).unwrap();
+        fs::rename(&tree, &displaced).unwrap();
+        fs::create_dir(&tree).unwrap();
+        fs::write(tree.join("replacement.txt"), b"replacement").unwrap();
+
+        let error =
+            remove_bound_directory_child(&parent, OsStr::new("tree"), expected_identity, &tree)
+                .unwrap_err();
+
+        assert!(
+            error.contains("identity") || error.contains("changed"),
+            "{error}"
+        );
+        assert_eq!(
+            fs::read(tree.join("replacement.txt")).unwrap(),
+            b"replacement"
+        );
+        assert_eq!(fs::read(displaced.join("owned.txt")).unwrap(), b"owned");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_handle_cleanup_removes_an_expected_regular_file() {
+        let root = unique_temp_root("handle-cleanup-file");
+        let parent_path = root.join("parent");
+        let file = parent_path.join("effective.yaml");
+        fs::create_dir_all(&parent_path).unwrap();
+        fs::write(&file, b"private").unwrap();
+        let parent = open_directory_nofollow(&parent_path).unwrap();
+        let expected_identity = file_identity(&fs::File::open(&file).unwrap()).unwrap();
+
+        unlink_bound_regular_child(&parent, OsStr::new("effective.yaml"), expected_identity)
+            .unwrap();
+
+        assert!(!file.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_handle_cleanup_leaves_a_regular_file_replacement_untouched() {
+        let root = unique_temp_root("handle-cleanup-file-replacement");
+        let parent_path = root.join("parent");
+        let file = parent_path.join("effective.yaml");
+        let displaced = parent_path.join("effective.displaced.yaml");
+        fs::create_dir_all(&parent_path).unwrap();
+        fs::write(&file, b"owned").unwrap();
+        let parent = open_directory_nofollow(&parent_path).unwrap();
+        let expected_identity = file_identity(&fs::File::open(&file).unwrap()).unwrap();
+        fs::rename(&file, &displaced).unwrap();
+        fs::write(&file, b"replacement").unwrap();
+
+        let error =
+            unlink_bound_regular_child(&parent, OsStr::new("effective.yaml"), expected_identity)
+                .unwrap_err();
+
+        assert!(error.contains("identity"), "{error}");
+        assert_eq!(fs::read(&file).unwrap(), b"replacement");
+        assert_eq!(fs::read(&displaced).unwrap(), b"owned");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn set_last_write_time(path: &std::path::Path, high: u32, low: u32) {
+        let file = fs::OpenOptions::new().write(true).open(path).unwrap();
+        let last_write = FILETIME {
+            dwLowDateTime: low,
+            dwHighDateTime: high,
+        };
+        // SAFETY: file owns a valid writable handle and last_write remains live for the call.
+        assert_ne!(
+            unsafe {
+                SetFileTime(
+                    file.as_raw_handle(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    &last_write,
+                )
+            },
+            0,
+            "{}",
+            std::io::Error::last_os_error()
+        );
+    }
+
+    fn unique_temp_root(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("unica-full-dump-{name}-{}", uuid::Uuid::new_v4()))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -483,21 +1584,6 @@ struct PreparedDump {
 }
 
 impl PreparedDump {
-    #[cfg(windows)]
-    fn prepare(
-        _args: &Map<String, Value>,
-        _context: &WorkspaceContext,
-        _platform_resolver: &dyn PlatformResolver,
-        _runner: &dyn ProcessRunner,
-        _cancellation: &CancellationToken,
-    ) -> Result<Self, String> {
-        Err(
-            "verified applied full dump is fail-closed on Windows until owner-only ACLs and handle-safe no-clobber directory publication are implemented"
-                .to_string(),
-        )
-    }
-
-    #[cfg(not(windows))]
     fn prepare(
         args: &Map<String, Value>,
         context: &WorkspaceContext,
@@ -971,8 +2057,12 @@ struct ImmutablePlatformEntry {
     path: PathBuf,
     kind: ImmutablePlatformEntryKind,
     identity: FileIdentity,
+    #[cfg(unix)]
     owner: u32,
+    #[cfg(unix)]
     mode: u32,
+    #[cfg(windows)]
+    security_descriptor_sha256: [u8; 32],
 }
 
 impl PlatformAttestation {
@@ -1037,7 +2127,7 @@ impl PlatformAttestation {
                     )?);
                 if after != trust_before {
                     return Err(format!(
-                        "immutable platform ownership or mode changed during attestation: {}",
+                        "immutable platform trust metadata changed during attestation: {}",
                         install_path.display()
                     ));
                 }
@@ -1104,10 +2194,289 @@ impl ImmutablePlatformTrustSnapshot {
         Ok(Self { entries })
     }
 
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    fn capture(install: &Path, executable: &Path, probe: &Path) -> Result<Self, String> {
+        verify_unprivileged_windows_platform_caller().map_err(|error| {
+            format!("failed to prove an unprivileged Windows platform caller: {error}")
+        })?;
+        let (mut entries, install_directory) =
+            capture_windows_immutable_platform_ancestry(install)?;
+        capture_windows_immutable_platform_children(&install_directory, install, &mut entries)?;
+        entries.sort_by(|left, right| left.path.cmp(&right.path));
+        entries.dedup();
+        for (path, role) in [
+            (executable, "platform executable"),
+            (probe, "platform version probe"),
+        ] {
+            let Some(entry) = entries.iter().find(|entry| entry.path == path) else {
+                return Err(format!(
+                    "{role} is outside the immutable platform inventory: {}",
+                    path.display()
+                ));
+            };
+            if entry.kind != ImmutablePlatformEntryKind::File {
+                return Err(format!(
+                    "{role} is not an immutable regular file: {}",
+                    path.display()
+                ));
+            }
+        }
+        Ok(Self { entries })
+    }
+
+    #[cfg(not(any(unix, windows)))]
     fn capture(_install: &Path, _executable: &Path, _probe: &Path) -> Result<Self, String> {
         Err("immutable platform trust verification is unavailable on this host".to_string())
     }
+}
+
+#[cfg(windows)]
+fn parse_windows_local_platform_path(install: &Path) -> Result<(PathBuf, Vec<OsString>), String> {
+    use std::path::{Component, Prefix};
+
+    if !install.is_absolute() {
+        return Err(format!(
+            "immutable platform installation path must be absolute: {}",
+            install.display()
+        ));
+    }
+    let mut components = install.components();
+    let prefix = match components.next() {
+        Some(Component::Prefix(prefix)) => prefix,
+        _ => {
+            return Err(format!(
+                "Windows immutable platform path has no volume prefix: {}",
+                install.display()
+            ))
+        }
+    };
+    if !matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)) {
+        return Err(format!(
+            "Windows immutable platform path must use a local disk prefix: {}",
+            install.display()
+        ));
+    }
+    if !matches!(components.next(), Some(Component::RootDir)) {
+        return Err(format!(
+            "Windows immutable platform path has no volume root: {}",
+            install.display()
+        ));
+    }
+    let mut names = Vec::new();
+    for component in components {
+        match component {
+            Component::Normal(name) => names.push(name.to_os_string()),
+            Component::CurDir => {}
+            Component::ParentDir | Component::Prefix(_) | Component::RootDir => {
+                return Err(format!(
+                    "immutable platform installation path contains a non-normal component: {}",
+                    install.display()
+                ))
+            }
+        }
+    }
+
+    let mut root_path = PathBuf::from(prefix.as_os_str());
+    root_path.push(Path::new(r"\"));
+    Ok((root_path, names))
+}
+
+#[cfg(windows)]
+fn capture_windows_immutable_platform_ancestry(
+    install: &Path,
+) -> Result<(Vec<ImmutablePlatformEntry>, File), String> {
+    let (root_path, names) = parse_windows_local_platform_path(install)?;
+    let root = open_directory_nofollow(&root_path).map_err(|error| {
+        format!(
+            "failed to securely open immutable platform volume root {}: {error}",
+            root_path.display()
+        )
+    })?;
+    verify_windows_local_fixed_volume(&root).map_err(|error| {
+        format!(
+            "failed to prove a local fixed immutable platform volume from retained handle {}: {error}",
+            root_path.display()
+        )
+    })?;
+    let root_profile = if names.is_empty() {
+        WindowsImmutableAclProfile::Installation
+    } else {
+        WindowsImmutableAclProfile::Ancestry
+    };
+    let mut entries = vec![capture_windows_immutable_platform_entry(
+        &root,
+        &root_path,
+        ImmutablePlatformEntryKind::Directory,
+        root_profile,
+    )?];
+    let mut current = root;
+    let mut current_path = root_path;
+    let final_index = names.len().saturating_sub(1);
+    for (index, name) in names.into_iter().enumerate() {
+        current = open_directory_child_nofollow(&current, &name).map_err(|error| {
+            format!(
+                "platform ancestry contains a reparse point, non-directory, or inaccessible component {}: {error}",
+                current_path.join(&name).display()
+            )
+        })?;
+        current_path.push(&name);
+        let profile = if index == final_index {
+            WindowsImmutableAclProfile::Installation
+        } else {
+            WindowsImmutableAclProfile::Ancestry
+        };
+        entries.push(capture_windows_immutable_platform_entry(
+            &current,
+            &current_path,
+            ImmutablePlatformEntryKind::Directory,
+            profile,
+        )?);
+    }
+    verify_windows_local_fixed_volume(&current).map_err(|error| {
+        format!(
+            "failed to prove a local fixed immutable platform installation from retained handle {}: {error}",
+            current_path.display()
+        )
+    })?;
+    Ok((entries, current))
+}
+
+#[cfg(windows)]
+fn capture_windows_immutable_platform_children(
+    directory: &File,
+    display_path: &Path,
+    entries: &mut Vec<ImmutablePlatformEntry>,
+) -> Result<(), String> {
+    let initial_names = crate::infrastructure::platform::filesystem::read_directory_names(
+        directory,
+    )
+    .map_err(|error| {
+        format!(
+            "failed to enumerate immutable platform installation {}: {error}",
+            display_path.display()
+        )
+    })?;
+    for name in &initial_names {
+        let child_path = display_path.join(name);
+        match open_directory_child_nofollow(directory, name) {
+            Ok(child) => {
+                let entry = capture_windows_immutable_platform_entry(
+                    &child,
+                    &child_path,
+                    ImmutablePlatformEntryKind::Directory,
+                    WindowsImmutableAclProfile::Installation,
+                )?;
+                let expected_identity = entry.identity;
+                entries.push(entry);
+                capture_windows_immutable_platform_children(&child, &child_path, entries)?;
+                let rebound = open_directory_child_nofollow(directory, name).map_err(|error| {
+                    format!(
+                        "failed to rebind immutable platform directory {}: {error}",
+                        child_path.display()
+                    )
+                })?;
+                if file_identity(&rebound).map_err(|error| {
+                    format!(
+                        "failed to recheck immutable platform directory {}: {error}",
+                        child_path.display()
+                    )
+                })? != expected_identity
+                {
+                    return Err(format!(
+                        "immutable platform directory identity changed while inspecting: {}",
+                        child_path.display()
+                    ));
+                }
+            }
+            Err(directory_error) => {
+                let file = open_regular_child_nofollow(directory, name).map_err(|file_error| {
+                    format!(
+                        "immutable platform inventory contains an unsupported or reparse entry {}: directory open failed ({directory_error}); regular-file open failed ({file_error})",
+                        child_path.display()
+                    )
+                })?;
+                if hard_link_count(&file).map_err(|error| {
+                    format!(
+                        "failed to inspect hard links for immutable platform file {}: {error}",
+                        child_path.display()
+                    )
+                })? != 1
+                {
+                    return Err(format!(
+                        "immutable platform file must have exactly one hard link: {}",
+                        child_path.display()
+                    ));
+                }
+                let entry = capture_windows_immutable_platform_entry(
+                    &file,
+                    &child_path,
+                    ImmutablePlatformEntryKind::File,
+                    WindowsImmutableAclProfile::Installation,
+                )?;
+                let expected_identity = entry.identity;
+                entries.push(entry);
+                let rebound = open_regular_child_nofollow(directory, name).map_err(|error| {
+                    format!(
+                        "failed to rebind immutable platform file {}: {error}",
+                        child_path.display()
+                    )
+                })?;
+                if file_identity(&rebound).map_err(|error| {
+                    format!(
+                        "failed to recheck immutable platform file {}: {error}",
+                        child_path.display()
+                    )
+                })? != expected_identity
+                {
+                    return Err(format!(
+                        "immutable platform file identity changed while inspecting: {}",
+                        child_path.display()
+                    ));
+                }
+            }
+        }
+    }
+    let final_names = crate::infrastructure::platform::filesystem::read_directory_names(directory)
+        .map_err(|error| {
+            format!(
+                "failed to re-enumerate immutable platform installation {}: {error}",
+                display_path.display()
+            )
+        })?;
+    if final_names != initial_names {
+        return Err(format!(
+            "immutable platform directory name set changed while inspecting: {}",
+            display_path.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn capture_windows_immutable_platform_entry(
+    file: &File,
+    path: &Path,
+    kind: ImmutablePlatformEntryKind,
+    profile: WindowsImmutableAclProfile,
+) -> Result<ImmutablePlatformEntry, String> {
+    let evidence = capture_windows_immutable_entry_evidence(file).map_err(|error| {
+        format!(
+            "failed to capture immutable Windows platform evidence {}: {error}",
+            path.display()
+        )
+    })?;
+    evidence.verify(profile).map_err(|error| {
+        format!(
+            "immutable Windows platform ACL is not trusted {}: {error}",
+            path.display()
+        )
+    })?;
+    Ok(ImmutablePlatformEntry {
+        path: path.to_path_buf(),
+        kind,
+        identity: evidence.identity,
+        security_descriptor_sha256: evidence.security_descriptor_sha256,
+    })
 }
 
 #[cfg(unix)]
@@ -1500,7 +2869,101 @@ fn secure_read_regular_file_snapshot(
     Ok(SecureFileSnapshot { identity, raw })
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn secure_read_regular_file_snapshot(
+    path: &Path,
+    role: &str,
+) -> Result<SecureFileSnapshot, String> {
+    let normalized = normalize_leaf_path(path)?;
+    let (parent_path, name) = split_parent_and_name(&normalized)?;
+    let parent = open_directory_nofollow(&parent_path).map_err(|error| {
+        format!(
+            "failed to securely open parent for {role} {}: {error}",
+            normalized.display()
+        )
+    })?;
+    let mut file = open_regular_child_nofollow(&parent, &name)
+        .map_err(|error| format!("failed to securely open {role} {}: {error}", path.display()))?;
+    let identity = file_identity(&file).map_err(|error| {
+        format!(
+            "failed to inspect opened {role} identity {}: {error}",
+            path.display()
+        )
+    })?;
+    if hard_link_count(&file).map_err(|error| {
+        format!(
+            "failed to inspect hard links for {role} {}: {error}",
+            path.display()
+        )
+    })? != 1
+    {
+        return Err(format!(
+            "{role} must have exactly one hard link: {}",
+            path.display()
+        ));
+    }
+    let opened = file.metadata().map_err(|error| {
+        format!(
+            "failed to inspect opened {role} {}: {error}",
+            path.display()
+        )
+    })?;
+
+    run_secure_read_hook(path);
+    let rebound = open_regular_child_nofollow(&parent, &name).map_err(|error| {
+        format!(
+            "failed to rebind {role} name before reading {}: {error}",
+            path.display()
+        )
+    })?;
+    if file_identity(&rebound).map_err(|error| {
+        format!(
+            "failed to recheck {role} identity {}: {error}",
+            path.display()
+        )
+    })? != identity
+    {
+        return Err(format!(
+            "{role} identity changed before reading: {}",
+            path.display()
+        ));
+    }
+
+    let mut raw = Vec::new();
+    file.read_to_end(&mut raw)
+        .map_err(|error| format!("failed to read {role} {}: {error}", path.display()))?;
+    run_secure_read_after_hook(path);
+    let after = file.metadata().map_err(|error| {
+        format!(
+            "failed to recheck opened {role} {}: {error}",
+            path.display()
+        )
+    })?;
+    if opened.len() != after.len() || opened.modified().ok() != after.modified().ok() {
+        return Err(format!("{role} changed while reading: {}", path.display()));
+    }
+    let rebound = open_regular_child_nofollow(&parent, &name).map_err(|error| {
+        format!(
+            "failed to rebind {role} name after reading {}: {error}",
+            path.display()
+        )
+    })?;
+    if file_identity(&rebound).map_err(|error| {
+        format!(
+            "failed to recheck {role} identity {}: {error}",
+            path.display()
+        )
+    })? != identity
+    {
+        return Err(format!(
+            "{role} identity changed while reading: {}",
+            path.display()
+        ));
+    }
+    Ok(SecureFileSnapshot { identity, raw })
+}
+
+#[cfg(not(any(unix, windows)))]
 fn secure_read_regular_file_snapshot(
     path: &Path,
     role: &str,
@@ -1579,7 +3042,39 @@ fn secure_path_is_absent(path: &Path) -> Result<bool, String> {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn secure_path_is_absent(path: &Path) -> Result<bool, String> {
+    use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND};
+
+    let normalized = normalize_leaf_path(path)?;
+    let (parent_path, name) = split_parent_and_name(&normalized)?;
+    let parent = open_directory_nofollow(&parent_path).map_err(|error| {
+        format!(
+            "failed to securely open parent while checking {}: {error}",
+            normalized.display()
+        )
+    })?;
+    match open_any_child_nofollow(&parent, &name) {
+        Ok((_child, OpenedChildKind::ReparsePoint)) => Ok(false),
+        Ok((_child, _kind)) => Ok(false),
+        Err(error)
+            if matches!(
+                error.raw_os_error(),
+                Some(code)
+                    if code == ERROR_FILE_NOT_FOUND as i32
+                        || code == ERROR_PATH_NOT_FOUND as i32
+            ) =>
+        {
+            Ok(true)
+        }
+        Err(error) => Err(format!(
+            "failed to securely inspect {}: {error}",
+            normalized.display()
+        )),
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 fn secure_path_is_absent(path: &Path) -> Result<bool, String> {
     Err(format!(
         "secure no-follow absence checks are unavailable on this host: {}",
@@ -1628,7 +3123,7 @@ fn open_directory_nofollow(path: &Path) -> std::io::Result<File> {
     Ok(current)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn open_directory_relative_nofollow(root: &File, relative: &Path) -> std::io::Result<File> {
     use std::path::Component;
 
@@ -1701,7 +3196,11 @@ fn open_regular_child_nofollow(parent: &File, name: &OsStr) -> std::io::Result<F
 }
 
 #[cfg(unix)]
-fn create_regular_child_owner_only(parent: &File, name: &OsStr) -> std::io::Result<File> {
+fn create_regular_child_owner_only(
+    parent: &File,
+    name: &OsStr,
+    _display_path: &Path,
+) -> std::io::Result<File> {
     let name = CString::new(name.as_bytes())?;
     // SAFETY: parent remains open for the call and name is a live
     // NUL-terminated string. The file starts owner-only; there is no
@@ -1722,8 +3221,44 @@ fn create_regular_child_owner_only(parent: &File, name: &OsStr) -> std::io::Resu
     }
 }
 
-#[cfg(not(unix))]
-fn create_regular_child_owner_only(_parent: &File, _name: &OsStr) -> std::io::Result<File> {
+#[cfg(windows)]
+fn create_regular_child_owner_only(
+    parent: &File,
+    name: &OsStr,
+    display_path: &Path,
+) -> std::io::Result<File> {
+    let created = create_owner_only_file_child(parent, name)?;
+    let cleanup_error = |primary: std::io::Error| {
+        match discard_created_child(&created) {
+        Ok(()) => primary,
+        Err(cleanup) => std::io::Error::new(
+            primary.kind(),
+            format!(
+                "{primary}; failed to remove unverified effective config through its created handle: {cleanup}"
+            ),
+        ),
+    }
+    };
+    let expected_identity = file_identity(&created).map_err(cleanup_error)?;
+    run_effective_config_create_hook(display_path);
+    verify_owner_only_acl(&created).map_err(cleanup_error)?;
+    let rebound = open_regular_child_nofollow(parent, name).map_err(cleanup_error)?;
+    let rebound_identity = file_identity(&rebound).map_err(cleanup_error)?;
+    if rebound_identity != expected_identity {
+        return Err(cleanup_error(std::io::Error::new(
+            ErrorKind::InvalidData,
+            "private effective config identity changed before verified reopen",
+        )));
+    }
+    Ok(created)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn create_regular_child_owner_only(
+    _parent: &File,
+    _name: &OsStr,
+    _display_path: &Path,
+) -> std::io::Result<File> {
     Err(std::io::Error::new(
         ErrorKind::Unsupported,
         "secure openat config creation is unavailable on this host",
@@ -1776,7 +3311,7 @@ struct DirectoryAnchor {
 }
 
 impl DirectoryAnchor {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn capture_exact(path: &Path) -> Result<Self, String> {
         if !path.is_absolute() {
             return Err(format!(
@@ -1804,7 +3339,7 @@ impl DirectoryAnchor {
         })
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn capture_descendant(&self, relative: &Path, display_path: &Path) -> Result<Self, String> {
         self.verify_path_binding()?;
         let directory =
@@ -1828,7 +3363,7 @@ impl DirectoryAnchor {
         })
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn verify_descendant_identity(
         &self,
         relative: &Path,
@@ -1858,7 +3393,7 @@ impl DirectoryAnchor {
         self.verify_path_binding()
     }
 
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     fn capture_descendant(&self, _relative: &Path, display_path: &Path) -> Result<Self, String> {
         Err(format!(
             "secure workspace-relative directory anchors are unavailable on this host: {}",
@@ -1866,7 +3401,7 @@ impl DirectoryAnchor {
         ))
     }
 
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     fn verify_descendant_identity(
         &self,
         _relative: &Path,
@@ -1879,7 +3414,7 @@ impl DirectoryAnchor {
         ))
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn try_clone(&self) -> Result<Self, String> {
         let directory = self.directory.try_clone().map_err(|error| {
             format!(
@@ -1894,7 +3429,7 @@ impl DirectoryAnchor {
         })
     }
 
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     fn try_clone(&self) -> Result<Self, String> {
         Err(format!(
             "secure directory anchors are unavailable on this host: {}",
@@ -1966,7 +3501,74 @@ impl DirectoryAnchor {
         })
     }
 
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    fn create_child(&self, name: &OsStr, display_path: &Path) -> Result<Self, String> {
+        let expected_path = self.path.join(name);
+        if display_path != expected_path {
+            return Err(format!(
+                "private directory display path does not match anchored child {}: {}",
+                expected_path.display(),
+                display_path.display()
+            ));
+        }
+        self.verify_path_binding()?;
+        let directory =
+            create_owner_only_directory_child(&self.directory, name).map_err(|error| {
+                format!(
+                    "failed to create private directory {}: {error}",
+                    display_path.display()
+                )
+            })?;
+        let identity = file_identity(&directory).map_err(|error| {
+            format!(
+                "failed to inspect private directory identity {}; the unverified directory was left untouched: {error}",
+                display_path.display()
+            )
+        })?;
+        let cleanup_error = |error: String| {
+            match remove_bound_directory_child(&self.directory, name, identity, display_path) {
+                Ok(()) => error,
+                Err(cleanup) => format!(
+                    "{error}; failed to remove private directory created through the retained parent anchor {}: {cleanup}",
+                    display_path.display()
+                ),
+            }
+        };
+        if let Err(error) = verify_owner_only_acl(&directory) {
+            return Err(cleanup_error(format!(
+                "failed to verify private directory ACL {}: {error}",
+                display_path.display()
+            )));
+        }
+        if let Err(error) = self.verify_path_binding() {
+            return Err(cleanup_error(error));
+        }
+        let rebound = open_directory_child_nofollow(&self.directory, name).map_err(|error| {
+            cleanup_error(format!(
+                "failed to bind newly created private directory {}: {error}",
+                display_path.display()
+            ))
+        })?;
+        let rebound_identity = file_identity(&rebound).map_err(|error| {
+            cleanup_error(format!(
+                "failed to recheck private directory identity {}: {error}",
+                display_path.display()
+            ))
+        })?;
+        if rebound_identity != identity {
+            return Err(cleanup_error(format!(
+                "private directory identity changed during creation: {}",
+                display_path.display()
+            )));
+        }
+        Ok(Self {
+            path: display_path.to_path_buf(),
+            identity,
+            directory,
+        })
+    }
+
+    #[cfg(not(any(unix, windows)))]
     fn create_child(&self, _name: &OsStr, display_path: &Path) -> Result<Self, String> {
         Err(format!(
             "secure mkdirat private directories are unavailable on this host: {}",
@@ -1974,7 +3576,7 @@ impl DirectoryAnchor {
         ))
     }
 
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     fn capture_exact(path: &Path) -> Result<Self, String> {
         Err(format!(
             "secure directory anchors are unavailable on this host: {}",
@@ -1982,7 +3584,7 @@ impl DirectoryAnchor {
         ))
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn verify_path_binding(&self) -> Result<(), String> {
         let directory = open_directory_nofollow(&self.path).map_err(|error| {
             format!(
@@ -2005,7 +3607,7 @@ impl DirectoryAnchor {
         Ok(())
     }
 
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     fn verify_path_binding(&self) -> Result<(), String> {
         Err(format!(
             "secure directory anchors are unavailable on this host: {}",
@@ -2020,7 +3622,7 @@ impl DirectoryAnchor {
         Ok(snapshot)
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn capture_child_root_identity(
         &self,
         name: &OsStr,
@@ -2050,7 +3652,7 @@ impl DirectoryAnchor {
         Ok(Some(identity))
     }
 
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     fn capture_child_root_identity(
         &self,
         _name: &OsStr,
@@ -2065,13 +3667,25 @@ impl DirectoryAnchor {
 
 struct PrivateDumpStage {
     parent_anchor: DirectoryAnchor,
-    root_anchor: DirectoryAnchor,
+    root_anchor: Option<DirectoryAnchor>,
     root_name: OsString,
     root: PathBuf,
     execution: PathBuf,
     recovery: PathBuf,
-    execution_anchor: DirectoryAnchor,
-    recovery_anchor: DirectoryAnchor,
+    execution_anchor: Option<DirectoryAnchor>,
+    recovery_anchor: Option<DirectoryAnchor>,
+    root_identity: FileIdentity,
+    execution_identity: FileIdentity,
+    #[cfg(windows)]
+    recovery_identity: FileIdentity,
+    #[cfg(windows)]
+    root_removed: bool,
+    #[cfg(windows)]
+    root_disposition_requested: bool,
+    #[cfg(windows)]
+    execution_removed: bool,
+    #[cfg(windows)]
+    recovery_removed: bool,
     staged_tree: PathBuf,
     effective_config: PathBuf,
     effective_config_handle: Option<File>,
@@ -2091,6 +3705,21 @@ impl PrivateDumpStage {
         let execution_anchor = match root_anchor.create_child(OsStr::new("execution"), &execution) {
             Ok(anchor) => anchor,
             Err(error) => {
+                #[cfg(windows)]
+                return Err(windows_private_creation_error(
+                    WindowsPrivateCreationRollback {
+                        parent_anchor: &parent_anchor,
+                        root_anchor,
+                        root_name: &root_name,
+                        root: &root,
+                        execution_anchor: None,
+                        execution: &execution,
+                        recovery_anchor: None,
+                        recovery: &recovery,
+                        primary: error,
+                    },
+                ));
+                #[cfg(not(windows))]
                 return Err(private_creation_error(
                     &parent_anchor,
                     &root_anchor,
@@ -2100,9 +3729,42 @@ impl PrivateDumpStage {
                 ));
             }
         };
+        #[cfg(windows)]
+        if let Err(error) =
+            run_private_creation_failpoint(PrivateCreationCheckpoint::AfterExecutionCreation)
+        {
+            return Err(windows_private_creation_error(
+                WindowsPrivateCreationRollback {
+                    parent_anchor: &parent_anchor,
+                    root_anchor,
+                    root_name: &root_name,
+                    root: &root,
+                    execution_anchor: Some(execution_anchor),
+                    execution: &execution,
+                    recovery_anchor: None,
+                    recovery: &recovery,
+                    primary: error,
+                },
+            ));
+        }
         let recovery_anchor = match root_anchor.create_child(OsStr::new("recovery"), &recovery) {
             Ok(anchor) => anchor,
             Err(error) => {
+                #[cfg(windows)]
+                return Err(windows_private_creation_error(
+                    WindowsPrivateCreationRollback {
+                        parent_anchor: &parent_anchor,
+                        root_anchor,
+                        root_name: &root_name,
+                        root: &root,
+                        execution_anchor: Some(execution_anchor),
+                        execution: &execution,
+                        recovery_anchor: None,
+                        recovery: &recovery,
+                        primary: error,
+                    },
+                ));
+                #[cfg(not(windows))]
                 return Err(private_creation_error(
                     &parent_anchor,
                     &root_anchor,
@@ -2112,7 +3774,40 @@ impl PrivateDumpStage {
                 ));
             }
         };
+        #[cfg(windows)]
+        if let Err(error) =
+            run_private_creation_failpoint(PrivateCreationCheckpoint::AfterRecoveryCreation)
+        {
+            return Err(windows_private_creation_error(
+                WindowsPrivateCreationRollback {
+                    parent_anchor: &parent_anchor,
+                    root_anchor,
+                    root_name: &root_name,
+                    root: &root,
+                    execution_anchor: Some(execution_anchor),
+                    execution: &execution,
+                    recovery_anchor: Some(recovery_anchor),
+                    recovery: &recovery,
+                    primary: error,
+                },
+            ));
+        }
         if let Err(error) = parent_anchor.verify_path_binding() {
+            #[cfg(windows)]
+            return Err(windows_private_creation_error(
+                WindowsPrivateCreationRollback {
+                    parent_anchor: &parent_anchor,
+                    root_anchor,
+                    root_name: &root_name,
+                    root: &root,
+                    execution_anchor: Some(execution_anchor),
+                    execution: &execution,
+                    recovery_anchor: Some(recovery_anchor),
+                    recovery: &recovery,
+                    primary: error,
+                },
+            ));
+            #[cfg(not(windows))]
             return Err(private_creation_error(
                 &parent_anchor,
                 &root_anchor,
@@ -2121,30 +3816,65 @@ impl PrivateDumpStage {
                 error,
             ));
         };
+        let root_identity = root_anchor.identity;
+        let execution_identity = execution_anchor.identity;
+        #[cfg(windows)]
+        let recovery_identity = recovery_anchor.identity;
         Ok(Self {
             staged_tree: execution.join("staged-source"),
             effective_config: execution.join(EFFECTIVE_CONFIG_NAME),
             parent_anchor,
-            root_anchor,
+            root_anchor: Some(root_anchor),
             root_name,
             root,
             execution,
             recovery,
-            execution_anchor,
-            recovery_anchor,
+            execution_anchor: Some(execution_anchor),
+            recovery_anchor: Some(recovery_anchor),
+            root_identity,
+            execution_identity,
+            #[cfg(windows)]
+            recovery_identity,
+            #[cfg(windows)]
+            root_removed: false,
+            #[cfg(windows)]
+            root_disposition_requested: false,
+            #[cfg(windows)]
+            execution_removed: false,
+            #[cfg(windows)]
+            recovery_removed: false,
             effective_config_handle: None,
             effective_config_secret_present: false,
             cleanup_on_drop: true,
         })
     }
 
+    fn root_anchor(&self) -> &DirectoryAnchor {
+        self.root_anchor
+            .as_ref()
+            .expect("private root anchor remains open before cleanup")
+    }
+
+    fn execution_anchor(&self) -> &DirectoryAnchor {
+        self.execution_anchor
+            .as_ref()
+            .expect("private execution anchor remains open before cleanup")
+    }
+
+    fn recovery_anchor(&self) -> &DirectoryAnchor {
+        self.recovery_anchor
+            .as_ref()
+            .expect("private recovery anchor remains open before cleanup")
+    }
+
     fn write_effective_config(&mut self, value: &YamlValue) -> Result<(), String> {
         let bytes = serde_yaml::to_string(value)
             .map_err(|error| format!("failed to serialize effective dump config: {error}"))?;
-        self.execution_anchor.verify_path_binding()?;
+        self.execution_anchor().verify_path_binding()?;
         let file = create_regular_child_owner_only(
-            &self.execution_anchor.directory,
+            &self.execution_anchor().directory,
             OsStr::new(EFFECTIVE_CONFIG_NAME),
+            &self.effective_config,
         )
         .map_err(|error| {
             format!(
@@ -2180,7 +3910,7 @@ impl PrivateDumpStage {
                     self.effective_config.display()
                 )
             })?;
-        self.execution_anchor
+        self.execution_anchor()
             .verify_path_binding()
             .map_err(|error| {
                 format!(
@@ -2195,6 +3925,8 @@ impl PrivateDumpStage {
         let Some(file) = self.effective_config_handle.as_ref() else {
             return Ok(());
         };
+        #[cfg(windows)]
+        run_private_cleanup_failpoint(PrivateCleanupCheckpoint::BeforeEffectiveConfigScrub)?;
         let identity = file_identity(file).map_err(|error| {
             format!(
                 "private effective config identity check failed for {}: {error}; secret-bearing private data may remain",
@@ -2214,8 +3946,14 @@ impl PrivateDumpStage {
             )
         })?;
         self.effective_config_secret_present = false;
+        let execution_anchor = self.execution_anchor.as_ref().ok_or_else(|| {
+            format!(
+                "private effective config cleanup cannot unlink {} because the execution anchor is closed; the scrubbed private file may remain",
+                self.effective_config.display()
+            )
+        })?;
         let unlink = unlink_bound_regular_child(
-            &self.execution_anchor.directory,
+            &execution_anchor.directory,
             OsStr::new(EFFECTIVE_CONFIG_NAME),
             identity,
         )
@@ -2229,15 +3967,16 @@ impl PrivateDumpStage {
         unlink
     }
 
+    #[cfg(not(windows))]
     fn preserve_for_recovery(&mut self) -> Result<(), String> {
         let mut errors = Vec::new();
         if let Err(error) = self.remove_effective_config() {
             errors.push(error);
         }
         if let Err(error) = remove_bound_directory_child(
-            &self.root_anchor.directory,
+            &self.root_anchor().directory,
             OsStr::new("execution"),
-            self.execution_anchor.identity,
+            self.execution_identity,
             &self.execution,
         ) {
             errors.push(format!(
@@ -2245,12 +3984,12 @@ impl PrivateDumpStage {
                 self.execution.display()
             ));
         }
-        if let Err(error) = self.root_anchor.verify_path_binding() {
+        if let Err(error) = self.root_anchor().verify_path_binding() {
             errors.push(format!(
                 "private recovery root is no longer bound to its visible path: {error}"
             ));
         }
-        if let Err(error) = self.recovery_anchor.verify_path_binding() {
+        if let Err(error) = self.recovery_anchor().verify_path_binding() {
             errors.push(format!(
                 "private recovery directory is no longer bound to its visible path: {error}"
             ));
@@ -2262,6 +4001,49 @@ impl PrivateDumpStage {
         Ok(())
     }
 
+    #[cfg(windows)]
+    fn preserve_for_recovery(&mut self) -> Result<(), String> {
+        self.remove_effective_config()?;
+        let mut errors = Vec::new();
+        let root_directory =
+            self.root_anchor().directory.try_clone().map_err(|error| {
+                format!("failed to clone private root anchor for cleanup: {error}")
+            })?;
+        if let Err(error) = release_anchor_and_remove_private_child(
+            &root_directory,
+            &mut self.execution_anchor,
+            &mut self.execution_removed,
+            OsStr::new("execution"),
+            self.execution_identity,
+            &self.execution,
+        ) {
+            errors.push(format!(
+                "private execution cleanup failed before retaining recovery {}: {error}",
+                self.execution.display()
+            ));
+        }
+        if let Some(root_anchor) = self.root_anchor.as_ref() {
+            if let Err(error) = root_anchor.verify_path_binding() {
+                errors.push(format!(
+                    "private recovery root is no longer bound to its visible path: {error}"
+                ));
+            }
+        }
+        if let Some(recovery_anchor) = self.recovery_anchor.as_ref() {
+            if let Err(error) = recovery_anchor.verify_path_binding() {
+                errors.push(format!(
+                    "private recovery directory is no longer bound to its visible path: {error}"
+                ));
+            }
+        }
+        if !errors.is_empty() {
+            return Err(errors.join("; "));
+        }
+        self.cleanup_on_drop = false;
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
     fn cleanup_now(&mut self) -> Result<(), String> {
         if !self.cleanup_on_drop {
             return Ok(());
@@ -2271,7 +4053,7 @@ impl PrivateDumpStage {
             errors.push(error);
         }
         if let Err(error) =
-            remove_directory_contents_nofollow(&self.root_anchor.directory, &self.root)
+            remove_directory_contents_nofollow(&self.root_anchor().directory, &self.root)
         {
             errors.push(format!(
                 "private dump contents cleanup failed for {}: {error}",
@@ -2281,7 +4063,7 @@ impl PrivateDumpStage {
         if let Err(error) = remove_bound_directory_child(
             &self.parent_anchor.directory,
             &self.root_name,
-            self.root_anchor.identity,
+            self.root_identity,
             &self.root,
         ) {
             errors.push(format!(
@@ -2296,8 +4078,240 @@ impl PrivateDumpStage {
             Err(errors.join("; "))
         }
     }
+
+    #[cfg(windows)]
+    fn cleanup_now(&mut self) -> Result<(), String> {
+        if !self.cleanup_on_drop {
+            return Ok(());
+        }
+        self.remove_effective_config()?;
+        let mut errors = Vec::new();
+
+        if self.root_anchor.is_none() && (!self.execution_removed || !self.recovery_removed) {
+            errors.push(
+                "private root anchor closed before its child directories were removed".to_string(),
+            );
+        } else if let Some(root_anchor) = self.root_anchor.as_ref() {
+            let root_directory = root_anchor.directory.try_clone().map_err(|error| {
+                format!("failed to clone private root anchor for cleanup: {error}")
+            })?;
+            if let Err(error) = release_anchor_and_remove_private_child(
+                &root_directory,
+                &mut self.execution_anchor,
+                &mut self.execution_removed,
+                OsStr::new("execution"),
+                self.execution_identity,
+                &self.execution,
+            ) {
+                errors.push(format!(
+                    "private execution cleanup failed for {}: {error}",
+                    self.execution.display()
+                ));
+            }
+            if let Err(error) = release_anchor_and_remove_private_child(
+                &root_directory,
+                &mut self.recovery_anchor,
+                &mut self.recovery_removed,
+                OsStr::new("recovery"),
+                self.recovery_identity,
+                &self.recovery,
+            ) {
+                errors.push(format!(
+                    "private recovery cleanup failed for {}: {error}",
+                    self.recovery.display()
+                ));
+            }
+        }
+
+        if errors.is_empty() && !self.root_removed {
+            if let Some(root_anchor) = self.root_anchor.as_ref() {
+                if let Err(error) =
+                    remove_directory_contents_nofollow(&root_anchor.directory, &self.root)
+                {
+                    errors.push(format!(
+                        "private dump contents cleanup failed for {}: {error}",
+                        self.root.display()
+                    ));
+                }
+            }
+            if errors.is_empty() && !self.root_disposition_requested {
+                self.root_anchor.take();
+                match remove_bound_directory_child(
+                    &self.parent_anchor.directory,
+                    &self.root_name,
+                    self.root_identity,
+                    &self.root,
+                ) {
+                    Ok(()) => self.root_disposition_requested = true,
+                    Err(error) => errors.push(format!(
+                        "private dump root cleanup failed for {}: {error}",
+                        self.root.display()
+                    )),
+                }
+            }
+            if errors.is_empty() && self.root_disposition_requested {
+                match prove_windows_child_absent(
+                    &self.parent_anchor.directory,
+                    &self.root_name,
+                    &self.root,
+                ) {
+                    Ok(()) => self.root_removed = true,
+                    Err(error) => errors.push(error),
+                }
+            }
+        }
+
+        if errors.is_empty() && self.root_removed {
+            self.cleanup_on_drop = false;
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
+    }
 }
 
+#[cfg(windows)]
+fn prove_windows_child_absent(
+    parent: &File,
+    name: &OsStr,
+    display_path: &Path,
+) -> Result<(), String> {
+    match open_any_child_nofollow(parent, name) {
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Ok((child, _kind)) => {
+            drop(child);
+            Err(format!(
+                "private path is still present after cleanup; absence was not proven: {}",
+                display_path.display()
+            ))
+        }
+        Err(error) => Err(format!(
+            "failed to prove private path absent through its retained parent anchor {}: {error}",
+            display_path.display()
+        )),
+    }
+}
+
+#[cfg(windows)]
+fn release_anchor_and_remove_private_child(
+    parent: &File,
+    anchor: &mut Option<DirectoryAnchor>,
+    removed: &mut bool,
+    name: &OsStr,
+    expected_identity: FileIdentity,
+    display_path: &Path,
+) -> Result<(), String> {
+    if *removed {
+        return Ok(());
+    }
+    if let Some(retained) = anchor.as_ref() {
+        remove_directory_contents_nofollow(&retained.directory, display_path)?;
+    }
+    anchor.take();
+    remove_bound_directory_child(parent, name, expected_identity, display_path)?;
+    *removed = true;
+    Ok(())
+}
+
+#[cfg(windows)]
+struct WindowsPrivateCreationRollback<'a> {
+    parent_anchor: &'a DirectoryAnchor,
+    root_anchor: DirectoryAnchor,
+    root_name: &'a OsStr,
+    root: &'a Path,
+    execution_anchor: Option<DirectoryAnchor>,
+    execution: &'a Path,
+    recovery_anchor: Option<DirectoryAnchor>,
+    recovery: &'a Path,
+    primary: String,
+}
+
+#[cfg(windows)]
+fn windows_private_creation_error(rollback: WindowsPrivateCreationRollback<'_>) -> String {
+    let WindowsPrivateCreationRollback {
+        parent_anchor,
+        root_anchor,
+        root_name,
+        root,
+        mut execution_anchor,
+        execution,
+        mut recovery_anchor,
+        recovery,
+        primary,
+    } = rollback;
+    let root_identity = root_anchor.identity;
+    let mut cleanup_errors = Vec::new();
+
+    if let Some(execution_identity) = execution_anchor.as_ref().map(|anchor| anchor.identity) {
+        let mut removed = false;
+        if let Err(error) = release_anchor_and_remove_private_child(
+            &root_anchor.directory,
+            &mut execution_anchor,
+            &mut removed,
+            OsStr::new("execution"),
+            execution_identity,
+            execution,
+        ) {
+            cleanup_errors.push(format!(
+                "private execution cleanup failed during construction rollback {}: {error}",
+                execution.display()
+            ));
+        }
+    }
+    execution_anchor.take();
+
+    if let Some(recovery_identity) = recovery_anchor.as_ref().map(|anchor| anchor.identity) {
+        let mut removed = false;
+        if let Err(error) = release_anchor_and_remove_private_child(
+            &root_anchor.directory,
+            &mut recovery_anchor,
+            &mut removed,
+            OsStr::new("recovery"),
+            recovery_identity,
+            recovery,
+        ) {
+            cleanup_errors.push(format!(
+                "private recovery cleanup failed during construction rollback {}: {error}",
+                recovery.display()
+            ));
+        }
+    }
+    recovery_anchor.take();
+
+    if let Err(error) = remove_directory_contents_nofollow(&root_anchor.directory, root) {
+        cleanup_errors.push(format!(
+            "private dump contents cleanup failed for {}: {error}",
+            root.display()
+        ));
+    }
+    drop(root_anchor);
+
+    let root_disposition_requested = match remove_bound_directory_child(
+        &parent_anchor.directory,
+        root_name,
+        root_identity,
+        root,
+    ) {
+        Ok(()) => true,
+        Err(error) => {
+            cleanup_errors.push(format!(
+                "private dump root cleanup failed for {}: {error}",
+                root.display()
+            ));
+            false
+        }
+    };
+    if let Err(error) = prove_windows_child_absent(&parent_anchor.directory, root_name, root) {
+        cleanup_errors.push(error);
+    }
+    if root_disposition_requested && cleanup_errors.is_empty() {
+        primary
+    } else {
+        format!("{primary}; {}", cleanup_errors.join("; "))
+    }
+}
+
+#[cfg(not(windows))]
 fn private_creation_error(
     parent_anchor: &DirectoryAnchor,
     root_anchor: &DirectoryAnchor,
@@ -2360,7 +4374,36 @@ fn unlink_bound_regular_child(
         .map_err(|error| format!("secure unlinkat failed: {error}"))
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn unlink_bound_regular_child(
+    parent: &File,
+    name: &OsStr,
+    expected_identity: FileIdentity,
+) -> Result<(), String> {
+    let child = open_any_child_for_delete(parent, name)
+        .map_err(|error| format!("failed to rebind the private file before cleanup: {error}"))?;
+    if opened_child_kind(&child)
+        .map_err(|error| format!("failed to classify the private file before cleanup: {error}"))?
+        != OpenedChildKind::RegularFile
+    {
+        return Err(
+            "private file changed kind before cleanup; the replacement was left untouched"
+                .to_string(),
+        );
+    }
+    let actual_identity = file_identity(&child)
+        .map_err(|error| format!("failed to inspect the private file before cleanup: {error}"))?;
+    if actual_identity != expected_identity {
+        return Err(
+            "private file identity changed before cleanup; the replacement was left untouched"
+                .to_string(),
+        );
+    }
+    delete_open_child(&child)
+        .map_err(|error| format!("secure handle-relative file cleanup failed: {error}"))
+}
+
+#[cfg(not(any(unix, windows)))]
 fn unlink_bound_regular_child(
     _parent: &File,
     _name: &OsStr,
@@ -2437,7 +4480,103 @@ fn remove_directory_contents_nofollow(directory: &File, display_path: &Path) -> 
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn remove_directory_contents_nofollow(directory: &File, display_path: &Path) -> Result<(), String> {
+    for name in crate::infrastructure::platform::filesystem::read_directory_names(directory)
+        .map_err(|error| {
+            format!(
+                "failed to enumerate the retained private directory anchor {}: {error}",
+                display_path.display()
+            )
+        })?
+    {
+        let child_path = display_path.join(&name);
+        let child = match open_any_child_for_delete(directory, &name) {
+            Ok(child) => child,
+            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "failed to inspect private entry {} before cleanup: {error}",
+                    child_path.display()
+                ));
+            }
+        };
+        let identity = file_identity(&child).map_err(|error| {
+            format!(
+                "failed to inspect private entry identity {} before cleanup: {error}",
+                child_path.display()
+            )
+        })?;
+        let kind = opened_child_kind(&child).map_err(|error| {
+            format!(
+                "failed to classify private entry {} before cleanup: {error}",
+                child_path.display()
+            )
+        })?;
+
+        if kind == OpenedChildKind::Directory {
+            let directory_child =
+                open_directory_child_nofollow(directory, &name).map_err(|error| {
+                    format!(
+                        "failed to bind private directory {} before cleanup: {error}",
+                        child_path.display()
+                    )
+                })?;
+            if file_identity(&directory_child).map_err(|error| {
+                format!(
+                    "failed to inspect private directory {} before cleanup: {error}",
+                    child_path.display()
+                )
+            })? != identity
+            {
+                return Err(format!(
+                    "private directory identity changed before cleanup; replacement left untouched: {}",
+                    child_path.display()
+                ));
+            }
+            remove_directory_contents_nofollow(&directory_child, &child_path)?;
+        } else if kind == OpenedChildKind::Unsupported {
+            return Err(format!(
+                "private tree contains an unsupported entry that cannot be securely removed: {}",
+                child_path.display()
+            ));
+        }
+
+        let rebound = open_any_child_for_delete(directory, &name).map_err(|error| {
+            format!(
+                "failed to rebind private entry {} before cleanup: {error}",
+                child_path.display()
+            )
+        })?;
+        let rebound_identity = file_identity(&rebound).map_err(|error| {
+            format!(
+                "failed to recheck private entry {} before cleanup: {error}",
+                child_path.display()
+            )
+        })?;
+        let rebound_kind = opened_child_kind(&rebound).map_err(|error| {
+            format!(
+                "failed to reclassify private entry {} before cleanup: {error}",
+                child_path.display()
+            )
+        })?;
+        if rebound_identity != identity || rebound_kind != kind {
+            return Err(format!(
+                "private entry identity or kind changed before cleanup; replacement left untouched: {}",
+                child_path.display()
+            ));
+        }
+        delete_open_child(&rebound).map_err(|error| {
+            format!(
+                "failed to remove private entry {} through its retained parent anchor: {error}",
+                child_path.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
 fn remove_directory_contents_nofollow(
     _directory: &File,
     display_path: &Path,
@@ -2500,7 +4639,97 @@ fn remove_bound_directory_child(
     })
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn remove_bound_directory_child(
+    parent: &File,
+    name: &OsStr,
+    expected_identity: FileIdentity,
+    display_path: &Path,
+) -> Result<(), String> {
+    let delete_handle = open_any_child_for_delete(parent, name).map_err(|error| {
+        format!(
+            "failed to rebind expected private directory {} before cleanup: {error}",
+            display_path.display()
+        )
+    })?;
+    if opened_child_kind(&delete_handle).map_err(|error| {
+        format!(
+            "failed to classify expected private directory {} before cleanup: {error}",
+            display_path.display()
+        )
+    })? != OpenedChildKind::Directory
+    {
+        return Err(format!(
+            "private directory changed kind before cleanup; replacement left untouched: {}",
+            display_path.display()
+        ));
+    }
+    if file_identity(&delete_handle).map_err(|error| {
+        format!(
+            "failed to inspect expected private directory {} before cleanup: {error}",
+            display_path.display()
+        )
+    })? != expected_identity
+    {
+        return Err(format!(
+            "private directory identity changed before cleanup; replacement left untouched: {}",
+            display_path.display()
+        ));
+    }
+
+    let directory = open_directory_child_nofollow(parent, name).map_err(|error| {
+        format!(
+            "failed to retain expected private directory {} before cleanup: {error}",
+            display_path.display()
+        )
+    })?;
+    if file_identity(&directory).map_err(|error| {
+        format!(
+            "failed to inspect retained private directory {} before cleanup: {error}",
+            display_path.display()
+        )
+    })? != expected_identity
+    {
+        return Err(format!(
+            "private directory identity changed before cleanup; replacement left untouched: {}",
+            display_path.display()
+        ));
+    }
+    remove_directory_contents_nofollow(&directory, display_path)?;
+
+    let rebound = open_any_child_for_delete(parent, name).map_err(|error| {
+        format!(
+            "failed to rebind expected private directory {} after cleanup: {error}",
+            display_path.display()
+        )
+    })?;
+    if file_identity(&rebound).map_err(|error| {
+        format!(
+            "failed to recheck expected private directory {} after cleanup: {error}",
+            display_path.display()
+        )
+    })? != expected_identity
+        || opened_child_kind(&rebound).map_err(|error| {
+            format!(
+                "failed to reclassify expected private directory {} after cleanup: {error}",
+                display_path.display()
+            )
+        })? != OpenedChildKind::Directory
+    {
+        return Err(format!(
+            "private directory identity or kind changed after cleanup; replacement left untouched: {}",
+            display_path.display()
+        ));
+    }
+    delete_open_child(&rebound).map_err(|error| {
+        format!(
+            "failed to remove expected private directory {} through its retained parent anchor: {error}",
+            display_path.display()
+        )
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
 fn remove_bound_directory_child(
     _parent: &File,
     _name: &OsStr,
@@ -2557,7 +4786,7 @@ impl TreeSnapshot {
 fn capture_directory_snapshot(root: &Path) -> Result<Vec<TreeEntrySnapshot>, String> {
     let normalized = normalize_leaf_path(root)?;
     let (parent_path, name) = split_parent_and_name(&normalized)?;
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (parent_path, name);
         Err(format!(
@@ -2565,7 +4794,7 @@ fn capture_directory_snapshot(root: &Path) -> Result<Vec<TreeEntrySnapshot>, Str
             root.display()
         ))
     }
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
         let directory = {
             let parent = open_directory_nofollow(&parent_path).map_err(|error| {
@@ -2656,7 +4885,67 @@ fn capture_tree_child_nofollow(
     Ok(TreeSnapshot::Directory { identity, entries })
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn capture_tree_target_nofollow(path: &Path) -> Result<TreeSnapshot, String> {
+    let normalized = normalize_leaf_path(path)?;
+    let (parent_path, name) = split_parent_and_name(&normalized)?;
+    let parent = open_directory_nofollow(&parent_path).map_err(|error| {
+        format!(
+            "failed to securely open dump target parent {}: {error}",
+            parent_path.display()
+        )
+    })?;
+    run_tree_open_hook(path);
+    capture_tree_child_nofollow(&parent, &name, path)
+}
+
+#[cfg(windows)]
+fn capture_tree_child_nofollow(
+    parent: &File,
+    name: &OsStr,
+    display_path: &Path,
+) -> Result<TreeSnapshot, String> {
+    let directory = match open_directory_child_nofollow(parent, name) {
+        Ok(directory) => directory,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(TreeSnapshot::Absent),
+        Err(error) => {
+            return Err(format!(
+                "dump target must be a real directory or absent {}: {error}",
+                display_path.display()
+            ));
+        }
+    };
+    let identity = file_identity(&directory).map_err(|error| {
+        format!(
+            "failed to inspect dump target directory identity {}: {error}",
+            display_path.display()
+        )
+    })?;
+    let mut entries = Vec::new();
+    capture_directory_snapshot_recursive(&directory, Path::new(""), display_path, &mut entries)?;
+    let rebound = open_directory_child_nofollow(parent, name).map_err(|error| {
+        format!(
+            "failed to rebind dump target directory {}: {error}",
+            display_path.display()
+        )
+    })?;
+    if file_identity(&rebound).map_err(|error| {
+        format!(
+            "failed to recheck dump target identity {}: {error}",
+            display_path.display()
+        )
+    })? != identity
+    {
+        return Err(format!(
+            "dump target directory identity changed while snapshotting: {}",
+            display_path.display()
+        ));
+    }
+    entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    Ok(TreeSnapshot::Directory { identity, entries })
+}
+
+#[cfg(not(any(unix, windows)))]
 fn capture_tree_target_nofollow(path: &Path) -> Result<TreeSnapshot, String> {
     Err(format!(
         "secure no-follow directory snapshots are unavailable on this host: {}",
@@ -2664,7 +4953,7 @@ fn capture_tree_target_nofollow(path: &Path) -> Result<TreeSnapshot, String> {
     ))
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn capture_tree_child_nofollow(
     _parent: &File,
     _name: &OsStr,
@@ -2674,6 +4963,205 @@ fn capture_tree_child_nofollow(
         "secure no-follow directory snapshots are unavailable on this host: {}",
         display_path.display()
     ))
+}
+
+#[cfg(windows)]
+fn capture_directory_snapshot_recursive(
+    directory: &File,
+    relative_root: &Path,
+    display_root: &Path,
+    entries: &mut Vec<TreeEntrySnapshot>,
+) -> Result<(), String> {
+    let initial_names = crate::infrastructure::platform::filesystem::read_directory_names(
+        directory,
+    )
+    .map_err(|error| {
+        format!(
+            "failed to securely enumerate {}: {error}",
+            display_root.join(relative_root).display()
+        )
+    })?;
+    for name in &initial_names {
+        let relative = relative_root.join(name);
+        let display_path = display_root.join(&relative);
+        let (opened, opened_kind) = open_any_child_nofollow(directory, name).map_err(|error| {
+            format!(
+                "dump tree contains an unsupported entry {}: {error}",
+                display_path.display()
+            )
+        })?;
+        let identity = file_identity(&opened).map_err(|error| {
+            format!(
+                "failed to inspect entry identity {}: {error}",
+                display_path.display()
+            )
+        })?;
+        if opened_kind == OpenedChildKind::Directory {
+            let child = open_directory_child_nofollow(directory, name).map_err(|error| {
+                format!(
+                    "failed to securely bind directory {}: {error}",
+                    display_path.display()
+                )
+            })?;
+            if file_identity(&child).map_err(|error| {
+                format!(
+                    "failed to inspect directory identity {}: {error}",
+                    display_path.display()
+                )
+            })? != identity
+            {
+                return Err(format!(
+                    "dump tree directory identity changed while opening: {}",
+                    display_path.display()
+                ));
+            }
+            entries.push(TreeEntrySnapshot {
+                relative_path: relative.clone(),
+                kind: TreeEntryKind::Directory { identity },
+            });
+            capture_directory_snapshot_recursive(&child, &relative, display_root, entries)?;
+            let rebound = open_directory_child_nofollow(directory, name).map_err(|error| {
+                format!(
+                    "failed to rebind directory {}: {error}",
+                    display_path.display()
+                )
+            })?;
+            if file_identity(&rebound).map_err(|error| {
+                format!(
+                    "failed to recheck directory identity {}: {error}",
+                    display_path.display()
+                )
+            })? != identity
+            {
+                return Err(format!(
+                    "dump tree directory identity changed while snapshotting: {}",
+                    display_path.display()
+                ));
+            }
+            continue;
+        }
+
+        if opened_kind != OpenedChildKind::RegularFile {
+            return Err(format!(
+                "dump tree contains an unsupported entry kind: {}",
+                display_path.display()
+            ));
+        }
+        let mut file = open_regular_child_nofollow(directory, name).map_err(|error| {
+            format!(
+                "dump tree contains an unsupported entry {}: {error}",
+                display_path.display()
+            )
+        })?;
+        if file_identity(&file).map_err(|error| {
+            format!(
+                "failed to inspect file identity {}: {error}",
+                display_path.display()
+            )
+        })? != identity
+        {
+            return Err(format!(
+                "dump tree file identity changed while opening: {}",
+                display_path.display()
+            ));
+        }
+        if hard_link_count(&file).map_err(|error| {
+            format!(
+                "failed to inspect hard links for {}: {error}",
+                display_path.display()
+            )
+        })? != 1
+        {
+            return Err(format!(
+                "dump tree file must have exactly one hard link: {}",
+                display_path.display()
+            ));
+        }
+        let before = file.metadata().map_err(|error| {
+            format!(
+                "failed to inspect opened file {}: {error}",
+                display_path.display()
+            )
+        })?;
+        let mut hasher = Sha256::new();
+        let mut size = 0_u64;
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let read = file
+                .read(&mut buffer)
+                .map_err(|error| format!("failed to read {}: {error}", display_path.display()))?;
+            if read == 0 {
+                break;
+            }
+            size += read as u64;
+            hasher.update(&buffer[..read]);
+        }
+        run_tree_open_hook(&display_path);
+        let after = file.metadata().map_err(|error| {
+            format!(
+                "failed to recheck opened file {}: {error}",
+                display_path.display()
+            )
+        })?;
+        if before.len() != after.len()
+            || before.modified().ok() != after.modified().ok()
+            || after.len() != size
+        {
+            return Err(format!(
+                "dump tree file changed while snapshotting: {}",
+                display_path.display()
+            ));
+        }
+        if hard_link_count(&file).map_err(|error| {
+            format!(
+                "failed to recheck hard links for {}: {error}",
+                display_path.display()
+            )
+        })? != 1
+        {
+            return Err(format!(
+                "dump tree file hard-link count changed while snapshotting: {}",
+                display_path.display()
+            ));
+        }
+        let rebound = open_regular_child_nofollow(directory, name).map_err(|error| {
+            format!("failed to rebind file {}: {error}", display_path.display())
+        })?;
+        if file_identity(&rebound).map_err(|error| {
+            format!(
+                "failed to recheck file identity {}: {error}",
+                display_path.display()
+            )
+        })? != identity
+        {
+            return Err(format!(
+                "dump tree file identity changed while snapshotting: {}",
+                display_path.display()
+            ));
+        }
+        entries.push(TreeEntrySnapshot {
+            relative_path: relative,
+            kind: TreeEntryKind::File {
+                identity,
+                size,
+                sha256: hasher.finalize().into(),
+            },
+        });
+    }
+    let final_names = crate::infrastructure::platform::filesystem::read_directory_names(directory)
+        .map_err(|error| {
+            format!(
+                "failed to securely re-enumerate {}: {error}",
+                display_root.join(relative_root).display()
+            )
+        })?;
+    if final_names != initial_names {
+        return Err(format!(
+            "dump tree directory name set changed while snapshotting: {}",
+            display_root.join(relative_root).display()
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -2871,7 +5359,7 @@ fn read_directory_names(directory: &File) -> std::io::Result<Vec<OsString>> {
     Ok(names)
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn capture_directory_snapshot_recursive(
     _directory: &File,
     _relative_root: &Path,
@@ -3229,10 +5717,10 @@ fn publish_staged_tree(
 
     run_publication_failpoint(PublicationCheckpoint::BeforeStageInstall)?;
     rename_prechecked_directory_child_no_replace(
-        &private.execution_anchor,
+        private.execution_anchor(),
         OsStr::new("staged-source"),
         staged_identity,
-        &private.recovery_anchor,
+        private.recovery_anchor(),
         &sealed_name,
     )
     .map_err(|error| {
@@ -3243,7 +5731,7 @@ fn publish_staged_tree(
         )
     })?;
     let sealed_snapshot = private
-        .recovery_anchor
+        .recovery_anchor()
         .capture_child(&sealed_name, &sealed)?;
     if &sealed_snapshot != staged {
         return Err(format!(
@@ -3256,7 +5744,7 @@ fn publish_staged_tree(
         rename_child_no_replace(
             target_parent,
             target_name,
-            &private.recovery_anchor,
+            private.recovery_anchor(),
             &backup_name,
         )
         .map_err(|error| {
@@ -3272,7 +5760,10 @@ fn publish_staged_tree(
                 format!("dump target parent changed after the atomic backup move: {error}"),
             ));
         }
-        let moved = match private.recovery_anchor.capture_child(&backup_name, &backup) {
+        let moved = match private
+            .recovery_anchor()
+            .capture_child(&backup_name, &backup)
+        {
             Ok(moved) => moved,
             Err(error) => {
                 return Err(retain_recovery_error(
@@ -3328,7 +5819,7 @@ fn publish_staged_tree(
     // name-swapped source is atomically removed from the Git-visible target into
     // private quarantine before rollback or lock release.
     if let Err(error) = rename_child_no_replace(
-        &private.recovery_anchor,
+        private.recovery_anchor(),
         &sealed_name,
         target_parent,
         target_name,
@@ -3500,7 +5991,7 @@ fn publish_staged_tree(
             if let Err(move_error) = rename_child_no_replace(
                 target_parent,
                 target_name,
-                &private.recovery_anchor,
+                private.recovery_anchor(),
                 &failed_name,
             ) {
                 return Err(retain_recovery_error(
@@ -3512,7 +6003,9 @@ fn publish_staged_tree(
                     ),
                 ));
             }
-            let failed_snapshot = match private.recovery_anchor.capture_child(&failed_name, &failed)
+            let failed_snapshot = match private
+                .recovery_anchor()
+                .capture_child(&failed_name, &failed)
             {
                 Ok(snapshot) => snapshot,
                 Err(snapshot_error) => {
@@ -3618,7 +6111,7 @@ fn quarantine_unverified_install(
     rename_child_no_replace(
         target_parent,
         target_name,
-        &private.recovery_anchor,
+        private.recovery_anchor(),
         quarantine_name,
     )
     .map_err(|error| {
@@ -3630,7 +6123,7 @@ fn quarantine_unverified_install(
     })?;
     if let Some(installed) = installed {
         let quarantined = private
-            .recovery_anchor
+            .recovery_anchor()
             .capture_child(quarantine_name, quarantine_path)
             .map_err(|error| {
                 format!(
@@ -3709,7 +6202,7 @@ fn rollback_before_stage_install(
 ) -> Result<Vec<String>, String> {
     let backup = private.recovery.join(backup_name);
     if let Err(error) = rename_child_no_replace(
-        &private.recovery_anchor,
+        private.recovery_anchor(),
         backup_name,
         target_parent,
         target_name,
@@ -3778,7 +6271,7 @@ fn rollback_before_stage_install(
             let quarantine = rename_child_no_replace(
                 target_parent,
                 target_name,
-                &private.recovery_anchor,
+                private.recovery_anchor(),
                 backup_name,
             );
             let detail = match quarantine {
@@ -3843,7 +6336,29 @@ fn rename_prechecked_directory_child_no_replace(
     )
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn rename_prechecked_directory_child_no_replace(
+    source_parent: &DirectoryAnchor,
+    source_name: &OsStr,
+    expected_identity: FileIdentity,
+    destination_parent: &DirectoryAnchor,
+    destination_name: &OsStr,
+) -> Result<(), String> {
+    let source = open_directory_child_for_rename(&source_parent.directory, source_name).map_err(
+        |error| {
+            format!(
+                "failed to open staged child {}: {error}",
+                source_parent.path.join(source_name).display()
+            )
+        },
+    )?;
+    if file_identity(&source).map_err(|error| error.to_string())? != expected_identity {
+        return Err("staged directory identity changed".to_string());
+    }
+    rename_open_directory_child_no_replace(source, destination_parent, destination_name)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn rename_prechecked_directory_child_no_replace(
     _source_parent: &DirectoryAnchor,
     _source_name: &OsStr,
@@ -3921,7 +6436,63 @@ fn rename_child_no_replace(
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn rename_child_no_replace(
+    source_parent: &DirectoryAnchor,
+    source_name: &OsStr,
+    destination_parent: &DirectoryAnchor,
+    destination_name: &OsStr,
+) -> Result<(), String> {
+    let source = open_directory_child_for_rename(&source_parent.directory, source_name).map_err(
+        |error| {
+            format!(
+                "failed to bind source directory {}: {error}",
+                source_parent.path.join(source_name).display()
+            )
+        },
+    )?;
+    rename_open_directory_child_no_replace(source, destination_parent, destination_name)
+}
+
+#[cfg(windows)]
+fn rename_open_directory_child_no_replace(
+    source: File,
+    destination_parent: &DirectoryAnchor,
+    destination_name: &OsStr,
+) -> Result<(), String> {
+    let expected_identity = file_identity(&source)
+        .map_err(|error| format!("failed to inspect source directory identity: {error}"))?;
+    rename_directory_handle_child_no_replace(
+        &source,
+        &destination_parent.directory,
+        destination_name,
+    )
+    .map_err(|error| error.to_string())?;
+    let destination =
+        open_directory_child_nofollow(&destination_parent.directory, destination_name).map_err(
+            |error| {
+                format!(
+                    "failed to reopen renamed destination {}: {error}",
+                    destination_parent.path.join(destination_name).display()
+                )
+            },
+        )?;
+    let actual_identity = file_identity(&destination).map_err(|error| {
+        format!(
+            "failed to inspect renamed destination identity {}: {error}",
+            destination_parent.path.join(destination_name).display()
+        )
+    })?;
+    if actual_identity != expected_identity {
+        return Err(format!(
+            "renamed destination identity does not match source: {}",
+            destination_parent.path.join(destination_name).display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
 fn rename_child_no_replace(
     _source_parent: &DirectoryAnchor,
     _source_name: &OsStr,
@@ -3937,6 +6508,19 @@ enum PublicationCheckpoint {
     BeforeStageInstall,
     BeforeSealedPublishRename,
     AfterStageInstall,
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrivateCleanupCheckpoint {
+    BeforeEffectiveConfigScrub,
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrivateCreationCheckpoint {
+    AfterExecutionCreation,
+    AfterRecoveryCreation,
 }
 
 #[cfg(test)]
@@ -3958,7 +6542,13 @@ thread_local! {
     static TEST_TARGETED_READ_HOOKS: RefCell<Option<TargetedReadHooks>> = const { RefCell::new(None) };
     static TEST_TREE_OPEN_HOOK: RefCell<Option<PathHook>> = const { RefCell::new(None) };
     static TEST_PRIVATE_CREATE_HOOK: RefCell<Option<PathHook>> = const { RefCell::new(None) };
+    #[cfg(windows)]
+    static TEST_EFFECTIVE_CONFIG_CREATE_HOOK: RefCell<Option<PathHook>> = const { RefCell::new(None) };
     static TEST_TARGET_PARENT_CAPTURE_HOOK: RefCell<Option<PathHook>> = const { RefCell::new(None) };
+    #[cfg(windows)]
+    static TEST_PRIVATE_CLEANUP_FAILPOINT: RefCell<Option<PrivateCleanupCheckpoint>> = const { RefCell::new(None) };
+    #[cfg(windows)]
+    static TEST_PRIVATE_CREATION_FAILPOINT: RefCell<Option<PrivateCreationCheckpoint>> = const { RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -4072,6 +6662,25 @@ fn with_private_create_hook<T>(
     action()
 }
 
+#[cfg(all(test, windows))]
+fn with_effective_config_create_hook<T>(
+    hook: impl FnOnce(&Path) + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<PathHook>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_EFFECTIVE_CONFIG_CREATE_HOOK.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+    let previous =
+        TEST_EFFECTIVE_CONFIG_CREATE_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
+    let _reset = Reset(previous);
+    action()
+}
+
 #[cfg(test)]
 fn with_target_parent_capture_hook<T>(
     hook: impl FnOnce(&Path) + 'static,
@@ -4090,9 +6699,77 @@ fn with_target_parent_capture_hook<T>(
     action()
 }
 
+#[cfg(all(test, windows))]
+fn with_private_cleanup_failpoint<T>(
+    checkpoint: PrivateCleanupCheckpoint,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<PrivateCleanupCheckpoint>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_PRIVATE_CLEANUP_FAILPOINT.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+    let previous = TEST_PRIVATE_CLEANUP_FAILPOINT.with(|slot| slot.replace(Some(checkpoint)));
+    let _reset = Reset(previous);
+    action()
+}
+
+#[cfg(all(test, windows))]
+fn with_private_creation_failpoint<T>(
+    checkpoint: PrivateCreationCheckpoint,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<PrivateCreationCheckpoint>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_PRIVATE_CREATION_FAILPOINT.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+    let previous = TEST_PRIVATE_CREATION_FAILPOINT.with(|slot| slot.replace(Some(checkpoint)));
+    let _reset = Reset(previous);
+    action()
+}
+
+#[cfg(windows)]
+fn run_private_cleanup_failpoint(checkpoint: PrivateCleanupCheckpoint) -> Result<(), String> {
+    #[cfg(test)]
+    if TEST_PRIVATE_CLEANUP_FAILPOINT.with(|slot| slot.borrow().as_ref() == Some(&checkpoint)) {
+        return Err(format!(
+            "injected private dump cleanup failure at {checkpoint:?}"
+        ));
+    }
+    let _ = checkpoint;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn run_private_creation_failpoint(checkpoint: PrivateCreationCheckpoint) -> Result<(), String> {
+    #[cfg(test)]
+    if TEST_PRIVATE_CREATION_FAILPOINT.with(|slot| slot.borrow().as_ref() == Some(&checkpoint)) {
+        return Err(format!(
+            "injected private dump creation failure at {checkpoint:?}"
+        ));
+    }
+    let _ = checkpoint;
+    Ok(())
+}
+
 fn run_private_create_hook(_path: &Path) {
     #[cfg(test)]
     if let Some(hook) = TEST_PRIVATE_CREATE_HOOK.with(|slot| slot.borrow_mut().take()) {
+        hook(_path);
+    }
+}
+
+#[cfg(windows)]
+fn run_effective_config_create_hook(_path: &Path) {
+    #[cfg(test)]
+    if let Some(hook) = TEST_EFFECTIVE_CONFIG_CREATE_HOOK.with(|slot| slot.borrow_mut().take()) {
         hook(_path);
     }
 }
@@ -5030,8 +7707,11 @@ fn parse_exact_platform_version(value: &str) -> Option<[u32; 4]> {
     (parts.len() == 4).then(|| [parts[0], parts[1], parts[2], parts[3]])
 }
 
-#[cfg(all(test, not(windows)))]
+#[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    use super::with_effective_config_create_hook;
+    #[cfg_attr(windows, allow(unused_imports))]
     use super::{
         normalize_key_value_connection, staged_root_version_policy, validate_staged_dump,
         with_private_create_hook, with_publication_failpoint, with_publication_hook,
@@ -5056,10 +7736,13 @@ mod tests {
 
         let normalized = normalize_key_value_connection(connection, config_dir).unwrap();
 
-        assert_eq!(
-            normalized,
-            r#"File="/workspace/project/build/ib;archive";Usr=O'Brien;Pwd="secret;with:semicolon""#
-        );
+        #[cfg(windows)]
+        let expected =
+            r#"File="/workspace/project\build/ib;archive";Usr=O'Brien;Pwd="secret;with:semicolon""#;
+        #[cfg(not(windows))]
+        let expected =
+            r#"File="/workspace/project/build/ib;archive";Usr=O'Brien;Pwd="secret;with:semicolon""#;
+        assert_eq!(normalized, expected);
     }
 
     struct FixedPlatform {
@@ -5318,9 +8001,10 @@ mod tests {
     }
 
     fn fixed_platform(root: &Path) -> FixedPlatform {
-        let executable = root.join("8.3.27.2074/1cv8");
+        let install = root.join("8.3.27.2074");
+        let executable = install.join(PlatformUtility::Designer.executable_name());
         make_platform_executable(&executable);
-        make_platform_executable(&executable.parent().unwrap().join("ibcmd"));
+        make_platform_executable(&install.join(PlatformUtility::Ibcmd.executable_name()));
         FixedPlatform {
             executable,
             version: "8.3.27.2074".to_string(),
@@ -5380,6 +8064,149 @@ mod tests {
         invoke_with_args(runner, platform, invocation, context, &args())
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_applied_full_dump_reaches_runner_and_commits_validated_tree() {
+        let (root, context, _) = workspace("windows-applied-full-dump");
+        let target = context.cwd.join("src");
+        let platform = fixed_platform(&root);
+        let runner = DumpRunner::valid();
+
+        let result = invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context);
+
+        assert!(result.ok, "{result:?}");
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 1);
+        assert!(target.join("Configuration.xml").is_file());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_applied_full_dump_rejects_effective_config_acl_mutation_before_runner_and_cleans_created_identity(
+    ) {
+        use std::os::windows::ffi::OsStrExt;
+        use std::ptr;
+        use windows_sys::Win32::Security::Authorization::{SetNamedSecurityInfoW, SE_FILE_OBJECT};
+        use windows_sys::Win32::Security::{
+            DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+        };
+
+        let (root, context, _) = workspace("windows-effective-config-acl-mutation");
+        let platform = fixed_platform(&root);
+        let runner = DumpRunner::valid();
+        let displaced = context.cwd.join("created-effective-config.yaml");
+        let hook_displaced = displaced.clone();
+
+        let result = with_effective_config_create_hook(
+            move |path| {
+                std::fs::rename(path, &hook_displaced).unwrap();
+                let mut path = hook_displaced.as_os_str().encode_wide().collect::<Vec<_>>();
+                path.push(0);
+                // SAFETY: path is NUL-terminated and names the newly created file. A null DACL is
+                // intentional test corruption that the production verifier must reject.
+                let status = unsafe {
+                    SetNamedSecurityInfoW(
+                        path.as_ptr(),
+                        SE_FILE_OBJECT,
+                        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                        ptr::null_mut(),
+                        ptr::null_mut(),
+                        ptr::null(),
+                        ptr::null(),
+                    )
+                };
+                assert_eq!(
+                    status,
+                    0,
+                    "{}",
+                    std::io::Error::from_raw_os_error(status as i32)
+                );
+            },
+            || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
+        );
+
+        assert!(!result.ok, "{result:?}");
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
+        assert!(
+            !displaced.exists(),
+            "the originally created identity escaped cleanup: {}",
+            displaced.display()
+        );
+        assert!(std::fs::read_dir(&context.cwd).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".unica-dump-guard-")));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_applied_full_dump_rejects_effective_config_name_swap_before_runner_and_preserves_replacement_identity(
+    ) {
+        use std::cell::Cell;
+
+        let (root, context, _) = workspace("windows-effective-config-name-swap");
+        let platform = fixed_platform(&root);
+        let runner = DumpRunner::valid();
+        let displaced = context.cwd.join("created-effective-config.yaml");
+        let replacement = context.cwd.join("replacement-effective-config.yaml");
+        std::fs::write(&replacement, b"replacement sentinel").unwrap();
+        let expected_replacement_identity =
+            crate::infrastructure::platform::filesystem::file_identity(
+                &std::fs::File::open(&replacement).unwrap(),
+            )
+            .unwrap();
+        let created_identity = std::rc::Rc::new(Cell::new(None));
+        let hook_created_identity = std::rc::Rc::clone(&created_identity);
+        let hook_displaced = displaced.clone();
+        let hook_replacement = replacement.clone();
+
+        let result = with_effective_config_create_hook(
+            move |path| {
+                hook_created_identity.set(Some(
+                    crate::infrastructure::platform::filesystem::file_identity(
+                        &std::fs::File::open(path).unwrap(),
+                    )
+                    .unwrap(),
+                ));
+                std::fs::rename(path, &hook_displaced).unwrap();
+                std::fs::hard_link(&hook_replacement, path).unwrap();
+            },
+            || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
+        );
+
+        assert!(!result.ok, "{result:?}");
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
+        assert!(
+            created_identity.get().is_some(),
+            "the post-create hook did not run"
+        );
+        assert!(
+            !displaced.exists(),
+            "the originally created identity escaped cleanup: {}",
+            displaced.display()
+        );
+        assert_eq!(
+            crate::infrastructure::platform::filesystem::file_identity(
+                &std::fs::File::open(&replacement).unwrap(),
+            )
+            .unwrap(),
+            expected_replacement_identity,
+            "cleanup followed the replaced effective-config name"
+        );
+        assert_eq!(
+            std::fs::read(&replacement).unwrap(),
+            b"replacement sentinel"
+        );
+        assert!(std::fs::read_dir(&context.cwd).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".unica-dump-guard-")));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn selected_source_set_target_must_be_relative_and_physically_contained_in_workspace() {
         for case in [
@@ -5397,7 +8224,10 @@ mod tests {
                 "symlink-parent" => {
                     #[cfg(unix)]
                     std::os::unix::fs::symlink(&outside, context.cwd.join("linked")).unwrap();
-                    #[cfg(not(unix))]
+                    #[cfg(windows)]
+                    std::os::windows::fs::symlink_dir(&outside, context.cwd.join("linked"))
+                        .unwrap();
+                    #[cfg(not(any(unix, windows)))]
                     std::fs::create_dir_all(context.cwd.join("linked")).unwrap();
                     "linked/symlink-src".to_string()
                 }
@@ -5406,7 +8236,10 @@ mod tests {
                     std::fs::create_dir_all(&real_target).unwrap();
                     #[cfg(unix)]
                     std::os::unix::fs::symlink(&real_target, context.cwd.join("src")).unwrap();
-                    #[cfg(not(unix))]
+                    #[cfg(windows)]
+                    std::os::windows::fs::symlink_dir(&real_target, context.cwd.join("src"))
+                        .unwrap();
+                    #[cfg(not(any(unix, windows)))]
                     std::fs::create_dir_all(context.cwd.join("src")).unwrap();
                     "src".to_string()
                 }
@@ -5787,7 +8620,7 @@ mod tests {
     }
 
     #[test]
-    fn system_resolver_does_not_trust_an_explicit_platform_path_or_broad_claim() {
+    fn platform_resolver_does_not_trust_an_explicit_platform_path_or_broad_claim() {
         let root = std::env::temp_dir().join(format!(
             "unica-platform-resolution-{}",
             uuid::Uuid::new_v4()
@@ -5891,7 +8724,7 @@ mod tests {
     }
 
     #[test]
-    fn system_resolver_rejects_fake_binary_even_under_exact_version_directory_name() {
+    fn platform_resolver_rejects_fake_binary_even_under_exact_version_directory_name() {
         let root = std::env::temp_dir().join(format!(
             "unica-platform-fake-resolution-{}",
             uuid::Uuid::new_v4()
@@ -6021,6 +8854,55 @@ mod tests {
             std::fs::read_to_string(target.join("Configuration.xml")).unwrap(),
             valid_configuration_owner()
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_destination_race_after_backup_survives_rollback() {
+        let (root, context, _) = workspace("windows-destination-race");
+        let target = context.cwd.join("src");
+        seed_valid_target(&target);
+        let platform = fixed_platform(&root);
+        let runner = DumpRunner::valid();
+        let raced_target = target.clone();
+        let hook_workspace = context.cwd.clone();
+
+        let result = with_publication_hook(
+            PublicationCheckpoint::AfterBackup,
+            move || {
+                assert!(
+                    !raced_target.exists(),
+                    "the original destination must already be moved to backup"
+                );
+                let private_root = std::fs::read_dir(&hook_workspace)
+                    .unwrap()
+                    .flatten()
+                    .map(|entry| entry.path())
+                    .find(|path| {
+                        path.file_name().is_some_and(|name| {
+                            name.to_string_lossy().starts_with(".unica-dump-guard-")
+                        })
+                    })
+                    .expect("private dump root");
+                assert!(
+                    std::fs::read_dir(private_root.join("recovery"))
+                        .unwrap()
+                        .flatten()
+                        .any(|entry| entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with("target-backup-")),
+                    "the original destination backup must be retained for rollback"
+                );
+                std::fs::create_dir_all(&raced_target).unwrap();
+                std::fs::write(raced_target.join("racer.txt"), b"racer").unwrap();
+            },
+            || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
+        );
+
+        assert!(!result.ok, "{result:?}");
+        assert_eq!(std::fs::read(target.join("racer.txt")).unwrap(), b"racer");
         std::fs::remove_dir_all(root).unwrap();
     }
 
