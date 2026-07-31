@@ -3183,7 +3183,6 @@ mod tests {
             "unica.form.compile",
             "unica.form.edit",
             "unica.form.info",
-            "unica.form.remove",
             "unica.form.validate",
             "unica.interface.edit",
             "unica.interface.validate",
@@ -3214,6 +3213,7 @@ mod tests {
             "unica.template.add",
             "unica.template.remove",
             "unica.help.add",
+            "unica.form.remove",
         ];
 
         for tool in tools() {

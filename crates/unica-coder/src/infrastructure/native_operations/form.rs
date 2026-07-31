@@ -2385,7 +2385,19 @@ pub(crate) fn add_form(args: &Map<String, Value>, context: &WorkspaceContext) ->
 }
 
 pub(crate) fn remove_form(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
-    let result = (|| -> Result<(String, Vec<String>, Vec<String>), String> {
+    remove_form_with_data(args, context).outcome
+}
+
+pub(crate) struct FormRemoveExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<MutationData>,
+}
+
+pub(crate) fn remove_form_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> FormRemoveExecution {
+    let result = (|| -> Result<(MutationData, Vec<String>, Vec<String>), String> {
         let object_name = required_string(
             args,
             &["objectName", "ObjectName", "processorName", "ProcessorName"],
@@ -2522,12 +2534,14 @@ pub(crate) fn remove_form(args: &Map<String, Value>, context: &WorkspaceContext)
 
         let mut stdout = String::new();
         let mut changes = Vec::new();
+        let mut mutation = MutationData::new(true);
         if form_dir_exists {
             stdout.push_str(&format!(
                 "[OK] Удалён каталог: {}\n",
                 form_dir_display.display()
             ));
             changes.push(format!("removed directory {}", form_dir_path.display()));
+            mutation = mutation.removed(&form_dir_path);
         }
         if remove_forms_collection {
             changes.push(format!(
@@ -2540,6 +2554,7 @@ pub(crate) fn remove_form(args: &Map<String, Value>, context: &WorkspaceContext)
             form_meta_display.display()
         ));
         changes.push(format!("removed file {}", form_meta_path.display()));
+        mutation = mutation.removed(&form_meta_path);
         if removed_form_refs > 0 {
             changes.push(format!("removed {removed_form_refs} Form reference(s)"));
         }
@@ -2547,36 +2562,47 @@ pub(crate) fn remove_form(args: &Map<String, Value>, context: &WorkspaceContext)
             changes.push(format!("cleared {tag}"));
         }
         changes.push(format!("updated {}", root_xml_path.display()));
+        mutation = mutation.updated(&root_xml_path);
 
         stdout.push_str(&format!(
             "[OK] Форма {form_name} удалена из {}\n",
             root_xml_display.display()
         ));
-        Ok((stdout, changes, report.cleanup_warnings))
+        let _ = stdout;
+        Ok((mutation, changes, report.cleanup_warnings))
     })();
 
     match result {
-        Ok((stdout, changes, warnings)) => AdapterOutcome {
-            ok: true,
-            summary: "unica.form.remove completed with native form remover".to_string(),
-            changes,
-            warnings,
-            errors: Vec::new(),
-            artifacts: Vec::new(),
-            stdout: Some(stdout),
-            stderr: Some(String::new()),
-            command: None,
+        Ok((mutation, changes, warnings)) => FormRemoveExecution {
+            outcome: AdapterOutcome {
+                ok: true,
+                summary: format!(
+                    "unica.form.remove removed {} path(s)",
+                    mutation.removed.len()
+                ),
+                changes,
+                warnings,
+                errors: Vec::new(),
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(String::new()),
+                command: None,
+            },
+            data: Some(mutation),
         },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.form.remove failed in native form remover".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-            command: None,
+        Err(error) => FormRemoveExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.form.remove failed in native form remover".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.clone()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{error}\n")),
+                command: None,
+            },
+            data: None,
         },
     }
 }

@@ -1394,40 +1394,6 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
-        name="form-remove-main-form",
-        tool="unica.form.remove",
-        skill="form-remove",
-        script="remove-form.py",
-        arguments={
-            "ObjectName": "ParityReport",
-            "FormName": "MainForm",
-            "SrcDir": "src/Reports",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="meta-compile",
-                script="meta-compile.py",
-                arguments={"JsonPath": "fixtures/meta-report.json", "OutputDir": "src"},
-            ),
-            SetupStep(
-                skill="form-add",
-                script="form-add.py",
-                arguments={
-                    "ObjectPath": "src/Reports/ParityReport.xml",
-                    "FormName": "MainForm",
-                    "Purpose": "Object",
-                    "Synonym": "Main form",
-                    "SetDefault": True,
-                },
-            ),
-        ),
-        fixtures=(
-            FileFixture("meta-report.json", "fixtures/meta-report.json"),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
         name="form-add-catalog-list-default",
         tool="unica.form.add",
         skill="form-add",
@@ -3561,14 +3527,6 @@ MISSING_INPUT_SCENARIOS = [
         False,
     ),
     ParityScenario(
-        "form-remove-missing-object",
-        "unica.form.remove",
-        "form-remove",
-        "remove-form.py",
-        {"ObjectName": "ParityCatalog", "FormName": "ФормаЭлемента", "SrcDir": "missing-src/Catalogs"},
-        False,
-    ),
-    ParityScenario(
         "form-validate-missing-form",
         "unica.form.validate",
         "form-validate",
@@ -3692,7 +3650,6 @@ NATIVE_PARITY_TOOLS = {
     "unica.form.compile",
     "unica.form.edit",
     "unica.form.info",
-    "unica.form.remove",
     "unica.form.validate",
     "unica.subsystem.compile",
     "unica.subsystem.edit",
@@ -3714,7 +3671,6 @@ MUTATING_FORM_DCS_PARITY_TOOLS = {
     "unica.form.add",
     "unica.form.compile",
     "unica.form.edit",
-    "unica.form.remove",
     "unica.dcs.compile",
     "unica.dcs.edit",
 }
@@ -3733,6 +3689,7 @@ TYPED_RESULT_TOOLS = {
     "unica.template.add",
     "unica.template.remove",
     "unica.help.add",
+    "unica.form.remove",
 }
 
 EXPECTED_TOOLS = {
@@ -3751,7 +3708,6 @@ EXPECTED_TOOLS = {
     "unica.form.compile",
     "unica.form.edit",
     "unica.form.info",
-    "unica.form.remove",
     "unica.form.validate",
     "unica.interface.edit",
     "unica.interface.validate",

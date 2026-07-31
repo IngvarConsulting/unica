@@ -51,6 +51,14 @@ impl NativeOperationAdapter {
                             "template add",
                         );
                     }
+                    "form-remove" => {
+                        let execution = form::remove_form_with_data(args, context);
+                        return typed_operation_result(
+                            execution.outcome,
+                            execution.data,
+                            "form remove",
+                        );
+                    }
                     "help-add" => {
                         let execution = help::add_help_with_data(args, context);
                         return typed_operation_result(
