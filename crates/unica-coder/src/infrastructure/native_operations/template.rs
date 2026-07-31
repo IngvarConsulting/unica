@@ -273,7 +273,14 @@ pub(crate) fn remove_template(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
-    let result = (|| -> Result<(String, Vec<String>, Vec<String>), String> {
+    remove_template_with_data(args, context).outcome
+}
+
+pub(crate) fn remove_template_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> TemplateExecution {
+    let result = (|| -> Result<(MutationData, Vec<String>, Vec<String>), String> {
         let object_name = required_string(
             args,
             &["objectName", "ObjectName", "processorName", "ProcessorName"],
@@ -408,12 +415,14 @@ pub(crate) fn remove_template(
 
         let mut stdout = String::new();
         let mut changes = Vec::new();
+        let mut mutation = MutationData::new(true);
         if template_payload_exists {
             stdout.push_str(&format!(
                 "[OK] Удалён каталог: {}\n",
                 template_dir_display.display()
             ));
             changes.push(format!("removed directory {}", template_dir_path.display()));
+            mutation = mutation.removed(&template_dir_path);
         }
         if remove_templates_collection {
             changes.push(format!(
@@ -427,41 +436,53 @@ pub(crate) fn remove_template(
             template_meta_display.display()
         ));
         changes.push(format!("removed file {}", template_meta_path.display()));
+        mutation = mutation.removed(&template_meta_path);
         if main_dcs_cleared {
             stdout.push_str("[OK] Очищён MainDataCompositionSchema\n");
             changes.push("cleared MainDataCompositionSchema".to_string());
         }
         changes.push(format!("updated {}", root_xml_path.display()));
+        mutation = mutation.updated(&root_xml_path);
 
         stdout.push_str(&format!(
             "[OK] Макет {template_name} удалён из {}\n",
             root_xml_display.display()
         ));
-        Ok((stdout, changes, report.cleanup_warnings))
+        let _ = stdout;
+        Ok((mutation, changes, report.cleanup_warnings))
     })();
 
     match result {
-        Ok((stdout, changes, warnings)) => AdapterOutcome {
-            ok: true,
-            summary: "unica.template.remove completed with native template remover".to_string(),
-            changes,
-            warnings,
-            errors: Vec::new(),
-            artifacts: Vec::new(),
-            stdout: Some(stdout),
-            stderr: Some(String::new()),
-            command: None,
+        Ok((mutation, changes, warnings)) => TemplateExecution {
+            outcome: AdapterOutcome {
+                ok: true,
+                summary: format!(
+                    "unica.template.remove removed {} path(s)",
+                    mutation.removed.len()
+                ),
+                changes,
+                warnings,
+                errors: Vec::new(),
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(String::new()),
+                command: None,
+            },
+            data: Some(mutation),
         },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.template.remove failed in native template remover".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-            command: None,
+        Err(error) => TemplateExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.template.remove failed in native template remover".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.clone()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{error}\n")),
+                command: None,
+            },
+            data: None,
         },
     }
 }

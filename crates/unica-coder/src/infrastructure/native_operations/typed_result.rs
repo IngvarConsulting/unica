@@ -40,9 +40,26 @@ impl NativeOperationAdapter {
                 Some(registry::TypedMutationHandler::FormEdit) => {}
                 None => {}
             }
-            if operation == "template-add" && !dry_run {
-                let execution = template::add_template_with_data(args, context);
-                return typed_operation_result(execution.outcome, execution.data, "template add");
+            if !dry_run {
+                match operation {
+                    "template-add" => {
+                        let execution = template::add_template_with_data(args, context);
+                        return typed_operation_result(
+                            execution.outcome,
+                            execution.data,
+                            "template add",
+                        );
+                    }
+                    "template-remove" => {
+                        let execution = template::remove_template_with_data(args, context);
+                        return typed_operation_result(
+                            execution.outcome,
+                            execution.data,
+                            "template remove",
+                        );
+                    }
+                    _ => {}
+                }
             }
             if operation == "meta-edit" {
                 let execution = if dry_run {

@@ -1472,31 +1472,6 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
-        name="bsp-template-remove-real-template-from-report-copy",
-        tool="unica.template.remove",
-        skill="template-remove",
-        script="remove-template.py",
-        arguments={
-            "ObjectName": "АнализВерсийОбъектов",
-            "TemplateName": "ОсновнаяСхемаКомпоновкиДанных",
-            "SrcDir": "src/Reports",
-        },
-        fixtures=(
-            FileFixture(BSP_META_REPORT_FIXTURE, "src/Reports/АнализВерсийОбъектов.xml"),
-            FileFixture(
-                BSP_META_REPORT_TEMPLATE_FIXTURE,
-                "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных.xml",
-            ),
-            FileFixture(
-                BSP_META_REPORT_TEMPLATE_CONTENT_FIXTURE,
-                "src/Reports/АнализВерсийОбъектов/Templates/"
-                "ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
-            ),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
         name="interface-validate-detailed",
         tool="unica.interface.validate",
         skill="interface-validate",
@@ -1673,41 +1648,6 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
-        name="template-remove-main-schema",
-        tool="unica.template.remove",
-        skill="template-remove",
-        script="remove-template.py",
-        arguments={
-            "ObjectName": "ParityReport",
-            "TemplateName": "MainSchema",
-            "SrcDir": "src/Reports",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="meta-compile",
-                script="meta-compile.py",
-                arguments={"JsonPath": "fixtures/meta-report.json", "OutputDir": "src"},
-            ),
-            SetupStep(
-                skill="template-add",
-                script="add-template.py",
-                arguments={
-                    "ObjectName": "ParityReport",
-                    "TemplateName": "MainSchema",
-                    "TemplateType": "DataCompositionSchema",
-                    "Synonym": "Main schema",
-                    "SrcDir": "src/Reports",
-                    "SetMainSKD": True,
-                },
-            ),
-        ),
-        fixtures=(
-            FileFixture("meta-report.json", "fixtures/meta-report.json"),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
         name="dcs-compile-simple",
         tool="unica.dcs.compile",
         skill="dcs-compile",
@@ -1755,6 +1695,29 @@ SUCCESS_SCENARIOS = [
         fixtures=(FileFixture("dcs-simple.json", "fixtures/dcs-simple.json"),),
         expect_ok=True,
         compare_files=True,
+    ),
+    ParityScenario(
+        # The report template fixtures were read only by the retired
+        # template.remove scenarios; dcs.info keeps them under test.
+        name="bsp-dcs-info-report-main-schema",
+        tool="unica.dcs.info",
+        skill="dcs-info",
+        script="dcs-info.py",
+        arguments={
+            "TemplatePath": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+            "Mode": "overview",
+        },
+        fixtures=(
+            FileFixture(
+                BSP_META_REPORT_TEMPLATE_FIXTURE,
+                "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных.xml",
+            ),
+            FileFixture(
+                BSP_META_REPORT_TEMPLATE_CONTENT_FIXTURE,
+                "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+            ),
+        ),
+        expect_ok=True,
     ),
     ParityScenario(
         name="bsp-dcs-info-overview",
@@ -3681,14 +3644,6 @@ MISSING_INPUT_SCENARIOS = [
         False,
     ),
     ParityScenario(
-        "template-remove-missing-object",
-        "unica.template.remove",
-        "template-remove",
-        "remove-template.py",
-        {"ObjectName": "ParityReport", "TemplateName": "MainSchema", "SrcDir": "missing-src/Reports"},
-        False,
-    ),
-    ParityScenario(
         "dcs-edit-missing-template",
         "unica.dcs.edit",
         "dcs-edit",
@@ -3766,7 +3721,6 @@ NATIVE_PARITY_TOOLS = {
     "unica.subsystem.validate",
     "unica.interface.edit",
     "unica.interface.validate",
-    "unica.template.remove",
     "unica.dcs.compile",
     "unica.dcs.edit",
     "unica.dcs.info",
@@ -3799,6 +3753,7 @@ TYPED_RESULT_TOOLS = {
     "unica.cfe.diff",
     "unica.meta.edit",
     "unica.template.add",
+    "unica.template.remove",
 }
 
 EXPECTED_TOOLS = {
@@ -3825,7 +3780,6 @@ EXPECTED_TOOLS = {
     "unica.subsystem.compile",
     "unica.subsystem.edit",
     "unica.subsystem.validate",
-    "unica.template.remove",
     "unica.dcs.compile",
     "unica.dcs.edit",
     "unica.dcs.info",
@@ -3855,7 +3809,6 @@ BSP_PARITY_REQUIRED_TOOLS = {
     "unica.subsystem.validate",
     "unica.interface.validate",
     "unica.interface.edit",
-    "unica.template.remove",
 }
 
 BSP_MUTATING_REQUIRED_TOOLS = {
@@ -3864,7 +3817,6 @@ BSP_MUTATING_REQUIRED_TOOLS = {
     "unica.dcs.edit",
     "unica.mxl.compile",
     "unica.interface.edit",
-    "unica.template.add",
     "unica.template.remove",
 }
 
