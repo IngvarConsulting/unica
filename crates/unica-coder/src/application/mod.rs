@@ -3176,7 +3176,6 @@ mod tests {
             "unica.cfe.patch_method",
             "unica.cfe.validate",
             "unica.meta.compile",
-            "unica.meta.edit",
             "unica.meta.info",
             "unica.meta.remove",
             "unica.meta.validate",
@@ -3214,6 +3213,7 @@ mod tests {
             "unica.subsystem.info",
             "unica.mxl.info",
             "unica.cfe.diff",
+            "unica.meta.edit",
         ];
 
         for tool in tools() {

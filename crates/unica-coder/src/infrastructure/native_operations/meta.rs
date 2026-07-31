@@ -2637,10 +2637,11 @@ mod edit_tests {
         write_file(&object_path, &sample_catalog_xml());
         let before = fs::read(&object_path).unwrap();
 
-        let outcome = preview_meta_edit(
+        let execution = preview_meta_edit_with_data(
             &meta_edit_args(&object_path, "modify-property", "Comment=Previewed"),
             &context,
         );
+        let outcome = &execution.outcome;
 
         assert!(outcome.ok, "{outcome:?}");
         assert!(outcome.summary.contains("planned native metadata edit"));
@@ -2648,15 +2649,16 @@ mod edit_tests {
             outcome.changes,
             vec![format!("would update {}", object_path.display())]
         );
-        let stdout = outcome.stdout.as_deref().unwrap_or_default();
-        assert!(stdout.contains("Planned operation: modify-property: Comment=Previewed"));
-        assert!(stdout.contains("Planned update:"));
-        assert!(stdout.contains("--- a/"), "{stdout}");
-        assert!(stdout.contains("+++ b/"), "{stdout}");
-        assert!(stdout.contains("-\t\t\t<Comment/>"), "{stdout}");
+        let data = execution.data.as_ref().unwrap();
+        assert!(data.changed);
+        assert_eq!(data.counts.modified, 1);
+        let diff = data.diff.as_deref().unwrap_or_default();
+        assert!(diff.contains("--- a/"), "{diff}");
+        assert!(diff.contains("+++ b/"), "{diff}");
+        assert!(diff.contains("-\t\t\t<Comment/>"), "{diff}");
         assert!(
-            stdout.contains("+\t\t\t<Comment>Previewed</Comment>"),
-            "{stdout}"
+            diff.contains("+\t\t\t<Comment>Previewed</Comment>"),
+            "{diff}"
         );
         assert_eq!(fs::read(&object_path).unwrap(), before);
 
@@ -2699,19 +2701,23 @@ mod edit_tests {
         );
         let before = fs::read(&object_path).unwrap();
 
-        let outcome = preview_meta_edit(
+        let execution = preview_meta_edit_with_data(
             &meta_edit_definition_args(&object_path, &definition_path),
             &context,
         );
+        let outcome = &execution.outcome;
 
         assert!(outcome.ok, "{outcome:?}");
-        let stdout = outcome.stdout.as_deref().unwrap_or_default();
-        assert!(stdout.contains("--- a/"), "{stdout}");
-        assert!(stdout.contains("-\t\t\t<Comment/>"), "{stdout}");
-        assert!(
-            stdout.contains("+\t\t\t<Comment>Defined</Comment>"),
-            "{stdout}"
-        );
+        let diff = execution
+            .data
+            .as_ref()
+            .unwrap()
+            .diff
+            .as_deref()
+            .unwrap_or_default();
+        assert!(diff.contains("--- a/"), "{diff}");
+        assert!(diff.contains("-\t\t\t<Comment/>"), "{diff}");
+        assert!(diff.contains("+\t\t\t<Comment>Defined</Comment>"), "{diff}");
         assert_eq!(fs::read(&object_path).unwrap(), before);
 
         let _ = fs::remove_dir_all(&context.cwd);
@@ -2726,10 +2732,11 @@ mod edit_tests {
         write_file(&object_path, &xml);
         let before = fs::read(&object_path).unwrap();
 
-        let outcome = preview_meta_edit(
+        let execution = preview_meta_edit_with_data(
             &meta_edit_args(&object_path, "modify-property", "Comment=Unchanged"),
             &context,
         );
+        let outcome = &execution.outcome;
 
         assert!(outcome.ok, "{outcome:?}");
         assert!(
@@ -2737,9 +2744,10 @@ mod edit_tests {
             "{outcome:?}"
         );
         assert!(outcome.changes.is_empty());
-        let stdout = outcome.stdout.as_deref().unwrap_or_default();
-        assert!(stdout.contains("[INFO] No changes"), "{stdout}");
-        assert!(!stdout.contains("--- a/"), "{stdout}");
+        // ADR-0023: "nothing changed" is a value, and no diff means no diff.
+        let data = execution.data.as_ref().unwrap();
+        assert!(!data.changed);
+        assert!(data.diff.is_none());
         assert_eq!(fs::read(&object_path).unwrap(), before);
 
         let _ = fs::remove_dir_all(&context.cwd);
@@ -2748,23 +2756,14 @@ mod edit_tests {
     /// Verifies a renderer fault does not turn a valid metadata edit into a failure.
     #[test]
     fn projected_diff_render_failure_becomes_warning() {
-        let mut info_lines = Vec::new();
         let mut warnings = Vec::new();
 
-        meta_edit_record_projected_diff(
-            &mut info_lines,
-            &mut warnings,
-            Err("synthetic renderer failure".to_string()),
-        );
+        let diff =
+            meta_edit_projected_diff(&mut warnings, Err("synthetic renderer failure".to_string()));
 
-        assert!(info_lines.is_empty());
-        assert_eq!(
-            warnings,
-            vec![
-                "projected diff could not be rendered safely: synthetic renderer failure"
-                    .to_string()
-            ]
-        );
+        assert!(diff.is_none());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("synthetic renderer failure"));
     }
 
     #[test]
@@ -3155,19 +3154,16 @@ mod edit_tests {
         write_utf8_bom(&object_path, &xml).unwrap();
         let before = fs::read(&object_path).unwrap();
 
-        let outcome = edit_meta(
+        let execution = edit_meta_with_data(
             &meta_edit_args(&object_path, "modify-property", "Comment=TEST-COMMENT"),
             &context,
         );
+        let outcome = &execution.outcome;
 
         assert!(outcome.ok, "{:?}", outcome.errors);
         assert!(outcome.changes.is_empty(), "{:?}", outcome.changes);
         assert_eq!(fs::read(&object_path).unwrap(), before);
-        assert!(outcome
-            .stdout
-            .as_deref()
-            .unwrap_or_default()
-            .contains("No changes"));
+        assert!(!execution.data.as_ref().unwrap().changed);
 
         let _ = fs::remove_dir_all(&context.cwd);
     }
@@ -3236,9 +3232,7 @@ mod edit_tests {
         write_file(&object_path, &sample_document_xml("<RegisterRecords/>"));
 
         let outcome = edit_meta(&register_record_args(&object_path), &context);
-        let stdout = outcome.stdout.as_deref().unwrap_or("");
-        assert!(outcome.ok, "{stdout}\n{:?}", outcome.errors);
-        assert!(stdout.contains("Added:    1"), "{stdout}");
+        assert!(outcome.ok, "{:?}", outcome.errors);
 
         let updated = fs::read_to_string(&object_path).unwrap();
         assert!(updated.contains("<RegisterRecords>"));
@@ -3305,9 +3299,7 @@ mod edit_tests {
             ),
             &context,
         );
-        let stdout = outcome.stdout.as_deref().unwrap_or("");
-        assert!(outcome.ok, "{stdout}\n{:?}", outcome.errors);
-        assert!(stdout.contains("Added:    1"), "{stdout}");
+        assert!(outcome.ok, "{:?}", outcome.errors);
 
         let updated = fs::read_to_string(&object_path).unwrap();
         assert!(updated.contains("<Attribute uuid=\""));
@@ -3328,8 +3320,7 @@ mod edit_tests {
             &meta_edit_args(&object_path, "add-ts", "SampleItems"),
             &context,
         );
-        let stdout = outcome.stdout.as_deref().unwrap_or("");
-        assert!(outcome.ok, "{stdout}\n{:?}", outcome.errors);
+        assert!(outcome.ok, "{:?}", outcome.errors);
 
         let updated = fs::read_to_string(&object_path).unwrap();
         assert!(updated.contains("<TabularSection uuid=\""));
@@ -3353,8 +3344,7 @@ mod edit_tests {
             ),
             &context,
         );
-        let stdout = outcome.stdout.as_deref().unwrap_or("");
-        assert!(outcome.ok, "{stdout}\n{:?}", outcome.errors);
+        assert!(outcome.ok, "{:?}", outcome.errors);
 
         let updated = fs::read_to_string(&object_path).unwrap();
         assert!(updated.contains("<TabularSection uuid=\""));
@@ -3433,8 +3423,7 @@ mod edit_tests {
             ),
             &context,
         );
-        let stdout = outcome.stdout.as_deref().unwrap_or("");
-        assert!(outcome.ok, "{stdout}\n{:?}", outcome.errors);
+        assert!(outcome.ok, "{:?}", outcome.errors);
 
         let updated = fs::read_to_string(&object_path).unwrap();
         assert!(updated.contains("<Name>SampleSourceDocument</Name>"));
@@ -3463,8 +3452,7 @@ mod edit_tests {
             ),
             &context,
         );
-        let stdout = outcome.stdout.as_deref().unwrap_or("");
-        assert!(outcome.ok, "{stdout}\n{:?}", outcome.errors);
+        assert!(outcome.ok, "{:?}", outcome.errors);
 
         let updated = fs::read_to_string(&object_path).unwrap();
         assert!(updated.contains("<Name>ExistingItem</Name>"));
@@ -3494,8 +3482,7 @@ mod edit_tests {
             ),
             &context,
         );
-        let stdout = outcome.stdout.as_deref().unwrap_or("");
-        assert!(outcome.ok, "{stdout}\n{:?}", outcome.errors);
+        assert!(outcome.ok, "{:?}", outcome.errors);
 
         let updated = fs::read_to_string(&object_path).unwrap();
         assert!(updated.starts_with('\u{feff}'));
@@ -3548,9 +3535,7 @@ mod edit_tests {
             ),
             &context,
         );
-        let stdout = outcome.stdout.as_deref().unwrap_or("");
-        assert!(outcome.ok, "{stdout}\n{:?}", outcome.errors);
-        assert!(stdout.contains("Removed:  1"), "{stdout}");
+        assert!(outcome.ok, "{:?}", outcome.errors);
 
         let updated = fs::read_to_string(&object_path).unwrap();
         assert!(updated.contains("<Name>ExistingItem</Name>"));
@@ -3608,9 +3593,7 @@ mod edit_tests {
             ),
             &context,
         );
-        let stdout = outcome.stdout.as_deref().unwrap_or("");
-        assert!(outcome.ok, "{stdout}\n{:?}", outcome.errors);
-        assert!(stdout.contains("Modified: 2"), "{stdout}");
+        assert!(outcome.ok, "{:?}", outcome.errors);
 
         let updated = fs::read_to_string(&object_path).unwrap();
         assert!(updated.contains("<Name>SampleCargoPlaceCode</Name>"));
@@ -3641,9 +3624,7 @@ mod edit_tests {
             ),
             &context,
         );
-        let stdout = outcome.stdout.as_deref().unwrap_or("");
-        assert!(outcome.ok, "{stdout}\n{:?}", outcome.errors);
-        assert!(stdout.contains("Modified: 3"), "{stdout}");
+        assert!(outcome.ok, "{:?}", outcome.errors);
 
         let updated = fs::read_to_string(&object_path).unwrap();
         assert!(updated.starts_with('\u{feff}'));
@@ -3683,9 +3664,7 @@ mod edit_tests {
             ),
             &context,
         );
-        let stdout = outcome.stdout.as_deref().unwrap_or("");
-        assert!(outcome.ok, "{stdout}\n{:?}", outcome.errors);
-        assert!(stdout.contains("Modified: 2"), "{stdout}");
+        assert!(outcome.ok, "{:?}", outcome.errors);
 
         let updated = fs::read_to_string(&object_path).unwrap();
         assert!(updated.starts_with('\u{feff}'));
@@ -4445,9 +4424,7 @@ mod edit_tests {
             ),
             &context,
         );
-        let stdout = outcome.stdout.as_deref().unwrap_or("");
-        assert!(outcome.ok, "{stdout}\n{:?}", outcome.errors);
-        assert!(stdout.contains("Added:    2"), "{stdout}");
+        assert!(outcome.ok, "{:?}", outcome.errors);
 
         let updated = fs::read_to_string(&object_path).unwrap();
         assert!(updated.contains("<Name>SampleCargoPlaceCode</Name>"));
@@ -4713,8 +4690,7 @@ mod edit_tests {
             ),
             &context,
         );
-        let stdout = outcome.stdout.as_deref().unwrap_or("");
-        assert!(outcome.ok, "{stdout}\n{:?}", outcome.errors);
+        assert!(outcome.ok, "{:?}", outcome.errors);
 
         let updated = fs::read_to_string(&object_path).unwrap();
         assert!(updated.contains("<v8:Type>xs:decimal</v8:Type>"));
@@ -16692,7 +16668,40 @@ struct MetaEditLineNumberLengthAuthorization {
     provenance: Option<PlatformXmlOwnerProvenance>,
 }
 
+/// Typed answer of `unica.meta.edit` (ADR-0023). The projected diff stays a
+/// string because a unified diff is a format, not a rendered report -- the same
+/// choice `unica.code.patch` makes.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MetaEditData {
+    pub(crate) object_kind: String,
+    pub(crate) object_name: String,
+    pub(crate) changed: bool,
+    pub(crate) counts: MetaEditCountsData,
+    pub(crate) diff: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MetaEditCountsData {
+    pub(crate) added: usize,
+    pub(crate) removed: usize,
+    pub(crate) modified: usize,
+}
+
+pub(crate) struct MetaEditExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<MetaEditData>,
+}
+
 pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
+    edit_meta_with_data(args, context).outcome
+}
+
+pub(crate) fn edit_meta_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> MetaEditExecution {
     edit_meta_with_mode(args, context, false)
 }
 
@@ -16701,6 +16710,13 @@ pub(crate) fn preview_meta_edit(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
+    preview_meta_edit_with_data(args, context).outcome
+}
+
+pub(crate) fn preview_meta_edit_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> MetaEditExecution {
     edit_meta_with_mode(args, context, true)
 }
 
@@ -16709,8 +16725,8 @@ fn edit_meta_with_mode(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
     dry_run: bool,
-) -> AdapterOutcome {
-    let edit_result = (|| -> Result<(String, PathBuf, bool, Vec<String>), String> {
+) -> MetaEditExecution {
+    let edit_result = (|| -> Result<(MetaEditData, PathBuf, bool, Vec<String>), String> {
         let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
         let operation = string_arg(args, &["operation", "Operation"]);
         if definition_file.is_some() && operation.is_some() {
@@ -16738,7 +16754,10 @@ fn edit_meta_with_mode(
         validate_metadata_8_3_27_enum_contract(&xml_text, "meta.edit")?;
 
         let mut counts = MetaEditCounts::default();
-        let mut info_lines = vec![format!("[INFO] Object: {object_type}.{object_name}")];
+        // The old report echoed the operation and value the caller had just
+        // sent, plus the path that `artifacts` already names. Data keeps what
+        // only the tool knows: whether anything changed, how much, and the diff.
+        let mut projected_diff = None;
         let mut transaction = CompileTransaction::new();
         let line_number_length_provenance = if let Some(definition_file) = definition_file {
             let definition_path = absolutize(definition_file.clone(), &context.cwd);
@@ -16773,7 +16792,6 @@ fn edit_meta_with_mode(
                 authorization.policy,
                 &mut counts,
             )?;
-            info_lines.extend(meta_edit_definition_info_lines(&definition));
             authorization.provenance
         } else {
             let operation = operation.expect("checked above");
@@ -16799,9 +16817,6 @@ fn edit_meta_with_mode(
                 authorization.policy,
                 &mut counts,
             )?;
-            if dry_run {
-                info_lines.push(format!("[INFO] Planned operation: {operation}: {value}"));
-            }
             authorization.provenance
         };
 
@@ -16828,9 +16843,7 @@ fn edit_meta_with_mode(
                     validate_metadata_8_3_27_enum_contract(&published, "meta.edit")
                 })?
                 .cleanup_warnings;
-            info_lines.push(format!("[INFO] Saved: {}", object_path.display()));
         } else if changed {
-            info_lines.push(format!("[INFO] Planned update: {}", object_path.display()));
             let diff_path = object_path
                 .strip_prefix(&context.cwd)
                 .unwrap_or(&object_path)
@@ -16840,80 +16853,93 @@ fn edit_meta_with_mode(
                 .map_err(|err| format!("failed to preview {}: {err}", object_path.display()))?;
             let after = String::from_utf8(serialized_bytes)
                 .map_err(|err| format!("failed to preview {}: {err}", object_path.display()))?;
-            meta_edit_record_projected_diff(
-                &mut info_lines,
+            projected_diff = meta_edit_projected_diff(
                 &mut warnings,
                 meta_edit_unified_diff(&diff_path, &before, &after),
             );
         } else {
             counts = MetaEditCounts::default();
-            info_lines.push("[INFO] No changes".to_string());
         }
-        let stdout = format!(
-            "{}\n\n=== meta-edit summary ===\n  Object:   {object_type}.{object_name}\n  Added:    {}\n  Removed:  {}\n  Modified: {}\n",
-            info_lines.join("\n"),
-            counts.added, counts.removed, counts.modified
-        );
-        Ok((stdout, object_path, changed, warnings))
+        let data = MetaEditData {
+            object_kind: object_type.to_string(),
+            object_name: object_name.to_string(),
+            changed,
+            counts: MetaEditCountsData {
+                added: counts.added,
+                removed: counts.removed,
+                modified: counts.modified,
+            },
+            diff: projected_diff,
+        };
+        Ok((data, object_path, changed, warnings))
     })();
 
     match edit_result {
-        Ok((stdout, object_path, changed, warnings)) => AdapterOutcome {
-            ok: true,
-            summary: if dry_run {
-                if changed {
-                    "dry run: unica.meta.edit planned native metadata edit".to_string()
+        Ok((data, object_path, changed, warnings)) => MetaEditExecution {
+            outcome: AdapterOutcome {
+                ok: true,
+                summary: if dry_run {
+                    if changed {
+                        "dry run: unica.meta.edit planned native metadata edit".to_string()
+                    } else {
+                        "dry run: unica.meta.edit found no metadata changes".to_string()
+                    }
                 } else {
-                    "dry run: unica.meta.edit found no metadata changes".to_string()
-                }
-            } else {
-                "unica.meta.edit completed with native metadata editor".to_string()
-            },
-            changes: if changed {
-                vec![if dry_run {
-                    format!("would update {}", object_path.display())
+                    "unica.meta.edit completed with native metadata editor".to_string()
+                },
+                changes: if changed {
+                    vec![if dry_run {
+                        format!("would update {}", object_path.display())
+                    } else {
+                        format!("updated {}", object_path.display())
+                    }]
                 } else {
-                    format!("updated {}", object_path.display())
-                }]
-            } else {
-                Vec::new()
+                    Vec::new()
+                },
+                warnings,
+                errors: Vec::new(),
+                artifacts: vec![object_path.display().to_string()],
+                stdout: None,
+                stderr: None,
+                command: None,
             },
-            warnings,
-            errors: Vec::new(),
-            artifacts: vec![object_path.display().to_string()],
-            stdout: Some(stdout),
-            stderr: None,
-            command: None,
+            data: Some(data),
         },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: if dry_run {
-                "dry run: unica.meta.edit failed in native metadata editor".to_string()
-            } else {
-                "unica.meta.edit failed in native metadata editor".to_string()
+        Err(error) => MetaEditExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: if dry_run {
+                    "dry run: unica.meta.edit failed in native metadata editor".to_string()
+                } else {
+                    "unica.meta.edit failed in native metadata editor".to_string()
+                },
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.clone()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{error}\n")),
+                command: None,
             },
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-            command: None,
+            data: None,
         },
     }
 }
 
-/// Adds a verified diff to stdout or records a non-fatal renderer diagnostic.
-fn meta_edit_record_projected_diff(
-    info_lines: &mut Vec<String>,
+/// Returns a verified diff or records a non-fatal renderer diagnostic. A
+/// renderer fault must not turn a valid edit into a failure.
+fn meta_edit_projected_diff(
     warnings: &mut Vec<String>,
     rendered: Result<String, String>,
-) {
+) -> Option<String> {
     match rendered {
-        Ok(diff) => info_lines.push(format!("\n=== projected diff ===\n{diff}")),
-        Err(error) => warnings.push(format!(
-            "projected diff could not be rendered safely: {error}"
-        )),
+        Ok(diff) => Some(diff),
+        Err(error) => {
+            warnings.push(format!(
+                "projected diff could not be rendered safely: {error}"
+            ));
+            None
+        }
     }
 }
 
@@ -20015,6 +20041,7 @@ pub(crate) fn invoke_mutation(
 ) -> Option<AdapterOutcome> {
     match operation {
         "meta-compile" => Some(compile_meta(args, context)),
+        // Typed answer; data reaches the envelope through typed_result.rs.
         "meta-edit" => Some(edit_meta(args, context)),
         "meta-remove" => Some(remove_metadata_object(args, context)),
         _ => None,

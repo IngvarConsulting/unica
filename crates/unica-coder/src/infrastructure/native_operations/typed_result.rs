@@ -38,6 +38,14 @@ impl NativeOperationAdapter {
                 Some(registry::TypedMutationHandler::FormEdit) => {}
                 None => {}
             }
+            if operation == "meta-edit" {
+                let execution = if dry_run {
+                    meta::preview_meta_edit_with_data(args, context)
+                } else {
+                    meta::edit_meta_with_data(args, context)
+                };
+                return typed_operation_result(execution.outcome, execution.data, "meta edit");
+            }
         }
         // A dry run keeps its placeholder outcome: previewing a read must not
         // perform it, even though these reads change nothing.

@@ -613,26 +613,6 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
-        name="bsp-meta-edit-catalog-ops",
-        tool="unica.meta.edit",
-        skill="meta-edit",
-        script="meta-edit.py",
-        arguments={
-            "ObjectPath": "src/Catalogs/Валюты.xml",
-            "DefinitionFile": "fixtures/meta-edit-bsp-catalog-ops.json",
-            "NoValidate": True,
-        },
-        fixtures=(
-            FileFixture(BSP_META_CATALOG_FIXTURE, "src/Catalogs/Валюты.xml"),
-            FileFixture(
-                "meta-edit/bsp-catalog-ops.json",
-                "fixtures/meta-edit-bsp-catalog-ops.json",
-            ),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
         name="meta-remove-catalog",
         tool="unica.meta.remove",
         skill="meta-remove",
@@ -3634,14 +3614,6 @@ MISSING_INPUT_SCENARIOS = [
         {"ExtensionPath": "missing-extension"},
         False,
     ),
-    ParityScenario(
-        "meta-edit-missing-object",
-        "unica.meta.edit",
-        "meta-edit",
-        "meta-edit.py",
-        {"ObjectPath": "missing/Catalog.xml", "Operation": "modify-property", "Value": "Synonym=Missing"},
-        False,
-    ),
     # `unica.meta.info` has no missing-input scenario: the reference model fails
     # on a missing file, the tool fails on an address it cannot prove, and those
     # are different contracts by construction. The typed refusal is covered by
@@ -3832,7 +3804,6 @@ NATIVE_PARITY_TOOLS = {
     "unica.cfe.validate",
     "unica.form.validate",
     "unica.meta.compile",
-    "unica.meta.edit",
     "unica.meta.info",
     "unica.meta.remove",
     "unica.meta.validate",
@@ -3880,6 +3851,7 @@ TYPED_RESULT_TOOLS = {
     "unica.subsystem.info",
     "unica.mxl.info",
     "unica.cfe.diff",
+    "unica.meta.edit",
 }
 
 EXPECTED_TOOLS = {
@@ -3891,7 +3863,6 @@ EXPECTED_TOOLS = {
     "unica.cfe.patch_method",
     "unica.cfe.validate",
     "unica.meta.compile",
-    "unica.meta.edit",
     "unica.meta.info",
     "unica.meta.remove",
     "unica.meta.validate",
