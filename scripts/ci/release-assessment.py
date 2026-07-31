@@ -720,8 +720,15 @@ def extract_diagnostic_codes(payload: dict[str, Any] | None) -> list[str]:
     if not payload:
         return []
     codes: set[str] = set()
-    diagnostics = payload.get("diagnostics")
-    if isinstance(diagnostics, list):
+    # unica.code.diagnostics answers with typed `data` (ADR-0023); the analyzer
+    # reply carries the findings there, not in a printed report.
+    data = payload.get("data")
+    candidates = [payload.get("diagnostics")]
+    if isinstance(data, dict):
+        candidates.append(data.get("diagnostics"))
+    for diagnostics in candidates:
+        if not isinstance(diagnostics, list):
+            continue
         for item in diagnostics:
             if not isinstance(item, dict):
                 continue

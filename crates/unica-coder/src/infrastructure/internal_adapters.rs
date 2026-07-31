@@ -1642,9 +1642,11 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         };
         // ADR-0023: the analyzer answers this tool with JSON, and wrapping that
         // JSON in a section header made the caller unwrap a string to reach it.
-        // `code.diagnostics` keeps its text for now: its `analyze` mode is an
-        // external process stream, so its contract is decided separately.
-        let data = if tool_name == "unica.code.graph" && !diagnostics_pending {
+        // `analyze` is the analyzer MCP tool name, not a spawned 1C process, so
+        // `code.diagnostics` returns the same kind of reply as `code.graph` and
+        // the ADR-0023 §4 carve-out for external process streams does not reach
+        // it.
+        let data = if !diagnostics_pending {
             Some(
                 serde_json::from_str::<Value>(output.result_text.trim()).map_err(|error| {
                     format!("{tool_name} received an unparsable bsl-analyzer reply: {error}")

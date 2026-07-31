@@ -7,15 +7,15 @@
 ## Итог
 
 - Инструментов: **71**
-- Отвечают типизированным `data`: **42**
+- Отвечают типизированным `data`: **43**
 - Типизированы частично: часть результата всё ещё текст: **1**
 - Отвечают снимком задания в `job`: **6**
-- Отвечают прозой в `stdout`: **22**
+- Отвечают прозой в `stdout`: **21**
 
 - В границах типизации: **43**
 - Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`): **16**
 - Вне границ: семейство runtime и build изучается отдельно: **12**
-- Осталось перевести на типизированный `data` в границах работы: **1**
+- Осталось перевести на типизированный `data` в границах работы: **0**
 - Публикуют больше 20 аргументов из общего списка: **37**
 
 ## build — сборка и запуск платформы
@@ -394,9 +394,9 @@ Run BSL diagnostics through the internal code analysis adapter.
 | `sourceDir` | string | нет | Workspace-relative source root to work in: on the path-based unica.code.* tools and unica.meta.profile it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
 | `timeoutSeconds` | integer | нет | Only supported for mode analyze. Defaults to 120 seconds. |
 
-**Результат сейчас:** текст в `stdout`; режим `analyze` — поток внешнего процесса, контракт решается отдельно (отвечают прозой в `stdout`)
+**Результат сейчас:** `data`: ответ MCP анализатора как есть, тем же путём, что `code.graph`. `analyze` — имя инструмента анализатора, а не внешний процесс 1С, поэтому исключение ADR-0023 §4 на него не распространяется (отвечают типизированным `data`)
 
-**Целевой контракт:** `data`: находки с файлом, позицией, серьёзностью и правилом. Открытый вопрос: режим `analyze` — поток внешнего процесса 1С, который ADR-0023 §4 оставляет за `stdout`; решить, типизировать ли его отдельно или оставить единственным исключением среди читателей
+**Целевой контракт:** достигнут
 
 **Сценарии:**
 
