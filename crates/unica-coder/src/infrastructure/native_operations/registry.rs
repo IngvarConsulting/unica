@@ -5,12 +5,14 @@ use std::path::PathBuf;
 
 use super::{
     cf, cfe, dcs, external, form, help, interface, meta, mxl, role, subsystem, support, template,
+    xdto,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TypedMutationHandler {
     CodePatch,
     FormEdit,
+    XdtoEdit,
 }
 
 #[cfg(test)]
@@ -84,9 +86,9 @@ pub(crate) fn native_mutation_file_input_contract(
             secondary_at_query_files: true,
             secondary_from_object_platform_xml: false,
         },
-        "code-patch" | "cf-init" | "support-edit" | "cfe-borrow" | "cfe-init" | "epf-init"
-        | "erf-init" | "cfe-patch-method" | "meta-remove" | "help-add" | "form-add"
-        | "form-remove" | "template-add" | "template-remove" => NO_FILE_INPUT,
+        "code-patch" | "xdto-edit" | "cf-init" | "support-edit" | "cfe-borrow" | "cfe-init"
+        | "epf-init" | "erf-init" | "cfe-patch-method" | "meta-remove" | "help-add"
+        | "form-add" | "form-remove" | "template-add" | "template-remove" => NO_FILE_INPUT,
         _ => return None,
     };
     Some(contract)
@@ -96,6 +98,7 @@ pub(crate) fn typed_mutation_handler(operation: &str) -> Option<TypedMutationHan
     match operation {
         "code-patch" => Some(TypedMutationHandler::CodePatch),
         "form-edit" => Some(TypedMutationHandler::FormEdit),
+        "xdto-edit" => Some(TypedMutationHandler::XdtoEdit),
         _ => None,
     }
 }
@@ -116,6 +119,7 @@ pub(crate) fn invoke_read(
         .or_else(|| dcs::invoke_read(operation, tool_name, args, context))
         .or_else(|| mxl::invoke_read(operation, tool_name, args, context))
         .or_else(|| role::invoke_read(operation, tool_name, args, context))
+        .or_else(|| xdto::invoke_read(operation, tool_name, args, context))
 }
 
 pub(crate) enum PreviewInvocation {

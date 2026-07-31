@@ -97,6 +97,13 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
         required_branches: &["bsl-only"],
     },
     MutatorRegistryEntry {
+        tool: "unica.xdto.edit",
+        operation: "xdto-edit",
+        impact: XmlImpactClass::CreateOrModify,
+        case_ids: &["xdto-add-nested-property"],
+        required_branches: &["nested-property"],
+    },
+    MutatorRegistryEntry {
         tool: "unica.dcs.compile",
         operation: "dcs-compile",
         impact: XmlImpactClass::CreateOrModify,
@@ -378,6 +385,11 @@ static EXECUTABLE_CASES: &[ExecutableCase] = &[
         id: "code-patch-bsl-only",
         tool: "unica.code.patch",
         branch: "bsl-only",
+    },
+    ExecutableCase {
+        id: "xdto-add-nested-property",
+        tool: "unica.xdto.edit",
+        branch: "nested-property",
     },
     ExecutableCase {
         id: "dcs-compile-owned-template",
@@ -741,6 +753,12 @@ fn sha256_file(path: &Path) -> Result<String, String> {
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
+fn is_xml_payload_path(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+        || path.file_name().is_some_and(|name| name == "Package.bin")
+}
+
 fn visit_xml_files(
     root: &Path,
     directory: &Path,
@@ -764,11 +782,7 @@ fn visit_xml_files(
         }
         if file_type.is_dir() {
             visit_xml_files(root, &path, snapshot)?;
-        } else if file_type.is_file()
-            && path
-                .extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
-        {
+        } else if file_type.is_file() && is_xml_payload_path(&path) {
             let relative = path
                 .strip_prefix(root)
                 .map_err(|error| format!("XML path escaped workspace: {error}"))?
@@ -854,11 +868,7 @@ fn capture_xml_payloads_recursive(
         }
         if file_type.is_dir() {
             capture_xml_payloads_recursive(workspace, &source, payloads)?;
-        } else if file_type.is_file()
-            && source
-                .extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
-        {
+        } else if file_type.is_file() && is_xml_payload_path(&source) {
             platform_support::require_single_link(&source)?;
             let relative = source
                 .strip_prefix(workspace)
@@ -1000,11 +1010,7 @@ fn capture_non_xml_payloads_recursive(
         }
         if file_type.is_dir() {
             capture_non_xml_payloads_recursive(workspace, &source, payloads)?;
-        } else if file_type.is_file()
-            && !source
-                .extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
-        {
+        } else if file_type.is_file() && !is_xml_payload_path(&source) {
             platform_support::require_single_link(&source)?;
             let relative = safe_workspace_relative_path(workspace, &source)?;
             let payload = fs::read(&source)
@@ -1780,6 +1786,38 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
         let mut args = common_args(workspace);
         args.insert("Path".to_string(), Value::String("src".to_string()));
         args.insert("Capability".to_string(), Value::String("off".to_string()));
+        return Ok(args);
+    }
+
+    if case.id == "xdto-add-nested-property" {
+        seed_configuration(workspace)?;
+        let package = workspace.join("src/XDTOPackages/CorpusPackage/Ext/Package.bin");
+        fs::create_dir_all(package.parent().expect("XDTO package parent"))
+            .map_err(|error| format!("cannot create XDTO package directory: {error}"))?;
+        fs::write(
+            &package,
+            b"\xef\xbb\xbf<package xmlns=\"http://v8.1c.ru/8.1/xdto\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" targetNamespace=\"urn:corpus\">\r\n\t<objectType name=\"Root\">\r\n\t\t<property name=\"Nested\">\r\n\t\t\t<typeDef xsi:type=\"ObjectType\"></typeDef>\r\n\t\t</property>\r\n\t</objectType>\r\n</package>\r\n",
+        )
+        .map_err(|error| format!("cannot write XDTO package: {error}"))?;
+        let mut args = common_args(workspace);
+        args.insert("sourceSet".to_string(), Value::String("main".to_string()));
+        args.insert(
+            "metadataPath".to_string(),
+            Value::String("XDTOPackage.CorpusPackage".to_string()),
+        );
+        args.insert(
+            "operation".to_string(),
+            Value::String("add-property".to_string()),
+        );
+        args.insert("typeName".to_string(), Value::String("Root".to_string()));
+        args.insert(
+            "propertyPath".to_string(),
+            Value::String("Nested".to_string()),
+        );
+        args.insert(
+            "property".to_string(),
+            json!({"name": "Inserted", "type": "xs:string", "minOccurs": 0}),
+        );
         return Ok(args);
     }
 

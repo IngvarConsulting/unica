@@ -55,6 +55,21 @@ const CFE_DIFF_ARGS: &[&str] = &["ExtensionPath", "extensionPath", "ConfigPath",
 /// list would also accept arguments no `meta.info` code path consults, and an
 /// accepted argument that changes nothing is a promise the tool cannot keep.
 const META_INFO_ARGS: &[&str] = &["sourceSet", "metadataPath"];
+const XDTO_INFO_ARGS: &[&str] = &["sourceSet", "metadataPath", "typeName", "limit", "cursor"];
+const XDTO_EDIT_ARGS: &[&str] = &[
+    "sourceSet",
+    "metadataPath",
+    "operation",
+    "name",
+    "base",
+    "typeName",
+    "propertyPath",
+    "property",
+    "lowerBound",
+    "upperBound",
+    "ordered",
+    "sequenced",
+];
 const RUNTIME_JOB_STATUS_ARGS: &[&str] = &["jobId"];
 const RUNTIME_JOB_WAIT_ARGS: &[&str] = &["jobId", "timeoutSeconds"];
 const RUNTIME_JOB_LOGS_ARGS: &[&str] = &["jobId", "tailChars"];
@@ -1788,6 +1803,8 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
         ToolHandler::NativeOperation { operation, .. } => {
             match operation {
                 "code-patch" => names.extend(CODE_PATCH_ARGS),
+                "xdto-info" => names.extend(XDTO_INFO_ARGS),
+                "xdto-edit" => names.extend(XDTO_EDIT_ARGS),
                 "cf-info" => names.extend(CF_INFO_ARGS),
                 "role-info" => names.extend(ROLE_INFO_ARGS),
                 "subsystem-info" => names.extend(SUBSYSTEM_INFO_ARGS),
@@ -1832,6 +1849,8 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
 fn native_args_for(operation: &str) -> &'static [&'static str] {
     match operation {
         "epf-init" | "erf-init" => EXTERNAL_INIT_ARGS,
+        "xdto-info" => XDTO_INFO_ARGS,
+        "xdto-edit" => XDTO_EDIT_ARGS,
         _ => NATIVE_XML_DSL_ARGS,
     }
 }
@@ -1992,7 +2011,7 @@ fn property_schema(name: &str) -> Value {
             | "includeMethods"
     ) {
         "boolean"
-    } else if name == "definition" {
+    } else if matches!(name, "definition" | "property") {
         "object"
     } else if matches!(
         name,
@@ -2009,6 +2028,8 @@ fn property_schema(name: &str) -> Value {
             | "rangeEnd"
             | "timeoutSeconds"
             | "tailChars"
+            | "lowerBound"
+            | "upperBound"
     ) {
         "integer"
     } else if matches!(
@@ -2055,6 +2076,10 @@ fn property_schema(name: &str) -> Value {
 /// `NATIVE_XML_DSL_ARGS` offer well over a hundred of them.
 const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
+        "base",
+        "Базовый QName для новой XDTO valueType в unica.xdto.edit; например xs:string.",
+    ),
+    (
         "allExtensions",
         "Boolean --all-extensions covering every extension in operation syntax; only for the designer-* modes, since mode edt rejects it together with extension",
     ),
@@ -2073,6 +2098,34 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "body_limit",
         "Maximum size of the standard page body returned by unica.standards.explain in page mode (snake_case alias of bodyLimit); honoured only alongside id/idOrAliasOrUrl, and ignored by standards.search.",
+    ),
+    (
+        "lowerBound",
+        "Нижняя граница XDTO-свойства; для add-property обычно задаётся как property.minOccurs.",
+    ),
+    (
+        "ordered",
+        "Признак упорядоченности objectType/typeDef XDTO; v1 сохраняет существующее значение и не изменяет его.",
+    ),
+    (
+        "property",
+        "Объект нового XDTO-свойства для unica.xdto.edit: обязательны name и type, допустим minOccurs.",
+    ),
+    (
+        "propertyPath",
+        "Точечный путь свойств к вложенному XDTO typeDef, например СсылкаНаОбъект.",
+    ),
+    (
+        "sequenced",
+        "Признак последовательности objectType/typeDef XDTO; v1 сохраняет существующее значение и не изменяет его.",
+    ),
+    (
+        "typeName",
+        "Имя XDTO valueType или objectType, либо целевого objectType для операции со свойством.",
+    ),
+    (
+        "upperBound",
+        "Верхняя граница XDTO-свойства; v1 не меняет её у существующего свойства.",
     ),
     (
         "borrowMainAttribute",

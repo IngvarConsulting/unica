@@ -1,5 +1,5 @@
 use super::{
-    cf, cfe, code, external, form, help, meta, mxl, registry, role, subsystem, template,
+    cf, cfe, code, external, form, help, meta, mxl, registry, role, subsystem, template, xdto,
     NativeOperationAdapter,
 };
 use crate::{application::AdapterOutcome, domain::workspace::WorkspaceContext};
@@ -20,6 +20,10 @@ impl NativeOperationAdapter {
         dry_run: bool,
         mutating: bool,
     ) -> Result<NativeOperationResult, String> {
+        if operation == "xdto-info" {
+            let execution = xdto::info_with_data(args, context)?;
+            return typed_operation_result(execution.outcome, execution.data, "XDTO info");
+        }
         if mutating {
             match registry::typed_mutation_handler(operation) {
                 Some(registry::TypedMutationHandler::CodePatch) => {
@@ -39,6 +43,14 @@ impl NativeOperationAdapter {
                     return typed_operation_result(execution.outcome, execution.data, "form edit");
                 }
                 Some(registry::TypedMutationHandler::FormEdit) => {}
+                Some(registry::TypedMutationHandler::XdtoEdit) => {
+                    let execution = if dry_run {
+                        xdto::preview_with_data(args, context)
+                    } else {
+                        xdto::apply_with_data(args, context)
+                    };
+                    return typed_operation_result(execution.outcome, execution.data, "XDTO edit");
+                }
                 None => {}
             }
             if !dry_run {

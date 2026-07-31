@@ -408,6 +408,20 @@ pub fn tools() -> Vec<ToolSpec> {
             },
         },
         ToolSpec {
+            name: "unica.xdto.info",
+            description: "Inspect one logically addressed 1C XDTO package schema.",
+            mutating: false,
+            cache_access: CacheAccess::default(),
+            handler: ToolHandler::NativeOperation { operation: "xdto-info", event: None },
+        },
+        ToolSpec {
+            name: "unica.xdto.edit",
+            description: "Preview or apply a safe targeted mutation to one logically addressed 1C XDTO package schema.",
+            mutating: true,
+            cache_access: cache_access_for("xdto-edit", Some(DomainEventKind::MetadataChanged)),
+            handler: ToolHandler::NativeOperation { operation: "xdto-edit", event: Some(DomainEventKind::MetadataChanged) },
+        },
+        ToolSpec {
             name: "unica.code.graph",
             description: "Inspect BSL call graph through the typed Unica code analysis boundary.",
             mutating: false,
@@ -5226,8 +5240,8 @@ mod tests {
                 Some(policy) => {
                     match policy {
                         SupportGuardPolicy::HandlerResolved { requirement } => {
-                            assert_eq!(
-                                operation, "code-patch",
+                            assert!(
+                                matches!(operation, "code-patch" | "xdto-edit"),
                                 "{operation} unexpectedly delegates support resolution"
                             );
                             assert_eq!(requirement, SupportGuardRequirement::Editable);
@@ -5292,6 +5306,7 @@ mod tests {
                 "subsystem-edit",
                 "template-add",
                 "template-remove",
+                "xdto-edit",
             ],
             "guarded platform-XML mutations changed without updating the support contract"
         );
@@ -5326,6 +5341,7 @@ mod tests {
 
         let expected = [
             ("code-patch", &[][..], "HandlerResolved"),
+            ("xdto-edit", &[][..], "HandlerResolved"),
             (
                 "cf-edit",
                 &["ConfigPath", "configPath", "Path", "path"][..],
