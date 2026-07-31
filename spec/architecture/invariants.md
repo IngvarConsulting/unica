@@ -263,6 +263,18 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `tests/ci/test_architecture_sync_guard.py`
 - **Scope:** source, packaged
 
+### INV-MCP-TYPED-RESULT — Результат инструмента типизирован, а не отрисован текстом
+
+- **Rule:** Успешный вызов мигрировавшего публичного инструмента публикует
+  результат только как `OperationResult.data`, текстового дубля результата в
+  `stdout` не существует, и `stdout` остаётся лишь потоком вывода внешнего
+  процесса 1С у `unica.build.*`, `unica.runtime.execute` и
+  `unica.runtime.job.logs`.
+- **Decision:** ADR-0020, ADR-0023
+- **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
+- **Check:** `ci-test` — `tests/ci/test_tool_surface_ledger.py`
+- **Scope:** source, runtime
+
 ### INV-MCP-SOURCE-SURFACE — Ресурсная поверхность логична и ограничена
 
 - **Rule:** Публичная группа источников содержит читающие
