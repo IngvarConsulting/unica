@@ -1,9 +1,3 @@
-//! Нативный writer для `XDTOPackages/*/Ext/Package.bin` по логическому адресу.
-//!
-//! Ресурс платформы остаётся XML несмотря на суффикс `.bin`. Writer разбирает
-//! итоговый документ, но выполняет малое байтовое изменение, сохраняя метку
-//! порядка байтов, переводы строк, объявления и всё несвязанное форматирование.
-
 use crate::application::AdapterOutcome;
 use crate::domain::project_sources::SourceFormat;
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
