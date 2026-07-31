@@ -613,46 +613,6 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
-        name="meta-remove-catalog",
-        tool="unica.meta.remove",
-        skill="meta-remove",
-        script="meta-remove.py",
-        arguments={"ConfigDir": "src", "Object": "Catalog.ParityCatalog"},
-        setup_steps=(
-            SetupStep(
-                skill="meta-compile",
-                script="meta-compile.py",
-                arguments={"JsonPath": "fixtures/meta-catalog.json", "OutputDir": "src"},
-            ),
-            SetupStep(
-                skill="subsystem-compile",
-                script="subsystem-compile.py",
-                arguments={
-                    "Value": {
-                        "name": "Sales",
-                        "synonym": "Sales",
-                        "content": [
-                            "Catalog.ParityCatalog",
-                            "Catalog.KeepCatalog",
-                        ],
-                    },
-                    "OutputDir": "src",
-                    "NoValidate": True,
-                },
-            ),
-        ),
-        fixtures=(
-            FileFixture("meta-catalog.json", "fixtures/meta-catalog.json"),
-            FileFixture("meta-remove/Configuration.xml", "src/Configuration.xml"),
-            FileFixture(
-                "cf-validate/Languages/Русский.xml",
-                "src/Languages/Русский.xml",
-            ),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
         name="meta-info-catalog-overview-outfile",
         tool="unica.meta.info",
         skill="meta-info",
@@ -3351,14 +3311,6 @@ MISSING_INPUT_SCENARIOS = [
     # are different contracts by construction. The typed refusal is covered by
     # `meta_info_reports_an_unknown_address_without_naming_a_path`.
     ParityScenario(
-        "meta-remove-missing-config",
-        "unica.meta.remove",
-        "meta-remove",
-        "meta-remove.py",
-        {"ConfigDir": "missing-src", "Object": "Catalog.ParityCatalog", "Force": True},
-        False,
-    ),
-    ParityScenario(
         "meta-validate-missing-object",
         "unica.meta.validate",
         "meta-validate",
@@ -3500,7 +3452,6 @@ NATIVE_PARITY_TOOLS = {
     "unica.form.validate",
     "unica.meta.compile",
     "unica.meta.info",
-    "unica.meta.remove",
     "unica.meta.validate",
     "unica.form.add",
     "unica.form.compile",
@@ -3541,6 +3492,7 @@ TYPED_RESULT_TOOLS = {
     "unica.help.add",
     "unica.interface.edit",
     "unica.meta.edit",
+    "unica.meta.remove",
     "unica.mxl.info",
     "unica.role.info",
     "unica.subsystem.info",
@@ -3558,7 +3510,6 @@ EXPECTED_TOOLS = {
     "unica.cfe.validate",
     "unica.meta.compile",
     "unica.meta.info",
-    "unica.meta.remove",
     "unica.meta.validate",
     "unica.form.add",
     "unica.form.compile",

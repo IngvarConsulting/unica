@@ -74,6 +74,17 @@ impl NativeOperationAdapter {
                             "support edit",
                         );
                     }
+                    // `DryRun` is the tool's own argument and is reported
+                    // through `dryRun` in the data; the protocol dry run still
+                    // keeps its placeholder and performs nothing.
+                    "meta-remove" => {
+                        let execution = meta::remove_metadata_object_with_data(args, context);
+                        return typed_operation_result(
+                            execution.outcome,
+                            execution.data,
+                            "meta remove",
+                        );
+                    }
                     "form-remove" => {
                         let execution = form::remove_form_with_data(args, context);
                         return typed_operation_result(

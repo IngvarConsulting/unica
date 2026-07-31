@@ -9587,10 +9587,30 @@ pub(crate) struct MetaRemoveError {
 }
 
 struct MetaRemoveSuccess {
-    stdout: String,
+    data: MetaRemoveData,
     changes: Vec<String>,
     artifacts: Vec<String>,
     warnings: Vec<String>,
+}
+
+/// Typed answer of `unica.meta.remove` (ADR-0023). The prose ended with an
+/// action count; the data names what was removed and where the object was still
+/// referenced, so a dry run can be read without parsing a report.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MetaRemoveData {
+    pub(crate) object_kind: String,
+    pub(crate) object_name: String,
+    /// True when nothing was written and the lists describe what would happen.
+    pub(crate) dry_run: bool,
+    /// Subsystem descriptors that still listed the object and were rewritten.
+    pub(crate) subsystems_cleaned: Vec<String>,
+    pub(crate) mutation: MutationData,
+}
+
+pub(crate) struct MetaRemoveExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<MetaRemoveData>,
 }
 
 pub(crate) fn meta_remove_stdout_error(message: String) -> MetaRemoveError {
@@ -10047,6 +10067,13 @@ pub(crate) fn remove_metadata_object(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
+    remove_metadata_object_with_data(args, context).outcome
+}
+
+pub(crate) fn remove_metadata_object_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> MetaRemoveExecution {
     let result = (|| -> Result<MetaRemoveSuccess, MetaRemoveError> {
         let config_dir_raw = required_string(args, &["configDir", "ConfigDir"], "ConfigDir")
             .map_err(|err| meta_remove_stdout_error(format!("[ERROR] {err}")))?;
@@ -10451,20 +10478,29 @@ pub(crate) fn remove_metadata_object(
                 .cleanup_warnings
         };
 
-        stdout.push('\n');
-        let total_actions = actions + subsystems_cleaned;
-        if dry_run {
-            stdout.push_str(&format!(
-                "=== Dry run complete: {total_actions} actions would be performed ===\n"
-            ));
-        } else {
-            stdout.push_str(&format!(
-                "=== Done: {total_actions} actions performed ({subsystems_cleaned} subsystem references removed) ===\n"
-            ));
+        let _ = (stdout, actions, subsystems_cleaned);
+        let mut mutation = MutationData::new(!dry_run);
+        for path in &removed_paths {
+            mutation = mutation.removed(path);
         }
+        let mut cleaned = subsystem_replacements
+            .iter()
+            .map(|replacement| replacement.path.display().to_string())
+            .collect::<Vec<_>>();
+        cleaned.sort();
+        for path in &subsystem_replacements {
+            mutation = mutation.updated(&path.path);
+        }
+        let data = MetaRemoveData {
+            object_kind: obj_type.to_string(),
+            object_name: obj_name.to_string(),
+            dry_run,
+            subsystems_cleaned: cleaned,
+            mutation,
+        };
 
         Ok(MetaRemoveSuccess {
-            stdout,
+            data,
             changes,
             artifacts,
             warnings,
@@ -10472,31 +10508,47 @@ pub(crate) fn remove_metadata_object(
     })();
 
     match result {
-        Ok(success) => AdapterOutcome {
-            ok: true,
-            summary: "unica.meta.remove completed with native metadata remover".to_string(),
-            changes: success.changes,
-            warnings: success.warnings,
-            errors: Vec::new(),
-            artifacts: success.artifacts,
-            stdout: Some(success.stdout),
-            stderr: Some(String::new()),
-            command: None,
-        },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.meta.remove failed in native metadata remover".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: if error.message.is_empty() {
-                Vec::new()
-            } else {
-                vec![error.message]
+        Ok(success) => MetaRemoveExecution {
+            outcome: AdapterOutcome {
+                ok: true,
+                summary: format!(
+                    "unica.meta.remove {} {}.{} and {} subsystem reference(s)",
+                    if success.data.dry_run {
+                        "would remove"
+                    } else {
+                        "removed"
+                    },
+                    success.data.object_kind,
+                    success.data.object_name,
+                    success.data.subsystems_cleaned.len()
+                ),
+                changes: success.changes,
+                warnings: success.warnings,
+                errors: Vec::new(),
+                artifacts: success.artifacts,
+                stdout: None,
+                stderr: Some(String::new()),
+                command: None,
             },
-            artifacts: Vec::new(),
-            stdout: Some(error.stdout),
-            stderr: Some(error.stderr),
-            command: None,
+            data: Some(success.data),
+        },
+        Err(error) => MetaRemoveExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.meta.remove failed in native metadata remover".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: if error.message.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![error.message]
+                },
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(error.stderr),
+                command: None,
+            },
+            data: None,
         },
     }
 }
