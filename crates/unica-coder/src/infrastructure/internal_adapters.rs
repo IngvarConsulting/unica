@@ -1531,7 +1531,7 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         args: &Map<String, Value>,
         context: &WorkspaceContext,
         dry_run: bool,
-    ) -> Result<AdapterOutcome, String> {
+    ) -> Result<BslAnalyzerOutcome, String> {
         self.invoke_cancellable(tool_name, args, context, dry_run, &CancellationToken::new())
     }
 
@@ -1542,10 +1542,10 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         context: &WorkspaceContext,
         dry_run: bool,
         cancellation: &CancellationToken,
-    ) -> Result<AdapterOutcome, String> {
+    ) -> Result<BslAnalyzerOutcome, String> {
         if cancellation.is_cancelled() {
-            return Ok(AdapterOutcome::cancelled(format!(
-                "{tool_name} cancelled before adapter work"
+            return Ok(BslAnalyzerOutcome::plain(AdapterOutcome::cancelled(
+                format!("{tool_name} cancelled before adapter work"),
             )));
         }
         let diagnostics_path = match (tool_name, args.get("path")) {
@@ -1574,9 +1574,11 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
                 cancellation,
             )?;
             if dry_run {
-                return Ok(outcome);
+                return Ok(BslAnalyzerOutcome::plain(outcome));
             }
-            return Ok(diagnostics_analyze_outcome(tool_name, &cli_args, outcome));
+            return Ok(BslAnalyzerOutcome::plain(diagnostics_analyze_outcome(
+                tool_name, &cli_args, outcome,
+            )));
         }
 
         let plugin_root = find_plugin_root(&context.cwd).ok_or_else(|| {
@@ -1599,7 +1601,7 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         reported_command.extend(command.args.clone());
 
         if dry_run {
-            return Ok(AdapterOutcome {
+            return Ok(BslAnalyzerOutcome::plain(AdapterOutcome {
                 ok: true,
                 summary: format!("dry run: {tool_name} would call typed bsl-analyzer MCP adapter"),
                 changes: Vec::new(),
@@ -1609,7 +1611,7 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
                 stdout: None,
                 stderr: None,
                 command: Some(reported_command),
-            });
+            }));
         }
 
         let output = self.runner.call(&command)?;
@@ -1638,24 +1640,59 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
                 Vec::new(),
             )
         };
-        Ok(AdapterOutcome {
-            ok: !diagnostics_pending,
-            summary,
-            changes: Vec::new(),
-            warnings,
-            errors,
-            artifacts: vec![
-                source_dir.display().to_string(),
-                command.tool_name.to_string(),
-            ],
-            stdout: Some(format_section(section, &output.result_text)),
-            stderr: if output.stderr.trim().is_empty() {
-                None
-            } else {
-                Some(output.stderr)
+        // ADR-0023: the analyzer answers this tool with JSON, and wrapping that
+        // JSON in a section header made the caller unwrap a string to reach it.
+        // `code.diagnostics` keeps its text for now: its `analyze` mode is an
+        // external process stream, so its contract is decided separately.
+        let data = if tool_name == "unica.code.graph" && !diagnostics_pending {
+            Some(
+                serde_json::from_str::<Value>(output.result_text.trim()).map_err(|error| {
+                    format!("{tool_name} received an unparsable bsl-analyzer reply: {error}")
+                })?,
+            )
+        } else {
+            None
+        };
+        Ok(BslAnalyzerOutcome {
+            outcome: AdapterOutcome {
+                ok: !diagnostics_pending,
+                summary,
+                changes: Vec::new(),
+                warnings,
+                errors,
+                artifacts: vec![
+                    source_dir.display().to_string(),
+                    command.tool_name.to_string(),
+                ],
+                stdout: data
+                    .is_none()
+                    .then(|| format_section(section, &output.result_text)),
+                stderr: if output.stderr.trim().is_empty() {
+                    None
+                } else {
+                    Some(output.stderr)
+                },
+                command: Some(reported_command),
             },
-            command: Some(reported_command),
+            data,
         })
+    }
+}
+
+/// An analyzer answer plus the typed payload, for the tools whose contract is
+/// already the analyzer's own JSON.
+#[derive(Debug)]
+pub struct BslAnalyzerOutcome {
+    pub outcome: AdapterOutcome,
+    pub data: Option<Value>,
+}
+
+impl BslAnalyzerOutcome {
+    fn plain(outcome: AdapterOutcome) -> Self {
+        Self {
+            outcome,
+            data: None,
+        }
     }
 }
 
@@ -4236,7 +4273,8 @@ source-set:
 
         let outcome = BslAnalyzerMcpAdapter::new()
             .invoke("unica.code.diagnostics", &args, &context, true)
-            .unwrap();
+            .unwrap()
+            .outcome;
 
         let command = outcome.command.unwrap().join(" ");
         assert!(command.contains("bin/"));
@@ -4262,7 +4300,8 @@ source-set:
 
         let outcome = BslAnalyzerMcpAdapter::with_process_runner(&runner)
             .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap();
+            .unwrap()
+            .outcome;
 
         assert!(outcome.ok);
         let commands = runner.commands.borrow();
@@ -4291,7 +4330,8 @@ source-set:
 
         let outcome = BslAnalyzerMcpAdapter::with_process_runner(&runner)
             .invoke("unica.code.diagnostics", &Map::new(), &context, false)
-            .unwrap();
+            .unwrap()
+            .outcome;
 
         assert!(outcome.ok);
         assert_eq!(
@@ -4320,7 +4360,8 @@ source-set:
 
         let outcome = BslAnalyzerMcpAdapter::with_process_runner(&runner)
             .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap();
+            .unwrap()
+            .outcome;
 
         assert!(!outcome.ok);
         assert!(outcome
@@ -4360,14 +4401,17 @@ source-set:
         args.insert("maxOutputTokens".to_string(), json!(1200));
         args.insert("limit".to_string(), json!(25));
 
-        let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
+        let analyzer = BslAnalyzerMcpAdapter::with_runner(&runner)
             .invoke("unica.code.graph", &args, &context, false)
             .unwrap();
 
-        assert!(outcome.ok);
+        assert!(analyzer.outcome.ok);
+        // ADR-0023: the analyzer reply is the result, not a JSON string wrapped
+        // in a section header.
+        assert!(analyzer.outcome.stdout.is_none());
         assert_eq!(
-            outcome.stdout.as_deref(),
-            Some("=== bsl-analyzer-graph ===\n{\"action\":\"callers\",\"nodes\":[]}")
+            analyzer.data.unwrap(),
+            json!({"action": "callers", "nodes": []})
         );
         let commands = runner.commands.borrow();
         assert_eq!(commands.len(), 1);
@@ -4413,7 +4457,8 @@ source-set:
 
         let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
             .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap();
+            .unwrap()
+            .outcome;
 
         assert!(outcome.ok);
         let commands = runner.commands.borrow();
@@ -4452,7 +4497,8 @@ source-set:
 
         let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
             .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap();
+            .unwrap()
+            .outcome;
 
         assert!(outcome.ok);
         let commands = runner.commands.borrow();
@@ -4559,7 +4605,8 @@ source-set:
 
         let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
             .invoke("unica.code.graph", &args, &context, false)
-            .unwrap();
+            .unwrap()
+            .outcome;
 
         assert!(outcome.ok);
         assert!(outcome
@@ -4588,7 +4635,8 @@ source-set:
 
         let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
             .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap();
+            .unwrap()
+            .outcome;
 
         assert!(!outcome.ok);
         assert!(outcome.warnings.is_empty());
@@ -4617,7 +4665,8 @@ source-set:
 
         let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
             .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap();
+            .unwrap()
+            .outcome;
 
         // `status` is the readiness probe callers are told to run first: it
         // answered the question it was asked, so a loading model is its result
@@ -4651,7 +4700,8 @@ source-set:
 
         let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
             .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap();
+            .unwrap()
+            .outcome;
 
         // Readiness lives in the reply's own fields; a finding that quotes the
         // words must not turn a complete result into a retryable failure.
@@ -4690,7 +4740,8 @@ source-set:
 
         let outcome = BslAnalyzerMcpAdapter::with_process_runner(&runner)
             .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap();
+            .unwrap()
+            .outcome;
 
         cleanup_context(&context);
         outcome

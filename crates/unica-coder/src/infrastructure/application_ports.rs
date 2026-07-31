@@ -313,7 +313,10 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                 command: ["graph"] | ["analyze"],
             } => BslAnalyzerMcpAdapter::new()
                 .invoke_cancellable(spec.name, args, context, dry_run, cancellation)
-                .map(HandlerOutcome::plain),
+                .map(|analyzer| match analyzer.data {
+                    Some(data) => HandlerOutcome::with_data(analyzer.outcome, data),
+                    None => HandlerOutcome::plain(analyzer.outcome),
+                }),
             ToolHandler::CodeAdapter { command } => {
                 CliAdapter::new("bsl-analyzer", command, "code analysis")
                     .invoke_cancellable(

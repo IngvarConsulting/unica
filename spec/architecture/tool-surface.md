@@ -7,15 +7,15 @@
 ## Итог
 
 - Инструментов: **71**
-- Отвечают типизированным `data`: **16**
+- Отвечают типизированным `data`: **17**
 - Типизированы частично: часть результата всё ещё текст: **3**
 - Отвечают снимком задания в `job`: **6**
-- Отвечают прозой в `stdout`: **46**
+- Отвечают прозой в `stdout`: **45**
 
 - В границах типизации: **43**
 - Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`): **16**
 - Вне границ: семейство runtime и build изучается отдельно: **12**
-- Осталось перевести на типизированный `data` в границах работы: **27**
+- Осталось перевести на типизированный `data` в границах работы: **26**
 - Публикуют больше 20 аргументов из общего списка: **38**
 
 ## build — сборка и запуск платформы
@@ -393,7 +393,7 @@ Run BSL diagnostics through the internal code analysis adapter.
 | `sourceDir` | string | нет | Workspace-relative source root to work in: on the path-based unica.code.* tools and unica.meta.profile it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
 | `timeoutSeconds` | integer | нет | Only supported for mode analyze. Defaults to 120 seconds. |
 
-**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
+**Результат сейчас:** текст в `stdout`; режим `analyze` — поток внешнего процесса, контракт решается отдельно (отвечают прозой в `stdout`)
 
 **Целевой контракт:** `data`: находки с кодом, позицией, серьёзностью и правилом
 
@@ -423,9 +423,9 @@ Inspect BSL call graph through the typed Unica code analysis boundary.
 | `query` | string | нет | Search text: provider-neutral query for unica.code.search, node-lookup text for unica.code.graph mode=resolve, the required unica.standards.search string, and explain's last-resort fallback |
 | `sourceDir` | string | нет | Workspace-relative source root to work in: on the path-based unica.code.* tools and unica.meta.profile it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
 
-**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
+**Результат сейчас:** `data`: ответ анализатора с узлами и рёбрами графа как есть (ADR-0023) (отвечают типизированным `data`)
 
-**Целевой контракт:** `data`: узлы и рёбра графа вызовов с направлением и видом
+**Целевой контракт:** достигнут
 
 **Сценарии:**
 
