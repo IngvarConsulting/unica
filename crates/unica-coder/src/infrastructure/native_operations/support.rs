@@ -7,10 +7,9 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use super::common::{
-    MutationData,
     absolutize, find_support_config_dir, guard_active_format_dependencies,
     guard_exact_preimage_if_unprotected, is_uuid_text, parse_support_header, path_arg,
-    support_root_uuid_from_bytes, support_uuid_dependency_paths,
+    support_root_uuid_from_bytes, support_uuid_dependency_paths, MutationData,
 };
 use super::compile_transaction::{CompileTransaction, DirectoryMembershipSelector};
 
@@ -137,10 +136,10 @@ pub(crate) fn edit_support_with_data(
         },
         Err(error) => SupportEditExecution {
             outcome: AdapterOutcome {
-            ok: false,
-            summary: "support-edit failed".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
+                ok: false,
+                summary: "support-edit failed".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
                 errors: vec![error],
                 artifacts: Vec::new(),
                 stdout: None,
