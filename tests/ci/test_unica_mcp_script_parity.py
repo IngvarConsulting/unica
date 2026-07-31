@@ -662,18 +662,19 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
-        name="bsp-form-info-real-form-full",
-        tool="unica.form.info",
-        skill="form-info",
-        script="form-info.py",
+        # Re-homed from the retired form.info scenarios so this real BSP form
+        # stays under parity coverage (ADR-0023 retires tools, not fixtures).
+        name="bsp-form-validate-business-process-action-form",
+        tool="unica.form.validate",
+        skill="form-validate",
+        script="form-validate.py",
         arguments={
             "FormPath": "src/Form.xml",
-            "Expand": "*",
-            "Limit": 200,
+            "Detailed": True,
         },
         fixtures=(
             FileFixture(
-                "bsp/forms/BusinessProcesses__Задание__ФормаСписка/Form.xml",
+                "bsp/forms/BusinessProcesses__Задание__ДействиеВыполнить/Form.xml",
                 "src/Form.xml",
             ),
         ),
@@ -714,24 +715,6 @@ SUCCESS_SCENARIOS = [
         expect_ok=True,
     ),
     ParityScenario(
-        name="bsp-form-info-real-action-run-form",
-        tool="unica.form.info",
-        skill="form-info",
-        script="form-info.py",
-        arguments={
-            "FormPath": "src/Form.xml",
-            "Expand": "attributes,commands,events",
-            "Limit": 200,
-        },
-        fixtures=(
-            FileFixture(
-                "bsp/forms/BusinessProcesses__Задание__ДействиеВыполнить/Form.xml",
-                "src/Form.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
         name="bsp-form-validate-real-action-check-form",
         tool="unica.form.validate",
         skill="form-validate",
@@ -745,40 +728,6 @@ SUCCESS_SCENARIOS = [
             FileFixture(
                 "bsp/forms/BusinessProcesses__Задание__ДействиеПроверить/Form.xml",
                 "src/Form.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-form-info-real-business-process-form",
-        tool="unica.form.info",
-        skill="form-info",
-        script="form-info.py",
-        arguments={
-            "FormPath": "src/Form.xml",
-            "Expand": "*",
-            "Limit": 200,
-        },
-        fixtures=(
-            FileFixture(
-                "bsp/forms/BusinessProcesses__Задание__ФормаБизнесПроцесса/Form.xml",
-                "src/Form.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="form-info-main-form",
-        tool="unica.form.info",
-        skill="form-info",
-        script="form-info.py",
-        arguments={
-            "FormPath": "src/Reports/ParityReport/Forms/MainForm/Ext/Form.xml",
-        },
-        fixtures=(
-            FileFixture(
-                "form-remove/ParityReport/Forms/MainForm/Ext/Form.xml",
-                "src/Reports/ParityReport/Forms/MainForm/Ext/Form.xml",
             ),
         ),
         expect_ok=True,
@@ -1496,14 +1445,6 @@ MISSING_INPUT_SCENARIOS = [
         False,
     ),
     ParityScenario(
-        "form-info-missing-form",
-        "unica.form.info",
-        "form-info",
-        "form-info.py",
-        {"FormPath": "missing/Form.xml"},
-        False,
-    ),
-    ParityScenario(
         "form-validate-missing-form",
         "unica.form.validate",
         "form-validate",
@@ -1594,7 +1535,6 @@ NATIVE_PARITY_TOOLS = {
     "unica.meta.info",
     "unica.meta.validate",
     "unica.form.compile",
-    "unica.form.info",
     "unica.form.validate",
     "unica.subsystem.compile",
     "unica.subsystem.validate",
@@ -1629,6 +1569,7 @@ TYPED_RESULT_TOOLS = {
     "unica.dcs.edit",
     "unica.form.add",
     "unica.form.edit",
+    "unica.form.info",
     "unica.form.remove",
     "unica.help.add",
     "unica.interface.edit",
@@ -1649,7 +1590,6 @@ EXPECTED_TOOLS = {
     "unica.meta.info",
     "unica.meta.validate",
     "unica.form.compile",
-    "unica.form.info",
     "unica.form.validate",
     "unica.interface.validate",
     "unica.subsystem.compile",
@@ -1668,7 +1608,6 @@ BSP_PARITY_REQUIRED_TOOLS = {
     "unica.cf.validate",
     "unica.meta.info",
     "unica.meta.validate",
-    "unica.form.info",
     "unica.form.validate",
     "unica.dcs.info",
     "unica.dcs.validate",

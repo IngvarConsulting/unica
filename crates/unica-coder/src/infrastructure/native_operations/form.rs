@@ -1412,11 +1412,272 @@ pub(crate) fn form_valid_cfg_prefixes() -> &'static [&'static str] {
     ]
 }
 
+/// Typed answer of `unica.form.info` (ADR-0023). The report sliced a form into
+/// numbered lines and hid deep pages behind `-Expand`; the data carries the
+/// whole form at once, so a caller never has to ask for the rest.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FormInfoData {
+    pub(crate) name: String,
+    /// The form title when it declares one; `null` otherwise.
+    pub(crate) title: Option<String>,
+    /// The metadata object the form belongs to; `null` for a standalone form.
+    pub(crate) object_context: Option<String>,
+    pub(crate) is_extension: bool,
+    /// `BaseForm` version for an extension form; `null` when the form declares
+    /// no base form, empty string when it declares one without a version.
+    pub(crate) base_form_version: Option<String>,
+    pub(crate) support: SupportData,
+    pub(crate) properties: Vec<FormInfoProperty>,
+    pub(crate) events: Vec<FormInfoEvent>,
+    /// Items of the form's own command bar; empty when it has none or when
+    /// `CommandBarLocation` is `None`.
+    pub(crate) auto_command_bar: Vec<String>,
+    /// Where that command bar sits: `Auto`, `Top`, `Bottom` or `None`.
+    pub(crate) command_bar_location: String,
+    pub(crate) elements: Vec<FormInfoElement>,
+    pub(crate) attributes: Vec<FormInfoAttribute>,
+    pub(crate) parameters: Vec<FormInfoParameter>,
+    pub(crate) commands: Vec<FormInfoCommand>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FormInfoProperty {
+    pub(crate) name: String,
+    pub(crate) value: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FormInfoEvent {
+    pub(crate) name: String,
+    pub(crate) handler: String,
+    /// The `callType` attribute; `null` when the event declares none.
+    pub(crate) call_type: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FormInfoElement {
+    pub(crate) tag: String,
+    pub(crate) name: String,
+    /// The data path or command the element is bound to; `null` when unbound.
+    pub(crate) binding: Option<FormInfoBinding>,
+    /// The element title when it differs from its name; `null` otherwise.
+    pub(crate) title: Option<String>,
+    pub(crate) visible: bool,
+    pub(crate) enabled: bool,
+    pub(crate) read_only: bool,
+    pub(crate) events: Vec<FormInfoEvent>,
+    pub(crate) children: Vec<FormInfoElement>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FormInfoBinding {
+    /// `dataPath`, `standardCommand`, `command` or `other`.
+    pub(crate) kind: String,
+    pub(crate) target: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FormInfoAttribute {
+    pub(crate) name: String,
+    #[serde(rename = "type")]
+    pub(crate) type_name: Option<String>,
+    pub(crate) is_main: bool,
+    /// `MainTable` of a dynamic list; `null` for every other type.
+    pub(crate) main_table: Option<String>,
+    /// Columns of a value table or tree; empty for every other type.
+    pub(crate) columns: Vec<FormInfoColumn>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FormInfoColumn {
+    pub(crate) name: String,
+    #[serde(rename = "type")]
+    pub(crate) type_name: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FormInfoParameter {
+    pub(crate) name: String,
+    #[serde(rename = "type")]
+    pub(crate) type_name: Option<String>,
+    pub(crate) is_key: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FormInfoCommand {
+    pub(crate) name: String,
+    pub(crate) actions: Vec<FormInfoEvent>,
+    /// The keyboard shortcut; `null` when the command declares none.
+    pub(crate) shortcut: Option<String>,
+}
+
+pub(crate) struct FormInfoExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<FormInfoData>,
+}
+
+fn form_info_optional(value: String) -> Option<String> {
+    (!value.is_empty()).then_some(value)
+}
+
+fn form_info_events_section(events: roxmltree::Node<'_, '_>) -> Vec<FormInfoEvent> {
+    form_children(events, "Event")
+        .into_iter()
+        .map(|event| FormInfoEvent {
+            name: event.attribute("name").unwrap_or("").to_string(),
+            handler: event.text().unwrap_or("").to_string(),
+            call_type: event.attribute("callType").map(str::to_string),
+        })
+        .collect()
+}
+
+fn form_info_binding(node: roxmltree::Node<'_, '_>) -> Option<FormInfoBinding> {
+    if let Some(data_path) = form_child_text(node, "DataPath") {
+        return Some(FormInfoBinding {
+            kind: "dataPath".to_string(),
+            target: data_path,
+        });
+    }
+    let command_name = form_child_text(node, "CommandName")?;
+    if let Some(name) = command_name.strip_prefix("Form.StandardCommand.") {
+        Some(FormInfoBinding {
+            kind: "standardCommand".to_string(),
+            target: name.to_string(),
+        })
+    } else if let Some(name) = command_name.strip_prefix("Form.Command.") {
+        Some(FormInfoBinding {
+            kind: "command".to_string(),
+            target: name.to_string(),
+        })
+    } else {
+        Some(FormInfoBinding {
+            kind: "other".to_string(),
+            target: command_name,
+        })
+    }
+}
+
+/// Typed counterpart of [`form_build_tree`]. The report collapsed deep pages
+/// behind `-Expand`; data has no reason to hide them, so the whole tree is
+/// always walked.
+fn form_info_tree(child_items: roxmltree::Node<'_, '_>) -> Vec<FormInfoElement> {
+    child_items
+        .children()
+        .filter(|child| {
+            child.is_element() && !form_skip_elements().contains(&child.tag_name().name())
+        })
+        .map(|child| {
+            let name = child.attribute("name").unwrap_or("").to_string();
+            FormInfoElement {
+                tag: form_element_tag(child),
+                title: form_title_differs(child, &name),
+                name,
+                binding: form_info_binding(child),
+                visible: form_child_text(child, "Visible").as_deref() != Some("false"),
+                enabled: form_child_text(child, "Enabled").as_deref() != Some("false"),
+                read_only: form_child_text(child, "ReadOnly").as_deref() == Some("true"),
+                events: form_child(child, "Events")
+                    .map(form_info_events_section)
+                    .unwrap_or_default(),
+                children: form_child(child, "ChildItems")
+                    .map(form_info_tree)
+                    .unwrap_or_default(),
+            }
+        })
+        .collect()
+}
+
+fn form_info_attributes(attrs: roxmltree::Node<'_, '_>) -> Vec<FormInfoAttribute> {
+    form_children(attrs, "Attribute")
+        .into_iter()
+        .map(|attr| {
+            let type_name = form_child(attr, "Type")
+                .map(form_format_type)
+                .and_then(form_info_optional);
+            let main_table = (type_name.as_deref() == Some("DynamicList"))
+                .then(|| form_child(attr, "Settings").and_then(|s| form_child_text(s, "MainTable")))
+                .flatten();
+            let columns = if matches!(type_name.as_deref(), Some("ValueTable") | Some("ValueTree"))
+            {
+                form_child(attr, "Columns")
+                    .map(|columns| {
+                        form_children(columns, "Column")
+                            .into_iter()
+                            .map(|column| FormInfoColumn {
+                                name: column.attribute("name").unwrap_or("").to_string(),
+                                type_name: form_child(column, "Type")
+                                    .map(form_format_type)
+                                    .and_then(form_info_optional),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            FormInfoAttribute {
+                name: attr.attribute("name").unwrap_or("").to_string(),
+                type_name,
+                is_main: form_child_text(attr, "MainAttribute").as_deref() == Some("true"),
+                main_table,
+                columns,
+            }
+        })
+        .collect()
+}
+
+fn form_info_parameters(params: roxmltree::Node<'_, '_>) -> Vec<FormInfoParameter> {
+    form_children(params, "Parameter")
+        .into_iter()
+        .map(|param| FormInfoParameter {
+            name: param.attribute("name").unwrap_or("").to_string(),
+            type_name: form_child(param, "Type")
+                .map(form_format_type)
+                .and_then(form_info_optional),
+            is_key: form_child_text(param, "KeyParameter").as_deref() == Some("true"),
+        })
+        .collect()
+}
+
+fn form_info_commands(commands: roxmltree::Node<'_, '_>) -> Vec<FormInfoCommand> {
+    form_children(commands, "Command")
+        .into_iter()
+        .map(|command| FormInfoCommand {
+            name: command.attribute("name").unwrap_or("").to_string(),
+            actions: form_children(command, "Action")
+                .into_iter()
+                .map(|action| FormInfoEvent {
+                    name: action.attribute("name").unwrap_or("").to_string(),
+                    handler: action.text().unwrap_or("").to_string(),
+                    call_type: action.attribute("callType").map(str::to_string),
+                })
+                .collect(),
+            shortcut: form_child_text(command, "Shortcut"),
+        })
+        .collect()
+}
+
 pub(crate) fn analyze_form_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
-    let result = (|| -> Result<(String, PathBuf), String> {
+    analyze_form_info_with_data(args, context).outcome
+}
+
+pub(crate) fn analyze_form_info_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> FormInfoExecution {
+    let result = (|| -> Result<(FormInfoData, PathBuf), String> {
         let raw_path = required_path(args, FORM_PATH, "FormPath")?;
         let form_path = resolve_form_info_path(absolutize(raw_path, &context.cwd));
         if !form_path.is_file() {
@@ -1440,24 +1701,9 @@ pub(crate) fn analyze_form_info(
         let is_extension = base_form.is_some();
         let (form_name, object_context) = form_info_context(&form_path);
 
-        let mut lines = Vec::new();
         let form_title = form_child(root, "Title")
             .map(form_ml_text)
             .filter(|value| !value.is_empty());
-        let ext_marker = if is_extension { " [EXTENSION]" } else { "" };
-        let mut header = format!("=== Form: {form_name}{ext_marker}");
-        if let Some(title) = form_title {
-            header.push_str(&format!(" — \"{title}\""));
-        }
-        if !object_context.is_empty() {
-            header.push_str(&format!(" ({object_context})"));
-        }
-        header.push_str(" ===");
-        lines.push(header);
-        lines.push(format!(
-            "Поддержка: {}",
-            support_status_for_path(&form_path)
-        ));
 
         let prop_names = [
             "Width",
@@ -1482,159 +1728,95 @@ pub(crate) fn analyze_form_info(
             "VerticalScroll",
             "ScalingMode",
         ];
-        let props = prop_names
+        let properties = prop_names
             .iter()
             .filter_map(|name| {
                 form_child(root, name).and_then(|node| {
                     let value = form_ml_text(node);
-                    if value.is_empty() {
-                        None
-                    } else {
-                        Some(format!("{name}={value}"))
-                    }
+                    (!value.is_empty()).then(|| FormInfoProperty {
+                        name: (*name).to_string(),
+                        value,
+                    })
                 })
             })
             .collect::<Vec<_>>();
-        if !props.is_empty() {
-            lines.push(String::new());
-            lines.push(format!("Properties: {}", props.join(", ")));
-        }
 
-        if let Some(events) = form_child(root, "Events") {
-            let event_lines = form_event_lines(events);
-            if !event_lines.is_empty() {
-                lines.push(String::new());
-                lines.push("Events:".to_string());
-                lines.extend(event_lines);
-            }
-        }
-
-        let cb_loc = form_child_text(root, "CommandBarLocation")
+        let command_bar_location = form_child_text(root, "CommandBarLocation")
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "Auto".to_string());
-        let acb_lines = if cb_loc != "None" {
+        let auto_command_bar = if command_bar_location != "None" {
             form_child(root, "AutoCommandBar")
                 .map(form_main_command_bar_lines)
                 .unwrap_or_default()
         } else {
             Vec::new()
         };
-        if !acb_lines.is_empty() && matches!(cb_loc.as_str(), "Auto" | "Top") {
-            lines.push(String::new());
-            lines.extend(acb_lines.clone());
-        }
 
-        let mut tree_state = FormTreeState {
-            has_collapsed: false,
+        let data = FormInfoData {
+            name: form_name,
+            title: form_title,
+            object_context: (!object_context.is_empty()).then_some(object_context),
+            is_extension,
+            base_form_version: base_form
+                .map(|node| node.attribute("version").unwrap_or("").to_string()),
+            support: support_state_data(&form_path, false),
+            properties,
+            events: form_child(root, "Events")
+                .map(form_info_events_section)
+                .unwrap_or_default(),
+            auto_command_bar,
+            command_bar_location,
+            elements: form_child(root, "ChildItems")
+                .map(form_info_tree)
+                .unwrap_or_default(),
+            attributes: form_child(root, "Attributes")
+                .map(form_info_attributes)
+                .unwrap_or_default(),
+            parameters: form_child(root, "Parameters")
+                .map(form_info_parameters)
+                .unwrap_or_default(),
+            commands: form_child(root, "Commands")
+                .map(form_info_commands)
+                .unwrap_or_default(),
         };
-        if let Some(child_items) = form_child(root, "ChildItems") {
-            let mut tree_lines = Vec::new();
-            form_build_tree(child_items, "  ", &mut tree_lines, expand, &mut tree_state);
-            lines.push(String::new());
-            lines.push("Elements:".to_string());
-            lines.extend(tree_lines);
-        }
+        let _ = (limit, offset, expand);
 
-        if !acb_lines.is_empty() && cb_loc == "Bottom" {
-            lines.push(String::new());
-            lines.extend(acb_lines);
-        }
-
-        if let Some(attrs) = form_child(root, "Attributes") {
-            let attr_lines = form_attribute_lines(attrs);
-            if !attr_lines.is_empty() {
-                lines.push(String::new());
-                lines.push("Attributes:".to_string());
-                lines.extend(attr_lines);
-            }
-        }
-
-        if let Some(params) = form_child(root, "Parameters") {
-            let param_lines = form_parameter_lines(params);
-            if !param_lines.is_empty() {
-                lines.push(String::new());
-                lines.push("Parameters:".to_string());
-                lines.extend(param_lines);
-            }
-        }
-
-        if let Some(commands) = form_child(root, "Commands") {
-            let command_lines = form_command_lines(commands);
-            if !command_lines.is_empty() {
-                lines.push(String::new());
-                lines.push("Commands:".to_string());
-                lines.extend(command_lines);
-            }
-        }
-
-        if let Some(base_form) = base_form {
-            let version = base_form.attribute("version").unwrap_or("");
-            let base_form_text = if version.is_empty() {
-                "present".to_string()
-            } else {
-                format!("present (version {version})")
-            };
-            lines.push(String::new());
-            lines.push(format!("BaseForm: {base_form_text}"));
-        }
-
-        if tree_state.has_collapsed {
-            lines.push(String::new());
-            lines.push(
-                "Hint: use -Expand <name> to expand a collapsed section, -Expand * for all"
-                    .to_string(),
-            );
-        }
-
-        let total_lines = lines.len();
-        if offset > 0 {
-            if offset >= total_lines {
-                return Ok((
-                    format!(
-                        "[INFO] Offset {offset} exceeds total lines ({total_lines}). Nothing to show.\n"
-                    ),
-                    form_path,
-                ));
-            }
-            lines = lines.into_iter().skip(offset).collect();
-        }
-
-        let stdout = if lines.len() > limit {
-            let shown = lines.iter().take(limit).cloned().collect::<Vec<_>>();
-            format!(
-                "{}\n\n[TRUNCATED] Shown {limit} of {total_lines} lines. Use -Offset {} to continue.\n",
-                shown.join("\n"),
-                offset + limit
-            )
-        } else {
-            format!("{}\n", lines.join("\n"))
-        };
-
-        Ok((stdout, form_path))
+        Ok((data, form_path))
     })();
 
     match result {
-        Ok((stdout, artifact)) => AdapterOutcome {
-            ok: true,
-            summary: "unica.form.info completed with native form analyzer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: Vec::new(),
-            artifacts: vec![artifact.display().to_string()],
-            stdout: Some(stdout),
-            stderr: Some(String::new()),
-            command: None,
+        Ok((data, artifact)) => FormInfoExecution {
+            outcome: AdapterOutcome {
+                ok: true,
+                summary: format!(
+                    "unica.form.info described {} with {} element(s) and {} attribute(s)",
+                    data.name,
+                    data.elements.len(),
+                    data.attributes.len()
+                ),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: Vec::new(),
+                artifacts: vec![artifact.display().to_string()],
+                stdout: None,
+                stderr: Some(String::new()),
+                command: None,
+            },
+            data: Some(data),
         },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.form.info failed in native form analyzer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: Some(String::new()),
-            stderr: Some(format!("{error}\n")),
-            command: None,
+        Err(error) => FormInfoExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.form.info failed in native form analyzer".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.clone()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{error}\n")),
+                command: None,
+            },
+            data: None,
         },
     }
 }
@@ -14332,13 +14514,14 @@ mod tests {
         )]);
         let validation = validate_form(&validate_args, &context);
         assert!(validation.ok, "{validation:?}");
-        let info = analyze_form_info(&validate_args, &context);
-        assert!(info.ok, "{info:?}");
+        let info = analyze_form_info_with_data(&validate_args, &context);
+        assert!(info.outcome.ok, "{:?}", info.outcome);
+        let info_data = info.data.as_ref().expect("form.info answers with data");
         assert!(
-            info.stdout
-                .as_deref()
-                .is_some_and(|stdout| stdout.contains("OnCreateAtServer -> OnCreateAtServer")),
-            "{info:?}"
+            info_data.events.iter().any(
+                |event| event.name == "OnCreateAtServer" && event.handler == "OnCreateAtServer"
+            ),
+            "{info_data:?}"
         );
 
         let _ = fs::remove_dir_all(&context.cwd);

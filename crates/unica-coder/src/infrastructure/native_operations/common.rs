@@ -2299,7 +2299,7 @@ impl MutationData {
 /// Typed support state for ADR-0023 readers. It lives beside `SupportState`
 /// because the counts are private there, and every reader needs the same
 /// four-state answer rather than its own rendering of it.
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SupportData {
     /// `notSupported`, `extension`, `removed` or `supported`.
@@ -2308,7 +2308,7 @@ pub(crate) struct SupportData {
     pub(crate) objects: Option<SupportCounts>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SupportCounts {
     pub(crate) locked: u64,

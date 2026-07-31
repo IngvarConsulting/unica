@@ -3205,7 +3205,6 @@ mod tests {
             "unica.meta.info",
             "unica.meta.validate",
             "unica.form.compile",
-            "unica.form.info",
             "unica.form.validate",
             "unica.interface.validate",
             "unica.subsystem.compile",
@@ -3245,6 +3244,7 @@ mod tests {
             "unica.form.add",
             "unica.dcs.edit",
             "unica.form.edit",
+            "unica.form.info",
         ];
 
         for tool in tools() {

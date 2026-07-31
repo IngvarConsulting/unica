@@ -205,6 +205,10 @@ impl NativeOperationAdapter {
                     let execution = cfe::diff_cfe(args, context);
                     return typed_operation_result(execution.outcome, execution.data, "cfe diff");
                 }
+                "form-info" => {
+                    let execution = form::analyze_form_info_with_data(args, context);
+                    return typed_operation_result(execution.outcome, execution.data, "form info");
+                }
                 "mxl-info" => {
                     let execution = mxl::analyze_mxl_info(args, context);
                     return typed_operation_result(execution.outcome, execution.data, "mxl info");
