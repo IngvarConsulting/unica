@@ -552,7 +552,9 @@ class UnicaMcpSmokeTests(unittest.TestCase):
                 self.assertTrue(info["ok"], info)
                 self.assertEqual(info["data"]["metadataPath"], address)
                 self.assertEqual(info["data"]["sourceSet"], "main")
-                self.assertIn("Владельцы (1): Catalog.Kinds", info["stdout"])
+                # The owners used to be a printed line; ADR-0023 makes them data.
+                self.assertEqual(info["data"]["owners"], ["Catalog.Kinds"])
+                self.assertNotIn("stdout", info)
 
                 legacy = call(
                     "unica.meta.info",

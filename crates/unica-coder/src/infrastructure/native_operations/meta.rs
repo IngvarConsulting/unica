@@ -7838,7 +7838,10 @@ pub(crate) fn meta_validate_forbidden_properties(md_type: &str) -> Option<&'stat
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MetaInfoData {
-    /// The logical address this call resolved (ADR-0021).
+    /// The logical address this call resolved. Flattened, because ADR-0021
+    /// fixed `sourceSet` and `metadataPath` at the top level of `data` and
+    /// `unica.source.locate` answers with the same shape.
+    #[serde(flatten)]
     pub(crate) target: ResolvedTarget,
     /// The platform's metadata kind: `Catalog`, `Document`, `CommonModule`, …
     pub(crate) kind: String,

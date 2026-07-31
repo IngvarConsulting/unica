@@ -104,10 +104,35 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
                     self.assertEqual(entry["scope"], "in")
 
     def test_a_partially_typed_tool_is_not_counted_as_migrated(self) -> None:
-        """meta.info puts its resolved address in `data` and its report in
-        prose. Counting it as done hid a tool that still has to move."""
+        """A tool that answers with some `data` and some prose is not migrated.
+        Counting it as done hides a tool that still has to move, which is how
+        meta.info stayed invisible until its contract was stated explicitly."""
 
-        self.assertEqual(self.review["unica.meta.info"]["result"]["contract"], "partial")
+        partial = {
+            name
+            for name, entry in self.review.items()
+            if entry["result"]["contract"] == "partial"
+        }
+        self.assertTrue(
+            partial,
+            "the ledger must keep naming partially typed tools while any remain",
+        )
+        # The count comes from the contract field alone. The original defect
+        # counted a tool as migrated because the word `data` appeared in its
+        # free-text note, which is how meta.info escaped the number.
+        typed = {
+            name
+            for name, entry in self.review.items()
+            if entry["result"]["contract"] == "typed"
+        }
+        self.assertEqual(partial & typed, set())
+        text = LEDGER.read_text(encoding="utf-8")
+        self.assertIn(
+            f"- {self.module.CONTRACT_STATES['typed']}: **{len(typed)}**", text
+        )
+        self.assertIn(
+            f"- {self.module.CONTRACT_STATES['partial']}: **{len(partial)}**", text
+        )
 
 
 if __name__ == "__main__":
