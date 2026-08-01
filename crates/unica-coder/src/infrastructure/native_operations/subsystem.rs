@@ -1612,7 +1612,7 @@ pub(crate) fn analyze_subsystem_info(
             picture: subsystem_optional(data.picture),
             include_in_command_interface: subsystem_optional(data.include_ci),
             use_one_command: subsystem_optional(data.use_one_command),
-            support: support_state_data(&xml_path, false),
+            support: object_support_state(&xml_path),
             content: data.content_items,
             groups: data
                 .groups
@@ -1677,7 +1677,7 @@ pub(crate) struct SubsystemInfoResult {
     pub(crate) picture: Option<String>,
     pub(crate) include_in_command_interface: Option<String>,
     pub(crate) use_one_command: Option<String>,
-    pub(crate) support: SupportData,
+    pub(crate) support: ObjectSupportData,
     pub(crate) content: Vec<String>,
     pub(crate) groups: Vec<SubsystemGroupData>,
     pub(crate) children: Vec<String>,

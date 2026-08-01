@@ -137,12 +137,12 @@ pub(crate) fn role_read_format_dependency_paths(
 /// Typed answer of `unica.role.info` (ADR-0023). Denied rights are always
 /// present: hiding them behind a flag made "no denied rights" and "you did not
 /// ask" the same observation.
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RoleInfoData {
     pub(crate) name: String,
     pub(crate) synonym: Option<String>,
-    pub(crate) support: SupportData,
+    pub(crate) support: ObjectSupportData,
     pub(crate) defaults: RoleDefaultsData,
     pub(crate) allowed: Vec<RoleGroupData>,
     pub(crate) denied: Vec<RoleGroupData>,
@@ -151,7 +151,7 @@ pub(crate) struct RoleInfoData {
     pub(crate) templates: Vec<String>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RoleDefaultsData {
     pub(crate) set_for_new_objects: Option<String>,
@@ -159,21 +159,21 @@ pub(crate) struct RoleDefaultsData {
     pub(crate) independent_rights_of_child_objects: Option<String>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RoleGroupData {
     pub(crate) kind: String,
     pub(crate) objects: Vec<RoleObjectData>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RoleObjectData {
     pub(crate) name: String,
     pub(crate) rights: Vec<RoleRightData>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RoleRightData {
     pub(crate) name: String,
@@ -181,7 +181,7 @@ pub(crate) struct RoleRightData {
     pub(crate) restricted: bool,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RoleTotalsData {
     pub(crate) allowed: usize,
@@ -346,7 +346,7 @@ pub(crate) fn analyze_role_info(
         let data = RoleInfoData {
             name: role_name,
             synonym: (!role_synonym.is_empty()).then_some(role_synonym),
-            support: support_state_data(&rights_path, false),
+            support: object_support_state(&rights_path),
             defaults: RoleDefaultsData {
                 set_for_new_objects: role_attribute(set_for_new),
                 set_for_attributes_by_default: role_attribute(set_for_attrs),
@@ -2095,6 +2095,34 @@ mod role_info_typed_result_tests {
             cache_root: root.join(".build/unica"),
             workspace_epoch: 1,
         }
+    }
+
+    /// The support state belongs to the object, and `Rights.xml` sits two
+    /// directories below the configuration root. Reading it from the leaf path
+    /// answered `notSupported` for a configuration that is on support.
+    #[test]
+    fn role_info_reads_the_support_state_from_the_configuration_root() {
+        let context = workspace("support");
+        fs::write(
+            context.workspace_root.join("src/Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Demo</Name></Properties></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        let args = Map::from_iter([(
+            "RightsPath".to_string(),
+            json!("src/Roles/Reader/Ext/Rights.xml"),
+        )]);
+
+        let execution = analyze_role_info(&args, &context);
+
+        assert!(execution.outcome.ok, "{:?}", execution.outcome);
+        let data = execution.data.expect("role info answers with data");
+        // No ParentConfigurations.bin here, so the honest answer is
+        // `notSupported` — but it must come from the resolved configuration
+        // root, not from a directory the walk never reached.
+        assert_eq!(data.support.state, "notSupported", "{data:?}");
+        assert_eq!(data.support.direct_edit_safe, None, "{data:?}");
+        let _ = fs::remove_dir_all(&context.workspace_root);
     }
 
     /// `ShowDenied` used to decide whether denied rights appeared at all, so an

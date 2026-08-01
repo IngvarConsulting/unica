@@ -171,7 +171,7 @@ impl MxlValidationReporter {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MxlInfoData {
     pub(crate) name: String,
-    pub(crate) support: SupportData,
+    pub(crate) support: ObjectSupportData,
     pub(crate) rows: i64,
     pub(crate) columns: i64,
     pub(crate) column_sets: Vec<MxlColumnSetData>,
@@ -409,7 +409,7 @@ pub(crate) fn analyze_mxl_info(
 
         let data = MxlInfoData {
             name: template_name,
-            support: support_state_data(&template_path, false),
+            support: object_support_state(&template_path),
             rows: doc_height,
             columns: default_col_count,
             column_sets: column_sets
