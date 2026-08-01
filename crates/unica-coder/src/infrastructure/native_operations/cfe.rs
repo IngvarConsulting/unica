@@ -6322,7 +6322,10 @@ pub(crate) fn create_extension_scaffold_with_data(
                 return Err("base config root must use the MDClasses namespace".to_string());
             }
             base_config_path = Some(config_path.clone());
-            derived.push(CfeInitDerivedProperty::from_base(
+            // The base config only gates whether this is emitted; the value
+            // itself is this build's active profile, so `baseConfig` would be
+            // a false provenance.
+            derived.push(CfeInitDerivedProperty::defaulted(
                 "mdClassesFormatVersion",
                 ACTIVE_FORMAT_PROFILE.export_format,
             ));

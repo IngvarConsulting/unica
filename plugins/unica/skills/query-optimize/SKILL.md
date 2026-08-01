@@ -51,8 +51,7 @@ description: "Оптимизация запросов 1С и СКД. Испол�
     "name": "unica.dcs.info",
     "arguments": {
       "cwd": "<workspace>",
-      "TemplatePath": "Reports/Продажи/Ext/Report/DataCompositionSchema.xml",
-      "Mode": "query"
+      "TemplatePath": "Reports/Продажи/Ext/Report/DataCompositionSchema.xml"
     }
   }
 }

@@ -391,25 +391,6 @@ pub(crate) fn analyze_dcs_info_with_data(
         require_dcs_root(root)?;
         // Eleven modes sliced one schema into eleven reports. Data answers
         // with every section at once; a caller projects what it needs.
-        let mode = string_arg(args, &["mode", "Mode"]).unwrap_or("overview");
-        const MODES: &[&str] = &[
-            "overview",
-            "query",
-            "fields",
-            "links",
-            "calculated",
-            "resources",
-            "params",
-            "variant",
-            "trace",
-            "templates",
-            "full",
-        ];
-        if !MODES.contains(&mode) {
-            return Err(format!(
-                "argument -Mode: invalid choice: '{mode}' (choose from 'overview', 'query', 'fields', 'links', 'calculated', 'resources', 'params', 'variant', 'trace', 'templates', 'full')"
-            ));
-        }
         let data = dcs_info_collect(root, NS_SCHEMA, NS_SETTINGS);
         Ok((data, resolved_path))
     })();
@@ -5461,8 +5442,15 @@ pub(crate) fn edit_dcs_with_data(
                     )?;
                 }
                 "add-drilldown" => {
-                    let _ = dcs_edit_add_drilldown(&mut xml_text, &value);
-                    force_save = true;
+                    // Only a real insertion counts: forcing the save
+                    // unconditionally reported `applied` for a resource the
+                    // schema has no named template for.
+                    if matches!(
+                        dcs_edit_add_drilldown(&mut xml_text, &value),
+                        DcsEditDrilldownResult::Added
+                    ) {
+                        force_save = true;
+                    }
                 }
                 "set-outputParameter" => {
                     let parsed = dcs_edit_parse_output_parameter(&value)?;

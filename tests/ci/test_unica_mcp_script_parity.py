@@ -1855,8 +1855,16 @@ source-set:
                         / "Ext"
                         / "Form.xml"
                     )
-                    arguments["OutputPath"] = str(output_path.relative_to(workspace))
-                    if arguments.get("FromObject") is True:
+                    # Only the compiler takes an output path. The skill also
+                    # documents a `form.info` read, and injecting the argument
+                    # there sent the reader a selector it does not publish.
+                    if example.payload["params"]["name"] == "unica.form.compile":
+                        arguments["OutputPath"] = str(output_path.relative_to(workspace))
+                    elif example.payload["params"]["name"] == "unica.form.info":
+                        arguments["FormPath"] = str(output_path.relative_to(workspace))
+                    if example.payload["params"]["name"] != "unica.form.compile":
+                        pass
+                    elif arguments.get("FromObject") is True:
                         object_path = workspace / "src" / "cf" / "Catalogs" / "Валюты.xml"
                         object_path.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copyfile(FIXTURES_ROOT / BSP_META_CATALOG_FIXTURE, object_path)

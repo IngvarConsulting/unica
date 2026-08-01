@@ -16,7 +16,7 @@
 - Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`): **16**
 - Вне границ: семейство runtime и build изучается отдельно: **12**
 - Осталось перевести на типизированный `data` в границах работы: **0**
-- Публикуют больше 20 аргументов из общего списка: **37**
+- Публикуют больше 20 аргументов из общего списка: **35**
 
 ## build — сборка и запуск платформы
 
@@ -543,8 +543,9 @@ Inspect Data Composition Schema Template.xml.
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
 | `TemplatePath` | string | да | Path to a `Template.xml`, or its directory which auto-resolves to `Ext/Template.xml`, for `unica.dcs.edit`/`info`/`validate` and `unica.mxl.info`/`validate`/`decompile`, relative to `cwd`; `unica.dcs.compile` writes through `outputPath` and ignores this argument. |
-
-Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+| `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
+| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
+| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 
 **Результат сейчас:** `data`: наборы данных с полями и точным текстом запроса, связи, вычисляемые поля, ресурсы, параметры, варианты настроек и макеты — все секции сразу (отвечают типизированным `data`)
 
@@ -681,8 +682,9 @@ Inspect managed Form.xml.
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
 | `FormPath` | string | да | Path to an existing `Form.xml`, or the form directory that resolves to it, for `unica.form.info`, `unica.form.edit` and `unica.form.validate`, relative to `cwd` |
-
-Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+| `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
+| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
+| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 
 **Результат сейчас:** `data`: свойства, события, полное дерево элементов без сворачивания, реквизиты с колонками, параметры и команды (отвечают типизированным `data`)
 
@@ -830,18 +832,10 @@ Inspect metadata object XML.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `Limit` | string | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, meta.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, meta.profile 20, code.graph nodes, code.diagnostics findings, standards results). |
-| `Mode` | string | нет | Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full\|incremental\|partial for dump, load\|merge for load, designer-config\|designer-modules\|edt for syntax, and the client kind for an mcp or mcp-va launch, while every other tool defines its own values (for example analyze\|status\|catalog\|file\|workspace on unica.code.diagnostics) — always use the enum published in that tool's own schema. |
-| `Name` | string | нет | Name of the object being created (`cf.init`, `cfe.init`, `epf.init`, `erf.init`), or the drill-down target for `meta.info`, `subsystem.info` and `dcs.info`; on `cf.info` it is an alias of `section` |
-| `Offset` | integer | нет | Number of output lines to skip in the paginating read tools, default 0; combine it with `limit` to page through a long report |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
 | `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
-| `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, meta.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, meta.profile 20, code.graph nodes, code.diagnostics findings, standards results). |
 | `metadataPath` | string | да | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
-| `mode` | string | нет | Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full\|incremental\|partial for dump, load\|merge for load, designer-config\|designer-modules\|edt for syntax, and the client kind for an mcp or mcp-va launch, while every other tool defines its own values (for example analyze\|status\|catalog\|file\|workspace on unica.code.diagnostics) — always use the enum published in that tool's own schema. |
-| `name` | string | нет | Name of the object being created (`cf.init`, `cfe.init`, `epf.init`, `erf.init`), or the drill-down target for `meta.info`, `subsystem.info` and `dcs.info`; on `cf.info` it is an alias of `section` |
-| `offset` | integer | нет | Number of output lines to skip in the paginating read tools, default 0; combine it with `limit` to page through a long report |
 | `sourceSet` | string | да | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 
 **Результат сейчас:** `data`: адрес, вид, имя, синоним, пообъектная поддержка, свойства именами платформы, владельцы, реквизиты/измерения/ресурсы, ТЧ, значения перечисления, формы, макеты, команды (отвечают типизированным `data`)

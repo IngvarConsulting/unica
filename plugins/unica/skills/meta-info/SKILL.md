@@ -1,7 +1,7 @@
 ---
 name: meta-info
 description: Анализ структуры объекта метаданных 1С из XML-выгрузки — реквизиты, табличные части, формы, движения, типы. Используй для изучения структуры объектов (вместо чтения XML-файлов напрямую) и как подготовительный шаг при написании запросов и кода, работающего с объектами
-argument-hint: <sourceSet> <metadataPath> [-Mode overview|brief|full] [-Name <элемент>]
+argument-hint: <sourceSet> <metadataPath>
 allowed-tools:
   - Bash
   - Read
@@ -27,9 +27,6 @@ allowed-tools:
 |----------|----------|
 | `sourceSet` | Имя набора исходников из карты проекта; список даёт `unica.project.map` |
 | `metadataPath` | Логический адрес объекта: `Catalog.Номенклатура`, `Справочник.Номенклатура`, `Catalog.Номенклатура.Form.ФормаЭлемента` |
-| `Mode` | Режим: `overview` (default), `brief`, `full` |
-| `Name` | Drill-down по имени элемента (реквизит, ТЧ, значение перечисления, шаблон URL, операция) |
-| `Limit` / `Offset` | Пагинация (по умолчанию 150 строк) |
 
 Адрес принимает русские и английские псевдонимы вида, а отвечает канонической
 английской формой в `data.metadataPath` — её можно передать дальше любому
@@ -48,25 +45,25 @@ allowed-tools:
     "arguments": {
       "cwd": "<workspace>",
       "sourceSet": "main",
-      "metadataPath": "Catalog.Номенклатура",
-      "Mode": "overview",
-      "Limit": 120
+      "metadataPath": "Catalog.Номенклатура"
     }
   }
 }
 ```
 
-## Три режима
+## Ответ
 
-| Режим | Что показывает |
-|---|---|
-| `overview` *(default)* | Заголовок + ключевые свойства + структура без раскрытия деталей |
-| `brief` | Всё одной-двумя строками: имена полей, счётчики |
-| `full` | Всё раскрыто: колонки ТЧ, список источников подписки, движения, формы |
+Инструмент отвечает типизированным `data` и всегда отдаёт объект целиком: вид,
+имя, синоним, поддержку, свойства **именами платформы** (`NumberType`,
+`Hierarchical`, `LevelCount`…), владельцев, реквизиты, измерения, ресурсы,
+табличные части с колонками, значения перечисления, формы, макеты и команды.
+Режимы, drill-down и постраничный вывод больше не нужны — берите нужную секцию
+из `data`.
 
-Для ссылочных объектов (`Справочник`, `Документ`, `Перечисление`, планы, `ПланОбмена`, `БизнесПроцесс`, `Задача`) вывод содержит `Представление типа`. В `full` дополнительно раскрываются `Представление объекта`, расширенные представления и представления списка, если они заданы в XML.
-
-`-Name` — drill-down: раскрыть конкретный элемент объекта (ТЧ, реквизит, шаблон URL, операцию веб-сервиса).
+«Представление типа», «Представление объекта» и представления списка ссылочных
+объектов лежат в `properties` под платформенными именами `ObjectPresentation`,
+`ExtendedObjectPresentation`, `ListPresentation`, `ExtendedListPresentation` —
+переводить их обратно в русские подписи инструмент больше не пытается.
 
 ## Поддерживаемые типы (23)
 
@@ -105,8 +102,7 @@ allowed-tools:
     "arguments": {
       "cwd": "<workspace>",
       "sourceSet": "main",
-      "metadataPath": "Document.АвансовыйОтчет",
-      "Mode": "full"
+      "metadataPath": "Document.АвансовыйОтчет"
     }
   }
 }
@@ -123,14 +119,13 @@ allowed-tools:
     "arguments": {
       "cwd": "<workspace>",
       "sourceSet": "main",
-      "metadataPath": "InformationRegister.КурсыВалют",
-      "Mode": "brief"
+      "metadataPath": "InformationRegister.КурсыВалют"
     }
   }
 }
 ```
 
-### Drill-down в табличную часть документа
+### Табличные части документа
 
 ```json
 {
@@ -141,14 +136,13 @@ allowed-tools:
     "arguments": {
       "cwd": "<workspace>",
       "sourceSet": "main",
-      "metadataPath": "Document.АвансовыйОтчет",
-      "Name": "Товары"
+      "metadataPath": "Document.АвансовыйОтчет"
     }
   }
 }
 ```
 
-### Drill-down в реквизит
+### Реквизиты справочника
 
 ```json
 {
@@ -159,8 +153,7 @@ allowed-tools:
     "arguments": {
       "cwd": "<workspace>",
       "sourceSet": "main",
-      "metadataPath": "Catalog.Валюты",
-      "Name": "ОсновнаяВалюта"
+      "metadataPath": "Catalog.Валюты"
     }
   }
 }
@@ -200,7 +193,7 @@ allowed-tools:
 }
 ```
 
-### HTTP-сервис: drill-down в шаблон URL
+### HTTP-сервис: шаблоны URL в `data`
 
 ```json
 {
@@ -211,8 +204,7 @@ allowed-tools:
     "arguments": {
       "cwd": "<workspace>",
       "sourceSet": "main",
-      "metadataPath": "HTTPService.ExternalAPI",
-      "Name": "АктуальныеЗадачи"
+      "metadataPath": "HTTPService.ExternalAPI"
     }
   }
 }
@@ -235,7 +227,7 @@ allowed-tools:
 }
 ```
 
-### Веб-сервис: drill-down в операцию
+### Веб-сервис: операции в `data`
 
 ```json
 {
@@ -246,8 +238,7 @@ allowed-tools:
     "arguments": {
       "cwd": "<workspace>",
       "sourceSet": "main",
-      "metadataPath": "WebService.EnterpriseDataUpload_1_0_1_1",
-      "Name": "TestConnection"
+      "metadataPath": "WebService.EnterpriseDataUpload_1_0_1_1"
     }
   }
 }
@@ -264,8 +255,7 @@ allowed-tools:
     "arguments": {
       "cwd": "<workspace>",
       "sourceSet": "main",
-      "metadataPath": "EventSubscription.ПолныйРегистрацияУдаления",
-      "Mode": "full"
+      "metadataPath": "EventSubscription.ПолныйРегистрацияУдаления"
     }
   }
 }

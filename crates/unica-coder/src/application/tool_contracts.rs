@@ -29,6 +29,12 @@ const ROLE_INFO_ARGS: &[&str] = &["RightsPath", "rightsPath", "Path", "path"];
 /// `subsystem.info` answers with typed data: its `Mode` picked which slice of
 /// one subsystem to print, and the tree projection belongs to a separate ask.
 const SUBSYSTEM_INFO_ARGS: &[&str] = &["SubsystemPath", "subsystemPath", "Path", "path"];
+
+/// A typed reader publishes only what it reads. `dcs.info` and `form.info`
+/// answer with every section at once, so `Mode`, `Raw`, `Name`, `Limit` and
+/// `Expand` no longer select or trim anything (ADR-0023).
+const DCS_INFO_ARGS: &[&str] = &["TemplatePath", "templatePath", "Path", "path"];
+const FORM_INFO_ARGS: &[&str] = &["FormPath", "formPath", "Path", "path"];
 /// `mxl.info` answers with typed data. `WithText` stays: it selects cell
 /// content, the way `includeMethods` selects methods in ADR-0020. `Format`,
 /// `MaxParams`, `Limit` and `Offset` only shaped a printed report.
@@ -48,18 +54,7 @@ const CFE_DIFF_ARGS: &[&str] = &["ExtensionPath", "extensionPath", "ConfigPath",
 /// `meta.info` publishes only what it reads. The shared `NATIVE_XML_DSL_ARGS`
 /// list would also accept arguments no `meta.info` code path consults, and an
 /// accepted argument that changes nothing is a promise the tool cannot keep.
-const META_INFO_ARGS: &[&str] = &[
-    "sourceSet",
-    "metadataPath",
-    "Mode",
-    "mode",
-    "Name",
-    "name",
-    "Limit",
-    "limit",
-    "Offset",
-    "offset",
-];
+const META_INFO_ARGS: &[&str] = &["sourceSet", "metadataPath"];
 const RUNTIME_JOB_STATUS_ARGS: &[&str] = &["jobId"];
 const RUNTIME_JOB_WAIT_ARGS: &[&str] = &["jobId", "timeoutSeconds"];
 const RUNTIME_JOB_LOGS_ARGS: &[&str] = &["jobId", "tailChars"];
@@ -1707,6 +1702,8 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
                 "mxl-info" => names.extend(MXL_INFO_ARGS),
                 "cfe-diff" => names.extend(CFE_DIFF_ARGS),
                 "meta-info" => names.extend(META_INFO_ARGS),
+                "dcs-info" => names.extend(DCS_INFO_ARGS),
+                "form-info" => names.extend(FORM_INFO_ARGS),
                 _ => names.extend(native_args_for(operation)),
             }
             if operation == "form-edit" {
@@ -3233,20 +3230,14 @@ mod tests {
         args.insert("sourceSet".to_string(), json!("main"));
         args.insert("metadataPath".to_string(), json!("Catalog.Items"));
         validate_tool_arguments(tool, &args, false).unwrap();
-        for (key, value) in [
-            ("Mode", json!("full")),
-            ("Name", json!("Реквизит")),
-            ("limit", json!(20)),
-            ("offset", json!(10)),
-        ] {
-            let mut with_option = args.clone();
-            with_option.insert(key.to_string(), value);
-            validate_tool_arguments(tool, &with_option, false).unwrap();
-        }
 
-        // `Detailed` belongs to the `*.validate` tools; `meta.info` never read
-        // it, and an accepted argument that changes nothing is a false promise.
-        for rejected in ["Detailed", "detailed", "OutFile", "outFile", "SrcDir"] {
+        // The typed answer carries the whole object, so the selectors that used
+        // to trim the report select nothing. An accepted argument that changes
+        // nothing is a false promise, and `Detailed` belongs to `*.validate`.
+        for rejected in [
+            "Mode", "Name", "limit", "offset", "Detailed", "detailed", "OutFile", "outFile",
+            "SrcDir",
+        ] {
             let mut with_rejected = args.clone();
             with_rejected.insert(rejected.to_string(), json!("value"));
             let error = validate_tool_arguments(tool, &with_rejected, false).unwrap_err();
@@ -4460,8 +4451,11 @@ mod tests {
         assert!(error.contains("requires `ObjectName`"));
     }
 
+    /// The typed reader answers with every section at once, so the selectors
+    /// that used to trim its report select nothing. Publishing them promised a
+    /// behaviour the handler no longer has (ADR-0023).
     #[test]
-    fn dcs_info_contract_exposes_raw_query_export() {
+    fn dcs_info_contract_publishes_only_what_the_typed_reader_reads() {
         let dcs_info = tools()
             .into_iter()
             .find(|tool| tool.name == "unica.dcs.info")
@@ -4469,14 +4463,12 @@ mod tests {
 
         let schema = input_schema_for_tool(&dcs_info);
         assert_eq!(schema["additionalProperties"], false);
-        assert_eq!(schema["properties"]["Raw"]["type"], "boolean");
-        let raw_description = schema["properties"]["Raw"]["description"]
-            .as_str()
-            .expect("Raw must describe its query-only behavior");
-        assert!(raw_description.contains("only with `Mode=query`"));
-        assert!(raw_description.contains("full query text"));
-        assert!(!raw_description.contains("changes nothing"));
-        assert!(!raw_description.contains("truncated"));
+        for retired in ["Raw", "Mode", "Name", "Limit", "Offset"] {
+            assert!(
+                schema["properties"].get(retired).is_none(),
+                "{retired} no longer selects anything: {schema}"
+            );
+        }
         assert_eq!(schema["required"], json!(["TemplatePath"]));
         assert!(schema.get("allOf").is_none());
 
@@ -4485,9 +4477,6 @@ mod tests {
             "TemplatePath".to_string(),
             json!("Reports/Sales/Templates/Main"),
         );
-        args.insert("Mode".to_string(), json!("query"));
-        args.insert("Name".to_string(), json!("Sales"));
-        args.insert("Raw".to_string(), json!(true));
         validate_tool_arguments(dcs_info, &args, false).unwrap();
     }
 

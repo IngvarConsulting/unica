@@ -7896,8 +7896,13 @@ fn meta_info_attr_data(attrs: Vec<MetaInfoAttr<'_, '_>>) -> Vec<MetaInfoAttrData
         .map(|attr| MetaInfoAttrData {
             name: attr.name,
             type_name: (!attr.type_name.is_empty()).then_some(attr.type_name),
+            // `meta_info_format_flags` renders `  [обязательный, индекс]`;
+            // splitting it raw left the brackets on the first and last flag.
             flags: attr
                 .flags
+                .trim()
+                .trim_start_matches('[')
+                .trim_end_matches(']')
                 .split(',')
                 .map(str::trim)
                 .filter(|flag| !flag.is_empty())
@@ -7991,13 +7996,6 @@ pub(crate) fn analyze_meta_info_with_data(
             .unwrap_or_default();
         // Mode and Name sliced one object into shorter reports. Data answers
         // with the whole object once; a caller projects what it needs.
-        let mode = string_arg(args, &["mode", "Mode"]).unwrap_or("overview");
-        if !matches!(mode, "overview" | "brief" | "full") {
-            return Err(format!(
-                "argument -Mode: invalid choice: '{mode}' (choose from 'overview', 'brief', 'full')"
-            ));
-        }
-
         let is_register = md_type.ends_with("Register");
         let data = MetaInfoData {
             target: resolved,
@@ -10657,7 +10655,7 @@ pub(crate) fn remove_metadata_object_with_data(
             outcome: AdapterOutcome {
                 ok: true,
                 summary: format!(
-                    "unica.meta.remove {} {}.{} and {} subsystem reference(s)",
+                    "unica.meta.remove {} {}.{} and cleaned {} subsystem descriptor(s)",
                     if success.data.dry_run {
                         "would remove"
                     } else {

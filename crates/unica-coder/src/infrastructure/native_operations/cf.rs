@@ -2387,7 +2387,11 @@ pub(crate) fn edit_cf_with_data(
         }
         let _ = (stdout, show_validation_output, validation_stdout);
 
-        let mut mutation = MutationData::new(true);
+        // `applied` must mean "something was written". An edit whose every
+        // operation was skipped writes nothing, and dcs.edit already follows
+        // this rule for an unchanged template.
+        let wrote_anything = config_updated || artifacts.iter().any(|path| path != &config_path);
+        let mut mutation = MutationData::new(wrote_anything);
         if config_updated {
             mutation = mutation.updated(&config_path);
         }

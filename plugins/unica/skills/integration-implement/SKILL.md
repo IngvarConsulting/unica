@@ -49,8 +49,7 @@ description: "Реализация интеграций 1С. Используй 
     "arguments": {
       "cwd": "<workspace>",
       "sourceSet": "main",
-      "metadataPath": "HTTPService.ExternalAPI",
-      "Mode": "full"
+      "metadataPath": "HTTPService.ExternalAPI"
     }
   }
 }

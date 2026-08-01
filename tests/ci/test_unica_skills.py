@@ -443,12 +443,14 @@ SCENARIO_PRESERVING_TOKENS = {
         '"name": "unica.meta.validate"',
         '"name": "unica.meta.info"',
     ],
+    # `Name` and `Mode` were report selectors. The typed answer carries the
+    # whole object, so the scenarios are preserved by the addresses they read,
+    # not by the drill-down argument that no longer exists (ADR-0023).
     "meta-info": [
         '"metadataPath": "Catalog.Валюты"',
         '"metadataPath": "Document.АвансовыйОтчет"',
-        '"Name": "Товары"',
         '"metadataPath": "HTTPService.ExternalAPI"',
-        '"Name": "TestConnection"',
+        '"metadataPath": "WebService.EnterpriseDataUpload_1_0_1_1"',
         '"metadataPath": "DefinedType.GLN"',
     ],
     "meta-remove": [
@@ -508,7 +510,6 @@ SCENARIO_PRESERVING_TOKENS = {
         '"Value": "<json-string>"',
         '"name": "unica.dcs.validate"',
         '"name": "unica.dcs.info"',
-        '"Mode": "variant"',
     ],
     "dcs-edit": [
         '"Operation": "add-field"',
@@ -516,18 +517,17 @@ SCENARIO_PRESERVING_TOKENS = {
         '"name": "unica.dcs.validate"',
         '"name": "unica.dcs.info"',
     ],
+    # Eleven `Mode` values selected eleven reports. The typed answer carries
+    # every section at once, so the scenarios are preserved by the sections the
+    # skill names, not by the selector that no longer exists (ADR-0023).
     "dcs-info": [
-        '"Mode": "query"',
-        '"Name": "НоменклатураСЦенами"',
-        '"Batch": 3',
-        '"Mode": "fields"',
-        '"Mode": "calculated"',
-        '"Mode": "resources"',
-        '"Mode": "trace"',
-        '"Mode": "variant"',
-        '"Mode": "templates"',
-        '"Name": "ВидНалоговойБазы"',
-        '"Mode": "trace"',
+        "`dataSets`",
+        "`links`",
+        "`calculatedFields`",
+        "`totalFields`",
+        "`parameters`",
+        "`variants`",
+        "`templates`",
     ],
     "mxl-info": [
         '"WithText": true',
@@ -1107,7 +1107,9 @@ class UnicaSkillRoutingTests(unittest.TestCase):
 
         self.assertIn("Значение-список", dcs_spec)
         self.assertIn("valueListAllowed", dcs_spec)
-        self.assertIn('"Raw": true', dcs_info)
+        # `Raw` existed because pagination mangled the query; `data` carries the
+        # exact text always, so the promise moved into the section description.
+        self.assertNotIn('"Raw": true', dcs_info)
         self.assertIn("сырой текст запроса целиком", dcs_info)
         self.assertIn("unica.dcs.edit", dcs_info)
         self.assertIn("patch-query", dcs_edit)

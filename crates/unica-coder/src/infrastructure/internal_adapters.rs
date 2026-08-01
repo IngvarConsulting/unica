@@ -1646,18 +1646,31 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         // `code.diagnostics` returns the same kind of reply as `code.graph` and
         // the ADR-0023 §4 carve-out for external process streams does not reach
         // it.
-        let data = if !diagnostics_pending {
-            Some(
-                serde_json::from_str::<Value>(output.result_text.trim()).map_err(|error| {
-                    format!("{tool_name} received an unparsable bsl-analyzer reply: {error}")
-                })?,
-            )
-        } else {
+        // A reply that is not JSON must still reach the caller: failing here
+        // dropped the analyzer text, its stderr and the reported command, so a
+        // plain-text diagnostic became "unparsable reply" and nothing else.
+        let mut parse_error = None;
+        let data = if diagnostics_pending {
             None
+        } else {
+            match serde_json::from_str::<Value>(output.result_text.trim()) {
+                Ok(value) => Some(value),
+                Err(error) => {
+                    parse_error = Some(format!(
+                        "{tool_name} received an unparsable bsl-analyzer reply: {error}"
+                    ));
+                    None
+                }
+            }
         };
+        let mut errors = errors;
+        if let Some(parse_error) = parse_error {
+            errors.push(parse_error);
+        }
+        let unparsable = data.is_none() && !diagnostics_pending;
         Ok(BslAnalyzerOutcome {
             outcome: AdapterOutcome {
-                ok: !diagnostics_pending,
+                ok: !diagnostics_pending && !unparsable,
                 summary,
                 changes: Vec::new(),
                 warnings,
@@ -1666,6 +1679,8 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
                     source_dir.display().to_string(),
                     command.tool_name.to_string(),
                 ],
+                // The raw reply survives only when it could not be typed;
+                // ADR-0023 keeps `stdout` empty for a well-formed answer.
                 stdout: data
                     .is_none()
                     .then(|| format_section(section, &output.result_text)),

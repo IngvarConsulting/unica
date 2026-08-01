@@ -212,7 +212,11 @@ pub(crate) fn edit_interface_with_data(
             removed: counters.removed,
             modified: counters.modified,
             validated,
-            mutation: MutationData::new(true).updated(&ci_path),
+            mutation: if created_new {
+                MutationData::new(true).created(&ci_path)
+            } else {
+                MutationData::new(true).updated(&ci_path)
+            },
         };
         Ok((data, ci_path, report.cleanup_warnings))
     })();
