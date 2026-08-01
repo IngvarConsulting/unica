@@ -2371,7 +2371,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "objectPath",
-        "Path to an object's metadata XML — a directory resolves to `<name>/<name>.xml` — for `unica.meta.edit`/`info`/`validate` and `unica.form.add`, relative to `cwd`; `meta.validate` accepts several joined by `|`",
+        "Path to an object's metadata XML — a directory resolves to `<name>/<name>.xml` — for `unica.meta.edit`/`validate` and `unica.form.add`, relative to `cwd`; `meta.validate` accepts several joined by `|`. `unica.meta.info` takes `sourceSet` + `metadataPath` instead",
     ),
     (
         "objects",

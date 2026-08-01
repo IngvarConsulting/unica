@@ -813,7 +813,7 @@ Edit metadata object XML.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `ObjectPath` | string | да | Path to an object's metadata XML — a directory resolves to `<name>/<name>.xml` — for `unica.meta.edit`/`info`/`validate` and `unica.form.add`, relative to `cwd`; `meta.validate` accepts several joined by `\|` |
+| `ObjectPath` | string | да | Path to an object's metadata XML — a directory resolves to `<name>/<name>.xml` — for `unica.meta.edit`/`validate` and `unica.form.add`, relative to `cwd`; `meta.validate` accepts several joined by `\|`. `unica.meta.info` takes `sourceSet` + `metadataPath` instead |
 
 Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -892,7 +892,7 @@ Validate metadata object XML.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `ObjectPath` | string | да | Path to an object's metadata XML — a directory resolves to `<name>/<name>.xml` — for `unica.meta.edit`/`info`/`validate` and `unica.form.add`, relative to `cwd`; `meta.validate` accepts several joined by `\|` |
+| `ObjectPath` | string | да | Path to an object's metadata XML — a directory resolves to `<name>/<name>.xml` — for `unica.meta.edit`/`validate` and `unica.form.add`, relative to `cwd`; `meta.validate` accepts several joined by `\|`. `unica.meta.info` takes `sourceSet` + `metadataPath` instead |
 
 Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 

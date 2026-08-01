@@ -315,7 +315,6 @@ struct PreparedCfeBorrow {
     log: CfeBorrowLog,
     borrowed: Vec<CfeBorrowedItem>,
     artifacts: Vec<PathBuf>,
-    borrowed_count: usize,
     registered_format_dependencies: Vec<PathBuf>,
 }
 
@@ -409,7 +408,6 @@ fn prepare_cfe_borrow_with_trace(
     let mut log = CfeBorrowLog::default();
     let mut borrowed = Vec::<CfeBorrowedItem>::new();
     let mut artifacts = Vec::<PathBuf>::new();
-    let mut borrowed_count = 0usize;
     for item in &items {
         let spec = cfe_borrow_parse_object_spec(item)?;
         if spec.form_name.is_some() {
@@ -464,7 +462,6 @@ fn prepare_cfe_borrow_with_trace(
                 &mut ext_text,
                 &mut log,
             )?);
-            borrowed_count += 1;
         } else {
             borrowed.push(CfeBorrowedItem {
                 kind: spec.type_name.clone(),
@@ -482,7 +479,6 @@ fn prepare_cfe_borrow_with_trace(
                 &mut log,
             )?;
             artifacts.push(artifact);
-            borrowed_count += 1;
         }
     }
 
@@ -504,7 +500,6 @@ fn prepare_cfe_borrow_with_trace(
         log,
         borrowed,
         artifacts,
-        borrowed_count,
         registered_format_dependencies,
     })
 }
@@ -624,7 +619,6 @@ pub(crate) fn borrow_cfe_with_data(
             log,
             borrowed,
             mut artifacts,
-            borrowed_count,
             registered_format_dependencies,
         } = prepare_cfe_borrow(args, context)?;
         let mut format_owner_targets = vec![cfg_path.as_path(), ext_path.as_path()];
@@ -635,7 +629,6 @@ pub(crate) fn borrow_cfe_with_data(
             write_plan.commit_with_post_validation(&format_owner_targets, context, || {
                 cfe_borrow_validate_extension(&ext_path, context)
             })?;
-        let _ = borrowed_count;
         let mut mutation = MutationData::new(true);
         for artifact in &artifacts {
             mutation = mutation.updated(artifact);
