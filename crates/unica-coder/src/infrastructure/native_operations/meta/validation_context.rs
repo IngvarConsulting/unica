@@ -1,5 +1,6 @@
 use super::super::common::read_utf8_sig;
-use super::{meta_info_child, meta_info_inner_text, meta_validate_valid_types};
+use super::validation::meta_validate_valid_types;
+use super::{meta_info_child, meta_info_inner_text};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform_xml_owner::{
     resolve_platform_xml_owners, PlatformXmlOwnerKind,

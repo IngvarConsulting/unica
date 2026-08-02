@@ -1,6 +1,6 @@
 #![allow(dead_code, unused_imports)]
 
-use super::*;
+use super::internal::*;
 
 #[derive(Default)]
 pub(crate) struct MetaEditCounts {
@@ -94,17 +94,9 @@ fn edit_meta_with_mode(
     dry_run: bool,
 ) -> MetaEditExecution {
     let edit_result = (|| -> Result<(MetaEditData, PathBuf, bool, Vec<String>), String> {
-        let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
-        let operation = string_arg(args, &["operation", "Operation"]);
-        if definition_file.is_some() && operation.is_some() {
-            return Err("Cannot use both -DefinitionFile and -Operation".to_string());
-        }
-        if definition_file.is_none() && operation.is_none() {
-            return Err("Either -DefinitionFile or -Operation is required".to_string());
-        }
+        let input = parse_meta_edit_dsl_input(args)?;
         let object_path_raw = required_path(args, OBJECT_PATH, "ObjectPath")?;
         let object_path = resolve_meta_edit_object_path(&object_path_raw, &context.cwd)?;
-        let value = string_arg(args, &["value", "Value"]).unwrap_or_default();
 
         let original_bytes = fs::read(&object_path)
             .map_err(|err| format!("failed to read {}: {err}", object_path.display()))?;
@@ -126,65 +118,60 @@ fn edit_meta_with_mode(
         // only the tool knows: whether anything changed, how much, and the diff.
         let mut projected_diff = None;
         let mut transaction = CompileTransaction::new();
-        let line_number_length_provenance = if let Some(definition_file) = definition_file {
-            let definition_path = absolutize(definition_file.clone(), &context.cwd);
-            if !definition_path.exists() {
-                return Err(format!(
-                    "Definition file not found: {}",
-                    definition_file.display()
-                ));
+        let line_number_length_provenance = match input {
+            MetaEditDslInput::File(definition_file) => {
+                let definition =
+                    read_meta_edit_definition(&definition_file, context, &mut transaction)?;
+                let authorization = if meta_edit_definition_requests_line_number_length(&definition)
+                {
+                    meta_edit_line_number_length_policy(
+                        &object_type,
+                        &object_path,
+                        context,
+                        &mut transaction,
+                    )?
+                } else {
+                    MetaEditLineNumberLengthAuthorization {
+                        policy: MetaEditLineNumberLengthPolicy::UnknownCompatibility,
+                        provenance: None,
+                    }
+                };
+                meta_edit_apply_definition(
+                    &mut xml_text,
+                    &object_type,
+                    &object_name,
+                    &definition,
+                    authorization.policy,
+                    &mut counts,
+                )?;
+                authorization.provenance
             }
-            let definition = FileBackedJson::read(&definition_path, |err| {
-                format!("DefinitionFile JSON parse error: {err}")
-            })?
-            .bind_to(&mut transaction)?;
-            let authorization = if meta_edit_definition_requests_line_number_length(&definition) {
-                meta_edit_line_number_length_policy(
+            MetaEditDslInput::Inline { operation, value } => {
+                let authorization =
+                    if meta_edit_inline_requests_line_number_length(&operation, &value) {
+                        meta_edit_line_number_length_policy(
+                            &object_type,
+                            &object_path,
+                            context,
+                            &mut transaction,
+                        )?
+                    } else {
+                        MetaEditLineNumberLengthAuthorization {
+                            policy: MetaEditLineNumberLengthPolicy::UnknownCompatibility,
+                            provenance: None,
+                        }
+                    };
+                meta_edit_apply_inline_operation(
+                    &mut xml_text,
                     &object_type,
-                    &object_path,
-                    context,
-                    &mut transaction,
-                )?
-            } else {
-                MetaEditLineNumberLengthAuthorization {
-                    policy: MetaEditLineNumberLengthPolicy::UnknownCompatibility,
-                    provenance: None,
-                }
-            };
-            meta_edit_apply_definition(
-                &mut xml_text,
-                &object_type,
-                &object_name,
-                &definition,
-                authorization.policy,
-                &mut counts,
-            )?;
-            authorization.provenance
-        } else {
-            let operation = operation.expect("checked above");
-            let authorization = if meta_edit_inline_requests_line_number_length(operation, value) {
-                meta_edit_line_number_length_policy(
-                    &object_type,
-                    &object_path,
-                    context,
-                    &mut transaction,
-                )?
-            } else {
-                MetaEditLineNumberLengthAuthorization {
-                    policy: MetaEditLineNumberLengthPolicy::UnknownCompatibility,
-                    provenance: None,
-                }
-            };
-            meta_edit_apply_inline_operation(
-                &mut xml_text,
-                &object_type,
-                &object_name,
-                operation,
-                value,
-                authorization.policy,
-                &mut counts,
-            )?;
-            authorization.provenance
+                    &object_name,
+                    &operation,
+                    &value,
+                    authorization.policy,
+                    &mut counts,
+                )?;
+                authorization.provenance
+            }
         };
 
         #[cfg(test)]
@@ -554,317 +541,6 @@ pub(crate) fn meta_edit_is_line_number_length_key(key: &str) -> bool {
         key.trim().to_ascii_lowercase().as_str(),
         "linenumberlength" | "line_number_length" | "line-number-length"
     )
-}
-
-pub(crate) fn meta_edit_changes_request_line_number_length(raw_changes: &str) -> bool {
-    split_meta_edit_commas_outside_parens(raw_changes)
-        .into_iter()
-        .filter_map(|change| change.split_once('='))
-        .any(|(key, _)| meta_edit_is_line_number_length_key(key))
-}
-
-pub(crate) fn meta_edit_inline_requests_line_number_length(operation: &str, value: &str) -> bool {
-    if !operation.eq_ignore_ascii_case("modify-ts") {
-        return false;
-    }
-    split_meta_edit_batch_items(value, operation)
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|item| item.split_once(':'))
-        .any(|(_, changes)| meta_edit_changes_request_line_number_length(changes))
-}
-
-pub(crate) fn meta_edit_definition_requests_line_number_length(definition: &Value) -> bool {
-    let Some(definition) = definition.as_object() else {
-        return false;
-    };
-    definition.iter().any(|(operation, operation_value)| {
-        if meta_edit_operation_key(operation).as_deref() != Some("modify") {
-            return false;
-        }
-        let Some(modify) = operation_value.as_object() else {
-            return false;
-        };
-        modify.iter().any(|(child_type, child_value)| {
-            if meta_edit_child_type_key(child_type) != Some("tabularSections") {
-                return false;
-            }
-            child_value
-                .as_object()
-                .into_iter()
-                .flat_map(|sections| sections.values())
-                .filter_map(Value::as_object)
-                .flat_map(|changes| changes.keys())
-                .any(|key| meta_edit_is_line_number_length_key(key))
-        })
-    })
-}
-
-pub(crate) fn split_meta_edit_batch_items<'a>(
-    raw_value: &'a str,
-    operation: &str,
-) -> Result<Vec<&'a str>, String> {
-    let items = raw_value
-        .split(";;")
-        .map(str::trim)
-        .filter(|item| !item.is_empty())
-        .collect::<Vec<_>>();
-    if items.is_empty() {
-        return Err(format!("{operation} requires non-empty Value"));
-    }
-    Ok(items)
-}
-
-pub(crate) fn meta_edit_apply_inline_operation(
-    xml_text: &mut String,
-    object_type: &str,
-    object_name: &str,
-    operation: &str,
-    value: &str,
-    line_number_length_policy: MetaEditLineNumberLengthPolicy,
-    counts: &mut MetaEditCounts,
-) -> Result<(), String> {
-    let (action, target) = operation
-        .split_once('-')
-        .ok_or_else(|| format!("Invalid meta-edit Operation: {operation}"))?;
-
-    if let Some(property) = meta_edit_complex_property_from_inline_target(target) {
-        meta_edit_apply_complex_property_action(
-            xml_text,
-            object_type,
-            object_name,
-            action,
-            property,
-            meta_edit_split_values(value),
-            counts,
-        )?;
-        return Ok(());
-    }
-
-    if target == "ts-attribute" {
-        match action {
-            "add" => {
-                for item in split_meta_edit_batch_items(value, operation)? {
-                    meta_edit_add_tabular_section_attribute(xml_text, item)?;
-                    counts.added += 1;
-                }
-            }
-            "remove" => {
-                counts.removed += meta_edit_remove_tabular_section_attribute(xml_text, value)?
-            }
-            "modify" => {
-                counts.modified += meta_edit_modify_tabular_section_attribute(xml_text, value)?
-            }
-            _ => return Err(format!("Unsupported meta-edit Operation: {operation}")),
-        }
-        return Ok(());
-    }
-
-    if target == "property" {
-        if action != "modify" {
-            return Err(format!("Unsupported meta-edit Operation: {operation}"));
-        }
-        counts.modified += meta_edit_modify_object_properties_from_pairs(xml_text, value)?;
-        return Ok(());
-    }
-
-    let Some(child_type) = meta_edit_child_type_from_inline_target(target) else {
-        return Err(format!("Unsupported meta-edit Operation: {operation}"));
-    };
-
-    match action {
-        "add" => {
-            for item in split_meta_edit_batch_items(value, operation)? {
-                let item_value = Value::String(item.to_string());
-                meta_edit_add_child_value(
-                    xml_text,
-                    object_type,
-                    object_name,
-                    child_type,
-                    &item_value,
-                )?;
-                counts.added += 1;
-            }
-        }
-        "remove" => {
-            for item in split_meta_edit_batch_items(value, operation)? {
-                meta_edit_remove_child_value(
-                    xml_text,
-                    child_type,
-                    &Value::String(item.to_string()),
-                )?;
-                counts.removed += 1;
-            }
-        }
-        "modify" => {
-            for item in split_meta_edit_batch_items(value, operation)? {
-                let (name, raw_changes) = item
-                    .split_once(':')
-                    .ok_or_else(|| format!("{operation} requires Value like Name: key=value"))?;
-                counts.modified += meta_edit_modify_top_child(
-                    xml_text,
-                    child_type,
-                    name.trim(),
-                    raw_changes.trim(),
-                    line_number_length_policy,
-                )?;
-            }
-        }
-        _ => return Err(format!("Unsupported meta-edit Operation: {operation}")),
-    }
-
-    Ok(())
-}
-
-pub(crate) fn meta_edit_apply_definition(
-    xml_text: &mut String,
-    object_type: &str,
-    object_name: &str,
-    definition: &Value,
-    line_number_length_policy: MetaEditLineNumberLengthPolicy,
-    counts: &mut MetaEditCounts,
-) -> Result<(), String> {
-    let definition = definition
-        .as_object()
-        .ok_or_else(|| "DefinitionFile root must be a JSON object".to_string())?;
-
-    if let Some(Value::Array(items)) = definition.get("_complex") {
-        for item in items {
-            let object = item
-                .as_object()
-                .ok_or_else(|| "_complex item must be an object".to_string())?;
-            let action = object
-                .get("action")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "_complex item is missing action".to_string())?;
-            let property = object
-                .get("property")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "_complex item is missing property".to_string())?;
-            let values = meta_edit_values_from_json(object.get("values"));
-            meta_edit_apply_complex_property_action(
-                xml_text,
-                object_type,
-                object_name,
-                action,
-                property,
-                values,
-                counts,
-            )?;
-        }
-    }
-
-    for (raw_key, value) in definition {
-        if raw_key == "_complex" {
-            continue;
-        }
-        match meta_edit_operation_key(raw_key).as_deref() {
-            Some("add") => {
-                meta_edit_apply_definition_add(xml_text, object_type, object_name, value, counts)?
-            }
-            Some("remove") => meta_edit_apply_definition_remove(xml_text, value, counts)?,
-            Some("modify") => meta_edit_apply_definition_modify(
-                xml_text,
-                object_type,
-                object_name,
-                value,
-                line_number_length_policy,
-                counts,
-            )?,
-            Some(other) => return Err(format!("Unsupported definition operation: {other}")),
-            None => return Err(format!("Unknown definition operation: {raw_key}")),
-        }
-    }
-
-    Ok(())
-}
-
-pub(crate) fn meta_edit_apply_definition_add(
-    xml_text: &mut String,
-    object_type: &str,
-    object_name: &str,
-    value: &Value,
-    counts: &mut MetaEditCounts,
-) -> Result<(), String> {
-    let object = value
-        .as_object()
-        .ok_or_else(|| "definition add must be an object".to_string())?;
-    for (raw_child_type, items) in object {
-        let child_type = meta_edit_child_type_key(raw_child_type)
-            .ok_or_else(|| format!("Unknown add child type: {raw_child_type}"))?;
-        for item in meta_edit_definition_items(items) {
-            meta_edit_add_child_value(xml_text, object_type, object_name, child_type, &item)?;
-            counts.added += 1;
-        }
-    }
-    Ok(())
-}
-
-pub(crate) fn meta_edit_apply_definition_remove(
-    xml_text: &mut String,
-    value: &Value,
-    counts: &mut MetaEditCounts,
-) -> Result<(), String> {
-    let object = value
-        .as_object()
-        .ok_or_else(|| "definition remove must be an object".to_string())?;
-    for (raw_child_type, items) in object {
-        let child_type = meta_edit_child_type_key(raw_child_type)
-            .ok_or_else(|| format!("Unknown remove child type: {raw_child_type}"))?;
-        for item in meta_edit_definition_items(items) {
-            meta_edit_remove_child_value(xml_text, child_type, &item)?;
-            counts.removed += 1;
-        }
-    }
-    Ok(())
-}
-
-pub(crate) fn meta_edit_apply_definition_modify(
-    xml_text: &mut String,
-    object_type: &str,
-    object_name: &str,
-    value: &Value,
-    line_number_length_policy: MetaEditLineNumberLengthPolicy,
-    counts: &mut MetaEditCounts,
-) -> Result<(), String> {
-    let object = value
-        .as_object()
-        .ok_or_else(|| "definition modify must be an object".to_string())?;
-    for (raw_child_type, items) in object {
-        let child_type = meta_edit_child_type_key(raw_child_type)
-            .ok_or_else(|| format!("Unknown modify child type: {raw_child_type}"))?;
-        if child_type == "properties" {
-            meta_edit_modify_object_properties_from_map(
-                xml_text,
-                object_type,
-                object_name,
-                items,
-                counts,
-            )?;
-        } else if child_type == "tabularSections" {
-            meta_edit_modify_tabular_sections_from_definition(
-                xml_text,
-                items,
-                line_number_length_policy,
-                counts,
-            )?;
-        } else {
-            let item_object = items
-                .as_object()
-                .ok_or_else(|| format!("modify {child_type} must be an object"))?;
-            for (name, changes) in item_object {
-                let raw_changes = meta_edit_changes_to_inline(changes)?;
-                counts.modified += meta_edit_modify_top_child(
-                    xml_text,
-                    child_type,
-                    name,
-                    &raw_changes,
-                    line_number_length_policy,
-                )?;
-            }
-        }
-    }
-    Ok(())
 }
 
 pub(crate) fn meta_edit_definition_info_lines(definition: &Value) -> Vec<String> {

@@ -204,24 +204,82 @@ fn run_before_meta_remove_subsystem_child_inspection_hook(path: &Path) {
     }
 }
 
-pub(crate) mod edit;
-pub(crate) mod info;
-pub(crate) mod legacy_dsl;
-pub(crate) mod publisher;
-pub(crate) mod remove;
-pub(crate) mod template_catalog;
-pub(crate) mod validation;
-pub(crate) mod validation_context;
-pub(crate) mod xml_model;
+mod edit;
+mod info;
+mod legacy_dsl;
+mod publisher;
+mod remove;
+mod template_catalog;
+mod validation;
+mod validation_context;
+mod xml_model;
 
-pub(crate) use edit::*;
-pub(crate) use info::*;
-pub(crate) use legacy_dsl::*;
-pub(crate) use publisher::*;
-pub(crate) use remove::*;
-pub(crate) use template_catalog::*;
-pub(crate) use validation::*;
-pub(crate) use xml_model::*;
+// The split stays private. This is the exact pre-existing meta::* compatibility
+// surface required by native-operation callers outside this family.
+pub(crate) use edit::{
+    edit_meta_with_data, preview_meta_edit, preview_meta_edit_with_data,
+    resolve_meta_edit_object_path,
+};
+pub(crate) use info::{analyze_meta_info_with_data, resolve_meta_info_path};
+pub(crate) use legacy_dsl::{
+    meta_compile_format_dependency_paths, meta_compile_object_xml, preview_meta_compile,
+    validate_metadata_owner_shape_8_3_27,
+};
+pub(crate) use publisher::fresh_meta_compile_uuid;
+pub(crate) use remove::{
+    meta_remove_reference_xml_dependency_paths, meta_remove_subsystem_dependency_paths,
+    meta_remove_type_plural, remove_metadata_child_text, remove_metadata_child_text_lxml,
+    remove_metadata_child_text_with_flag, remove_metadata_object_with_data,
+};
+pub(crate) use template_catalog::{emit_meta_internal_info, metadata_generated_types_8_3_27};
+pub(crate) use validation::{meta_validate_format_dependency_paths, validate_meta};
+pub(crate) use xml_model::{
+    meta_info_child, meta_info_child_text, meta_info_children, meta_info_inner_text,
+};
+
+// During the extraction, native-operation implementations share internal XML,
+// transaction, and DSL helpers without widening the compatibility facade.
+mod internal {
+    pub(super) use super::super::common::*;
+    pub(super) use super::super::{
+        cf::*, cfe::*, dcs::*, form::*, interface::*, mxl::*, role::*, subsystem::*, template::*,
+    };
+    pub(super) use super::{
+        apply, classify_root_version, fs, json, metadata_kind,
+        resolve_platform_xml_owners_with_provenance, root_version_literal, Write, OBJECT_PATH,
+    };
+    pub(super) use super::{
+        edit::*, info::*, legacy_dsl::*, publisher::*, remove::*, template_catalog::*,
+        validation::*, xml_model::*, AdapterOutcome, Map, Path, PathBuf, ResolvedTarget, Value,
+        WorkspaceContext,
+    };
+    #[cfg(test)]
+    pub(super) use super::{
+        force_meta_remove_reparse_path, run_before_meta_remove_subsystem_child_inspection_hook,
+        run_meta_compile_after_format_plan_hook, run_meta_compile_after_owner_validation_hook,
+        run_meta_edit_after_line_number_length_policy_hook,
+        with_before_meta_remove_subsystem_child_inspection_hook,
+        with_meta_compile_after_format_plan_hook, with_meta_compile_after_owner_validation_hook,
+        with_meta_edit_after_line_number_length_policy_hook, with_meta_remove_forced_reparse_paths,
+        META_REMOVE_FORCED_REPARSE_PATHS,
+    };
+    pub(super) use super::{
+        inspect_meta_validation_reads, meta_validate_registrar_document_scan,
+        meta_validate_types_with_list_presentation, MetaValidationOwnerKind,
+    };
+    pub(super) use super::{
+        BTreeMap, DiffOptions, Document, ErrorKind, FormatCompatibility, HashMap, HashSet, Patch,
+        PlatformXmlOwnerKind, PlatformXmlOwnerProvenance, ACTIVE_FORMAT_PROFILE,
+    };
+    pub(super) use super::{
+        CompileTransaction, DirectoryTopologyEntry, DirectoryTopologyEntryKind, RegistrationStatus,
+    };
+}
+
+use edit::edit_meta;
+use info::analyze_meta_info;
+use legacy_dsl::compile_meta;
+use remove::remove_metadata_object;
 
 pub(crate) fn invoke_read(
     operation: &str,
@@ -252,4 +310,12 @@ pub(crate) fn invoke_mutation(
 }
 
 #[cfg(test)]
-mod tests;
+mod compile_tests;
+#[cfg(test)]
+mod edit_tests;
+#[cfg(test)]
+mod info_tests;
+#[cfg(test)]
+mod remove_tests;
+#[cfg(test)]
+mod template_catalog_tests;

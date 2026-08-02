@@ -1,6 +1,6 @@
 #![allow(dead_code, unused_imports)]
 
-use super::*;
+use super::internal::*;
 
 pub(crate) struct MetaValidationReporter {
     pub(crate) errors: usize,

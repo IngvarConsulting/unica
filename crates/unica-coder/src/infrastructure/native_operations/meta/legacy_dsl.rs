@@ -1,6 +1,6 @@
 #![allow(dead_code, unused_imports)]
 
-use super::*;
+use super::internal::*;
 
 pub(crate) const META_COMPILE_SUPPORTED_TYPES: &[&str] = &[
     "Catalog",
@@ -29,6 +29,50 @@ pub(crate) const META_COMPILE_SUPPORTED_TYPES: &[&str] = &[
 ];
 
 pub(crate) const META_COMPILE_PENDING_TYPES: &[&str] = &[];
+
+pub(crate) enum MetaEditDslInput {
+    File(PathBuf),
+    Inline { operation: String, value: String },
+}
+
+pub(crate) fn parse_meta_edit_dsl_input(
+    args: &Map<String, Value>,
+) -> Result<MetaEditDslInput, String> {
+    let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
+    let operation = string_arg(args, &["operation", "Operation"]);
+    if definition_file.is_some() && operation.is_some() {
+        return Err("Cannot use both -DefinitionFile and -Operation".to_string());
+    }
+    match (definition_file, operation) {
+        (Some(definition_file), None) => Ok(MetaEditDslInput::File(definition_file)),
+        (None, Some(operation)) => Ok(MetaEditDslInput::Inline {
+            operation: operation.to_string(),
+            value: string_arg(args, &["value", "Value"])
+                .unwrap_or_default()
+                .to_string(),
+        }),
+        (None, None) => Err("Either -DefinitionFile or -Operation is required".to_string()),
+        (Some(_), Some(_)) => unreachable!("checked above"),
+    }
+}
+
+pub(crate) fn read_meta_edit_definition(
+    definition_file: &Path,
+    context: &WorkspaceContext,
+    transaction: &mut CompileTransaction,
+) -> Result<Value, String> {
+    let definition_path = absolutize(definition_file.to_path_buf(), &context.cwd);
+    if !definition_path.exists() {
+        return Err(format!(
+            "Definition file not found: {}",
+            definition_file.display()
+        ));
+    }
+    FileBackedJson::read(&definition_path, |err| {
+        format!("DefinitionFile JSON parse error: {err}")
+    })?
+    .bind_to(transaction)
+}
 
 pub(crate) fn meta_compile_type_plural(obj_type: &str) -> Option<&'static str> {
     if !META_COMPILE_SUPPORTED_TYPES.contains(&obj_type) {
@@ -118,14 +162,14 @@ pub(crate) fn meta_compile_format_dependency_paths(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct MetaCompileEventSubscriptionDependency {
+pub(crate) struct MetaCompileEventSubscriptionDependency {
     subscription_name: String,
     subscription_descriptor_path: PathBuf,
     source_type: String,
     source_descriptor_path: PathBuf,
 }
 
-fn meta_compile_event_subscription_dependencies(
+pub(crate) fn meta_compile_event_subscription_dependencies(
     definition: &Value,
     output_dir: &Path,
 ) -> Vec<MetaCompileEventSubscriptionDependency> {
@@ -209,7 +253,7 @@ fn meta_compile_event_subscription_dependencies(
     dependencies
 }
 
-fn validate_meta_compile_event_subscription_dependencies(
+pub(crate) fn validate_meta_compile_event_subscription_dependencies(
     dependencies: &[MetaCompileEventSubscriptionDependency],
     transaction: &CompileTransaction,
 ) -> Result<(), String> {
@@ -254,7 +298,7 @@ fn validate_meta_compile_event_subscription_dependencies(
     Ok(())
 }
 
-fn meta_compile_definition_format_dependency_paths(
+pub(crate) fn meta_compile_definition_format_dependency_paths(
     definition: &Value,
     output_dir: &Path,
 ) -> Vec<PathBuf> {
@@ -313,151 +357,14 @@ pub(crate) fn compile_meta(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
-    let write_result = plan_meta_compile(args, context).and_then(
-        |(stdout, mut transaction, validation_paths, config_owner, format_dependencies)| {
-            let format_dependencies = format_dependencies
-                .iter()
-                .map(PathBuf::as_path)
-                .collect::<Vec<_>>();
-            guard_active_format_dependencies(&mut transaction, &format_dependencies, context)?;
-            let report = transaction.commit_with_post_validation(|| {
-                if let Some(config_owner) = config_owner.as_deref() {
-                    require_meta_configuration_owner_validation(
-                        config_owner,
-                        context,
-                        "meta.compile",
-                    )?;
-                }
-                validate_meta_compile_post_state(&validation_paths, context)
-            })?;
-            let mut changes = report
-                .created
-                .iter()
-                .map(|path| format!("created {}", path.display()))
-                .collect::<Vec<_>>();
-            changes.extend(
-                report
-                    .updated
-                    .iter()
-                    .map(|path| format!("updated {}", path.display())),
-            );
-            Ok((stdout, report.created, changes, report.cleanup_warnings))
-        },
-    );
-
-    match write_result {
-        Ok((stdout, artifacts, changes, warnings)) => AdapterOutcome {
-            ok: true,
-            summary: "unica.meta.compile completed with native metadata compiler".to_string(),
-            changes,
-            warnings,
-            errors: Vec::new(),
-            artifacts: artifacts
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect(),
-            stdout: Some(stdout),
-            stderr: None,
-            command: None,
-        },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.meta.compile failed in native metadata compiler".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-            command: None,
-        },
-    }
+    publish_meta_compile(prepare_meta_compile(args, context), context)
 }
 
 pub(crate) fn preview_meta_compile(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Result<AdapterOutcome, String> {
-    let (_stdout, transaction, _validation_paths, _config_owner, _format_dependencies) =
-        plan_meta_compile(args, context)?;
-    Ok(AdapterOutcome {
-        ok: true,
-        summary: "dry run: unica.meta.compile planned native metadata compilation".to_string(),
-        changes: transaction.dry_run_changes(),
-        warnings: Vec::new(),
-        errors: Vec::new(),
-        artifacts: Vec::new(),
-        stdout: Some(transaction.dry_run_stdout()),
-        stderr: None,
-        command: None,
-    })
-}
-
-type MetaCompilePlan = (
-    String,
-    CompileTransaction,
-    Vec<PathBuf>,
-    Option<PathBuf>,
-    Vec<PathBuf>,
-);
-
-fn plan_meta_compile(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-) -> Result<MetaCompilePlan, String> {
-    let output_dir_label = string_arg(args, &["outputDir", "OutputDir"])
-        .ok_or_else(|| "missing required OutputDir argument".to_string())?
-        .to_string();
-    let output_dir = absolutize(PathBuf::from(&output_dir_label), &context.cwd);
-    let config_path = output_dir.join("Configuration.xml");
-    let config_owner = if config_path.is_file() {
-        let snapshot = read_utf8_sig_snapshot(&config_path)?;
-        require_meta_configuration_owner_validation(&config_path, context, "meta.compile")?;
-        if fs::read(&config_path)
-            .map_err(|error| format!("failed to read {}: {error}", config_path.display()))?
-            != snapshot.raw
-        {
-            return Err(format!(
-                "Configuration owner changed while planning: {}",
-                config_path.display()
-            ));
-        }
-        #[cfg(test)]
-        run_meta_compile_after_owner_validation_hook(&config_path);
-        Some((config_path, snapshot.raw))
-    } else {
-        None
-    };
-    let mut transaction = CompileTransaction::new();
-    let defn = read_meta_compile_definition_guarded(args, context, &mut transaction)?;
-    let event_subscription_dependencies =
-        meta_compile_event_subscription_dependencies(&defn, &output_dir);
-    let mut format_dependencies =
-        meta_compile_definition_format_dependency_paths(&defn, &output_dir);
-    #[cfg(test)]
-    run_meta_compile_after_format_plan_hook();
-    let (stdout, planned_artifacts) = compile_meta_value(
-        defn,
-        &output_dir_label,
-        &output_dir,
-        context,
-        &mut transaction,
-        &mut format_dependencies,
-    )?;
-    validate_meta_compile_event_subscription_dependencies(
-        &event_subscription_dependencies,
-        &transaction,
-    )?;
-    if let Some((config_owner, expected_preimage)) = &config_owner {
-        transaction.guard_or_verify_exact_preimage(config_owner, expected_preimage)?;
-    }
-    Ok((
-        stdout,
-        transaction,
-        planned_artifacts,
-        config_owner.map(|(path, _)| path),
-        format_dependencies,
-    ))
+    preview_prepared_meta_compile(prepare_meta_compile(args, context))
 }
 
 fn read_meta_compile_definition(
@@ -476,7 +383,7 @@ fn read_meta_compile_definition(
         .map_err(|err| format!("failed to parse metadata JSON: {err}"))
 }
 
-fn read_meta_compile_definition_guarded(
+pub(crate) fn read_meta_compile_definition_guarded(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
     transaction: &mut CompileTransaction,
@@ -506,25 +413,7 @@ pub(crate) fn require_meta_configuration_owner_validation(
     })
 }
 
-fn validate_meta_compile_post_state(
-    validation_paths: &[PathBuf],
-    context: &WorkspaceContext,
-) -> Result<(), String> {
-    for path in validation_paths {
-        if path.extension().and_then(|value| value.to_str()) != Some("xml") {
-            continue;
-        }
-        let xml = read_utf8_sig(path)?;
-        let document = Document::parse(xml.trim_start_matches('\u{feff}'))
-            .map_err(|error| format!("XML parse error in {}: {error}", path.display()))?;
-        if document.root_element().tag_name().name() == "MetaDataObject" {
-            validate_metadata_owner_shape_8_3_27(path, context, "meta.compile")?;
-        }
-    }
-    Ok(())
-}
-
-fn compile_meta_value(
+pub(crate) fn compile_meta_value(
     defn: Value,
     output_dir_label: &str,
     output_dir: &Path,
@@ -711,11 +600,8 @@ fn compile_meta_object(
         }
     }
 
-    let reg_result = transaction.register_canonical_child(
-        output_dir.join("Configuration.xml"),
-        &obj_type,
-        obj_name,
-    )?;
+    let reg_result =
+        register_compiled_meta_in_transaction(transaction, output_dir, &obj_type, obj_name)?;
 
     let attr_count = object
         .get("attributes")
@@ -1552,6 +1438,419 @@ pub(crate) fn validate_meta_compile_tabular_section_types(
     validate_meta_compile_name(context, &section.name)?;
     for attr in &section.columns {
         validate_meta_compile_attr_type(attr, context)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn split_meta_edit_batch_items<'a>(
+    raw_value: &'a str,
+    operation: &str,
+) -> Result<Vec<&'a str>, String> {
+    let items = raw_value
+        .split(";;")
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .collect::<Vec<_>>();
+    if items.is_empty() {
+        return Err(format!("{operation} requires non-empty Value"));
+    }
+    Ok(items)
+}
+
+pub(crate) fn meta_compile_is_config_type(type_name: &str) -> bool {
+    [
+        "CatalogRef.",
+        "CatalogObject.",
+        "DocumentRef.",
+        "DocumentObject.",
+        "EnumRef.",
+        "ChartOfAccountsRef.",
+        "ChartOfAccountsObject.",
+        "ChartOfCharacteristicTypesRef.",
+        "ChartOfCharacteristicTypesObject.",
+        "ChartOfCalculationTypesRef.",
+        "ChartOfCalculationTypesObject.",
+        "ExchangePlanRef.",
+        "ExchangePlanObject.",
+        "BusinessProcessRef.",
+        "BusinessProcessObject.",
+        "TaskRef.",
+        "TaskObject.",
+        "ReportObject.",
+        "DataProcessorObject.",
+        "DefinedType.",
+    ]
+    .iter()
+    .any(|prefix| type_name.starts_with(prefix))
+}
+
+pub(crate) fn resolve_meta_type(type_name: &str) -> String {
+    if let Some(open) = type_name.find('(') {
+        if type_name.ends_with(')') {
+            let base = type_name[..open].trim();
+            let params = &type_name[open + 1..type_name.len() - 1];
+            if let Some(resolved) = meta_type_synonym(base) {
+                return format!("{resolved}({params})");
+            }
+        }
+    }
+    if let Some(dot) = type_name.find('.') {
+        let prefix = &type_name[..dot];
+        let suffix = &type_name[dot..];
+        if let Some(resolved) = meta_type_synonym(prefix) {
+            return format!("{resolved}{suffix}");
+        }
+    }
+    meta_type_synonym(type_name)
+        .unwrap_or(type_name)
+        .to_string()
+}
+
+pub(crate) fn meta_type_synonym(value: &str) -> Option<&'static str> {
+    match value.to_lowercase().as_str() {
+        "число" | "number" => Some("Number"),
+        "строка" | "string" => Some("String"),
+        "булево" | "boolean" | "bool" => Some("Boolean"),
+        "дата" | "date" => Some("Date"),
+        "датавремя" | "datetime" => Some("DateTime"),
+        "хранилищезначения" | "valuestorage" => Some("ValueStorage"),
+        "справочникссылка" | "catalogref" => Some("CatalogRef"),
+        "документссылка" | "documentref" => Some("DocumentRef"),
+        "перечислениессылка" | "enumref" => Some("EnumRef"),
+        "плансчетовссылка" | "chartofaccountsref" => Some("ChartOfAccountsRef"),
+        "планвидовхарактеристикссылка" | "chartofcharacteristictypesref" => {
+            Some("ChartOfCharacteristicTypesRef")
+        }
+        "планвидоврасчётассылка" | "планвидоврасчетассылка" | "chartofcalculationtypesref" => {
+            Some("ChartOfCalculationTypesRef")
+        }
+        "планобменассылка" | "exchangeplanref" => Some("ExchangePlanRef"),
+        "бизнеспроцессссылка" | "businessprocessref" => {
+            Some("BusinessProcessRef")
+        }
+        "задачассылка" | "taskref" => Some("TaskRef"),
+        "определяемыйтип" | "definedtype" => Some("DefinedType"),
+        _ => None,
+    }
+}
+
+pub(crate) fn parse_meta_string_type(value: &str) -> Option<u32> {
+    let rest = value.strip_prefix("String(")?.strip_suffix(')')?.trim();
+    if rest.is_empty() || rest.contains(',') {
+        return None;
+    }
+    rest.parse().ok().filter(|length| *length <= 1024)
+}
+
+pub(crate) fn parse_meta_number_type(value: &str) -> Option<(u32, u32, bool)> {
+    let rest = value.strip_prefix("Number(")?.strip_suffix(')')?;
+    let parts = rest.split(',').map(str::trim).collect::<Vec<_>>();
+    if !matches!(parts.len(), 2 | 3)
+        || parts.iter().any(|part| part.is_empty())
+        || (parts.len() == 3 && parts[2] != "nonneg")
+    {
+        return None;
+    }
+    let digits = parts[0].parse().ok()?;
+    let fraction = parts[1].parse().ok()?;
+    if digits > 38 || fraction > digits {
+        return None;
+    }
+    Some((digits, fraction, parts.len() == 3))
+}
+
+pub(crate) fn meta_edit_changes_request_line_number_length(raw_changes: &str) -> bool {
+    split_meta_edit_commas_outside_parens(raw_changes)
+        .into_iter()
+        .filter_map(|change| change.split_once('='))
+        .any(|(key, _)| meta_edit_is_line_number_length_key(key))
+}
+
+pub(crate) fn meta_edit_inline_requests_line_number_length(operation: &str, value: &str) -> bool {
+    if !operation.eq_ignore_ascii_case("modify-ts") {
+        return false;
+    }
+    split_meta_edit_batch_items(value, operation)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|item| item.split_once(':'))
+        .any(|(_, changes)| meta_edit_changes_request_line_number_length(changes))
+}
+
+pub(crate) fn meta_edit_definition_requests_line_number_length(definition: &Value) -> bool {
+    let Some(definition) = definition.as_object() else {
+        return false;
+    };
+    definition.iter().any(|(operation, operation_value)| {
+        if meta_edit_operation_key(operation).as_deref() != Some("modify") {
+            return false;
+        }
+        let Some(modify) = operation_value.as_object() else {
+            return false;
+        };
+        modify.iter().any(|(child_type, child_value)| {
+            if meta_edit_child_type_key(child_type) != Some("tabularSections") {
+                return false;
+            }
+            child_value
+                .as_object()
+                .into_iter()
+                .flat_map(|sections| sections.values())
+                .filter_map(Value::as_object)
+                .flat_map(|changes| changes.keys())
+                .any(|key| meta_edit_is_line_number_length_key(key))
+        })
+    })
+}
+
+pub(crate) fn meta_edit_apply_inline_operation(
+    xml_text: &mut String,
+    object_type: &str,
+    object_name: &str,
+    operation: &str,
+    value: &str,
+    line_number_length_policy: MetaEditLineNumberLengthPolicy,
+    counts: &mut MetaEditCounts,
+) -> Result<(), String> {
+    let (action, target) = operation
+        .split_once('-')
+        .ok_or_else(|| format!("Invalid meta-edit Operation: {operation}"))?;
+
+    if let Some(property) = meta_edit_complex_property_from_inline_target(target) {
+        meta_edit_apply_complex_property_action(
+            xml_text,
+            object_type,
+            object_name,
+            action,
+            property,
+            meta_edit_split_values(value),
+            counts,
+        )?;
+        return Ok(());
+    }
+
+    if target == "ts-attribute" {
+        match action {
+            "add" => {
+                for item in split_meta_edit_batch_items(value, operation)? {
+                    meta_edit_add_tabular_section_attribute(xml_text, item)?;
+                    counts.added += 1;
+                }
+            }
+            "remove" => {
+                counts.removed += meta_edit_remove_tabular_section_attribute(xml_text, value)?
+            }
+            "modify" => {
+                counts.modified += meta_edit_modify_tabular_section_attribute(xml_text, value)?
+            }
+            _ => return Err(format!("Unsupported meta-edit Operation: {operation}")),
+        }
+        return Ok(());
+    }
+
+    if target == "property" {
+        if action != "modify" {
+            return Err(format!("Unsupported meta-edit Operation: {operation}"));
+        }
+        counts.modified += meta_edit_modify_object_properties_from_pairs(xml_text, value)?;
+        return Ok(());
+    }
+
+    let Some(child_type) = meta_edit_child_type_from_inline_target(target) else {
+        return Err(format!("Unsupported meta-edit Operation: {operation}"));
+    };
+
+    match action {
+        "add" => {
+            for item in split_meta_edit_batch_items(value, operation)? {
+                let item_value = Value::String(item.to_string());
+                meta_edit_add_child_value(
+                    xml_text,
+                    object_type,
+                    object_name,
+                    child_type,
+                    &item_value,
+                )?;
+                counts.added += 1;
+            }
+        }
+        "remove" => {
+            for item in split_meta_edit_batch_items(value, operation)? {
+                meta_edit_remove_child_value(
+                    xml_text,
+                    child_type,
+                    &Value::String(item.to_string()),
+                )?;
+                counts.removed += 1;
+            }
+        }
+        "modify" => {
+            for item in split_meta_edit_batch_items(value, operation)? {
+                let (name, raw_changes) = item
+                    .split_once(':')
+                    .ok_or_else(|| format!("{operation} requires Value like Name: key=value"))?;
+                counts.modified += meta_edit_modify_top_child(
+                    xml_text,
+                    child_type,
+                    name.trim(),
+                    raw_changes.trim(),
+                    line_number_length_policy,
+                )?;
+            }
+        }
+        _ => return Err(format!("Unsupported meta-edit Operation: {operation}")),
+    }
+
+    Ok(())
+}
+
+pub(crate) fn meta_edit_apply_definition(
+    xml_text: &mut String,
+    object_type: &str,
+    object_name: &str,
+    definition: &Value,
+    line_number_length_policy: MetaEditLineNumberLengthPolicy,
+    counts: &mut MetaEditCounts,
+) -> Result<(), String> {
+    let definition = definition
+        .as_object()
+        .ok_or_else(|| "DefinitionFile root must be a JSON object".to_string())?;
+
+    if let Some(Value::Array(items)) = definition.get("_complex") {
+        for item in items {
+            let object = item
+                .as_object()
+                .ok_or_else(|| "_complex item must be an object".to_string())?;
+            let action = object
+                .get("action")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "_complex item is missing action".to_string())?;
+            let property = object
+                .get("property")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "_complex item is missing property".to_string())?;
+            let values = meta_edit_values_from_json(object.get("values"));
+            meta_edit_apply_complex_property_action(
+                xml_text,
+                object_type,
+                object_name,
+                action,
+                property,
+                values,
+                counts,
+            )?;
+        }
+    }
+
+    for (raw_key, value) in definition {
+        if raw_key == "_complex" {
+            continue;
+        }
+        match meta_edit_operation_key(raw_key).as_deref() {
+            Some("add") => {
+                meta_edit_apply_definition_add(xml_text, object_type, object_name, value, counts)?
+            }
+            Some("remove") => meta_edit_apply_definition_remove(xml_text, value, counts)?,
+            Some("modify") => meta_edit_apply_definition_modify(
+                xml_text,
+                object_type,
+                object_name,
+                value,
+                line_number_length_policy,
+                counts,
+            )?,
+            Some(other) => return Err(format!("Unsupported definition operation: {other}")),
+            None => return Err(format!("Unknown definition operation: {raw_key}")),
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn meta_edit_apply_definition_add(
+    xml_text: &mut String,
+    object_type: &str,
+    object_name: &str,
+    value: &Value,
+    counts: &mut MetaEditCounts,
+) -> Result<(), String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "definition add must be an object".to_string())?;
+    for (raw_child_type, items) in object {
+        let child_type = meta_edit_child_type_key(raw_child_type)
+            .ok_or_else(|| format!("Unknown add child type: {raw_child_type}"))?;
+        for item in meta_edit_definition_items(items) {
+            meta_edit_add_child_value(xml_text, object_type, object_name, child_type, &item)?;
+            counts.added += 1;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn meta_edit_apply_definition_remove(
+    xml_text: &mut String,
+    value: &Value,
+    counts: &mut MetaEditCounts,
+) -> Result<(), String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "definition remove must be an object".to_string())?;
+    for (raw_child_type, items) in object {
+        let child_type = meta_edit_child_type_key(raw_child_type)
+            .ok_or_else(|| format!("Unknown remove child type: {raw_child_type}"))?;
+        for item in meta_edit_definition_items(items) {
+            meta_edit_remove_child_value(xml_text, child_type, &item)?;
+            counts.removed += 1;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn meta_edit_apply_definition_modify(
+    xml_text: &mut String,
+    object_type: &str,
+    object_name: &str,
+    value: &Value,
+    line_number_length_policy: MetaEditLineNumberLengthPolicy,
+    counts: &mut MetaEditCounts,
+) -> Result<(), String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "definition modify must be an object".to_string())?;
+    for (raw_child_type, items) in object {
+        let child_type = meta_edit_child_type_key(raw_child_type)
+            .ok_or_else(|| format!("Unknown modify child type: {raw_child_type}"))?;
+        if child_type == "properties" {
+            meta_edit_modify_object_properties_from_map(
+                xml_text,
+                object_type,
+                object_name,
+                items,
+                counts,
+            )?;
+        } else if child_type == "tabularSections" {
+            meta_edit_modify_tabular_sections_from_definition(
+                xml_text,
+                items,
+                line_number_length_policy,
+                counts,
+            )?;
+        } else {
+            let item_object = items
+                .as_object()
+                .ok_or_else(|| format!("modify {child_type} must be an object"))?;
+            for (name, changes) in item_object {
+                let raw_changes = meta_edit_changes_to_inline(changes)?;
+                counts.modified += meta_edit_modify_top_child(
+                    xml_text,
+                    child_type,
+                    name,
+                    &raw_changes,
+                    line_number_length_policy,
+                )?;
+            }
+        }
     }
     Ok(())
 }
