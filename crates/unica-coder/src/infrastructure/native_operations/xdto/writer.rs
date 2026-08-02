@@ -99,8 +99,9 @@ pub(super) fn plan(
                 ));
                 None
             } else {
+                let element_name = lexical_xdto_child_name(before, root, "valueType")?;
                 let fragment = format!(
-                    "<valueType name=\"{}\" base=\"{}\"/>",
+                    "<{element_name} name=\"{}\" base=\"{}\"/>",
                     escape_attribute(name),
                     escape_attribute(base)
                 );
@@ -120,7 +121,8 @@ pub(super) fn plan(
                 ));
                 None
             } else {
-                let fragment = format!("<objectType name=\"{}\"/>", escape_attribute(name));
+                let element_name = lexical_xdto_child_name(before, root, "objectType")?;
+                let fragment = format!("<{element_name} name=\"{}\"/>", escape_attribute(name));
                 Some(insert_top_level(before, root, TopLevelInsert::ObjectType, &fragment)?)
             }
         }
@@ -160,8 +162,9 @@ pub(super) fn plan(
                     .map(|value| format!(" lowerBound=\"{value}\""))
                     .unwrap_or_default();
                 let rendered_qname = render_property_qname(root, target, &desired_qname)?;
+                let element_name = lexical_xdto_child_name(before, target, "property")?;
                 let fragment = format!(
-                    "<property{} name=\"{}\" type=\"{}\"{lower}/>",
+                    "<{element_name}{} name=\"{}\" type=\"{}\"{lower}/>",
                     rendered_qname.namespace_attribute,
                     escape_attribute(name),
                     escape_attribute(&rendered_qname.value)
@@ -208,6 +211,7 @@ enum TopLevelInsert {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct SemanticQName {
     namespace: Option<String>,
+    unresolved_prefix: Option<String>,
     local: String,
     lexical_valid: bool,
 }
@@ -246,6 +250,7 @@ fn desired_property_qname(
         raw: raw.to_string(),
         semantic: SemanticQName {
             namespace: Some(target_namespace.to_string()),
+            unresolved_prefix: None,
             local: raw.to_string(),
             lexical_valid: !raw.is_empty(),
         },
@@ -318,18 +323,24 @@ fn existing_non_default_prefix(
 fn semantic_qname(node: Node<'_, '_>, raw: &str) -> SemanticQName {
     let parts = raw.split(':').collect::<Vec<_>>();
     match parts.as_slice() {
-        [prefix, local] if !prefix.is_empty() && !local.is_empty() => SemanticQName {
-            namespace: node.lookup_namespace_uri(Some(prefix)).map(str::to_string),
-            local: (*local).to_string(),
-            lexical_valid: true,
-        },
+        [prefix, local] if !prefix.is_empty() && !local.is_empty() => {
+            let namespace = node.lookup_namespace_uri(Some(prefix)).map(str::to_string);
+            SemanticQName {
+                unresolved_prefix: namespace.is_none().then(|| (*prefix).to_string()),
+                namespace,
+                local: (*local).to_string(),
+                lexical_valid: true,
+            }
+        }
         [local] if !local.is_empty() => SemanticQName {
             namespace: None,
+            unresolved_prefix: None,
             local: (*local).to_string(),
             lexical_valid: true,
         },
         _ => SemanticQName {
             namespace: None,
+            unresolved_prefix: None,
             local: raw.to_string(),
             lexical_valid: false,
         },
@@ -340,9 +351,10 @@ fn compatible_value_type(node: Node<'_, '_>, base: &SemanticQName) -> bool {
     node.has_tag_name((XDTO_NS, "valueType"))
         && has_only_plain_attributes(node, &["name", "base"])
         && has_exact_compatible_content(node)
-        && node
-            .attribute("base")
-            .is_some_and(|existing| semantic_qname(node, existing) == *base)
+        && node.attribute("base").is_some_and(|existing| {
+            let existing = semantic_qname(node, existing);
+            existing.lexical_valid && base.lexical_valid && existing == *base
+        })
 }
 
 fn compatible_empty_object_type(node: Node<'_, '_>) -> bool {
@@ -355,9 +367,10 @@ fn compatible_property(node: Node<'_, '_>, type_ref: &SemanticQName, desired_low
     node.has_tag_name((XDTO_NS, "property"))
         && has_only_plain_attributes(node, &["name", "type", "lowerBound", "upperBound"])
         && has_exact_compatible_content(node)
-        && node
-            .attribute("type")
-            .is_some_and(|existing| semantic_qname(node, existing) == *type_ref)
+        && node.attribute("type").is_some_and(|existing| {
+            let existing = semantic_qname(node, existing);
+            existing.lexical_valid && type_ref.lexical_valid && existing == *type_ref
+        })
         && node.attribute("lowerBound").unwrap_or("1") == desired_lower
         && node.attribute("upperBound").unwrap_or("1") == "1"
 }
@@ -601,6 +614,18 @@ fn lexical_element_name(source: &str) -> Result<&str, String> {
     Ok(name)
 }
 
+fn lexical_xdto_child_name(
+    text: &str,
+    parent: Node<'_, '_>,
+    child_local: &str,
+) -> Result<String, String> {
+    let parent_name = lexical_element_name(&text[parent.range()])?;
+    Ok(parent_name.rsplit_once(':').map_or_else(
+        || child_local.to_string(),
+        |(prefix, _)| format!("{prefix}:{child_local}"),
+    ))
+}
+
 fn remove_node(text: &str, node: Node<'_, '_>) -> TextEdit {
     let range = node.range();
     let start = line_start(text, range.start);
@@ -645,19 +670,16 @@ fn property_target<'a>(
     type_name: &str,
     property_path: Option<&str>,
 ) -> Result<Node<'a, 'a>, String> {
-    let mut matching = root.children().filter(|node| {
-        node.has_tag_name((XDTO_NS, "objectType")) && node.attribute("name") == Some(type_name)
-    });
-    let mut target = matching.next().ok_or_else(|| {
-        if !named_types(root, type_name).is_empty() {
-            "unsupported_node: properties can be added only to objectType".to_string()
-        } else {
-            "target_not_found: type does not exist".to_string()
+    let matching = named_types(root, type_name);
+    let mut target = match matching.as_slice() {
+        [] => return Err("target_not_found: type does not exist".to_string()),
+        [node] if node.has_tag_name((XDTO_NS, "objectType")) => *node,
+        [node] if node.has_tag_name((XDTO_NS, "valueType")) => {
+            return Err("unsupported_node: properties can be added only to objectType".to_string())
         }
-    })?;
-    if matching.next().is_some() {
-        return Err("unsupported_node: objectType identity is ambiguous".to_string());
-    }
+        [_] => return Err("unsupported_node: property target kind is unsupported".to_string()),
+        _ => return Err("unsupported_node: named type identity is ambiguous".to_string()),
+    };
     let segments = strict_property_path(property_path)?;
     for segment in segments {
         let properties = direct_named_properties(target, segment);
@@ -803,6 +825,66 @@ mod tests {
         }
     }
 
+    fn assert_removal(
+        before: &str,
+        plan: &super::WriterPlan,
+        expected_range: std::ops::Range<usize>,
+        expected_after: &str,
+    ) {
+        assert_eq!(plan.edits.len(), 1);
+        let edit = &plan.edits[0];
+        assert_eq!(edit.range, expected_range);
+        assert!(edit.replacement.is_empty());
+        assert_eq!(plan.after, expected_after);
+        assert_eq!(&plan.after[..edit.range.start], &before[..edit.range.start]);
+        assert_eq!(&plan.after[edit.range.start..], &before[edit.range.end..]);
+        assert_edit_applies(before, plan);
+    }
+
+    #[test]
+    fn xdto_writer_preserves_the_lexical_xdto_prefix_for_all_adds_and_nested_closing_tag() {
+        let mut text = r#"<x:package xmlns:x="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" targetNamespace="urn:test">
+	<x:objectType name="Target">
+		<x:property name="Nested">
+			<x:typeDef xsi:type="ObjectType"/>
+		</x:property>
+	</x:objectType>
+</x:package>"#
+            .to_string();
+        let operations = [
+            (
+                "add-value-type",
+                args(&[("name", json!("AddedValue")), ("base", json!("xs:string"))]),
+            ),
+            ("add-object-type", args(&[("name", json!("AddedObject"))])),
+            (
+                "add-property",
+                args(&[
+                    ("typeName", json!("Target")),
+                    ("propertyPath", json!("Nested")),
+                    (
+                        "property",
+                        json!({"name":"AddedProperty", "type":"xs:string"}),
+                    ),
+                ]),
+            ),
+        ];
+
+        for (operation, arguments) in operations {
+            text = plan(&text, &arguments, operation).unwrap().after;
+            let model = super::super::model::PackageModel::parse(&text).unwrap();
+            assert!(
+                super::super::validation::validate(&model).is_empty(),
+                "{operation}: {text}"
+            );
+        }
+        assert!(text.contains("<x:valueType name=\"AddedValue\""));
+        assert!(text.contains("<x:objectType name=\"AddedObject\""));
+        assert!(text.contains("<x:property name=\"AddedProperty\""));
+        assert!(text.contains("</x:typeDef>"));
+        assert!(!text.contains("</typeDef>"));
+    }
+
     #[test]
     fn xdto_writer_places_value_type_before_the_first_object_type() {
         let before = package("\t<objectType name=\"Existing\"></objectType>\n");
@@ -883,6 +965,71 @@ mod tests {
         assert_eq!(conflict.after, before);
         assert_eq!(conflict.duplicate_code(), Some("duplicate_type"));
         assert!(conflict.conflict());
+    }
+
+    #[test]
+    fn xdto_writer_qname_duplicates_require_resolved_or_lexically_identical_identity() {
+        let declared = ROOT.replace(
+            "targetNamespace=\"urn:test\"",
+            "xmlns:a=\"urn:external\" xmlns:b=\"urn:external\" targetNamespace=\"urn:test\"",
+        );
+        let value_before = format!(
+            "<package {declared}>\n\t<import namespace=\"urn:external\"/>\n\t<valueType name=\"Existing\" base=\"a:T\"/>\n</package>"
+        );
+        let value_exact = plan(
+            &value_before,
+            &args(&[("name", json!("Existing")), ("base", json!("b:T"))]),
+            "add-value-type",
+        )
+        .unwrap();
+        assert!(!value_exact.conflict());
+        assert_eq!(value_exact.duplicate_code(), Some("duplicate_type"));
+
+        let property_before = format!(
+            "<package {declared}>\n\t<import namespace=\"urn:external\"/>\n\t<objectType name=\"Target\">\n\t\t<property name=\"Existing\" type=\"a:T\"/>\n\t</objectType>\n</package>"
+        );
+        let property_exact = plan(
+            &property_before,
+            &args(&[
+                ("typeName", json!("Target")),
+                ("property", json!({"name":"Existing", "type":"b:T"})),
+            ]),
+            "add-property",
+        )
+        .unwrap();
+        assert!(!property_exact.conflict());
+        assert_eq!(property_exact.duplicate_code(), Some("duplicate_property"));
+
+        for (label, existing, requested) in [
+            ("different unresolved prefixes", "foo:T", "bar:T"),
+            ("bare versus unresolved", "foo:T", "T"),
+            ("same lexical-invalid QName", "foo:T:bad", "foo:T:bad"),
+        ] {
+            let value_before = package(&format!(
+                "\t<valueType name=\"Existing\" base=\"{existing}\"/>\n"
+            ));
+            let value_conflict = plan(
+                &value_before,
+                &args(&[("name", json!("Existing")), ("base", json!(requested))]),
+                "add-value-type",
+            )
+            .unwrap();
+            assert!(value_conflict.conflict(), "valueType: {label}");
+
+            let property_before = package(&format!(
+                "\t<objectType name=\"Target\">\n\t\t<property name=\"Existing\" type=\"{existing}\"/>\n\t</objectType>\n"
+            ));
+            let property_conflict = plan(
+                &property_before,
+                &args(&[
+                    ("typeName", json!("Target")),
+                    ("property", json!({"name":"Existing", "type":requested})),
+                ]),
+                "add-property",
+            )
+            .unwrap();
+            assert!(property_conflict.conflict(), "property: {label}");
+        }
     }
 
     #[test]
@@ -1039,6 +1186,25 @@ mod tests {
     }
 
     #[test]
+    fn xdto_writer_rejects_a_joint_mixed_kind_property_target_as_ambiguous() {
+        let before = package(
+            "\t<valueType name=\"Target\" base=\"xs:string\"/>\n\t<objectType name=\"Target\"/>\n",
+        );
+        let error = plan(
+            &before,
+            &args(&[
+                ("typeName", json!("Target")),
+                ("property", json!({"name":"Added", "type":"xs:string"})),
+            ]),
+            "add-property",
+        )
+        .unwrap_err();
+
+        assert!(error.contains("unsupported_node"), "{error}");
+        assert!(error.contains("ambiguous"), "{error}");
+    }
+
+    #[test]
     fn xdto_writer_rejects_a_nested_type_def_without_exact_object_discriminator() {
         let before = package(
             "\t<objectType name=\"Target\">\n\t\t<property name=\"Nested\"><typeDef xsi:type=\"ValueType\"/></property>\n\t</objectType>\n",
@@ -1142,18 +1308,112 @@ mod tests {
     }
 
     #[test]
-    fn xdto_writer_remove_keeps_neighboring_blank_lines_byte_identical() {
-        let before = package(
-            "\t<valueType name=\"Keep\" base=\"xs:string\"/>\n\n\t<valueType name=\"Remove\" base=\"xs:string\"/>\n\n\t<objectType name=\"Object\"/>\n",
+    fn xdto_writer_removal_matrix_preserves_exact_outer_slices() {
+        let inline_node = "<valueType name=\"Remove\" base=\"xs:string\"/>";
+        let inline = format!("<package {ROOT}>{inline_node}<objectType name=\"Keep\"/></package>");
+        let inline_start = inline.find(inline_node).unwrap();
+        let inline_plan =
+            plan(&inline, &args(&[("name", json!("Remove"))]), "remove-type").unwrap();
+        assert_removal(
+            &inline,
+            &inline_plan,
+            inline_start..inline_start + inline_node.len(),
+            &inline.replacen(inline_node, "", 1),
         );
-        let expected = package(
-            "\t<valueType name=\"Keep\" base=\"xs:string\"/>\n\n\n\t<objectType name=\"Object\"/>\n",
-        );
-        let plan = plan(&before, &args(&[("name", json!("Remove"))]), "remove-type").unwrap();
 
-        assert_eq!(plan.after, expected);
-        assert_eq!(plan.edits.len(), 1);
-        assert_edit_applies(&before, &plan);
+        let lf_line = "\t<valueType name=\"Remove\" base=\"xs:string\"/>\n";
+        let own_line_lf = package(&format!(
+            "\t<valueType name=\"Keep\" base=\"xs:string\"/>\n{lf_line}\t<objectType name=\"Object\"/>\n"
+        ));
+        let lf_start = own_line_lf.find(lf_line).unwrap();
+        let lf_plan = plan(
+            &own_line_lf,
+            &args(&[("name", json!("Remove"))]),
+            "remove-type",
+        )
+        .unwrap();
+        assert_removal(
+            &own_line_lf,
+            &lf_plan,
+            lf_start..lf_start + lf_line.len(),
+            &own_line_lf.replacen(lf_line, "", 1),
+        );
+
+        let crlf_line = "\t<valueType name=\"Remove\" base=\"xs:string\"/>\r\n";
+        let own_line_crlf = package(
+            "\t<valueType name=\"Keep\" base=\"xs:string\"/>\n\t<valueType name=\"Remove\" base=\"xs:string\"/>\n\t<objectType name=\"Object\"/>\n",
+        )
+        .replace('\n', "\r\n");
+        let crlf_start = own_line_crlf.find(crlf_line).unwrap();
+        let crlf_plan = plan(
+            &own_line_crlf,
+            &args(&[("name", json!("Remove"))]),
+            "remove-type",
+        )
+        .unwrap();
+        assert_removal(
+            &own_line_crlf,
+            &crlf_plan,
+            crlf_start..crlf_start + crlf_line.len(),
+            &own_line_crlf.replacen(crlf_line, "", 1),
+        );
+
+        let last_line = "\t<valueType name=\"Remove\" base=\"xs:string\"/>\n";
+        let last_before_close =
+            format!("<package {ROOT}>\n\t<objectType name=\"Keep\"/>\n{last_line}</package>");
+        let last_start = last_before_close.find(last_line).unwrap();
+        let last_plan = plan(
+            &last_before_close,
+            &args(&[("name", json!("Remove"))]),
+            "remove-type",
+        )
+        .unwrap();
+        assert_removal(
+            &last_before_close,
+            &last_plan,
+            last_start..last_start + last_line.len(),
+            &last_before_close.replacen(last_line, "", 1),
+        );
+
+        let nested_line = "\t\t\t\t<property name=\"Remove\" type=\"xs:string\"/>\n";
+        let nested = package(&format!(
+            "\t<objectType name=\"Target\">\n\t\t<property name=\"Nested\">\n\t\t\t<typeDef xsi:type=\"ObjectType\">\n{nested_line}\t\t\t\t<property name=\"Keep\" type=\"xs:string\"/>\n\t\t\t</typeDef>\n\t\t</property>\n\t</objectType>\n"
+        ));
+        let nested_start = nested.find(nested_line).unwrap();
+        let nested_plan = plan(
+            &nested,
+            &args(&[
+                ("typeName", json!("Target")),
+                ("propertyPath", json!("Nested")),
+                ("name", json!("Remove")),
+            ]),
+            "remove-property",
+        )
+        .unwrap();
+        assert_removal(
+            &nested,
+            &nested_plan,
+            nested_start..nested_start + nested_line.len(),
+            &nested.replacen(nested_line, "", 1),
+        );
+
+        let blank_line = "\t<valueType name=\"Remove\" base=\"xs:string\"/>\n";
+        let neighboring_blanks = package(&format!(
+            "\t<valueType name=\"Keep\" base=\"xs:string\"/>\n\n{blank_line}\n\t<objectType name=\"Object\"/>\n"
+        ));
+        let blank_start = neighboring_blanks.find(blank_line).unwrap();
+        let blank_plan = plan(
+            &neighboring_blanks,
+            &args(&[("name", json!("Remove"))]),
+            "remove-type",
+        )
+        .unwrap();
+        assert_removal(
+            &neighboring_blanks,
+            &blank_plan,
+            blank_start..blank_start + blank_line.len(),
+            &neighboring_blanks.replacen(blank_line, "", 1),
+        );
     }
 
     #[test]

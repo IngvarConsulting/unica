@@ -732,6 +732,41 @@ mod tests {
     }
 
     #[test]
+    fn xdto_writer_orchestration_rejects_mixed_kind_target_in_preview_and_apply_without_write() {
+        let (context, mut args, package, _) = xdto_guard_fixture("writer-ambiguous-target");
+        let before = r#"<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:test">
+	<valueType name="Target" base="xs:string"/>
+	<objectType name="Target"/>
+</package>"#
+            .as_bytes()
+            .to_vec();
+        fs::write(&package, &before).unwrap();
+        let model =
+            super::model::PackageModel::parse(std::str::from_utf8(&before).unwrap()).unwrap();
+        assert!(super::validation::validate(&model)
+            .iter()
+            .any(|finding| finding.code == "duplicate_type"));
+        args.insert("operation".to_string(), json!("add-property"));
+        args.insert("typeName".to_string(), json!("Target"));
+        args.insert(
+            "property".to_string(),
+            json!({"name":"Added", "type":"xs:string"}),
+        );
+
+        for execution in [
+            preview_with_data(&args, &context),
+            apply_with_data(&args, &context),
+        ] {
+            assert!(!execution.outcome.ok, "{:?}", execution.outcome);
+            let errors = execution.outcome.errors.join("\n");
+            assert!(errors.contains("unsupported_node"), "{errors}");
+            assert!(errors.contains("ambiguous"), "{errors}");
+            assert_eq!(fs::read(&package).unwrap(), before);
+        }
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
     fn xdto_validation_reports_unrelated_baseline_findings_without_blocking() {
         let (context, mut args, package, _) = xdto_guard_fixture("validation-baseline");
         fs::write(
