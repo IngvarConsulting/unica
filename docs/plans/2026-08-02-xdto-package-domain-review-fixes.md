@@ -72,13 +72,50 @@ smoke.
 
 6. Коммит: `fix(xdto): bind package writes to logical target guards`.
 
-## Task 3. Ввести семантическую модель и валидатор XDTO
+## Task 3. Зафиксировать доказанный контракт формата XDTO
+
+**Файлы:**
+
+- создать: `plugins/unica/references/specs/1c-xdto-spec.md`;
+- изменить: `plugins/unica/references/specs/README.md`;
+- изменить: `plugins/unica/references/specs/format-index.md`;
+- изменить: `plugins/unica/references/specs/1c-configuration-spec.md`;
+- создать: `tests/fixtures/xdto/enterprise-data-minimal/Configuration.xml`;
+- создать: `tests/fixtures/xdto/enterprise-data-minimal/XDTOPackages/EnterpriseData_1_17_3.xml`;
+- создать: `tests/fixtures/xdto/enterprise-data-minimal/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin`;
+- изменить: `tests/ci/test_reference_format_profile.py`;
+- проверить: `tests/ci/test_reference_reachability.py`.
+
+1. Зафиксировать donor baseline
+   `Nikolay-Shirokov/cc-1c-skills@2067778ba3bad527bd1e5850304d1c82acb81fc8`
+   и изучить только его XDTO skills, docs и cases. Donor — источник evidence,
+   но локальная спецификация становится контрактом реализации.
+2. Добавить red-тесты, требующие индексированной XDTO-спецификации и реальной
+   fixture с `Package.bin`, BOM+CRLF, imports, локальными типами, вложенным
+   `ЛюбаяСсылка/СсылкаНаОбъект/typeDef` и self-closing
+   `СоставнойЛюбойОбъект`.
+3. Зафиксировать в спецификации путь `Ext/Package.bin`, XDTO namespace,
+   порядок `import* → property* → valueType* → objectType*`, допустимые
+   контейнеры, QName/import/self-reference, уникальность, effective bounds,
+   nested `typeDef` и требования byte-local writer. Не объявлять полной
+   грамматикой то, чего donor/fixture не доказывают.
+4. Связать новую спецификацию из README, format-index и раздела XDTOPackage
+   общей конфигурационной спецификации.
+5. Запустить:
+
+   `python3.12 -m unittest tests.ci.test_reference_format_profile tests.ci.test_reference_reachability`
+
+6. Коммит: `docs(xdto): specify package grammar and evidence`.
+
+## Task 4. Ввести семантическую модель и валидатор XDTO
 
 **Файлы:**
 
 - создать: `crates/unica-coder/src/infrastructure/native_operations/xdto/model.rs`;
 - создать: `crates/unica-coder/src/infrastructure/native_operations/xdto/validation.rs`;
-- изменить: `crates/unica-coder/src/infrastructure/native_operations/xdto.rs`.
+- изменить: `crates/unica-coder/src/infrastructure/native_operations/xdto.rs`;
+- читать как контракт: `plugins/unica/references/specs/1c-xdto-spec.md`;
+- использовать fixture: `tests/fixtures/xdto/enterprise-data-minimal/`.
 
 1. Добавить red-тесты для корня/namespace, порядка секций, NCName,
    уникальности типов/свойств, допустимых контейнеров, nested object `typeDef`,
@@ -95,7 +132,7 @@ smoke.
 
 5. Коммит: `feat(xdto): validate package grammar and type references`.
 
-## Task 4. Сделать точечный writer грамматически корректным
+## Task 5. Сделать точечный writer грамматически корректным
 
 **Файлы:**
 
@@ -120,7 +157,7 @@ smoke.
 
 5. Коммит: `fix(xdto): preserve package text while applying valid edits`.
 
-## Task 5. Синхронизировать schema, info и события
+## Task 6. Синхронизировать schema, info и события
 
 **Файлы:**
 
@@ -151,14 +188,12 @@ smoke.
 
 7. Коммит: `feat(xdto): complete typed contract and pagination`.
 
-## Task 6. Доказать формат, corpus и публичную упаковку
+## Task 7. Доказать corpus и публичную упаковку
 
 **Файлы:**
 
 - изменить: `crates/unica-coder/tests/format_8_3_27_xml_corpus.rs`;
-- изменить/добавить fixtures: `crates/unica-coder/tests/fixtures/format-8-3-27/`;
-- изменить: `plugins/unica/references/specs/1c-configuration-spec.md`;
-- изменить: `plugins/unica/references/specs/format-index.md`;
+- использовать fixture: `tests/fixtures/xdto/enterprise-data-minimal/`;
 - изменить: `plugins/unica/skills/xdto/SKILL.md`;
 - изменить: `spec/provenance/skill-upstreams.json`;
 - изменить: `spec/architecture/tool-surface-review.json`;
@@ -170,15 +205,13 @@ smoke.
 1. Добавить red corpus-тест с classifier namespace
    `{http://v8.1c.ru/8.1/xdto}package`; убедиться, что он не находится только в
    ignored generator.
-2. Зафиксировать в спецификациях `Package.bin`, секции/order, QName/import и
-   допустимые контейнеры, подтверждённые fixture/donor corpus.
-3. Исправить provenance: назвать донора и adapted/material relation, не
+2. Исправить provenance: назвать донора и adapted/material relation, не
    объявлять заимствованный workflow полностью `unicaOwnedSkills`.
-4. Проверить skill-путь info → preview → apply, отсутствие validate/direct
+3. Проверить skill-путь info → preview → apply, отсутствие validate/direct
    script и паритет исходного/упакованного MCP.
-5. Добавить две XDTO-записи в review ledger и регенерировать tool-surface
+4. Добавить две XDTO-записи в review ledger и регенерировать tool-surface
    собранным бинарём по help генератора.
-6. Запустить:
+5. Запустить:
 
    `cargo test -p unica-coder --test format_8_3_27_xml_corpus -- --test-threads=1`
 
@@ -186,9 +219,9 @@ smoke.
 
    `python3.12 scripts/ci/smoke-unica-mcp.py`
 
-7. Коммит: `test(xdto): cover package corpus and public boundary`.
+6. Коммит: `test(xdto): cover package corpus and public boundary`.
 
-## Task 7. Полная проверка и обновление PR
+## Task 8. Полная проверка и обновление PR
 
 1. Получить актуальные `origin/main` и head fork; подтвердить отсутствие нового
    расхождения ADR-номера и неожиданных коммитов в удалённой head-ветке.
