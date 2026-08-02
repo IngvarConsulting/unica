@@ -526,37 +526,28 @@ fn validate_bounds(property: &Property, findings: &mut Vec<Finding>) {
     let lower = property
         .lower_bound
         .as_ref()
-        .map(|value| {
-            value
-                .value
-                .parse::<i64>()
-                .ok()
-                .filter(|parsed| matches!(parsed, 0 | 1))
-        })
-        .unwrap_or(Some(1));
+        .map_or("1", |value| value.value.as_str());
     let upper = property
         .upper_bound
         .as_ref()
-        .map(|value| {
-            value
-                .value
-                .parse::<i64>()
-                .ok()
-                .filter(|parsed| *parsed == -1 || *parsed >= 1)
-        })
-        .unwrap_or(Some(1));
-    let valid = match (lower, upper) {
-        (Some(lower), Some(-1)) => lower >= 0,
-        (Some(lower), Some(upper)) => lower <= upper,
-        _ => false,
-    };
+        .map_or("1", |value| value.value.as_str());
+    let lower_is_valid = matches!(lower, "0" | "1");
+    let upper_is_unbounded = upper == "-1";
+    let upper_is_finite = is_canonical_positive_decimal(upper);
+    let valid = lower_is_valid
+        && (upper_is_unbounded || (upper_is_finite && decimal_less_than_or_equal(lower, upper)));
     if !valid {
-        let span = property
-            .lower_bound
-            .as_ref()
-            .map(|value| &value.span)
-            .or_else(|| property.upper_bound.as_ref().map(|value| &value.span))
-            .unwrap_or(&property.span);
+        let span = if !lower_is_valid {
+            property
+                .lower_bound
+                .as_ref()
+                .map_or(&property.span, |value| &value.span)
+        } else {
+            property
+                .upper_bound
+                .as_ref()
+                .map_or(&property.span, |value| &value.span)
+        };
         findings.push(Finding::error(
             "invalid_bounds",
             format!("{}/@bounds", property.key),
@@ -565,6 +556,20 @@ fn validate_bounds(property: &Property, findings: &mut Vec<Finding>) {
                 .to_string(),
         ));
     }
+}
+
+fn is_canonical_positive_decimal(value: &str) -> bool {
+    value
+        .as_bytes()
+        .first()
+        .is_some_and(|first| matches!(first, b'1'..=b'9'))
+        && value.as_bytes()[1..]
+            .iter()
+            .all(|byte| byte.is_ascii_digit())
+}
+
+fn decimal_less_than_or_equal(left: &str, right: &str) -> bool {
+    left.len() < right.len() || (left.len() == right.len() && left <= right)
 }
 
 fn is_ncname(value: &str) -> bool {
@@ -605,4 +610,338 @@ fn is_ncname_char(character: char) -> bool {
             character,
             '-' | '.' | '0'..='9' | '\u{00b7}' | '\u{0300}'..='\u{036f}' | '\u{203f}'..='\u{2040}'
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{validate, Finding};
+    use crate::infrastructure::native_operations::xdto::model::PackageModel;
+
+    const ROOT: &str = r#"xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:tns="urn:test" targetNamespace="urn:test""#;
+
+    fn package(body: &str) -> String {
+        format!("<package {ROOT}>{body}</package>")
+    }
+
+    fn findings(xml: &str) -> Vec<Finding> {
+        validate(&PackageModel::parse(xml).unwrap())
+    }
+
+    fn codes(xml: &str) -> Vec<String> {
+        findings(xml)
+            .into_iter()
+            .map(|finding| finding.code)
+            .collect()
+    }
+
+    #[test]
+    fn xdto_validation_rejects_noncanonical_bound_literals() {
+        for (label, attributes) in [
+            ("lower leading zero", r#"lowerBound="00""#),
+            ("lower noncanonical one", r#"lowerBound="01""#),
+            ("lower plus", r#"lowerBound="+1""#),
+            ("lower negative zero", r#"lowerBound="-01""#),
+            ("upper zero", r#"upperBound="0""#),
+            ("upper leading zero", r#"upperBound="00""#),
+            ("upper noncanonical one", r#"upperBound="01""#),
+            ("upper plus", r#"upperBound="+1""#),
+            ("upper negative sentinel", r#"upperBound="-01""#),
+            ("upper negative finite", r#"upperBound="-2""#),
+        ] {
+            let xml = package(&format!(
+                r#"<objectType name="T"><property name="P" {attributes}/></objectType>"#
+            ));
+            assert_eq!(codes(&xml), vec!["invalid_bounds"], "{label}");
+        }
+    }
+
+    #[test]
+    fn xdto_validation_accepts_unbounded_defaults_and_arbitrary_size_finite_upper() {
+        for (label, attributes) in [
+            ("defaults", ""),
+            ("minimum finite", r#"lowerBound="1" upperBound="1""#),
+            ("unbounded", r#"lowerBound="0" upperBound="-1""#),
+            (
+                "above i64 max",
+                r#"lowerBound="1" upperBound="9223372036854775808""#,
+            ),
+            (
+                "arbitrary precision",
+                r#"lowerBound="0" upperBound="999999999999999999999999999999999999999999""#,
+            ),
+        ] {
+            let xml = package(&format!(
+                r#"<objectType name="T"><property name="P" {attributes}/></objectType>"#
+            ));
+            assert!(findings(&xml).is_empty(), "{label}: {:#?}", findings(&xml));
+        }
+    }
+
+    #[test]
+    fn xdto_validation_ignores_only_whitespace_character_data_in_supported_containers() {
+        let xml = package(
+            r#"
+	<!-- package comment with data --><?package instruction?>
+	<import namespace="urn:external">
+		<!-- import comment --><?import instruction?>
+	</import>
+	<valueType name="V" base="xs:string">
+		<!-- named type comment --><?type instruction?>
+	</valueType>
+	<objectType name="T">
+		<property name="Nested">
+			<!-- property comment --><?property instruction?>
+			<typeDef xsi:type="ObjectType">
+				<!-- typeDef comment --><?typedef instruction?>
+				<property name="Leaf" type="xs:string"/>
+			</typeDef>
+		</property>
+	</objectType>
+"#,
+        );
+
+        assert!(findings(&xml).is_empty(), "{:#?}", findings(&xml));
+    }
+
+    #[test]
+    fn xdto_validation_rejects_text_and_cdata_in_every_supported_container_with_span() {
+        let cases = [
+            (
+                "package text",
+                package("unexpected-package<objectType name=\"T\"/>"),
+            ),
+            (
+                "import text",
+                package("<import namespace=\"urn:external\">unexpected-import</import>"),
+            ),
+            (
+                "named type text",
+                package("<objectType name=\"T\">unexpected-type</objectType>"),
+            ),
+            (
+                "value type text",
+                package("<valueType name=\"V\">unexpected-value-type</valueType>"),
+            ),
+            (
+                "property text",
+                package(
+                    "<objectType name=\"T\"><property name=\"P\">unexpected-property</property></objectType>",
+                ),
+            ),
+            (
+                "typeDef text",
+                package(
+                    "<objectType name=\"T\"><property name=\"P\"><typeDef xsi:type=\"ObjectType\">unexpected-typedef</typeDef></property></objectType>",
+                ),
+            ),
+            (
+                "package CDATA",
+                package("<![CDATA[unexpected-package]]><objectType name=\"T\"/>"),
+            ),
+            (
+                "import CDATA",
+                package(
+                    "<import namespace=\"urn:external\"><![CDATA[unexpected-import]]></import>",
+                ),
+            ),
+            (
+                "named type CDATA",
+                package("<objectType name=\"T\"><![CDATA[unexpected-type]]></objectType>"),
+            ),
+            (
+                "value type CDATA",
+                package(
+                    "<valueType name=\"V\"><![CDATA[unexpected-value-type]]></valueType>",
+                ),
+            ),
+            (
+                "property CDATA",
+                package(
+                    "<objectType name=\"T\"><property name=\"P\"><![CDATA[unexpected-property]]></property></objectType>",
+                ),
+            ),
+            (
+                "typeDef CDATA",
+                package(
+                    "<objectType name=\"T\"><property name=\"P\"><typeDef xsi:type=\"ObjectType\"><![CDATA[unexpected-typedef]]></typeDef></property></objectType>",
+                ),
+            ),
+        ];
+
+        for (label, xml) in cases {
+            let unsupported = findings(&xml)
+                .into_iter()
+                .filter(|finding| finding.code == "unsupported_node")
+                .collect::<Vec<_>>();
+            assert_eq!(unsupported.len(), 1, "{label}: {unsupported:#?}");
+            let span = &unsupported[0].location.span;
+            assert!(
+                unsupported[0]
+                    .location
+                    .key
+                    .ends_with("/unsupported:character-data"),
+                "{label}: {:?}",
+                unsupported[0].location.key
+            );
+            assert!(span.start < span.end, "{label}: {span:#?}");
+            assert!(
+                xml[span.start..span.end].contains("unexpected-"),
+                "{label}: {:?}",
+                &xml[span.start..span.end]
+            );
+        }
+    }
+
+    #[test]
+    fn xdto_validation_does_not_treat_non_xml_unicode_space_as_formatting() {
+        let xml = package("\u{00a0}<objectType name=\"T\"/>");
+
+        let unsupported = findings(&xml)
+            .into_iter()
+            .filter(|finding| finding.code == "unsupported_node")
+            .collect::<Vec<_>>();
+
+        assert_eq!(unsupported.len(), 1, "{unsupported:#?}");
+        let span = &unsupported[0].location.span;
+        assert_eq!(&xml[span.start..span.end], "\u{00a0}");
+    }
+
+    #[test]
+    fn xdto_validation_does_not_use_default_namespace_for_bare_qname_values() {
+        let xml = package(r#"<valueType name="V" base="string"/>"#);
+
+        assert_eq!(codes(&xml), vec!["invalid_qname"]);
+    }
+
+    #[test]
+    fn xdto_validation_accepts_node_scope_prefix_for_imported_external_type() {
+        let xml = package(
+            r#"<import namespace="urn:external"/>
+	<objectType name="T"><property xmlns:ext="urn:external" name="P" type="ext:Remote"/></objectType>"#,
+        );
+
+        assert!(findings(&xml).is_empty(), "{:#?}", findings(&xml));
+    }
+
+    #[test]
+    fn xdto_validation_treats_xsi_type_only_as_object_type_discriminator() {
+        let xml = package(
+            r#"<objectType name="T"><property name="P"><typeDef xsi:type="ObjectType"/></property></objectType>"#,
+        );
+
+        assert!(findings(&xml).is_empty(), "{:#?}", findings(&xml));
+    }
+
+    #[test]
+    fn xdto_validation_local_ref_requires_global_property_not_same_named_type() {
+        let type_only = package(
+            r#"<valueType name="Shared" base="xs:string"/>
+	<objectType name="T"><property ref="tns:Shared"/></objectType>"#,
+        );
+        assert_eq!(codes(&type_only), vec!["unknown_property_reference"]);
+
+        let with_global_property = package(
+            r#"<property name="Shared" type="xs:string"/>
+	<valueType name="Shared" base="xs:string"/>
+	<objectType name="T"><property ref="tns:Shared"/></objectType>"#,
+        );
+        assert!(
+            findings(&with_global_property).is_empty(),
+            "{:#?}",
+            findings(&with_global_property)
+        );
+    }
+
+    #[test]
+    fn xdto_validation_rejects_unknown_local_base() {
+        let xml = package(r#"<valueType name="V" base="tns:Missing"/>"#);
+
+        assert_eq!(codes(&xml), vec!["unknown_type_reference"]);
+    }
+
+    #[test]
+    fn xdto_validation_recurses_through_nested_object_type_defs() {
+        let xml = package(
+            r#"<objectType name="T">
+	<property name="Outer"><typeDef xsi:type="ObjectType">
+		<property name="Inner"><typeDef xsi:type="ObjectType">
+			<property name="Leaf" type="tns:Missing"/>
+		</typeDef></property>
+	</typeDef></property>
+</objectType>"#,
+        );
+
+        let validation = findings(&xml);
+        assert_eq!(validation.len(), 1, "{validation:#?}");
+        assert_eq!(validation[0].code, "unknown_type_reference");
+        assert!(
+            validation[0]
+                .location
+                .key
+                .contains("property:Outer/typeDef/property:Inner/typeDef/property:Leaf/@type"),
+            "{:?}",
+            validation[0].location.key
+        );
+    }
+
+    #[test]
+    fn xdto_validation_accepts_every_supported_container_edge() {
+        let xml = package(
+            r#"<import namespace="urn:external"/>
+	<property name="Global" type="xs:string"/>
+	<valueType name="V" base="xs:string"/>
+	<objectType name="T">
+		<property name="Nested"><typeDef xsi:type="ObjectType">
+			<property ref="tns:Global"/>
+		</typeDef></property>
+	</objectType>"#,
+        );
+
+        assert!(findings(&xml).is_empty(), "{:#?}", findings(&xml));
+    }
+
+    #[test]
+    fn xdto_validation_rejects_each_explicitly_unsupported_edge() {
+        for (label, body) in [
+            (
+                "valueType enumeration",
+                r#"<valueType name="V" base="xs:string"><enumeration/></valueType>"#,
+            ),
+            (
+                "valueType pattern",
+                r#"<valueType name="V" base="xs:string"><pattern/></valueType>"#,
+            ),
+            (
+                "valueType typeDef",
+                r#"<valueType name="V"><typeDef xsi:type="ValueType"/></valueType>"#,
+            ),
+            (
+                "property ValueType typeDef",
+                r#"<objectType name="T"><property name="P"><typeDef xsi:type="ValueType"/></property></objectType>"#,
+            ),
+            (
+                "valueType memberTypes",
+                r#"<valueType name="V" memberTypes="xs:string"/>"#,
+            ),
+            (
+                "import child",
+                r#"<import namespace="urn:external"><property name="P"/></import>"#,
+            ),
+            (
+                "property child",
+                r#"<objectType name="T"><property name="P"><objectType name="Nested"/></property></objectType>"#,
+            ),
+            (
+                "typeDef child",
+                r#"<objectType name="T"><property name="P"><typeDef xsi:type="ObjectType"><valueType name="V"/></typeDef></property></objectType>"#,
+            ),
+        ] {
+            assert!(
+                codes(&package(body))
+                    .iter()
+                    .any(|code| code == "unsupported_node"),
+                "{label}"
+            );
+        }
+    }
 }

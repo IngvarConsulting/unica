@@ -178,6 +178,7 @@ impl PackageModel {
             "$package",
             &mut model.unsupported,
         );
+        collect_unsupported_character_data(root, "$package", &mut model.unsupported);
 
         for child in root.children().filter(Node::is_element) {
             let (kind, key) = if child.has_tag_name((XDTO_NS, "import")) {
@@ -195,6 +196,7 @@ impl PackageModel {
                     &mut model.unsupported,
                 );
                 collect_element_children_as_unsupported(child, &key, &mut model.unsupported);
+                collect_unsupported_character_data(child, &key, &mut model.unsupported);
                 model.imports.push(Import {
                     namespace,
                     key: key.clone(),
@@ -291,6 +293,7 @@ fn parse_named_type(
     );
     let base = qname_attribute(node, "base");
     let mut properties = Vec::new();
+    collect_unsupported_character_data(node, &key, unsupported);
     for child in node.children().filter(Node::is_element) {
         if kind == TypeKind::Object && child.has_tag_name((XDTO_NS, "property")) {
             properties.push(parse_property(child, &key, unsupported));
@@ -342,6 +345,7 @@ fn parse_property(
         unsupported,
     );
     let mut type_defs = Vec::new();
+    collect_unsupported_character_data(node, &key, unsupported);
     for child in node.children().filter(Node::is_element) {
         if child.has_tag_name((XDTO_NS, "typeDef")) {
             type_defs.push(parse_type_def(child, &key, unsupported));
@@ -379,6 +383,7 @@ fn parse_type_def(
     );
     let discriminator = attribute(node, Some(XSI_NS), "type");
     let mut properties = Vec::new();
+    collect_unsupported_character_data(node, &key, unsupported);
     for child in node.children().filter(Node::is_element) {
         if child.has_tag_name((XDTO_NS, "property")) {
             properties.push(parse_property(child, &key, unsupported));
@@ -474,6 +479,30 @@ fn collect_element_children_as_unsupported(
         unsupported.push(UnsupportedSyntax {
             key: format!("{key}/unsupported:{}", child.tag_name().name()),
             description: format!("{} cannot contain elements", node.tag_name().name()),
+            span: child.range().into(),
+        });
+    }
+}
+
+fn collect_unsupported_character_data(
+    node: Node<'_, '_>,
+    key: &str,
+    unsupported: &mut Vec<UnsupportedSyntax>,
+) {
+    for child in node.children().filter(Node::is_text) {
+        let Some(text) = child.text() else { continue };
+        if text
+            .chars()
+            .all(|character| matches!(character, ' ' | '\t' | '\r' | '\n'))
+        {
+            continue;
+        }
+        unsupported.push(UnsupportedSyntax {
+            key: format!("{key}/unsupported:character-data"),
+            description: format!(
+                "{} cannot contain non-whitespace character data",
+                node.tag_name().name()
+            ),
             span: child.range().into(),
         });
     }
