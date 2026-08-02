@@ -1982,9 +1982,12 @@ source-set:
             # No example needs a live snapshot any more: the source surface is
             # read-only and the source-access skill previews through
             # unica.code.patch like every other writer example.
-            workspace_before_calls = snapshot_workspace(workspace)
+            workspace_before_calls = snapshot_workspace_bytes(workspace)
             responses = self.call_mcp_messages(messages, temp_root / "cache")
-            self.assertEqual(snapshot_workspace(workspace), workspace_before_calls)
+            self.assertEqual(
+                snapshot_workspace_bytes(workspace),
+                workspace_before_calls,
+            )
         self.assertEqual(len(responses), len(examples))
         for example, message in zip(examples, messages):
             with self.subTest(skill=example.skill, line=example.line):
@@ -3198,6 +3201,37 @@ class WindowsParityNormalizationTests(unittest.TestCase):
             normalize_snapshot_text("first", workspace),
         )
 
+    def test_exact_byte_snapshot_detects_xdto_bom_and_eol_drift(self) -> None:
+        fixture = (
+            REPO_ROOT
+            / "tests"
+            / "fixtures"
+            / "xdto"
+            / "enterprise-data-minimal"
+            / "XDTOPackages"
+            / "EnterpriseData_1_17_3"
+            / "Ext"
+            / "Package.bin"
+        )
+        original = fixture.read_bytes()
+        self.assertTrue(original.startswith(b"\xef\xbb\xbf"))
+        self.assertIn(b"\r\n", original)
+
+        with tempfile.TemporaryDirectory(prefix="unica-exact-byte-snapshot-") as temp:
+            workspace = Path(temp)
+            target = workspace / "XDTOPackages/P/Ext/Package.bin"
+            target.parent.mkdir(parents=True)
+            target.write_bytes(original)
+            normalized_before = snapshot_workspace(workspace)
+            exact_before = snapshot_workspace_bytes(workspace)
+
+            mutated = original.removeprefix(b"\xef\xbb\xbf").replace(b"\r\n", b"\n")
+            self.assertNotEqual(mutated, original)
+            target.write_bytes(mutated)
+
+            self.assertEqual(snapshot_workspace(workspace), normalized_before)
+            self.assertNotEqual(snapshot_workspace_bytes(workspace), exact_before)
+
     def test_non_path_backslashes_remain_significant(self) -> None:
         workspace = Path("C:/parity-workspace")
 
@@ -3250,6 +3284,18 @@ def snapshot_workspace(workspace: Path) -> dict[str, str]:
             snapshot[rel] = "sha256:" + hashlib.sha256(data).hexdigest()
             continue
         snapshot[rel] = normalize_snapshot_text(text, workspace)
+    return snapshot
+
+
+def snapshot_workspace_bytes(workspace: Path) -> dict[str, bytes]:
+    snapshot: dict[str, bytes] = {}
+    for path in sorted(workspace.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(workspace).as_posix()
+        if rel.startswith(".build/") or rel.startswith(".unica-cache/"):
+            continue
+        snapshot[rel] = path.read_bytes()
     return snapshot
 
 
