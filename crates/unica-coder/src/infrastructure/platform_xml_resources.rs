@@ -68,10 +68,56 @@ struct StoredSnapshot {
     byte_size: usize,
 }
 
+#[derive(Default)]
+struct SnapshotStore {
+    snapshots: HashMap<String, StoredSnapshot>,
+    reserved_bytes: usize,
+    reserved_count: usize,
+}
+
+struct SnapshotCapacityReservation<'a> {
+    store: &'a Mutex<SnapshotStore>,
+    byte_size: usize,
+    active: bool,
+}
+
+impl SnapshotCapacityReservation<'_> {
+    fn publish(mut self, snapshot: StoredSnapshot) -> Result<(), SourceResourceError> {
+        if snapshot.byte_size > self.byte_size {
+            return Err(capacity_error());
+        }
+        let mut store = self.store.lock().map_err(|_| {
+            public_error(
+                SourceResourceErrorCode::SourceUnavailable,
+                "resource snapshot store is unavailable",
+            )
+        })?;
+        store.reserved_bytes -= self.byte_size;
+        store.reserved_count -= 1;
+        store
+            .snapshots
+            .insert(snapshot.snapshot_id.clone(), snapshot);
+        self.active = false;
+        Ok(())
+    }
+}
+
+impl Drop for SnapshotCapacityReservation<'_> {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        if let Ok(mut store) = self.store.lock() {
+            store.reserved_bytes -= self.byte_size;
+            store.reserved_count -= 1;
+        }
+    }
+}
+
 pub(crate) struct PlatformXmlResourceProvider {
     instance_secret: String,
     clock: Arc<dyn SourceResourceClock>,
-    snapshots: Mutex<HashMap<String, StoredSnapshot>>,
+    snapshots: Mutex<SnapshotStore>,
     #[cfg(test)]
     phase_hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     #[cfg(test)]
@@ -89,7 +135,7 @@ impl PlatformXmlResourceProvider {
         Self {
             instance_secret: Uuid::new_v4().to_string(),
             clock,
-            snapshots: Mutex::new(HashMap::new()),
+            snapshots: Mutex::new(SnapshotStore::default()),
             #[cfg(test)]
             phase_hook: Mutex::new(None),
             #[cfg(test)]
@@ -135,21 +181,25 @@ impl PlatformXmlResourceProvider {
                 )
             })?;
             if snapshots
+                .snapshots
                 .get(&request.snapshot_id)
                 .is_some_and(|snapshot| self.clock.now() >= snapshot.expires_at)
             {
-                snapshots.remove(&request.snapshot_id);
+                snapshots.snapshots.remove(&request.snapshot_id);
                 return Err(public_error(
                     SourceResourceErrorCode::SnapshotExpired,
                     "resource snapshot has expired",
                 ));
             }
-            let snapshot = snapshots.get(&request.snapshot_id).ok_or_else(|| {
-                public_error(
-                    SourceResourceErrorCode::SnapshotNotFound,
-                    "resource snapshot was not issued by this application instance",
-                )
-            })?;
+            let snapshot = snapshots
+                .snapshots
+                .get(&request.snapshot_id)
+                .ok_or_else(|| {
+                    public_error(
+                        SourceResourceErrorCode::SnapshotNotFound,
+                        "resource snapshot was not issued by this application instance",
+                    )
+                })?;
             self.validate_snapshot(snapshot, context)?;
             let resource = snapshot
                 .resources
@@ -294,7 +344,8 @@ impl PlatformXmlResourceProvider {
         };
         self.check_cancelled(cancellation)?;
 
-        let budget = self.available_snapshot_budget()?;
+        let reservation = self.reserve_snapshot_capacity()?;
+        let budget = reservation.byte_size;
         let source_root = evidence.source_root.clone();
         let mut stored_resources = Vec::new();
         let mut byte_size = 0_usize;
@@ -331,46 +382,42 @@ impl PlatformXmlResourceProvider {
         };
         self.check_cancelled(cancellation)?;
         let page = self.page(&snapshot, 0);
-        let mut snapshots = self.snapshots.lock().map_err(|_| {
-            public_error(
-                SourceResourceErrorCode::SourceUnavailable,
-                "resource snapshot store is unavailable",
-            )
-        })?;
-        let now = self.clock.now();
-        snapshots.retain(|_, stored| now < stored.expires_at);
-        let live_bytes = snapshots
-            .values()
-            .map(|stored| stored.byte_size)
-            .sum::<usize>();
-        if !within_live_capacity(snapshots.len(), live_bytes, snapshot.byte_size) {
-            return Err(capacity_error());
-        }
-        snapshots.insert(snapshot_id, snapshot);
+        reservation.publish(snapshot)?;
         Ok(page)
     }
 
-    /// Bytes this snapshot may buffer, bounded by what the live store could
-    /// actually accept. Without it a request that the store has no room for
-    /// still reads its way to the single-snapshot ceiling before the capacity
-    /// check at insertion time rejects it.
-    fn available_snapshot_budget(&self) -> Result<usize, SourceResourceError> {
-        let mut snapshots = self.snapshots.lock().map_err(|_| {
+    /// Atomically reserves live count and byte capacity before construction.
+    /// Publishing replaces the reservation with the actual snapshot size;
+    /// dropping the guard releases it on every other exit path.
+    fn reserve_snapshot_capacity(
+        &self,
+    ) -> Result<SnapshotCapacityReservation<'_>, SourceResourceError> {
+        let mut store = self.snapshots.lock().map_err(|_| {
             public_error(
                 SourceResourceErrorCode::SourceUnavailable,
                 "resource snapshot store is unavailable",
             )
         })?;
         let now = self.clock.now();
-        snapshots.retain(|_, stored| now < stored.expires_at);
-        let live_bytes = snapshots
+        store.snapshots.retain(|_, stored| now < stored.expires_at);
+        let live_bytes = store
+            .snapshots
             .values()
             .map(|stored| stored.byte_size)
             .sum::<usize>();
-        if snapshots.len() >= MAX_LIVE_SNAPSHOTS || live_bytes >= MAX_LIVE_SNAPSHOT_BYTES {
+        let occupied_bytes = live_bytes.saturating_add(store.reserved_bytes);
+        let occupied_count = store.snapshots.len().saturating_add(store.reserved_count);
+        if occupied_count >= MAX_LIVE_SNAPSHOTS || occupied_bytes >= MAX_LIVE_SNAPSHOT_BYTES {
             return Err(capacity_error());
         }
-        Ok(MAX_SNAPSHOT_BYTES.min(MAX_LIVE_SNAPSHOT_BYTES - live_bytes))
+        let byte_size = MAX_SNAPSHOT_BYTES.min(MAX_LIVE_SNAPSHOT_BYTES - occupied_bytes);
+        store.reserved_bytes += byte_size;
+        store.reserved_count += 1;
+        Ok(SnapshotCapacityReservation {
+            store: &self.snapshots,
+            byte_size,
+            active: true,
+        })
     }
 
     fn continue_snapshot(
@@ -387,21 +434,25 @@ impl PlatformXmlResourceProvider {
             )
         })?;
         if snapshots
+            .snapshots
             .get(&request.snapshot_id)
             .is_some_and(|snapshot| self.clock.now() >= snapshot.expires_at)
         {
-            snapshots.remove(&request.snapshot_id);
+            snapshots.snapshots.remove(&request.snapshot_id);
             return Err(public_error(
                 SourceResourceErrorCode::SnapshotExpired,
                 "resource snapshot has expired",
             ));
         }
-        let snapshot = snapshots.get(&request.snapshot_id).ok_or_else(|| {
-            public_error(
-                SourceResourceErrorCode::SnapshotNotFound,
-                "resource snapshot was not issued by this application instance",
-            )
-        })?;
+        let snapshot = snapshots
+            .snapshots
+            .get(&request.snapshot_id)
+            .ok_or_else(|| {
+                public_error(
+                    SourceResourceErrorCode::SnapshotNotFound,
+                    "resource snapshot was not issued by this application instance",
+                )
+            })?;
         self.validate_snapshot(snapshot, context)?;
         if request
             .limit
@@ -634,10 +685,6 @@ fn capacity_error() -> SourceResourceError {
     )
 }
 
-fn within_live_capacity(count: usize, bytes: usize, new_bytes: usize) -> bool {
-    count < MAX_LIVE_SNAPSHOTS && bytes.saturating_add(new_bytes) <= MAX_LIVE_SNAPSHOT_BYTES
-}
-
 fn scan_root_resources(
     root: &Path,
     cancellation: &CancellationToken,
@@ -856,10 +903,11 @@ mod tests {
 
     use std::fs;
     use std::sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc, Arc, Barrier,
     };
-    use std::time::Duration;
+    use std::thread;
+    use std::time::{Duration, Instant};
     use uuid::{Uuid, Version};
 
     #[derive(Default)]
@@ -1622,10 +1670,6 @@ mod tests {
 
     #[test]
     fn live_snapshot_capacity_is_bounded_without_evicting_unexpired_snapshots() {
-        assert!(within_live_capacity(63, MAX_LIVE_SNAPSHOT_BYTES - 1, 1));
-        assert!(!within_live_capacity(64, 0, 0));
-        assert!(!within_live_capacity(0, MAX_LIVE_SNAPSHOT_BYTES, 1));
-
         let fixture = Fixture::new(b"x");
         let (provider, _) = provider();
         let first = provider
@@ -1667,6 +1711,100 @@ mod tests {
                 &CancellationToken::new(),
             )
             .unwrap();
+    }
+
+    #[test]
+    fn source_resources_reservations_are_atomic_across_threads_and_released_on_drop() {
+        const WORKERS: usize = 8;
+        const MAX_CONCURRENT_RESERVATIONS: usize = 4;
+
+        let (provider, _) = provider();
+        let provider = Arc::new(provider);
+        let start = Arc::new(Barrier::new(WORKERS + 1));
+        let release = Arc::new(AtomicBool::new(false));
+        let (outcomes, received) = mpsc::channel();
+        let workers = (0..WORKERS)
+            .map(|_| {
+                let provider = Arc::clone(&provider);
+                let start = Arc::clone(&start);
+                let release = Arc::clone(&release);
+                let outcomes = outcomes.clone();
+                thread::spawn(move || {
+                    start.wait();
+                    match provider.reserve_snapshot_capacity() {
+                        Ok(reservation) => {
+                            outcomes.send(true).unwrap();
+                            let deadline = Instant::now() + Duration::from_secs(5);
+                            while !release.load(Ordering::Acquire) {
+                                assert!(
+                                    Instant::now() < deadline,
+                                    "timed out waiting to release snapshot reservation"
+                                );
+                                thread::yield_now();
+                            }
+                            drop(reservation);
+                        }
+                        Err(error) => {
+                            assert_eq!(
+                                error.code,
+                                SourceResourceErrorCode::SnapshotCapacityExceeded
+                            );
+                            outcomes.send(false).unwrap();
+                        }
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        drop(outcomes);
+
+        start.wait();
+        let successful = (0..WORKERS)
+            .map(|_| received.recv_timeout(Duration::from_secs(5)).unwrap())
+            .filter(|reserved| *reserved)
+            .count();
+        assert_eq!(successful, MAX_CONCURRENT_RESERVATIONS);
+
+        release.store(true, Ordering::Release);
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert_eq!(
+            provider.reserve_snapshot_capacity().unwrap().byte_size,
+            MAX_SNAPSHOT_BYTES
+        );
+    }
+
+    #[test]
+    fn source_resources_publish_rejects_snapshot_larger_than_its_reservation() {
+        let fixture = Fixture::new(b"x");
+        let (provider, _) = provider();
+        let page = provider
+            .resources(
+                fixture.module_request(ResourceScope::SelfOnly, 50),
+                &fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut snapshot = provider
+            .snapshots
+            .lock()
+            .unwrap()
+            .snapshots
+            .remove(&page.snapshot_id)
+            .unwrap();
+        let reservation = provider.reserve_snapshot_capacity().unwrap();
+        snapshot.byte_size = reservation.byte_size + 1;
+
+        let error = reservation.publish(snapshot).unwrap_err();
+
+        assert_eq!(
+            error.code,
+            SourceResourceErrorCode::SnapshotCapacityExceeded
+        );
+        let store = provider.snapshots.lock().unwrap();
+        assert!(store.snapshots.is_empty());
+        assert_eq!(store.reserved_bytes, 0);
+        assert_eq!(store.reserved_count, 0);
     }
 
     #[test]
