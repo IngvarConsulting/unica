@@ -584,7 +584,9 @@ fn type_json(node: Node<'_, '_>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::{apply_with_data, decode, encode_like, mutation};
+    use crate::application::SupportGuardRequirement;
     use crate::domain::workspace::WorkspaceContext;
+    use crate::infrastructure::native_operations::common::support_guard_violation;
     use crate::infrastructure::native_operations::single_file_publisher::with_before_commit_hook;
     use crate::infrastructure::platform::testing::{
         create_file_link_fixture_for_test, FileLinkFixtureOutcome,
@@ -738,18 +740,38 @@ mod tests {
             .workspace_root
             .join("src/Ext/ParentConfigurations.bin");
         let support_for_hook = support.clone();
+        let concurrent_support = concat!(
+            "\u{feff}{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,",
+            "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",",
+            "\"VendorConf\",3,1,0,aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,",
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,0,0,",
+            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb,",
+            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb,2,0,",
+            "cccccccc-cccc-cccc-cccc-cccccccccccc,",
+            "cccccccc-cccc-cccc-cccc-cccccccccccc}"
+        )
+        .as_bytes()
+        .to_vec();
+        let concurrent_support_for_hook = concurrent_support.clone();
+        assert!(
+            support_guard_violation(&package, SupportGuardRequirement::Editable).is_none(),
+            "the initial absent support state must allow editing"
+        );
 
         let execution = with_before_commit_hook(
-            move |_| fs::write(&support_for_hook, "concurrent support state").unwrap(),
+            move |_| fs::write(&support_for_hook, &concurrent_support_for_hook).unwrap(),
             || apply_with_data(&args, &context),
         );
 
         assert!(!execution.outcome.ok, "{:?}", execution.outcome);
+        let error = execution.outcome.errors.join("\n");
+        assert!(error.contains("absence guard"), "{error}");
+        assert!(error.contains("ParentConfigurations.bin"), "{error}");
         assert_eq!(fs::read(&package).unwrap(), before);
-        assert_eq!(
-            fs::read_to_string(&support).unwrap(),
-            "concurrent support state"
-        );
+        assert_eq!(fs::read(&support).unwrap(), concurrent_support);
+        let violation = support_guard_violation(&package, SupportGuardRequirement::Editable)
+            .expect("concurrent support state must change the XDTO package verdict to locked");
+        assert_eq!(violation.code, "locked");
         fs::remove_dir_all(context.workspace_root).unwrap();
     }
 
