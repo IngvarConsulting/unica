@@ -265,11 +265,12 @@ Unica. Каждая запись формулирует одно нормати�
 
 ### INV-MCP-TYPED-RESULT — Результат инструмента типизирован, а не отрисован текстом
 
-- **Rule:** Успешный вызов мигрировавшего публичного инструмента публикует
-  результат только как `OperationResult.data`, текстового дубля результата в
-  `stdout` не существует, и `stdout` остаётся лишь потоком вывода внешнего
-  процесса 1С у `unica.build.*`, `unica.runtime.execute` и
-  `unica.runtime.job.logs`.
+- **Rule:** Успешный вызов публичного инструмента, чья запись в
+  `spec/architecture/tool-surface-review.json` имеет `scope: "in"` и
+  `result.contract: "typed"`, публикует результат только как
+  `OperationResult.data` без текстового дубля в `stdout`; записи с
+  `scope: "retiring"` и `scope: "runtime"` находятся вне границы этого правила
+  до собственного решения.
 - **Decision:** ADR-0020, ADR-0023
 - **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
 - **Check:** `ci-test` — `tests/ci/test_tool_surface_ledger.py`
