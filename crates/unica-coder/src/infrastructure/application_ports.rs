@@ -1,5 +1,8 @@
+use crate::application::metadata::{MetaFailure, MetaInfoRequest, MetadataRequest};
 use crate::application::ports::{
-    ApplicationPorts, FormatGuardCheck, FormatGuardError, HandlerOutcome, SupportGuardCheck,
+    ApplicationPorts, FormatGuardCheck, FormatGuardError, HandlerOutcome, MetaLocalInfo,
+    MetaRelatedData, MetadataRead, MetadataValidationResult, MetadataValidationSubject,
+    PreparedMetadataMutation, SupportGuardCheck,
 };
 use crate::application::source_navigation::{
     SourceChildrenRequest, SourceChildrenResult, SourceLocateRequest, SourceLocateResult,
@@ -25,6 +28,7 @@ use crate::infrastructure::internal_adapters::{
     BslAnalyzerMcpAdapter, CliAdapter, ConfigDumpInfoGitCheck, GitTrackingAdapter, RuntimeAdapter,
     RuntimeJobAdapter, StandardsAdapter,
 };
+use crate::infrastructure::metadata_operations::MetadataOperations;
 use crate::infrastructure::native_operations::NativeOperationAdapter;
 use crate::infrastructure::platform::full_dump_publication::{
     FullDumpInvocation, VerifiedFullDumpAdapter,
@@ -64,6 +68,43 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         context: &WorkspaceContext,
     ) -> Result<(), String> {
         crate::infrastructure::tool_context::validate_tool_context(spec, args, dry_run, context)
+    }
+
+    fn read_metadata_local(
+        &self,
+        request: &MetaInfoRequest,
+        context: &WorkspaceContext,
+        cancellation: &CancellationToken,
+    ) -> Result<MetadataRead, MetaFailure> {
+        MetadataOperations::read_local(request, context, cancellation)
+    }
+
+    fn read_metadata_related(
+        &self,
+        request: &MetaInfoRequest,
+        local: &MetaLocalInfo,
+        context: &WorkspaceContext,
+        cancellation: &CancellationToken,
+    ) -> MetaRelatedData {
+        MetadataOperations::read_related(request, local, context, cancellation)
+    }
+
+    fn validate_metadata(
+        &self,
+        subject: &MetadataValidationSubject,
+        context: &WorkspaceContext,
+        cancellation: &CancellationToken,
+    ) -> MetadataValidationResult {
+        MetadataOperations::validate(subject, context, cancellation)
+    }
+
+    fn prepare_metadata_mutation(
+        &self,
+        request: &MetadataRequest,
+        context: &WorkspaceContext,
+        cancellation: &CancellationToken,
+    ) -> Result<Box<dyn PreparedMetadataMutation>, MetaFailure> {
+        MetadataOperations::prepare_mutation(request, context, cancellation)
     }
 
     fn resolve_code_intelligence_context(
@@ -204,7 +245,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         }
         match spec.handler {
             ToolHandler::Metadata { .. } => Err(format!(
-                "{} metadata handler is not registered for infrastructure dispatch yet",
+                "{} must be dispatched through the provider-neutral metadata coordinator",
                 spec.name
             )),
             ToolHandler::NativeOperation { operation, .. } => {
@@ -300,6 +341,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                 events: Vec::new(),
                 projected_events: Vec::new(),
                 recorded_cache: None,
+                diagnostics: None,
             }),
             ToolHandler::CodeIntelligence { .. } => Err(format!(
                 "{} must be dispatched through the provider-neutral code intelligence registry",

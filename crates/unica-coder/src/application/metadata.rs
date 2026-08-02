@@ -1,13 +1,18 @@
 #![allow(dead_code)] // The handler remains off-registry until the coordinated public switch.
 
+use super::ports::{ApplicationPorts, HandlerOutcome};
+use super::AdapterOutcome;
+use crate::domain::cancellation::CancellationToken;
+use crate::domain::events::{DomainEvent, DomainEventKind};
 use crate::domain::metadata::{
     DateFractions, MetaCollection, MetaDiagnostic, MetaDiagnosticCode, MetaEditOperation,
     MetaEditOperationTag, MetaElementInput, MetaElementUpdateInput, MetaFillValue, MetaPosition,
     MetaPropertyChanges, MetaPropertyInput, MetaPropertyValue, MetaPropertyValueKind, MetaRelation,
-    MetaScope, MetadataKind, MetadataReference, MetadataType, MetadataTypeVariant, NumberSign,
-    RelationEditMode, StringLengthMode, METADATA_PROPERTY_SPECS,
+    MetaScope, MetaValidationStatus, MetadataKind, MetadataReference, MetadataType,
+    MetadataTypeVariant, NumberSign, RelationEditMode, StringLengthMode, METADATA_PROPERTY_SPECS,
 };
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use crate::domain::workspace::WorkspaceContext;
 use serde_json::{json, Map, Value};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +96,204 @@ impl From<MetaDiagnostic> for MetaFailure {
         Self {
             diagnostics: vec![diagnostic],
         }
+    }
+}
+
+pub(crate) fn invoke(
+    operation: MetadataOperation,
+    ports: &dyn ApplicationPorts,
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+    cancellation: &CancellationToken,
+) -> Result<HandlerOutcome, String> {
+    let request = match parse_metadata_request(operation, args) {
+        Ok(request) => request,
+        Err(failure) => {
+            return Ok(metadata_failure(
+                "metadata arguments are invalid",
+                failure,
+                None,
+            ))
+        }
+    };
+    match request {
+        MetadataRequest::Info(request) => invoke_info(ports, &request, context, cancellation),
+        request => invoke_mutation(ports, request, context, cancellation),
+    }
+}
+
+fn invoke_info(
+    ports: &dyn ApplicationPorts,
+    request: &MetaInfoRequest,
+    context: &WorkspaceContext,
+    cancellation: &CancellationToken,
+) -> Result<HandlerOutcome, String> {
+    let read = match ports.read_metadata_local(request, context, cancellation) {
+        Ok(read) => read,
+        Err(failure) => return Ok(metadata_failure("metadata read failed", failure, None)),
+    };
+    let validation = ports.validate_metadata(&read.validation_subject, context, cancellation);
+    let related = ports.read_metadata_related(request, &read.local, context, cancellation);
+    let failed = validation.status == MetaValidationStatus::Failed;
+    let diagnostics = validation.diagnostics.clone();
+    let data = serde_json::to_value(read.local.into_info(validation, related))
+        .map_err(|error| format!("cannot serialize metadata info result: {error}"))?;
+    if failed {
+        return Ok(metadata_failure(
+            "metadata validation failed",
+            MetaFailure { diagnostics },
+            Some(data),
+        ));
+    }
+    Ok(metadata_success(
+        "metadata information inspected",
+        data,
+        Vec::new(),
+        Vec::new(),
+    ))
+}
+
+fn invoke_mutation(
+    ports: &dyn ApplicationPorts,
+    request: MetadataRequest,
+    context: &WorkspaceContext,
+    cancellation: &CancellationToken,
+) -> Result<HandlerOutcome, String> {
+    let dry_run = mutation_dry_run(&request);
+    let prepared = match ports.prepare_metadata_mutation(&request, context, cancellation) {
+        Ok(prepared) => prepared,
+        Err(failure) => {
+            return Ok(metadata_failure(
+                "metadata mutation is unavailable",
+                failure,
+                None,
+            ))
+        }
+    };
+    let validation = ports.validate_metadata(prepared.validation_subject(), context, cancellation);
+    if validation.status == MetaValidationStatus::Failed {
+        let diagnostics = validation.diagnostics.clone();
+        let mut data = prepared.preview().clone();
+        data.validation = validation;
+        let data = serde_json::to_value(data)
+            .map_err(|error| format!("cannot serialize metadata mutation result: {error}"))?;
+        return Ok(metadata_failure(
+            "metadata validation failed",
+            MetaFailure { diagnostics },
+            Some(data),
+        ));
+    }
+
+    if dry_run {
+        let mut data = prepared.preview().clone();
+        data.validation = validation;
+        let projected_events = metadata_change_event(&data, true);
+        let data = serde_json::to_value(data)
+            .map_err(|error| format!("cannot serialize metadata mutation preview: {error}"))?;
+        return Ok(metadata_success(
+            "metadata mutation preview prepared",
+            data,
+            Vec::new(),
+            projected_events,
+        ));
+    }
+
+    if cancellation.is_cancelled() {
+        return Ok(HandlerOutcome::plain(AdapterOutcome::cancelled(
+            "metadata mutation stopped before publication",
+        )));
+    }
+
+    let report = match prepared.publish(cancellation) {
+        Ok(report) => report,
+        Err(failure) => {
+            return Ok(metadata_failure(
+                "metadata publication failed",
+                failure,
+                None,
+            ))
+        }
+    };
+    let mut data = report.data;
+    data.validation = validation;
+    let events = metadata_change_event(&data, false);
+    let data = serde_json::to_value(data)
+        .map_err(|error| format!("cannot serialize metadata mutation result: {error}"))?;
+    Ok(metadata_success(
+        "metadata mutation published",
+        data,
+        events,
+        Vec::new(),
+    ))
+}
+
+fn mutation_dry_run(request: &MetadataRequest) -> bool {
+    match request {
+        MetadataRequest::Info(_) => false,
+        MetadataRequest::Add(request) => request.dry_run,
+        MetadataRequest::Edit(request) => request.dry_run,
+        MetadataRequest::Remove(request) => request.dry_run,
+    }
+}
+
+fn metadata_change_event(
+    data: &crate::domain::metadata::MetaMutationData,
+    projected: bool,
+) -> Vec<DomainEvent> {
+    if !data.changed {
+        return Vec::new();
+    }
+    let artifact = if projected {
+        format!("preview:{}", data.metadata_path.as_str())
+    } else {
+        data.metadata_path.as_str().to_string()
+    };
+    vec![DomainEvent::new(DomainEventKind::MetadataChanged, artifact)]
+}
+
+fn metadata_success(
+    summary: &str,
+    data: Value,
+    events: Vec<DomainEvent>,
+    projected_events: Vec<DomainEvent>,
+) -> HandlerOutcome {
+    HandlerOutcome {
+        adapter: AdapterOutcome::ok(summary),
+        data: Some(data),
+        job: None,
+        events,
+        projected_events,
+        recorded_cache: None,
+        diagnostics: None,
+    }
+}
+
+fn metadata_failure(summary: &str, failure: MetaFailure, data: Option<Value>) -> HandlerOutcome {
+    let errors = failure
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.message.clone())
+        .collect();
+    let diagnostics = serde_json::to_value(&failure.diagnostics)
+        .expect("metadata diagnostics are always serializable");
+    HandlerOutcome {
+        adapter: AdapterOutcome {
+            ok: false,
+            summary: summary.to_string(),
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors,
+            artifacts: Vec::new(),
+            stdout: None,
+            stderr: None,
+            command: None,
+        },
+        data,
+        job: None,
+        events: Vec::new(),
+        projected_events: Vec::new(),
+        recorded_cache: None,
+        diagnostics: Some(diagnostics),
     }
 }
 
@@ -1170,7 +1373,24 @@ fn element_schema() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::metadata::{MetaDiagnosticCode, MetaEditOperation, MetadataKind};
+    use crate::application::ports::{
+        ApplicationPorts, HandlerOutcome, MetaLocalInfo, MetaPublishReport, MetadataRead,
+        MetadataResourceImage, MetadataResourceRole, MetadataValidationSubject,
+        PreparedMetadataMutation, SupportGuardCheck,
+    };
+    use crate::application::ToolSpec;
+    use crate::domain::cache::{CacheAccess, CacheReport};
+    use crate::domain::cancellation::CancellationToken;
+    use crate::domain::events::{DomainEvent, DomainEventKind};
+    use crate::domain::metadata::{
+        MetaCollectionsData, MetaCompleteness, MetaDiagnosticCode, MetaEditOperation,
+        MetaFreshness, MetaMutationData, MetaRelatedItem, MetaRelatedSection, MetaRelatedSections,
+        MetaRelatedStatus, MetaSupportStatus, MetaValidationData, MetaValidationStatus,
+        MetadataKind,
+    };
+    use crate::domain::workspace::WorkspaceContext;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
 
     fn object(value: Value) -> Map<String, Value> {
         value
@@ -1197,6 +1417,556 @@ mod tests {
             "metadataPath": "Document.Order",
             "operations": [operation]
         })
+    }
+
+    #[derive(Default)]
+    struct CoordinatorState {
+        calls: Vec<&'static str>,
+        publish_calls: usize,
+    }
+
+    struct FakePreparedMutation {
+        state: Arc<Mutex<CoordinatorState>>,
+        preview: MetaMutationData,
+        validation_subject: MetadataValidationSubject,
+        publication: Result<MetaPublishReport, MetaFailure>,
+    }
+
+    impl PreparedMetadataMutation for FakePreparedMutation {
+        fn preview(&self) -> &MetaMutationData {
+            &self.preview
+        }
+
+        fn validation_subject(&self) -> &MetadataValidationSubject {
+            &self.validation_subject
+        }
+
+        fn publish(
+            self: Box<Self>,
+            _cancellation: &CancellationToken,
+        ) -> Result<MetaPublishReport, MetaFailure> {
+            let mut state = self.state.lock().unwrap();
+            state.calls.push("publish");
+            state.publish_calls += 1;
+            drop(state);
+            self.publication
+        }
+    }
+
+    struct FakeMetadataPorts {
+        state: Arc<Mutex<CoordinatorState>>,
+        cache_events: Arc<Mutex<Vec<DomainEvent>>>,
+        read: Mutex<Option<Result<MetadataRead, MetaFailure>>>,
+        related: MetaRelatedSections,
+        validation: MetaValidationData,
+        prepared: Mutex<Option<Result<Box<dyn PreparedMetadataMutation>, MetaFailure>>>,
+        cancel_after_validation: Option<CancellationToken>,
+    }
+
+    impl ApplicationPorts for FakeMetadataPorts {
+        fn discover_workspace(
+            &self,
+            _requested_cwd: Option<PathBuf>,
+        ) -> Result<WorkspaceContext, String> {
+            Ok(coordinator_context())
+        }
+
+        fn validate_tool_context(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _dry_run: bool,
+            _context: &WorkspaceContext,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn read_metadata_local(
+            &self,
+            _request: &MetaInfoRequest,
+            _context: &WorkspaceContext,
+            _cancellation: &CancellationToken,
+        ) -> Result<MetadataRead, MetaFailure> {
+            self.state.lock().unwrap().calls.push("read");
+            self.read
+                .lock()
+                .unwrap()
+                .take()
+                .expect("read is called exactly once")
+        }
+
+        fn read_metadata_related(
+            &self,
+            _request: &MetaInfoRequest,
+            _local: &MetaLocalInfo,
+            _context: &WorkspaceContext,
+            _cancellation: &CancellationToken,
+        ) -> MetaRelatedSections {
+            self.state.lock().unwrap().calls.push("related");
+            self.related.clone()
+        }
+
+        fn validate_metadata(
+            &self,
+            _subject: &MetadataValidationSubject,
+            _context: &WorkspaceContext,
+            _cancellation: &CancellationToken,
+        ) -> MetaValidationData {
+            self.state.lock().unwrap().calls.push("validate");
+            if let Some(cancellation) = self.cancel_after_validation.as_ref() {
+                cancellation.cancel();
+            }
+            self.validation.clone()
+        }
+
+        fn prepare_metadata_mutation(
+            &self,
+            _request: &MetadataRequest,
+            _context: &WorkspaceContext,
+            _cancellation: &CancellationToken,
+        ) -> Result<Box<dyn PreparedMetadataMutation>, MetaFailure> {
+            self.state.lock().unwrap().calls.push("prepare");
+            self.prepared
+                .lock()
+                .unwrap()
+                .take()
+                .expect("mutation is prepared exactly once")
+        }
+
+        fn evaluate_support_guard(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _context: &WorkspaceContext,
+        ) -> Result<SupportGuardCheck, String> {
+            Ok(SupportGuardCheck::Allow)
+        }
+
+        fn invoke_handler(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _context: &WorkspaceContext,
+            _dry_run: bool,
+            _cancellation: &CancellationToken,
+        ) -> Result<HandlerOutcome, String> {
+            unreachable!("metadata has a dedicated coordinator")
+        }
+
+        fn cache_report(
+            &self,
+            context: &WorkspaceContext,
+            events: &[DomainEvent],
+            dry_run: bool,
+            _cache_access: CacheAccess,
+        ) -> Result<CacheReport, String> {
+            *self.cache_events.lock().unwrap() = events.to_vec();
+            Ok(CacheReport {
+                mode: if dry_run { "preview" } else { "apply" }.to_string(),
+                root: context.cache_root.display().to_string(),
+                workspace_epoch: context.workspace_epoch,
+                events: events
+                    .iter()
+                    .map(|event| event.name().to_string())
+                    .collect(),
+                invalidated: Vec::new(),
+                refreshed: Vec::new(),
+                lazy_rebuilt: Vec::new(),
+                stale: Vec::new(),
+                fresh: Vec::new(),
+                publication_warnings: Vec::new(),
+            })
+        }
+
+        fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
+    }
+
+    fn coordinator_context() -> WorkspaceContext {
+        WorkspaceContext {
+            cwd: PathBuf::from("/workspace"),
+            workspace_root: PathBuf::from("/workspace"),
+            cache_root: PathBuf::from("/workspace/.unica/cache"),
+            workspace_epoch: 1,
+        }
+    }
+
+    fn passed_validation() -> MetaValidationData {
+        MetaValidationData {
+            status: MetaValidationStatus::Passed,
+            diagnostics: Vec::new(),
+        }
+    }
+
+    fn unavailable_section() -> MetaRelatedSection<MetaRelatedItem> {
+        MetaRelatedSection {
+            status: MetaRelatedStatus::Unavailable,
+            freshness: MetaFreshness::Unknown,
+            completeness: MetaCompleteness::Unknown,
+            total: 0,
+            returned: 0,
+            truncated: false,
+            items: Vec::new(),
+            diagnostics: vec![MetaDiagnostic::error(
+                MetaDiagnosticCode::CapabilityUnavailable,
+                "related metadata is unavailable",
+            )],
+        }
+    }
+
+    fn unavailable_related() -> MetaRelatedSections {
+        MetaRelatedSections {
+            modules: unavailable_section(),
+            roles: unavailable_section(),
+            subscriptions: unavailable_section(),
+            functional_options: unavailable_section(),
+            predefined_items: Some(unavailable_section()),
+        }
+    }
+
+    fn empty_collections() -> MetaCollectionsData {
+        MetaCollectionsData {
+            attributes: Vec::new(),
+            tabular_sections: Vec::new(),
+            dimensions: Vec::new(),
+            resources: Vec::new(),
+            enum_values: Vec::new(),
+            columns: Vec::new(),
+            forms: Vec::new(),
+            templates: Vec::new(),
+            commands: Vec::new(),
+        }
+    }
+
+    fn validation_subject() -> MetadataValidationSubject {
+        MetadataValidationSubject {
+            target: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Document.Order")
+                .unwrap(),
+            resources: vec![MetadataResourceImage {
+                role: MetadataResourceRole::Descriptor,
+                bytes: b"<MetaDataObject/>".to_vec(),
+            }],
+        }
+    }
+
+    fn mutation_data(changed: bool) -> MetaMutationData {
+        MetaMutationData {
+            metadata_path: MetadataAddress::parse(
+                PLATFORM_XML_8_3_27_FORMAT_2_20,
+                "Document.Order",
+            )
+            .unwrap(),
+            changed,
+            publication_plan: Vec::new(),
+            validation: passed_validation(),
+            diagnostics: Vec::new(),
+        }
+    }
+
+    fn fake_ports(
+        validation: MetaValidationData,
+        preview_changed: bool,
+        publication: Result<MetaPublishReport, MetaFailure>,
+    ) -> (FakeMetadataPorts, Arc<Mutex<CoordinatorState>>) {
+        let state = Arc::new(Mutex::new(CoordinatorState::default()));
+        let plan = FakePreparedMutation {
+            state: Arc::clone(&state),
+            preview: mutation_data(preview_changed),
+            validation_subject: validation_subject(),
+            publication,
+        };
+        (
+            FakeMetadataPorts {
+                state: Arc::clone(&state),
+                cache_events: Arc::new(Mutex::new(Vec::new())),
+                read: Mutex::new(None),
+                related: unavailable_related(),
+                validation,
+                prepared: Mutex::new(Some(Ok(Box::new(plan)))),
+                cancel_after_validation: None,
+            },
+            state,
+        )
+    }
+
+    fn add_args(dry_run: bool) -> Map<String, Value> {
+        object(json!({
+            "sourceSet": "main",
+            "kind": "Document",
+            "name": "Order",
+            "dryRun": dry_run
+        }))
+    }
+
+    #[test]
+    fn coordinator_info_reads_validates_then_enriches_and_keeps_local_data_when_related_is_unavailable(
+    ) {
+        let state = Arc::new(Mutex::new(CoordinatorState::default()));
+        let subject = validation_subject();
+        let ports = FakeMetadataPorts {
+            state: Arc::clone(&state),
+            cache_events: Arc::new(Mutex::new(Vec::new())),
+            read: Mutex::new(Some(Ok(MetadataRead {
+                local: MetaLocalInfo {
+                    metadata_path: subject.target.clone(),
+                    kind: MetadataKind::Document,
+                    name: "Order".to_string(),
+                    synonym: Some("Order".to_string()),
+                    support: MetaSupportStatus::Supported,
+                    properties: Vec::new(),
+                    owners: Vec::new(),
+                    collections: empty_collections(),
+                },
+                validation_subject: subject,
+            }))),
+            related: unavailable_related(),
+            validation: passed_validation(),
+            prepared: Mutex::new(None),
+            cancel_after_validation: None,
+        };
+
+        let outcome = invoke(
+            MetadataOperation::Info,
+            &ports,
+            &object(json!({
+                "sourceSet": "main",
+                "metadataPath": "Document.Order",
+                "sections": ["modules", "roles", "subscriptions", "functionalOptions", "predefinedItems"]
+            })),
+            &coordinator_context(),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+
+        assert!(outcome.adapter.ok);
+        assert_eq!(outcome.adapter.stdout, None);
+        assert_eq!(outcome.data.as_ref().unwrap()["name"], "Order");
+        assert_eq!(
+            outcome.data.as_ref().unwrap()["related"]["modules"]["status"],
+            "unavailable"
+        );
+        assert_eq!(state.lock().unwrap().calls, ["read", "validate", "related"]);
+    }
+
+    #[test]
+    fn coordinator_validation_failure_blocks_publication_and_returns_typed_diagnostics() {
+        let diagnostic = MetaDiagnostic::error(
+            MetaDiagnosticCode::ValidationFailed,
+            "post-image validation failed",
+        );
+        let failed_validation = MetaValidationData {
+            status: MetaValidationStatus::Failed,
+            diagnostics: vec![diagnostic.clone()],
+        };
+        let (ports, state) = fake_ports(
+            failed_validation,
+            true,
+            Ok(MetaPublishReport {
+                data: mutation_data(true),
+            }),
+        );
+
+        let outcome = invoke(
+            MetadataOperation::Add,
+            &ports,
+            &add_args(false),
+            &coordinator_context(),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+
+        assert!(!outcome.adapter.ok);
+        assert_eq!(outcome.adapter.stdout, None);
+        assert_eq!(outcome.diagnostics, Some(json!([diagnostic])));
+        assert!(outcome.events.is_empty());
+        assert!(outcome.projected_events.is_empty());
+        let state = state.lock().unwrap();
+        assert_eq!(state.calls, ["prepare", "validate"]);
+        assert_eq!(state.publish_calls, 0);
+    }
+
+    #[test]
+    fn coordinator_preview_never_publishes_and_emits_only_a_projected_metadata_event() {
+        let (ports, state) = fake_ports(
+            passed_validation(),
+            true,
+            Ok(MetaPublishReport {
+                data: mutation_data(true),
+            }),
+        );
+
+        let outcome = invoke(
+            MetadataOperation::Add,
+            &ports,
+            &add_args(true),
+            &coordinator_context(),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+
+        assert!(outcome.adapter.ok);
+        assert_eq!(outcome.adapter.stdout, None);
+        assert!(outcome.events.is_empty());
+        assert_eq!(outcome.projected_events.len(), 1);
+        assert_eq!(
+            outcome.projected_events[0].kind,
+            DomainEventKind::MetadataChanged
+        );
+        let state = state.lock().unwrap();
+        assert_eq!(state.calls, ["prepare", "validate"]);
+        assert_eq!(state.publish_calls, 0);
+    }
+
+    #[test]
+    fn coordinator_apply_publishes_once_and_emits_only_an_actual_metadata_event() {
+        let (ports, state) = fake_ports(
+            passed_validation(),
+            true,
+            Ok(MetaPublishReport {
+                data: mutation_data(true),
+            }),
+        );
+
+        let outcome = invoke(
+            MetadataOperation::Add,
+            &ports,
+            &add_args(false),
+            &coordinator_context(),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+
+        assert!(outcome.adapter.ok);
+        assert_eq!(outcome.adapter.stdout, None);
+        assert_eq!(outcome.events.len(), 1);
+        assert_eq!(outcome.events[0].kind, DomainEventKind::MetadataChanged);
+        assert!(outcome.projected_events.is_empty());
+        let state = state.lock().unwrap();
+        assert_eq!(state.calls, ["prepare", "validate", "publish"]);
+        assert_eq!(state.publish_calls, 1);
+    }
+
+    #[test]
+    fn coordinator_internal_dispatch_preserves_the_actual_event_for_cache_publication() {
+        let (ports, _state) = fake_ports(
+            passed_validation(),
+            true,
+            Ok(MetaPublishReport {
+                data: mutation_data(true),
+            }),
+        );
+        let cache_events = Arc::clone(&ports.cache_events);
+        let spec = ToolSpec {
+            name: "unica.meta.add",
+            description: "internal metadata coordinator test",
+            mutating: true,
+            cache_access: CacheAccess::default(),
+            handler: crate::application::ToolHandler::Metadata {
+                operation: MetadataOperation::Add,
+            },
+        };
+
+        let result = crate::application::call_tool(
+            spec,
+            &add_args(false),
+            &ports,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+
+        assert!(result.ok);
+        assert_eq!(result.stdout, None);
+        assert_eq!(result.data.as_ref().unwrap()["changed"], true);
+        assert_eq!(result.cache.events, ["MetadataChanged"]);
+        assert_eq!(
+            cache_events.lock().unwrap()[0].kind,
+            DomainEventKind::MetadataChanged
+        );
+    }
+
+    #[test]
+    fn coordinator_cancellation_after_validation_never_calls_publication() {
+        let cancellation = CancellationToken::new();
+        let (mut ports, state) = fake_ports(
+            passed_validation(),
+            true,
+            Ok(MetaPublishReport {
+                data: mutation_data(true),
+            }),
+        );
+        ports.cancel_after_validation = Some(cancellation.clone());
+
+        let outcome = invoke(
+            MetadataOperation::Add,
+            &ports,
+            &add_args(false),
+            &coordinator_context(),
+            &cancellation,
+        )
+        .unwrap();
+
+        assert!(!outcome.adapter.ok);
+        assert!(outcome.events.is_empty());
+        assert!(outcome.projected_events.is_empty());
+        let state = state.lock().unwrap();
+        assert_eq!(state.calls, ["prepare", "validate"]);
+        assert_eq!(state.publish_calls, 0);
+    }
+
+    #[test]
+    fn coordinator_apply_noop_uses_the_publication_report_and_emits_no_event() {
+        let (ports, state) = fake_ports(
+            passed_validation(),
+            true,
+            Ok(MetaPublishReport {
+                data: mutation_data(false),
+            }),
+        );
+
+        let outcome = invoke(
+            MetadataOperation::Add,
+            &ports,
+            &add_args(false),
+            &coordinator_context(),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+
+        assert!(outcome.adapter.ok);
+        assert_eq!(outcome.data.as_ref().unwrap()["changed"], false);
+        assert!(outcome.events.is_empty());
+        assert!(outcome.projected_events.is_empty());
+        assert_eq!(state.lock().unwrap().publish_calls, 1);
+    }
+
+    #[test]
+    fn coordinator_rollback_failure_stays_a_typed_error_without_events() {
+        let diagnostic = MetaDiagnostic::error(
+            MetaDiagnosticCode::RollbackFailed,
+            "publication failed and rollback did not restore the preimage",
+        );
+        let (ports, state) = fake_ports(
+            passed_validation(),
+            true,
+            Err(MetaFailure {
+                diagnostics: vec![diagnostic.clone()],
+            }),
+        );
+
+        let outcome = invoke(
+            MetadataOperation::Add,
+            &ports,
+            &add_args(false),
+            &coordinator_context(),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+
+        assert!(!outcome.adapter.ok);
+        assert_eq!(outcome.adapter.stdout, None);
+        assert_eq!(outcome.diagnostics, Some(json!([diagnostic])));
+        assert!(outcome.events.is_empty());
+        assert!(outcome.projected_events.is_empty());
+        assert_eq!(state.lock().unwrap().publish_calls, 1);
     }
 
     #[test]

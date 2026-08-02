@@ -619,6 +619,9 @@ fn call_tool(
     };
 
     let handler_outcome = match spec.handler {
+        ToolHandler::Metadata { operation } => {
+            metadata::invoke(operation, ports, args, &context, cancellation)?
+        }
         ToolHandler::CodeIntelligence {
             operation: CodeIntelligenceOperation::Search,
         } => invoke_code_intelligence_search(ports, args, &context, dry_run, cancellation)?,
@@ -643,6 +646,7 @@ fn call_tool(
     let handler_events = handler_outcome.events;
     let projected_events = handler_outcome.projected_events;
     let recorded_cache = handler_outcome.recorded_cache;
+    let handler_diagnostics = handler_outcome.diagnostics;
     if let Some(warning) = support_guard_warning {
         outcome.warnings.insert(0, warning);
     }
@@ -651,12 +655,10 @@ fn call_tool(
     }
     let events = if dry_run && !projected_events.is_empty() {
         projected_events
+    } else if !dry_run && spec.mutating && outcome.ok && !handler_events.is_empty() {
+        handler_events
     } else if should_emit_events(spec, args, dry_run, &outcome, handler_outcome.data.as_ref()) {
-        if handler_events.is_empty() {
-            domain_events(spec, args)
-        } else {
-            handler_events
-        }
+        domain_events(spec, args)
     } else {
         Vec::new()
     };
@@ -675,15 +677,18 @@ fn call_tool(
     if spec.mutating && !dry_run && outcome.ok && !events.is_empty() {
         ports.notify_invalidation(&context, &events);
     }
-    let diagnostics = merge_diagnostics(
-        runtime_result_diagnostics(
-            spec,
-            args,
-            &context,
-            &outcome,
-            handler_outcome.data.as_ref(),
+    let diagnostics = merge_handler_diagnostics(
+        handler_diagnostics,
+        merge_diagnostics(
+            runtime_result_diagnostics(
+                spec,
+                args,
+                &context,
+                &outcome,
+                handler_outcome.data.as_ref(),
+            ),
+            format_diagnostic,
         ),
-        format_diagnostic,
     );
 
     Ok(OperationResult {
@@ -1088,6 +1093,18 @@ fn merge_diagnostics(runtime: Option<Value>, format: Option<Value>) -> Option<Va
                 }))
             }
         }
+    }
+}
+
+fn merge_handler_diagnostics(handler: Option<Value>, orchestrator: Option<Value>) -> Option<Value> {
+    match (handler, orchestrator) {
+        (None, None) => None,
+        (Some(handler), None) => Some(handler),
+        (None, Some(orchestrator)) => Some(orchestrator),
+        (Some(handler), Some(orchestrator)) => Some(json!({
+            "handler": handler,
+            "orchestrator": orchestrator,
+        })),
     }
 }
 

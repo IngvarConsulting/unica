@@ -807,6 +807,18 @@ pub fn validate_tool_arguments(
     args: &Map<String, Value>,
     dry_run: bool,
 ) -> Result<(), String> {
+    if let ToolHandler::Metadata { operation } = tool.handler {
+        return super::metadata::parse_metadata_request(operation, args)
+            .map(|_| ())
+            .map_err(|failure| {
+                let detail = failure
+                    .diagnostics
+                    .first()
+                    .map(|diagnostic| diagnostic.message.as_str())
+                    .unwrap_or("metadata arguments are invalid");
+                format!("{} invalid arguments: {detail}", tool.name)
+            });
+    }
     validate_removed_target_arguments(tool, args)?;
     let allowed = allowed_args(&tool).into_iter().collect::<BTreeSet<_>>();
     for key in args.keys() {
