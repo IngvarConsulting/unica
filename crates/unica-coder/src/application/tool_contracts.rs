@@ -55,6 +55,24 @@ const CFE_DIFF_ARGS: &[&str] = &["ExtensionPath", "extensionPath", "ConfigPath",
 /// list would also accept arguments no `meta.info` code path consults, and an
 /// accepted argument that changes nothing is a promise the tool cannot keep.
 const META_INFO_ARGS: &[&str] = &["sourceSet", "metadataPath"];
+const XDTO_INFO_ARGS: &[&str] = &["sourceSet", "metadataPath", "typeName", "limit", "cursor"];
+const XDTO_EDIT_ARGS: &[&str] = &[
+    "sourceSet",
+    "metadataPath",
+    "operation",
+    "name",
+    "base",
+    "typeName",
+    "propertyPath",
+    "property",
+];
+const XDTO_EDIT_OPERATIONS: &[&str] = &[
+    "add-value-type",
+    "add-object-type",
+    "add-property",
+    "remove-type",
+    "remove-property",
+];
 const RUNTIME_JOB_STATUS_ARGS: &[&str] = &["jobId"];
 const RUNTIME_JOB_WAIT_ARGS: &[&str] = &["jobId", "timeoutSeconds"];
 const RUNTIME_JOB_LOGS_ARGS: &[&str] = &["jobId", "tailChars"];
@@ -674,7 +692,55 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
             }
         ]);
     }
+    if tool.name == "unica.xdto.info" {
+        schema["not"] = json!({
+            "anyOf": [
+                {"required": ["typeName", "limit"]},
+                {"required": ["typeName", "cursor"]}
+            ]
+        });
+    }
+    if tool.name == "unica.xdto.edit" {
+        schema["oneOf"] = json!([
+            xdto_edit_schema_branch(
+                "add-value-type",
+                &["name", "base"],
+                &["typeName", "propertyPath", "property"],
+            ),
+            xdto_edit_schema_branch(
+                "add-object-type",
+                &["name"],
+                &["base", "typeName", "propertyPath", "property"],
+            ),
+            xdto_edit_schema_branch("add-property", &["typeName", "property"], &["name", "base"],),
+            xdto_edit_schema_branch(
+                "remove-type",
+                &["name"],
+                &["base", "typeName", "propertyPath", "property"],
+            ),
+            xdto_edit_schema_branch(
+                "remove-property",
+                &["typeName", "name"],
+                &["base", "property"],
+            ),
+        ]);
+    }
     schema
+}
+
+fn xdto_edit_schema_branch(operation: &str, required: &[&str], forbidden: &[&str]) -> Value {
+    let mut branch_required = vec!["operation"];
+    branch_required.extend_from_slice(required);
+    json!({
+        "properties": {"operation": {"const": operation}},
+        "required": branch_required,
+        "not": {
+            "anyOf": forbidden
+                .iter()
+                .map(|name| json!({"required": [name]}))
+                .collect::<Vec<_>>()
+        }
+    })
 }
 
 pub(crate) fn normalize_native_path_aliases(
@@ -771,6 +837,7 @@ pub fn validate_tool_arguments(
     validate_support_arguments(tool, args, dry_run)?;
     validate_external_init_arguments(tool, args)?;
     validate_cfe_patch_method_arguments(tool, args)?;
+    validate_xdto_arguments(tool, args)?;
 
     if !dry_run || is_external_init_tool(tool) {
         for required in required_args(&tool) {
@@ -781,6 +848,283 @@ pub fn validate_tool_arguments(
     }
 
     Ok(())
+}
+
+fn validate_xdto_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Result<(), String> {
+    if !matches!(tool.name, "unica.xdto.info" | "unica.xdto.edit") {
+        return Ok(());
+    }
+    let source_set = xdto_required_string(tool.name, args, "sourceSet")?;
+    if source_set != source_set.trim() {
+        return Err(format!(
+            "{} argument `sourceSet` must not have surrounding whitespace",
+            tool.name
+        ));
+    }
+    let metadata_path = xdto_required_string(tool.name, args, "metadataPath")?;
+    let package_name = metadata_path
+        .strip_prefix("XDTOPackage.")
+        .or_else(|| metadata_path.strip_prefix("ПакетXDTO."));
+    if package_name.is_none_or(|name| !is_xml_ncname(name) || name.contains('.')) {
+        return Err(format!(
+            "{} argument `metadataPath` must be XDTOPackage.<NCName>",
+            tool.name
+        ));
+    }
+
+    if tool.name == "unica.xdto.info" {
+        if let Some(type_name) = xdto_optional_string(tool.name, args, "typeName")? {
+            if !is_xml_ncname(type_name) {
+                return Err(format!(
+                    "{} argument `typeName` must be an XML NCName",
+                    tool.name
+                ));
+            }
+            if args.contains_key("limit") || args.contains_key("cursor") {
+                return Err(format!(
+                    "{} `typeName` detail does not accept `limit` or `cursor`",
+                    tool.name
+                ));
+            }
+        }
+        validate_integer_bound(
+            tool.name,
+            args,
+            "limit",
+            1,
+            SOURCE_NAVIGATION_LIMIT_MAX as u64,
+        )?;
+        if args.get("cursor").is_some_and(|cursor| {
+            cursor
+                .as_str()
+                .is_none_or(|value| value.is_empty() || value.chars().any(char::is_whitespace))
+        }) {
+            return Err(format!(
+                "{} argument `cursor` must be a non-empty string without whitespace",
+                tool.name
+            ));
+        }
+        return Ok(());
+    }
+
+    let operation = xdto_required_string(tool.name, args, "operation")?;
+    if !XDTO_EDIT_OPERATIONS.contains(&operation) {
+        return Err(format!(
+            "{} argument `operation` must be one of: {}",
+            tool.name,
+            XDTO_EDIT_OPERATIONS.join(", ")
+        ));
+    }
+    let (required, forbidden): (&[&str], &[&str]) = match operation {
+        "add-value-type" => (&["name", "base"], &["typeName", "propertyPath", "property"]),
+        "add-object-type" => (&["name"], &["base", "typeName", "propertyPath", "property"]),
+        "add-property" => (&["typeName", "property"], &["name", "base"]),
+        "remove-type" => (&["name"], &["base", "typeName", "propertyPath", "property"]),
+        "remove-property" => (&["typeName", "name"], &["base", "property"]),
+        _ => unreachable!("operation was checked against the closed set"),
+    };
+    for field in required {
+        if !args.contains_key(*field) {
+            return Err(format!(
+                "{} operation `{operation}` requires `{field}` argument",
+                tool.name
+            ));
+        }
+    }
+    for field in forbidden {
+        if args.contains_key(*field) {
+            return Err(format!(
+                "{} operation `{operation}` does not accept `{field}` argument",
+                tool.name
+            ));
+        }
+    }
+
+    for field in ["name", "typeName"] {
+        if let Some(value) = xdto_optional_string(tool.name, args, field)? {
+            if !is_xml_ncname(value) {
+                return Err(format!(
+                    "{} argument `{field}` must be an XML NCName",
+                    tool.name
+                ));
+            }
+        }
+    }
+    if let Some(base) = xdto_optional_string(tool.name, args, "base")? {
+        if !is_xml_prefixed_qname(base) {
+            return Err(format!(
+                "{} argument `base` must be a prefixed XML QName without surrounding whitespace",
+                tool.name
+            ));
+        }
+    }
+    if let Some(path) = xdto_optional_string(tool.name, args, "propertyPath")? {
+        if !is_xdto_property_path(path) {
+            return Err(format!(
+                "{} argument `propertyPath` must contain dot-separated XML NCNames with literal dots escaped as `\\.`",
+                tool.name
+            ));
+        }
+    }
+    if let Some(property) = args.get("property") {
+        let property = property
+            .as_object()
+            .ok_or_else(|| format!("{} argument `property` must be object", tool.name))?;
+        if property
+            .keys()
+            .any(|key| !matches!(key.as_str(), "name" | "type" | "minOccurs"))
+        {
+            return Err(format!(
+                "{} argument `property` accepts only name, type, minOccurs",
+                tool.name
+            ));
+        }
+        let name = property
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|value| is_xml_ncname(value))
+            .ok_or_else(|| {
+                format!(
+                    "{} argument `property.name` must be an XML NCName",
+                    tool.name
+                )
+            })?;
+        debug_assert!(!name.is_empty());
+        let property_type = property
+            .get("type")
+            .and_then(Value::as_str)
+            .filter(|value| is_xml_prefixed_qname(value))
+            .ok_or_else(|| {
+                format!(
+                    "{} argument `property.type` must be a prefixed XML QName without surrounding whitespace",
+                    tool.name
+                )
+            })?;
+        debug_assert!(!property_type.is_empty());
+        if property
+            .get("minOccurs")
+            .is_some_and(|value| !matches!(value.as_u64(), Some(0 | 1)))
+        {
+            return Err(format!(
+                "{} argument `property.minOccurs` must be 0 or 1",
+                tool.name
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn xdto_required_string<'a>(
+    tool_name: &str,
+    args: &'a Map<String, Value>,
+    field: &str,
+) -> Result<&'a str, String> {
+    args.get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("{tool_name} requires non-empty `{field}` argument"))
+}
+
+fn xdto_optional_string<'a>(
+    tool_name: &str,
+    args: &'a Map<String, Value>,
+    field: &str,
+) -> Result<Option<&'a str>, String> {
+    args.get(field)
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| format!("{tool_name} argument `{field}` must be a non-empty string"))
+        })
+        .transpose()
+}
+
+fn is_xdto_property_path(value: &str) -> bool {
+    if value.is_empty() {
+        return false;
+    }
+    let mut segment = String::new();
+    let mut characters = value.chars();
+    while let Some(character) = characters.next() {
+        match character {
+            '\\' => {
+                if characters.next() != Some('.') {
+                    return false;
+                }
+                segment.push('.');
+            }
+            '.' => {
+                if !is_xml_ncname(&segment) {
+                    return false;
+                }
+                segment.clear();
+            }
+            _ => segment.push(character),
+        }
+    }
+    is_xml_ncname(&segment)
+}
+
+fn is_xml_prefixed_qname(value: &str) -> bool {
+    let mut parts = value.split(':');
+    let prefix = parts.next().unwrap_or_default();
+    let local = parts.next().unwrap_or_default();
+    parts.next().is_none() && is_xml_ncname(prefix) && is_xml_ncname(local)
+}
+
+fn is_xml_ncname(value: &str) -> bool {
+    let mut characters = value.chars();
+    let Some(first) = characters.next() else {
+        return false;
+    };
+    is_xml_ncname_start(first) && characters.all(is_xml_ncname_char)
+}
+
+// XML 1.0 Fifth Edition NCName ranges. The BMP grammar is shared by runtime
+// validation and the published JSON-Schema patterns. Astral ranges remain a
+// runtime-only addition because an ECMAScript pattern without Unicode mode
+// cannot portably represent them as single code points.
+const XML_NCNAME_START_BMP_RANGES: &[(char, char)] = &[
+    ('A', 'Z'),
+    ('_', '_'),
+    ('a', 'z'),
+    ('\u{00c0}', '\u{00d6}'),
+    ('\u{00d8}', '\u{00f6}'),
+    ('\u{00f8}', '\u{02ff}'),
+    ('\u{0370}', '\u{037d}'),
+    ('\u{037f}', '\u{1fff}'),
+    ('\u{200c}', '\u{200d}'),
+    ('\u{2070}', '\u{218f}'),
+    ('\u{2c00}', '\u{2fef}'),
+    ('\u{3001}', '\u{d7ff}'),
+    ('\u{f900}', '\u{fdcf}'),
+    ('\u{fdf0}', '\u{fffd}'),
+];
+const XML_NCNAME_START_ASTRAL_RANGES: &[(char, char)] = &[('\u{10000}', '\u{effff}')];
+const XML_NCNAME_CONTINUATION_RANGES: &[(char, char)] = &[
+    ('-', '-'),
+    ('.', '.'),
+    ('0', '9'),
+    ('\u{00b7}', '\u{00b7}'),
+    ('\u{0300}', '\u{036f}'),
+    ('\u{203f}', '\u{2040}'),
+];
+
+fn xml_character_is_in_ranges(character: char, ranges: &[(char, char)]) -> bool {
+    ranges
+        .iter()
+        .any(|&(start, end)| start <= character && character <= end)
+}
+
+fn is_xml_ncname_start(character: char) -> bool {
+    xml_character_is_in_ranges(character, XML_NCNAME_START_BMP_RANGES)
+        || xml_character_is_in_ranges(character, XML_NCNAME_START_ASTRAL_RANGES)
+}
+
+fn is_xml_ncname_char(character: char) -> bool {
+    is_xml_ncname_start(character)
+        || xml_character_is_in_ranges(character, XML_NCNAME_CONTINUATION_RANGES)
 }
 
 fn validate_source_resource_arguments(
@@ -1788,6 +2132,8 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
         ToolHandler::NativeOperation { operation, .. } => {
             match operation {
                 "code-patch" => names.extend(CODE_PATCH_ARGS),
+                "xdto-info" => names.extend(XDTO_INFO_ARGS),
+                "xdto-edit" => names.extend(XDTO_EDIT_ARGS),
                 "cf-info" => names.extend(CF_INFO_ARGS),
                 "role-info" => names.extend(ROLE_INFO_ARGS),
                 "subsystem-info" => names.extend(SUBSYSTEM_INFO_ARGS),
@@ -1832,6 +2178,8 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
 fn native_args_for(operation: &str) -> &'static [&'static str] {
     match operation {
         "epf-init" | "erf-init" => EXTERNAL_INIT_ARGS,
+        "xdto-info" => XDTO_INFO_ARGS,
+        "xdto-edit" => XDTO_EDIT_ARGS,
         _ => NATIVE_XML_DSL_ARGS,
     }
 }
@@ -1992,7 +2340,7 @@ fn property_schema(name: &str) -> Value {
             | "includeMethods"
     ) {
         "boolean"
-    } else if name == "definition" {
+    } else if matches!(name, "definition" | "property") {
         "object"
     } else if matches!(
         name,
@@ -2009,6 +2357,8 @@ fn property_schema(name: &str) -> Value {
             | "rangeEnd"
             | "timeoutSeconds"
             | "tailChars"
+            | "lowerBound"
+            | "upperBound"
     ) {
         "integer"
     } else if matches!(
@@ -2055,6 +2405,10 @@ fn property_schema(name: &str) -> Value {
 /// `NATIVE_XML_DSL_ARGS` offer well over a hundred of them.
 const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
+        "base",
+        "Prefixed lexical QName naming the base type of a new XDTO valueType in `unica.xdto.edit`, for example `xs:string`; an unprefixed name or surrounding whitespace is rejected.",
+    ),
+    (
         "allExtensions",
         "Boolean --all-extensions covering every extension in operation syntax; only for the designer-* modes, since mode edt rejects it together with extension",
     ),
@@ -2073,6 +2427,18 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "body_limit",
         "Maximum size of the standard page body returned by unica.standards.explain in page mode (snake_case alias of bodyLimit); honoured only alongside id/idOrAliasOrUrl, and ignored by standards.search.",
+    ),
+    (
+        "property",
+        "New XDTO property object for `unica.xdto.edit`: `name` must be an XML NCName and `type` a prefixed lexical QName; `minOccurs` is optional and must be 0 or 1.",
+    ),
+    (
+        "propertyPath",
+        "Property path to a nested XDTO `typeDef`: an unescaped dot separates segments and `\\.` denotes a literal dot inside one NCName, for example `A\\.B.Child`.",
+    ),
+    (
+        "typeName",
+        "Name of the XDTO valueType or objectType, or of the target objectType for a property operation.",
     ),
     (
         "borrowMainAttribute",
@@ -2475,7 +2841,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "operation",
-        "Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; the metadata edit verbs for unica.meta.edit — read the enum published in the tool's own schema.",
+        "Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; the metadata edit verbs for unica.meta.edit; `add-value-type`, `add-object-type`, `add-property`, `remove-type` or `remove-property` for `unica.xdto.edit` — read the enum published in the tool's own schema.",
     ),
     (
         "output",
@@ -2777,6 +3143,59 @@ fn description_for_arg(name: &str) -> Option<&'static str> {
 }
 
 fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
+    if matches!(tool.name, "unica.xdto.info" | "unica.xdto.edit") {
+        return match name {
+            "sourceSet" => json!({
+                "type": "string",
+                "minLength": 1,
+                "pattern": r"^\S(?:.*\S)?$"
+            }),
+            "typeName" | "name" => json!({
+                "type": "string",
+                "minLength": 1,
+                "pattern": xml_ncname_pattern()
+            }),
+            "base" => json!({
+                "type": "string",
+                "minLength": 1,
+                "pattern": xml_qname_pattern()
+            }),
+            "propertyPath" => json!({
+                "type": "string",
+                "minLength": 1,
+                "pattern": xml_property_path_pattern()
+            }),
+            "metadataPath" => json!({
+                "type": "string",
+                "pattern": format!(
+                    r"^(?:XDTOPackage|ПакетXDTO)\.{}$",
+                    xml_property_path_segment_pattern_body()
+                ),
+                "description": "Logical address of an XDTO package in the form `XDTOPackage.<name>`; the physical `Package.bin` path is rejected."
+            }),
+            "operation" => json!({
+                "type": "string",
+                "enum": XDTO_EDIT_OPERATIONS
+            }),
+            "limit" => json!({
+                "type": "integer",
+                "minimum": 1,
+                "maximum": SOURCE_NAVIGATION_LIMIT_MAX
+            }),
+            "cursor" => json!({"type": "string", "minLength": 1, "pattern": r"^\S+$"}),
+            "property" => json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "name": { "type": "string", "minLength": 1, "pattern": xml_ncname_pattern() },
+                    "type": { "type": "string", "minLength": 1, "pattern": xml_qname_pattern() },
+                    "minOccurs": { "type": "integer", "minimum": 0, "maximum": 1 }
+                },
+                "required": ["name", "type"]
+            }),
+            _ => property_schema(name),
+        };
+    }
     if tool.name == "unica.form.edit" && name == "definition" {
         return form_edit_definition_schema();
     }
@@ -2952,6 +3371,76 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
         _ => {}
     }
     property_schema(name)
+}
+
+fn xml_ncname_pattern() -> String {
+    format!("^{}$", xml_ncname_pattern_body())
+}
+
+fn xml_qname_pattern() -> String {
+    let ncname = xml_ncname_pattern_body();
+    format!("^{ncname}:{ncname}$")
+}
+
+fn xml_property_path_pattern() -> String {
+    let ncname_without_dot = xml_property_path_segment_pattern_body();
+    let continuation = xml_ncname_char_without_dot_pattern_body();
+    let segment = format!(r"{ncname_without_dot}(?:\\\.{continuation}*)*");
+    format!(r"^{segment}(?:\.{segment})*$")
+}
+
+fn xml_property_path_segment_pattern_body() -> String {
+    format!(
+        "{}{}*",
+        xml_ncname_start_pattern_body(),
+        xml_ncname_char_without_dot_pattern_body()
+    )
+}
+
+fn xml_ncname_start_pattern_body() -> String {
+    xml_character_class(XML_NCNAME_START_BMP_RANGES.iter())
+}
+
+fn xml_ncname_char_without_dot_pattern_body() -> String {
+    xml_ncname_char_pattern_body(false)
+}
+
+fn xml_ncname_pattern_body() -> String {
+    format!(
+        "{}{}*",
+        xml_ncname_start_pattern_body(),
+        xml_ncname_char_pattern_body(true)
+    )
+}
+
+fn xml_ncname_char_pattern_body(include_dot: bool) -> String {
+    xml_character_class(
+        XML_NCNAME_START_BMP_RANGES.iter().chain(
+            XML_NCNAME_CONTINUATION_RANGES
+                .iter()
+                .filter(|&&(start, end)| include_dot || (start, end) != ('.', '.')),
+        ),
+    )
+}
+
+fn xml_character_class<'a>(ranges: impl IntoIterator<Item = &'a (char, char)>) -> String {
+    let mut pattern = String::from("[");
+    for &(start, end) in ranges {
+        append_xml_pattern_character(&mut pattern, start);
+        if start != end {
+            pattern.push('-');
+            append_xml_pattern_character(&mut pattern, end);
+        }
+    }
+    pattern.push(']');
+    pattern
+}
+
+fn append_xml_pattern_character(pattern: &mut String, character: char) {
+    if matches!(character, '\\' | '[' | ']' | '^' | '-') {
+        pattern.push('\\');
+    }
+    pattern.push(character);
 }
 
 fn validate_argument_type(tool_name: &str, key: &str, value: &Value) -> Result<(), String> {
@@ -3392,6 +3881,530 @@ mod tests {
         assert!(validate_tool_arguments(tool, &args, false).is_err());
         args.insert("rawArgs".to_string(), json!(["--unsafe"]));
         assert!(validate_tool_arguments(tool, &args, false).is_err());
+    }
+
+    #[test]
+    fn xdto_contract_publishes_and_enforces_typed_arguments() {
+        let info = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.xdto.info")
+            .unwrap();
+        let edit = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.xdto.edit")
+            .unwrap();
+        let info_schema = input_schema_for_tool(&info);
+        let edit_schema = input_schema_for_tool(&edit);
+        let info_validator = jsonschema::validator_for(&info_schema).unwrap();
+        let edit_validator = jsonschema::validator_for(&edit_schema).unwrap();
+
+        assert!(info_validator.is_valid(&json!({
+            "sourceSet": "configuration",
+            "metadataPath": "XDTOPackage.EnterpriseData_1_17_3"
+        })));
+        assert!(!info_validator.is_valid(&json!({
+            "sourceSet": "configuration",
+            "metadataPath": "XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin"
+        })));
+        assert!(!info_validator.is_valid(&json!({
+            "sourceSet": "configuration",
+            "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+            "typeName": "Document",
+            "limit": 1
+        })));
+        assert_eq!(info_schema["properties"]["limit"]["maximum"], 50);
+
+        let valid_operations = [
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "operation": "add-value-type",
+                "name": "Document",
+                "base": "xs:string"
+            }),
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "operation": "add-object-type",
+                "name": "Document"
+            }),
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "operation": "add-property",
+                "typeName": "AnyRef",
+                "propertyPath": "ObjectRef.Nested",
+                "property": {"name": "Document", "type": "tns:Document", "minOccurs": 0}
+            }),
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "operation": "remove-type",
+                "name": "Document"
+            }),
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "operation": "remove-property",
+                "typeName": "AnyRef",
+                "propertyPath": "ObjectRef.Nested",
+                "name": "Document"
+            }),
+        ];
+        assert_eq!(edit_schema["oneOf"].as_array().unwrap().len(), 5);
+        for call in &valid_operations {
+            assert!(edit_validator.is_valid(call), "schema rejected {call}");
+            for dry_run in [true, false] {
+                validate_tool_arguments(edit, call.as_object().unwrap(), dry_run)
+                    .unwrap_or_else(|error| panic!("dryRun={dry_run} rejected {call}: {error}"));
+            }
+        }
+        let unicode_ncname = json!({
+            "sourceSet": "configuration",
+            "metadataPath": "ПакетXDTO.Обмен",
+            "operation": "add-object-type",
+            "name": "A·B́"
+        });
+        assert!(edit_validator.is_valid(&unicode_ncname));
+        validate_tool_arguments(edit, unicode_ncname.as_object().unwrap(), true).unwrap();
+
+        let branch_required = [
+            &["name", "base"][..],
+            &["name"][..],
+            &["typeName", "property"][..],
+            &["name"][..],
+            &["typeName", "name"][..],
+        ];
+        let branch_forbidden = [
+            &["typeName", "propertyPath", "property"][..],
+            &["base", "typeName", "propertyPath", "property"][..],
+            &["name", "base"][..],
+            &["base", "typeName", "propertyPath", "property"][..],
+            &["base", "property"][..],
+        ];
+        assert_eq!(valid_operations.len(), XDTO_EDIT_OPERATIONS.len());
+        assert_eq!(branch_required.len(), valid_operations.len());
+        assert_eq!(branch_forbidden.len(), valid_operations.len());
+        let field_value = |field: &str| match field {
+            "name" => json!("Document"),
+            "base" => json!("xs:string"),
+            "typeName" => json!("AnyRef"),
+            "propertyPath" => json!("Nested"),
+            "property" => json!({"name":"Document", "type":"tns:Document"}),
+            _ => unreachable!(),
+        };
+        for ((call, required), forbidden) in valid_operations
+            .iter()
+            .zip(branch_required)
+            .zip(branch_forbidden)
+        {
+            for field in required {
+                let mut missing = call.as_object().unwrap().clone();
+                missing.remove(*field);
+                let missing = Value::Object(missing);
+                assert!(
+                    !edit_validator.is_valid(&missing),
+                    "schema accepted {missing}"
+                );
+                for dry_run in [true, false] {
+                    assert!(
+                        validate_tool_arguments(edit, missing.as_object().unwrap(), dry_run)
+                            .is_err(),
+                        "runtime accepted dryRun={dry_run}: {missing}"
+                    );
+                }
+            }
+            for field in forbidden {
+                let mut incompatible = call.as_object().unwrap().clone();
+                incompatible.insert((*field).to_string(), field_value(field));
+                let incompatible = Value::Object(incompatible);
+                assert!(
+                    !edit_validator.is_valid(&incompatible),
+                    "schema accepted {incompatible}"
+                );
+                for dry_run in [true, false] {
+                    assert!(
+                        validate_tool_arguments(edit, incompatible.as_object().unwrap(), dry_run)
+                            .is_err(),
+                        "runtime accepted dryRun={dry_run}: {incompatible}"
+                    );
+                }
+            }
+        }
+        for field in ["sourceSet", "metadataPath", "operation"] {
+            let mut missing = valid_operations[0].as_object().unwrap().clone();
+            missing.remove(field);
+            for dry_run in [true, false] {
+                assert!(
+                    validate_tool_arguments(edit, &missing, dry_run).is_err(),
+                    "runtime accepted missing {field} with dryRun={dry_run}"
+                );
+            }
+        }
+
+        let invalid_calls = [
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "operation": "add-object-type"
+            }),
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "operation": "add-object-type",
+                "name": "Document",
+                "base": "xs:string"
+            }),
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "operation": "add-property",
+                "typeName": "AnyRef",
+                "property": {"name": "Document"}
+            }),
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "operation": "add-property",
+                "typeName": "AnyRef",
+                "propertyPath": "ObjectRef..Nested",
+                "property": {"name": "Document", "type": "tns:Document"}
+            }),
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "operation": "add-property",
+                "typeName": "AnyRef",
+                "property": {"name": "Document", "type": "tns:Document", "minOccurs": 2}
+            }),
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "operation": "add-value-type",
+                "name": "bad:name",
+                "base": "xs:string"
+            }),
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "operation": "add-value-type",
+                "name": "Document",
+                "base": "xs::string"
+            }),
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "operation": "add-object-type",
+                "name": 1
+            }),
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "operation": "add-value-type",
+                "name": "Document",
+                "base": 1
+            }),
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "operation": "add-property",
+                "typeName": 1,
+                "property": {"name": "Document", "type": "tns:Document"}
+            }),
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "operation": "remove-property",
+                "typeName": "AnyRef",
+                "name": "Document",
+                "propertyPath": 1
+            }),
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "operation": "add-property",
+                "typeName": "AnyRef",
+                "property": {"name": "Document", "type": "tns:Document", "minOccurs": -1}
+            }),
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "operation": "add-property",
+                "typeName": "AnyRef",
+                "property": {"name": "Document", "type": "tns:Document", "minOccurs": "0"}
+            }),
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "operation": "add-property",
+                "typeName": "AnyRef",
+                "property": {"name": "Document", "type": "tns:Document", "extra": true}
+            }),
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "operation": "rename-type",
+                "name": "Document"
+            }),
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "operation": " add-object-type",
+                "name": "Document"
+            }),
+            json!({
+                "sourceSet": " configuration ",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "operation": "add-object-type",
+                "name": "Document"
+            }),
+        ];
+        for call in &invalid_calls {
+            assert!(!edit_validator.is_valid(call), "schema accepted {call}");
+            for dry_run in [true, false] {
+                assert!(
+                    validate_tool_arguments(edit, call.as_object().unwrap(), dry_run).is_err(),
+                    "runtime accepted dryRun={dry_run}: {call}"
+                );
+            }
+        }
+
+        for dry_run in [true, false] {
+            assert!(validate_tool_arguments(edit, &Map::new(), dry_run).is_err());
+            assert!(validate_tool_arguments(info, &Map::new(), dry_run).is_err());
+        }
+
+        for invalid in [
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "typeName": "bad:name"
+            }),
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "typeName": 1
+            }),
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "limit": 51
+            }),
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "typeName": "Document",
+                "cursor": "nav1-token"
+            }),
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.Enterprise.Data"
+            }),
+        ] {
+            assert!(
+                !info_validator.is_valid(&invalid),
+                "schema accepted {invalid}"
+            );
+            assert!(
+                validate_tool_arguments(info, invalid.as_object().unwrap(), false).is_err(),
+                "runtime accepted {invalid}"
+            );
+        }
+
+        let invalid_path = json!({
+            "sourceSet": "configuration",
+            "metadataPath": "Package.bin"
+        });
+        assert!(validate_tool_arguments(info, invalid_path.as_object().unwrap(), false).is_err());
+        let invalid_property = json!({
+            "sourceSet": "configuration",
+            "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+            "operation": "add-property",
+            "property": {"name": "Document", "type": "Document", "upperBound": 1}
+        });
+        assert!(
+            validate_tool_arguments(edit, invalid_property.as_object().unwrap(), false).is_err()
+        );
+    }
+
+    #[test]
+    fn xdto_qname_schema_and_runtime_require_an_unpadded_prefix() {
+        let edit = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.xdto.edit")
+            .unwrap();
+        let schema = input_schema_for_tool(&edit);
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let value_type = |base: &str| {
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "operation": "add-value-type",
+                "name": "Document",
+                "base": base
+            })
+        };
+        let property = |type_ref: &str| {
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "operation": "add-property",
+                "typeName": "AnyRef",
+                "property": {"name": "Document", "type": type_ref}
+            })
+        };
+
+        for call in [value_type("xs:string"), property("tns:Document")] {
+            assert!(validator.is_valid(&call), "schema rejected {call}");
+            validate_tool_arguments(edit, call.as_object().unwrap(), true)
+                .unwrap_or_else(|error| panic!("runtime rejected {call}: {error}"));
+        }
+
+        for call in [
+            value_type("string"),
+            value_type(" xs:string"),
+            value_type("xs:string "),
+            property("Document"),
+            property(" tns:Document"),
+            property("tns:Document "),
+        ] {
+            assert!(!validator.is_valid(&call), "schema accepted {call}");
+            assert!(
+                validate_tool_arguments(edit, call.as_object().unwrap(), true).is_err(),
+                "runtime accepted {call}"
+            );
+        }
+    }
+
+    #[test]
+    fn xdto_published_patterns_do_not_embed_astral_code_points() {
+        let info = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.xdto.info")
+            .unwrap();
+        let edit = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.xdto.edit")
+            .unwrap();
+        let info_schema = input_schema_for_tool(&info);
+        let edit_schema = input_schema_for_tool(&edit);
+        let patterns = [
+            &info_schema["properties"]["metadataPath"]["pattern"],
+            &info_schema["properties"]["typeName"]["pattern"],
+            &edit_schema["properties"]["metadataPath"]["pattern"],
+            &edit_schema["properties"]["name"]["pattern"],
+            &edit_schema["properties"]["typeName"]["pattern"],
+            &edit_schema["properties"]["base"]["pattern"],
+            &edit_schema["properties"]["propertyPath"]["pattern"],
+            &edit_schema["properties"]["property"]["properties"]["name"]["pattern"],
+            &edit_schema["properties"]["property"]["properties"]["type"]["pattern"],
+        ];
+
+        for pattern in patterns {
+            let pattern = pattern.as_str().expect("XDTO pattern must be a string");
+            assert!(
+                pattern.chars().all(|character| character <= '\u{ffff}'),
+                "published ECMAScript pattern embeds an astral code point: {pattern}"
+            );
+        }
+    }
+
+    #[test]
+    fn xdto_runtime_keeps_the_full_xml_ncname_range() {
+        let edit = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.xdto.edit")
+            .unwrap();
+        let astral_name = "\u{10000}";
+        let call = json!({
+            "sourceSet": "configuration",
+            "metadataPath": format!("XDTOPackage.{astral_name}"),
+            "operation": "add-property",
+            "typeName": astral_name,
+            "propertyPath": format!("{astral_name}.{astral_name}"),
+            "property": {
+                "name": astral_name,
+                "type": format!("{astral_name}:{astral_name}")
+            }
+        });
+
+        validate_tool_arguments(edit, call.as_object().unwrap(), true)
+            .unwrap_or_else(|error| panic!("runtime rejected XML astral NCNames: {error}"));
+    }
+
+    #[test]
+    fn xdto_property_path_schema_and_runtime_share_the_escape_grammar() {
+        let edit = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.xdto.edit")
+            .unwrap();
+        let schema = input_schema_for_tool(&edit);
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let call = |property_path: &str| {
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "operation": "add-property",
+                "typeName": "AnyRef",
+                "propertyPath": property_path,
+                "property": {"name": "Document", "type": "tns:Document"}
+            })
+        };
+
+        for property_path in [r"A\.B", r"A\.B.Child", "A.Child"] {
+            let call = call(property_path);
+            assert!(validator.is_valid(&call), "schema rejected {call}");
+            validate_tool_arguments(edit, call.as_object().unwrap(), true)
+                .unwrap_or_else(|error| panic!("runtime rejected {call}: {error}"));
+        }
+
+        for property_path in [
+            "", ".A", "A.", "A..B", r"\A", r"A\B", "A\\", r"A\\.B", r"A\.B\C",
+        ] {
+            let call = call(property_path);
+            assert!(!validator.is_valid(&call), "schema accepted {call}");
+            assert!(
+                validate_tool_arguments(edit, call.as_object().unwrap(), true).is_err(),
+                "runtime accepted {call}"
+            );
+        }
+    }
+
+    #[test]
+    fn xdto_cursor_schema_and_runtime_reject_all_whitespace() {
+        let info = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.xdto.info")
+            .unwrap();
+        let schema = input_schema_for_tool(&info);
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let call = |cursor: &str| {
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "cursor": cursor
+            })
+        };
+
+        assert_eq!(schema["properties"]["cursor"]["pattern"], r"^\S+$");
+        let valid = call("nav1-token");
+        assert!(validator.is_valid(&valid));
+        validate_tool_arguments(info, valid.as_object().unwrap(), false).unwrap();
+
+        for cursor in [
+            " nav1-token",
+            "nav1-token ",
+            "nav1 token",
+            "nav1\ttoken",
+            "nav1\u{00a0}token",
+        ] {
+            let call = call(cursor);
+            assert!(!validator.is_valid(&call), "schema accepted {call}");
+            assert!(
+                validate_tool_arguments(info, call.as_object().unwrap(), false).is_err(),
+                "runtime accepted {call}"
+            );
+        }
     }
 
     #[test]

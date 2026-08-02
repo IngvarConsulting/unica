@@ -174,6 +174,16 @@ Unica. Каждая запись формулирует одно нормати�
 
 ## MCP — публичная MCP-поверхность
 
+### INV-MCP-XDTO-LOGICAL-TARGET — XDTO-пакет выбирается логическим адресом
+
+- **Rule:** `unica.xdto.info` и `unica.xdto.edit` принимают XDTO-пакет только
+  через `sourceSet` и `metadataPath` вида `XDTOPackage.<Имя>`; публичная схема
+  не принимает физический путь к `Package.bin`.
+- **Decision:** ADR-0024
+- **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
+- **Check:** `ci-test` — `tests/ci/test_unica_skills.py`
+- **Scope:** source, packaged, runtime
+
 ### INV-MCP-NO-ENGINE-SERVERS — `unica` — единственный MCP-сервер, видимый модели
 
 - **Rule:** Внутренние движки (сборка и runtime, анализ BSL, индекс кода,

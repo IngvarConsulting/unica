@@ -13,34 +13,103 @@ import threading
 from pathlib import Path
 
 
-REQUIRED_DCS_TOOLS = {
-    "unica.dcs.compile",
-    "unica.dcs.edit",
-    "unica.dcs.info",
-    "unica.dcs.validate",
-}
-REQUIRED_TOOLS = REQUIRED_DCS_TOOLS | {
-    "unica.project.status",
-    "unica.standards.search",
-    "unica.standards.explain",
-    "unica.source.resolve",
-    "unica.source.children",
-    "unica.source.resources",
-    "unica.source.read",
-    # The packaged surface must publish the migrated reader; its logical flow is
-    # exercised against the real binary by tests/ci/test_unica_mcp_smoke.py,
-    # because this script runs against a canned source oracle at release time.
-    "unica.meta.info",
-}
-REMOVED_DCS_TOOL_ALIASES = {
-    name.replace(".dcs.", ".s" + "kd.") for name in REQUIRED_DCS_TOOLS
-}
+TOOL_SURFACE_REVIEW_RELATIVE = Path("spec/architecture/tool-surface-review.json")
+CHECKOUT_MARKERS = (
+    Path("Cargo.toml"),
+    Path("plugins/unica/.codex-plugin/plugin.json"),
+)
 SOURCE_TOOL_NAMES = {
     "unica.source.resolve",
     "unica.source.children",
     "unica.source.resources",
     "unica.source.read",
 }
+
+
+def _valid_unica_tool_name(value: object) -> bool:
+    if not isinstance(value, str) or not 1 <= len(value) <= 128:
+        return False
+    parts = value.split(".")
+    return (
+        len(parts) >= 2
+        and parts[0] == "unica"
+        and all(
+            part
+            and all(
+                character.isascii()
+                and (character.isalnum() or character in {"_", "-"})
+                for character in part
+            )
+            for part in parts[1:]
+        )
+    )
+
+
+def _input_schema_shape_error(value: object) -> str | None:
+    if not isinstance(value, dict):
+        return "must be an object"
+    if value.get("type") != "object":
+        return "must declare type object"
+    properties = value.get("properties")
+    if not isinstance(properties, dict):
+        return "must declare object properties"
+    required = value.get("required")
+    if not isinstance(required, list) or not all(
+        isinstance(name, str) and name in properties for name in required
+    ):
+        return "must declare required as property names"
+    if len(required) != len(set(required)):
+        return "must not repeat required property names"
+    if value.get("additionalProperties") is not False:
+        return "must reject additional properties"
+    return None
+
+
+def tool_surface_review_path(plugin_root: Path) -> Path:
+    """Resolve the canonical public-tool ledger from any checkout-local package.
+
+    Release smoke runs with both source plugin roots and nested generated package
+    roots. The nearest checkout marker pair bounds lookup so a missing ledger
+    cannot be replaced by an unrelated file above the checkout.
+    """
+
+    resolved = plugin_root.resolve()
+    checkout_root = next(
+        (
+            root
+            for root in (resolved, *resolved.parents)
+            if all((root / marker).is_file() for marker in CHECKOUT_MARKERS)
+        ),
+        None,
+    )
+    if checkout_root is None:
+        raise SystemExit(
+            "cannot resolve validated checkout root from plugin root: "
+            f"{resolved}"
+        )
+    candidate = checkout_root / TOOL_SURFACE_REVIEW_RELATIVE
+    if candidate.is_file():
+        return candidate
+    raise SystemExit(
+        "cannot resolve canonical tool-surface-review.json within checkout root: "
+        f"{checkout_root}"
+    )
+
+
+def expected_tool_names(plugin_root: Path) -> set[str]:
+    path = tool_surface_review_path(plugin_root)
+    try:
+        review = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise SystemExit(f"cannot read public tool ledger {path}: {error}") from error
+    if not isinstance(review, dict) or not review:
+        raise SystemExit(f"public tool ledger must be a non-empty object: {path}")
+    invalid = sorted(name for name in review if not _valid_unica_tool_name(name))
+    if invalid:
+        raise SystemExit(f"public tool ledger has invalid names: {invalid}")
+    return set(review)
+
+
 EXPECTED_SOURCE_INPUT_SCHEMAS = json.loads(
     r'''
 {
@@ -299,6 +368,331 @@ EXPECTED_SOURCE_INPUT_SCHEMAS = json.loads(
     },
     "required": [],
     "type": "object"
+  }
+}
+'''
+)
+
+
+EXPECTED_XDTO_INPUT_SCHEMAS = json.loads(
+    r'''
+{
+  "unica.xdto.info": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "confirm": {
+        "type": "boolean",
+        "description": "Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does"
+      },
+      "cursor": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^\\S+$",
+        "description": "Opaque continuation token returned by the same source navigation request or source.resources snapshot page; do not inspect or reuse it with another request or snapshot"
+      },
+      "cwd": {
+        "type": "string",
+        "description": "Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it"
+      },
+      "dryRun": {
+        "type": "boolean",
+        "description": "Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution."
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 50,
+        "description": "Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, meta.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, meta.profile 20, code.graph nodes, code.diagnostics findings, standards results)."
+      },
+      "metadataPath": {
+        "type": "string",
+        "pattern": "^(?:XDTOPackage|ПакетXDTO)\\.[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*$",
+        "description": "Logical address of an XDTO package in the form `XDTOPackage.<name>`; the physical `Package.bin` path is rejected."
+      },
+      "sourceSet": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^\\S(?:.*\\S)?$",
+        "description": "Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set"
+      },
+      "typeName": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$",
+        "description": "Name of the XDTO valueType or objectType, or of the target objectType for a property operation."
+      }
+    },
+    "required": [
+      "sourceSet",
+      "metadataPath"
+    ],
+    "not": {
+      "anyOf": [
+        {
+          "required": [
+            "typeName",
+            "limit"
+          ]
+        },
+        {
+          "required": [
+            "typeName",
+            "cursor"
+          ]
+        }
+      ]
+    }
+  },
+  "unica.xdto.edit": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "base": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*:[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$",
+        "description": "Prefixed lexical QName naming the base type of a new XDTO valueType in `unica.xdto.edit`, for example `xs:string`; an unprefixed name or surrounding whitespace is rejected."
+      },
+      "confirm": {
+        "type": "boolean",
+        "description": "Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does"
+      },
+      "cwd": {
+        "type": "string",
+        "description": "Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it"
+      },
+      "dryRun": {
+        "type": "boolean",
+        "description": "Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution."
+      },
+      "metadataPath": {
+        "type": "string",
+        "pattern": "^(?:XDTOPackage|ПакетXDTO)\\.[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*$",
+        "description": "Logical address of an XDTO package in the form `XDTOPackage.<name>`; the physical `Package.bin` path is rejected."
+      },
+      "name": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$",
+        "description": "Name of the object being created (`cf.init`, `cfe.init`, `epf.init`, `erf.init`), or the drill-down target for `meta.info`, `subsystem.info` and `dcs.info`; on `cf.info` it is an alias of `section`"
+      },
+      "operation": {
+        "type": "string",
+        "enum": [
+          "add-value-type",
+          "add-object-type",
+          "add-property",
+          "remove-type",
+          "remove-property"
+        ],
+        "description": "Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; the metadata edit verbs for unica.meta.edit; `add-value-type`, `add-object-type`, `add-property`, `remove-type` or `remove-property` for `unica.xdto.edit` — read the enum published in the tool's own schema."
+      },
+      "property": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$"
+          },
+          "type": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*:[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$"
+          },
+          "minOccurs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1
+          }
+        },
+        "required": [
+          "name",
+          "type"
+        ],
+        "description": "New XDTO property object for `unica.xdto.edit`: `name` must be an XML NCName and `type` a prefixed lexical QName; `minOccurs` is optional and must be 0 or 1."
+      },
+      "propertyPath": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*(?:\\\\\\.[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*)*(?:\\.[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*(?:\\\\\\.[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*)*)*$",
+        "description": "Property path to a nested XDTO `typeDef`: an unescaped dot separates segments and `\\.` denotes a literal dot inside one NCName, for example `A\\.B.Child`."
+      },
+      "sourceSet": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^\\S(?:.*\\S)?$",
+        "description": "Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set"
+      },
+      "typeName": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$",
+        "description": "Name of the XDTO valueType or objectType, or of the target objectType for a property operation."
+      }
+    },
+    "required": [
+      "sourceSet",
+      "metadataPath",
+      "operation"
+    ],
+    "oneOf": [
+      {
+        "properties": {
+          "operation": {
+            "const": "add-value-type"
+          }
+        },
+        "required": [
+          "operation",
+          "name",
+          "base"
+        ],
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "typeName"
+              ]
+            },
+            {
+              "required": [
+                "propertyPath"
+              ]
+            },
+            {
+              "required": [
+                "property"
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "properties": {
+          "operation": {
+            "const": "add-object-type"
+          }
+        },
+        "required": [
+          "operation",
+          "name"
+        ],
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "base"
+              ]
+            },
+            {
+              "required": [
+                "typeName"
+              ]
+            },
+            {
+              "required": [
+                "propertyPath"
+              ]
+            },
+            {
+              "required": [
+                "property"
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "properties": {
+          "operation": {
+            "const": "add-property"
+          }
+        },
+        "required": [
+          "operation",
+          "typeName",
+          "property"
+        ],
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "name"
+              ]
+            },
+            {
+              "required": [
+                "base"
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "properties": {
+          "operation": {
+            "const": "remove-type"
+          }
+        },
+        "required": [
+          "operation",
+          "name"
+        ],
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "base"
+              ]
+            },
+            {
+              "required": [
+                "typeName"
+              ]
+            },
+            {
+              "required": [
+                "propertyPath"
+              ]
+            },
+            {
+              "required": [
+                "property"
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "properties": {
+          "operation": {
+            "const": "remove-property"
+          }
+        },
+        "required": [
+          "operation",
+          "typeName",
+          "name"
+        ],
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "base"
+              ]
+            },
+            {
+              "required": [
+                "property"
+              ]
+            }
+          ]
+        }
+      }
+    ]
   }
 }
 '''
@@ -852,20 +1246,70 @@ def _call(session: McpSession, request_id: int, name: str, arguments: dict) -> d
     )
 
 
-def _stable_tool_contract(tools: list[dict]) -> None:
-    by_name = {tool.get("name"): tool for tool in tools if isinstance(tool, dict)}
-    for name in sorted(REQUIRED_TOOLS):
-        if name not in by_name:
-            raise SystemExit(f"Unica MCP tools/list is missing: {name}")
+def _stable_tool_contract(tools: list[object], expected_names: set[str]) -> None:
+    unledgered_source_tools = sorted(SOURCE_TOOL_NAMES - expected_names)
+    if unledgered_source_tools:
+        raise SystemExit(
+            "source tools are absent from tool-surface-review.json: "
+            + ", ".join(unledgered_source_tools)
+        )
+    unledgered_xdto_tools = sorted(
+        set(EXPECTED_XDTO_INPUT_SCHEMAS) - expected_names
+    )
+    if unledgered_xdto_tools:
+        raise SystemExit(
+            "XDTO tools are absent from tool-surface-review.json: "
+            + ", ".join(unledgered_xdto_tools)
+        )
+    by_name = {}
+    name_counts = {}
+    malformed_count = 0
+    for tool in tools:
+        if not isinstance(tool, dict) or not _valid_unica_tool_name(tool.get("name")):
+            malformed_count += 1
+            continue
+        name = tool["name"]
+        schema_error = _input_schema_shape_error(tool.get("inputSchema"))
+        if schema_error is not None:
+            raise SystemExit(
+                f"Unica MCP tools/list has malformed input schema for {name}: "
+                f"{schema_error}"
+            )
+        by_name[name] = tool
+        name_counts[name] = name_counts.get(name, 0) + 1
+    actual_names = set(by_name)
+    missing = sorted(expected_names - actual_names)
+    unexpected = sorted(actual_names - expected_names)
+    duplicates = sorted(name for name, count in name_counts.items() if count > 1)
+    if missing or unexpected or duplicates or malformed_count:
+        diagnostics = []
+        if missing:
+            diagnostics.append("missing: " + ", ".join(missing))
+        if unexpected:
+            diagnostics.append("unexpected: " + ", ".join(unexpected))
+        if duplicates:
+            diagnostics.append("duplicate: " + ", ".join(duplicates))
+        if malformed_count:
+            diagnostics.append(f"malformed entries: {malformed_count}")
+        raise SystemExit(
+            "Unica MCP tools/list differs from tool-surface-review.json ("
+            + "; ".join(diagnostics)
+            + ")"
+        )
     projected = {}
     for name in sorted(SOURCE_TOOL_NAMES):
-        schema = by_name[name].get("inputSchema")
-        if not isinstance(schema, dict):
-            raise SystemExit(f"Unica MCP tools/list has no input schema for {name}")
+        schema = by_name[name]["inputSchema"]
         _assert_path_free(schema)
         projected[name] = schema
     if projected != EXPECTED_SOURCE_INPUT_SCHEMAS:
         raise SystemExit("Unica MCP source input schema projection drifted")
+    xdto_projected = {}
+    for name in sorted(EXPECTED_XDTO_INPUT_SCHEMAS):
+        schema = by_name[name]["inputSchema"]
+        _assert_path_free(schema)
+        xdto_projected[name] = schema
+    if xdto_projected != EXPECTED_XDTO_INPUT_SCHEMAS:
+        raise SystemExit("Unica MCP XDTO input schema projection drifted")
 
 
 def _exercise_source_set(
@@ -924,6 +1368,7 @@ def _exercise_source_set(
 def smoke(command: list[str], plugin_root: Path, timeout_seconds: float) -> None:
     environment = os.environ.copy()
     environment["UNICA_PLUGIN_ROOT"] = str(plugin_root.resolve())
+    expected_names = expected_tool_names(plugin_root)
     with tempfile.TemporaryDirectory(prefix="unica-packaged-source-smoke-") as temporary:
         root = Path(temporary)
         workspace = root / "workspace"
@@ -944,11 +1389,7 @@ def smoke(command: list[str], plugin_root: Path, timeout_seconds: float) -> None
             tools = listed.get("result", {}).get("tools")
             if not isinstance(tools, list):
                 raise SystemExit("Unica MCP tools/list response is missing")
-            _stable_tool_contract(tools)
-            names = {tool.get("name") for tool in tools if isinstance(tool, dict)}
-            removed_aliases = sorted(REMOVED_DCS_TOOL_ALIASES & names)
-            if removed_aliases:
-                raise SystemExit("Unica MCP tools/list exposes removed DCS aliases: " + ", ".join(removed_aliases))
+            _stable_tool_contract(tools, expected_names)
             cache_root = root / "cache"
             next_id, _ = _exercise_source_set(
                 session, 3, workspace, cache_root, "main"

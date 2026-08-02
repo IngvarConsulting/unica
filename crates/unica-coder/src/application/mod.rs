@@ -5,7 +5,7 @@ use crate::domain::events::{runtime_event_kind, DomainEvent, DomainEventKind};
 use crate::domain::workspace::WorkspaceContext;
 pub(crate) use operation_descriptors::SupportGuardRequirement;
 pub(crate) use outcome::AdapterOutcome;
-use ports::{ApplicationPorts, FormatGuardCheck, SupportGuardCheck};
+use ports::{ApplicationPorts, FormatGuardCheck, FormatGuardError, SupportGuardCheck};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
@@ -408,6 +408,20 @@ pub fn tools() -> Vec<ToolSpec> {
             },
         },
         ToolSpec {
+            name: "unica.xdto.info",
+            description: "Inspect one logically addressed 1C XDTO package schema.",
+            mutating: false,
+            cache_access: CacheAccess::default(),
+            handler: ToolHandler::NativeOperation { operation: "xdto-info", event: None },
+        },
+        ToolSpec {
+            name: "unica.xdto.edit",
+            description: "Preview or apply a safe targeted mutation to one logically addressed 1C XDTO package schema.",
+            mutating: true,
+            cache_access: cache_access_for("xdto-edit", Some(DomainEventKind::MetadataChanged)),
+            handler: ToolHandler::NativeOperation { operation: "xdto-edit", event: Some(DomainEventKind::MetadataChanged) },
+        },
+        ToolSpec {
             name: "unica.code.graph",
             description: "Inspect BSL call graph through the typed Unica code analysis boundary.",
             mutating: false,
@@ -470,21 +484,47 @@ fn call_tool(
     let cwd = args.get("cwd").and_then(Value::as_str).map(PathBuf::from);
     let context = ports.discover_workspace(cwd)?;
     ports.validate_tool_context(spec, args, dry_run, &context)?;
+    let xdto_target = XdtoLogicalTarget::from_call(spec, args);
     let mut format_guard_warning = None;
     let mut format_diagnostic = None;
-    match ports.evaluate_format_guard(spec, args, &context)? {
+    let format_guard = ports
+        .evaluate_format_guard(spec, args, &context)
+        .map_err(|error| project_xdto_format_guard_error(xdto_target.as_ref(), error))?;
+    match format_guard {
         FormatGuardCheck::Allow => {}
         FormatGuardCheck::Warn {
             warning,
             diagnostic,
         } => {
-            format_guard_warning = Some(warning);
-            format_diagnostic = Some(diagnostic);
+            if let Some(target) = xdto_target.as_ref() {
+                format_guard_warning = Some(target.warning(
+                    "format_guard_warning",
+                    "the source export format is outside the supported profile",
+                ));
+                format_diagnostic = Some(target.format_diagnostic(&diagnostic));
+            } else {
+                format_guard_warning = Some(warning);
+                format_diagnostic = Some(diagnostic);
+            }
         }
         FormatGuardCheck::Block {
-            outcome,
+            mut outcome,
             diagnostic,
         } => {
+            let diagnostic = if let Some(target) = xdto_target.as_ref() {
+                let code = diagnostic
+                    .get("code")
+                    .and_then(Value::as_str)
+                    .unwrap_or("format_incompatible");
+                outcome = target.blocked_outcome(
+                    spec,
+                    code,
+                    "the source export format is outside the supported profile",
+                );
+                target.format_diagnostic(&diagnostic)
+            } else {
+                diagnostic
+            };
             let cache = ports.cache_report(&context, &[], dry_run, spec.cache_access)?;
             return Ok(OperationResult {
                 ok: outcome.ok,
@@ -524,10 +564,30 @@ fn call_tool(
         });
     }
     let support_guard_warning = if spec.mutating {
-        match ports.evaluate_support_guard(spec, args, &context)? {
+        let support_guard =
+            ports
+                .evaluate_support_guard(spec, args, &context)
+                .map_err(|error| {
+                    project_xdto_guard_error(xdto_target.as_ref(), "support_guard_failed", error)
+                })?;
+        match support_guard {
             SupportGuardCheck::Allow => None,
-            SupportGuardCheck::Warn(warning) => Some(warning),
+            SupportGuardCheck::Warn(warning) => Some(if let Some(target) = xdto_target.as_ref() {
+                target.warning(
+                    "support_guard_warning",
+                    "the target is protected by support policy; the operation continues in warn mode",
+                )
+            } else {
+                warning
+            }),
             SupportGuardCheck::Block(mut outcome) => {
+                if let Some(target) = xdto_target.as_ref() {
+                    outcome = target.blocked_outcome(
+                        spec,
+                        "support_locked",
+                        "the target is protected by support policy",
+                    );
+                }
                 if dry_run {
                     outcome.summary = format!("dry run: {}", outcome.summary);
                 }
@@ -586,7 +646,7 @@ fn call_tool(
     }
     let events = if dry_run && !projected_events.is_empty() {
         projected_events
-    } else if should_emit_events(spec, args, dry_run, &outcome) {
+    } else if should_emit_events(spec, args, dry_run, &outcome, handler_outcome.data.as_ref()) {
         if handler_events.is_empty() {
             domain_events(spec, args)
         } else {
@@ -636,6 +696,105 @@ fn call_tool(
         data: handler_outcome.data,
         job: handler_outcome.job,
     })
+}
+
+#[derive(Clone, Debug)]
+struct XdtoLogicalTarget {
+    source_set: String,
+    metadata_path: String,
+}
+
+impl XdtoLogicalTarget {
+    fn from_call(spec: ToolSpec, args: &Map<String, Value>) -> Option<Self> {
+        if !matches!(spec.name, "unica.xdto.info" | "unica.xdto.edit") {
+            return None;
+        }
+        let source_set = args.get("sourceSet")?.as_str()?.to_string();
+        let raw_metadata_path = args.get("metadataPath")?.as_str()?;
+        let name = raw_metadata_path
+            .strip_prefix("XDTOPackage.")
+            .or_else(|| raw_metadata_path.strip_prefix("ПакетXDTO."))?;
+        Some(Self {
+            source_set,
+            metadata_path: format!("XDTOPackage.{name}"),
+        })
+    }
+
+    fn identity(&self) -> String {
+        format!("{} + {}", self.source_set, self.metadata_path)
+    }
+
+    fn warning(&self, code: &str, reason: &str) -> String {
+        format!("{code}: {} — {reason}", self.identity())
+    }
+
+    fn blocked_outcome(&self, spec: ToolSpec, code: &str, reason: &str) -> AdapterOutcome {
+        let message = format!("{code}: {} — {reason}", self.identity());
+        AdapterOutcome {
+            ok: false,
+            summary: format!("{} blocked for {} ({code})", spec.name, self.identity()),
+            changes: Vec::new(),
+            warnings: (code != "support_locked")
+                .then(|| message.clone())
+                .into_iter()
+                .collect(),
+            errors: vec![message.clone()],
+            artifacts: vec![self.identity()],
+            stdout: None,
+            stderr: Some(format!("{message}\n")),
+            command: None,
+        }
+    }
+
+    fn format_diagnostic(&self, diagnostic: &Value) -> Value {
+        let mut projected = Map::new();
+        if let Some(source) = diagnostic.as_object() {
+            for key in [
+                "code",
+                "actualFormat",
+                "targetFormat",
+                "targetPlatform",
+                "compatibility",
+                "ownerKind",
+            ] {
+                if let Some(value) = source.get(key) {
+                    projected.insert(key.to_string(), value.clone());
+                }
+            }
+        }
+        projected.insert("sourceSet".to_string(), json!(self.source_set));
+        projected.insert("metadataPath".to_string(), json!(self.metadata_path));
+        projected.insert("targetKind".to_string(), json!("metadataObject"));
+        Value::Object(projected)
+    }
+}
+
+fn project_xdto_guard_error(
+    target: Option<&XdtoLogicalTarget>,
+    code: &str,
+    internal_error: String,
+) -> String {
+    target.map_or(internal_error, |target| {
+        format!("{code}: guard evaluation failed for {}", target.identity())
+    })
+}
+
+fn project_xdto_format_guard_error(
+    target: Option<&XdtoLogicalTarget>,
+    error: FormatGuardError,
+) -> String {
+    let Some(target) = target else {
+        return error.into_internal_cause();
+    };
+    match error.public_projection() {
+        Some((code, message)) => {
+            format!("{}: {} — {message}", code.as_str(), target.identity())
+        }
+        None => format!(
+            "format_guard_failed: guard evaluation failed for {}",
+            target.identity()
+        ),
+    }
 }
 
 fn invoke_code_intelligence_search(
@@ -1006,12 +1165,26 @@ fn should_emit_events(
     args: &Map<String, Value>,
     dry_run: bool,
     outcome: &AdapterOutcome,
+    data: Option<&Value>,
 ) -> bool {
     if !spec.mutating || !outcome.ok {
         return false;
     }
     if !dry_run {
-        return !outcome.changes.is_empty();
+        return if spec.name == "unica.xdto.edit" {
+            data.and_then(|data| data.get("noOp"))
+                .and_then(Value::as_bool)
+                == Some(false)
+        } else {
+            !outcome.changes.is_empty()
+        };
+    }
+
+    if spec.name == "unica.xdto.edit" {
+        return data
+            .and_then(|data| data.get("noOp"))
+            .and_then(Value::as_bool)
+            == Some(false);
     }
 
     if spec.name == "unica.code.patch" {
@@ -2021,6 +2194,243 @@ mod tests {
     }
 
     #[test]
+    fn xdto_guards_project_support_deny_and_warn_to_the_logical_target() {
+        let (deny_root, deny_workspace) =
+            xdto_public_guard_workspace("unica-xdto-support-deny", "2.20", None);
+        let deny_args = xdto_public_edit_args(&deny_workspace, "ПакетXDTO.Sample");
+        let denied = UnicaApplication::new()
+            .call_tool("unica.xdto.edit", &deny_args)
+            .unwrap();
+
+        assert!(!denied.ok, "{denied:?}");
+        assert!(
+            denied.errors.join("\n").contains("support_locked"),
+            "{denied:?}"
+        );
+        assert_eq!(
+            denied.artifacts,
+            vec!["main + XDTOPackage.Sample".to_string()]
+        );
+        assert!(denied.data.is_none(), "{denied:?}");
+        assert_xdto_public_fields_are_logical(&denied, &deny_workspace);
+
+        let (warn_root, warn_workspace) =
+            xdto_public_guard_workspace("unica-xdto-support-warn", "2.20", Some("warn"));
+        let warned = UnicaApplication::new()
+            .call_tool(
+                "unica.xdto.edit",
+                &xdto_public_edit_args(&warn_workspace, "XDTOPackage.Sample"),
+            )
+            .unwrap();
+
+        assert!(warned.ok, "{warned:?}");
+        assert!(
+            warned
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("support_guard_warning")
+                    && warning.contains("main + XDTOPackage.Sample")),
+            "{warned:?}"
+        );
+        assert_eq!(
+            warned.data.as_ref().unwrap()["metadataPath"],
+            "XDTOPackage.Sample"
+        );
+        assert_xdto_public_fields_are_logical(&warned, &warn_workspace);
+
+        std::fs::remove_dir_all(deny_root).unwrap();
+        std::fs::remove_dir_all(warn_root).unwrap();
+    }
+
+    #[test]
+    fn xdto_guards_project_format_warn_and_block_to_the_logical_target() {
+        for (label, format_version, expected_code) in [
+            ("invalid", "2.20.0", "formatVersionInvalid"),
+            ("older", "2.19", "formatMigrationAvailable"),
+            ("newer", "2.21", "platformVersionUnsupported"),
+        ] {
+            let (warn_root, warn_workspace) = xdto_public_guard_workspace(
+                &format!("unica-xdto-format-warn-{label}"),
+                format_version,
+                None,
+            );
+            let read = UnicaApplication::new()
+                .call_tool(
+                    "unica.xdto.info",
+                    &Map::from_iter([
+                        (
+                            "cwd".to_string(),
+                            Value::String(warn_workspace.display().to_string()),
+                        ),
+                        ("sourceSet".to_string(), json!("main")),
+                        ("metadataPath".to_string(), json!("ПакетXDTO.Sample")),
+                    ]),
+                )
+                .unwrap();
+
+            assert!(read.ok, "{label}: {read:?}");
+            assert!(
+                read.warnings.iter().any(|warning| {
+                    warning.contains("format_guard_warning")
+                        && warning.contains("main + XDTOPackage.Sample")
+                }),
+                "{label}: {read:?}"
+            );
+            let read_diagnostic = &read.diagnostics.as_ref().unwrap()["formatCompatibility"];
+            assert_eq!(read_diagnostic["code"], expected_code, "{label}");
+            assert_eq!(read_diagnostic["sourceSet"], "main", "{label}");
+            assert_eq!(
+                read_diagnostic["metadataPath"], "XDTOPackage.Sample",
+                "{label}"
+            );
+            assert!(read_diagnostic.get("root").is_none(), "{label}: {read:?}");
+            assert_xdto_public_fields_are_logical(&read, &warn_workspace);
+
+            let (block_root, block_workspace) = xdto_public_guard_workspace(
+                &format!("unica-xdto-format-block-{label}"),
+                format_version,
+                None,
+            );
+            let blocked = UnicaApplication::new()
+                .call_tool(
+                    "unica.xdto.edit",
+                    &xdto_public_edit_args(&block_workspace, "XDTOPackage.Sample"),
+                )
+                .unwrap();
+
+            assert!(!blocked.ok, "{label}: {blocked:?}");
+            assert_eq!(
+                blocked.artifacts,
+                vec!["main + XDTOPackage.Sample".to_string()],
+                "{label}"
+            );
+            let blocked_diagnostic = &blocked.diagnostics.as_ref().unwrap()["formatCompatibility"];
+            assert_eq!(blocked_diagnostic["code"], expected_code, "{label}");
+            assert_eq!(blocked_diagnostic["sourceSet"], "main", "{label}");
+            assert_eq!(
+                blocked_diagnostic["metadataPath"], "XDTOPackage.Sample",
+                "{label}"
+            );
+            assert!(
+                blocked_diagnostic.get("root").is_none(),
+                "{label}: {blocked:?}"
+            );
+            assert!(blocked.data.is_none(), "{label}: {blocked:?}");
+            assert_xdto_public_fields_are_logical(&blocked, &block_workspace);
+
+            std::fs::remove_dir_all(warn_root).unwrap();
+            std::fs::remove_dir_all(block_root).unwrap();
+        }
+    }
+
+    #[test]
+    fn xdto_guards_sanitize_format_and_support_evaluation_errors() {
+        let workspace = PathBuf::from("/private/provider/workspace");
+        let args = xdto_public_edit_args(&workspace, "ПакетXDTO.Sample");
+        for (guard, expected_code) in [
+            (FailingXdtoGuard::Format, "format_guard_failed"),
+            (FailingXdtoGuard::Support, "support_guard_failed"),
+        ] {
+            let error = UnicaApplication::with_ports(Arc::new(FailingXdtoGuardPorts { guard }))
+                .call_tool("unica.xdto.edit", &args)
+                .expect_err("guard evaluation failure must remain an application error");
+
+            assert!(error.starts_with(expected_code), "{guard:?}: {error}");
+            assert!(
+                error.contains("main + XDTOPackage.Sample"),
+                "{guard:?}: {error}"
+            );
+            assert!(!error.contains("/private/provider"), "{guard:?}: {error}");
+            assert!(!error.contains("Package.bin"), "{guard:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn xdto_format_guard_preserves_known_resolver_codes_without_physical_handles() {
+        let (root, workspace) =
+            xdto_public_guard_workspace("unica-xdto-resolver-errors", "2.20", None);
+        std::fs::create_dir_all(workspace.join("external")).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n  - name: external\n    type: EXTERNAL_DATA_PROCESSORS\n    path: external\n",
+        )
+        .unwrap();
+
+        let cases = [
+            (
+                "source_set_unknown",
+                "missing + XDTOPackage.Sample",
+                UnicaApplication::new()
+                    .call_tool(
+                        "unica.xdto.info",
+                        &xdto_public_info_args(&workspace, "missing", "XDTOPackage.Sample"),
+                    )
+                    .expect_err("unknown source set must remain an application error"),
+            ),
+            (
+                "target_not_found",
+                "main + XDTOPackage.Missing",
+                UnicaApplication::new()
+                    .call_tool(
+                        "unica.xdto.info",
+                        &xdto_public_info_args(&workspace, "main", "XDTOPackage.Missing"),
+                    )
+                    .expect_err("missing logical target must remain an application error"),
+            ),
+            (
+                "not_an_xdto_package",
+                "external + XDTOPackage.Sample",
+                UnicaApplication::new()
+                    .call_tool(
+                        "unica.xdto.info",
+                        &xdto_public_info_args(&workspace, "external", "XDTOPackage.Sample"),
+                    )
+                    .expect_err("unsupported source format must remain an application error"),
+            ),
+        ];
+
+        std::fs::remove_file(workspace.join("src/XDTOPackages/Sample/Ext/Package.bin")).unwrap();
+        let missing_resource = UnicaApplication::new()
+            .call_tool(
+                "unica.xdto.info",
+                &xdto_public_info_args(&workspace, "main", "XDTOPackage.Sample"),
+            )
+            .expect_err("missing Package.bin must remain an application error");
+        let expected_codes = [
+            "source_set_unknown",
+            "target_not_found",
+            "not_an_xdto_package",
+            "package_resource_missing",
+        ];
+        let actual_codes = cases
+            .iter()
+            .map(|(_, _, error)| {
+                error
+                    .split_once(':')
+                    .map_or(error.as_str(), |(code, _)| code)
+            })
+            .chain(std::iter::once(
+                missing_resource
+                    .split_once(':')
+                    .map_or(missing_resource.as_str(), |(code, _)| code),
+            ))
+            .collect::<Vec<_>>();
+        assert_eq!(actual_codes, expected_codes);
+
+        for (expected_code, expected_target, error) in &cases {
+            assert_xdto_public_error_is_logical(error, expected_code, expected_target, &workspace);
+        }
+        assert_xdto_public_error_is_logical(
+            &missing_resource,
+            "package_resource_missing",
+            "main + XDTOPackage.Sample",
+            &workspace,
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn code_patch_public_result_is_typed_and_emits_only_applied_change_events() {
         let root = test_workspace_root("unica-code-patch-public-result");
         let workspace = root.join("workspace");
@@ -2849,17 +3259,18 @@ mod tests {
         };
 
         let args = Map::new();
-        assert!(!should_emit_events(spec, &args, false, &outcome));
+        assert!(!should_emit_events(spec, &args, false, &outcome, None));
 
         outcome
             .changes
             .push("updated Configuration.xml".to_string());
-        assert!(should_emit_events(spec, &args, false, &outcome));
+        assert!(should_emit_events(spec, &args, false, &outcome, None));
         assert!(should_emit_events(
             spec,
             &args,
             true,
-            &AdapterOutcome::ok("generic dry run")
+            &AdapterOutcome::ok("generic dry run"),
+            None,
         ));
 
         let code_patch_spec = ToolSpec {
@@ -2876,7 +3287,8 @@ mod tests {
             code_patch_spec,
             &args,
             true,
-            &AdapterOutcome::ok("code patch preview")
+            &AdapterOutcome::ok("code patch preview"),
+            None,
         ));
 
         let form_edit_spec = ToolSpec {
@@ -2897,7 +3309,8 @@ mod tests {
             form_edit_spec,
             &semantic_args,
             true,
-            &AdapterOutcome::ok("semantic dry run no-op")
+            &AdapterOutcome::ok("semantic dry run no-op"),
+            None,
         ));
 
         let mut planned = AdapterOutcome::ok("dry run planned change");
@@ -2906,7 +3319,8 @@ mod tests {
             form_edit_spec,
             &semantic_args,
             true,
-            &planned
+            &planned,
+            None,
         ));
 
         let mut rejected = AdapterOutcome::ok("dry run rejected");
@@ -2916,7 +3330,45 @@ mod tests {
             form_edit_spec,
             &semantic_args,
             true,
-            &rejected
+            &rejected,
+            None,
+        ));
+    }
+
+    #[test]
+    fn xdto_event_selector_uses_typed_plan_state_without_presentation_changes() {
+        let spec = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.xdto.edit")
+            .unwrap();
+        let args = Map::new();
+        let changed = json!({"noOp": false});
+        let no_op = json!({"noOp": true});
+        let successful = AdapterOutcome::ok("presentation changes intentionally omitted");
+
+        assert!(should_emit_events(
+            spec,
+            &args,
+            false,
+            &successful,
+            Some(&changed),
+        ));
+        assert!(!should_emit_events(
+            spec,
+            &args,
+            false,
+            &successful,
+            Some(&no_op),
+        ));
+
+        let mut failed = AdapterOutcome::ok("typed plan exists but the operation failed");
+        failed.ok = false;
+        assert!(!should_emit_events(
+            spec,
+            &args,
+            false,
+            &failed,
+            Some(&changed),
         ));
     }
 
@@ -5226,8 +5678,8 @@ mod tests {
                 Some(policy) => {
                     match policy {
                         SupportGuardPolicy::HandlerResolved { requirement } => {
-                            assert_eq!(
-                                operation, "code-patch",
+                            assert!(
+                                matches!(operation, "code-patch" | "xdto-edit"),
                                 "{operation} unexpectedly delegates support resolution"
                             );
                             assert_eq!(requirement, SupportGuardRequirement::Editable);
@@ -5292,6 +5744,7 @@ mod tests {
                 "subsystem-edit",
                 "template-add",
                 "template-remove",
+                "xdto-edit",
             ],
             "guarded platform-XML mutations changed without updating the support contract"
         );
@@ -5326,6 +5779,7 @@ mod tests {
 
         let expected = [
             ("code-patch", &[][..], "HandlerResolved"),
+            ("xdto-edit", &[][..], "HandlerResolved"),
             (
                 "cf-edit",
                 &["ConfigPath", "configPath", "Path", "path"][..],
@@ -6831,7 +7285,7 @@ mod tests {
                 _spec: ToolSpec,
                 args: &Map<String, Value>,
                 _context: &WorkspaceContext,
-            ) -> Result<FormatGuardCheck, String> {
+            ) -> Result<FormatGuardCheck, FormatGuardError> {
                 self.record("format", args);
                 Ok(FormatGuardCheck::Allow)
             }
@@ -9443,6 +9897,88 @@ mod tests {
         data: Option<Value>,
     }
 
+    #[derive(Clone, Copy, Debug)]
+    enum FailingXdtoGuard {
+        Format,
+        Support,
+    }
+
+    struct FailingXdtoGuardPorts {
+        guard: FailingXdtoGuard,
+    }
+
+    impl ports::ApplicationPorts for FailingXdtoGuardPorts {
+        fn discover_workspace(
+            &self,
+            requested_cwd: Option<PathBuf>,
+        ) -> Result<WorkspaceContext, String> {
+            let cwd = requested_cwd.unwrap_or_default();
+            Ok(WorkspaceContext {
+                cwd: cwd.clone(),
+                workspace_root: cwd.clone(),
+                cache_root: cwd.join(".build/unica"),
+                workspace_epoch: 1,
+            })
+        }
+
+        fn validate_tool_context(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _dry_run: bool,
+            _context: &WorkspaceContext,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn evaluate_format_guard(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _context: &WorkspaceContext,
+        ) -> Result<FormatGuardCheck, FormatGuardError> {
+            match self.guard {
+                FailingXdtoGuard::Format => Err(FormatGuardError::internal(
+                    "failed to inspect /private/provider/workspace/src/Configuration.xml"
+                        .to_string(),
+                )),
+                FailingXdtoGuard::Support => Ok(FormatGuardCheck::Allow),
+            }
+        }
+
+        fn evaluate_support_guard(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _context: &WorkspaceContext,
+        ) -> Result<SupportGuardCheck, String> {
+            Err("failed to inspect /private/provider/workspace/src/XDTOPackages/Sample/Ext/Package.bin".to_string())
+        }
+
+        fn invoke_handler(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _context: &WorkspaceContext,
+            _dry_run: bool,
+            _cancellation: &CancellationToken,
+        ) -> Result<ports::HandlerOutcome, String> {
+            Err("handler must not run after a guard evaluation error".to_string())
+        }
+
+        fn cache_report(
+            &self,
+            _context: &WorkspaceContext,
+            _events: &[DomainEvent],
+            _dry_run: bool,
+            _cache_access: CacheAccess,
+        ) -> Result<CacheReport, String> {
+            Err("cache report must not run after a guard evaluation error".to_string())
+        }
+
+        fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
+    }
+
     impl ports::ApplicationPorts for FixedOutcomePorts {
         fn discover_workspace(
             &self,
@@ -9588,6 +10124,150 @@ mod tests {
         let root = std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    fn xdto_public_guard_workspace(
+        prefix: &str,
+        source_format_version: &str,
+        support_mode: Option<&str>,
+    ) -> (std::path::PathBuf, std::path::PathBuf) {
+        let root = test_workspace_root(prefix);
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let package = src.join("XDTOPackages/Sample/Ext/Package.bin");
+        std::fs::create_dir_all(package.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(src.join("Ext")).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        if let Some(mode) = support_mode {
+            std::fs::write(
+                workspace.join(".v8-project.json"),
+                format!(r#"{{"editingAllowedCheck":"{mode}"}}"#),
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            src.join("Configuration.xml"),
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="{source_format_version}"><Configuration uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"><Properties><Name>Main</Name></Properties></Configuration></MetaDataObject>"#
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("XDTOPackages/Sample.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><XDTOPackage uuid="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"><Properties><Name>Sample</Name><Namespace>urn:test</Namespace></Properties></XDTOPackage></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            package,
+            r#"<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:tns="urn:test" targetNamespace="urn:test">
+	<objectType name="Existing"/>
+</package>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("Ext/ParentConfigurations.bin"),
+            support_test_parent_configurations_bin(
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                "cccccccc-cccc-cccc-cccc-cccccccccccc",
+            ),
+        )
+        .unwrap();
+        (root, workspace)
+    }
+
+    fn xdto_public_edit_args(
+        workspace: &std::path::Path,
+        metadata_path: &str,
+    ) -> Map<String, Value> {
+        Map::from_iter([
+            (
+                "cwd".to_string(),
+                Value::String(workspace.display().to_string()),
+            ),
+            ("sourceSet".to_string(), json!("main")),
+            ("metadataPath".to_string(), json!(metadata_path)),
+            ("operation".to_string(), json!("add-object-type")),
+            ("name".to_string(), json!("Added")),
+        ])
+    }
+
+    fn xdto_public_info_args(
+        workspace: &std::path::Path,
+        source_set: &str,
+        metadata_path: &str,
+    ) -> Map<String, Value> {
+        Map::from_iter([
+            (
+                "cwd".to_string(),
+                Value::String(workspace.display().to_string()),
+            ),
+            ("sourceSet".to_string(), json!(source_set)),
+            ("metadataPath".to_string(), json!(metadata_path)),
+        ])
+    }
+
+    fn assert_xdto_public_error_is_logical(
+        error: &str,
+        expected_code: &str,
+        expected_target: &str,
+        workspace: &std::path::Path,
+    ) {
+        assert!(error.starts_with(expected_code), "{error}");
+        assert!(error.contains(expected_target), "{error}");
+        let serialized = serde_json::to_string(error).unwrap();
+        for forbidden in [
+            workspace.display().to_string(),
+            workspace.join("src").display().to_string(),
+            "XDTOPackages/Sample/Ext/Package.bin".to_string(),
+            "XDTOPackages\\Sample\\Ext\\Package.bin".to_string(),
+            "XDTOPackages/Sample.xml".to_string(),
+            "XDTOPackages\\Sample.xml".to_string(),
+            "Package.bin".to_string(),
+            "Configuration.xml".to_string(),
+            "provider".to_string(),
+        ] {
+            assert!(
+                !serialized.contains(&forbidden),
+                "leaked {forbidden:?}: {serialized}"
+            );
+        }
+    }
+
+    fn assert_xdto_public_fields_are_logical(
+        result: &OperationResult,
+        workspace: &std::path::Path,
+    ) {
+        let public_fields = serde_json::to_string(&json!({
+            "summary": result.summary,
+            "changes": result.changes,
+            "warnings": result.warnings,
+            "errors": result.errors,
+            "artifacts": result.artifacts,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "command": result.command,
+            "diagnostics": result.diagnostics,
+            "data": result.data,
+        }))
+        .unwrap();
+        for forbidden in [
+            workspace.display().to_string(),
+            workspace.join("src").display().to_string(),
+            "XDTOPackages/Sample/Ext/Package.bin".to_string(),
+            "XDTOPackages\\Sample\\Ext\\Package.bin".to_string(),
+            "XDTOPackages/Sample.xml".to_string(),
+            "XDTOPackages\\Sample.xml".to_string(),
+        ] {
+            assert!(
+                !public_fields.contains(&forbidden),
+                "leaked {forbidden:?}: {public_fields}"
+            );
+        }
     }
 
     fn source_tree_snapshot(

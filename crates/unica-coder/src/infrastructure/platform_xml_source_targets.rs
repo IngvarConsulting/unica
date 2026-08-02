@@ -1920,6 +1920,16 @@ pub(crate) struct RevalidatedPlatformXmlTarget {
     pub(crate) path: PathBuf,
 }
 
+/// Revalidated resource paths whose field meaning follows the closed handle's
+/// target kind:
+///
+/// - `Module`: `target_path` is the BSL module and `descriptor_paths` contains
+///   the descriptors required by its layout; `module_paths` is empty.
+/// - `MetadataObject`: `target_path` is the object descriptor and
+///   `module_paths` contains its proven owned BSL modules; `descriptor_paths`
+///   is empty.
+/// - `SourceRoot`: `target_path` is the source root and `descriptor_paths`
+///   contains `Configuration.xml`; `module_paths` is empty.
 pub(crate) struct PlatformXmlResourceEvidence {
     pub(crate) target_path: PathBuf,
     pub(crate) source_root: PathBuf,
@@ -2387,13 +2397,10 @@ fn validate_source_set(selected: &ResolvedNamedSourceSet) -> Result<(), SourceTa
         SourceSetKind::Configuration | SourceSetKind::Extension
     ) || selected.source_set.source_format != SourceFormat::PlatformXml
     {
-        return Err(SourceTargetError::new(
-            SourceTargetErrorCode::SourceRootNotAddressable,
-            format!(
-                "source set `{}` must be a Platform XML Configuration or Extension",
-                selected.source_set.name
-            ),
-        ));
+        return Err(SourceTargetError::source_format_unsupported(format!(
+            "source set `{}` must be a Platform XML Configuration or Extension",
+            selected.source_set.name
+        )));
     }
     Ok(())
 }
@@ -3041,7 +3048,8 @@ mod tests {
     };
     use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
     use crate::domain::source_target::{
-        MetadataAddress, SourceTarget, SourceTargetErrorCode, PLATFORM_XML_8_3_27_FORMAT_2_20,
+        MetadataAddress, SourceTarget, SourceTargetErrorCode, SourceTargetErrorReason,
+        PLATFORM_XML_8_3_27_FORMAT_2_20,
     };
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::platform::filesystem::create_dir_symlink_for_test;
@@ -3188,6 +3196,21 @@ mod tests {
                 error.code,
                 SourceTargetErrorCode::SourceRootNotAddressable,
                 "{source_set}: {error}"
+            );
+            assert_eq!(
+                error.reason(),
+                SourceTargetErrorReason::SourceFormatUnsupported,
+                "{source_set}: {error}"
+            );
+            assert!(
+                error.to_string().starts_with("SourceRootNotAddressable:"),
+                "{source_set}: {error}"
+            );
+            let serialized = serde_json::to_string(&error).unwrap();
+            assert!(!serialized.contains("reason"), "{source_set}: {serialized}");
+            assert!(
+                !serialized.contains("SourceFormatUnsupported"),
+                "{source_set}: {serialized}"
             );
         }
         cleanup(&context);

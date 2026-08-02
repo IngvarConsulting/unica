@@ -8,6 +8,7 @@ use crate::infrastructure::native_operations::common::{
     absolutize, path_arg, required_string, resolve_code_patch_guard_path, support_guard_violation,
     SupportGuardViolation,
 };
+use crate::infrastructure::native_operations::xdto::resolve_xdto_guard_path;
 use crate::infrastructure::native_operations::{meta, template};
 use crate::infrastructure::source_roots::normalize_path_identity;
 use serde_json::{Map, Value};
@@ -75,9 +76,11 @@ fn support_guard_target(
     let policy = native_operation_descriptor(operation)?.support_guard?;
     match policy {
         SupportGuardPolicy::HandlerResolved { requirement } => {
-            resolve_code_patch_guard_path(args, context)
-                .ok()
-                .map(|path| (path, requirement))
+            let resolved = match operation {
+                "xdto-edit" => resolve_xdto_guard_path(args, context).ok(),
+                _ => resolve_code_patch_guard_path(args, context).ok(),
+            };
+            resolved.map(|path| (path, requirement))
         }
         SupportGuardPolicy::PathArgs { names, requirement } => {
             support_guard_path_arg(args, context, names, requirement)

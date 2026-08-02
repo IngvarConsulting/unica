@@ -13,10 +13,39 @@ DOCUMENT_LINK_PATTERNS = (
     re.compile(r"`([^`\s]*/[^`\s]*\.md)`"),
     re.compile(r"\]\((?!\w+:)([^)\s#]+\.md)(?:#[^)\s]*)?\)"),
 )
+XDTO_DONOR_EVIDENCE_START = "<!-- xdto-donor-evidence:start -->"
+XDTO_DONOR_EVIDENCE_END = "<!-- xdto-donor-evidence:end -->"
+XDTO_DONOR_EVIDENCE_PATH = Path(
+    "plugins/unica/references/specs/1c-xdto-spec.md"
+)
+XDTO_DONOR_EVIDENCE = re.compile(
+    re.escape(XDTO_DONOR_EVIDENCE_START)
+    + r".*?"
+    + re.escape(XDTO_DONOR_EVIDENCE_END),
+    re.DOTALL,
+)
 
 
 def document_links(text: str) -> list[str]:
     return [match for pattern in DOCUMENT_LINK_PATTERNS for match in pattern.findall(text)]
+
+
+def stale_route_guard_text(path: Path, text: str) -> str:
+    """Subtract the one audited donor inventory, never a reusable marker block."""
+
+    if path != XDTO_DONOR_EVIDENCE_PATH:
+        return text
+    matches = list(XDTO_DONOR_EVIDENCE.finditer(text))
+    if (
+        text.count(XDTO_DONOR_EVIDENCE_START) != 1
+        or text.count(XDTO_DONOR_EVIDENCE_END) != 1
+        or len(matches) != 1
+    ):
+        raise ValueError(
+            f"{XDTO_DONOR_EVIDENCE_PATH} must contain exactly one donor evidence block"
+        )
+    match = matches[0]
+    return text[: match.start()] + text[match.end() :]
 
 
 IN_SCOPE_TOOLS = {
@@ -1375,9 +1404,36 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         for root in scanned_roots:
             for path in root.rglob("*.md"):
                 text = path.read_text(encoding="utf-8")
+                relative_path = path.relative_to(self.repo_root())
+                # A pinned source inventory is evidence, not prompt routing.
+                # Only the exact XDTO specification owns that exception; marker
+                # reuse in any other prompt-visible document is itself a failure.
+                if relative_path == XDTO_DONOR_EVIDENCE_PATH:
+                    self.assertEqual(text.count(XDTO_DONOR_EVIDENCE_START), 1)
+                    self.assertEqual(text.count(XDTO_DONOR_EVIDENCE_END), 1)
+                else:
+                    self.assertNotIn(XDTO_DONOR_EVIDENCE_START, text)
+                    self.assertNotIn(XDTO_DONOR_EVIDENCE_END, text)
+                try:
+                    text = stale_route_guard_text(relative_path, text)
+                except ValueError as error:
+                    self.fail(str(error))
                 for pattern in forbidden_patterns:
-                    with self.subTest(path=path.relative_to(self.repo_root()), pattern=pattern):
+                    with self.subTest(path=relative_path, pattern=pattern):
                         self.assertIsNone(re.search(pattern, text))
+
+    def test_xdto_donor_evidence_markers_cannot_mask_other_documents(self) -> None:
+        foreign_document = """<!-- xdto-donor-evidence:start -->
+Use `.claude/commands/xdto.md` as the execution route.
+<!-- xdto-donor-evidence:end -->
+"""
+
+        guarded = stale_route_guard_text(
+            Path("plugins/unica/skills/foreign/SKILL.md"),
+            foreign_document,
+        )
+
+        self.assertIn(".claude", guarded)
 
     def test_v8_runner_docs_track_current_v8project_contract(self) -> None:
         v8project = (self.reference_root() / "tooling" / "v8project.md").read_text(
@@ -1542,6 +1598,65 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertRegex(text, r"Configuration.{0,120}Extension")
         self.assertIn("sourceSet", text)
         self.assertIn("metadataPath", text)
+
+    def test_xdto_skill_uses_one_confirmed_info_preview_apply_mcp_flow(self) -> None:
+        path = self.skill_root() / "xdto" / "SKILL.md"
+        text = path.read_text(encoding="utf-8")
+        blocks = list(re.finditer(r"```json\s*(.*?)```", text, re.DOTALL))
+        calls = [json.loads(block.group(1)) for block in blocks]
+
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(
+            [call.get("method") for call in calls],
+            ["tools/call", "tools/call", "tools/call"],
+        )
+        params = [call["params"] for call in calls]
+        self.assertEqual(
+            [item["name"] for item in params],
+            ["unica.xdto.info", "unica.xdto.edit", "unica.xdto.edit"],
+        )
+        self.assertEqual(
+            {item["name"] for item in params},
+            {"unica.xdto.info", "unica.xdto.edit"},
+        )
+
+        preview = dict(params[1]["arguments"])
+        apply = dict(params[2]["arguments"])
+        self.assertIs(preview.pop("dryRun"), True)
+        self.assertIs(apply.pop("dryRun"), False)
+        self.assertEqual(preview, apply)
+        confirmation_text = text[blocks[1].end() : blocks[2].start()].casefold()
+        self.assertIn("явного подтверждения", confirmation_text)
+
+        for item in params:
+            with self.subTest(tool=item["name"]):
+                arguments = item["arguments"]
+                self.assertEqual(arguments.get("sourceSet"), "main")
+                self.assertEqual(
+                    arguments.get("metadataPath"),
+                    "XDTOPackage.EnterpriseData_1_17_3",
+                )
+                self.assertNotIn("path", arguments)
+                self.assertNotIn("Package.bin", json.dumps(arguments, ensure_ascii=False))
+        self.assertEqual(
+            preview["property"]["type"], "tns:Документ_ЗаказКлиента"
+        )
+        self.assertIn("одну атомарную мутацию", text)
+        self.assertIn("неатомарную последовательность", text)
+        for forbidden in (
+            "unica.xdto.validate",
+            "xdto-compile",
+            "xdto-decompile",
+            "xdto-validate",
+            "scripts/",
+            "powershell.exe",
+            ".ps1",
+            ".py",
+            "```bash",
+            "```shell",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, text)
 
     def test_source_access_skill_routes_reads_and_sends_writes_to_code_patch(
         self,

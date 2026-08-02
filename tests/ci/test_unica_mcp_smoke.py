@@ -305,7 +305,12 @@ class UnicaMcpSmokeTests(unittest.TestCase):
 
                 listed = request({"jsonrpc": "2.0", "id": next_id, "method": "tools/list", "params": {}})
                 next_id += 1
-                oracle._stable_tool_contract(listed["result"]["tools"])
+                oracle._stable_tool_contract(
+                    listed["result"]["tools"],
+                    oracle.expected_tool_names(
+                        self.repo_root() / "plugins" / "unica"
+                    ),
+                )
                 tools = {item["name"]: item for item in listed["result"]["tools"]}
                 source_tools = {
                     "unica.source.resolve",

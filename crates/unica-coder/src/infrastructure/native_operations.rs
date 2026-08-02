@@ -21,6 +21,7 @@ pub(crate) mod support;
 pub(crate) mod template;
 pub(crate) mod text_snapshot;
 pub(crate) mod typed_result;
+pub(crate) mod xdto;
 
 use crate::{application::AdapterOutcome, domain::workspace::WorkspaceContext};
 use serde_json::{Map, Value};

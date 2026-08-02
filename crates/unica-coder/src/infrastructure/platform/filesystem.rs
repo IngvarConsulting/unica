@@ -2186,6 +2186,11 @@ pub(crate) fn create_dir_symlink_for_test(
     Some(symlink(source, target))
 }
 
+#[cfg(all(test, unix))]
+pub(crate) fn remove_dir_symlink_for_test(path: impl AsRef<Path>) -> io::Result<()> {
+    fs::remove_file(path)
+}
+
 #[cfg(all(test, windows))]
 pub(crate) fn create_file_symlink_for_test(
     source: impl AsRef<Path>,
@@ -2206,6 +2211,11 @@ pub(crate) fn create_dir_symlink_for_test(
     Some(symlink_dir(source, target))
 }
 
+#[cfg(all(test, windows))]
+pub(crate) fn remove_dir_symlink_for_test(path: impl AsRef<Path>) -> io::Result<()> {
+    fs::remove_dir(path)
+}
+
 #[cfg(all(test, not(any(unix, windows))))]
 pub(crate) fn create_file_symlink_for_test(
     _source: impl AsRef<Path>,
@@ -2220,6 +2230,14 @@ pub(crate) fn create_dir_symlink_for_test(
     _target: impl AsRef<Path>,
 ) -> Option<io::Result<()>> {
     None
+}
+
+#[cfg(all(test, not(any(unix, windows))))]
+pub(crate) fn remove_dir_symlink_for_test(_path: impl AsRef<Path>) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "test directory links are unavailable on this host",
+    ))
 }
 
 pub(crate) fn metadata_is_link_or_reparse_point(metadata: &fs::Metadata) -> bool {

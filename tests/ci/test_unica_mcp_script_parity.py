@@ -1786,6 +1786,65 @@ source-set:
 """,
                 encoding="utf-8",
             )
+            xdto_examples = [example for example in examples if example.skill == "xdto"]
+            if xdto_examples:
+                xdto_target = "XDTOPackage.EnterpriseData_1_17_3"
+                package_name = xdto_target.partition(".")[2]
+                fixture_root = (
+                    REPO_ROOT / "tests" / "fixtures" / "xdto" / "enterprise-data-minimal"
+                )
+                fixture_tree = fixture_root / "XDTOPackages"
+                source_root = source_roots["main"]
+
+                for example in xdto_examples:
+                    arguments = example.payload["params"]["arguments"]
+                    self.assertEqual(arguments.get("sourceSet"), "main")
+                    self.assertEqual(arguments.get("metadataPath"), xdto_target)
+                    if example.payload["params"]["name"] == "unica.xdto.edit":
+                        self.assertEqual(
+                            arguments["property"]["type"],
+                            "tns:Документ_ЗаказКлиента",
+                        )
+
+                fixture_configuration = ET.parse(
+                    fixture_root / "Configuration.xml"
+                ).getroot()
+                fixture_registrations = [
+                    node.text
+                    for node in fixture_configuration.findall(
+                        ".//{http://v8.1c.ru/8.3/MDClasses}XDTOPackage"
+                    )
+                ]
+                self.assertEqual(fixture_registrations, [package_name])
+
+                shutil.copytree(
+                    fixture_tree,
+                    source_root / "XDTOPackages",
+                    dirs_exist_ok=True,
+                )
+                for fixture_path in fixture_tree.rglob("*"):
+                    if fixture_path.is_file():
+                        copied_path = source_root / fixture_path.relative_to(fixture_root)
+                        self.assertEqual(copied_path.read_bytes(), fixture_path.read_bytes())
+
+                configuration = source_root / "Configuration.xml"
+                configuration_before = configuration.read_text(encoding="utf-8")
+                closing_tag = "\t\t</ChildObjects>"
+                registration = f"\t\t\t<XDTOPackage>{package_name}</XDTOPackage>\n"
+                self.assertEqual(configuration_before.count(closing_tag), 1)
+                self.assertNotIn(registration, configuration_before)
+                configuration_after = configuration_before.replace(
+                    closing_tag,
+                    registration + closing_tag,
+                    1,
+                )
+                configuration.write_text(configuration_after, encoding="utf-8")
+                self.assertEqual(
+                    configuration.read_text(encoding="utf-8"),
+                    configuration_after,
+                )
+                self.assertIn("<Name>ParityConfiguration</Name>", configuration_after)
+                self.assertEqual(configuration_after.count(registration), 1)
             if any(example.skill == "source-access" for example in examples):
                 source_access_name = "SourceAccessExample"
                 configuration = workspace / "src" / "cf" / "Configuration.xml"
@@ -1926,7 +1985,12 @@ source-set:
             # No example needs a live snapshot any more: the source surface is
             # read-only and the source-access skill previews through
             # unica.code.patch like every other writer example.
+            workspace_before_calls = snapshot_workspace_bytes(workspace)
             responses = self.call_mcp_messages(messages, temp_root / "cache")
+            self.assertEqual(
+                snapshot_workspace_bytes(workspace),
+                workspace_before_calls,
+            )
         self.assertEqual(len(responses), len(examples))
         for example, message in zip(examples, messages):
             with self.subTest(skill=example.skill, line=example.line):
@@ -1934,7 +1998,13 @@ source-set:
                 self.assertNotIn("error", response)
                 result = json.loads(response["result"]["content"][0]["text"])
                 self.assertTrue(result["ok"], json.dumps(result, ensure_ascii=False, indent=2))
-                self.assertIn("dry run", result["summary"])
+                if example.payload["params"]["name"] == "unica.xdto.info":
+                    self.assertEqual(
+                        result["summary"],
+                        "unica.xdto.info inspected XDTO package",
+                    )
+                else:
+                    self.assertIn("dry run", result["summary"])
                 if example.skill == "code-patch":
                     arguments = example.payload["params"]["arguments"]
                     self.assertNotIn("path", arguments)
@@ -3134,6 +3204,37 @@ class WindowsParityNormalizationTests(unittest.TestCase):
             normalize_snapshot_text("first", workspace),
         )
 
+    def test_exact_byte_snapshot_detects_xdto_bom_and_eol_drift(self) -> None:
+        fixture = (
+            REPO_ROOT
+            / "tests"
+            / "fixtures"
+            / "xdto"
+            / "enterprise-data-minimal"
+            / "XDTOPackages"
+            / "EnterpriseData_1_17_3"
+            / "Ext"
+            / "Package.bin"
+        )
+        original = fixture.read_bytes()
+        self.assertTrue(original.startswith(b"\xef\xbb\xbf"))
+        self.assertIn(b"\r\n", original)
+
+        with tempfile.TemporaryDirectory(prefix="unica-exact-byte-snapshot-") as temp:
+            workspace = Path(temp)
+            target = workspace / "XDTOPackages/P/Ext/Package.bin"
+            target.parent.mkdir(parents=True)
+            target.write_bytes(original)
+            normalized_before = snapshot_workspace(workspace)
+            exact_before = snapshot_workspace_bytes(workspace)
+
+            mutated = original.removeprefix(b"\xef\xbb\xbf").replace(b"\r\n", b"\n")
+            self.assertNotEqual(mutated, original)
+            target.write_bytes(mutated)
+
+            self.assertEqual(snapshot_workspace(workspace), normalized_before)
+            self.assertNotEqual(snapshot_workspace_bytes(workspace), exact_before)
+
     def test_non_path_backslashes_remain_significant(self) -> None:
         workspace = Path("C:/parity-workspace")
 
@@ -3186,6 +3287,18 @@ def snapshot_workspace(workspace: Path) -> dict[str, str]:
             snapshot[rel] = "sha256:" + hashlib.sha256(data).hexdigest()
             continue
         snapshot[rel] = normalize_snapshot_text(text, workspace)
+    return snapshot
+
+
+def snapshot_workspace_bytes(workspace: Path) -> dict[str, bytes]:
+    snapshot: dict[str, bytes] = {}
+    for path in sorted(workspace.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(workspace).as_posix()
+        if rel.startswith(".build/") or rel.startswith(".unica-cache/"):
+            continue
+        snapshot[rel] = path.read_bytes()
     return snapshot
 
 

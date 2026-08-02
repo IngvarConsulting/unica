@@ -6,13 +6,13 @@
 
 ## Итог
 
-- Инструментов: **71**
-- Отвечают типизированным `data`: **43**
+- Инструментов: **73**
+- Отвечают типизированным `data`: **45**
 - Типизированы частично: часть результата всё ещё текст: **1**
 - Отвечают снимком задания в `job`: **6**
 - Отвечают прозой в `stdout`: **21**
 
-- В границах типизации: **43**
+- В границах типизации: **45**
 - Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`): **16**
 - Вне границ: семейство runtime и build изучается отдельно: **12**
 - Осталось перевести на типизированный `data` в границах работы: **0**
@@ -466,7 +466,7 @@ Insert content into one logically addressed existing Platform XML Configuration 
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
 | `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 | `metadataPath` | string | да | Canonical logical module address inside sourceSet, for example CommonModule.Service.Module or Catalog.Items.ObjectModule. |
-| `operation` | string | да | Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; the metadata edit verbs for unica.meta.edit — read the enum published in the tool's own schema. |
+| `operation` | string | да | Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; the metadata edit verbs for unica.meta.edit; `add-value-type`, `add-object-type`, `add-property`, `remove-type` or `remove-property` for `unica.xdto.edit` — read the enum published in the tool's own schema. |
 | `position` | string | нет | Where unica.code.patch places the content relative to the selector: before or after |
 | `selector` | object | да | Object naming the unica.code.patch insertion point: exactly one of {"method": "Name"} for a whole procedure or function, or {"anchor": "text"} for a fragment that occurs once inside one method |
 | `sourceSet` | string | да | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
@@ -1094,7 +1094,7 @@ Execute typed v8-runner runtime workflows through the single Unica MCP boundary.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `operation` | string | да | Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; the metadata edit verbs for unica.meta.edit — read the enum published in the tool's own schema. |
+| `operation` | string | да | Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; the metadata edit verbs for unica.meta.edit; `add-value-type`, `add-object-type`, `add-property`, `remove-type` or `remove-property` for `unica.xdto.edit` — read the enum published in the tool's own schema. |
 
 Публикует **64** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -1170,7 +1170,7 @@ Start a durable typed v8-runner runtime job without changing runtime.execute.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `operation` | string | да | Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; the metadata edit verbs for unica.meta.edit — read the enum published in the tool's own schema. |
+| `operation` | string | да | Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; the metadata edit verbs for unica.meta.edit; `add-value-type`, `add-object-type`, `add-property`, `remove-type` or `remove-property` for `unica.xdto.edit` — read the enum published in the tool's own schema. |
 
 Публикует **61** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -1526,3 +1526,58 @@ Remove a template from an object.
 **Сценарии:**
 
 - Удалить неиспользуемый макет
+
+## xdto — пакеты XDTO
+
+### `unica.xdto.edit`
+
+Preview or apply a safe targeted mutation to one logically addressed 1C XDTO package schema.
+
+| Аргумент | Тип | Обяз. | Описание |
+| --- | --- | --- | --- |
+| `base` | string | нет | Prefixed lexical QName naming the base type of a new XDTO valueType in `unica.xdto.edit`, for example `xs:string`; an unprefixed name or surrounding whitespace is rejected. |
+| `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
+| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
+| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
+| `metadataPath` | string | да | Logical address of an XDTO package in the form `XDTOPackage.<name>`; the physical `Package.bin` path is rejected. |
+| `name` | string | нет | Name of the object being created (`cf.init`, `cfe.init`, `epf.init`, `erf.init`), or the drill-down target for `meta.info`, `subsystem.info` and `dcs.info`; on `cf.info` it is an alias of `section` |
+| `operation` | string | да | Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; the metadata edit verbs for unica.meta.edit; `add-value-type`, `add-object-type`, `add-property`, `remove-type` or `remove-property` for `unica.xdto.edit` — read the enum published in the tool's own schema. |
+| `property` | object | нет | New XDTO property object for `unica.xdto.edit`: `name` must be an XML NCName and `type` a prefixed lexical QName; `minOccurs` is optional and must be 0 or 1. |
+| `propertyPath` | string | нет | Property path to a nested XDTO `typeDef`: an unescaped dot separates segments and `\.` denotes a literal dot inside one NCName, for example `A\.B.Child`. |
+| `sourceSet` | string | да | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
+| `typeName` | string | нет | Name of the XDTO valueType or objectType, or of the target objectType for a property operation. |
+
+**Результат сейчас:** `data`: операция, no-op, byte-local план изменения и стабильные findings (ADR-0024) (отвечают типизированным `data`)
+
+**Целевой контракт:** достигнут
+
+**Сценарии:**
+
+- Предпросмотром добавить тип или свойство и проверить точный план до записи
+- Применить подтверждённый неизменный план с guard-проверками цели и снимка
+- Без записи распознать точный повтор операции как no-op
+
+### `unica.xdto.info`
+
+Inspect one logically addressed 1C XDTO package schema.
+
+| Аргумент | Тип | Обяз. | Описание |
+| --- | --- | --- | --- |
+| `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
+| `cursor` | string | нет | Opaque continuation token returned by the same source navigation request or source.resources snapshot page; do not inspect or reuse it with another request or snapshot |
+| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
+| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
+| `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, meta.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, meta.profile 20, code.graph nodes, code.diagnostics findings, standards results). |
+| `metadataPath` | string | да | Logical address of an XDTO package in the form `XDTOPackage.<name>`; the physical `Package.bin` path is rejected. |
+| `sourceSet` | string | да | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
+| `typeName` | string | нет | Name of the XDTO valueType or objectType, or of the target objectType for a property operation. |
+
+**Результат сейчас:** `data`: сводка, импорты, типы, свойства и логические позиции пакета XDTO (ADR-0024) (отвечают типизированным `data`)
+
+**Целевой контракт:** достигнут
+
+**Сценарии:**
+
+- Прочитать сводку и импорты XDTO-пакета по логическому адресу
+- Перелистать именованные типы ограниченными страницами
+- Получить рекурсивную деталь одного типа без раскрытия физического Package.bin

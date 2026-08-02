@@ -1,5 +1,5 @@
 use crate::application::ports::{
-    ApplicationPorts, FormatGuardCheck, HandlerOutcome, SupportGuardCheck,
+    ApplicationPorts, FormatGuardCheck, FormatGuardError, HandlerOutcome, SupportGuardCheck,
 };
 use crate::application::source_navigation::{
     SourceChildrenRequest, SourceChildrenResult, SourceLocateRequest, SourceLocateResult,
@@ -179,7 +179,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         spec: ToolSpec,
         args: &Map<String, Value>,
         context: &WorkspaceContext,
-    ) -> Result<FormatGuardCheck, String> {
+    ) -> Result<FormatGuardCheck, FormatGuardError> {
         crate::infrastructure::format_guard::evaluate_format_guard(spec, args, context)
     }
 

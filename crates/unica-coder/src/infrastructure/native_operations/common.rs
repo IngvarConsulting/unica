@@ -2021,6 +2021,18 @@ pub(crate) fn guard_code_patch_resolved_target(
         )
         .to_string());
     }
+    guard_resolved_platform_xml_target_dependencies(transaction, handle, context)
+}
+
+/// Revalidate a closed logical target and bind every currently available
+/// format/support input used to authorize a write to the same transaction.
+/// Target-kind admission remains the caller's responsibility: in particular,
+/// `code.patch` keeps its explicit `ModuleOnly` check above.
+pub(crate) fn guard_resolved_platform_xml_target_dependencies(
+    transaction: &mut CompileTransaction,
+    handle: &ClosedPlatformXmlTarget,
+    context: &WorkspaceContext,
+) -> Result<PathBuf, String> {
     let target = revalidate_platform_xml_target(context, handle)
         .map_err(|error| error.to_string())?
         .path;

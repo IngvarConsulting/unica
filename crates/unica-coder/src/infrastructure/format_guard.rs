@@ -1,7 +1,7 @@
 use crate::application::operation_descriptors::{
     native_operation_descriptor, FormatGuardPolicy, FormatPathPolicy,
 };
-use crate::application::ports::FormatGuardCheck;
+use crate::application::ports::{FormatGuardCheck, FormatGuardError};
 use crate::application::{AdapterOutcome, ToolHandler, ToolSpec};
 use crate::domain::format_profile::{
     classify_root_version, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
@@ -46,6 +46,7 @@ use crate::infrastructure::native_operations::subsystem::{
 };
 use crate::infrastructure::native_operations::support::support_edit_reads_uuid_dependency;
 use crate::infrastructure::native_operations::template::template_add_object_type_folders;
+use crate::infrastructure::native_operations::xdto::resolve_xdto_guard_path;
 use crate::infrastructure::platform_xml_owner::{
     resolve_existing_platform_xml_owners_for_new_output, resolve_platform_xml_owners,
     resolve_platform_xml_owners_for_exact_root, PlatformXmlRootExpectation, DCS_ROOT,
@@ -61,7 +62,7 @@ pub(crate) fn evaluate_format_guard(
     spec: ToolSpec,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Result<FormatGuardCheck, String> {
+) -> Result<FormatGuardCheck, FormatGuardError> {
     let ToolHandler::NativeOperation { operation, .. } = spec.handler else {
         return Ok(FormatGuardCheck::Allow);
     };
@@ -252,6 +253,7 @@ fn effective_format_paths(
 ) -> Result<Vec<PathBuf>, String> {
     let planned_new_outputs = create_only_planned_xml_paths(descriptor.operation, args, context);
     effective_format_paths_with_planned_outputs(descriptor, args, context, &planned_new_outputs)
+        .map_err(FormatGuardError::into_internal_cause)
 }
 
 fn effective_format_paths_with_planned_outputs(
@@ -259,7 +261,7 @@ fn effective_format_paths_with_planned_outputs(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
     planned_new_outputs: &[PathBuf],
-) -> Result<Vec<PathBuf>, String> {
+) -> Result<Vec<PathBuf>, FormatGuardError> {
     let mut paths = if matches!(
         descriptor.operation,
         "cf-init" | "epf-init" | "erf-init" | "support-edit" | "meta-validate"
@@ -274,7 +276,7 @@ fn effective_format_paths_with_planned_outputs(
                 .map(|raw| absolutize(raw, &context.cwd))
                 .collect(),
             FormatPathPolicy::HandlerResolved => {
-                handler_resolved_format_paths(descriptor, args, context)
+                handler_resolved_format_paths(descriptor, args, context)?
             }
             FormatPathPolicy::DefaultSrcObject => {
                 let src = ["SrcDir", "srcDir"]
@@ -296,7 +298,8 @@ fn effective_format_paths_with_planned_outputs(
             FormatPathPolicy::FormCompile => form_compile_format_paths(args, context),
         }
     };
-    add_operation_format_dependencies(descriptor.operation, args, context, &mut paths)?;
+    add_operation_format_dependencies(descriptor.operation, args, context, &mut paths)
+        .map_err(FormatGuardError::internal)?;
     if matches!(descriptor.operation, "epf-init" | "erf-init") {
         if let Some(output_dir) = planned_new_outputs
             .first()
@@ -986,7 +989,7 @@ fn handler_resolved_format_paths(
     descriptor: &crate::application::operation_descriptors::OperationDescriptor,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Vec<PathBuf> {
+) -> Result<Vec<PathBuf>, FormatGuardError> {
     let raw = descriptor
         .source_path_args
         .iter()
@@ -994,6 +997,7 @@ fn handler_resolved_format_paths(
     let fallback = raw.map(|path| absolutize(path, &context.cwd));
     let resolved =
         match descriptor.operation {
+            "xdto-info" | "xdto-edit" => Some(resolve_xdto_guard_path(args, context)?),
             "code-patch" => resolve_code_patch_guard_path(args, context).ok(),
             "cf-edit" => resolve_cf_edit_config_path(args, context).ok(),
             "cf-info" | "cf-validate" => resolve_cf_read_config_path(args, context).ok(),
@@ -1020,7 +1024,13 @@ fn handler_resolved_format_paths(
             "role-info" | "role-validate" => resolve_role_read_rights_path(args, context).ok(),
             _ => None,
         };
-    resolved.or(fallback).into_iter().collect()
+    let paths = resolved.or(fallback).into_iter().collect::<Vec<_>>();
+    if matches!(descriptor.operation, "xdto-info" | "xdto-edit") && paths.is_empty() {
+        return Err(FormatGuardError::internal(
+            "format guard contract: XDTO HandlerResolved target is empty",
+        ));
+    }
+    Ok(paths)
 }
 
 fn form_compile_format_paths(
@@ -1081,7 +1091,7 @@ fn absolutize(raw: &str, cwd: &Path) -> PathBuf {
 mod tests {
     use super::{effective_format_paths, evaluate_format_guard};
     use crate::application::operation_descriptors::native_operation_descriptor;
-    use crate::application::ports::FormatGuardCheck;
+    use crate::application::ports::{FormatGuardCheck, XdtoPublicErrorCode};
     use crate::application::tools;
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::native_operations::cfe::cfe_borrow_format_dependency_inspection;
@@ -2276,6 +2286,75 @@ mod tests {
         assert_eq!(diagnostic["code"], "formatMigrationAvailable");
         assert_eq!(diagnostic["actualFormat"], "2.19");
         assert_eq!(std::fs::read(module).unwrap(), before);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn xdto_guard_handler_resolved_descriptor_reaches_format_owner() {
+        let root = test_root("xdto-handler-resolved");
+        config(&root, Some("2.19"));
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let descriptor = root.join("src/XDTOPackages/Sample.xml");
+        let resource = root.join("src/XDTOPackages/Sample/Ext/Package.bin");
+        std::fs::create_dir_all(resource.parent().unwrap()).unwrap();
+        std::fs::write(
+            &descriptor,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><XDTOPackage><Properties><Name>Sample</Name></Properties></XDTOPackage></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &resource,
+            r#"<package xmlns="http://v8.1c.ru/8.1/xdto" targetNamespace="urn:test"></package>"#,
+        )
+        .unwrap();
+        let mut args = Map::new();
+        args.insert("sourceSet".into(), Value::String("main".to_string()));
+        args.insert(
+            "metadataPath".into(),
+            Value::String("XDTOPackage.Sample".to_string()),
+        );
+
+        let check = evaluate_format_guard(spec("unica.xdto.edit"), &args, &context(&root))
+            .expect("XDTO handler-resolved format path must resolve");
+        let FormatGuardCheck::Block { diagnostic, .. } = check else {
+            panic!("XDTO mutation inside an older source set must block");
+        };
+
+        assert_eq!(diagnostic["code"], "formatMigrationAvailable");
+        assert_eq!(diagnostic["actualFormat"], "2.19");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn xdto_guard_empty_handler_resolution_is_a_contract_error() {
+        let root = test_root("xdto-empty-handler-resolution");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let mut args = Map::new();
+        args.insert("sourceSet".into(), Value::String("main".to_string()));
+        args.insert(
+            "metadataPath".into(),
+            Value::String("XDTOPackage.Missing".to_string()),
+        );
+
+        let error = match evaluate_format_guard(spec("unica.xdto.edit"), &args, &context(&root)) {
+            Ok(_) => panic!("an unresolved XDTO HandlerResolved path must not degrade to Allow"),
+            Err(error) => error,
+        };
+
+        assert_eq!(
+            error.public_projection().map(|(code, _)| code),
+            Some(XdtoPublicErrorCode::TargetNotFound)
+        );
+        assert!(error.to_string().contains("target_not_found"), "{error}");
         let _ = std::fs::remove_dir_all(root);
     }
 

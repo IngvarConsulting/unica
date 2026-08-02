@@ -108,6 +108,8 @@ const CODE_PATCH_REQUIRED: &[&str] = &[
     "selector",
     "content",
 ];
+const XDTO_INFO_REQUIRED: &[&str] = &["sourceSet", "metadataPath"];
+const XDTO_EDIT_REQUIRED: &[&str] = &["sourceSet", "metadataPath", "operation"];
 
 const JSON_PATH: &[&str] = &["JsonPath", "jsonPath"];
 const DEFINITION_FILE: &[&str] = &["DefinitionFile", "definitionFile"];
@@ -209,6 +211,24 @@ pub(crate) fn native_operation_descriptor(operation: &str) -> Option<&'static Op
 }
 
 pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
+    descriptor_with_paths(
+        "xdto-info",
+        XDTO_INFO_REQUIRED,
+        EMPTY,
+        EMPTY,
+        FormatGuardPolicy::ExistingDump,
+        FormatPathPolicy::HandlerResolved,
+        None,
+    ),
+    descriptor_with_paths(
+        "xdto-edit",
+        XDTO_EDIT_REQUIRED,
+        EMPTY,
+        EMPTY,
+        FormatGuardPolicy::ExistingDump,
+        FormatPathPolicy::HandlerResolved,
+        Some(handler_resolved_guard(SupportGuardRequirement::Editable)),
+    ),
     descriptor_with_paths(
         "code-patch",
         CODE_PATCH_REQUIRED,
