@@ -91,19 +91,22 @@ must save the returned value explicitly outside the read-only tool contract.
 
 ## Logical source target migration
 
-The release containing
-[issue #260](https://github.com/IngvarConsulting/unica/issues/260) replaces
-physical target selectors for `unica.code.patch` with one logical target.
-There is no deprecated alias:
+Tools migrate to one logical target, one merge request at a time. There is no
+deprecated alias:
 
-| Removed selector | Canonical selector |
-| --- | --- |
-| `path` + `sourceDir` | `sourceSet` + `metadataPath` |
+| Tool | Removed selector | Canonical selector |
+| --- | --- | --- |
+| `unica.code.patch` | `path` + `sourceDir` | `sourceSet` + `metadataPath` |
+| `unica.meta.info` | `ObjectPath` / `Path` | `sourceSet` + `metadataPath` |
 
-Calls that still pass either removed field fail with
-`legacy_target_removed` and name the canonical replacement. The logical
-selector addresses existing Platform XML Configuration and Extension modules;
-Unica resolves the physical `*Module.bsl` location privately.
+Calls that still pass a removed field fail with `legacy_target_removed` and
+name the canonical replacement. The logical selector addresses existing
+Platform XML Configuration and Extension targets; Unica resolves the physical
+`*Module.bsl` or descriptor location privately. `unica.meta.info` also stops
+accepting `Detailed`, which it never read.
+
+`unica.source.resolve` finds an address by name, and `unica.source.locate`
+converts a path discovered by other means into one.
 
 ## Runtime delivery
 

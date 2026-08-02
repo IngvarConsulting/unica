@@ -301,7 +301,7 @@ TASK_EXAMPLE_ARGUMENT_KEYS = {
     "erf-init": ["Name", "OutputDir", "FormName"],
     "meta-compile": ["JsonPath", "OutputDir"],
     "meta-edit": ["ObjectPath", "Operation", "Value"],
-    "meta-info": ["ObjectPath"],
+    "meta-info": ["sourceSet", "metadataPath"],
     "meta-remove": ["ConfigDir", "Object"],
     "meta-validate": ["ObjectPath"],
     "form-add": ["ObjectPath", "FormName", "Purpose"],
@@ -353,13 +353,13 @@ SCENARIO_PRESERVING_MIN_MCP_CALLS = {
     "interface-validate": 2,
     "subsystem-compile": 4,
     "subsystem-edit": 6,
-    "subsystem-info": 8,
+    "subsystem-info": 5,
     "subsystem-validate": 2,
     "template-add": 2,
     "dcs-compile": 5,
     "dcs-info": 12,
     "dcs-validate": 2,
-    "mxl-info": 6,
+    "mxl-info": 3,
     "mxl-validate": 2,
     "role-info": 2,
     "dcs-edit": 4,
@@ -389,12 +389,13 @@ SCENARIO_PRESERVING_TOKENS = {
         '"Operation": "add-defaultRole"',
         '"Operation": "set-defaultRoles"',
     ],
+    # ADR-0023: cf.info answers with typed data, so the prose-size levers are
+    # gone from the skill and the documented fields take their place.
     "cf-info": [
-        '"Mode": "brief"',
-        '"Mode": "full"',
-        '"Limit": 50',
-        '"Offset": 100',
-        '"Section": "home-page"',
+        '"ConfigPath": "src"',
+        "`support`",
+        "`childObjects`",
+        "`homePage`",
     ],
     "cf-init": [
         '"Name": "МояКонфигурация"',
@@ -413,7 +414,7 @@ SCENARIO_PRESERVING_TOKENS = {
         '"BorrowMainAttribute": "All"',
         '"name": "unica.cfe.validate"',
     ],
-    "cfe-diff": ['"Mode": "A"', '"Mode": "B"'],
+    "cfe-diff": ["`transfer[]`", "`objects[].status`"],
     "cfe-init": [
         '"ConfigPath": "C:\\\\WS\\\\tasks\\\\cfsrc\\\\erp_8.3.24"',
         '"Purpose": "Patch"',
@@ -442,13 +443,15 @@ SCENARIO_PRESERVING_TOKENS = {
         '"name": "unica.meta.validate"',
         '"name": "unica.meta.info"',
     ],
+    # `Name` and `Mode` were report selectors. The typed answer carries the
+    # whole object, so the scenarios are preserved by the addresses they read,
+    # not by the drill-down argument that no longer exists (ADR-0023).
     "meta-info": [
-        '"ObjectPath": "Catalogs/Валюты/Валюты.xml"',
-        '"ObjectPath": "Documents/АвансовыйОтчет/АвансовыйОтчет.xml"',
-        '"Name": "Товары"',
-        '"ObjectPath": "HTTPServices/ExternalAPI/ExternalAPI.xml"',
-        '"Name": "TestConnection"',
-        '"ObjectPath": "DefinedTypes/GLN/GLN.xml"',
+        '"metadataPath": "Catalog.Валюты"',
+        '"metadataPath": "Document.АвансовыйОтчет"',
+        '"metadataPath": "HTTPService.ExternalAPI"',
+        '"metadataPath": "WebService.EnterpriseDataUpload_1_0_1_1"',
+        '"metadataPath": "DefinedType.GLN"',
     ],
     "meta-remove": [
         '"Object": "Catalog.Устаревший"',
@@ -489,11 +492,9 @@ SCENARIO_PRESERVING_TOKENS = {
         '"Operation": "set-property"',
     ],
     "subsystem-info": [
-        '"Mode": "content"',
-        '"Name": "Document"',
-        '"Mode": "ci"',
-        '"Mode": "tree"',
-        '"Name": "Администрирование"',
+        '"SubsystemPath": "Subsystems"',
+        "`commandInterface`",
+        "`tree`",
     ],
     "template-add": [
         '"TemplateType": "DataCompositionSchema"',
@@ -509,7 +510,6 @@ SCENARIO_PRESERVING_TOKENS = {
         '"Value": "<json-string>"',
         '"name": "unica.dcs.validate"',
         '"name": "unica.dcs.info"',
-        '"Mode": "variant"',
     ],
     "dcs-edit": [
         '"Operation": "add-field"',
@@ -517,28 +517,24 @@ SCENARIO_PRESERVING_TOKENS = {
         '"name": "unica.dcs.validate"',
         '"name": "unica.dcs.info"',
     ],
+    # Eleven `Mode` values selected eleven reports. The typed answer carries
+    # every section at once, so the scenarios are preserved by the sections the
+    # skill names, not by the selector that no longer exists (ADR-0023).
     "dcs-info": [
-        '"Mode": "query"',
-        '"Name": "НоменклатураСЦенами"',
-        '"Batch": 3',
-        '"Mode": "fields"',
-        '"Mode": "calculated"',
-        '"Mode": "resources"',
-        '"Mode": "trace"',
-        '"Mode": "variant"',
-        '"Mode": "templates"',
-        '"Name": "ВидНалоговойБазы"',
-        '"Mode": "trace"',
+        "`dataSets`",
+        "`links`",
+        "`calculatedFields`",
+        "`totalFields`",
+        "`parameters`",
+        "`variants`",
+        "`templates`",
     ],
     "mxl-info": [
-        '"ProcessorName": "<Имя>"',
-        '"TemplateName": "<Макет>"',
         '"WithText": true',
-        '"Format": "json"',
-        '"MaxParams": 20',
-        '"Offset": 150',
+        "`columnSets`",
+        "`outside`",
     ],
-    "role-info": ['"Offset": 150'],
+    "role-info": ["`data.denied`", "`restrictedObjects`"],
 }
 
 # Arguments the MCP contract used to publish and now rejects. The packaged skill
@@ -546,6 +542,14 @@ SCENARIO_PRESERVING_TOKENS = {
 # "does not accept argument", so a leftover example is a broken instruction.
 SCENARIO_RETIRED_TOKENS = {
     "meta-remove": ['"KeepFiles"', '"keepFiles"'],
+    "cf-info": ['"Mode"', '"Section"', '"Limit"', '"Offset"'],
+    "role-info": ['"ShowDenied"', '"Limit"', '"Offset"'],
+    "subsystem-info": ['"Mode"', '"Name"', '"Limit"', '"Offset"'],
+    "mxl-info": ['"Format"', '"MaxParams"', '"Limit"', '"Offset"'],
+    "cfe-diff": ['"Mode"'],
+    # A published example that still selects by path shows a call the server
+    # now rejects with `legacy_target_removed`.
+    "meta-info": ['"ObjectPath"', '"objectPath"', '"Detailed"', '"detailed"'],
 }
 
 
@@ -1103,7 +1107,9 @@ class UnicaSkillRoutingTests(unittest.TestCase):
 
         self.assertIn("Значение-список", dcs_spec)
         self.assertIn("valueListAllowed", dcs_spec)
-        self.assertIn('"Raw": true', dcs_info)
+        # `Raw` existed because pagination mangled the query; `data` carries the
+        # exact text always, so the promise moved into the section description.
+        self.assertNotIn('"Raw": true', dcs_info)
         self.assertIn("сырой текст запроса целиком", dcs_info)
         self.assertIn("unica.dcs.edit", dcs_info)
         self.assertIn("patch-query", dcs_edit)

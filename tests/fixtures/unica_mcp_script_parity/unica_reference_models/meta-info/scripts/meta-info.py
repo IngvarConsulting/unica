@@ -903,6 +903,19 @@ if not drill_done:
     else:
         # mode: overview / full
 
+        # Owners: subordination is reported, including its negative case
+        owners_node = find(props, "md:Owners")
+        if owners_node is not None:
+            owners = [
+                inner_text(item).strip()
+                for item in find_all(props, "md:Owners/xr:Item")
+                if inner_text(item).strip()
+            ]
+            if owners:
+                out(f"Владельцы ({len(owners)}): {', '.join(owners)}")
+            else:
+                out("Владельцы: нет")
+
         # Document-specific header
         if md_type == "Document":
             num_type = find(props, "md:NumberType")
@@ -939,12 +952,26 @@ if not drill_done:
                 else:
                     ht_text += ", без ограничения уровней"
                 parts.append(f"Иерархический: {ht_text}")
+            else:
+                parts.append("Иерархический: нет")
             code_len = find(props, "md:CodeLength")
             desc_len = find(props, "md:DescriptionLength")
-            if code_len is not None and inner_text(code_len).isdigit() and int(inner_text(code_len)) > 0:
-                parts.append(f"Код({inner_text(code_len)})")
+            if code_len is not None:
+                code_value = inner_text(code_len)
+                if code_value.isdigit() and int(code_value) > 0:
+                    parts.append(f"Код({code_value})")
+                else:
+                    parts.append("Код: нет")
             if desc_len is not None and inner_text(desc_len).isdigit() and int(inner_text(desc_len)) > 0:
                 parts.append(f"Наименование({inner_text(desc_len)})")
+            presentation_node = find(props, "md:DefaultPresentation")
+            if presentation_node is not None:
+                presentation = inner_text(presentation_node)
+                presentation = {"AsDescription": "наименование", "AsCode": "код"}.get(
+                    presentation, presentation
+                )
+                if presentation:
+                    parts.append(f"Основное представление: {presentation}")
             if parts:
                 out(" | ".join(parts))
 
@@ -1156,8 +1183,8 @@ if not drill_done:
                     ts_parts = [f"{t['Name']}({t['ColCount']})" for t in tss]
                     out(f"ТЧ ({len(tss)}): {', '.join(ts_parts)}")
 
-        # Forms/Templates/Commands in overview for Reports & DataProcessors
-        if mode == "overview" and child_objs is not None and md_type in ("Report", "DataProcessor"):
+        # Forms/Templates/Commands in overview for every kind that has them
+        if mode == "overview" and child_objs is not None:
             forms = get_simple_children(child_objs, "Form")
             if forms:
                 out(f"Формы: {', '.join(forms)}")

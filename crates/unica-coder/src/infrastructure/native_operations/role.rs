@@ -134,11 +134,98 @@ pub(crate) fn role_read_format_dependency_paths(
     Ok(paths)
 }
 
+/// Typed answer of `unica.role.info` (ADR-0023). Denied rights are always
+/// present: hiding them behind a flag made "no denied rights" and "you did not
+/// ask" the same observation.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RoleInfoData {
+    pub(crate) name: String,
+    pub(crate) synonym: Option<String>,
+    pub(crate) support: ObjectSupportData,
+    pub(crate) defaults: RoleDefaultsData,
+    pub(crate) allowed: Vec<RoleGroupData>,
+    pub(crate) denied: Vec<RoleGroupData>,
+    pub(crate) totals: RoleTotalsData,
+    pub(crate) restricted_objects: Vec<String>,
+    pub(crate) templates: Vec<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RoleDefaultsData {
+    pub(crate) set_for_new_objects: Option<String>,
+    pub(crate) set_for_attributes_by_default: Option<String>,
+    pub(crate) independent_rights_of_child_objects: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RoleGroupData {
+    pub(crate) kind: String,
+    pub(crate) objects: Vec<RoleObjectData>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RoleObjectData {
+    pub(crate) name: String,
+    pub(crate) rights: Vec<RoleRightData>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RoleRightData {
+    pub(crate) name: String,
+    /// Row-level security restricts this right on this object.
+    pub(crate) restricted: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RoleTotalsData {
+    pub(crate) allowed: usize,
+    pub(crate) denied: usize,
+}
+
+pub(crate) struct RoleInfoExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<RoleInfoData>,
+}
+
+fn role_group_data(groups: Vec<RoleInfoGroup>) -> Vec<RoleGroupData> {
+    groups
+        .into_iter()
+        .map(|group| RoleGroupData {
+            kind: group.type_prefix,
+            objects: group
+                .objects
+                .into_iter()
+                .map(|object| RoleObjectData {
+                    name: object.short_name,
+                    rights: object
+                        .rights
+                        .into_iter()
+                        .map(|right| RoleRightData {
+                            name: right.name,
+                            restricted: right.rls,
+                        })
+                        .collect(),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+fn role_attribute(value: &str) -> Option<String> {
+    (!value.is_empty()).then(|| value.to_string())
+}
+
 pub(crate) fn analyze_role_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
-    let result = (|| -> Result<(String, PathBuf), String> {
+) -> RoleInfoExecution {
+    let result = (|| -> Result<(RoleInfoData, PathBuf), String> {
         let rights_path = resolve_role_read_rights_path(args, context)?;
         if !rights_path.is_file() {
             return Err(format!("[ERROR] File not found: {}", rights_path.display()));
@@ -256,125 +343,60 @@ pub(crate) fn analyze_role_info(
             }
         }
 
-        let mut lines = Vec::<String>::new();
-        let mut header = format!("=== Role: {role_name}");
-        if !role_synonym.is_empty() {
-            header.push_str(&format!(" --- \"{role_synonym}\""));
-        }
-        header.push_str(" ===");
-        lines.push(header);
-        lines.push(format!(
-            "Поддержка: {}",
-            support_status_for_path(&rights_path)
-        ));
-        lines.push(String::new());
-        lines.push(format!(
-            "Properties: setForNewObjects={set_for_new}, setForAttributesByDefault={set_for_attrs}, independentRightsOfChildObjects={independent_child}"
-        ));
-        lines.push(String::new());
-
-        if !allowed.is_empty() {
-            lines.push("Allowed rights:".to_string());
-            lines.push(String::new());
-            for group in &allowed {
-                lines.push(format!(
-                    "  {} ({}):",
-                    group.type_prefix,
-                    group.objects.len()
-                ));
-                append_role_info_group(&mut lines, &group.objects, false);
-                lines.push(String::new());
-            }
-        } else {
-            lines.push("(no allowed rights)".to_string());
-            lines.push(String::new());
-        }
-
-        let show_denied = bool_arg(args, &["showDenied", "ShowDenied"]);
-        if show_denied && !denied.is_empty() {
-            lines.push("Denied rights:".to_string());
-            lines.push(String::new());
-            for group in &denied {
-                lines.push(format!(
-                    "  {} ({}):",
-                    group.type_prefix,
-                    group.objects.len()
-                ));
-                append_role_info_group(&mut lines, &group.objects, true);
-                lines.push(String::new());
-            }
-        } else if total_denied > 0 {
-            lines.push(format!(
-                "Denied: {total_denied} rights (use -ShowDenied to list)"
-            ));
-            lines.push(String::new());
-        }
-
-        if !rls_objects.is_empty() {
-            lines.push(format!("RLS: {} restrictions", rls_objects.len()));
-        }
-        if !templates.is_empty() {
-            lines.push(format!("Templates: {}", templates.join(", ")));
-        }
-
-        lines.push(String::new());
-        lines.push("---".to_string());
-        lines.push(format!(
-            "Total: {total_allowed} allowed, {total_denied} denied"
-        ));
-
-        let total_lines = lines.len();
-        let offset = int_arg(args, &["offset", "Offset"]).unwrap_or(0);
-        let limit = int_arg(args, &["limit", "Limit"]).unwrap_or(150);
-
-        let mut out_lines = lines;
-        if offset > 0 {
-            if offset as usize >= total_lines {
-                return Ok((
-                    format!(
-                        "[INFO] Offset {offset} exceeds total lines ({total_lines}). Nothing to show.\n"
-                    ),
-                    rights_path,
-                ));
-            }
-            out_lines = out_lines[offset as usize..].to_vec();
-        }
-
-        if limit > 0 && out_lines.len() > limit as usize {
-            let mut shown = out_lines[..limit as usize].to_vec();
-            shown.push(String::new());
-            shown.push(format!(
-                "[TRUNCATED] Shown {limit} of {total_lines} lines. Use -Offset {} to continue.",
-                offset + limit
-            ));
-            out_lines = shown;
-        }
-
-        Ok((format!("{}\n", out_lines.join("\n")), rights_path))
+        let data = RoleInfoData {
+            name: role_name,
+            synonym: (!role_synonym.is_empty()).then_some(role_synonym),
+            support: object_support_state(&rights_path),
+            defaults: RoleDefaultsData {
+                set_for_new_objects: role_attribute(set_for_new),
+                set_for_attributes_by_default: role_attribute(set_for_attrs),
+                independent_rights_of_child_objects: role_attribute(independent_child),
+            },
+            allowed: role_group_data(allowed),
+            // `ShowDenied` used to gate this list, so an empty answer could
+            // mean "none" or "not asked for". Data always carries both.
+            denied: role_group_data(denied),
+            totals: RoleTotalsData {
+                allowed: total_allowed,
+                denied: total_denied,
+            },
+            restricted_objects: rls_objects,
+            templates,
+        };
+        Ok((data, rights_path))
     })();
 
     match result {
-        Ok((stdout, rights_path)) => AdapterOutcome {
-            ok: true,
-            summary: "unica.role.info completed with native role analyzer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: Vec::new(),
-            artifacts: vec![rights_path.display().to_string()],
-            stdout: Some(stdout),
-            stderr: Some(String::new()),
-            command: None,
+        Ok((data, rights_path)) => RoleInfoExecution {
+            outcome: AdapterOutcome {
+                ok: true,
+                summary: format!(
+                    "unica.role.info described {} with {} allowed and {} denied right(s)",
+                    data.name, data.totals.allowed, data.totals.denied
+                ),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: Vec::new(),
+                artifacts: vec![rights_path.display().to_string()],
+                stdout: None,
+                stderr: Some(String::new()),
+                command: None,
+            },
+            data: Some(data),
         },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.role.info failed in native role analyzer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-            command: None,
+        Err(error) => RoleInfoExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.role.info failed in native role analyzer".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.clone()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{error}\n")),
+                command: None,
+            },
+            data: None,
         },
     }
 }
@@ -2018,7 +2040,9 @@ pub(crate) fn invoke_read(
     context: &WorkspaceContext,
 ) -> Option<Result<AdapterOutcome, String>> {
     match operation {
-        "role-info" => Some(Ok(analyze_role_info(args, context))),
+        // Typed answer: the registry keeps the prose-shaped signature, and the
+        // data reaches the envelope through typed_result.rs.
+        "role-info" => Some(Ok(analyze_role_info(args, context).outcome)),
         "role-validate" => Some(Ok(validate_role(args, context))),
         _ => None,
     }
@@ -2033,6 +2057,99 @@ pub(crate) fn invoke_mutation(
     match operation {
         "role-compile" => Some(compile_role(args, context)),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod role_info_typed_result_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn workspace(name: &str) -> WorkspaceContext {
+        let root = std::env::temp_dir().join(format!(
+            "unica-role-info-typed-{name}-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join("src/Roles/Reader/Ext")).unwrap();
+        fs::write(
+            root.join("src/Roles/Reader.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Role><Properties><Name>Reader</Name></Properties></Role></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/Roles/Reader/Ext/Rights.xml"),
+            r#"<Rights xmlns="http://v8.1c.ru/8.2/roles" setForNewObjects="false" setForAttributesByDefault="true" independentRightsOfChildObjects="false">
+  <object><name>Catalog.Goods</name>
+    <right><name>Read</name><value>true</value><restrictionByCondition><condition>ГДЕ Ложь</condition></restrictionByCondition></right>
+    <right><name>Insert</name><value>false</value></right>
+  </object>
+</Rights>"#,
+        )
+        .unwrap();
+        WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        }
+    }
+
+    /// The support state belongs to the object, and `Rights.xml` sits two
+    /// directories below the configuration root. Reading it from the leaf path
+    /// answered `notSupported` for a configuration that is on support.
+    #[test]
+    fn role_info_reads_the_support_state_from_the_configuration_root() {
+        let context = workspace("support");
+        fs::write(
+            context.workspace_root.join("src/Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Demo</Name></Properties></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        let args = Map::from_iter([(
+            "RightsPath".to_string(),
+            json!("src/Roles/Reader/Ext/Rights.xml"),
+        )]);
+
+        let execution = analyze_role_info(&args, &context);
+
+        assert!(execution.outcome.ok, "{:?}", execution.outcome);
+        let data = execution.data.expect("role info answers with data");
+        // No ParentConfigurations.bin here, so the honest answer is
+        // `notSupported` — but it must come from the resolved configuration
+        // root, not from a directory the walk never reached.
+        assert_eq!(data.support.state, "notSupported", "{data:?}");
+        assert_eq!(data.support.direct_edit_safe, None, "{data:?}");
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    /// `ShowDenied` used to decide whether denied rights appeared at all, so an
+    /// answer without them could mean "none" or "you did not ask".
+    #[test]
+    fn role_info_reports_allowed_and_denied_rights_without_a_flag() {
+        let context = workspace("both");
+        let args = Map::from_iter([(
+            "RightsPath".to_string(),
+            json!("src/Roles/Reader/Ext/Rights.xml"),
+        )]);
+
+        let execution = analyze_role_info(&args, &context);
+
+        assert!(execution.outcome.ok, "{:?}", execution.outcome);
+        assert!(execution.outcome.stdout.is_none());
+        let data = execution.data.expect("role info answers with data");
+        assert_eq!(data.name, "Reader");
+        assert_eq!(data.totals.allowed, 1);
+        assert_eq!(data.totals.denied, 1);
+        assert_eq!(data.defaults.set_for_new_objects.as_deref(), Some("false"));
+        let allowed = &data.allowed[0].objects[0];
+        assert_eq!(allowed.name, "Goods");
+        assert!(allowed.rights.iter().any(|right| right.restricted));
+        assert!(!data.denied.is_empty(), "denied rights are always reported");
+        assert_eq!(data.restricted_objects.len(), 1);
+        let _ = fs::remove_dir_all(&context.workspace_root);
     }
 }
 

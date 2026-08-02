@@ -1531,7 +1531,7 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         args: &Map<String, Value>,
         context: &WorkspaceContext,
         dry_run: bool,
-    ) -> Result<AdapterOutcome, String> {
+    ) -> Result<BslAnalyzerOutcome, String> {
         self.invoke_cancellable(tool_name, args, context, dry_run, &CancellationToken::new())
     }
 
@@ -1542,10 +1542,10 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         context: &WorkspaceContext,
         dry_run: bool,
         cancellation: &CancellationToken,
-    ) -> Result<AdapterOutcome, String> {
+    ) -> Result<BslAnalyzerOutcome, String> {
         if cancellation.is_cancelled() {
-            return Ok(AdapterOutcome::cancelled(format!(
-                "{tool_name} cancelled before adapter work"
+            return Ok(BslAnalyzerOutcome::plain(AdapterOutcome::cancelled(
+                format!("{tool_name} cancelled before adapter work"),
             )));
         }
         let diagnostics_path = match (tool_name, args.get("path")) {
@@ -1574,9 +1574,11 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
                 cancellation,
             )?;
             if dry_run {
-                return Ok(outcome);
+                return Ok(BslAnalyzerOutcome::plain(outcome));
             }
-            return Ok(diagnostics_analyze_outcome(tool_name, &cli_args, outcome));
+            return Ok(BslAnalyzerOutcome::plain(diagnostics_analyze_outcome(
+                tool_name, &cli_args, outcome,
+            )));
         }
 
         let plugin_root = find_plugin_root(&context.cwd).ok_or_else(|| {
@@ -1599,7 +1601,7 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         reported_command.extend(command.args.clone());
 
         if dry_run {
-            return Ok(AdapterOutcome {
+            return Ok(BslAnalyzerOutcome::plain(AdapterOutcome {
                 ok: true,
                 summary: format!("dry run: {tool_name} would call typed bsl-analyzer MCP adapter"),
                 changes: Vec::new(),
@@ -1609,7 +1611,7 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
                 stdout: None,
                 stderr: None,
                 command: Some(reported_command),
-            });
+            }));
         }
 
         let output = self.runner.call(&command)?;
@@ -1638,24 +1640,76 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
                 Vec::new(),
             )
         };
-        Ok(AdapterOutcome {
-            ok: !diagnostics_pending,
-            summary,
-            changes: Vec::new(),
-            warnings,
-            errors,
-            artifacts: vec![
-                source_dir.display().to_string(),
-                command.tool_name.to_string(),
-            ],
-            stdout: Some(format_section(section, &output.result_text)),
-            stderr: if output.stderr.trim().is_empty() {
-                None
-            } else {
-                Some(output.stderr)
+        // ADR-0023: the analyzer answers this tool with JSON, and wrapping that
+        // JSON in a section header made the caller unwrap a string to reach it.
+        // `analyze` is the analyzer MCP tool name, not a spawned 1C process, so
+        // `code.diagnostics` returns the same kind of reply as `code.graph` and
+        // the ADR-0023 §4 carve-out for external process streams does not reach
+        // it.
+        // A reply that is not JSON must still reach the caller: failing here
+        // dropped the analyzer text, its stderr and the reported command, so a
+        // plain-text diagnostic became "unparsable reply" and nothing else.
+        let mut parse_error = None;
+        let data = if diagnostics_pending {
+            None
+        } else {
+            match serde_json::from_str::<Value>(output.result_text.trim()) {
+                Ok(value) => Some(value),
+                Err(error) => {
+                    parse_error = Some(format!(
+                        "{tool_name} received an unparsable bsl-analyzer reply: {error}"
+                    ));
+                    None
+                }
+            }
+        };
+        let mut errors = errors;
+        if let Some(parse_error) = parse_error {
+            errors.push(parse_error);
+        }
+        let unparsable = data.is_none() && !diagnostics_pending;
+        Ok(BslAnalyzerOutcome {
+            outcome: AdapterOutcome {
+                ok: !diagnostics_pending && !unparsable,
+                summary,
+                changes: Vec::new(),
+                warnings,
+                errors,
+                artifacts: vec![
+                    source_dir.display().to_string(),
+                    command.tool_name.to_string(),
+                ],
+                // The raw reply survives only when it could not be typed;
+                // ADR-0023 keeps `stdout` empty for a well-formed answer.
+                stdout: data
+                    .is_none()
+                    .then(|| format_section(section, &output.result_text)),
+                stderr: if output.stderr.trim().is_empty() {
+                    None
+                } else {
+                    Some(output.stderr)
+                },
+                command: Some(reported_command),
             },
-            command: Some(reported_command),
+            data,
         })
+    }
+}
+
+/// An analyzer answer plus the typed payload, for the tools whose contract is
+/// already the analyzer's own JSON.
+#[derive(Debug)]
+pub struct BslAnalyzerOutcome {
+    pub outcome: AdapterOutcome,
+    pub data: Option<Value>,
+}
+
+impl BslAnalyzerOutcome {
+    fn plain(outcome: AdapterOutcome) -> Self {
+        Self {
+            outcome,
+            data: None,
+        }
     }
 }
 
@@ -2028,7 +2082,7 @@ impl StandardsAdapter {
         }
     }
 
-    pub fn invoke(operation: &str, args: &Map<String, Value>) -> AdapterOutcome {
+    pub fn invoke(operation: &str, args: &Map<String, Value>) -> StandardsOutcome {
         Self::invoke_with_client(operation, args, &UREQ_HTTP_CLIENT)
     }
 
@@ -2036,13 +2090,13 @@ impl StandardsAdapter {
         operation: &str,
         args: &Map<String, Value>,
         http: &dyn HttpClient,
-    ) -> AdapterOutcome {
+    ) -> StandardsOutcome {
         let endpoint = env::var("UNICA_STANDARDS_MCP_URL")
             .unwrap_or_else(|_| "https://ai.v8std.ru/mcp".to_string());
         let request = match Self::request_for(operation, args) {
             Ok(request) => request,
             Err(error) => {
-                return AdapterOutcome {
+                return StandardsOutcome::plain(AdapterOutcome {
                     ok: false,
                     summary: format!("unica.standards.{operation} rejected invalid arguments"),
                     changes: Vec::new(),
@@ -2052,7 +2106,7 @@ impl StandardsAdapter {
                     stdout: None,
                     stderr: None,
                     command: None,
-                }
+                })
             }
         };
 
@@ -2068,7 +2122,7 @@ impl StandardsAdapter {
 
         match http.post_json(&endpoint, &payload) {
             Ok(text) => Self::outcome_from_http_body(operation, &endpoint, request.method, &text),
-            Err(err) => AdapterOutcome {
+            Err(err) => StandardsOutcome::plain(AdapterOutcome {
                 ok: false,
                 summary: format!(
                     "unica.standards.{operation} failed through internal v8std MCP proxy"
@@ -2080,7 +2134,7 @@ impl StandardsAdapter {
                 stdout: None,
                 stderr: None,
                 command: None,
-            },
+            }),
         }
     }
 
@@ -2089,11 +2143,11 @@ impl StandardsAdapter {
         endpoint: &str,
         remote_method: &str,
         text: &str,
-    ) -> AdapterOutcome {
+    ) -> StandardsOutcome {
         let normalized = match normalize_mcp_http_body(text) {
             Ok(text) => text,
             Err(error) => {
-                return AdapterOutcome {
+                return StandardsOutcome::plain(AdapterOutcome {
                     ok: false,
                     summary: format!(
                         "unica.standards.{operation} received invalid v8std MCP response"
@@ -2105,7 +2159,7 @@ impl StandardsAdapter {
                     stdout: None,
                     stderr: None,
                     command: None,
-                }
+                })
             }
         };
 
@@ -2116,7 +2170,7 @@ impl StandardsAdapter {
                     .and_then(|error| error.get("message"))
                     .and_then(Value::as_str)
                     .unwrap_or("remote JSON-RPC error");
-                AdapterOutcome {
+                StandardsOutcome::plain(AdapterOutcome {
                     ok: false,
                     summary: format!(
                         "unica.standards.{operation} failed through internal v8std MCP proxy"
@@ -2128,22 +2182,27 @@ impl StandardsAdapter {
                     stdout: None,
                     stderr: None,
                     command: None,
-                }
+                })
             }
-            Ok(Value::Object(object)) if object.contains_key("result") => AdapterOutcome {
-                ok: true,
-                summary: format!(
-                    "unica.standards.{operation} completed through internal v8std MCP proxy"
-                ),
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: Vec::new(),
-                artifacts: vec![endpoint.to_string(), remote_method.to_string()],
-                stdout: Some(normalized),
-                stderr: None,
-                command: None,
+            // ADR-0023: the JSON-RPC envelope is transport. The tool publishes
+            // the `result` payload it carried, not the envelope as a string.
+            Ok(Value::Object(mut object)) if object.contains_key("result") => StandardsOutcome {
+                outcome: AdapterOutcome {
+                    ok: true,
+                    summary: format!(
+                        "unica.standards.{operation} completed through internal v8std MCP proxy"
+                    ),
+                    changes: Vec::new(),
+                    warnings: Vec::new(),
+                    errors: Vec::new(),
+                    artifacts: vec![endpoint.to_string(), remote_method.to_string()],
+                    stdout: None,
+                    stderr: None,
+                    command: None,
+                },
+                data: object.remove("result"),
             },
-            Ok(_) => AdapterOutcome {
+            Ok(_) => StandardsOutcome::plain(AdapterOutcome {
                 ok: false,
                 summary: format!(
                     "unica.standards.{operation} received non-JSON-RPC v8std MCP response"
@@ -2155,8 +2214,8 @@ impl StandardsAdapter {
                 stdout: None,
                 stderr: None,
                 command: None,
-            },
-            Err(error) => AdapterOutcome {
+            }),
+            Err(error) => StandardsOutcome::plain(AdapterOutcome {
                 ok: false,
                 summary: format!("unica.standards.{operation} received invalid v8std MCP JSON"),
                 changes: Vec::new(),
@@ -2166,7 +2225,23 @@ impl StandardsAdapter {
                 stdout: None,
                 stderr: None,
                 command: None,
-            },
+            }),
+        }
+    }
+}
+
+/// A standards answer plus the `result` payload the remote MCP returned.
+#[derive(Debug)]
+pub struct StandardsOutcome {
+    pub outcome: AdapterOutcome,
+    pub data: Option<Value>,
+}
+
+impl StandardsOutcome {
+    fn plain(outcome: AdapterOutcome) -> Self {
+        Self {
+            outcome,
+            data: None,
         }
     }
 }
@@ -4236,7 +4311,8 @@ source-set:
 
         let outcome = BslAnalyzerMcpAdapter::new()
             .invoke("unica.code.diagnostics", &args, &context, true)
-            .unwrap();
+            .unwrap()
+            .outcome;
 
         let command = outcome.command.unwrap().join(" ");
         assert!(command.contains("bin/"));
@@ -4262,7 +4338,8 @@ source-set:
 
         let outcome = BslAnalyzerMcpAdapter::with_process_runner(&runner)
             .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap();
+            .unwrap()
+            .outcome;
 
         assert!(outcome.ok);
         let commands = runner.commands.borrow();
@@ -4291,7 +4368,8 @@ source-set:
 
         let outcome = BslAnalyzerMcpAdapter::with_process_runner(&runner)
             .invoke("unica.code.diagnostics", &Map::new(), &context, false)
-            .unwrap();
+            .unwrap()
+            .outcome;
 
         assert!(outcome.ok);
         assert_eq!(
@@ -4320,7 +4398,8 @@ source-set:
 
         let outcome = BslAnalyzerMcpAdapter::with_process_runner(&runner)
             .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap();
+            .unwrap()
+            .outcome;
 
         assert!(!outcome.ok);
         assert!(outcome
@@ -4360,14 +4439,17 @@ source-set:
         args.insert("maxOutputTokens".to_string(), json!(1200));
         args.insert("limit".to_string(), json!(25));
 
-        let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
+        let analyzer = BslAnalyzerMcpAdapter::with_runner(&runner)
             .invoke("unica.code.graph", &args, &context, false)
             .unwrap();
 
-        assert!(outcome.ok);
+        assert!(analyzer.outcome.ok);
+        // ADR-0023: the analyzer reply is the result, not a JSON string wrapped
+        // in a section header.
+        assert!(analyzer.outcome.stdout.is_none());
         assert_eq!(
-            outcome.stdout.as_deref(),
-            Some("=== bsl-analyzer-graph ===\n{\"action\":\"callers\",\"nodes\":[]}")
+            analyzer.data.unwrap(),
+            json!({"action": "callers", "nodes": []})
         );
         let commands = runner.commands.borrow();
         assert_eq!(commands.len(), 1);
@@ -4413,7 +4495,8 @@ source-set:
 
         let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
             .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap();
+            .unwrap()
+            .outcome;
 
         assert!(outcome.ok);
         let commands = runner.commands.borrow();
@@ -4452,7 +4535,8 @@ source-set:
 
         let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
             .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap();
+            .unwrap()
+            .outcome;
 
         assert!(outcome.ok);
         let commands = runner.commands.borrow();
@@ -4559,7 +4643,8 @@ source-set:
 
         let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
             .invoke("unica.code.graph", &args, &context, false)
-            .unwrap();
+            .unwrap()
+            .outcome;
 
         assert!(outcome.ok);
         assert!(outcome
@@ -4588,7 +4673,8 @@ source-set:
 
         let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
             .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap();
+            .unwrap()
+            .outcome;
 
         assert!(!outcome.ok);
         assert!(outcome.warnings.is_empty());
@@ -4617,7 +4703,8 @@ source-set:
 
         let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
             .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap();
+            .unwrap()
+            .outcome;
 
         // `status` is the readiness probe callers are told to run first: it
         // answered the question it was asked, so a loading model is its result
@@ -4651,7 +4738,8 @@ source-set:
 
         let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
             .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap();
+            .unwrap()
+            .outcome;
 
         // Readiness lives in the reply's own fields; a finding that quotes the
         // words must not turn a complete result into a retryable failure.
@@ -4690,7 +4778,8 @@ source-set:
 
         let outcome = BslAnalyzerMcpAdapter::with_process_runner(&runner)
             .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap();
+            .unwrap()
+            .outcome;
 
         cleanup_context(&context);
         outcome
@@ -5317,9 +5406,14 @@ source-set:
             r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"bad id"}}"#,
         );
 
-        assert!(!outcome.ok);
-        assert!(outcome.errors.iter().any(|error| error.contains("bad id")));
-        assert!(outcome.stdout.is_none());
+        assert!(!outcome.outcome.ok);
+        assert!(outcome
+            .outcome
+            .errors
+            .iter()
+            .any(|error| error.contains("bad id")));
+        assert!(outcome.outcome.stdout.is_none());
+        assert!(outcome.data.is_none());
     }
 
     #[test]
@@ -5331,11 +5425,11 @@ source-set:
             "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}\n\n",
         );
 
-        assert!(outcome.ok);
-        assert_eq!(
-            outcome.stdout.as_deref(),
-            Some(r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#)
-        );
+        assert!(outcome.outcome.ok);
+        // ADR-0023: the JSON-RPC envelope is transport; the tool publishes the
+        // result it carried.
+        assert!(outcome.outcome.stdout.is_none());
+        assert_eq!(outcome.data.unwrap(), json!({"ok": true}));
     }
 
     #[test]
@@ -5347,8 +5441,9 @@ source-set:
             r#"{"not":"json-rpc"}"#,
         );
 
-        assert!(!outcome.ok);
+        assert!(!outcome.outcome.ok);
         assert!(outcome
+            .outcome
             .errors
             .iter()
             .any(|error| error.contains("missing JSON-RPC")));
@@ -5366,7 +5461,8 @@ source-set:
 
         let outcome = StandardsAdapter::invoke_with_client("search", &args, &client);
 
-        assert!(outcome.ok);
+        assert!(outcome.outcome.ok);
+        assert_eq!(outcome.data.unwrap(), json!({"content": []}));
         let payloads = client.payloads.borrow();
         assert_eq!(payloads.len(), 1);
         assert_eq!(payloads[0]["method"], "tools/call");

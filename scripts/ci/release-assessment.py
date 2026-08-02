@@ -400,23 +400,17 @@ def response_output_size(stdout: str, stderr: str, payload: dict[str, Any] | Non
     return len(stdout.encode("utf-8")) + len(stderr.encode("utf-8")) + payload_size
 
 
-def parsed_stdout_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
-    if not payload:
-        return {}
-    stdout = payload.get("stdout")
-    if not isinstance(stdout, str) or not stdout.strip():
-        return {}
-    try:
-        parsed = json.loads(stdout)
-    except json.JSONDecodeError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
-
-
 def project_source_sets(payload: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Read the source sets from the typed result.
+
+    ADR-0023 moved the map out of `stdout`, where it used to be a JSON string
+    inside the JSON envelope; `data` is the only place it lives now.
+    """
+
     if not payload:
         return []
-    for candidate in (payload, parsed_stdout_payload(payload)):
+    data = payload.get("data")
+    for candidate in (data if isinstance(data, dict) else {}, payload):
         source_sets = candidate.get("sourceSets")
         if source_sets is None:
             source_sets = candidate.get("source_sets")
@@ -688,7 +682,7 @@ def base_tool_scenarios(bsp_root: Path) -> list[tuple[str, str, str, dict[str, A
     scenarios: list[tuple[str, str, str, dict[str, Any], bool, bool]] = [
         ("project-status", "Workspace status", "unica.project.status", {}, True, True),
         ("project-map", "Workspace source-set map", "unica.project.map", {}, True, True),
-        ("cf-info", "BSP Configuration.xml overview", "unica.cf.info", {"ConfigPath": SOURCE_DIR, "Mode": "brief", "Limit": 80}, True, True),
+        ("cf-info", "BSP Configuration.xml overview", "unica.cf.info", {"ConfigPath": SOURCE_DIR}, True, True),
         ("cf-validate", "BSP Configuration.xml validation", "unica.cf.validate", {"ConfigPath": SOURCE_DIR, "MaxErrors": 50}, False, False),
         (
             "code-diagnostics-workspace",
@@ -726,8 +720,15 @@ def extract_diagnostic_codes(payload: dict[str, Any] | None) -> list[str]:
     if not payload:
         return []
     codes: set[str] = set()
-    diagnostics = payload.get("diagnostics")
-    if isinstance(diagnostics, list):
+    # unica.code.diagnostics answers with typed `data` (ADR-0023); the analyzer
+    # reply carries the findings there, not in a printed report.
+    data = payload.get("data")
+    candidates = [payload.get("diagnostics")]
+    if isinstance(data, dict):
+        candidates.append(data.get("diagnostics"))
+    for diagnostics in candidates:
+        if not isinstance(diagnostics, list):
+            continue
         for item in diagnostics:
             if not isinstance(item, dict):
                 continue

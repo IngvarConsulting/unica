@@ -1,7 +1,7 @@
 ---
 name: meta-info
 description: Анализ структуры объекта метаданных 1С из XML-выгрузки — реквизиты, табличные части, формы, движения, типы. Используй для изучения структуры объектов (вместо чтения XML-файлов напрямую) и как подготовительный шаг при написании запросов и кода, работающего с объектами
-argument-hint: <ObjectPath> [-Mode overview|brief|full] [-Name <элемент>]
+argument-hint: <sourceSet> <metadataPath>
 allowed-tools:
   - Bash
   - Read
@@ -17,7 +17,7 @@ allowed-tools:
 - Execution path: call MCP `unica` tool `unica.meta.info`; skill-local operation scripts are not part of the workflow.
 - For mutating operations, pass `dryRun: false` only when the user explicitly requested the change; otherwise keep the default dry run.
 
-Читает XML объекта метаданных из выгрузки конфигурации 1С и выводит компактное описание структуры.
+Читает объект метаданных 1С по логическому адресу и выводит компактное описание структуры. Раскладка выгрузки конфигуратора знать не нужно: `sourceSet` называет набор исходников из карты проекта, `metadataPath` — сам объект.
 
 В основном выводе показывает `Поддержка` по `Ext/ParentConfigurations.bin`: не на поддержке, на замке, редактируется с сохранением поддержки, снято с поддержки или read-only. Если объект на замке, планируй доработку через CFE/release-support flow, а не через прямую правку raw support metadata.
 
@@ -25,10 +25,16 @@ allowed-tools:
 
 | Параметр | Описание |
 |----------|----------|
-| `ObjectPath` | Путь к XML-файлу объекта или каталогу (авто-резолв `<name>/<name>.xml`) |
-| `Mode` | Режим: `overview` (default), `brief`, `full` |
-| `Name` | Drill-down по имени элемента (реквизит, ТЧ, значение перечисления, шаблон URL, операция) |
-| `Limit` / `Offset` | Пагинация (по умолчанию 150 строк) |
+| `sourceSet` | Имя набора исходников из карты проекта; список даёт `unica.project.map` |
+| `metadataPath` | Логический адрес объекта: `Catalog.Номенклатура`, `Справочник.Номенклатура`, `Catalog.Номенклатура.Form.ФормаЭлемента` |
+
+Адрес принимает русские и английские псевдонимы вида, а отвечает канонической
+английской формой в `data.metadataPath` — её можно передать дальше любому
+логическому инструменту. Если известен только путь файла, `unica.source.locate`
+переводит его в адрес, а `unica.source.resolve` ищет объект по имени.
+
+Модуль объекта этот инструмент не читает: `Catalog.X.ObjectModule` отклоняется,
+для кода есть `unica.code.*`.
 
 ```json
 {
@@ -38,25 +44,26 @@ allowed-tools:
     "name": "unica.meta.info",
     "arguments": {
       "cwd": "<workspace>",
-      "ObjectPath": "src/Catalogs/Номенклатура.xml",
-      "Mode": "overview",
-      "Limit": 120
+      "sourceSet": "main",
+      "metadataPath": "Catalog.Номенклатура"
     }
   }
 }
 ```
 
-## Три режима
+## Ответ
 
-| Режим | Что показывает |
-|---|---|
-| `overview` *(default)* | Заголовок + ключевые свойства + структура без раскрытия деталей |
-| `brief` | Всё одной-двумя строками: имена полей, счётчики |
-| `full` | Всё раскрыто: колонки ТЧ, список источников подписки, движения, формы |
+Инструмент отвечает типизированным `data` и всегда отдаёт объект целиком: вид,
+имя, синоним, поддержку, свойства **именами платформы** (`NumberType`,
+`Hierarchical`, `LevelCount`…), владельцев, реквизиты, измерения, ресурсы,
+табличные части с колонками, значения перечисления, формы, макеты и команды.
+Режимы, drill-down и постраничный вывод больше не нужны — берите нужную секцию
+из `data`.
 
-Для ссылочных объектов (`Справочник`, `Документ`, `Перечисление`, планы, `ПланОбмена`, `БизнесПроцесс`, `Задача`) вывод содержит `Представление типа`. В `full` дополнительно раскрываются `Представление объекта`, расширенные представления и представления списка, если они заданы в XML.
-
-`-Name` — drill-down: раскрыть конкретный элемент объекта (ТЧ, реквизит, шаблон URL, операцию веб-сервиса).
+«Представление типа», «Представление объекта» и представления списка ссылочных
+объектов лежат в `properties` под платформенными именами `ObjectPresentation`,
+`ExtendedObjectPresentation`, `ListPresentation`, `ExtendedListPresentation` —
+переводить их обратно в русские подписи инструмент больше не пытается.
 
 ## Поддерживаемые типы (23)
 
@@ -77,7 +84,8 @@ allowed-tools:
     "name": "unica.meta.info",
     "arguments": {
       "cwd": "<workspace>",
-      "ObjectPath": "Catalogs/Валюты/Валюты.xml"
+      "sourceSet": "main",
+      "metadataPath": "Catalog.Валюты"
     }
   }
 }
@@ -93,8 +101,8 @@ allowed-tools:
     "name": "unica.meta.info",
     "arguments": {
       "cwd": "<workspace>",
-      "ObjectPath": "Documents/АвансовыйОтчет/АвансовыйОтчет.xml",
-      "Mode": "full"
+      "sourceSet": "main",
+      "metadataPath": "Document.АвансовыйОтчет"
     }
   }
 }
@@ -110,14 +118,14 @@ allowed-tools:
     "name": "unica.meta.info",
     "arguments": {
       "cwd": "<workspace>",
-      "ObjectPath": "InformationRegisters/КурсыВалют/КурсыВалют.xml",
-      "Mode": "brief"
+      "sourceSet": "main",
+      "metadataPath": "InformationRegister.КурсыВалют"
     }
   }
 }
 ```
 
-### Drill-down в табличную часть документа
+### Табличные части документа
 
 ```json
 {
@@ -127,14 +135,14 @@ allowed-tools:
     "name": "unica.meta.info",
     "arguments": {
       "cwd": "<workspace>",
-      "ObjectPath": "Documents/АвансовыйОтчет/АвансовыйОтчет.xml",
-      "Name": "Товары"
+      "sourceSet": "main",
+      "metadataPath": "Document.АвансовыйОтчет"
     }
   }
 }
 ```
 
-### Drill-down в реквизит
+### Реквизиты справочника
 
 ```json
 {
@@ -144,8 +152,8 @@ allowed-tools:
     "name": "unica.meta.info",
     "arguments": {
       "cwd": "<workspace>",
-      "ObjectPath": "Catalogs/Валюты/Валюты.xml",
-      "Name": "ОсновнаяВалюта"
+      "sourceSet": "main",
+      "metadataPath": "Catalog.Валюты"
     }
   }
 }
@@ -161,7 +169,8 @@ allowed-tools:
     "name": "unica.meta.info",
     "arguments": {
       "cwd": "<workspace>",
-      "ObjectPath": "CommonModules/ОбщегоНазначения/ОбщегоНазначения.xml"
+      "sourceSet": "main",
+      "metadataPath": "CommonModule.ОбщегоНазначения"
     }
   }
 }
@@ -177,13 +186,14 @@ allowed-tools:
     "name": "unica.meta.info",
     "arguments": {
       "cwd": "<workspace>",
-      "ObjectPath": "HTTPServices/ExternalAPI/ExternalAPI.xml"
+      "sourceSet": "main",
+      "metadataPath": "HTTPService.ExternalAPI"
     }
   }
 }
 ```
 
-### HTTP-сервис: drill-down в шаблон URL
+### HTTP-сервис: шаблоны URL в `data`
 
 ```json
 {
@@ -193,8 +203,8 @@ allowed-tools:
     "name": "unica.meta.info",
     "arguments": {
       "cwd": "<workspace>",
-      "ObjectPath": "HTTPServices/ExternalAPI/ExternalAPI.xml",
-      "Name": "АктуальныеЗадачи"
+      "sourceSet": "main",
+      "metadataPath": "HTTPService.ExternalAPI"
     }
   }
 }
@@ -210,13 +220,14 @@ allowed-tools:
     "name": "unica.meta.info",
     "arguments": {
       "cwd": "<workspace>",
-      "ObjectPath": "WebServices/EnterpriseDataUpload_1_0_1_1/EnterpriseDataUpload_1_0_1_1.xml"
+      "sourceSet": "main",
+      "metadataPath": "WebService.EnterpriseDataUpload_1_0_1_1"
     }
   }
 }
 ```
 
-### Веб-сервис: drill-down в операцию
+### Веб-сервис: операции в `data`
 
 ```json
 {
@@ -226,8 +237,8 @@ allowed-tools:
     "name": "unica.meta.info",
     "arguments": {
       "cwd": "<workspace>",
-      "ObjectPath": "WebServices/EnterpriseDataUpload_1_0_1_1/EnterpriseDataUpload_1_0_1_1.xml",
-      "Name": "TestConnection"
+      "sourceSet": "main",
+      "metadataPath": "WebService.EnterpriseDataUpload_1_0_1_1"
     }
   }
 }
@@ -243,8 +254,8 @@ allowed-tools:
     "name": "unica.meta.info",
     "arguments": {
       "cwd": "<workspace>",
-      "ObjectPath": "EventSubscriptions/ПолныйРегистрацияУдаления/ПолныйРегистрацияУдаления.xml",
-      "Mode": "full"
+      "sourceSet": "main",
+      "metadataPath": "EventSubscription.ПолныйРегистрацияУдаления"
     }
   }
 }
@@ -260,7 +271,8 @@ allowed-tools:
     "name": "unica.meta.info",
     "arguments": {
       "cwd": "<workspace>",
-      "ObjectPath": "ScheduledJobs/АвтоматическоеЗакрытиеМесяца/АвтоматическоеЗакрытиеМесяца.xml"
+      "sourceSet": "main",
+      "metadataPath": "ScheduledJob.АвтоматическоеЗакрытиеМесяца"
     }
   }
 }
@@ -276,7 +288,8 @@ allowed-tools:
     "name": "unica.meta.info",
     "arguments": {
       "cwd": "<workspace>",
-      "ObjectPath": "DefinedTypes/GLN/GLN.xml"
+      "sourceSet": "main",
+      "metadataPath": "DefinedType.GLN"
     }
   }
 }

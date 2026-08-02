@@ -5,6 +5,7 @@ use crate::application::AdapterOutcome;
 use crate::domain::format_profile::{
     classify_root_version, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
 };
+use crate::domain::source_target::ResolvedTarget;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::metadata_kinds::metadata_kind;
 use crate::infrastructure::platform_xml_owner::{
@@ -2636,10 +2637,11 @@ mod edit_tests {
         write_file(&object_path, &sample_catalog_xml());
         let before = fs::read(&object_path).unwrap();
 
-        let outcome = preview_meta_edit(
+        let execution = preview_meta_edit_with_data(
             &meta_edit_args(&object_path, "modify-property", "Comment=Previewed"),
             &context,
         );
+        let outcome = &execution.outcome;
 
         assert!(outcome.ok, "{outcome:?}");
         assert!(outcome.summary.contains("planned native metadata edit"));
@@ -2647,15 +2649,16 @@ mod edit_tests {
             outcome.changes,
             vec![format!("would update {}", object_path.display())]
         );
-        let stdout = outcome.stdout.as_deref().unwrap_or_default();
-        assert!(stdout.contains("Planned operation: modify-property: Comment=Previewed"));
-        assert!(stdout.contains("Planned update:"));
-        assert!(stdout.contains("--- a/"), "{stdout}");
-        assert!(stdout.contains("+++ b/"), "{stdout}");
-        assert!(stdout.contains("-\t\t\t<Comment/>"), "{stdout}");
+        let data = execution.data.as_ref().unwrap();
+        assert!(data.changed);
+        assert_eq!(data.counts.modified, 1);
+        let diff = data.diff.as_deref().unwrap_or_default();
+        assert!(diff.contains("--- a/"), "{diff}");
+        assert!(diff.contains("+++ b/"), "{diff}");
+        assert!(diff.contains("-\t\t\t<Comment/>"), "{diff}");
         assert!(
-            stdout.contains("+\t\t\t<Comment>Previewed</Comment>"),
-            "{stdout}"
+            diff.contains("+\t\t\t<Comment>Previewed</Comment>"),
+            "{diff}"
         );
         assert_eq!(fs::read(&object_path).unwrap(), before);
 
@@ -2698,19 +2701,23 @@ mod edit_tests {
         );
         let before = fs::read(&object_path).unwrap();
 
-        let outcome = preview_meta_edit(
+        let execution = preview_meta_edit_with_data(
             &meta_edit_definition_args(&object_path, &definition_path),
             &context,
         );
+        let outcome = &execution.outcome;
 
         assert!(outcome.ok, "{outcome:?}");
-        let stdout = outcome.stdout.as_deref().unwrap_or_default();
-        assert!(stdout.contains("--- a/"), "{stdout}");
-        assert!(stdout.contains("-\t\t\t<Comment/>"), "{stdout}");
-        assert!(
-            stdout.contains("+\t\t\t<Comment>Defined</Comment>"),
-            "{stdout}"
-        );
+        let diff = execution
+            .data
+            .as_ref()
+            .unwrap()
+            .diff
+            .as_deref()
+            .unwrap_or_default();
+        assert!(diff.contains("--- a/"), "{diff}");
+        assert!(diff.contains("-\t\t\t<Comment/>"), "{diff}");
+        assert!(diff.contains("+\t\t\t<Comment>Defined</Comment>"), "{diff}");
         assert_eq!(fs::read(&object_path).unwrap(), before);
 
         let _ = fs::remove_dir_all(&context.cwd);
@@ -2725,10 +2732,11 @@ mod edit_tests {
         write_file(&object_path, &xml);
         let before = fs::read(&object_path).unwrap();
 
-        let outcome = preview_meta_edit(
+        let execution = preview_meta_edit_with_data(
             &meta_edit_args(&object_path, "modify-property", "Comment=Unchanged"),
             &context,
         );
+        let outcome = &execution.outcome;
 
         assert!(outcome.ok, "{outcome:?}");
         assert!(
@@ -2736,9 +2744,10 @@ mod edit_tests {
             "{outcome:?}"
         );
         assert!(outcome.changes.is_empty());
-        let stdout = outcome.stdout.as_deref().unwrap_or_default();
-        assert!(stdout.contains("[INFO] No changes"), "{stdout}");
-        assert!(!stdout.contains("--- a/"), "{stdout}");
+        // ADR-0023: "nothing changed" is a value, and no diff means no diff.
+        let data = execution.data.as_ref().unwrap();
+        assert!(!data.changed);
+        assert!(data.diff.is_none());
         assert_eq!(fs::read(&object_path).unwrap(), before);
 
         let _ = fs::remove_dir_all(&context.cwd);
@@ -2747,23 +2756,14 @@ mod edit_tests {
     /// Verifies a renderer fault does not turn a valid metadata edit into a failure.
     #[test]
     fn projected_diff_render_failure_becomes_warning() {
-        let mut info_lines = Vec::new();
         let mut warnings = Vec::new();
 
-        meta_edit_record_projected_diff(
-            &mut info_lines,
-            &mut warnings,
-            Err("synthetic renderer failure".to_string()),
-        );
+        let diff =
+            meta_edit_projected_diff(&mut warnings, Err("synthetic renderer failure".to_string()));
 
-        assert!(info_lines.is_empty());
-        assert_eq!(
-            warnings,
-            vec![
-                "projected diff could not be rendered safely: synthetic renderer failure"
-                    .to_string()
-            ]
-        );
+        assert!(diff.is_none());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("synthetic renderer failure"));
     }
 
     #[test]
@@ -3154,19 +3154,16 @@ mod edit_tests {
         write_utf8_bom(&object_path, &xml).unwrap();
         let before = fs::read(&object_path).unwrap();
 
-        let outcome = edit_meta(
+        let execution = edit_meta_with_data(
             &meta_edit_args(&object_path, "modify-property", "Comment=TEST-COMMENT"),
             &context,
         );
+        let outcome = &execution.outcome;
 
         assert!(outcome.ok, "{:?}", outcome.errors);
         assert!(outcome.changes.is_empty(), "{:?}", outcome.changes);
         assert_eq!(fs::read(&object_path).unwrap(), before);
-        assert!(outcome
-            .stdout
-            .as_deref()
-            .unwrap_or_default()
-            .contains("No changes"));
+        assert!(!execution.data.as_ref().unwrap().changed);
 
         let _ = fs::remove_dir_all(&context.cwd);
     }
@@ -3235,9 +3232,7 @@ mod edit_tests {
         write_file(&object_path, &sample_document_xml("<RegisterRecords/>"));
 
         let outcome = edit_meta(&register_record_args(&object_path), &context);
-        let stdout = outcome.stdout.as_deref().unwrap_or("");
-        assert!(outcome.ok, "{stdout}\n{:?}", outcome.errors);
-        assert!(stdout.contains("Added:    1"), "{stdout}");
+        assert!(outcome.ok, "{:?}", outcome.errors);
 
         let updated = fs::read_to_string(&object_path).unwrap();
         assert!(updated.contains("<RegisterRecords>"));
@@ -3304,9 +3299,7 @@ mod edit_tests {
             ),
             &context,
         );
-        let stdout = outcome.stdout.as_deref().unwrap_or("");
-        assert!(outcome.ok, "{stdout}\n{:?}", outcome.errors);
-        assert!(stdout.contains("Added:    1"), "{stdout}");
+        assert!(outcome.ok, "{:?}", outcome.errors);
 
         let updated = fs::read_to_string(&object_path).unwrap();
         assert!(updated.contains("<Attribute uuid=\""));
@@ -3327,8 +3320,7 @@ mod edit_tests {
             &meta_edit_args(&object_path, "add-ts", "SampleItems"),
             &context,
         );
-        let stdout = outcome.stdout.as_deref().unwrap_or("");
-        assert!(outcome.ok, "{stdout}\n{:?}", outcome.errors);
+        assert!(outcome.ok, "{:?}", outcome.errors);
 
         let updated = fs::read_to_string(&object_path).unwrap();
         assert!(updated.contains("<TabularSection uuid=\""));
@@ -3352,8 +3344,7 @@ mod edit_tests {
             ),
             &context,
         );
-        let stdout = outcome.stdout.as_deref().unwrap_or("");
-        assert!(outcome.ok, "{stdout}\n{:?}", outcome.errors);
+        assert!(outcome.ok, "{:?}", outcome.errors);
 
         let updated = fs::read_to_string(&object_path).unwrap();
         assert!(updated.contains("<TabularSection uuid=\""));
@@ -3432,8 +3423,7 @@ mod edit_tests {
             ),
             &context,
         );
-        let stdout = outcome.stdout.as_deref().unwrap_or("");
-        assert!(outcome.ok, "{stdout}\n{:?}", outcome.errors);
+        assert!(outcome.ok, "{:?}", outcome.errors);
 
         let updated = fs::read_to_string(&object_path).unwrap();
         assert!(updated.contains("<Name>SampleSourceDocument</Name>"));
@@ -3462,8 +3452,7 @@ mod edit_tests {
             ),
             &context,
         );
-        let stdout = outcome.stdout.as_deref().unwrap_or("");
-        assert!(outcome.ok, "{stdout}\n{:?}", outcome.errors);
+        assert!(outcome.ok, "{:?}", outcome.errors);
 
         let updated = fs::read_to_string(&object_path).unwrap();
         assert!(updated.contains("<Name>ExistingItem</Name>"));
@@ -3493,8 +3482,7 @@ mod edit_tests {
             ),
             &context,
         );
-        let stdout = outcome.stdout.as_deref().unwrap_or("");
-        assert!(outcome.ok, "{stdout}\n{:?}", outcome.errors);
+        assert!(outcome.ok, "{:?}", outcome.errors);
 
         let updated = fs::read_to_string(&object_path).unwrap();
         assert!(updated.starts_with('\u{feff}'));
@@ -3547,9 +3535,7 @@ mod edit_tests {
             ),
             &context,
         );
-        let stdout = outcome.stdout.as_deref().unwrap_or("");
-        assert!(outcome.ok, "{stdout}\n{:?}", outcome.errors);
-        assert!(stdout.contains("Removed:  1"), "{stdout}");
+        assert!(outcome.ok, "{:?}", outcome.errors);
 
         let updated = fs::read_to_string(&object_path).unwrap();
         assert!(updated.contains("<Name>ExistingItem</Name>"));
@@ -3607,9 +3593,7 @@ mod edit_tests {
             ),
             &context,
         );
-        let stdout = outcome.stdout.as_deref().unwrap_or("");
-        assert!(outcome.ok, "{stdout}\n{:?}", outcome.errors);
-        assert!(stdout.contains("Modified: 2"), "{stdout}");
+        assert!(outcome.ok, "{:?}", outcome.errors);
 
         let updated = fs::read_to_string(&object_path).unwrap();
         assert!(updated.contains("<Name>SampleCargoPlaceCode</Name>"));
@@ -3640,9 +3624,7 @@ mod edit_tests {
             ),
             &context,
         );
-        let stdout = outcome.stdout.as_deref().unwrap_or("");
-        assert!(outcome.ok, "{stdout}\n{:?}", outcome.errors);
-        assert!(stdout.contains("Modified: 3"), "{stdout}");
+        assert!(outcome.ok, "{:?}", outcome.errors);
 
         let updated = fs::read_to_string(&object_path).unwrap();
         assert!(updated.starts_with('\u{feff}'));
@@ -3682,9 +3664,7 @@ mod edit_tests {
             ),
             &context,
         );
-        let stdout = outcome.stdout.as_deref().unwrap_or("");
-        assert!(outcome.ok, "{stdout}\n{:?}", outcome.errors);
-        assert!(stdout.contains("Modified: 2"), "{stdout}");
+        assert!(outcome.ok, "{:?}", outcome.errors);
 
         let updated = fs::read_to_string(&object_path).unwrap();
         assert!(updated.starts_with('\u{feff}'));
@@ -4444,9 +4424,7 @@ mod edit_tests {
             ),
             &context,
         );
-        let stdout = outcome.stdout.as_deref().unwrap_or("");
-        assert!(outcome.ok, "{stdout}\n{:?}", outcome.errors);
-        assert!(stdout.contains("Added:    2"), "{stdout}");
+        assert!(outcome.ok, "{:?}", outcome.errors);
 
         let updated = fs::read_to_string(&object_path).unwrap();
         assert!(updated.contains("<Name>SampleCargoPlaceCode</Name>"));
@@ -4712,8 +4690,7 @@ mod edit_tests {
             ),
             &context,
         );
-        let stdout = outcome.stdout.as_deref().unwrap_or("");
-        assert!(outcome.ok, "{stdout}\n{:?}", outcome.errors);
+        assert!(outcome.ok, "{:?}", outcome.errors);
 
         let updated = fs::read_to_string(&object_path).unwrap();
         assert!(updated.contains("<v8:Type>xs:decimal</v8:Type>"));
@@ -7854,19 +7831,145 @@ pub(crate) fn meta_validate_forbidden_properties(md_type: &str) -> Option<&'stat
     }
 }
 
+/// Typed answer of `unica.meta.info` (ADR-0023). The report translated platform
+/// properties into Russian prose (`Номер: Строка(9), помесячно, авто`); the data
+/// carries the platform's own property names and values instead, so the twenty
+/// three metadata kinds need one shape rather than fifteen bespoke sections.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MetaInfoData {
+    /// The logical address this call resolved. Flattened, because ADR-0021
+    /// fixed `sourceSet` and `metadataPath` at the top level of `data` and
+    /// `unica.source.locate` answers with the same shape.
+    #[serde(flatten)]
+    pub(crate) target: ResolvedTarget,
+    /// The platform's metadata kind: `Catalog`, `Document`, `CommonModule`, …
+    pub(crate) kind: String,
+    pub(crate) name: String,
+    /// The object's synonym; `null` when it declares none.
+    pub(crate) synonym: Option<String>,
+    pub(crate) support: ObjectSupportData,
+    /// Scalar properties under `Properties`, by their platform names.
+    pub(crate) properties: Vec<MetaInfoProperty>,
+    /// Owners of a subordinate catalog; empty for everything else.
+    pub(crate) owners: Vec<String>,
+    pub(crate) attributes: Vec<MetaInfoAttrData>,
+    /// Register dimensions; empty for every other kind.
+    pub(crate) dimensions: Vec<MetaInfoAttrData>,
+    /// Register resources; empty for every other kind.
+    pub(crate) resources: Vec<MetaInfoAttrData>,
+    pub(crate) tabular_sections: Vec<MetaInfoTabularSectionData>,
+    /// Enumeration values; empty for every other kind.
+    pub(crate) enum_values: Vec<String>,
+    pub(crate) forms: Vec<String>,
+    pub(crate) templates: Vec<String>,
+    pub(crate) commands: Vec<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MetaInfoProperty {
+    pub(crate) name: String,
+    pub(crate) value: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MetaInfoAttrData {
+    pub(crate) name: String,
+    #[serde(rename = "type")]
+    pub(crate) type_name: Option<String>,
+    /// Platform flags the report rendered inline, one entry each.
+    pub(crate) flags: Vec<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MetaInfoTabularSectionData {
+    pub(crate) name: String,
+    pub(crate) columns: Vec<MetaInfoAttrData>,
+}
+
+fn meta_info_attr_data(attrs: Vec<MetaInfoAttr<'_, '_>>) -> Vec<MetaInfoAttrData> {
+    attrs
+        .into_iter()
+        .map(|attr| MetaInfoAttrData {
+            name: attr.name,
+            type_name: (!attr.type_name.is_empty()).then_some(attr.type_name),
+            // `meta_info_format_flags` renders `  [обязательный, индекс]`;
+            // splitting it raw left the brackets on the first and last flag.
+            flags: attr
+                .flags
+                .trim()
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .split(',')
+                .map(str::trim)
+                .filter(|flag| !flag.is_empty())
+                .map(str::to_string)
+                .collect(),
+        })
+        .collect()
+}
+
+/// Scalar `Properties` children, by their platform names. Composite children
+/// (`Synonym`, `Type`, `Owners`, …) have their own typed places and are skipped
+/// here so the map stays flat.
+fn meta_info_properties(props: Option<roxmltree::Node<'_, '_>>) -> Vec<MetaInfoProperty> {
+    let Some(props) = props else {
+        return Vec::new();
+    };
+    props
+        .children()
+        .filter(|child| child.is_element())
+        .filter(|child| child.children().all(|node| !node.is_element()))
+        .filter_map(|child| {
+            let name = child.tag_name().name().to_string();
+            if matches!(name.as_str(), "Name") {
+                return None;
+            }
+            let value = child.text().unwrap_or("").trim().to_string();
+            (!value.is_empty()).then_some(MetaInfoProperty { name, value })
+        })
+        .collect()
+}
+
+fn meta_info_owner_names(props: Option<roxmltree::Node<'_, '_>>) -> Vec<String> {
+    let Some(owners_node) = props.and_then(|node| meta_info_child(node, "Owners")) else {
+        return Vec::new();
+    };
+    meta_info_children(owners_node, "Item")
+        .into_iter()
+        .map(meta_info_inner_text)
+        .map(|owner| owner.trim().to_string())
+        .filter(|owner| !owner.is_empty())
+        .collect()
+}
+
+pub(crate) struct MetaInfoExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<MetaInfoData>,
+}
+
 pub(crate) fn analyze_meta_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
+    analyze_meta_info_with_data(args, context).outcome
+}
+
+/// The resolved logical target rides in typed data rather than in the printed
+/// report: ADR-0021 asks every exact operation to name the source set it
+/// actually resolved, and a machine reader should not have to parse prose for
+/// it.
+pub(crate) fn analyze_meta_info_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> MetaInfoExecution {
     const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
-    let result = (|| -> Result<(String, PathBuf), String> {
-        let raw_path = required_path(
-            args,
-            &["objectPath", "ObjectPath", "path", "Path"],
-            "ObjectPath",
-        )?;
-        let object_path = resolve_meta_info_path(absolutize(raw_path, &context.cwd))?;
+    let result = (|| -> Result<(MetaInfoData, PathBuf), String> {
+        let (resolved, object_path) = resolve_metadata_object_descriptor(args, context)?;
         let text = read_utf8_sig(&object_path)?;
         let doc = Document::parse(text.trim_start_matches('\u{feff}'))
             .map_err(|err| format!("XML parse error in {}: {err}", object_path.display()))?;
@@ -7891,46 +7994,80 @@ pub(crate) fn analyze_meta_info(
             .and_then(|node| meta_info_child(node, "Synonym"))
             .map(meta_info_ml_text)
             .unwrap_or_default();
-        let mode = string_arg(args, &["mode", "Mode"]).unwrap_or("overview");
-        let drill_name = string_arg(args, &["name", "Name"]).unwrap_or("");
-
-        let mut lines = if drill_name.is_empty() {
-            meta_info_main_lines(md_type, props, child_objs, &obj_name, &synonym, mode)?
-        } else {
-            meta_info_drill_lines(md_type, child_objs, drill_name, &obj_name)?
+        // Mode and Name sliced one object into shorter reports. Data answers
+        // with the whole object once; a caller projects what it needs.
+        let is_register = md_type.ends_with("Register");
+        let data = MetaInfoData {
+            target: resolved,
+            kind: md_type.to_string(),
+            name: obj_name,
+            synonym: (!synonym.is_empty()).then_some(synonym),
+            support: object_support_state(&object_path),
+            properties: meta_info_properties(props),
+            owners: meta_info_owner_names(props),
+            attributes: if md_type == "Enum" {
+                Vec::new()
+            } else {
+                meta_info_attr_data(meta_info_attributes(child_objs, "Attribute", false))
+            },
+            dimensions: if is_register {
+                meta_info_attr_data(meta_info_attributes(child_objs, "Dimension", true))
+            } else {
+                Vec::new()
+            },
+            resources: if is_register {
+                meta_info_attr_data(meta_info_attributes(child_objs, "Resource", false))
+            } else {
+                Vec::new()
+            },
+            tabular_sections: meta_info_tabular_sections(child_objs)
+                .into_iter()
+                .map(|section| MetaInfoTabularSectionData {
+                    name: section.name,
+                    columns: meta_info_attr_data(section.columns),
+                })
+                .collect(),
+            enum_values: meta_info_enum_values(child_objs),
+            forms: meta_info_simple_children(child_objs, "Form"),
+            templates: meta_info_simple_children(child_objs, "Template"),
+            commands: meta_info_simple_children(child_objs, "Command"),
         };
-        if drill_name.is_empty() {
-            lines.insert(
-                1,
-                format!("Поддержка: {}", support_status_for_path(&object_path)),
-            );
-        }
-        let output_text = meta_info_paginate(lines, args);
-        Ok((format!("{output_text}\n"), object_path))
+        Ok((data, object_path))
     })();
 
     match result {
-        Ok((stdout, artifact)) => AdapterOutcome {
-            ok: true,
-            summary: "unica.meta.info completed with native metadata analyzer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: Vec::new(),
-            artifacts: vec![artifact.display().to_string()],
-            stdout: Some(stdout),
-            stderr: Some(String::new()),
-            command: None,
+        Ok((data, artifact)) => MetaInfoExecution {
+            outcome: AdapterOutcome {
+                ok: true,
+                summary: format!(
+                    "unica.meta.info described {} {} with {} attribute(s)",
+                    data.kind,
+                    data.name,
+                    data.attributes.len()
+                ),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: Vec::new(),
+                artifacts: vec![artifact.display().to_string()],
+                stdout: None,
+                stderr: Some(String::new()),
+                command: None,
+            },
+            data: Some(data),
         },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.meta.info failed in native metadata analyzer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: Some(format!("{error}\n")),
-            stderr: Some(String::new()),
-            command: None,
+        Err(error) => MetaInfoExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.meta.info failed in native metadata analyzer".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.clone()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{error}\n")),
+                command: None,
+            },
+            data: None,
         },
     }
 }
@@ -8191,6 +8328,7 @@ pub(crate) fn meta_info_append_overview_or_full(
     child_objs: Option<roxmltree::Node<'_, '_>>,
     mode: &str,
 ) {
+    meta_info_append_owners(lines, props);
     if md_type == "Document" {
         meta_info_append_document_header(lines, props);
     }
@@ -8253,7 +8391,9 @@ pub(crate) fn meta_info_append_overview_or_full(
         meta_info_append_attribute_section(lines, "Реквизиты", child_objs, "Attribute", false);
         meta_info_append_tabular_sections(lines, child_objs, mode);
     }
-    if mode == "overview" && matches!(md_type, "Report" | "DataProcessor") {
+    // Forms, templates and commands exist on far more kinds than reports and
+    // data processors; overview hid them from every other object.
+    if mode == "overview" {
         meta_info_append_simple_children(lines, child_objs);
     }
     if mode == "full" {
@@ -8493,6 +8633,34 @@ pub(crate) fn meta_info_append_document_header(
     }
 }
 
+/// Subordination is a first-class property of the object, so an object that
+/// declares `<Owners>` always reports it. Silence would be read as "the tool
+/// does not know", which is exactly the ambiguity that sends a reader to the
+/// raw XML.
+pub(crate) fn meta_info_append_owners(
+    lines: &mut Vec<String>,
+    props: Option<roxmltree::Node<'_, '_>>,
+) {
+    let Some(owners_node) = props.and_then(|node| meta_info_child(node, "Owners")) else {
+        return;
+    };
+    let owners = meta_info_children(owners_node, "Item")
+        .into_iter()
+        .map(meta_info_inner_text)
+        .map(|owner| owner.trim().to_string())
+        .filter(|owner| !owner.is_empty())
+        .collect::<Vec<_>>();
+    if owners.is_empty() {
+        lines.push("Владельцы: нет".to_string());
+    } else {
+        lines.push(format!(
+            "Владельцы ({}): {}",
+            owners.len(),
+            owners.join(", ")
+        ));
+    }
+}
+
 pub(crate) fn meta_info_append_catalog_header(
     lines: &mut Vec<String>,
     props: Option<roxmltree::Node<'_, '_>>,
@@ -8517,15 +8685,31 @@ pub(crate) fn meta_info_append_catalog_header(
             hierarchy_type.push_str(", без ограничения уровней");
         }
         parts.push(format!("Иерархический: {hierarchy_type}"));
+    } else {
+        // A missing line cannot be told apart from an unreported one, so the
+        // negative case is stated instead of skipped.
+        parts.push("Иерархический: нет".to_string());
     }
     if let Some(code_length) = meta_info_child_text(props, "CodeLength") {
         if code_length.parse::<i64>().unwrap_or(0) > 0 {
             parts.push(format!("Код({code_length})"));
+        } else {
+            parts.push("Код: нет".to_string());
         }
     }
     if let Some(description_length) = meta_info_child_text(props, "DescriptionLength") {
         if description_length.parse::<i64>().unwrap_or(0) > 0 {
             parts.push(format!("Наименование({description_length})"));
+        }
+    }
+    if let Some(presentation) = meta_info_child_text(props, "DefaultPresentation") {
+        let presentation = match presentation.as_str() {
+            "AsDescription" => "наименование",
+            "AsCode" => "код",
+            other => other,
+        };
+        if !presentation.is_empty() {
+            parts.push(format!("Основное представление: {presentation}"));
         }
     }
     if !parts.is_empty() {
@@ -9546,10 +9730,30 @@ pub(crate) struct MetaRemoveError {
 }
 
 struct MetaRemoveSuccess {
-    stdout: String,
+    data: MetaRemoveData,
     changes: Vec<String>,
     artifacts: Vec<String>,
     warnings: Vec<String>,
+}
+
+/// Typed answer of `unica.meta.remove` (ADR-0023). The prose ended with an
+/// action count; the data names what was removed and where the object was still
+/// referenced, so a dry run can be read without parsing a report.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MetaRemoveData {
+    pub(crate) object_kind: String,
+    pub(crate) object_name: String,
+    /// True when nothing was written and the lists describe what would happen.
+    pub(crate) dry_run: bool,
+    /// Subsystem descriptors that still listed the object and were rewritten.
+    pub(crate) subsystems_cleaned: Vec<String>,
+    pub(crate) mutation: MutationData,
+}
+
+pub(crate) struct MetaRemoveExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<MetaRemoveData>,
 }
 
 pub(crate) fn meta_remove_stdout_error(message: String) -> MetaRemoveError {
@@ -10006,6 +10210,13 @@ pub(crate) fn remove_metadata_object(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
+    remove_metadata_object_with_data(args, context).outcome
+}
+
+pub(crate) fn remove_metadata_object_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> MetaRemoveExecution {
     let result = (|| -> Result<MetaRemoveSuccess, MetaRemoveError> {
         let config_dir_raw = required_string(args, &["configDir", "ConfigDir"], "ConfigDir")
             .map_err(|err| meta_remove_stdout_error(format!("[ERROR] {err}")))?;
@@ -10410,20 +10621,29 @@ pub(crate) fn remove_metadata_object(
                 .cleanup_warnings
         };
 
-        stdout.push('\n');
-        let total_actions = actions + subsystems_cleaned;
-        if dry_run {
-            stdout.push_str(&format!(
-                "=== Dry run complete: {total_actions} actions would be performed ===\n"
-            ));
-        } else {
-            stdout.push_str(&format!(
-                "=== Done: {total_actions} actions performed ({subsystems_cleaned} subsystem references removed) ===\n"
-            ));
+        let _ = (stdout, actions, subsystems_cleaned);
+        let mut mutation = MutationData::new(!dry_run);
+        for path in &removed_paths {
+            mutation = mutation.removed(path);
         }
+        let mut cleaned = subsystem_replacements
+            .iter()
+            .map(|replacement| replacement.path.display().to_string())
+            .collect::<Vec<_>>();
+        cleaned.sort();
+        for path in &subsystem_replacements {
+            mutation = mutation.updated(&path.path);
+        }
+        let data = MetaRemoveData {
+            object_kind: obj_type.to_string(),
+            object_name: obj_name.to_string(),
+            dry_run,
+            subsystems_cleaned: cleaned,
+            mutation,
+        };
 
         Ok(MetaRemoveSuccess {
-            stdout,
+            data,
             changes,
             artifacts,
             warnings,
@@ -10431,31 +10651,47 @@ pub(crate) fn remove_metadata_object(
     })();
 
     match result {
-        Ok(success) => AdapterOutcome {
-            ok: true,
-            summary: "unica.meta.remove completed with native metadata remover".to_string(),
-            changes: success.changes,
-            warnings: success.warnings,
-            errors: Vec::new(),
-            artifacts: success.artifacts,
-            stdout: Some(success.stdout),
-            stderr: Some(String::new()),
-            command: None,
-        },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.meta.remove failed in native metadata remover".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: if error.message.is_empty() {
-                Vec::new()
-            } else {
-                vec![error.message]
+        Ok(success) => MetaRemoveExecution {
+            outcome: AdapterOutcome {
+                ok: true,
+                summary: format!(
+                    "unica.meta.remove {} {}.{} and cleaned {} subsystem descriptor(s)",
+                    if success.data.dry_run {
+                        "would remove"
+                    } else {
+                        "removed"
+                    },
+                    success.data.object_kind,
+                    success.data.object_name,
+                    success.data.subsystems_cleaned.len()
+                ),
+                changes: success.changes,
+                warnings: success.warnings,
+                errors: Vec::new(),
+                artifacts: success.artifacts,
+                stdout: None,
+                stderr: Some(String::new()),
+                command: None,
             },
-            artifacts: Vec::new(),
-            stdout: Some(error.stdout),
-            stderr: Some(error.stderr),
-            command: None,
+            data: Some(success.data),
+        },
+        Err(error) => MetaRemoveExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.meta.remove failed in native metadata remover".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: if error.message.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![error.message]
+                },
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(error.stderr),
+                command: None,
+            },
+            data: None,
         },
     }
 }
@@ -16627,7 +16863,40 @@ struct MetaEditLineNumberLengthAuthorization {
     provenance: Option<PlatformXmlOwnerProvenance>,
 }
 
+/// Typed answer of `unica.meta.edit` (ADR-0023). The projected diff stays a
+/// string because a unified diff is a format, not a rendered report -- the same
+/// choice `unica.code.patch` makes.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MetaEditData {
+    pub(crate) object_kind: String,
+    pub(crate) object_name: String,
+    pub(crate) changed: bool,
+    pub(crate) counts: MetaEditCountsData,
+    pub(crate) diff: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MetaEditCountsData {
+    pub(crate) added: usize,
+    pub(crate) removed: usize,
+    pub(crate) modified: usize,
+}
+
+pub(crate) struct MetaEditExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<MetaEditData>,
+}
+
 pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
+    edit_meta_with_data(args, context).outcome
+}
+
+pub(crate) fn edit_meta_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> MetaEditExecution {
     edit_meta_with_mode(args, context, false)
 }
 
@@ -16636,6 +16905,13 @@ pub(crate) fn preview_meta_edit(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
+    preview_meta_edit_with_data(args, context).outcome
+}
+
+pub(crate) fn preview_meta_edit_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> MetaEditExecution {
     edit_meta_with_mode(args, context, true)
 }
 
@@ -16644,8 +16920,8 @@ fn edit_meta_with_mode(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
     dry_run: bool,
-) -> AdapterOutcome {
-    let edit_result = (|| -> Result<(String, PathBuf, bool, Vec<String>), String> {
+) -> MetaEditExecution {
+    let edit_result = (|| -> Result<(MetaEditData, PathBuf, bool, Vec<String>), String> {
         let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
         let operation = string_arg(args, &["operation", "Operation"]);
         if definition_file.is_some() && operation.is_some() {
@@ -16673,7 +16949,10 @@ fn edit_meta_with_mode(
         validate_metadata_8_3_27_enum_contract(&xml_text, "meta.edit")?;
 
         let mut counts = MetaEditCounts::default();
-        let mut info_lines = vec![format!("[INFO] Object: {object_type}.{object_name}")];
+        // The old report echoed the operation and value the caller had just
+        // sent, plus the path that `artifacts` already names. Data keeps what
+        // only the tool knows: whether anything changed, how much, and the diff.
+        let mut projected_diff = None;
         let mut transaction = CompileTransaction::new();
         let line_number_length_provenance = if let Some(definition_file) = definition_file {
             let definition_path = absolutize(definition_file.clone(), &context.cwd);
@@ -16708,7 +16987,6 @@ fn edit_meta_with_mode(
                 authorization.policy,
                 &mut counts,
             )?;
-            info_lines.extend(meta_edit_definition_info_lines(&definition));
             authorization.provenance
         } else {
             let operation = operation.expect("checked above");
@@ -16734,9 +17012,6 @@ fn edit_meta_with_mode(
                 authorization.policy,
                 &mut counts,
             )?;
-            if dry_run {
-                info_lines.push(format!("[INFO] Planned operation: {operation}: {value}"));
-            }
             authorization.provenance
         };
 
@@ -16763,9 +17038,7 @@ fn edit_meta_with_mode(
                     validate_metadata_8_3_27_enum_contract(&published, "meta.edit")
                 })?
                 .cleanup_warnings;
-            info_lines.push(format!("[INFO] Saved: {}", object_path.display()));
         } else if changed {
-            info_lines.push(format!("[INFO] Planned update: {}", object_path.display()));
             let diff_path = object_path
                 .strip_prefix(&context.cwd)
                 .unwrap_or(&object_path)
@@ -16775,80 +17048,93 @@ fn edit_meta_with_mode(
                 .map_err(|err| format!("failed to preview {}: {err}", object_path.display()))?;
             let after = String::from_utf8(serialized_bytes)
                 .map_err(|err| format!("failed to preview {}: {err}", object_path.display()))?;
-            meta_edit_record_projected_diff(
-                &mut info_lines,
+            projected_diff = meta_edit_projected_diff(
                 &mut warnings,
                 meta_edit_unified_diff(&diff_path, &before, &after),
             );
         } else {
             counts = MetaEditCounts::default();
-            info_lines.push("[INFO] No changes".to_string());
         }
-        let stdout = format!(
-            "{}\n\n=== meta-edit summary ===\n  Object:   {object_type}.{object_name}\n  Added:    {}\n  Removed:  {}\n  Modified: {}\n",
-            info_lines.join("\n"),
-            counts.added, counts.removed, counts.modified
-        );
-        Ok((stdout, object_path, changed, warnings))
+        let data = MetaEditData {
+            object_kind: object_type.to_string(),
+            object_name: object_name.to_string(),
+            changed,
+            counts: MetaEditCountsData {
+                added: counts.added,
+                removed: counts.removed,
+                modified: counts.modified,
+            },
+            diff: projected_diff,
+        };
+        Ok((data, object_path, changed, warnings))
     })();
 
     match edit_result {
-        Ok((stdout, object_path, changed, warnings)) => AdapterOutcome {
-            ok: true,
-            summary: if dry_run {
-                if changed {
-                    "dry run: unica.meta.edit planned native metadata edit".to_string()
+        Ok((data, object_path, changed, warnings)) => MetaEditExecution {
+            outcome: AdapterOutcome {
+                ok: true,
+                summary: if dry_run {
+                    if changed {
+                        "dry run: unica.meta.edit planned native metadata edit".to_string()
+                    } else {
+                        "dry run: unica.meta.edit found no metadata changes".to_string()
+                    }
                 } else {
-                    "dry run: unica.meta.edit found no metadata changes".to_string()
-                }
-            } else {
-                "unica.meta.edit completed with native metadata editor".to_string()
-            },
-            changes: if changed {
-                vec![if dry_run {
-                    format!("would update {}", object_path.display())
+                    "unica.meta.edit completed with native metadata editor".to_string()
+                },
+                changes: if changed {
+                    vec![if dry_run {
+                        format!("would update {}", object_path.display())
+                    } else {
+                        format!("updated {}", object_path.display())
+                    }]
                 } else {
-                    format!("updated {}", object_path.display())
-                }]
-            } else {
-                Vec::new()
+                    Vec::new()
+                },
+                warnings,
+                errors: Vec::new(),
+                artifacts: vec![object_path.display().to_string()],
+                stdout: None,
+                stderr: None,
+                command: None,
             },
-            warnings,
-            errors: Vec::new(),
-            artifacts: vec![object_path.display().to_string()],
-            stdout: Some(stdout),
-            stderr: None,
-            command: None,
+            data: Some(data),
         },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: if dry_run {
-                "dry run: unica.meta.edit failed in native metadata editor".to_string()
-            } else {
-                "unica.meta.edit failed in native metadata editor".to_string()
+        Err(error) => MetaEditExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: if dry_run {
+                    "dry run: unica.meta.edit failed in native metadata editor".to_string()
+                } else {
+                    "unica.meta.edit failed in native metadata editor".to_string()
+                },
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.clone()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{error}\n")),
+                command: None,
             },
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-            command: None,
+            data: None,
         },
     }
 }
 
-/// Adds a verified diff to stdout or records a non-fatal renderer diagnostic.
-fn meta_edit_record_projected_diff(
-    info_lines: &mut Vec<String>,
+/// Returns a verified diff or records a non-fatal renderer diagnostic. A
+/// renderer fault must not turn a valid edit into a failure.
+fn meta_edit_projected_diff(
     warnings: &mut Vec<String>,
     rendered: Result<String, String>,
-) {
+) -> Option<String> {
     match rendered {
-        Ok(diff) => info_lines.push(format!("\n=== projected diff ===\n{diff}")),
-        Err(error) => warnings.push(format!(
-            "projected diff could not be rendered safely: {error}"
-        )),
+        Ok(diff) => Some(diff),
+        Err(error) => {
+            warnings.push(format!(
+                "projected diff could not be rendered safely: {error}"
+            ));
+            None
+        }
     }
 }
 
@@ -19950,9 +20236,220 @@ pub(crate) fn invoke_mutation(
 ) -> Option<AdapterOutcome> {
     match operation {
         "meta-compile" => Some(compile_meta(args, context)),
+        // Typed answer; data reaches the envelope through typed_result.rs.
         "meta-edit" => Some(edit_meta(args, context)),
         "meta-remove" => Some(remove_metadata_object(args, context)),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod meta_info_logical_target_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn workspace(name: &str) -> WorkspaceContext {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("unica-meta-info-logical-{name}-{nanos}"));
+        fs::create_dir_all(root.join("src/Catalogs/Items/Ext")).unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration/></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Items</Name><Synonym><v8:item xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:lang>ru</v8:lang><v8:content>Номенклатура</v8:content></v8:item></Synonym></Properties></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/Catalogs/Items/Ext/ObjectModule.bsl"),
+            "Procedure BeforeWrite()\nEndProcedure\n",
+        )
+        .unwrap();
+        WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        }
+    }
+
+    fn info_args(address: &str) -> Map<String, Value> {
+        Map::from_iter([
+            ("sourceSet".to_string(), json!("main")),
+            ("metadataPath".to_string(), json!(address)),
+        ])
+    }
+
+    #[test]
+    fn meta_info_reads_the_descriptor_named_by_a_logical_address() {
+        let context = workspace("reads");
+
+        let execution = analyze_meta_info_with_data(&info_args("Catalog.Items"), &context);
+
+        assert!(execution.outcome.ok, "{:?}", execution.outcome);
+        let data = execution.data.expect("a resolved target is reported");
+        assert_eq!(data.kind, "Catalog");
+        assert_eq!(data.name, "Items");
+        assert_eq!(data.target.source_set, "main");
+        assert_eq!(
+            data.target.metadata_path.as_ref().map(|path| path.as_str()),
+            Some("Catalog.Items")
+        );
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    /// The profile accepts a Russian kind alias and answers with the canonical
+    /// English address, so the answer can be fed back to any logical tool.
+    #[test]
+    fn meta_info_accepts_a_russian_kind_alias_and_answers_with_the_canonical_address() {
+        let context = workspace("alias");
+
+        let execution = analyze_meta_info_with_data(&info_args("Справочник.Items"), &context);
+
+        assert!(execution.outcome.ok, "{:?}", execution.outcome);
+        assert_eq!(
+            execution
+                .data
+                .and_then(|data| data.target.metadata_path)
+                .map(|path| path.as_str().to_string()),
+            Some("Catalog.Items".to_string())
+        );
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    /// Subordination is the structural fact that separates one catalog from
+    /// another; reading it required opening the raw XML before.
+    #[test]
+    fn meta_info_reports_owners_and_their_absence() {
+        let context = workspace("owners");
+        let subordinate = context.workspace_root.join("src/Catalogs/Series.xml");
+        fs::write(
+            &subordinate,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20"><Catalog><Properties><Name>Series</Name><Owners><xr:Item>Catalog.Items</xr:Item><xr:Item>Catalog.Kinds</xr:Item></Owners></Properties></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            context.workspace_root.join("src/Catalogs/Plain.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Plain</Name><Owners/></Properties></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+
+        let subordinate = analyze_meta_info_with_data(&info_args("Catalog.Series"), &context);
+        let plain = analyze_meta_info_with_data(&info_args("Catalog.Plain"), &context);
+
+        assert!(subordinate.outcome.ok, "{:?}", subordinate.outcome);
+        assert_eq!(
+            subordinate
+                .data
+                .expect("meta.info answers with data")
+                .owners,
+            vec!["Catalog.Items".to_string(), "Catalog.Kinds".to_string()]
+        );
+        assert!(plain.outcome.ok, "{:?}", plain.outcome);
+        // An empty list is the answer: the catalog is not subordinate.
+        assert!(plain
+            .data
+            .expect("meta.info answers with data")
+            .owners
+            .is_empty());
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    /// A silent property cannot be told apart from an unreported one, which is
+    /// what forced a reader to the XML to learn a catalog is flat.
+    #[test]
+    fn meta_info_states_catalog_properties_including_their_negatives() {
+        let context = workspace("catalog-properties");
+        fs::write(
+            context.workspace_root.join("src/Catalogs/Flat.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Flat</Name><Hierarchical>false</Hierarchical><CodeLength>0</CodeLength><DescriptionLength>150</DescriptionLength><DefaultPresentation>AsCode</DefaultPresentation></Properties><ChildObjects><Form>ФормаЭлемента</Form></ChildObjects></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+
+        let execution = analyze_meta_info_with_data(&info_args("Catalog.Flat"), &context);
+
+        assert!(execution.outcome.ok, "{:?}", execution.outcome);
+        let data = execution.data.expect("meta.info answers with data");
+        // Properties keep the platform's own names and values, so a negative is
+        // stated rather than left out.
+        let property = |name: &str| {
+            data.properties
+                .iter()
+                .find(|property| property.name == name)
+                .map(|property| property.value.as_str())
+        };
+        assert_eq!(property("Hierarchical"), Some("false"), "{data:?}");
+        assert_eq!(property("CodeLength"), Some("0"), "{data:?}");
+        assert_eq!(property("DescriptionLength"), Some("150"), "{data:?}");
+        assert_eq!(property("DefaultPresentation"), Some("AsCode"), "{data:?}");
+        // Forms used to appear in overview only for reports and data processors.
+        assert_eq!(data.forms, vec!["ФормаЭлемента".to_string()]);
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    /// Reading a module is `unica.code.*` work. Quietly reading the owner
+    /// instead would answer a question the caller did not ask.
+    #[test]
+    fn meta_info_refuses_a_module_terminal_by_name() {
+        let context = workspace("module");
+
+        let outcome = analyze_meta_info(&info_args("Catalog.Items.ObjectModule"), &context);
+
+        assert!(!outcome.ok);
+        assert!(
+            outcome.errors[0].contains("names a module terminal"),
+            "{:?}",
+            outcome.errors
+        );
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    #[test]
+    fn meta_info_reports_an_unknown_address_without_naming_a_path() {
+        let context = workspace("unknown");
+
+        let outcome = analyze_meta_info(&info_args("Catalog.Missing"), &context);
+
+        assert!(!outcome.ok);
+        assert!(
+            outcome.errors[0].contains("Catalog.Missing"),
+            "{:?}",
+            outcome.errors
+        );
+        assert!(
+            !outcome.errors[0].contains("Catalogs/"),
+            "{:?}",
+            outcome.errors
+        );
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    #[test]
+    fn meta_info_requires_a_source_set() {
+        let context = workspace("no-source-set");
+
+        let outcome = analyze_meta_info(
+            &Map::from_iter([("metadataPath".to_string(), json!("Catalog.Items"))]),
+            &context,
+        );
+
+        assert!(!outcome.ok);
+        assert!(
+            outcome.errors[0].contains("sourceSet"),
+            "{:?}",
+            outcome.errors
+        );
+        let _ = fs::remove_dir_all(&context.workspace_root);
     }
 }
 

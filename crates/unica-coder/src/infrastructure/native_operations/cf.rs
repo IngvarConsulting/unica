@@ -866,13 +866,106 @@ pub(crate) fn cf_validate_form_ref(config_dir: &Path, form_ref: &str) -> bool {
     false
 }
 
+/// Typed answer of `unica.cf.info` (ADR-0023). Every declared property is
+/// present: an absent value is `null`, never a missing key, so "not set" and
+/// "not reported" stay different facts.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfInfoData {
+    pub(crate) format: String,
+    pub(crate) name: String,
+    pub(crate) synonym: Option<String>,
+    pub(crate) version: Option<String>,
+    pub(crate) vendor: Option<String>,
+    pub(crate) extension_purpose: Option<String>,
+    pub(crate) support: SupportData,
+    pub(crate) properties: CfInfoProperties,
+    pub(crate) child_objects: Vec<CfChildObjectCount>,
+    pub(crate) total_objects: usize,
+    pub(crate) home_page: Option<CfHomePageData>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfInfoProperties {
+    pub(crate) compatibility_mode: Option<String>,
+    pub(crate) default_run_mode: Option<String>,
+    pub(crate) script_variant: Option<String>,
+    pub(crate) default_language: Option<String>,
+    pub(crate) data_lock_control_mode: Option<String>,
+    pub(crate) modality_use_mode: Option<String>,
+    pub(crate) interface_compatibility_mode: Option<String>,
+    pub(crate) extension_compatibility_mode: Option<String>,
+    pub(crate) object_autonumeration_mode: Option<String>,
+    pub(crate) synchronous_call_use_mode: Option<String>,
+    pub(crate) database_tablespaces_use_mode: Option<String>,
+    pub(crate) main_window_mode: Option<String>,
+    pub(crate) comment: Option<String>,
+    pub(crate) name_prefix: Option<String>,
+    pub(crate) update_catalog_address: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfChildObjectCount {
+    pub(crate) kind: String,
+    pub(crate) count: usize,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfHomePageData {
+    pub(crate) template: String,
+    pub(crate) left: Vec<CfHomePageItemData>,
+    pub(crate) right: Vec<CfHomePageItemData>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfHomePageItemData {
+    pub(crate) form: String,
+    pub(crate) height: i64,
+    pub(crate) common: bool,
+    pub(crate) roles: Vec<CfHomePageRoleData>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfHomePageRoleData {
+    pub(crate) role: String,
+    pub(crate) visible: bool,
+}
+
+fn optional(value: String) -> Option<String> {
+    (!value.is_empty()).then_some(value)
+}
+
+fn cf_home_page_item_data(items: &[CfHomePageItem]) -> Vec<CfHomePageItemData> {
+    items
+        .iter()
+        .map(|item| CfHomePageItemData {
+            form: item.form.clone(),
+            height: item.height,
+            common: item.common,
+            roles: item
+                .roles
+                .iter()
+                .map(|(role, visible)| CfHomePageRoleData {
+                    role: role.clone(),
+                    visible: *visible,
+                })
+                .collect(),
+        })
+        .collect()
+}
+
 pub(crate) fn analyze_cf_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> AdapterOutcome {
+) -> CfInfoExecution {
     const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
-    let result = (|| -> Result<(String, PathBuf), String> {
+    let result = (|| -> Result<(CfInfoData, PathBuf), String> {
         let config_path = resolve_cf_read_config_path(args, context)?;
 
         let text = fs::read_to_string(&config_path)
@@ -898,157 +991,105 @@ pub(crate) fn analyze_cf_info(
             return Err("[ERROR] No <Configuration>/<Properties> element found".to_string());
         };
 
-        let mode = string_arg(args, &["mode", "Mode"]).unwrap_or("overview");
-        let section = string_arg(args, &["section", "Section", "name", "Name"]).unwrap_or("");
-
         let version = root.attribute("version").unwrap_or("");
-        let cfg_name = cf_prop_text(props, "Name");
-        let cfg_synonym = cf_prop_ml(props, "Synonym");
-        let cfg_version = cf_prop_text(props, "Version");
-        let cfg_vendor = cf_prop_text(props, "Vendor");
-        let cfg_compat = cf_prop_text(props, "CompatibilityMode");
-        let cfg_default_run = cf_prop_text(props, "DefaultRunMode");
-        let cfg_script = cf_prop_text(props, "ScriptVariant");
-        let cfg_default_lang = cf_prop_text(props, "DefaultLanguage");
-        let cfg_data_lock = cf_prop_text(props, "DataLockControlMode");
-        let cfg_modality = cf_prop_text(props, "ModalityUseMode");
-        let cfg_intf_compat = cf_prop_text(props, "InterfaceCompatibilityMode");
-        let cfg_ext_purpose = cf_prop_text(props, "ConfigurationExtensionPurpose");
-        let support_lines =
-            support_state_lines_for_configuration(&config_path, !cfg_ext_purpose.is_empty());
-
+        let config_dir = config_path.parent().unwrap_or(context.cwd.as_path());
+        let extension_purpose = optional(cf_prop_text(props, "ConfigurationExtensionPurpose"));
         let counts = cf_child_object_counts(cfg);
         let total_objects = counts.iter().map(|(_, count)| *count).sum::<usize>();
-        let mut lines = Vec::<String>::new();
-
-        let config_dir = config_path.parent().unwrap_or(context.cwd.as_path());
-
-        if section == "home-page" {
-            cf_append_home_page_section(&mut lines, config_dir, &cfg_name);
-        } else if mode == "brief" {
-            let syn_part = if cfg_synonym.is_empty() {
-                String::new()
-            } else {
-                format!(" — \"{cfg_synonym}\"")
-            };
-            let ver_part = if cfg_version.is_empty() {
-                String::new()
-            } else {
-                format!(" v{cfg_version}")
-            };
-            let compat_part = if cfg_compat.is_empty() {
-                String::new()
-            } else {
-                format!(" | {cfg_compat}")
-            };
-            lines.push(format!(
-                "Конфигурация: {cfg_name}{syn_part}{ver_part} | {total_objects} объектов{compat_part}"
-            ));
-        } else if mode == "overview" {
-            let syn_part = if cfg_synonym.is_empty() {
-                String::new()
-            } else {
-                format!(" — \"{cfg_synonym}\"")
-            };
-            let ver_part = if cfg_version.is_empty() {
-                String::new()
-            } else {
-                format!(" v{cfg_version}")
-            };
-            lines.push(format!(
-                "=== Конфигурация: {cfg_name}{syn_part}{ver_part} ==="
-            ));
-            lines.push(String::new());
-            lines.push(format!("Формат:         {version}"));
-            if !cfg_vendor.is_empty() {
-                lines.push(format!("Поставщик:      {cfg_vendor}"));
-            }
-            if !cfg_version.is_empty() {
-                lines.push(format!("Версия:         {cfg_version}"));
-            }
-            lines.extend(support_lines.clone());
-            lines.push(format!("Совместимость:  {cfg_compat}"));
-            lines.push(format!("Режим запуска:  {cfg_default_run}"));
-            lines.push(format!("Язык скриптов:  {cfg_script}"));
-            lines.push(format!("Язык:           {cfg_default_lang}"));
-            lines.push(format!("Блокировки:     {cfg_data_lock}"));
-            lines.push(format!("Модальность:    {cfg_modality}"));
-            lines.push(format!("Интерфейс:      {cfg_intf_compat}"));
-            lines.push(String::new());
-            cf_append_counts(&mut lines, &counts, total_objects);
-        } else if mode == "full" {
-            let cfg_ext_compat = cf_prop_text(props, "ConfigurationExtensionCompatibilityMode");
-            let cfg_auto_num = cf_prop_text(props, "ObjectAutonumerationMode");
-            let cfg_sync_calls =
-                cf_prop_text(props, "SynchronousPlatformExtensionAndAddInCallUseMode");
-            let cfg_db_spaces = cf_prop_text(props, "DatabaseTablespacesUseMode");
-            let cfg_window_mode = cf_prop_text(props, "MainClientApplicationWindowMode");
-            let cfg_comment = cf_prop_text(props, "Comment");
-            let cfg_prefix = cf_prop_text(props, "NamePrefix");
-            let cfg_update_addr = cf_prop_text(props, "UpdateCatalogAddress");
-            cf_append_full_info(
-                &mut lines,
-                cfg,
-                props,
-                version,
-                &cfg_name,
-                &cfg_synonym,
-                &cfg_version,
-                &cfg_vendor,
-                &cfg_compat,
-                &cfg_ext_compat,
-                &cfg_default_run,
-                &cfg_script,
-                &cfg_default_lang,
-                &cfg_data_lock,
-                &cfg_modality,
-                &cfg_intf_compat,
-                &cfg_auto_num,
-                &cfg_sync_calls,
-                &cfg_db_spaces,
-                &cfg_window_mode,
-                &cfg_comment,
-                &cfg_prefix,
-                &cfg_update_addr,
-                config_dir,
-                &support_lines,
-                &counts,
-                total_objects,
-            );
-        } else {
-            return Err(format!(
-                "argument -Mode: invalid choice: '{mode}' (choose from 'overview', 'brief', 'full')"
-            ));
-        }
-
-        let result_text = cf_paginate(lines, args);
-        Ok((format!("{result_text}\n"), config_path))
+        // Every mode used to trade completeness for printed size. Typed data
+        // needs no such lever: the caller keeps the fields it wants.
+        let data = CfInfoData {
+            format: version.to_string(),
+            name: cf_prop_text(props, "Name"),
+            synonym: optional(cf_prop_ml(props, "Synonym")),
+            version: optional(cf_prop_text(props, "Version")),
+            vendor: optional(cf_prop_text(props, "Vendor")),
+            support: support_state_data(&config_path, extension_purpose.is_some()),
+            extension_purpose,
+            properties: CfInfoProperties {
+                compatibility_mode: optional(cf_prop_text(props, "CompatibilityMode")),
+                default_run_mode: optional(cf_prop_text(props, "DefaultRunMode")),
+                script_variant: optional(cf_prop_text(props, "ScriptVariant")),
+                default_language: optional(cf_prop_text(props, "DefaultLanguage")),
+                data_lock_control_mode: optional(cf_prop_text(props, "DataLockControlMode")),
+                modality_use_mode: optional(cf_prop_text(props, "ModalityUseMode")),
+                interface_compatibility_mode: optional(cf_prop_text(
+                    props,
+                    "InterfaceCompatibilityMode",
+                )),
+                extension_compatibility_mode: optional(cf_prop_text(
+                    props,
+                    "ConfigurationExtensionCompatibilityMode",
+                )),
+                object_autonumeration_mode: optional(cf_prop_text(
+                    props,
+                    "ObjectAutonumerationMode",
+                )),
+                synchronous_call_use_mode: optional(cf_prop_text(
+                    props,
+                    "SynchronousPlatformExtensionAndAddInCallUseMode",
+                )),
+                database_tablespaces_use_mode: optional(cf_prop_text(
+                    props,
+                    "DatabaseTablespacesUseMode",
+                )),
+                main_window_mode: optional(cf_prop_text(props, "MainClientApplicationWindowMode")),
+                comment: optional(cf_prop_text(props, "Comment")),
+                name_prefix: optional(cf_prop_text(props, "NamePrefix")),
+                update_catalog_address: optional(cf_prop_text(props, "UpdateCatalogAddress")),
+            },
+            child_objects: counts
+                .into_iter()
+                .map(|(kind, count)| CfChildObjectCount { kind, count })
+                .collect(),
+            total_objects,
+            home_page: cf_read_home_page(config_dir).map(|layout| CfHomePageData {
+                template: layout.template,
+                left: cf_home_page_item_data(&layout.left),
+                right: cf_home_page_item_data(&layout.right),
+            }),
+        };
+        Ok((data, config_path))
     })();
 
     match result {
-        Ok((stdout, artifact)) => AdapterOutcome {
-            ok: true,
-            summary: "unica.cf.info completed with native configuration analyzer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: Vec::new(),
-            artifacts: vec![artifact.display().to_string()],
-            stdout: Some(stdout),
-            stderr: Some(String::new()),
-            command: None,
+        Ok((data, artifact)) => CfInfoExecution {
+            outcome: AdapterOutcome {
+                ok: true,
+                summary: format!(
+                    "unica.cf.info described {} with {} object(s)",
+                    data.name, data.total_objects
+                ),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: Vec::new(),
+                artifacts: vec![artifact.display().to_string()],
+                stdout: None,
+                stderr: Some(String::new()),
+                command: None,
+            },
+            data: Some(data),
         },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.cf.info failed in native configuration analyzer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-            command: None,
+        Err(error) => CfInfoExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.cf.info failed in native configuration analyzer".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.clone()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{error}\n")),
+                command: None,
+            },
+            data: None,
         },
     }
+}
+
+pub(crate) struct CfInfoExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<CfInfoData>,
 }
 
 pub(crate) fn cf_prop_text(props: roxmltree::Node<'_, '_>, local_name: &str) -> String {
@@ -1995,14 +2036,76 @@ mod metadata_kind_consumer_tests {
 }
 
 struct CfEditRun {
-    stdout: String,
+    data: CfEditData,
     config_path: PathBuf,
     artifacts: Vec<PathBuf>,
     config_updated: bool,
     warnings: Vec<String>,
 }
 
+/// Typed answer of `unica.cf.edit` (ADR-0023). Every requested operation is
+/// reported, including the ones that changed nothing: `[WARN] Already exists`
+/// becomes `applied: false` with a reason instead of a line to grep for.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfEditData {
+    pub(crate) configuration: String,
+    pub(crate) operations: Vec<CfEditOperationData>,
+    pub(crate) added: usize,
+    pub(crate) removed: usize,
+    pub(crate) modified: usize,
+    /// True when `Configuration.xml` itself was rewritten.
+    pub(crate) config_updated: bool,
+    /// The edit commits only through post-validation; this records that the
+    /// validator actually ran over the written configuration.
+    pub(crate) validated: bool,
+    pub(crate) mutation: MutationData,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfEditOperationData {
+    pub(crate) operation: String,
+    /// What the operation acted on: an object reference, a role, or a path.
+    pub(crate) target: Option<String>,
+    pub(crate) applied: bool,
+    /// Why nothing changed; `null` when the operation applied.
+    pub(crate) reason: Option<String>,
+}
+
+impl CfEditOperationData {
+    fn applied(operation: &str, target: impl Into<Option<String>>) -> Self {
+        Self {
+            operation: operation.to_string(),
+            target: target.into(),
+            applied: true,
+            reason: None,
+        }
+    }
+
+    fn skipped(operation: &str, target: impl Into<Option<String>>, reason: &str) -> Self {
+        Self {
+            operation: operation.to_string(),
+            target: target.into(),
+            applied: false,
+            reason: Some(reason.to_string()),
+        }
+    }
+}
+
+pub(crate) struct CfEditExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<CfEditData>,
+}
+
 pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
+    edit_cf_with_data(args, context).outcome
+}
+
+pub(crate) fn edit_cf_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> CfEditExecution {
     let edit_result = (|| -> Result<CfEditRun, String> {
         let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
         let operation = string_arg(args, &["operation", "Operation"]);
@@ -2039,7 +2142,8 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
         let mut add_count = 0usize;
         let mut remove_count = 0usize;
         let mut modify_count = 0usize;
-        let mut stdout = format!("[INFO] Configuration: {obj_name}\n");
+        let stdout = format!("[INFO] Configuration: {obj_name}\n");
+        let mut operation_log: Vec<CfEditOperationData> = Vec::new();
         let mut artifacts = vec![config_path.clone()];
         let mut external_files = BTreeMap::<PathBuf, Vec<u8>>::new();
         let mut config_changed = false;
@@ -2069,7 +2173,10 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                         text = cf_edit_replace_property(&text, prop_name, &replacement)?;
                         config_changed = true;
                         modify_count += 1;
-                        stdout.push_str(&format!("[INFO] Set {prop_name} = \"{prop_value}\"\n"));
+                        operation_log.push(CfEditOperationData::applied(
+                            "set-property",
+                            format!("{prop_name}={prop_value}"),
+                        ));
                     }
                 }
                 "remove-childObject" => {
@@ -2078,11 +2185,15 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                         if cf_edit_remove_child_object_text(&mut text, type_name, obj_name_val)? {
                             remove_count += 1;
                             config_changed = true;
-                            stdout
-                                .push_str(&format!("[INFO] Removed: {type_name}.{obj_name_val}\n"));
+                            operation_log.push(CfEditOperationData::applied(
+                                "remove-childObject",
+                                format!("{type_name}.{obj_name_val}"),
+                            ));
                         } else {
-                            stdout.push_str(&format!(
-                                "[WARN] Not found: {type_name}.{obj_name_val}\n"
+                            operation_log.push(CfEditOperationData::skipped(
+                                "remove-childObject",
+                                format!("{type_name}.{obj_name_val}"),
+                                "не найден в составе конфигурации",
                             ));
                         }
                     }
@@ -2121,10 +2232,15 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                         if cf_edit_add_child_object_text(&mut text, type_name, obj_name_val)? {
                             add_count += 1;
                             config_changed = true;
-                            stdout.push_str(&format!("[INFO] Added: {type_name}.{obj_name_val}\n"));
+                            operation_log.push(CfEditOperationData::applied(
+                                "add-childObject",
+                                format!("{type_name}.{obj_name_val}"),
+                            ));
                         } else {
-                            stdout.push_str(&format!(
-                                "[WARN] Already exists: {type_name}.{obj_name_val}\n"
+                            operation_log.push(CfEditOperationData::skipped(
+                                "add-childObject",
+                                format!("{type_name}.{obj_name_val}"),
+                                "уже присутствует в составе конфигурации",
                             ));
                         }
                     }
@@ -2137,25 +2253,28 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                     text = cf_edit_replace_default_roles(&text, &roles)?;
                     config_changed = true;
                     modify_count += 1;
-                    if roles.is_empty() {
-                        stdout.push_str("[INFO] Cleared DefaultRoles\n");
-                    } else {
-                        stdout
-                            .push_str(&format!("[INFO] Set DefaultRoles: {} roles\n", roles.len()));
-                    }
+                    operation_log.push(CfEditOperationData::applied(
+                        "set-defaultRoles",
+                        (!roles.is_empty()).then(|| roles.join(", ")),
+                    ));
                 }
                 "add-defaultRole" => {
                     let mut roles = cf_edit_default_roles(&text)?;
                     for role in cf_edit_batch_value(&op_value) {
                         let role_name = cf_edit_role_ref(&role);
                         if roles.contains(&role_name) {
-                            stdout.push_str(&format!(
-                                "[WARN] DefaultRole already exists: {role_name}\n"
+                            operation_log.push(CfEditOperationData::skipped(
+                                "add-defaultRole",
+                                role_name.clone(),
+                                "уже в списке ролей по умолчанию",
                             ));
                         } else {
                             roles.push(role_name.clone());
                             add_count += 1;
-                            stdout.push_str(&format!("[INFO] Added DefaultRole: {role_name}\n"));
+                            operation_log.push(CfEditOperationData::applied(
+                                "add-defaultRole",
+                                role_name.clone(),
+                            ));
                         }
                     }
                     text = cf_edit_replace_default_roles(&text, &roles)?;
@@ -2170,10 +2289,16 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                         {
                             roles.remove(index);
                             remove_count += 1;
-                            stdout.push_str(&format!("[INFO] Removed DefaultRole: {role_name}\n"));
+                            operation_log.push(CfEditOperationData::applied(
+                                "remove-defaultRole",
+                                role_name.clone(),
+                            ));
                         } else {
-                            stdout
-                                .push_str(&format!("[WARN] DefaultRole not found: {role_name}\n"));
+                            operation_log.push(CfEditOperationData::skipped(
+                                "remove-defaultRole",
+                                role_name.clone(),
+                                "не найдена в списке ролей по умолчанию",
+                            ));
                         }
                     }
                     text = cf_edit_replace_default_roles(&text, &roles)?;
@@ -2184,7 +2309,10 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                     let path = plan.path.clone();
                     external_files.insert(plan.path, plan.bytes);
                     modify_count += 1;
-                    stdout.push_str(&format!("[INFO] Wrote panel layout: {}\n", path.display()));
+                    operation_log.push(CfEditOperationData::applied(
+                        "set-panels",
+                        path.display().to_string(),
+                    ));
                     artifacts.push(path);
                 }
                 "set-home-page" => {
@@ -2192,9 +2320,9 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                     let path = plan.path.clone();
                     external_files.insert(plan.path, plan.bytes);
                     modify_count += 1;
-                    stdout.push_str(&format!(
-                        "[INFO] Wrote home page layout: {}\n",
-                        path.display()
+                    operation_log.push(CfEditOperationData::applied(
+                        "set-home-page",
+                        path.display().to_string(),
                     ));
                     artifacts.push(path);
                 }
@@ -2227,6 +2355,7 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
         )?;
         let show_validation_output = !bool_arg(args, &["noValidate", "NoValidate"]);
         let mut validation_stdout = None;
+        let mut validated = false;
         let validate_args = Map::from_iter([(
             "ConfigPath".to_string(),
             Value::String(config_path.display().to_string()),
@@ -2234,6 +2363,7 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
         let report = transaction
             .commit_with_post_validation(|| {
                 let outcome = validate_cf(&validate_args, context);
+                validated = outcome.ok;
                 if show_validation_output {
                     validation_stdout = outcome.stdout.clone();
                 }
@@ -2254,27 +2384,34 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
         let warnings = report.cleanup_warnings;
         if config_changed && report.updated.contains(&config_path) {
             config_updated = true;
-            stdout.push_str(&format!("[INFO] Saved: {}\n", config_path.display()));
-        } else {
-            stdout.push_str("[INFO] No Configuration.xml changes\n");
         }
+        let _ = (stdout, show_validation_output, validation_stdout);
 
-        if show_validation_output {
-            stdout.push('\n');
-            stdout.push_str("--- Running cf-validate ---\n");
-            if let Some(validate_stdout) = validation_stdout {
-                stdout.push_str(&validate_stdout);
+        // `applied` must mean "something was written". An edit whose every
+        // operation was skipped writes nothing, and dcs.edit already follows
+        // this rule for an unchanged template.
+        let wrote_anything = config_updated || artifacts.iter().any(|path| path != &config_path);
+        let mut mutation = MutationData::new(wrote_anything);
+        if config_updated {
+            mutation = mutation.updated(&config_path);
+        }
+        for artifact in &artifacts {
+            if artifact != &config_path {
+                mutation = mutation.updated(artifact);
             }
         }
-
-        stdout.push('\n');
-        stdout.push_str("=== cf-edit summary ===\n");
-        stdout.push_str(&format!("  Configuration: {obj_name}\n"));
-        stdout.push_str(&format!("  Added:         {add_count}\n"));
-        stdout.push_str(&format!("  Removed:       {remove_count}\n"));
-        stdout.push_str(&format!("  Modified:      {modify_count}\n"));
+        let data = CfEditData {
+            configuration: obj_name.to_string(),
+            operations: operation_log,
+            added: add_count,
+            removed: remove_count,
+            modified: modify_count,
+            config_updated,
+            validated,
+            mutation,
+        };
         Ok(CfEditRun {
-            stdout,
+            data,
             config_path,
             artifacts,
             config_updated,
@@ -2284,7 +2421,7 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
 
     match edit_result {
         Ok(CfEditRun {
-            stdout,
+            data,
             config_path,
             artifacts,
             config_updated,
@@ -2299,31 +2436,42 @@ pub(crate) fn edit_cf(args: &Map<String, Value>, context: &WorkspaceContext) -> 
                     changes.push(format!("updated {}", artifact.display()));
                 }
             }
-            AdapterOutcome {
-                ok: true,
-                summary: "unica.cf.edit completed with native Configuration.xml editor".to_string(),
-                changes,
-                warnings,
-                errors: Vec::new(),
-                artifacts: artifacts
-                    .into_iter()
-                    .map(|path| path.display().to_string())
-                    .collect(),
-                stdout: Some(stdout),
-                stderr: None,
-                command: None,
+            CfEditExecution {
+                outcome: AdapterOutcome {
+                    ok: true,
+                    summary: format!(
+                        "unica.cf.edit applied {} of {} operation(s) to {}",
+                        data.operations.iter().filter(|item| item.applied).count(),
+                        data.operations.len(),
+                        data.configuration
+                    ),
+                    changes,
+                    warnings,
+                    errors: Vec::new(),
+                    artifacts: artifacts
+                        .into_iter()
+                        .map(|path| path.display().to_string())
+                        .collect(),
+                    stdout: None,
+                    stderr: None,
+                    command: None,
+                },
+                data: Some(data),
             }
         }
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.cf.edit failed in native Configuration.xml editor".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-            command: None,
+        Err(error) => CfEditExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.cf.edit failed in native Configuration.xml editor".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.clone()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{error}\n")),
+                command: None,
+            },
+            data: None,
         },
     }
 }
@@ -4144,22 +4292,46 @@ pub(crate) fn cf_init_post_validation_dependency_paths(planned: &CfInitPlannedXm
     vec![planned.output_dir.join("Ext/HomePageWorkArea.xml")]
 }
 
+/// Typed answer of `unica.cf.init` (ADR-0023): the scaffold that was written.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CfInitData {
+    pub(crate) name: String,
+    pub(crate) root: String,
+    pub(crate) mutation: MutationData,
+}
+
+pub(crate) struct CfInitExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<CfInitData>,
+}
+
 pub(crate) fn create_configuration_scaffold(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
+    create_configuration_scaffold_with_data(args, context).outcome
+}
+
+pub(crate) fn create_configuration_scaffold_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> CfInitExecution {
     let name = string_arg(args, &["name", "Name"]).unwrap_or("");
     if name.is_empty() {
-        return AdapterOutcome {
-            ok: false,
-            summary: "unica.cf.init failed in native XML scaffold writer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec!["missing required Name argument".to_string()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some("missing required Name argument\n".to_string()),
-            command: None,
+        return CfInitExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.cf.init failed in native XML scaffold writer".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec!["missing required Name argument".to_string()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some("missing required Name argument\n".to_string()),
+                command: None,
+            },
+            data: None,
         };
     }
     let synonym = string_arg(args, &["synonym", "Synonym"]).unwrap_or(name);
@@ -4377,41 +4549,51 @@ pub(crate) fn create_configuration_scaffold(
     })();
 
     match write_result {
-        Ok(warnings) => AdapterOutcome {
-            ok: true,
-            summary: "unica.cf.init completed with native XML scaffold writer".to_string(),
-            changes: vec![
-                format!("created {}", config.display()),
-                format!("created {}", language.display()),
-                format!("created {}", cai.display()),
-            ],
-            warnings,
-            errors: Vec::new(),
-            artifacts: vec![
-                config.display().to_string(),
-                language.display().to_string(),
-                cai.display().to_string(),
-            ],
-            stdout: Some(format!(
-                "[OK] Создана конфигурация: {name}\n     Каталог:            {}\n     Configuration.xml:  {}\n     Languages:          {}\n     Ext/CAI:            {}\n",
-                out_dir.display(),
-                config.display(),
-                language.display(),
-                cai.display()
-            )),
-            stderr: None,
-            command: None,
+        Ok(warnings) => CfInitExecution {
+            outcome: AdapterOutcome {
+                ok: true,
+                summary: format!(
+                    "unica.cf.init created configuration {name} in {}",
+                    out_dir.display()
+                ),
+                changes: vec![
+                    format!("created {}", config.display()),
+                    format!("created {}", language.display()),
+                    format!("created {}", cai.display()),
+                ],
+                warnings,
+                errors: Vec::new(),
+                artifacts: vec![
+                    config.display().to_string(),
+                    language.display().to_string(),
+                    cai.display().to_string(),
+                ],
+                stdout: None,
+                stderr: None,
+                command: None,
+            },
+            data: Some(CfInitData {
+                name: name.to_string(),
+                root: out_dir.display().to_string(),
+                mutation: MutationData::new(true)
+                    .created(&config)
+                    .created(&language)
+                    .created(&cai),
+            }),
         },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.cf.init failed in native XML scaffold writer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-            command: None,
+        Err(error) => CfInitExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.cf.init failed in native XML scaffold writer".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.clone()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{error}\n")),
+                command: None,
+            },
+            data: None,
         },
     }
 }
@@ -4737,7 +4919,9 @@ pub(crate) fn invoke_read(
     context: &WorkspaceContext,
 ) -> Option<Result<AdapterOutcome, String>> {
     match operation {
-        "cf-info" => Some(Ok(analyze_cf_info(args, context))),
+        // `cf-info` answers with typed data; the registry keeps only the
+        // prose-shaped path, so the typed route reaches it in typed_result.rs.
+        "cf-info" => Some(Ok(analyze_cf_info(args, context).outcome)),
         "cf-validate" => Some(Ok(validate_cf(args, context))),
         _ => None,
     }

@@ -106,17 +106,25 @@ fn meta_edit_dry_run_dispatches_to_projected_diff_preview() {
     }))
     .unwrap();
 
-    let result =
-        NativeOperationAdapter::invoke("meta-edit", "unica.meta.edit", &args, &context, true, true)
-            .unwrap();
+    let result = NativeOperationAdapter::invoke_with_data(
+        "meta-edit",
+        "unica.meta.edit",
+        &args,
+        &context,
+        true,
+        true,
+    )
+    .unwrap();
 
-    assert!(result.ok, "{result:?}");
-    let stdout = result.stdout.as_deref().unwrap_or_default();
-    assert!(stdout.contains("--- a/"), "{stdout}");
-    assert!(stdout.contains("-\t\t\t<Comment/>"), "{stdout}");
+    assert!(result.adapter.ok, "{:?}", result.adapter);
+    // ADR-0023: the projected diff travels in data, like code.patch's does.
+    assert!(result.adapter.stdout.is_none());
+    let diff = result.data.unwrap()["diff"].as_str().unwrap().to_string();
+    assert!(diff.contains("--- a/"), "{diff}");
+    assert!(diff.contains("-\t\t\t<Comment/>"), "{diff}");
     assert!(
-        stdout.contains("+\t\t\t<Comment>Dispatched</Comment>"),
-        "{stdout}"
+        diff.contains("+\t\t\t<Comment>Dispatched</Comment>"),
+        "{diff}"
     );
     assert_eq!(fs::read(&object_path).unwrap(), original);
 
@@ -173,16 +181,22 @@ fn read_only_native_dispatch_does_not_honor_legacy_outfile() {
     }))
     .unwrap();
 
-    let result =
-        NativeOperationAdapter::invoke("cf-info", "unica.cf.info", &args, &context, false, false)
-            .unwrap();
+    let result = NativeOperationAdapter::invoke_with_data(
+        "cf-info",
+        "unica.cf.info",
+        &args,
+        &context,
+        false,
+        false,
+    )
+    .unwrap();
 
-    assert!(result.ok, "{result:?}");
+    assert!(result.adapter.ok, "{:?}", result.adapter);
     assert_eq!(fs::read(&config_path).unwrap(), original);
-    assert!(result
-        .stdout
-        .as_deref()
-        .is_some_and(|stdout| stdout.contains("ReadOnlyContract")));
+    // ADR-0023: the answer is data, and a legacy output sink still changes
+    // nothing on disk.
+    assert_eq!(result.data.unwrap()["name"], "ReadOnlyContract");
+    assert!(result.adapter.stdout.is_none());
 
     fs::remove_dir_all(root).unwrap();
 }

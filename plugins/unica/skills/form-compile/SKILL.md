@@ -514,7 +514,7 @@ allowed-tools:
     "name": "unica.form.validate",
     "arguments": {
       "cwd": "<workspace>",
-      "FormPath": "<OutputPath>"
+      "FormPath": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"
     }
   }
 }
@@ -530,7 +530,7 @@ allowed-tools:
     "name": "unica.form.info",
     "arguments": {
       "cwd": "<workspace>",
-      "FormPath": "<OutputPath>"
+      "FormPath": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"
     }
   }
 }

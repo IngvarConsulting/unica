@@ -496,9 +496,7 @@ Raw XML (`"template": "<...>"`) остаётся как fallback. Детект: 
     "name": "unica.dcs.info",
     "arguments": {
       "cwd": "<workspace>",
-      "TemplatePath": "<OutputPath>",
-      "Mode": "variant",
-      "Name": "1"
+      "TemplatePath": "<OutputPath>"
     }
   }
 }

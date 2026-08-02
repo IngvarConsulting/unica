@@ -12,6 +12,7 @@ use super::meta::validate_metadata_owner_shape_8_3_27;
 use super::template::template_add_object_type_folders;
 
 struct HelpAddRun {
+    mutation: MutationData,
     stdout: String,
     changes: Vec<String>,
     artifacts: Vec<String>,
@@ -19,6 +20,18 @@ struct HelpAddRun {
 }
 
 pub(crate) fn add_help(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
+    add_help_with_data(args, context).outcome
+}
+
+pub(crate) struct HelpAddExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<MutationData>,
+}
+
+pub(crate) fn add_help_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> HelpAddExecution {
     let result = (|| -> Result<HelpAddRun, String> {
         let object_name = required_string(
             args,
@@ -135,7 +148,16 @@ pub(crate) fn add_help(args: &Map<String, Value>, context: &WorkspaceContext) ->
             help_display_path(&help_html_path, &context.cwd)
         ));
 
+        let mut mutation = MutationData::new(true)
+            .created(&help_xml_path)
+            .created(&help_html_path);
+        for change in &changes {
+            if let Some(path) = change.strip_prefix("updated ") {
+                mutation = mutation.updated(Path::new(path));
+            }
+        }
         Ok(HelpAddRun {
+            mutation,
             stdout,
             changes,
             artifacts,
@@ -145,31 +167,41 @@ pub(crate) fn add_help(args: &Map<String, Value>, context: &WorkspaceContext) ->
 
     match result {
         Ok(HelpAddRun {
+            mutation,
             stdout,
             changes,
             artifacts,
             warnings,
-        }) => AdapterOutcome {
-            ok: true,
-            summary: "unica.help.add completed with native help writer".to_string(),
-            changes,
-            warnings,
-            errors: Vec::new(),
-            artifacts,
-            stdout: Some(stdout),
-            stderr: None,
-            command: None,
-        },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.help.add failed".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-            command: None,
+        }) => {
+            let _ = stdout;
+            HelpAddExecution {
+                outcome: AdapterOutcome {
+                    ok: true,
+                    summary: format!("unica.help.add created {} file(s)", mutation.created.len()),
+                    changes,
+                    warnings,
+                    errors: Vec::new(),
+                    artifacts,
+                    stdout: None,
+                    stderr: None,
+                    command: None,
+                },
+                data: Some(mutation),
+            }
+        }
+        Err(error) => HelpAddExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.help.add failed".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.clone()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{error}\n")),
+                command: None,
+            },
+            data: None,
         },
     }
 }

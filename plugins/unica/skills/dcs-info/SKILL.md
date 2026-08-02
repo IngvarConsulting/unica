@@ -21,6 +21,21 @@ allowed-tools:
 
 В `overview` и `full` показывает `Поддержка` для объекта-владельца макета по `Ext/ParentConfigurations.bin`. Режим `query` остаётся пригодным для round-trip текста запроса; support-state используй как риск перед `unica.dcs.edit`.
 
+## Ответ
+
+Инструмент отвечает типизированным `data` и отдаёт схему целиком; режимы,
+`Raw`, `Name`, `Limit` и `Offset` больше не нужны:
+
+| Секция | Что в ней |
+|---|---|
+| `dataSets` | наборы данных, их поля и сырой текст запроса целиком, с отступами строк продолжения |
+| `links` | связи наборов данных с выражениями источника и приёмника |
+| `calculatedFields` | вычисляемые поля с выражением и заголовком |
+| `totalFields` | ресурсы (итоги) с выражением |
+| `parameters` | параметры с типом, значением, выражением и признаком ограничения |
+| `variants` | варианты настроек: отбор, порядок, структура |
+| `templates` | макеты схемы |
+
 ## MCP параметры
 
 | Параметр | Описание |
@@ -58,9 +73,7 @@ allowed-tools:
     "name": "unica.dcs.info",
     "arguments": {
       "cwd": "<workspace>",
-      "TemplatePath": "<путь>",
-      "Mode": "query",
-      "Name": "НоменклатураСЦенами"
+      "TemplatePath": "<путь>"
     }
   }
 }
@@ -76,10 +89,7 @@ allowed-tools:
     "name": "unica.dcs.info",
     "arguments": {
       "cwd": "<workspace>",
-      "TemplatePath": "<путь>",
-      "Mode": "query",
-      "Name": "ДанныеТ13",
-      "Batch": 3
+      "TemplatePath": "<путь>"
     }
   }
 }
@@ -95,10 +105,7 @@ allowed-tools:
     "name": "unica.dcs.info",
     "arguments": {
       "cwd": "<workspace>",
-      "TemplatePath": "<путь>",
-      "Mode": "query",
-      "Name": "ДанныеТ13",
-      "Raw": true
+      "TemplatePath": "<путь>"
     }
   }
 }
@@ -114,9 +121,7 @@ allowed-tools:
     "name": "unica.dcs.info",
     "arguments": {
       "cwd": "<workspace>",
-      "TemplatePath": "<путь>",
-      "Mode": "fields",
-      "Name": "КадастроваяСтоимость"
+      "TemplatePath": "<путь>"
     }
   }
 }
@@ -132,9 +137,7 @@ allowed-tools:
     "name": "unica.dcs.info",
     "arguments": {
       "cwd": "<workspace>",
-      "TemplatePath": "<путь>",
-      "Mode": "calculated",
-      "Name": "КоэффициентКи"
+      "TemplatePath": "<путь>"
     }
   }
 }
@@ -150,9 +153,7 @@ allowed-tools:
     "name": "unica.dcs.info",
     "arguments": {
       "cwd": "<workspace>",
-      "TemplatePath": "<путь>",
-      "Mode": "resources",
-      "Name": "СуммаНалога"
+      "TemplatePath": "<путь>"
     }
   }
 }
@@ -168,9 +169,7 @@ allowed-tools:
     "name": "unica.dcs.info",
     "arguments": {
       "cwd": "<workspace>",
-      "TemplatePath": "<путь>",
-      "Mode": "trace",
-      "Name": "Коэффициент Ки"
+      "TemplatePath": "<путь>"
     }
   }
 }
@@ -186,9 +185,7 @@ allowed-tools:
     "name": "unica.dcs.info",
     "arguments": {
       "cwd": "<workspace>",
-      "TemplatePath": "<путь>",
-      "Mode": "variant",
-      "Name": 1
+      "TemplatePath": "<путь>"
     }
   }
 }
@@ -204,8 +201,7 @@ allowed-tools:
     "name": "unica.dcs.info",
     "arguments": {
       "cwd": "<workspace>",
-      "TemplatePath": "<путь>",
-      "Mode": "templates"
+      "TemplatePath": "<путь>"
     }
   }
 }
@@ -221,9 +217,7 @@ allowed-tools:
     "name": "unica.dcs.info",
     "arguments": {
       "cwd": "<workspace>",
-      "TemplatePath": "<путь>",
-      "Mode": "templates",
-      "Name": "ВидНалоговойБазы"
+      "TemplatePath": "<путь>"
     }
   }
 }
@@ -254,7 +248,7 @@ allowed-tools:
 3. `query -Name <набор>` — посмотреть текст SQL-запроса
 4. `variant -Name <N>` — посмотреть группировки и фильтры варианта
 
-Переработка запроса (round-trip): `Mode=query`, `Name=<набор>`, `"Raw": true` ->
+Переработка запроса (round-trip): возьми `data.dataSets[].query` ->
 правка текста из ответа -> `unica.dcs.edit` с `Operation=set-query` и `Value=<исправленный текст>`.
 `Raw` отдаёт запрос целиком без декораций, поэтому передача текста точна, включая многопакетные запросы с временными таблицами.
 
@@ -288,9 +282,7 @@ allowed-tools:
     "name": "unica.dcs.info",
     "arguments": {
       "cwd": "<workspace>",
-      "TemplatePath": "<path>",
-      "Mode": "trace",
-      "Name": "<field>"
+      "TemplatePath": "<path>"
     }
   }
 }

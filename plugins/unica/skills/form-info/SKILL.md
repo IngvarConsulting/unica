@@ -31,9 +31,7 @@ allowed-tools:
     "name": "unica.form.info",
     "arguments": {
       "cwd": "<workspace>",
-      "FormPath": "src/Catalogs/Номенклатура/Forms/ФормаЭлемента",
-      "Expand": "*",
-      "Limit": 150
+      "FormPath": "src/Catalogs/Номенклатура/Forms/ФормаЭлемента"
     }
   }
 }

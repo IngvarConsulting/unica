@@ -1042,7 +1042,7 @@ fn exact_module_outcome(
         source_set: source_set.to_string(),
         metadata_path: Some(address.clone()),
     };
-    match resolve_platform_xml_target(context, &target) {
+    match resolve_platform_xml_target(context, &target, TargetKindPolicy::ModuleOnly) {
         Ok(_) => Ok(ExactCandidate::Proven),
         Err(error) if error.code == SourceTargetErrorCode::ContainmentDenied => {
             Err(error.to_string())
@@ -1068,49 +1068,65 @@ fn exact_object_outcome(
 ) -> Result<ExactCandidate, String> {
     check_navigation_cancellation(cancellation)?;
     let parts = address.segments().collect::<Vec<_>>();
-    match parts.as_slice() {
+    // A nested child is only as real as the owner that declares it, so the
+    // owner descriptor is proven first and its verdict wins when it fails.
+    if parts.len() == 4 {
+        let Some(owner) = object_descriptor_evidence(&parts[..2]) else {
+            return Ok(ExactCandidate::Absent);
+        };
+        let outcome = descriptor_outcome(source_root, &owner.path, &owner.kind, &owner.name);
+        if outcome != ExactCandidate::Proven {
+            return Ok(outcome);
+        }
+        check_navigation_cancellation(cancellation)?;
+    }
+    let Some(evidence) = object_descriptor_evidence(&parts) else {
+        return Ok(ExactCandidate::Absent);
+    };
+    Ok(descriptor_outcome(
+        source_root,
+        &evidence.path,
+        &evidence.kind,
+        &evidence.name,
+    ))
+}
+
+struct ObjectDescriptorEvidence {
+    path: PathBuf,
+    kind: String,
+    name: String,
+}
+
+/// The one place that renders a metadata object address into the descriptor
+/// that proves it. Navigation, resolution and resource access all read this
+/// mapping so they cannot disagree about what a logical object is.
+fn object_descriptor_evidence(parts: &[&str]) -> Option<ObjectDescriptorEvidence> {
+    match parts {
         [kind, name] => {
-            let Some(kind) = metadata_kind(kind) else {
-                return Ok(ExactCandidate::Absent);
-            };
-            Ok(descriptor_outcome(
-                source_root,
-                &metadata_descriptor(kind.directory, name),
-                kind.tag,
-                name,
-            ))
+            let kind = metadata_kind(kind)?;
+            Some(ObjectDescriptorEvidence {
+                path: metadata_descriptor(kind.directory, name),
+                kind: kind.tag.to_string(),
+                name: (*name).to_string(),
+            })
         }
         [kind, name, child_kind, child_name] if matches!(*child_kind, "Form" | "Command") => {
-            let Some(kind) = metadata_kind(kind) else {
-                return Ok(ExactCandidate::Absent);
-            };
-            let owner = descriptor_outcome(
-                source_root,
-                &metadata_descriptor(kind.directory, name),
-                kind.tag,
-                name,
-            );
-            if owner != ExactCandidate::Proven {
-                return Ok(owner);
-            }
-            check_navigation_cancellation(cancellation)?;
+            let kind = metadata_kind(kind)?;
             let child_directory = if *child_kind == "Form" {
                 "Forms"
             } else {
                 "Commands"
             };
-            let descriptor = PathBuf::from(kind.directory)
-                .join(name)
-                .join(child_directory)
-                .join(format!("{child_name}.xml"));
-            Ok(descriptor_outcome(
-                source_root,
-                &descriptor,
-                child_kind,
-                child_name,
-            ))
+            Some(ObjectDescriptorEvidence {
+                path: PathBuf::from(kind.directory)
+                    .join(name)
+                    .join(child_directory)
+                    .join(format!("{child_name}.xml")),
+                kind: (*child_kind).to_string(),
+                name: (*child_name).to_string(),
+            })
         }
-        _ => Ok(ExactCandidate::Absent),
+        _ => None,
     }
 }
 
@@ -1867,8 +1883,24 @@ pub(crate) struct ClosedPlatformXmlTarget {
     source_root: PathBuf,
     source_set_kind: SourceSetKind,
     source_format: SourceFormat,
+    target_kind: TargetKind,
     target_path: PathBuf,
     module_owner: Option<String>,
+}
+
+impl ClosedPlatformXmlTarget {
+    pub(crate) fn target_kind(&self) -> TargetKind {
+        self.target_kind
+    }
+}
+
+/// Which target kinds a caller is prepared to receive. The write surface passes
+/// `ModuleOnly` so that widening the resolver can never hand a descriptor to a
+/// writer; read-only callers pass `Any`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TargetKindPolicy {
+    ModuleOnly,
+    Any,
 }
 
 impl fmt::Debug for ClosedPlatformXmlTarget {
@@ -1892,6 +1924,9 @@ pub(crate) struct PlatformXmlResourceEvidence {
     pub(crate) target_path: PathBuf,
     pub(crate) source_root: PathBuf,
     pub(crate) descriptor_paths: Vec<PathBuf>,
+    /// Proven BSL modules owned by a metadata object target. Empty for module
+    /// and source-root targets, which are not module owners themselves.
+    pub(crate) module_paths: Vec<PathBuf>,
     pub(crate) registration_path: PathBuf,
     pub(crate) module_owner: Option<String>,
 }
@@ -1940,6 +1975,7 @@ impl PlatformXmlModuleRole {
 pub(crate) fn resolve_platform_xml_target(
     context: &WorkspaceContext,
     target: &SourceTarget,
+    policy: TargetKindPolicy,
 ) -> Result<PlatformXmlResolution, SourceTargetError> {
     if target.source_set.is_empty() {
         return Err(SourceTargetError::new(
@@ -1954,13 +1990,24 @@ pub(crate) fn resolve_platform_xml_target(
         return resolve_platform_xml_root(context, target, selected);
     }
     let address = target.metadata_path.as_ref().expect("checked above");
-    if address.target_kind() != TargetKind::Module {
-        return Err(SourceTargetError::new(
+    match (address.target_kind(), policy) {
+        (TargetKind::Module, _) => resolve_platform_xml_module(context, target, selected, address),
+        (TargetKind::MetadataObject, TargetKindPolicy::Any) => {
+            resolve_platform_xml_object(context, target, selected, address)
+        }
+        _ => Err(SourceTargetError::new(
             SourceTargetErrorCode::TargetKindMismatch,
             "metadataPath does not identify a module terminal",
-        ));
+        )),
     }
+}
 
+fn resolve_platform_xml_module(
+    context: &WorkspaceContext,
+    target: &SourceTarget,
+    selected: ResolvedNamedSourceSet,
+    address: &MetadataAddress,
+) -> Result<PlatformXmlResolution, SourceTargetError> {
     let relative_path = module_path_for_address(address).map_err(|error| {
         SourceTargetError::new(SourceTargetErrorCode::MetadataAddressNotFound, error)
     })?;
@@ -2010,8 +2057,81 @@ pub(crate) fn resolve_platform_xml_target(
             source_root: selected.path,
             source_set_kind: selected.source_set.kind,
             source_format: selected.source_set.source_format,
+            target_kind: TargetKind::Module,
             target_path,
             module_owner: Some(identity.owner),
+        },
+    })
+}
+
+/// Resolves a metadata object to the descriptor that proves it. The descriptor
+/// is evidence, never a write target: `TargetKindPolicy::ModuleOnly` keeps every
+/// writer out of this branch.
+fn resolve_platform_xml_object(
+    context: &WorkspaceContext,
+    target: &SourceTarget,
+    selected: ResolvedNamedSourceSet,
+    address: &MetadataAddress,
+) -> Result<PlatformXmlResolution, SourceTargetError> {
+    let parts = address.segments().collect::<Vec<_>>();
+    let relative_path = object_descriptor_evidence(&parts)
+        .map(|evidence| evidence.path)
+        .ok_or_else(|| {
+            SourceTargetError::new(
+                SourceTargetErrorCode::MetadataAddressNotFound,
+                "metadataPath does not identify a known metadata object",
+            )
+        })?;
+    validate_platform_xml_module_descriptors(
+        context,
+        &selected.path,
+        std::slice::from_ref(&relative_path),
+    )
+    .map_err(|error| public_evidence_error(target, error))?;
+
+    let target_path = WorkspacePathPolicy::new(context)
+        .resolve_write(selected.path.join(&relative_path))
+        .map_err(|_| target_containment_error(&target.source_set))?;
+    ensure_no_link_components(&selected.path, &target_path)
+        .map_err(|_| target_containment_error(&target.source_set))?;
+    let target_identity = normalize_path_identity(&target_path)
+        .map_err(|_| target_containment_error(&target.source_set))?;
+    if !target_identity.starts_with(&selected.path) {
+        return Err(target_containment_error(&target.source_set));
+    }
+
+    match exact_object_outcome(&selected.path, address, &CancellationToken::new()) {
+        Ok(ExactCandidate::Proven) => {}
+        Ok(ExactCandidate::Absent) => {
+            return Err(SourceTargetError::new(
+                SourceTargetErrorCode::MetadataAddressNotFound,
+                format!(
+                    "metadataPath `{address}` was not found in sourceSet `{}`",
+                    target.source_set
+                ),
+            ));
+        }
+        Ok(ExactCandidate::Unproven) | Err(_) => return Err(metadata_owner_evidence_error(target)),
+    }
+
+    let workspace_root = normalize_path_identity(&context.workspace_root)
+        .map_err(|_| target_containment_error(&target.source_set))?;
+    Ok(PlatformXmlResolution {
+        resolved: ResolvedTarget {
+            source_set: selected.source_set.name.clone(),
+            metadata_path: Some(address.clone()),
+            target_kind: TargetKind::MetadataObject,
+        },
+        handle: ClosedPlatformXmlTarget {
+            source_target: target.clone(),
+            workspace_root,
+            source_root_lexical: selected.lexical_path,
+            source_root: selected.path,
+            source_set_kind: selected.source_set.kind,
+            source_format: selected.source_set.source_format,
+            target_kind: TargetKind::MetadataObject,
+            target_path,
+            module_owner: None,
         },
     })
 }
@@ -2049,6 +2169,7 @@ fn resolve_platform_xml_root(
             source_root: selected.path.clone(),
             source_set_kind: selected.source_set.kind,
             source_format: selected.source_set.source_format,
+            target_kind: TargetKind::SourceRoot,
             target_path: selected.path,
             module_owner: None,
         },
@@ -2074,9 +2195,17 @@ pub(crate) fn revalidate_platform_xml_target(
         return Err(source_map_rebind_error(&handle.source_target.source_set));
     }
 
-    let current = resolve_platform_xml_target(context, &handle.source_target)?;
+    // A handle revalidates under the policy it was issued under: an object
+    // handle can never widen into a module write target, and a module handle
+    // never accepts an object in its place.
+    let policy = match handle.target_kind {
+        TargetKind::Module => TargetKindPolicy::ModuleOnly,
+        TargetKind::MetadataObject | TargetKind::SourceRoot => TargetKindPolicy::Any,
+    };
+    let current = resolve_platform_xml_target(context, &handle.source_target, policy)?;
     if current.handle.target_path != handle.target_path
         || current.handle.module_owner != handle.module_owner
+        || current.handle.target_kind != handle.target_kind
     {
         return Err(source_map_rebind_error(&handle.source_target.source_set));
     }
@@ -2090,32 +2219,100 @@ pub(crate) fn platform_xml_resource_evidence(
     handle: &ClosedPlatformXmlTarget,
 ) -> Result<PlatformXmlResourceEvidence, SourceTargetError> {
     let current = revalidate_platform_xml_target(context, handle)?;
-    let descriptor_paths = if handle.source_target.metadata_path.is_some() {
-        let relative = current
-            .path
-            .strip_prefix(&handle.source_root)
-            .map_err(|_| target_containment_error(&handle.source_target.source_set))?;
-        platform_xml_module_identity(relative)
-            .map_err(|_| {
-                SourceTargetError::new(
-                    SourceTargetErrorCode::MetadataAddressNotFound,
-                    "module resource evidence is unavailable",
-                )
-            })?
-            .descriptors
-            .into_iter()
-            .map(|path| handle.source_root.join(path))
-            .collect()
-    } else {
-        vec![handle.source_root.join("Configuration.xml")]
+    let mut module_paths = Vec::new();
+    let descriptor_paths = match handle.target_kind {
+        TargetKind::Module => {
+            let relative = current
+                .path
+                .strip_prefix(&handle.source_root)
+                .map_err(|_| target_containment_error(&handle.source_target.source_set))?;
+            platform_xml_module_identity(relative)
+                .map_err(|_| {
+                    SourceTargetError::new(
+                        SourceTargetErrorCode::MetadataAddressNotFound,
+                        "module resource evidence is unavailable",
+                    )
+                })?
+                .descriptors
+                .into_iter()
+                .map(|path| handle.source_root.join(path))
+                .collect()
+        }
+        TargetKind::MetadataObject => {
+            let address = handle
+                .source_target
+                .metadata_path
+                .as_ref()
+                .expect("an object handle carries its address");
+            module_paths = object_module_paths(context, &handle.source_root, address);
+            Vec::new()
+        }
+        TargetKind::SourceRoot => vec![handle.source_root.join("Configuration.xml")],
     };
     Ok(PlatformXmlResourceEvidence {
+        module_paths,
         target_path: current.path,
         source_root: handle.source_root.clone(),
         descriptor_paths,
         registration_path: handle.source_root.join("Configuration.xml"),
         module_owner: handle.module_owner.clone(),
     })
+}
+
+/// Module roles that a metadata object can own. Root modules are addressed by a
+/// single segment and never hang off an object address, so they are absent here.
+const PLATFORM_XML_OBJECT_MODULE_ROLES: &[PlatformXmlModuleRole] = &[
+    PlatformXmlModuleRole::Module,
+    PlatformXmlModuleRole::ObjectModule,
+    PlatformXmlModuleRole::ManagerModule,
+    PlatformXmlModuleRole::RecordSetModule,
+    PlatformXmlModuleRole::ValueManagerModule,
+    PlatformXmlModuleRole::FormModule,
+    PlatformXmlModuleRole::CommandModule,
+];
+
+/// Renders each module role the object could own, keeps the ones whose layout
+/// round-trips back to the same address, and returns only contained regular
+/// files. Nothing here scans a directory: an unproven file cannot appear.
+fn object_module_paths(
+    context: &WorkspaceContext,
+    source_root: &Path,
+    address: &MetadataAddress,
+) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for role in PLATFORM_XML_OBJECT_MODULE_ROLES {
+        let Ok(candidate) = MetadataAddress::parse(
+            crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+            &format!("{address}.{}", role.as_str()),
+        ) else {
+            continue;
+        };
+        let Ok(relative) = module_path_for_address(&candidate) else {
+            continue;
+        };
+        let Ok(identity) = platform_xml_module_identity(&relative) else {
+            continue;
+        };
+        if identity.address != candidate {
+            continue;
+        }
+        let Ok(resolved) =
+            WorkspacePathPolicy::new(context).resolve_write(source_root.join(&relative))
+        else {
+            continue;
+        };
+        if ensure_no_link_components(source_root, &resolved).is_err() {
+            continue;
+        }
+        let Ok(metadata) = fs::symlink_metadata(&resolved) else {
+            continue;
+        };
+        if metadata_is_link_or_reparse_point(&metadata) || !metadata.is_file() {
+            continue;
+        }
+        paths.push(resolved);
+    }
+    paths
 }
 
 fn public_source_set_error(source_set: &str, error: NamedSourceSetError) -> SourceTargetError {
@@ -2836,8 +3033,7 @@ mod tests {
     use super::{
         children_platform_xml_source_navigation as children_platform_xml_source_navigation_cancellable,
         resolve_platform_xml_source_navigation as resolve_platform_xml_source_navigation_cancellable,
-        resolve_platform_xml_target, revalidate_platform_xml_target,
-        set_navigation_provider_entry_hook_for_test,
+        revalidate_platform_xml_target, set_navigation_provider_entry_hook_for_test,
     };
     use crate::application::source_navigation::{
         NavigationCompleteness, SourceChildrenRequest, SourceLocation, SourceMatchKind,
@@ -2859,6 +3055,22 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static TEMP_NONCE: AtomicU64 = AtomicU64::new(0);
+
+    /// The write surface's policy is the default under test: every case that
+    /// wants an object target says so explicitly with `TargetKindPolicy::Any`.
+    fn resolve_platform_xml_target(
+        context: &WorkspaceContext,
+        target: &SourceTarget,
+    ) -> Result<super::PlatformXmlResolution, crate::domain::source_target::SourceTargetError> {
+        super::resolve_platform_xml_target(context, target, super::TargetKindPolicy::ModuleOnly)
+    }
+
+    fn resolve_platform_xml_object_target(
+        context: &WorkspaceContext,
+        target: &SourceTarget,
+    ) -> Result<super::PlatformXmlResolution, crate::domain::source_target::SourceTargetError> {
+        super::resolve_platform_xml_target(context, target, super::TargetKindPolicy::Any)
+    }
 
     fn resolve_platform_xml_source_navigation(
         context: &WorkspaceContext,
@@ -4539,6 +4751,206 @@ mod tests {
             "Procedure Run()\nEndProcedure\n",
         )
         .unwrap();
+    }
+
+    #[test]
+    fn platform_xml_object_target_resolves_to_its_descriptor() {
+        let context = fixture(
+            "object-target",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_metadata_descriptor(&root, "Catalogs", "Catalog", "Items", "Items");
+
+        let resolution =
+            resolve_platform_xml_object_target(&context, &target("main", "Catalog.Items")).unwrap();
+
+        assert_eq!(
+            resolution.resolved.target_kind,
+            crate::domain::source_target::TargetKind::MetadataObject
+        );
+        assert_eq!(
+            resolution.resolved.metadata_path.unwrap().as_str(),
+            "Catalog.Items"
+        );
+        assert_eq!(
+            resolution.handle.target_path,
+            normalize_path_identity(&root.join("Catalogs/Items.xml")).unwrap()
+        );
+        assert!(resolution.handle.module_owner.is_none());
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_object_target_is_refused_by_the_module_only_policy() {
+        let context = fixture(
+            "object-target-module-only",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_metadata_descriptor(&root, "Catalogs", "Catalog", "Items", "Items");
+
+        let error =
+            resolve_platform_xml_target(&context, &target("main", "Catalog.Items")).unwrap_err();
+
+        assert_eq!(error.code, SourceTargetErrorCode::TargetKindMismatch);
+        assert!(
+            error.message.contains("module terminal"),
+            "{}",
+            error.message
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_nested_object_target_resolves_to_its_child_descriptor() {
+        let context = fixture(
+            "object-target-nested",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_metadata_descriptor(&root, "Catalogs", "Catalog", "Items", "Items");
+        write_nested_module_fixture(
+            &root,
+            "Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
+            "Catalogs/Items/Forms/List.xml",
+            "Form",
+            "List",
+        );
+
+        let resolution = resolve_platform_xml_object_target(
+            &context,
+            &target("main", "Catalog.Items.Form.List"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolution.handle.target_path,
+            normalize_path_identity(&root.join("Catalogs/Items/Forms/List.xml")).unwrap()
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_nested_object_target_requires_a_proven_owner() {
+        let context = fixture(
+            "object-target-nested-owner",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_nested_module_fixture(
+            &root,
+            "Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
+            "Catalogs/Items/Forms/List.xml",
+            "Form",
+            "List",
+        );
+
+        let error = resolve_platform_xml_object_target(
+            &context,
+            &target("main", "Catalog.Items.Form.List"),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, SourceTargetErrorCode::MetadataAddressNotFound);
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_object_target_rejects_a_descriptor_naming_another_object() {
+        let context = fixture(
+            "object-target-mismatch",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_metadata_descriptor(&root, "Catalogs", "Catalog", "Items", "Goods");
+
+        let error = resolve_platform_xml_object_target(&context, &target("main", "Catalog.Items"))
+            .unwrap_err();
+
+        assert_eq!(error.code, SourceTargetErrorCode::MetadataAddressNotFound);
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_object_target_reports_a_missing_descriptor_as_not_found() {
+        let context = fixture(
+            "object-target-missing",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_metadata_descriptor(&root, "Catalogs", "Catalog", "Goods", "Goods");
+
+        let error = resolve_platform_xml_object_target(&context, &target("main", "Catalog.Items"))
+            .unwrap_err();
+
+        assert_eq!(error.code, SourceTargetErrorCode::MetadataAddressNotFound);
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_object_target_refuses_a_linked_descriptor() {
+        let context = fixture(
+            "object-target-symlink",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_metadata_descriptor(&root, "Catalogs", "Catalog", "Items", "Items");
+        let descriptor = root.join("Catalogs/Items.xml");
+        let real = root.join("Catalogs/Replacement.xml");
+        fs::rename(&descriptor, &real).unwrap();
+        let outcome = create_file_link_fixture_for_test(&real, &descriptor)
+            .expect("unexpected file-link creation error must fail the fixture test");
+        if outcome != FileLinkFixtureOutcome::Created {
+            cleanup(&context);
+            return;
+        }
+
+        let error = resolve_platform_xml_object_target(&context, &target("main", "Catalog.Items"))
+            .unwrap_err();
+
+        assert_eq!(error.code, SourceTargetErrorCode::ContainmentDenied);
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_object_evidence_lists_only_proven_modules() {
+        let context = fixture(
+            "object-evidence",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_metadata_descriptor(&root, "Catalogs", "Catalog", "Items", "Items");
+        for module in [
+            "Catalogs/Items/Ext/ObjectModule.bsl",
+            "Catalogs/Items/Ext/ManagerModule.bsl",
+        ] {
+            let path = root.join(module);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, "Procedure Run()\nEndProcedure\n").unwrap();
+        }
+
+        let resolution =
+            resolve_platform_xml_object_target(&context, &target("main", "Catalog.Items")).unwrap();
+        let evidence = super::platform_xml_resource_evidence(&context, &resolution.handle).unwrap();
+
+        assert_eq!(
+            evidence.target_path,
+            normalize_path_identity(&root.join("Catalogs/Items.xml")).unwrap()
+        );
+        assert!(evidence.descriptor_paths.is_empty());
+        assert_eq!(
+            evidence
+                .module_paths
+                .iter()
+                .map(|path| path.file_name().unwrap().to_string_lossy().to_string())
+                .collect::<Vec<_>>(),
+            vec![
+                "ObjectModule.bsl".to_string(),
+                "ManagerModule.bsl".to_string()
+            ]
+        );
+        cleanup(&context);
     }
 
     fn write_metadata_descriptor(

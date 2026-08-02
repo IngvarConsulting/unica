@@ -263,6 +263,19 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `tests/ci/test_architecture_sync_guard.py`
 - **Scope:** source, packaged
 
+### INV-MCP-TYPED-RESULT — Результат инструмента типизирован, а не отрисован текстом
+
+- **Rule:** Успешный вызов публичного инструмента, чья запись в
+  `spec/architecture/tool-surface-review.json` имеет `scope: "in"` и
+  `result.contract: "typed"`, публикует результат только как
+  `OperationResult.data` без текстового дубля в `stdout`; записи с
+  `scope: "retiring"` и `scope: "runtime"` находятся вне границы этого правила
+  до собственного решения.
+- **Decision:** ADR-0020, ADR-0023
+- **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
+- **Check:** `ci-test` — `tests/ci/test_tool_surface_ledger.py`
+- **Scope:** source, runtime
+
 ### INV-MCP-SOURCE-SURFACE — Ресурсная поверхность логична и ограничена
 
 - **Rule:** Публичная группа источников содержит читающие
@@ -628,6 +641,18 @@ Unica. Каждая запись формулирует одно нормати�
 - **Decision:** ADR-0021
 - **Check:** `ci-test` — `crates/unica-coder/src/domain/source_target.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs`
+- **Scope:** source, runtime
+
+### INV-SOURCE-WRITE-TARGET-KIND — Писатель принимает только терминал модуля
+
+- **Rule:** Разрешение цели выполняется под явной политикой вида: пишущая
+  операция запрашивает только терминал модуля и отклоняет адрес объекта
+  метаданных стабильным `TargetKindMismatch`, закрытая ручка несёт вид, под
+  которым выдана, и повторная проверка выполняется под той же политикой,
+  поэтому расширение резолвера на новый вид цели не расширяет право записи.
+- **Decision:** ADR-0021
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/code.rs`
 - **Scope:** source, runtime
 
 ### INV-SOURCE-SNAPSHOT-BINDING — Ресурс действует только внутри своего снимка

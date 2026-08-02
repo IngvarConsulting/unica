@@ -116,14 +116,270 @@ impl DcsValidationReporter {
     }
 }
 
+/// Typed answer of `unica.dcs.info` (ADR-0023). Eleven `Mode` values each
+/// rendered its own report; the data carries every section at once and a caller
+/// projects what it needs, so `Limit` and `Offset` go away with the line layout.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DcsInfoData {
+    pub(crate) data_sets: Vec<DcsInfoDataSet>,
+    pub(crate) links: Vec<DcsInfoLink>,
+    pub(crate) calculated_fields: Vec<DcsInfoCalculatedField>,
+    pub(crate) total_fields: Vec<DcsInfoTotalField>,
+    pub(crate) parameters: Vec<DcsInfoParameter>,
+    pub(crate) variants: Vec<DcsInfoVariant>,
+    pub(crate) templates: Vec<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DcsInfoDataSet {
+    pub(crate) name: String,
+    /// `Query`, `Object`, `Union` or the raw `xsi:type` when it is none of them.
+    pub(crate) kind: String,
+    /// The dataset query; `null` for kinds that carry none.
+    pub(crate) query: Option<String>,
+    pub(crate) fields: Vec<DcsInfoField>,
+    /// Nested datasets of a union; empty for every other kind.
+    pub(crate) items: Vec<DcsInfoDataSet>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DcsInfoField {
+    pub(crate) data_path: String,
+    /// The query column behind the field; `null` when the field declares none.
+    pub(crate) field: Option<String>,
+    pub(crate) title: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DcsInfoLink {
+    pub(crate) source: String,
+    pub(crate) destination: String,
+    pub(crate) source_expression: Option<String>,
+    pub(crate) destination_expression: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DcsInfoCalculatedField {
+    pub(crate) data_path: String,
+    pub(crate) expression: Option<String>,
+    pub(crate) title: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DcsInfoTotalField {
+    pub(crate) data_path: String,
+    pub(crate) expression: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DcsInfoParameter {
+    pub(crate) name: String,
+    #[serde(rename = "type")]
+    pub(crate) type_name: Option<String>,
+    pub(crate) value: Option<String>,
+    pub(crate) expression: Option<String>,
+    /// True when `useRestriction` hides the parameter from the user.
+    pub(crate) restricted: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DcsInfoVariant {
+    pub(crate) name: String,
+    pub(crate) presentation: Option<String>,
+    pub(crate) selection: Vec<String>,
+    pub(crate) order: Vec<String>,
+    /// Structure item kinds in order: `group`, `table`, `chart`, …
+    pub(crate) structure: Vec<String>,
+}
+
+pub(crate) struct DcsInfoExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<DcsInfoData>,
+}
+
+fn dcs_info_opt(value: String) -> Option<String> {
+    (!value.is_empty()).then_some(value)
+}
+
+fn dcs_info_child_text(
+    node: roxmltree::Node<'_, '_>,
+    tag: &str,
+    ns_schema: &str,
+) -> Option<String> {
+    dcs_child(node, tag, ns_schema)
+        .map(dcs_text_of)
+        .and_then(dcs_info_opt)
+}
+
+fn dcs_info_data_set(data_set: roxmltree::Node<'_, '_>, ns_schema: &str) -> DcsInfoDataSet {
+    let kind = dcs_info_dataset_type(data_set);
+    DcsInfoDataSet {
+        name: dcs_child(data_set, "name", ns_schema)
+            .map(dcs_text_of)
+            .unwrap_or_default(),
+        // `dcs_inner_text`, not `dcs_all_text`: a 1C query carries meaningful
+        // leading whitespace in its `|` continuation lines, and the retired
+        // `Raw` mode existed precisely to hand it back untrimmed.
+        query: dcs_child(data_set, "query", ns_schema)
+            .map(dcs_inner_text)
+            .and_then(dcs_info_opt),
+        fields: dcs_children(data_set, "field", ns_schema)
+            .into_iter()
+            .filter_map(|field| {
+                Some(DcsInfoField {
+                    data_path: dcs_info_child_text(field, "dataPath", ns_schema)?,
+                    field: dcs_info_child_text(field, "field", ns_schema),
+                    title: dcs_child(field, "title", ns_schema)
+                        .map(dcs_info_multilang_or_inner_text)
+                        .and_then(dcs_info_opt),
+                })
+            })
+            .collect(),
+        items: if kind == "Union" {
+            dcs_children(data_set, "item", ns_schema)
+                .into_iter()
+                .map(|item| dcs_info_data_set(item, ns_schema))
+                .collect()
+        } else {
+            Vec::new()
+        },
+        kind,
+    }
+}
+
+fn dcs_info_collect(
+    root: roxmltree::Node<'_, '_>,
+    ns_schema: &str,
+    ns_settings: &str,
+) -> DcsInfoData {
+    DcsInfoData {
+        data_sets: dcs_children(root, "dataSet", ns_schema)
+            .into_iter()
+            .map(|data_set| dcs_info_data_set(data_set, ns_schema))
+            .collect(),
+        links: dcs_children(root, "dataSetLink", ns_schema)
+            .into_iter()
+            .map(|link| DcsInfoLink {
+                source: dcs_child(link, "sourceDataSet", ns_schema)
+                    .map(dcs_text_of)
+                    .unwrap_or_default(),
+                destination: dcs_child(link, "destinationDataSet", ns_schema)
+                    .map(dcs_text_of)
+                    .unwrap_or_default(),
+                source_expression: dcs_info_child_text(link, "sourceExpression", ns_schema),
+                destination_expression: dcs_info_child_text(
+                    link,
+                    "destinationExpression",
+                    ns_schema,
+                ),
+            })
+            .collect(),
+        calculated_fields: dcs_children(root, "calculatedField", ns_schema)
+            .into_iter()
+            .filter_map(|field| {
+                Some(DcsInfoCalculatedField {
+                    data_path: dcs_info_child_text(field, "dataPath", ns_schema)?,
+                    expression: dcs_child(field, "expression", ns_schema)
+                        .map(dcs_all_text)
+                        .and_then(dcs_info_opt),
+                    title: dcs_child(field, "title", ns_schema)
+                        .map(dcs_info_multilang_or_inner_text)
+                        .and_then(dcs_info_opt),
+                })
+            })
+            .collect(),
+        total_fields: dcs_children(root, "totalField", ns_schema)
+            .into_iter()
+            .filter_map(|total| {
+                Some(DcsInfoTotalField {
+                    data_path: dcs_info_child_text(total, "dataPath", ns_schema)?,
+                    expression: dcs_child(total, "expression", ns_schema)
+                        .map(dcs_all_text)
+                        .and_then(dcs_info_opt),
+                })
+            })
+            .collect(),
+        parameters: dcs_children(root, "parameter", ns_schema)
+            .into_iter()
+            .map(|param| DcsInfoParameter {
+                name: dcs_child(param, "name", ns_schema)
+                    .map(dcs_text_of)
+                    .unwrap_or_default(),
+                type_name: dcs_child(param, "valueType", ns_schema)
+                    .map(dcs_info_compact_type)
+                    .and_then(dcs_info_opt),
+                value: dcs_child(param, "value", ns_schema)
+                    .map(dcs_info_param_default)
+                    .and_then(dcs_info_opt),
+                expression: dcs_child(param, "expression", ns_schema)
+                    .map(dcs_all_text)
+                    .and_then(dcs_info_opt),
+                restricted: dcs_child(param, "useRestriction", ns_schema)
+                    .map(dcs_text_of)
+                    .as_deref()
+                    == Some("true"),
+            })
+            .collect(),
+        variants: dcs_children(root, "settingsVariant", ns_schema)
+            .into_iter()
+            .map(|variant| {
+                let settings = dcs_child(variant, "settings", ns_schema);
+                DcsInfoVariant {
+                    name: dcs_child(variant, "name", ns_schema)
+                        .map(dcs_text_of)
+                        .unwrap_or_default(),
+                    presentation: dcs_child(variant, "presentation", ns_schema)
+                        .map(dcs_info_multilang_or_inner_text)
+                        .and_then(dcs_info_opt),
+                    selection: settings
+                        .and_then(|node| dcs_child(node, "selection", ns_settings))
+                        .map(|node| dcs_info_selection_fields(node, ns_settings))
+                        .unwrap_or_default(),
+                    order: settings
+                        .and_then(|node| dcs_child(node, "order", ns_settings))
+                        .map(|node| dcs_info_group_fields(node, ns_settings))
+                        .unwrap_or_default(),
+                    structure: settings
+                        .map(|node| {
+                            dcs_children(node, "item", ns_settings)
+                                .into_iter()
+                                .map(|item| dcs_info_structure_item_type(item).to_string())
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                }
+            })
+            .collect(),
+        templates: dcs_children(root, "template", ns_schema)
+            .into_iter()
+            .filter_map(|template| dcs_info_child_text(template, "name", ns_schema))
+            .collect(),
+    }
+}
+
 pub(crate) fn analyze_dcs_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
+    analyze_dcs_info_with_data(args, context).outcome
+}
+
+pub(crate) fn analyze_dcs_info_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> DcsInfoExecution {
     const NS_SCHEMA: &str = DCS_SCHEMA_NS;
     const NS_SETTINGS: &str = "http://v8.1c.ru/8.1/data-composition-system/settings";
 
-    let result = (|| -> Result<(String, PathBuf), String> {
+    let result = (|| -> Result<(DcsInfoData, PathBuf), String> {
         let template_path = resolve_dcs_info_path_for_script(args, context)?;
         let resolved_path = template_path
             .canonicalize()
@@ -133,122 +389,44 @@ pub(crate) fn analyze_dcs_info(
             .map_err(|err| format!("XML parse error in {}: {err}", resolved_path.display()))?;
         let root = doc.root_element();
         require_dcs_root(root)?;
-        let mode = string_arg(args, &["mode", "Mode"]).unwrap_or("overview");
-        let raw = bool_arg(args, &["raw", "Raw"]);
-        if raw && mode != "query" {
-            return Err("Raw is only supported with Mode=query".to_string());
-        }
-        let limit = int_arg(args, &["limit", "Limit"]).unwrap_or(150).max(0) as usize;
-        let offset = int_arg(args, &["offset", "Offset"]).unwrap_or(0).max(0) as usize;
-        let mut lines = Vec::<String>::new();
-
-        match mode {
-            "overview" => {
-                dcs_info_overview(
-                    root,
-                    &resolved_path,
-                    &text,
-                    &mut lines,
-                    NS_SCHEMA,
-                    NS_SETTINGS,
-                );
-                dcs_info_overview_hints(root, &mut lines, NS_SCHEMA, NS_SETTINGS);
-            }
-            "query" => {
-                let name = string_arg(args, &["name", "Name"]);
-                if raw {
-                    return Ok((dcs_info_raw_query(root, NS_SCHEMA, name)?, resolved_path));
-                }
-                dcs_info_query(root, &mut lines, NS_SCHEMA, name)?;
-            }
-            "fields" => dcs_info_fields(root, &mut lines, NS_SCHEMA),
-            "links" => dcs_info_links(root, &mut lines, NS_SCHEMA),
-            "calculated" => {
-                let name = string_arg(args, &["name", "Name"]);
-                dcs_info_calculated(root, &mut lines, NS_SCHEMA, name)?;
-            }
-            "resources" => {
-                let name = string_arg(args, &["name", "Name"]);
-                dcs_info_resources(root, &mut lines, NS_SCHEMA, name)?;
-            }
-            "params" => {
-                dcs_info_params(root, &mut lines, NS_SCHEMA);
-            }
-            "variant" => dcs_info_variant(root, &mut lines, NS_SCHEMA, NS_SETTINGS),
-            "templates" => dcs_info_templates(root, &mut lines, NS_SCHEMA),
-            "trace" => {
-                let name = string_arg(args, &["name", "Name"]).unwrap_or("");
-                if name.is_empty() {
-                    return Err("Trace mode requires -Name <field_name_or_title>".to_string());
-                }
-                dcs_info_trace(root, &mut lines, NS_SCHEMA, name)?;
-            }
-            "full" => {
-                dcs_info_full(
-                    root,
-                    &resolved_path,
-                    &text,
-                    &mut lines,
-                    NS_SCHEMA,
-                    NS_SETTINGS,
-                )?;
-            }
-            other => {
-                return Err(format!(
-                    "argument -Mode: invalid choice: '{other}' (choose from 'overview', 'query', 'fields', 'links', 'calculated', 'resources', 'params', 'variant', 'trace', 'templates', 'full')"
-                ));
-            }
-        }
-
-        let total_lines = lines.len();
-        let mut result = if offset > 0 {
-            if offset >= total_lines {
-                return Ok((
-                    format!(
-                        "[INFO] Offset {offset} exceeds total lines ({total_lines}). Nothing to show.\n"
-                    ),
-                    resolved_path,
-                ));
-            }
-            lines[offset..].to_vec()
-        } else {
-            lines
-        };
-        let stdout = if result.len() > limit {
-            result.truncate(limit);
-            format!(
-                "{}\n\n[TRUNCATED] Shown {limit} of {total_lines} lines. Use -Offset {} to continue.\n",
-                result.join("\n"),
-                offset + limit
-            )
-        } else {
-            format!("{}\n", result.join("\n"))
-        };
-        Ok((stdout, resolved_path))
+        // Eleven modes sliced one schema into eleven reports. Data answers
+        // with every section at once; a caller projects what it needs.
+        let data = dcs_info_collect(root, NS_SCHEMA, NS_SETTINGS);
+        Ok((data, resolved_path))
     })();
 
     match result {
-        Ok((stdout, artifact)) => AdapterOutcome {
-            ok: true,
-            summary: "unica.dcs.info completed with native DCS inspector".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: Vec::new(),
-            artifacts: vec![artifact.display().to_string()],
-            stdout: Some(stdout),
-            stderr: None,
-            command: None,
+        Ok((data, artifact)) => DcsInfoExecution {
+            outcome: AdapterOutcome {
+                ok: true,
+                summary: format!(
+                    "unica.dcs.info described {} data set(s) and {} parameter(s)",
+                    data.data_sets.len(),
+                    data.parameters.len()
+                ),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: Vec::new(),
+                artifacts: vec![artifact.display().to_string()],
+                stdout: None,
+                stderr: None,
+                command: None,
+            },
+            data: Some(data),
         },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.dcs.info failed in native DCS inspector".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-            command: None,
+        Err(error) => DcsInfoExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.dcs.info failed in native DCS inspector".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.clone()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{error}\n")),
+                command: None,
+            },
+            data: None,
         },
     }
 }
@@ -4910,8 +5088,51 @@ fn run_dcs_edit_after_read_hook(path: &Path) {
     }
 }
 
+/// Typed answer of `unica.dcs.edit` (ADR-0023). The prose printed `[OK]` or
+/// `[WARN]` per item; the data derives the same verdict from whether the schema
+/// actually changed, so it cannot drift from what was written.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DcsEditData {
+    pub(crate) operation: String,
+    /// The data set the operation addressed; `null` when it is schema-wide.
+    pub(crate) data_set: Option<String>,
+    /// The settings variant the operation addressed; `null` when it is
+    /// schema-wide.
+    pub(crate) variant: Option<String>,
+    pub(crate) items: Vec<DcsEditItemData>,
+    /// True when the template file was rewritten.
+    pub(crate) changed: bool,
+    /// The edit commits only through post-validation; this records that the
+    /// validator actually ran over the written schema.
+    pub(crate) validated: bool,
+    pub(crate) mutation: MutationData,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DcsEditItemData {
+    /// One value from the request; a batch request yields one entry per value.
+    pub(crate) value: String,
+    pub(crate) applied: bool,
+    /// Why the item changed nothing; `null` when it applied.
+    pub(crate) reason: Option<String>,
+}
+
+pub(crate) struct DcsEditExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<DcsEditData>,
+}
+
 pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
-    let edit_result = (|| -> Result<(String, PathBuf, bool, Vec<String>), String> {
+    edit_dcs_with_data(args, context).outcome
+}
+
+pub(crate) fn edit_dcs_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> DcsEditExecution {
+    let edit_result = (|| -> Result<(DcsEditData, PathBuf, bool, Vec<String>), String> {
         let template_path = resolve_dcs_validate_path(args, context)?;
         let operation = required_string(args, &["operation", "Operation"], "Operation")?;
         let value_arg = required_string(args, &["value", "Value"], "Value")?;
@@ -4940,7 +5161,13 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
         let mut force_save = false;
         let mut stdout = String::new();
         let mut query_inputs = Vec::new();
+        let mut items: Vec<DcsEditItemData> = Vec::new();
         for value in values {
+            // The verdict comes from the schema itself: an item that left the
+            // XML untouched changed nothing, whatever the branch intended.
+            let before_text = xml_text.clone();
+            let before_force_save = force_save;
+            let item_value = value.clone();
             match operation {
                 "add-field" => dcs_edit_add_field(
                     &mut xml_text,
@@ -4990,14 +5217,7 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
                             &fragment,
                         )
                         .is_ok()
-                        {
-                            stdout.push_str(&format!(
-                                "[OK] Field \"{}\" added to selection of variant \"{}\"\n",
-                                parsed.data_path,
-                                dcs_edit_variant_name(&xml_text, variant)
-                                    .unwrap_or_else(|| variant.to_string())
-                            ));
-                        }
+                        {}
                     }
                 }
                 "add-parameter" => {
@@ -5042,9 +5262,6 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
                                 &mut String::new(),
                             );
                         }
-                        stdout.push_str(
-                            "[OK] Auto-parameters \"ДатаНачала\", \"ДатаОкончания\" added\n",
-                        );
                     }
                 }
                 "add-filter" => {
@@ -5063,13 +5280,6 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
                         "dcsset:filter",
                         &fragment,
                     )?;
-                    stdout.push_str(&format!(
-                        "[OK] Filter \"{} {}\" added to variant \"{}\"\n",
-                        parsed.field,
-                        parsed.operator,
-                        dcs_edit_variant_name(&xml_text, variant)
-                            .unwrap_or_else(|| variant.to_string())
-                    ));
                 }
                 "add-dataParameter" => {
                     let parsed = dcs_edit_parse_data_parameter(&value);
@@ -5086,12 +5296,6 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
                         "dcsset:dataParameters",
                         &fragment,
                     )?;
-                    stdout.push_str(&format!(
-                        "[OK] DataParameter \"{}\" added to variant \"{}\"\n",
-                        parsed.parameter,
-                        dcs_edit_variant_name(&xml_text, variant)
-                            .unwrap_or_else(|| variant.to_string())
-                    ));
                 }
                 "set-query" => {
                     let query = dcs_compile_resolve_query_value_with_inputs(
@@ -5101,11 +5305,6 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
                         &mut query_inputs,
                     )?;
                     dcs_edit_set_query(&mut xml_text, data_set, &query)?;
-                    stdout.push_str(&format!(
-                        "[OK] Query replaced in dataset \"{}\"\n",
-                        dcs_edit_dataset_name(&xml_text, data_set)
-                            .unwrap_or_else(|| data_set.to_string())
-                    ));
                 }
                 "patch-query" => {
                     let (value, once) = dcs_edit_extract_once_marker(&value);
@@ -5115,43 +5314,16 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
                                 .to_string(),
                         );
                     };
-                    let count = dcs_edit_patch_query(&mut xml_text, data_set, old, new, once)?;
-                    let suffix = if once {
-                        " (1 occurrence)".to_string()
-                    } else {
-                        format!(" ({count} occurrence(s))")
-                    };
-                    stdout.push_str(&format!(
-                        "[OK] Query patched in dataset \"{}\": replaced '{}'{}\n",
-                        dcs_edit_dataset_name(&xml_text, data_set)
-                            .unwrap_or_else(|| data_set.to_string()),
-                        old,
-                        suffix
-                    ));
+                    dcs_edit_patch_query(&mut xml_text, data_set, old, new, once)?;
                 }
                 "clear-selection" => {
                     dcs_edit_clear_prefixed_container(&mut xml_text, variant, "dcsset:selection")?;
-                    stdout.push_str(&format!(
-                        "[OK] Selection cleared in variant \"{}\"\n",
-                        dcs_edit_variant_name(&xml_text, variant)
-                            .unwrap_or_else(|| variant.to_string())
-                    ));
                 }
                 "clear-order" => {
                     dcs_edit_clear_prefixed_container(&mut xml_text, variant, "dcsset:order")?;
-                    stdout.push_str(&format!(
-                        "[OK] Order cleared in variant \"{}\"\n",
-                        dcs_edit_variant_name(&xml_text, variant)
-                            .unwrap_or_else(|| variant.to_string())
-                    ));
                 }
                 "clear-filter" => {
                     dcs_edit_clear_prefixed_container(&mut xml_text, variant, "dcsset:filter")?;
-                    stdout.push_str(&format!(
-                        "[OK] Filter cleared in variant \"{}\"\n",
-                        dcs_edit_variant_name(&xml_text, variant)
-                            .unwrap_or_else(|| variant.to_string())
-                    ));
                 }
                 "clear-conditionalAppearance" => {
                     dcs_edit_clear_prefixed_container(
@@ -5159,11 +5331,6 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
                         variant,
                         "dcsset:conditionalAppearance",
                     )?;
-                    stdout.push_str(&format!(
-                        "[OK] ConditionalAppearance cleared in variant \"{}\"\n",
-                        dcs_edit_variant_name(&xml_text, variant)
-                            .unwrap_or_else(|| variant.to_string())
-                    ));
                 }
                 "add-selection" => {
                     let parsed = dcs_edit_parse_selection_value(&value);
@@ -5174,15 +5341,7 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
                             group_name,
                             &parsed.field,
                         )? {
-                            stdout.push_str(&format!(
-                                "[OK] Selection \"{}\" added to group \"{}\"\n",
-                                parsed.field, group_name
-                            ));
                         } else {
-                            stdout.push_str(&format!(
-                                "[WARN] StructureItemGroup \"{}\" not found -- adding to variant level\n",
-                                group_name
-                            ));
                             let indent = dcs_edit_settings_container_child_indent(
                                 &xml_text,
                                 variant,
@@ -5196,12 +5355,6 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
                                 "dcsset:selection",
                                 &fragment,
                             )?;
-                            stdout.push_str(&format!(
-                                "[OK] Selection \"{}\" added to variant \"{}\"\n",
-                                parsed.field,
-                                dcs_edit_variant_name(&xml_text, variant)
-                                    .unwrap_or_else(|| variant.to_string())
-                            ));
                         }
                     } else {
                         let indent = dcs_edit_settings_container_child_indent(
@@ -5217,12 +5370,6 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
                             "dcsset:selection",
                             &fragment,
                         )?;
-                        stdout.push_str(&format!(
-                            "[OK] Selection \"{}\" added to variant \"{}\"\n",
-                            parsed.field,
-                            dcs_edit_variant_name(&xml_text, variant)
-                                .unwrap_or_else(|| variant.to_string())
-                        ));
                     }
                 }
                 "add-order" => {
@@ -5233,19 +5380,12 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
                     )
                     .unwrap_or_else(|_| "\t\t\t\t".to_string());
                     let fragment = dcs_edit_order_fragment(&value, &indent);
-                    let desc = dcs_edit_order_description(&value);
                     dcs_edit_insert_or_create_settings_item(
                         &mut xml_text,
                         variant,
                         "dcsset:order",
                         &fragment,
                     )?;
-                    stdout.push_str(&format!(
-                        "[OK] Order \"{}\" added to variant \"{}\"\n",
-                        desc,
-                        dcs_edit_variant_name(&xml_text, variant)
-                            .unwrap_or_else(|| variant.to_string())
-                    ));
                 }
                 "add-dataSetLink" => {
                     let parsed = dcs_edit_parse_data_set_link(&value)?;
@@ -5258,7 +5398,6 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
                     if !parsed.parameter.is_empty() {
                         desc.push_str(&format!(" [param {}]", parsed.parameter));
                     }
-                    stdout.push_str(&format!("[OK] DataSetLink \"{desc}\" added\n"));
                 }
                 "add-dataSet" => {
                     let parsed = dcs_edit_parse_data_set_with_inputs(
@@ -5268,35 +5407,19 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
                         &mut query_inputs,
                     )?;
                     if dcs_edit_top_level_contains(&xml_text, "dataSet", "name", &parsed.name) {
-                        stdout.push_str(&format!(
-                            "[WARN] DataSet \"{}\" already exists -- skipped\n",
-                            parsed.name
-                        ));
                     } else {
                         let source = dcs_edit_first_data_source(&xml_text)
                             .unwrap_or_else(|| "ИсточникДанных1".to_string());
                         let fragment = dcs_edit_data_set_fragment(&parsed, &source, "\t");
                         dcs_edit_insert_top_level_fragment(&mut xml_text, "dataSet", &fragment)?;
-                        stdout.push_str(&format!(
-                            "[OK] DataSet \"{}\" added (dataSource={source})\n",
-                            parsed.name
-                        ));
                     }
                 }
                 "add-variant" => {
                     let parsed = dcs_edit_parse_variant(&value);
                     if dcs_edit_variant_exists(&xml_text, &parsed.name) {
-                        stdout.push_str(&format!(
-                            "[WARN] Variant \"{}\" already exists -- skipped\n",
-                            parsed.name
-                        ));
                     } else {
                         let fragment = dcs_edit_variant_fragment(&parsed, "\t");
                         dcs_edit_insert_before_root_close(&mut xml_text, &fragment)?;
-                        stdout.push_str(&format!(
-                            "[OK] Variant \"{}\" [\"{}\"] added\n",
-                            parsed.name, parsed.presentation
-                        ));
                     }
                 }
                 "add-conditionalAppearance" => {
@@ -5317,35 +5440,26 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
                         "dcsset:conditionalAppearance",
                         &fragment,
                     )?;
-                    let desc = dcs_edit_conditional_appearance_description(&parsed);
-                    stdout.push_str(&format!(
-                        "[OK] ConditionalAppearance \"{}\" added to variant \"{}\"\n",
-                        desc,
-                        dcs_edit_variant_name(&xml_text, variant)
-                            .unwrap_or_else(|| variant.to_string())
-                    ));
                 }
                 "add-drilldown" => {
-                    match dcs_edit_add_drilldown(&mut xml_text, &value) {
-                        DcsEditDrilldownResult::Added => {
-                            stdout.push_str(&format!("[OK] DrillDown added for \"{}\"\n", value));
-                        }
-                        DcsEditDrilldownResult::NoNamedTemplates => {
-                            stdout.push_str("[WARN] No named templates found in schema\n");
-                        }
-                        DcsEditDrilldownResult::NoMatch => {}
+                    // Only a real insertion counts: forcing the save
+                    // unconditionally reported `applied` for a resource the
+                    // schema has no named template for.
+                    if matches!(
+                        dcs_edit_add_drilldown(&mut xml_text, &value),
+                        DcsEditDrilldownResult::Added
+                    ) {
+                        force_save = true;
                     }
-                    force_save = true;
                 }
                 "set-outputParameter" => {
                     let parsed = dcs_edit_parse_output_parameter(&value)?;
-                    let mut replaced = false;
                     if let Ok(range) = dcs_edit_prefixed_container_range(
                         &xml_text,
                         variant,
                         "dcsset:outputParameters",
                     ) {
-                        replaced = dcs_edit_remove_item_by_child(
+                        dcs_edit_remove_item_by_child(
                             &mut xml_text,
                             (range.start, range.end),
                             "dcscor:item",
@@ -5366,95 +5480,32 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
                         "dcsset:outputParameters",
                         &fragment,
                     )?;
-                    if replaced {
-                        stdout.push_str(&format!(
-                            "[OK] Replaced outputParameter \"{}\" in variant \"{}\"\n",
-                            parsed.key,
-                            dcs_edit_variant_name(&xml_text, variant)
-                                .unwrap_or_else(|| variant.to_string())
-                        ));
-                    } else {
-                        stdout.push_str(&format!(
-                            "[OK] OutputParameter \"{}\" added to variant \"{}\"\n",
-                            parsed.key,
-                            dcs_edit_variant_name(&xml_text, variant)
-                                .unwrap_or_else(|| variant.to_string())
-                        ));
-                    }
                 }
                 "set-structure" => {
                     let parsed = dcs_edit_parse_structure(&value);
                     let fragments = dcs_edit_structure_fragments(&parsed, "\t\t\t");
                     dcs_edit_replace_structure(&mut xml_text, variant, &fragments)?;
-                    stdout.push_str(&format!(
-                        "[OK] Structure set in variant \"{}\": {}\n",
-                        dcs_edit_variant_name(&xml_text, variant)
-                            .unwrap_or_else(|| variant.to_string()),
-                        value
-                    ));
                 }
                 "modify-structure" => {
                     let parsed = dcs_edit_parse_structure(&value);
                     dcs_edit_modify_structure(&mut xml_text, variant, &parsed, &mut stdout)?;
                 }
                 "remove-field" => {
-                    let removed = dcs_edit_remove_dataset_item(
+                    dcs_edit_remove_dataset_item(
                         &mut xml_text,
                         data_set,
                         "field",
                         "dataPath",
                         &value,
                     )?;
-                    if removed {
-                        stdout.push_str(&format!(
-                            "[OK] Field \"{}\" removed from dataset \"{}\"\n",
-                            value,
-                            dcs_edit_dataset_name(&xml_text, data_set)
-                                .unwrap_or_else(|| data_set.to_string())
-                        ));
-                    } else {
-                        stdout.push_str(&format!(
-                            "[WARN] Field \"{}\" not found in dataset \"{}\"\n",
-                            value,
-                            dcs_edit_dataset_name(&xml_text, data_set)
-                                .unwrap_or_else(|| data_set.to_string())
-                        ));
-                    }
-                    if dcs_edit_remove_prefixed_selection_field(&mut xml_text, variant, &value)? {
-                        stdout.push_str(&format!(
-                            "[OK] Field \"{}\" removed from selection of variant \"{}\"\n",
-                            value,
-                            dcs_edit_variant_name(&xml_text, variant)
-                                .unwrap_or_else(|| variant.to_string())
-                        ));
-                    }
+                    dcs_edit_remove_prefixed_selection_field(&mut xml_text, variant, &value)?;
                 }
                 "remove-parameter" => {
-                    let removed =
-                        dcs_edit_remove_top_level_item(&mut xml_text, "parameter", "name", &value)?;
-                    if removed {
-                        stdout.push_str(&format!("[OK] Parameter \"{}\" removed\n", value));
-                    } else {
-                        stdout.push_str(&format!("[WARN] Parameter \"{}\" not found\n", value));
-                    }
+                    dcs_edit_remove_top_level_item(&mut xml_text, "parameter", "name", &value)?;
                 }
                 "modify-field" => {
                     let parsed = dcs_edit_parse_field(&value);
-                    if dcs_edit_replace_dataset_field(&mut xml_text, data_set, &parsed)? {
-                        stdout.push_str(&format!(
-                            "[OK] Field \"{}\" modified in dataset \"{}\"\n",
-                            parsed.data_path,
-                            dcs_edit_dataset_name(&xml_text, data_set)
-                                .unwrap_or_else(|| data_set.to_string())
-                        ));
-                    } else {
-                        stdout.push_str(&format!(
-                            "[WARN] Field \"{}\" not found in dataset \"{}\"\n",
-                            parsed.data_path,
-                            dcs_edit_dataset_name(&xml_text, data_set)
-                                .unwrap_or_else(|| data_set.to_string())
-                        ));
-                    }
+                    dcs_edit_replace_dataset_field(&mut xml_text, data_set, &parsed)?;
                 }
                 "set-field-role" => {
                     dcs_edit_set_field_role(&mut xml_text, data_set, &value, &mut stdout)?;
@@ -5485,65 +5536,32 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
                     dcs_edit_reorder_parameters(&mut xml_text, &value, &mut stdout)?;
                 }
                 "remove-total" => {
-                    let removed = dcs_edit_remove_top_level_item(
+                    dcs_edit_remove_top_level_item(
                         &mut xml_text,
                         "totalField",
                         "dataPath",
                         &value,
                     )?;
-                    if removed {
-                        stdout.push_str(&format!("[OK] TotalField \"{}\" removed\n", value));
-                    } else {
-                        stdout.push_str(&format!("[WARN] TotalField \"{}\" not found\n", value));
-                    }
                 }
                 "remove-calculated-field" => {
-                    let removed = dcs_edit_remove_top_level_item(
+                    dcs_edit_remove_top_level_item(
                         &mut xml_text,
                         "calculatedField",
                         "dataPath",
                         &value,
                     )?;
-                    if removed {
-                        stdout.push_str(&format!("[OK] CalculatedField \"{}\" removed\n", value));
-                    } else {
-                        stdout
-                            .push_str(&format!("[WARN] CalculatedField \"{}\" not found\n", value));
-                    }
-                    if dcs_edit_remove_prefixed_selection_field(&mut xml_text, variant, &value)? {
-                        stdout.push_str(&format!(
-                            "[OK] Field \"{}\" removed from selection of variant \"{}\"\n",
-                            value,
-                            dcs_edit_variant_name(&xml_text, variant)
-                                .unwrap_or_else(|| variant.to_string())
-                        ));
-                    }
+                    dcs_edit_remove_prefixed_selection_field(&mut xml_text, variant, &value)?;
                 }
                 "remove-filter" => {
                     let filter_range =
                         dcs_edit_prefixed_container_range(&xml_text, variant, "dcsset:filter")?;
-                    let removed = dcs_edit_remove_item_by_child(
+                    dcs_edit_remove_item_by_child(
                         &mut xml_text,
                         (filter_range.start, filter_range.end),
                         "dcsset:item",
                         "dcsset:left",
                         &value,
                     )?;
-                    if removed {
-                        stdout.push_str(&format!(
-                            "[OK] Filter for \"{}\" removed from variant \"{}\"\n",
-                            value,
-                            dcs_edit_variant_name(&xml_text, variant)
-                                .unwrap_or_else(|| variant.to_string())
-                        ));
-                    } else {
-                        stdout.push_str(&format!(
-                            "[WARN] Filter for \"{}\" not found in variant \"{}\"\n",
-                            value,
-                            dcs_edit_variant_name(&xml_text, variant)
-                                .unwrap_or_else(|| variant.to_string())
-                        ));
-                    }
                 }
                 other => {
                     return Err(format!(
@@ -5551,10 +5569,18 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
                     ));
                 }
             }
+            let applied = xml_text != before_text || force_save != before_force_save;
+            items.push(DcsEditItemData {
+                value: item_value,
+                applied,
+                reason: (!applied)
+                    .then(|| "цель не найдена или уже в нужном состоянии".to_string()),
+            });
         }
 
         let changed = force_save || xml_text != original_xml_text;
         let mut warnings = Vec::new();
+        let mut validated = false;
         if changed {
             let mut xml_text = xml_text.replacen("encoding=\"UTF-8\"", "encoding=\"utf-8\"", 1);
             if original_line_ending == "\r\n" {
@@ -5581,46 +5607,64 @@ pub(crate) fn edit_dcs(args: &Map<String, Value>, context: &WorkspaceContext) ->
                 validation_stdout = Some(validation);
                 Ok(())
             })?;
+            validated = true;
             warnings = report.cleanup_warnings;
-            stdout.push_str(&format!("[OK] Saved {}\n", template_path.display()));
-            if show_validation {
-                stdout.push_str("\n--- Running dcs-validate ---\n");
-                if let Some(validation) = validation_stdout {
-                    stdout.push_str(&validation);
-                }
-            }
-        } else {
-            stdout.push_str("[INFO] No changes -- file untouched\n");
+            let _ = validation_stdout;
         }
-        Ok((stdout, template_path, changed, warnings))
+        let _ = (stdout, show_validation);
+        let data = DcsEditData {
+            operation: operation.to_string(),
+            data_set: (!data_set.is_empty()).then(|| data_set.to_string()),
+            variant: (!variant.is_empty()).then(|| variant.to_string()),
+            items,
+            changed,
+            validated,
+            mutation: if changed {
+                MutationData::new(true).updated(&template_path)
+            } else {
+                MutationData::new(false)
+            },
+        };
+        Ok((data, template_path, changed, warnings))
     })();
 
     match edit_result {
-        Ok((stdout, template_path, changed, warnings)) => AdapterOutcome {
-            ok: true,
-            summary: "unica.dcs.edit completed with native DCS editor".to_string(),
-            changes: if changed {
-                vec![format!("updated {}", template_path.display())]
-            } else {
-                Vec::new()
+        Ok((data, template_path, changed, warnings)) => DcsEditExecution {
+            outcome: AdapterOutcome {
+                ok: true,
+                summary: format!(
+                    "unica.dcs.edit applied {} of {} item(s) with {}",
+                    data.items.iter().filter(|item| item.applied).count(),
+                    data.items.len(),
+                    data.operation
+                ),
+                changes: if changed {
+                    vec![format!("updated {}", template_path.display())]
+                } else {
+                    Vec::new()
+                },
+                warnings,
+                errors: Vec::new(),
+                artifacts: vec![template_path.display().to_string()],
+                stdout: None,
+                stderr: None,
+                command: None,
             },
-            warnings,
-            errors: Vec::new(),
-            artifacts: vec![template_path.display().to_string()],
-            stdout: Some(stdout),
-            stderr: None,
-            command: None,
+            data: Some(data),
         },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.dcs.edit failed in native DCS editor".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-            command: None,
+        Err(error) => DcsEditExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.dcs.edit failed in native DCS editor".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.clone()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{error}\n")),
+                command: None,
+            },
+            data: None,
         },
     }
 }
@@ -10283,17 +10327,17 @@ mod tests {
             fs::write(context.cwd.join("Template.xml"), base_dcs_xml()).unwrap();
             let args = dcs_edit_args("add-total", "Amount: SUM(Amount)", no_validate);
 
-            let outcome = edit_dcs(&args, &context);
+            let execution = edit_dcs_with_data(&args, &context);
+            let outcome = &execution.outcome;
 
             assert!(outcome.ok, "{outcome:?}");
-            assert_eq!(
-                outcome
-                    .stdout
-                    .as_deref()
-                    .unwrap_or("")
-                    .contains("--- Running dcs-validate ---"),
-                expect_report,
-                "{outcome:?}"
+            // The report was presentation; validation itself never depended on
+            // NoValidate, and the typed answer says so directly.
+            let _ = expect_report;
+            let data = execution.data.as_ref().expect("dcs.edit answers with data");
+            assert!(
+                data.validated,
+                "post-write validation runs whatever NoValidate says: {data:?}"
             );
             fs::remove_dir_all(&context.cwd).unwrap();
         }
@@ -10549,30 +10593,19 @@ mod tests {
             ("Offset".to_string(), json!(100)),
         ]);
 
-        let outcome = analyze_dcs_info(&args, &context);
+        let execution = analyze_dcs_info_with_data(&args, &context);
 
-        assert!(outcome.ok, "{outcome:?}");
-        assert_eq!(outcome.stdout.as_deref(), Some(query));
-        let _ = fs::remove_dir_all(&context.cwd);
-    }
-
-    #[test]
-    fn dcs_info_raw_rejects_non_query_mode() {
-        let context = temp_context("dcs-info-raw-non-query");
-        fs::write(context.cwd.join("Template.xml"), base_dcs_xml()).unwrap();
-        let args = Map::from_iter([
-            ("TemplatePath".to_string(), json!("Template.xml")),
-            ("Mode".to_string(), json!("overview")),
-            ("Raw".to_string(), json!(true)),
-        ]);
-
-        let outcome = analyze_dcs_info(&args, &context);
-
-        assert!(!outcome.ok, "{outcome:?}");
-        assert!(outcome
-            .errors
+        assert!(execution.outcome.ok, "{:?}", execution.outcome);
+        // `Raw` existed because pagination mangled the query; data carries the
+        // exact text always, so Limit and Offset cannot truncate it and the
+        // flag has nothing left to switch on.
+        let data = execution.data.expect("dcs.info answers with data");
+        let queries = data
+            .data_sets
             .iter()
-            .any(|error| error.contains("Raw") && error.contains("Mode=query")));
+            .filter_map(|data_set| data_set.query.as_deref())
+            .collect::<Vec<_>>();
+        assert_eq!(queries, vec![query], "{data:?}");
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
@@ -11854,16 +11887,16 @@ mod tests {
         args.insert("Operation".to_string(), json!("remove-filter"));
         args.insert("Value".to_string(), json!("MissingField"));
 
-        let outcome = edit_dcs(&args, &context);
+        let execution = edit_dcs_with_data(&args, &context);
+        let outcome = &execution.outcome;
         assert!(outcome.ok, "{outcome:?}");
         assert!(outcome.changes.is_empty(), "{outcome:?}");
+        let data = execution.data.as_ref().expect("dcs.edit answers with data");
+        assert!(!data.changed, "{data:?}");
         assert!(
-            outcome
-                .stdout
-                .as_deref()
-                .unwrap_or("")
-                .contains("[INFO] No changes -- file untouched"),
-            "{outcome:?}"
+            data.items.iter().all(|item| !item.applied),
+            "a no-op reports every item as not applied: {:?}",
+            data.items
         );
         assert_eq!(fs::read(&template_path).unwrap(), before);
 

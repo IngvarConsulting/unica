@@ -122,6 +122,14 @@ class ParityScenario:
     fixtures: tuple[FileFixture, ...] = ()
     setup_steps: tuple[SetupStep, ...] = ()
     compare_files: bool = False
+    # A migrated tool selects its target logically while the reference model
+    # still selects a file. Parity then compares the analysis, not the
+    # selector: both sides must describe the same object identically.
+    reference_arguments: dict[str, Any] | None = None
+
+    @property
+    def script_arguments(self) -> dict[str, Any]:
+        return self.arguments if self.reference_arguments is None else self.reference_arguments
 
 
 @dataclasses.dataclass(frozen=True)
@@ -142,59 +150,6 @@ class CcSkillCase:
 
 
 SUCCESS_SCENARIOS = [
-    ParityScenario(
-        name="cf-init-basic",
-        tool="unica.cf.init",
-        skill="cf-init",
-        script="cf-init.py",
-        arguments={
-            "Name": "ParityConfiguration",
-            "Synonym": "Parity configuration",
-            "OutputDir": "src",
-            "Version": "1.0.0.1",
-            "Vendor": "Unica",
-            "CompatibilityMode": "Version8_3_24",
-        },
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="cfe-init-basic",
-        tool="unica.cfe.init",
-        skill="cfe-init",
-        script="cfe-init.py",
-        arguments={
-            "Name": "ParityExtension",
-            "Synonym": "Parity extension",
-            "NamePrefix": "PE_",
-            "OutputDir": "src-cfe",
-            "Purpose": "Patch",
-            "Version": "1.0.0.1",
-            "Vendor": "Unica",
-            "CompatibilityMode": "Version8_3_24",
-            "NoRole": True,
-        },
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="cfe-init-with-role",
-        tool="unica.cfe.init",
-        skill="cfe-init",
-        script="cfe-init.py",
-        arguments={
-            "Name": "ParityExtensionRole",
-            "Synonym": "Parity extension role",
-            "NamePrefix": "PER_",
-            "OutputDir": "src-cfe-role",
-            "Purpose": "Customization",
-            "Version": "2.0.0.0",
-            "Vendor": "Unica",
-            "CompatibilityMode": "Version8_3_24",
-        },
-        expect_ok=True,
-        compare_files=True,
-    ),
     ParityScenario(
         name="cfe-validate-detailed-outfile",
         tool="unica.cfe.validate",
@@ -223,462 +178,6 @@ SUCCESS_SCENARIOS = [
         expect_ok=True,
     ),
     ParityScenario(
-        name="cfe-patch-method-before-borrowed-common-module",
-        tool="unica.cfe.patch_method",
-        skill="cfe-patch-method",
-        script="cfe-patch-method.py",
-        arguments={
-            "ExtensionPath": "src-cfe",
-            "ModulePath": "CommonModule.GoogleПереводчик",
-            "MethodName": "ОбновитьДанные",
-            "InterceptorType": "Before",
-            "Context": "НаСервере",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="cfe-init",
-                script="cfe-init.py",
-                arguments={
-                    "Name": "ParityExtension",
-                    "NamePrefix": "PE_",
-                    "OutputDir": "src-cfe",
-                    "Purpose": "Customization",
-                    "Version": "1.0.0.1",
-                    "Vendor": "Unica",
-                    "CompatibilityMode": "Version8_3_24",
-                    "NoRole": True,
-                },
-            ),
-            SetupStep(
-                skill="cfe-borrow",
-                script="cfe-borrow.py",
-                tool="unica.cfe.borrow",
-                arguments={
-                    "ExtensionPath": "src-cfe",
-                    "ConfigPath": "src",
-                    "Object": "CommonModule.GoogleПереводчик",
-                },
-            ),
-        ),
-        fixtures=(
-            FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),
-            FileFixture(
-                BSP_META_COMMON_MODULE_FIXTURE,
-                "src/CommonModules/GoogleПереводчик.xml",
-            ),
-            FileFixture(
-                "cfe-patch-method/base-common-module.bsl",
-                "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
-            ),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="cfe-patch-method-after-borrowed-common-module",
-        tool="unica.cfe.patch_method",
-        skill="cfe-patch-method",
-        script="cfe-patch-method.py",
-        arguments={
-            "ExtensionPath": "src-cfe",
-            "ModulePath": "CommonModule.GoogleПереводчик",
-            "MethodName": "ОбновитьДанные",
-            "InterceptorType": "After",
-            "Context": "НаСервере",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="cfe-init",
-                script="cfe-init.py",
-                arguments={
-                    "Name": "ParityExtension",
-                    "NamePrefix": "PE_",
-                    "OutputDir": "src-cfe",
-                    "Purpose": "Customization",
-                    "Version": "1.0.0.1",
-                    "Vendor": "Unica",
-                    "CompatibilityMode": "Version8_3_24",
-                    "NoRole": True,
-                },
-            ),
-            SetupStep(
-                skill="cfe-borrow",
-                script="cfe-borrow.py",
-                tool="unica.cfe.borrow",
-                arguments={
-                    "ExtensionPath": "src-cfe",
-                    "ConfigPath": "src",
-                    "Object": "CommonModule.GoogleПереводчик",
-                },
-            ),
-        ),
-        fixtures=(
-            FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),
-            FileFixture(
-                BSP_META_COMMON_MODULE_FIXTURE,
-                "src/CommonModules/GoogleПереводчик.xml",
-            ),
-            FileFixture(
-                "cfe-patch-method/base-common-module.bsl",
-                "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
-            ),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="cfe-borrow-catalog-object",
-        tool="unica.cfe.borrow",
-        skill="cfe-borrow",
-        script="cfe-borrow.py",
-        arguments={
-            "ExtensionPath": "src-cfe",
-            "ConfigPath": "src",
-            "Object": "Catalog.ParityCatalog",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="cfe-init",
-                script="cfe-init.py",
-                arguments={
-                    "Name": "ParityExtension",
-                    "Synonym": "Parity extension",
-                    "NamePrefix": "PE_",
-                    "OutputDir": "src-cfe",
-                    "Purpose": "Customization",
-                    "Version": "1.0.0.1",
-                    "Vendor": "Unica",
-                    "CompatibilityMode": "Version8_3_24",
-                    "NoRole": True,
-                },
-            ),
-        ),
-        fixtures=(
-            FileFixture("cfe-borrow/Configuration.xml", "src/Configuration.xml"),
-            FileFixture("cfe-borrow/Catalogs/ParityCatalog.xml", "src/Catalogs/ParityCatalog.xml"),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-cfe-borrow-real-catalog-object",
-        tool="unica.cfe.borrow",
-        skill="cfe-borrow",
-        script="cfe-borrow.py",
-        arguments={
-            "ExtensionPath": "src-cfe",
-            "ConfigPath": "src",
-            "Object": "Catalog.Валюты",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="cfe-init",
-                script="cfe-init.py",
-                tool="unica.cfe.init",
-                arguments={
-                    "Name": "ParityExtension",
-                    "Synonym": "Parity extension",
-                    "NamePrefix": "PE_",
-                    "OutputDir": "src-cfe",
-                    "Purpose": "Customization",
-                    "Version": "1.0.0.1",
-                    "Vendor": "Unica",
-                    "CompatibilityMode": "Version8_3_24",
-                    "NoRole": True,
-                },
-            ),
-        ),
-        fixtures=(
-            FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),
-            FileFixture(BSP_META_CATALOG_FIXTURE, "src/Catalogs/Валюты.xml"),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-cfe-borrow-russian-types-batch",
-        tool="unica.cfe.borrow",
-        skill="cfe-borrow",
-        script="cfe-borrow.py",
-        arguments={
-            "ExtensionPath": "src-cfe",
-            "ConfigPath": "src",
-            "Object": "Справочник.Валюты;;Документ.АктОбУничтоженииПерсональныхДанных",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="cfe-init",
-                script="cfe-init.py",
-                tool="unica.cfe.init",
-                arguments={
-                    "Name": "ParityExtension",
-                    "Synonym": "Parity extension",
-                    "NamePrefix": "PE_",
-                    "OutputDir": "src-cfe",
-                    "Purpose": "Customization",
-                    "Version": "1.0.0.1",
-                    "Vendor": "Unica",
-                    "CompatibilityMode": "Version8_3_24",
-                    "NoRole": True,
-                },
-            ),
-        ),
-        fixtures=(
-            FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),
-            FileFixture(BSP_META_CATALOG_FIXTURE, "src/Catalogs/Валюты.xml"),
-            FileFixture(
-                BSP_META_DOCUMENT_FIXTURE,
-                "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
-            ),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-cfe-borrow-real-document-object",
-        tool="unica.cfe.borrow",
-        skill="cfe-borrow",
-        script="cfe-borrow.py",
-        arguments={
-            "ExtensionPath": "src-cfe",
-            "ConfigPath": "src",
-            "Object": "Document.АктОбУничтоженииПерсональныхДанных",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="cfe-init",
-                script="cfe-init.py",
-                tool="unica.cfe.init",
-                arguments={
-                    "Name": "ParityExtension",
-                    "Synonym": "Parity extension",
-                    "NamePrefix": "PE_",
-                    "OutputDir": "src-cfe",
-                    "Purpose": "Customization",
-                    "Version": "1.0.0.1",
-                    "Vendor": "Unica",
-                    "CompatibilityMode": "Version8_3_24",
-                    "NoRole": True,
-                },
-            ),
-        ),
-        fixtures=(
-            FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),
-            FileFixture(BSP_META_DOCUMENT_FIXTURE, "src/Documents/АктОбУничтоженииПерсональныхДанных.xml"),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-cfe-borrow-business-process-form-main-attribute",
-        tool="unica.cfe.borrow",
-        skill="cfe-borrow",
-        script="cfe-borrow.py",
-        arguments={
-            "ExtensionPath": "src-cfe",
-            "ConfigPath": "src",
-            "Object": "BusinessProcess.Задание.Form.ФормаБизнесПроцесса",
-            "BorrowMainAttribute": "Form",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="cfe-init",
-                script="cfe-init.py",
-                tool="unica.cfe.init",
-                arguments={
-                    "Name": "ParityExtension",
-                    "Synonym": "Parity extension",
-                    "NamePrefix": "PE_",
-                    "OutputDir": "src-cfe",
-                    "Purpose": "Customization",
-                    "Version": "1.0.0.1",
-                    "Vendor": "Unica",
-                    "CompatibilityMode": "Version8_3_24",
-                    "NoRole": True,
-                },
-            ),
-        ),
-        fixtures=(
-            FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),
-            FileFixture(
-                "cfe-borrow-bsp-form/BusinessProcesses/Задание.xml",
-                "src/BusinessProcesses/Задание.xml",
-            ),
-            FileFixture(
-                "cfe-borrow-bsp-form/BusinessProcesses/Задание/Forms/ФормаБизнесПроцесса.xml",
-                "src/BusinessProcesses/Задание/Forms/ФормаБизнесПроцесса.xml",
-            ),
-            FileFixture(
-                BSP_FORM_BUSINESS_PROCESS_FIXTURE,
-                "src/BusinessProcesses/Задание/Forms/ФормаБизнесПроцесса/Ext/Form.xml",
-            ),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="cfe-diff-empty-extension-mode-a",
-        tool="unica.cfe.diff",
-        skill="cfe-diff",
-        script="cfe-diff.py",
-        arguments={
-            "ExtensionPath": "src-cfe",
-            "ConfigPath": "src",
-            "Mode": "A",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="cfe-init",
-                script="cfe-init.py",
-                arguments={
-                    "Name": "ParityExtension",
-                    "NamePrefix": "PE_",
-                    "OutputDir": "src-cfe",
-                    "NoRole": True,
-                },
-            ),
-            SetupStep(
-                skill="cf-init",
-                script="cf-init.py",
-                arguments={
-                    "Name": "ParityConfiguration",
-                    "OutputDir": "src",
-                },
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-cfe-diff-borrowed-catalog-mode-a",
-        tool="unica.cfe.diff",
-        skill="cfe-diff",
-        script="cfe-diff.py",
-        arguments={
-            "ExtensionPath": "src-cfe",
-            "ConfigPath": "src",
-            "Mode": "A",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="cfe-init",
-                script="cfe-init.py",
-                tool="unica.cfe.init",
-                arguments={
-                    "Name": "ParityExtension",
-                    "Synonym": "Parity extension",
-                    "NamePrefix": "PE_",
-                    "OutputDir": "src-cfe",
-                    "Purpose": "Customization",
-                    "Version": "1.0.0.1",
-                    "Vendor": "Unica",
-                    "CompatibilityMode": "Version8_3_24",
-                    "NoRole": True,
-                },
-            ),
-            SetupStep(
-                skill="cfe-borrow",
-                script="cfe-borrow.py",
-                tool="unica.cfe.borrow",
-                arguments={
-                    "ExtensionPath": "src-cfe",
-                    "ConfigPath": "src",
-                    "Object": "Catalog.Валюты",
-                },
-            ),
-        ),
-        fixtures=(
-            FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),
-            FileFixture(BSP_META_CATALOG_FIXTURE, "src/Catalogs/Валюты.xml"),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-cfe-diff-transfer-check-mode-b",
-        tool="unica.cfe.diff",
-        skill="cfe-diff",
-        script="cfe-diff.py",
-        arguments={
-            "ExtensionPath": "src-cfe",
-            "ConfigPath": "src",
-            "Mode": "B",
-        },
-        fixtures=(
-            FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),
-            FileFixture(
-                "cfe-diff/mode-b/src/Catalogs/Валюты/Ext/ObjectModule.bsl",
-                "src/Catalogs/Валюты/Ext/ObjectModule.bsl",
-            ),
-            FileFixture(
-                "cfe-diff/mode-b/src-cfe/Configuration.xml",
-                "src-cfe/Configuration.xml",
-            ),
-            FileFixture(
-                "cfe-diff/mode-b/src-cfe/Catalogs/Валюты.xml",
-                "src-cfe/Catalogs/Валюты.xml",
-            ),
-            FileFixture(
-                "cfe-diff/mode-b/src-cfe/Catalogs/Валюты/Ext/ObjectModule.bsl",
-                "src-cfe/Catalogs/Валюты/Ext/ObjectModule.bsl",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="cf-info-overview-outfile",
-        tool="unica.cf.info",
-        skill="cf-info",
-        script="cf-info.py",
-        arguments={
-            "ConfigPath": "src/Configuration.xml",
-            "Mode": "overview",
-        },
-        fixtures=(FileFixture("cf-info/Configuration.xml", "src/Configuration.xml"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="cf-info-full-with-interface-ext",
-        tool="unica.cf.info",
-        skill="cf-info",
-        script="cf-info.py",
-        arguments={
-            "ConfigPath": "src/Configuration.xml",
-            "Mode": "full",
-            "Limit": 120,
-        },
-        fixtures=(
-            FileFixture("cf-info/Configuration.xml", "src/Configuration.xml"),
-            FileFixture(
-                "cf-info/Ext/ClientApplicationInterface.xml",
-                "src/Ext/ClientApplicationInterface.xml",
-            ),
-            FileFixture(
-                "cf-info/Ext/HomePageWorkArea.xml",
-                "src/Ext/HomePageWorkArea.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="cf-info-home-page-section",
-        tool="unica.cf.info",
-        skill="cf-info",
-        script="cf-info.py",
-        arguments={
-            "ConfigPath": "src/Configuration.xml",
-            "Section": "home-page",
-            "Limit": 120,
-        },
-        fixtures=(
-            FileFixture("cf-info/Configuration.xml", "src/Configuration.xml"),
-            FileFixture(
-                "cf-info/Ext/HomePageWorkArea.xml",
-                "src/Ext/HomePageWorkArea.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
         name="cf-validate-detailed-outfile",
         tool="unica.cf.validate",
         skill="cf-validate",
@@ -695,32 +194,6 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
-        name="bsp-cf-info-brief",
-        tool="unica.cf.info",
-        skill="cf-info",
-        script="cf-info.py",
-        arguments={
-            "ConfigPath": "src/Configuration.xml",
-            "Mode": "brief",
-            "Limit": 200,
-        },
-        fixtures=(FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-cf-info-full",
-        tool="unica.cf.info",
-        skill="cf-info",
-        script="cf-info.py",
-        arguments={
-            "ConfigPath": "src/Configuration.xml",
-            "Mode": "full",
-            "Limit": 200,
-        },
-        fixtures=(FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
         name="bsp-cf-validate-detailed",
         tool="unica.cf.validate",
         skill="cf-validate",
@@ -734,140 +207,11 @@ SUCCESS_SCENARIOS = [
         expect_ok=True,
     ),
     ParityScenario(
-        name="cf-edit-definition-file-all-ops",
-        tool="unica.cf.edit",
-        skill="cf-edit",
-        script="cf-edit.py",
-        arguments={
-            "ConfigPath": "src",
-            "DefinitionFile": "fixtures/cf-edit-ops.json",
-            "NoValidate": True,
-        },
-        setup_steps=(
-            SetupStep(
-                skill="cf-init",
-                script="cf-init.py",
-                arguments={"Name": "ParityConfiguration", "OutputDir": "src"},
-            ),
-            SetupStep(
-                skill="meta-compile",
-                script="meta-compile.py",
-                arguments={"JsonPath": "fixtures/meta-catalog.json", "OutputDir": "src"},
-            ),
-            SetupStep(
-                skill="form-add",
-                script="form-add.py",
-                arguments={
-                    "ObjectPath": "src/Catalogs/ParityCatalog.xml",
-                    "FormName": "ListForm",
-                    "Purpose": "List",
-                },
-            ),
-            SetupStep(
-                skill="form-add",
-                script="form-add.py",
-                arguments={
-                    "ObjectPath": "src/Catalogs/ParityCatalog.xml",
-                    "FormName": "ObjectForm",
-                    "Purpose": "Object",
-                },
-            ),
-        ),
-        fixtures=(
-            FileFixture("meta-catalog.json", "fixtures/meta-catalog.json"),
-            FileFixture("cf-edit/ops.json", "fixtures/cf-edit-ops.json"),
-        ),
-        expect_ok=True,
-        # Native cf.edit preserves Configuration.xml text for child-object edits;
-        # the donor script still rewrites the XML and is no longer a byte oracle.
-        compare_files=False,
-    ),
-    ParityScenario(
         name="meta-compile-catalog",
         tool="unica.meta.compile",
         skill="meta-compile",
         script="meta-compile.py",
         arguments={"JsonPath": "fixtures/meta-catalog.json", "OutputDir": "src"},
-        fixtures=(FileFixture("meta-catalog.json", "fixtures/meta-catalog.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-meta-edit-catalog-ops",
-        tool="unica.meta.edit",
-        skill="meta-edit",
-        script="meta-edit.py",
-        arguments={
-            "ObjectPath": "src/Catalogs/Валюты.xml",
-            "DefinitionFile": "fixtures/meta-edit-bsp-catalog-ops.json",
-            "NoValidate": True,
-        },
-        fixtures=(
-            FileFixture(BSP_META_CATALOG_FIXTURE, "src/Catalogs/Валюты.xml"),
-            FileFixture(
-                "meta-edit/bsp-catalog-ops.json",
-                "fixtures/meta-edit-bsp-catalog-ops.json",
-            ),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="meta-remove-catalog",
-        tool="unica.meta.remove",
-        skill="meta-remove",
-        script="meta-remove.py",
-        arguments={"ConfigDir": "src", "Object": "Catalog.ParityCatalog"},
-        setup_steps=(
-            SetupStep(
-                skill="meta-compile",
-                script="meta-compile.py",
-                arguments={"JsonPath": "fixtures/meta-catalog.json", "OutputDir": "src"},
-            ),
-            SetupStep(
-                skill="subsystem-compile",
-                script="subsystem-compile.py",
-                arguments={
-                    "Value": {
-                        "name": "Sales",
-                        "synonym": "Sales",
-                        "content": [
-                            "Catalog.ParityCatalog",
-                            "Catalog.KeepCatalog",
-                        ],
-                    },
-                    "OutputDir": "src",
-                    "NoValidate": True,
-                },
-            ),
-        ),
-        fixtures=(
-            FileFixture("meta-catalog.json", "fixtures/meta-catalog.json"),
-            FileFixture("meta-remove/Configuration.xml", "src/Configuration.xml"),
-            FileFixture(
-                "cf-validate/Languages/Русский.xml",
-                "src/Languages/Русский.xml",
-            ),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="meta-info-catalog-overview-outfile",
-        tool="unica.meta.info",
-        skill="meta-info",
-        script="meta-info.py",
-        arguments={
-            "ObjectPath": "src/Catalogs/ParityCatalog.xml",
-            "Mode": "overview",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="meta-compile",
-                script="meta-compile.py",
-                arguments={"JsonPath": "fixtures/meta-catalog.json", "OutputDir": "src"},
-            ),
-        ),
         fixtures=(FileFixture("meta-catalog.json", "fixtures/meta-catalog.json"),),
         expect_ok=True,
         compare_files=True,
@@ -952,40 +296,6 @@ SUCCESS_SCENARIOS = [
         expect_ok=True,
     ),
     ParityScenario(
-        name="help-add-catalog",
-        tool="unica.help.add",
-        skill="help-add",
-        script="add-help.py",
-        arguments={
-            "ObjectName": "Catalogs/ParityCatalog",
-            "SrcDir": "src",
-            "Lang": "ru",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="meta-compile",
-                script="meta-compile.py",
-                arguments={"JsonPath": "fixtures/meta-catalog.json", "OutputDir": "src"},
-            ),
-        ),
-        fixtures=(FileFixture("meta-catalog.json", "fixtures/meta-catalog.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-meta-info-catalog-full",
-        tool="unica.meta.info",
-        skill="meta-info",
-        script="meta-info.py",
-        arguments={
-            "ObjectPath": "src/Catalogs/Валюты.xml",
-            "Mode": "full",
-            "Limit": 200,
-        },
-        fixtures=(FileFixture(BSP_META_CATALOG_FIXTURE, "src/Catalogs/Валюты.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
         name="bsp-meta-validate-catalog-detailed",
         tool="unica.meta.validate",
         skill="meta-validate",
@@ -997,24 +307,6 @@ SUCCESS_SCENARIOS = [
         },
         fixtures=BSP_META_VALIDATE_OWNER_FIXTURES
         + (FileFixture(BSP_META_CATALOG_FIXTURE, "src/Catalogs/Валюты.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-meta-info-document-full",
-        tool="unica.meta.info",
-        skill="meta-info",
-        script="meta-info.py",
-        arguments={
-            "ObjectPath": "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
-            "Mode": "full",
-            "Limit": 200,
-        },
-        fixtures=(
-            FileFixture(
-                BSP_META_DOCUMENT_FIXTURE,
-                "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
-            ),
-        ),
         expect_ok=True,
     ),
     ParityScenario(
@@ -1037,19 +329,6 @@ SUCCESS_SCENARIOS = [
         expect_ok=True,
     ),
     ParityScenario(
-        name="bsp-meta-info-report-full",
-        tool="unica.meta.info",
-        skill="meta-info",
-        script="meta-info.py",
-        arguments={
-            "ObjectPath": "src/Reports/АнализВерсийОбъектов.xml",
-            "Mode": "full",
-            "Limit": 200,
-        },
-        fixtures=(FileFixture(BSP_META_REPORT_FIXTURE, "src/Reports/АнализВерсийОбъектов.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
         name="bsp-meta-validate-report-detailed",
         tool="unica.meta.validate",
         skill="meta-validate",
@@ -1061,25 +340,6 @@ SUCCESS_SCENARIOS = [
         },
         fixtures=BSP_META_VALIDATE_OWNER_FIXTURES
         + (FileFixture(BSP_META_REPORT_FIXTURE, "src/Reports/АнализВерсийОбъектов.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-meta-info-common-module-full",
-        tool="unica.meta.info",
-        skill="meta-info",
-        script="meta-info.py",
-        arguments={
-            "ObjectPath": "src/CommonModules/GoogleПереводчик.xml",
-            "Mode": "full",
-            "Limit": 200,
-        },
-        fixtures=(
-            FileFixture(BSP_META_COMMON_MODULE_FIXTURE, "src/CommonModules/GoogleПереводчик.xml"),
-            FileFixture(
-                BSP_META_COMMON_MODULE_BSL_FIXTURE,
-                "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
-            ),
-        ),
         expect_ok=True,
     ),
     ParityScenario(
@@ -1103,19 +363,6 @@ SUCCESS_SCENARIOS = [
         expect_ok=True,
     ),
     ParityScenario(
-        name="bsp-meta-info-enum-full",
-        tool="unica.meta.info",
-        skill="meta-info",
-        script="meta-info.py",
-        arguments={
-            "ObjectPath": "src/Enums/ВажностьПроблемыУчета.xml",
-            "Mode": "full",
-            "Limit": 200,
-        },
-        fixtures=(FileFixture(BSP_META_ENUM_FIXTURE, "src/Enums/ВажностьПроблемыУчета.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
         name="bsp-meta-validate-enum-detailed",
         tool="unica.meta.validate",
         skill="meta-validate",
@@ -1127,24 +374,6 @@ SUCCESS_SCENARIOS = [
         },
         fixtures=BSP_META_VALIDATE_OWNER_FIXTURES
         + (FileFixture(BSP_META_ENUM_FIXTURE, "src/Enums/ВажностьПроблемыУчета.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-meta-info-information-register-full",
-        tool="unica.meta.info",
-        skill="meta-info",
-        script="meta-info.py",
-        arguments={
-            "ObjectPath": "src/InformationRegisters/АдминистративнаяИерархия.xml",
-            "Mode": "full",
-            "Limit": 200,
-        },
-        fixtures=(
-            FileFixture(
-                BSP_META_INFORMATION_REGISTER_FIXTURE,
-                "src/InformationRegisters/АдминистративнаяИерархия.xml",
-            ),
-        ),
         expect_ok=True,
     ),
     ParityScenario(
@@ -1263,75 +492,96 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
-        name="form-edit-additions",
-        tool="unica.form.edit",
-        skill="form-edit",
-        script="form-edit.py",
-        arguments={
-            "FormPath": "forms/Form.xml",
-            "JsonPath": "fixtures/form-edit-additions.json",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="form-compile",
-                script="form-compile.py",
-                arguments={
-                    "JsonPath": "fixtures/form-simple.json",
-                    "OutputPath": "forms/Form.xml",
-                },
-            ),
-        ),
+        # Re-homed from the retired dcs.info scenarios so this real BSP schema
+        # stays under parity coverage (ADR-0023 retires tools, not fixtures).
+        name="bsp-dcs-validate-enterprise-data-exchange",
+        tool="unica.dcs.validate",
+        skill="dcs-validate",
+        script="dcs-validate.py",
+        arguments={"TemplatePath": "src/Template.xml"},
         fixtures=(
-            FileFixture("form-simple.json", "fixtures/form-simple.json"),
-            FileFixture("form-edit/additions.json", "fixtures/form-edit-additions.json"),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="form-edit-valuetable-attribute-columns",
-        tool="unica.form.edit",
-        skill="form-edit",
-        script="form-edit.py",
-        arguments={
-            "FormPath": "forms/Form.xml",
-            "JsonPath": "fixtures/form-edit-valuetable-columns.json",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="form-compile",
-                script="form-compile.py",
-                arguments={
-                    "JsonPath": "fixtures/form-simple.json",
-                    "OutputPath": "forms/Form.xml",
-                },
-            ),
-        ),
-        fixtures=(
-            FileFixture("form-simple.json", "fixtures/form-simple.json"),
             FileFixture(
-                "form-edit/valuetable-columns.json",
-                "fixtures/form-edit-valuetable-columns.json",
+                "bsp/dcs/DataProcessors__ВыгрузкаЗагрузкаEnterpriseData__СхемаКомпоновкиДанных/Template.xml",
+                "src/Template.xml",
             ),
         ),
         expect_ok=True,
-        compare_files=True,
     ),
     ParityScenario(
-        name="bsp-form-info-real-form-full",
-        tool="unica.form.info",
-        skill="form-info",
-        script="form-info.py",
+        # Re-homed from the retired dcs.info scenarios so this real BSP schema
+        # stays under parity coverage (ADR-0023 retires tools, not fixtures).
+        name="bsp-dcs-validate-email-processing-rules",
+        tool="unica.dcs.validate",
+        skill="dcs-validate",
+        script="dcs-validate.py",
+        arguments={"TemplatePath": "src/Template.xml"},
+        fixtures=(
+            FileFixture(
+                "bsp/dcs/Catalogs__ПравилаОбработкиЭлектроннойПочты__СхемаПравилаОбработкиЭлектроннойПочты/Template.xml",
+                "src/Template.xml",
+            ),
+        ),
+        expect_ok=True,
+    ),
+    ParityScenario(
+        # Re-homed from the retired dcs.info scenarios so this real BSP schema
+        # stays under parity coverage (ADR-0023 retires tools, not fixtures).
+        name="bsp-dcs-validate-object-versions-report",
+        tool="unica.dcs.validate",
+        skill="dcs-validate",
+        script="dcs-validate.py",
+        # The descriptor rides along at its platform-relative path so the schema
+        # is validated in the layout the platform actually writes.
+        arguments={
+            "TemplatePath": (
+                "src/Reports/АнализВерсийОбъектов/Templates"
+                "/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml"
+            )
+        },
+        fixtures=(
+            FileFixture(
+                "bsp/meta/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных.xml",
+                "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных.xml",
+            ),
+            FileFixture(
+                "bsp/meta/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+                "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+            ),
+        ),
+        expect_ok=True,
+    ),
+    ParityScenario(
+        # Re-homed from the retired form.info scenarios so this real BSP form
+        # stays under parity coverage (ADR-0023 retires tools, not fixtures).
+        name="bsp-form-validate-business-process-action-form",
+        tool="unica.form.validate",
+        skill="form-validate",
+        script="form-validate.py",
         arguments={
             "FormPath": "src/Form.xml",
-            "Expand": "*",
-            "Limit": 200,
+            "Detailed": True,
         },
         fixtures=(
             FileFixture(
-                "bsp/forms/BusinessProcesses__Задание__ФормаСписка/Form.xml",
+                "bsp/forms/BusinessProcesses__Задание__ДействиеВыполнить/Form.xml",
                 "src/Form.xml",
             ),
+        ),
+        expect_ok=True,
+    ),
+    ParityScenario(
+        # Re-homed from the retired cfe-borrow scenarios so this real BSP form
+        # stays under parity coverage (ADR-0023 retires tools, not fixtures).
+        name="bsp-form-validate-business-process-main-form",
+        tool="unica.form.validate",
+        skill="form-validate",
+        script="form-validate.py",
+        arguments={
+            "FormPath": "src/Form.xml",
+            "Detailed": True,
+        },
+        fixtures=(
+            FileFixture(BSP_FORM_BUSINESS_PROCESS_FIXTURE, "src/Form.xml"),
         ),
         expect_ok=True,
     ),
@@ -1354,24 +604,6 @@ SUCCESS_SCENARIOS = [
         expect_ok=True,
     ),
     ParityScenario(
-        name="bsp-form-info-real-action-run-form",
-        tool="unica.form.info",
-        skill="form-info",
-        script="form-info.py",
-        arguments={
-            "FormPath": "src/Form.xml",
-            "Expand": "attributes,commands,events",
-            "Limit": 200,
-        },
-        fixtures=(
-            FileFixture(
-                "bsp/forms/BusinessProcesses__Задание__ДействиеВыполнить/Form.xml",
-                "src/Form.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
         name="bsp-form-validate-real-action-check-form",
         tool="unica.form.validate",
         skill="form-validate",
@@ -1385,62 +617,6 @@ SUCCESS_SCENARIOS = [
             FileFixture(
                 "bsp/forms/BusinessProcesses__Задание__ДействиеПроверить/Form.xml",
                 "src/Form.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-form-info-real-business-process-form",
-        tool="unica.form.info",
-        skill="form-info",
-        script="form-info.py",
-        arguments={
-            "FormPath": "src/Form.xml",
-            "Expand": "*",
-            "Limit": 200,
-        },
-        fixtures=(
-            FileFixture(
-                "bsp/forms/BusinessProcesses__Задание__ФормаБизнесПроцесса/Form.xml",
-                "src/Form.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-form-edit-add-attribute-command-element",
-        tool="unica.form.edit",
-        skill="form-edit",
-        script="form-edit.py",
-        arguments={
-            "FormPath": "src/Form.xml",
-            "JsonPath": "fixtures/form-edit-bsp-additions.json",
-        },
-        fixtures=(
-            FileFixture(
-                "bsp/forms/BusinessProcesses__Задание__ФормаСписка/Form.xml",
-                "src/Form.xml",
-            ),
-            FileFixture(
-                "form-edit/bsp-additions.json",
-                "fixtures/form-edit-bsp-additions.json",
-            ),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="form-info-main-form",
-        tool="unica.form.info",
-        skill="form-info",
-        script="form-info.py",
-        arguments={
-            "FormPath": "src/Reports/ParityReport/Forms/MainForm/Ext/Form.xml",
-        },
-        fixtures=(
-            FileFixture(
-                "form-remove/ParityReport/Forms/MainForm/Ext/Form.xml",
-                "src/Reports/ParityReport/Forms/MainForm/Ext/Form.xml",
             ),
         ),
         expect_ok=True,
@@ -1494,31 +670,6 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
-        name="subsystem-info-full",
-        tool="unica.subsystem.info",
-        skill="subsystem-info",
-        script="subsystem-info.py",
-        arguments={
-            "SubsystemPath": "src/Subsystems/Subsystems/ParitySubsystem.xml",
-            "Mode": "full",
-            "Limit": 0,
-        },
-        setup_steps=(
-            SetupStep(
-                skill="subsystem-compile",
-                script="subsystem-compile.py",
-                arguments={
-                    "DefinitionFile": "fixtures/subsystem-sales.json",
-                    "OutputDir": "src/Subsystems",
-                    "NoValidate": True,
-                },
-            ),
-        ),
-        fixtures=(FileFixture("subsystem-sales.json", "fixtures/subsystem-sales.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
         name="subsystem-validate-detailed",
         tool="unica.subsystem.validate",
         skill="subsystem-validate",
@@ -1543,19 +694,6 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
-        name="bsp-subsystem-info-full",
-        tool="unica.subsystem.info",
-        skill="subsystem-info",
-        script="subsystem-info.py",
-        arguments={
-            "SubsystemPath": "src/Subsystems/Администрирование.xml",
-            "Mode": "full",
-            "Limit": 200,
-        },
-        fixtures=(FileFixture(BSP_SUBSYSTEM_FIXTURE, "src/Subsystems/Администрирование.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
         name="bsp-subsystem-validate-detailed",
         tool="unica.subsystem.validate",
         skill="subsystem-validate",
@@ -1567,156 +705,6 @@ SUCCESS_SCENARIOS = [
         },
         fixtures=(FileFixture(BSP_SUBSYSTEM_FIXTURE, "src/Subsystems/Администрирование.xml"),),
         expect_ok=True,
-    ),
-    ParityScenario(
-        name="subsystem-edit-definition-file-all-ops",
-        tool="unica.subsystem.edit",
-        skill="subsystem-edit",
-        script="subsystem-edit.py",
-        arguments={
-            "SubsystemPath": "src/Subsystems/Subsystems/ParitySubsystem.xml",
-            "DefinitionFile": "fixtures/subsystem-edit-ops.json",
-            "NoValidate": True,
-        },
-        setup_steps=(
-            SetupStep(
-                skill="subsystem-compile",
-                script="subsystem-compile.py",
-                arguments={
-                    "DefinitionFile": "fixtures/subsystem-sales.json",
-                    "OutputDir": "src/Subsystems",
-                    "NoValidate": True,
-                },
-            ),
-        ),
-        fixtures=(
-            FileFixture("subsystem-sales.json", "fixtures/subsystem-sales.json"),
-            FileFixture("subsystem-edit/ops.json", "fixtures/subsystem-edit-ops.json"),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="form-remove-main-form",
-        tool="unica.form.remove",
-        skill="form-remove",
-        script="remove-form.py",
-        arguments={
-            "ObjectName": "ParityReport",
-            "FormName": "MainForm",
-            "SrcDir": "src/Reports",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="meta-compile",
-                script="meta-compile.py",
-                arguments={"JsonPath": "fixtures/meta-report.json", "OutputDir": "src"},
-            ),
-            SetupStep(
-                skill="form-add",
-                script="form-add.py",
-                arguments={
-                    "ObjectPath": "src/Reports/ParityReport.xml",
-                    "FormName": "MainForm",
-                    "Purpose": "Object",
-                    "Synonym": "Main form",
-                    "SetDefault": True,
-                },
-            ),
-        ),
-        fixtures=(
-            FileFixture("meta-report.json", "fixtures/meta-report.json"),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="form-add-catalog-list-default",
-        tool="unica.form.add",
-        skill="form-add",
-        script="form-add.py",
-        arguments={
-            "ObjectPath": "src/Catalogs/ParityCatalog.xml",
-            "FormName": "ListForm",
-            "Purpose": "List",
-            "Synonym": "List form",
-            "SetDefault": True,
-        },
-        setup_steps=(
-            SetupStep(
-                skill="meta-compile",
-                script="meta-compile.py",
-                arguments={"JsonPath": "fixtures/meta-catalog.json", "OutputDir": "src"},
-            ),
-        ),
-        fixtures=(FileFixture("meta-catalog.json", "fixtures/meta-catalog.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="template-add-main-schema",
-        tool="unica.template.add",
-        skill="template-add",
-        script="add-template.py",
-        arguments={
-            "ObjectName": "ParityReport",
-            "TemplateName": "NewSchema",
-            "TemplateType": "DataCompositionSchema",
-            "Synonym": "New schema",
-            "SrcDir": "src/Reports",
-            "SetMainSKD": True,
-        },
-        setup_steps=(
-            SetupStep(
-                skill="meta-compile",
-                script="meta-compile.py",
-                arguments={"JsonPath": "fixtures/meta-report.json", "OutputDir": "src"},
-            ),
-        ),
-        fixtures=(FileFixture("meta-report.json", "fixtures/meta-report.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-template-add-real-report-copy",
-        tool="unica.template.add",
-        skill="template-add",
-        script="add-template.py",
-        arguments={
-            "ObjectName": "АнализВерсийОбъектов",
-            "TemplateName": "ParityBspTemplate",
-            "TemplateType": "DataCompositionSchema",
-            "Synonym": "Parity BSP template",
-            "SrcDir": "src/Reports",
-        },
-        fixtures=(FileFixture(BSP_META_REPORT_FIXTURE, "src/Reports/АнализВерсийОбъектов.xml"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-template-remove-real-template-from-report-copy",
-        tool="unica.template.remove",
-        skill="template-remove",
-        script="remove-template.py",
-        arguments={
-            "ObjectName": "АнализВерсийОбъектов",
-            "TemplateName": "ОсновнаяСхемаКомпоновкиДанных",
-            "SrcDir": "src/Reports",
-        },
-        fixtures=(
-            FileFixture(BSP_META_REPORT_FIXTURE, "src/Reports/АнализВерсийОбъектов.xml"),
-            FileFixture(
-                BSP_META_REPORT_TEMPLATE_FIXTURE,
-                "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных.xml",
-            ),
-            FileFixture(
-                BSP_META_REPORT_TEMPLATE_CONTENT_FIXTURE,
-                "src/Reports/АнализВерсийОбъектов/Templates/"
-                "ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
-            ),
-        ),
-        expect_ok=True,
-        compare_files=True,
     ),
     ParityScenario(
         name="interface-validate-detailed",
@@ -1759,177 +747,6 @@ SUCCESS_SCENARIOS = [
         expect_ok=True,
     ),
     ParityScenario(
-        name="bsp-interface-edit-show-real-command",
-        tool="unica.interface.edit",
-        skill="interface-edit",
-        script="interface-edit.py",
-        arguments={
-            "CIPath": "src/Subsystems/Администрирование/Ext/CommandInterface.xml",
-            "Operation": "show",
-            "Value": "Catalog.Пользователи.StandardCommand.OpenList",
-            "NoValidate": True,
-        },
-        fixtures=(
-            FileFixture(
-                BSP_SUBSYSTEM_FIXTURE,
-                "src/Subsystems/Администрирование.xml",
-            ),
-            FileFixture(
-                BSP_SUBSYSTEM_COMMAND_INTERFACE_FIXTURE,
-                "src/Subsystems/Администрирование/Ext/CommandInterface.xml",
-            ),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="interface-edit-definition-file-all-ops",
-        tool="unica.interface.edit",
-        skill="interface-edit",
-        script="interface-edit.py",
-        arguments={
-            "CIPath": "src/Subsystems/Sales/Ext/CommandInterface.xml",
-            "DefinitionFile": "fixtures/interface-edit-ops.json",
-            "NoValidate": True,
-        },
-        setup_steps=(
-            SetupStep(
-                skill="subsystem-compile",
-                script="subsystem-compile.py",
-                arguments={
-                    "Value": {"name": "Sales", "synonym": "Sales"},
-                    "OutputDir": "src",
-                    "NoValidate": True,
-                },
-            ),
-        ),
-        fixtures=(
-            FileFixture(
-                "interface-validate/Sales/Ext/CommandInterface.xml",
-                "src/Subsystems/Sales/Ext/CommandInterface.xml",
-            ),
-            FileFixture("interface-edit/ops.json", "fixtures/interface-edit-ops.json"),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="interface-edit-create-if-missing",
-        tool="unica.interface.edit",
-        skill="interface-edit",
-        script="interface-edit.py",
-        arguments={
-            "CIPath": "src/Subsystems/NewSales/Ext/CommandInterface.xml",
-            "Operation": "subsystem-order",
-            "Value": "[\"Subsystem.Sales.Subsystem.Retail\",\"Subsystem.Sales.Subsystem.Wholesale\"]",
-            "CreateIfMissing": True,
-            "NoValidate": True,
-        },
-        setup_steps=(
-            SetupStep(
-                skill="subsystem-compile",
-                script="subsystem-compile.py",
-                arguments={
-                    "Value": {"name": "NewSales", "synonym": "New sales"},
-                    "OutputDir": "src",
-                    "NoValidate": True,
-                },
-            ),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="interface-edit-create-if-missing-hide",
-        tool="unica.interface.edit",
-        skill="interface-edit",
-        script="interface-edit.py",
-        arguments={
-            "CIPath": "src/Subsystems/NewVisibility/Ext/CommandInterface.xml",
-            "Operation": "hide",
-            "Value": "Catalog.Products.StandardCommand.OpenList",
-            "CreateIfMissing": True,
-            "NoValidate": True,
-        },
-        setup_steps=(
-            SetupStep(
-                skill="subsystem-compile",
-                script="subsystem-compile.py",
-                arguments={
-                    "Value": {
-                        "name": "NewVisibility",
-                        "synonym": "New visibility",
-                    },
-                    "OutputDir": "src",
-                    "NoValidate": True,
-                },
-            ),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="interface-edit-create-if-missing-show",
-        tool="unica.interface.edit",
-        skill="interface-edit",
-        script="interface-edit.py",
-        arguments={
-            "CIPath": "src/Subsystems/NewVisible/Ext/CommandInterface.xml",
-            "Operation": "show",
-            "Value": "Catalog.Products.StandardCommand.OpenList",
-            "CreateIfMissing": True,
-            "NoValidate": True,
-        },
-        setup_steps=(
-            SetupStep(
-                skill="subsystem-compile",
-                script="subsystem-compile.py",
-                arguments={
-                    "Value": {"name": "NewVisible", "synonym": "New visible"},
-                    "OutputDir": "src",
-                    "NoValidate": True,
-                },
-            ),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="template-remove-main-schema",
-        tool="unica.template.remove",
-        skill="template-remove",
-        script="remove-template.py",
-        arguments={
-            "ObjectName": "ParityReport",
-            "TemplateName": "MainSchema",
-            "SrcDir": "src/Reports",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="meta-compile",
-                script="meta-compile.py",
-                arguments={"JsonPath": "fixtures/meta-report.json", "OutputDir": "src"},
-            ),
-            SetupStep(
-                skill="template-add",
-                script="add-template.py",
-                arguments={
-                    "ObjectName": "ParityReport",
-                    "TemplateName": "MainSchema",
-                    "TemplateType": "DataCompositionSchema",
-                    "Synonym": "Main schema",
-                    "SrcDir": "src/Reports",
-                    "SetMainSKD": True,
-                },
-            ),
-        ),
-        fixtures=(
-            FileFixture("meta-report.json", "fixtures/meta-report.json"),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
         name="dcs-compile-simple",
         tool="unica.dcs.compile",
         skill="dcs-compile",
@@ -1954,152 +771,6 @@ SUCCESS_SCENARIOS = [
         fixtures=(FileFixture("dcs-bsp-data-usage.json", "fixtures/dcs-bsp-data-usage.json"),),
         expect_ok=True,
         compare_files=True,
-    ),
-    ParityScenario(
-        name="dcs-info-overview-outfile",
-        tool="unica.dcs.info",
-        skill="dcs-info",
-        script="dcs-info.py",
-        arguments={
-            "TemplatePath": "templates/DCS.xml",
-            "Mode": "overview",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="dcs-compile",
-                script="dcs-compile.py",
-                arguments={
-                    "DefinitionFile": "fixtures/dcs-simple.json",
-                    "OutputPath": "templates/DCS.xml",
-                },
-            ),
-        ),
-        fixtures=(FileFixture("dcs-simple.json", "fixtures/dcs-simple.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-info-overview",
-        tool="unica.dcs.info",
-        skill="dcs-info",
-        script="dcs-info.py",
-        arguments={"TemplatePath": "src/Template.xml", "Mode": "overview", "Limit": 200},
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-info-query",
-        tool="unica.dcs.info",
-        skill="dcs-info",
-        script="dcs-info.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Mode": "query",
-            "Name": "ОсновнойНаборДанных",
-            "Limit": 200,
-        },
-        fixtures=(FileFixture(BSP_DCS_QUERY_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-info-query-named-nested-union",
-        tool="unica.dcs.info",
-        skill="dcs-info",
-        script="dcs-info.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Mode": "query",
-            "Name": "ОпределениеПолей",
-            "Limit": 200,
-        },
-        fixtures=(FileFixture(BSP_DCS_UNION_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-info-fields",
-        tool="unica.dcs.info",
-        skill="dcs-info",
-        script="dcs-info.py",
-        arguments={"TemplatePath": "src/Template.xml", "Mode": "fields", "Limit": 200},
-        fixtures=(FileFixture(BSP_DCS_UNION_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-info-links",
-        tool="unica.dcs.info",
-        skill="dcs-info",
-        script="dcs-info.py",
-        arguments={"TemplatePath": "src/Template.xml", "Mode": "links", "Limit": 200},
-        fixtures=(FileFixture(BSP_DCS_UNION_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-info-calculated",
-        tool="unica.dcs.info",
-        skill="dcs-info",
-        script="dcs-info.py",
-        arguments={"TemplatePath": "src/Template.xml", "Mode": "calculated", "Limit": 200},
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-info-resources",
-        tool="unica.dcs.info",
-        skill="dcs-info",
-        script="dcs-info.py",
-        arguments={"TemplatePath": "src/Template.xml", "Mode": "resources", "Limit": 200},
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-info-params",
-        tool="unica.dcs.info",
-        skill="dcs-info",
-        script="dcs-info.py",
-        arguments={"TemplatePath": "src/Template.xml", "Mode": "params", "Limit": 200},
-        fixtures=(FileFixture(BSP_DCS_UNION_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-info-variant",
-        tool="unica.dcs.info",
-        skill="dcs-info",
-        script="dcs-info.py",
-        arguments={"TemplatePath": "src/Template.xml", "Mode": "variant", "Limit": 200},
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-info-trace",
-        tool="unica.dcs.info",
-        skill="dcs-info",
-        script="dcs-info.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Mode": "trace",
-            "Name": "КоличествоДанных",
-            "Limit": 200,
-        },
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-info-templates",
-        tool="unica.dcs.info",
-        skill="dcs-info",
-        script="dcs-info.py",
-        arguments={"TemplatePath": "src/Template.xml", "Mode": "templates", "Limit": 200},
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-info-full",
-        tool="unica.dcs.info",
-        skill="dcs-info",
-        script="dcs-info.py",
-        arguments={"TemplatePath": "src/Template.xml", "Mode": "full", "Limit": 200},
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
     ),
     ParityScenario(
         name="bsp-dcs-validate-real-template-detailed",
@@ -2130,1255 +801,6 @@ SUCCESS_SCENARIOS = [
             ),
         ),
         fixtures=(FileFixture("dcs-simple.json", "fixtures/dcs-simple.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="dcs-edit-modify-structure",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "templates/DCS.xml",
-            "Operation": "modify-structure",
-            "Value": "Price @name=G2",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="dcs-compile",
-                script="dcs-compile.py",
-                arguments={
-                    "DefinitionFile": "fixtures/dcs-simple.json",
-                    "OutputPath": "templates/DCS.xml",
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                arguments={
-                    "TemplatePath": "templates/DCS.xml",
-                    "Operation": "set-structure",
-                    "Value": "Code @name=G1 > Quantity @name=G2 > details",
-                },
-            ),
-        ),
-        fixtures=(FileFixture("dcs-simple.json", "fixtures/dcs-simple.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="dcs-edit-add-selection-in-named-variant",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "templates/DCS.xml",
-            "Operation": "add-selection",
-            "Value": "Code",
-            "Variant": "Alt",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="dcs-compile",
-                script="dcs-compile.py",
-                arguments={
-                    "DefinitionFile": "fixtures/dcs-simple.json",
-                    "OutputPath": "templates/DCS.xml",
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                arguments={
-                    "TemplatePath": "templates/DCS.xml",
-                    "Operation": "add-variant",
-                    "Value": "Alt [Alt presentation]",
-                },
-            ),
-        ),
-        fixtures=(FileFixture("dcs-simple.json", "fixtures/dcs-simple.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="dcs-edit-add-selection-folder",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "templates/DCS.xml",
-            "Operation": "add-selection",
-            "Value": "Folder(Parity folder: Code, Quantity)",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="dcs-compile",
-                script="dcs-compile.py",
-                arguments={
-                    "DefinitionFile": "fixtures/dcs-simple.json",
-                    "OutputPath": "templates/DCS.xml",
-                },
-            ),
-        ),
-        fixtures=(FileFixture("dcs-simple.json", "fixtures/dcs-simple.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="dcs-edit-add-selection-to-named-structure-group",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "templates/DCS.xml",
-            "Operation": "add-selection",
-            "Value": "Quantity @group=G1",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="dcs-compile",
-                script="dcs-compile.py",
-                arguments={
-                    "DefinitionFile": "fixtures/dcs-simple.json",
-                    "OutputPath": "templates/DCS.xml",
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                arguments={
-                    "TemplatePath": "templates/DCS.xml",
-                    "Operation": "set-structure",
-                    "Value": "Code @name=G1 > details",
-                },
-            ),
-        ),
-        fixtures=(FileFixture("dcs-simple.json", "fixtures/dcs-simple.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-edit-query",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Operation": "patch-query",
-            "Value": "1 => 2 @once",
-            "DataSet": "ОсновнойНаборДанных",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "set-query",
-                    "Value": "ВЫБРАТЬ\n\t1 КАК Ссылка",
-                    "DataSet": "ОсновнойНаборДанных",
-                },
-            ),
-        ),
-        fixtures=(FileFixture(BSP_DCS_QUERY_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-edit-set-query-final",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Operation": "set-query",
-            "Value": "ВЫБРАТЬ\n\t2 КАК Ссылка",
-            "DataSet": "ОсновнойНаборДанных",
-        },
-        fixtures=(FileFixture(BSP_DCS_QUERY_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-edit-add-variant-final",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Operation": "add-variant",
-            "Value": "ParityVariantFinal [Parity variant final]",
-        },
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-edit-add-calculated-field-final",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Operation": "add-calculated-field",
-            "Value": "ParityCalcFinal: decimal(10,2) = КоличествоДанных + 1",
-            "NoSelection": True,
-        },
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-edit-modify-field-final",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Operation": "modify-field",
-            "Value": "ПредставлениеДанных [Представление parity final]: string",
-            "DataSet": "МестаИспользования",
-        },
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-edit-set-field-role-final",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Operation": "set-field-role",
-            "Value": "ПредставлениеДанных @dimension",
-            "DataSet": "МестаИспользования",
-        },
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-edit-add-order-final",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Operation": "add-order",
-            "Value": "КоличествоДанных desc",
-        },
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-edit-clear-order-final",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Operation": "clear-order",
-            "Value": "*",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "add-order",
-                    "Value": "КоличествоДанных desc",
-                },
-            ),
-        ),
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-edit-clear-selection-final",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Operation": "clear-selection",
-            "Value": "*",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "add-selection",
-                    "Value": "КоличествоДанных",
-                },
-            ),
-        ),
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-edit-clear-filter-final",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Operation": "clear-filter",
-            "Value": "*",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "add-filter",
-                    "Value": "КоличествоДанных = 1",
-                },
-            ),
-        ),
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-edit-remove-filter-final",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Operation": "remove-filter",
-            "Value": "КоличествоДанных",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "add-filter",
-                    "Value": "КоличествоДанных = 1",
-                },
-            ),
-        ),
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-edit-add-data-parameter-final",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Operation": "add-dataParameter",
-            "Value": "ДатаФормирования = LastMonth",
-        },
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-edit-add-data-set-final",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Operation": "add-dataSet",
-            "Value": "ParityDataSetFinal: ВЫБРАТЬ 1 КАК КоличествоДанных",
-        },
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-edit-add-data-set-link-final",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Operation": "add-dataSetLink",
-            "Value": "МестаИспользования > ParityDataSetFinal on КоличествоДанных = КоличествоДанных [param ParityLinkFinal]",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "add-dataSet",
-                    "Value": "ParityDataSetFinal: ВЫБРАТЬ 1 КАК КоличествоДанных",
-                },
-            ),
-        ),
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-edit-set-output-parameter-final",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Operation": "set-outputParameter",
-            "Value": "Заголовок = ParityTitleFinal",
-        },
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-edit-set-structure-final",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Operation": "set-structure",
-            "Value": "Ссылка @name=ParityRootFinal > details",
-        },
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-edit-rename-parameter-final",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Operation": "rename-parameter",
-            "Value": "ParityRenameParam => ParityRenameParamFinal",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "add-parameter",
-                    "Value": "ParityRenameParam",
-                },
-            ),
-        ),
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-edit-remove-field-final",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Operation": "remove-field",
-            "Value": "ParityRemoveField",
-            "DataSet": "МестаИспользования",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "add-field",
-                    "Value": "ParityRemoveField: decimal(10,0)",
-                    "DataSet": "МестаИспользования",
-                    "NoSelection": True,
-                },
-            ),
-        ),
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-edit-remove-field-keeps_group_items",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Operation": "remove-field",
-            "Value": "ParityGroupedField",
-            "DataSet": "МестаИспользования",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "add-field",
-                    "Value": "ParityGroupedField: decimal(10,0)",
-                    "DataSet": "МестаИспользования",
-                    "NoSelection": True,
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "set-structure",
-                    "Value": "ParityGroupedField @name=ParityGroupedRoot > details",
-                },
-            ),
-        ),
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-edit-add-conditional-appearance-final",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Operation": "add-conditionalAppearance",
-            "Value": "ЦветТекста = web:Red when ВедущееИзмерение = false for КоличествоДанных",
-        },
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-edit-clear-conditional-appearance-final",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Operation": "clear-conditionalAppearance",
-            "Value": "*",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "add-conditionalAppearance",
-                    "Value": "ЦветТекста = web:Red when ВедущееИзмерение = false for КоличествоДанных",
-                },
-            ),
-        ),
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="dcs-edit-add-field-preserves_schema_order_and_role_markers",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "templates/DCS.xml",
-            "Operation": "add-field",
-            "Value": "Amount: decimal(10,2) @dimension #noFilter",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="dcs-compile",
-                script="dcs-compile.py",
-                arguments={
-                    "DefinitionFile": "fixtures/dcs-simple.json",
-                    "OutputPath": "templates/DCS.xml",
-                },
-            ),
-        ),
-        fixtures=(FileFixture("dcs-simple.json", "fixtures/dcs-simple.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="dcs-edit-add-total-aggregate-shorthand",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "templates/DCS.xml",
-            "Operation": "add-total",
-            "Value": "Amount: Сумма",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="dcs-compile",
-                script="dcs-compile.py",
-                arguments={
-                    "DefinitionFile": "fixtures/dcs-simple.json",
-                    "OutputPath": "templates/DCS.xml",
-                },
-            ),
-        ),
-        fixtures=(FileFixture("dcs-simple.json", "fixtures/dcs-simple.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="dcs-edit-add-parameter-typed-available-values",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "templates/DCS.xml",
-            "Operation": "add-parameter",
-            "Value": (
-                "Period: StandardPeriod = LastMonth "
-                "availableValue=LastMonth:Прошлый месяц, ThisMonth:Текущий месяц"
-            ),
-        },
-        setup_steps=(
-            SetupStep(
-                skill="dcs-compile",
-                script="dcs-compile.py",
-                arguments={
-                    "DefinitionFile": "fixtures/dcs-simple.json",
-                    "OutputPath": "templates/DCS.xml",
-                },
-            ),
-        ),
-        fixtures=(FileFixture("dcs-simple.json", "fixtures/dcs-simple.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="dcs-edit-add-parameter-quoted-value-list-and-available-values",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "templates/DCS.xml",
-            "Operation": "add-parameter",
-            "Value": (
-                "Tags: string = \"one,two\", 'three:four' "
-                "availableValue=\"one,two\":\"One, two\", 'three:four':'Three: four'"
-            ),
-        },
-        setup_steps=(
-            SetupStep(
-                skill="dcs-compile",
-                script="dcs-compile.py",
-                arguments={
-                    "DefinitionFile": "fixtures/dcs-simple.json",
-                    "OutputPath": "templates/DCS.xml",
-                },
-            ),
-        ),
-        fixtures=(FileFixture("dcs-simple.json", "fixtures/dcs-simple.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="dcs-edit-modify-parameter-preserves_typed_value_and_sets_available_values",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "templates/DCS.xml",
-            "Operation": "modify-parameter",
-            "Value": (
-                "Period [Период] value=ThisMonth denyIncompleteValues=true use=Always "
-                "availableValue=ThisMonth:Текущий месяц, LastMonth:Прошлый месяц"
-            ),
-        },
-        setup_steps=(
-            SetupStep(
-                skill="dcs-compile",
-                script="dcs-compile.py",
-                arguments={
-                    "DefinitionFile": "fixtures/dcs-simple.json",
-                    "OutputPath": "templates/DCS.xml",
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "templates/DCS.xml",
-                    "Operation": "add-parameter",
-                    "Value": "Period: StandardPeriod = LastMonth",
-                },
-            ),
-        ),
-        fixtures=(FileFixture("dcs-simple.json", "fixtures/dcs-simple.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="dcs-edit-modify-parameter-quoted-value-list-and-available-values",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "templates/DCS.xml",
-            "Operation": "modify-parameter",
-            "Value": (
-                "Tags value=\"one,two\", 'three:four' "
-                "availableValue=\"one,two\":\"One, two\", 'three:four':'Three: four'"
-            ),
-        },
-        setup_steps=(
-            SetupStep(
-                skill="dcs-compile",
-                script="dcs-compile.py",
-                arguments={
-                    "DefinitionFile": "fixtures/dcs-simple.json",
-                    "OutputPath": "templates/DCS.xml",
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "templates/DCS.xml",
-                    "Operation": "add-parameter",
-                    "Value": "Tags: string = initial",
-                },
-            ),
-        ),
-        fixtures=(FileFixture("dcs-simple.json", "fixtures/dcs-simple.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="dcs-edit-modify-filter-preserves_existing_disabled_state",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "templates/DCS.xml",
-            "Operation": "modify-filter",
-            "Value": "Code >= 2",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="dcs-compile",
-                script="dcs-compile.py",
-                arguments={
-                    "DefinitionFile": "fixtures/dcs-simple.json",
-                    "OutputPath": "templates/DCS.xml",
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "templates/DCS.xml",
-                    "Operation": "add-filter",
-                    "Value": "Code = 1 @off",
-                },
-            ),
-        ),
-        fixtures=(FileFixture("dcs-simple.json", "fixtures/dcs-simple.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="dcs-edit-modify-data-parameter-preserves_existing_value",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "templates/DCS.xml",
-            "Operation": "modify-dataParameter",
-            "Value": "Period @off",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="dcs-compile",
-                script="dcs-compile.py",
-                arguments={
-                    "DefinitionFile": "fixtures/dcs-simple.json",
-                    "OutputPath": "templates/DCS.xml",
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "templates/DCS.xml",
-                    "Operation": "add-dataParameter",
-                    "Value": "Period = LastMonth @off",
-                },
-            ),
-        ),
-        fixtures=(FileFixture("dcs-simple.json", "fixtures/dcs-simple.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-edit-fields-and-resources",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Operation": "remove-total",
-            "Value": "ВременныйИтог",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "modify-field",
-                    "Value": "ПредставлениеДанных [Представление parity]: string",
-                    "DataSet": "МестаИспользования",
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "set-field-role",
-                    "Value": "ПредставлениеДанных @dimension",
-                    "DataSet": "МестаИспользования",
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "add-total",
-                    "Value": "ВременныйИтог: Сумма(КоличествоДанных)",
-                },
-            ),
-        ),
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-edit-params",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Operation": "reorder-parameters",
-            "Value": "ПараметрParityПереименованный, ДатаФормирования, ПредставлениеСписка",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "add-parameter",
-                    "Value": "ПараметрParity",
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "modify-parameter",
-                    "Value": "ПараметрParity [Параметр parity] @hidden @always",
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "rename-parameter",
-                    "Value": "ПараметрParity => ПараметрParityПереименованный",
-                },
-            ),
-        ),
-        fixtures=(FileFixture(BSP_DCS_UNION_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-edit-settings",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Operation": "add-drilldown",
-            "Value": "КоличествоДанных",
-            "Variant": "ParityVariant",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "add-variant",
-                    "Value": "ParityVariant [Parity variant]",
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "set-structure",
-                    "Value": "Ссылка @name=ParityRoot > details",
-                    "Variant": "ParityVariant",
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "modify-structure",
-                    "Value": "Данные @name=ParityRoot",
-                    "Variant": "ParityVariant",
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "add-filter",
-                    "Value": "ВедущееИзмерение = false",
-                    "Variant": "ParityVariant",
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "remove-filter",
-                    "Value": "ВедущееИзмерение",
-                    "Variant": "ParityVariant",
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "add-conditionalAppearance",
-                    "Value": "ЦветТекста = web:Red when ВедущееИзмерение = false for КоличествоДанных",
-                    "Variant": "ParityVariant",
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "clear-conditionalAppearance",
-                    "Value": "*",
-                    "Variant": "ParityVariant",
-                },
-            ),
-        ),
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-edit-add-filter",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Operation": "add-filter",
-            "Value": "ВедущееИзмерение = false",
-        },
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-edit-calculated-field-lifecycle",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Operation": "remove-calculated-field",
-            "Value": "ParityCalc",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "add-calculated-field",
-                    "Value": "ParityCalc: decimal(10,2) = КоличествоДанных + 1",
-                    "NoSelection": True,
-                },
-            ),
-        ),
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-edit-datasets-and-variant-params",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Operation": "modify-filter",
-            "Value": "КоличествоДанных >= 2",
-            "Variant": "ParityDataVariant",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "add-variant",
-                    "Value": "ParityDataVariant [Parity data variant]",
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "add-dataSet",
-                    "Value": "ParityDataSet: ВЫБРАТЬ 1 КАК КоличествоДанных",
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "add-dataSetLink",
-                    "Value": "МестаИспользования > ParityDataSet on КоличествоДанных = КоличествоДанных [param ParityLink]",
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "set-outputParameter",
-                    "Value": "Заголовок = ParityTitle",
-                    "Variant": "ParityDataVariant",
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "add-dataParameter",
-                    "Value": "ДатаФормирования = LastMonth",
-                    "Variant": "ParityDataVariant",
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "modify-dataParameter",
-                    "Value": "ДатаФормирования = ThisMonth",
-                    "Variant": "ParityDataVariant",
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "add-filter",
-                    "Value": "КоличествоДанных = 1",
-                    "Variant": "ParityDataVariant",
-                },
-            ),
-        ),
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="bsp-dcs-edit-basic-ops-lifecycle",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Operation": "remove-parameter",
-            "Value": "ParityCleanupParam",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "add-variant",
-                    "Value": "ParityOpsVariant [Parity ops variant]",
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "add-field",
-                    "Value": "ParityCleanupField: decimal(10,0)",
-                    "DataSet": "МестаИспользования",
-                    "NoSelection": True,
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "add-parameter",
-                    "Value": "ParityCleanupParam",
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "add-selection",
-                    "Value": "ParityCleanupField",
-                    "Variant": "ParityOpsVariant",
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "add-order",
-                    "Value": "ParityCleanupField desc",
-                    "Variant": "ParityOpsVariant",
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "add-filter",
-                    "Value": "ParityCleanupField = 1",
-                    "Variant": "ParityOpsVariant",
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "clear-selection",
-                    "Value": "*",
-                    "Variant": "ParityOpsVariant",
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "clear-order",
-                    "Value": "*",
-                    "Variant": "ParityOpsVariant",
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "clear-filter",
-                    "Value": "*",
-                    "Variant": "ParityOpsVariant",
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                tool="unica.dcs.edit",
-                arguments={
-                    "TemplatePath": "src/Template.xml",
-                    "Operation": "remove-field",
-                    "Value": "ParityCleanupField",
-                    "DataSet": "МестаИспользования",
-                    "Variant": "ParityOpsVariant",
-                },
-            ),
-        ),
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
         expect_ok=True,
         compare_files=True,
     ),
@@ -3417,28 +839,6 @@ SUCCESS_SCENARIOS = [
         expect_ok=True,
     ),
     ParityScenario(
-        name="mxl-info-text",
-        tool="unica.mxl.info",
-        skill="mxl-info",
-        script="mxl-info.py",
-        arguments={
-            "TemplatePath": "src/Reports/ParityReport/Templates/Main/Ext/Template.xml",
-            "WithText": True,
-        },
-        setup_steps=(
-            SetupStep(
-                skill="mxl-compile",
-                script="mxl-compile.py",
-                arguments={
-                    "JsonPath": "fixtures/mxl-simple.json",
-                    "OutputPath": "src/Reports/ParityReport/Templates/Main/Ext/Template.xml",
-                },
-            ),
-        ),
-        fixtures=(FileFixture("mxl-simple.json", "fixtures/mxl-simple.json"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
         name="mxl-validate-detailed",
         tool="unica.mxl.validate",
         skill="mxl-validate",
@@ -3458,24 +858,6 @@ SUCCESS_SCENARIOS = [
             ),
         ),
         fixtures=(FileFixture("mxl-simple.json", "fixtures/mxl-simple.json"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-mxl-info-real-template",
-        tool="unica.mxl.info",
-        skill="mxl-info",
-        script="mxl-info.py",
-        arguments={
-            "TemplatePath": "src/Reports/ParityReport/Templates/Receipt/Ext/Template.xml",
-            "WithText": True,
-            "Limit": 200,
-        },
-        fixtures=(
-            FileFixture(
-                BSP_MXL_RECEIPT_FIXTURE,
-                "src/Reports/ParityReport/Templates/Receipt/Ext/Template.xml",
-            ),
-        ),
         expect_ok=True,
     ),
     ParityScenario(
@@ -3552,45 +934,6 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
-        name="role-info-show-denied",
-        tool="unica.role.info",
-        skill="role-info",
-        script="role-info.py",
-        arguments={
-            "RightsPath": "src/Roles/SalesReader/Ext/Rights.xml",
-            "ShowDenied": True,
-            "Limit": 0,
-        },
-        fixtures=(
-            FileFixture("role-info/SalesReader.xml", "src/Roles/SalesReader.xml"),
-            FileFixture(
-                "role-info/SalesReader/Ext/Rights.xml",
-                "src/Roles/SalesReader/Ext/Rights.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="role-info-outfile-pagination",
-        tool="unica.role.info",
-        skill="role-info",
-        script="role-info.py",
-        arguments={
-            "RightsPath": "src/Roles/SalesReader/Ext/Rights.xml",
-            "Limit": 5,
-            "Offset": 1,
-        },
-        fixtures=(
-            FileFixture("role-info/SalesReader.xml", "src/Roles/SalesReader.xml"),
-            FileFixture(
-                "role-info/SalesReader/Ext/Rights.xml",
-                "src/Roles/SalesReader/Ext/Rights.xml",
-            ),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
         name="role-validate-detailed",
         tool="unica.role.validate",
         skill="role-validate",
@@ -3610,41 +953,6 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
-        name="bsp-role-info-full",
-        tool="unica.role.info",
-        skill="role-info",
-        script="role-info.py",
-        arguments={
-            "RightsPath": "src/Roles/АдминистраторСистемы/Ext/Rights.xml",
-            "Limit": 0,
-        },
-        fixtures=(
-            FileFixture(
-                BSP_ROLE_ADMIN_RIGHTS_FIXTURE,
-                "src/Roles/АдминистраторСистемы/Ext/Rights.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-role-info-administration-show-denied",
-        tool="unica.role.info",
-        skill="role-info",
-        script="role-info.py",
-        arguments={
-            "RightsPath": "src/Roles/Администрирование/Ext/Rights.xml",
-            "ShowDenied": True,
-            "Limit": 0,
-        },
-        fixtures=(
-            FileFixture(
-                BSP_ROLE_ADMINISTRATION_RIGHTS_FIXTURE,
-                "src/Roles/Администрирование/Ext/Rights.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
         name="bsp-role-validate-detailed",
         tool="unica.role.validate",
         skill="role-validate",
@@ -3659,6 +967,27 @@ SUCCESS_SCENARIOS = [
             FileFixture(
                 BSP_ROLE_ADMIN_RIGHTS_FIXTURE,
                 "src/Roles/АдминистраторСистемы/Ext/Rights.xml",
+            ),
+        ),
+        expect_ok=True,
+    ),
+    ParityScenario(
+        # The Администрирование rights were only read by the retired role.info
+        # scenarios; validation keeps this real-world BSP role exercised.
+        name="bsp-role-validate-administration",
+        tool="unica.role.validate",
+        skill="role-validate",
+        script="role-validate.py",
+        arguments={
+            "RightsPath": "src/Roles/Администрирование/Ext/Rights.xml",
+            "Detailed": True,
+            "MaxErrors": 80,
+        },
+        fixtures=(
+            FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),
+            FileFixture(
+                BSP_ROLE_ADMINISTRATION_RIGHTS_FIXTURE,
+                "src/Roles/Администрирование/Ext/Rights.xml",
             ),
         ),
         expect_ok=True,
@@ -3757,38 +1086,6 @@ VALIDATION_FAILURE_SCENARIOS = [
         fixtures=(FileFixture("dcs-validate/BadPrefix.xml", "templates/BadPrefix.xml"),),
     ),
     ParityScenario(
-        name="dcs-edit-patch-query-once-ambiguous",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "templates/DCS.xml",
-            "Operation": "patch-query",
-            "Value": "Code => ItemCode @once",
-        },
-        expect_ok=False,
-        setup_steps=(
-            SetupStep(
-                skill="dcs-compile",
-                script="dcs-compile.py",
-                arguments={
-                    "DefinitionFile": "fixtures/dcs-simple.json",
-                    "OutputPath": "templates/DCS.xml",
-                },
-            ),
-            SetupStep(
-                skill="dcs-edit",
-                script="dcs-edit.py",
-                arguments={
-                    "TemplatePath": "templates/DCS.xml",
-                    "Operation": "set-query",
-                    "Value": "SELECT Code AS Code",
-                },
-            ),
-        ),
-        fixtures=(FileFixture("dcs-simple.json", "fixtures/dcs-simple.json"),),
-    ),
-    ParityScenario(
         name="form-validate-duplicate-names-are-errors",
         tool="unica.form.validate",
         skill="form-validate",
@@ -3822,79 +1119,16 @@ VALIDATION_FAILURE_SCENARIOS = [
             ),
         ),
     ),
-    ParityScenario(
-        name="bsp-dcs-info-query-named-union-fails",
-        tool="unica.dcs.info",
-        skill="dcs-info",
-        script="dcs-info.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Mode": "query",
-            "Name": "ОбщееКоличествоЭлементов",
-        },
-        expect_ok=False,
-        fixtures=(FileFixture(BSP_DCS_UNION_FIXTURE, "src/Template.xml"),),
-    ),
-    ParityScenario(
-        name="bsp-dcs-edit-missing-variant-fails",
-        tool="unica.dcs.edit",
-        skill="dcs-edit",
-        script="dcs-edit.py",
-        arguments={
-            "TemplatePath": "src/Template.xml",
-            "Operation": "add-selection",
-            "Value": "КоличествоДанных",
-            "Variant": "DefinitelyMissingVariant",
-        },
-        expect_ok=False,
-        fixtures=(FileFixture(BSP_DCS_OBJECT_FIXTURE, "src/Template.xml"),),
-    ),
 ]
 
 
 MISSING_INPUT_SCENARIOS = [
-    ParityScenario(
-        "cf-edit-missing-config",
-        "unica.cf.edit",
-        "cf-edit",
-        "cf-edit.py",
-        {"ConfigPath": "missing/Configuration.xml", "Operation": "modify-property", "Value": "Version=1.0"},
-        False,
-    ),
-    ParityScenario(
-        "cf-info-missing-config",
-        "unica.cf.info",
-        "cf-info",
-        "cf-info.py",
-        {"ConfigPath": "missing/Configuration.xml", "Mode": "brief"},
-        False,
-    ),
     ParityScenario(
         "cf-validate-missing-config",
         "unica.cf.validate",
         "cf-validate",
         "cf-validate.py",
         {"ConfigPath": "missing/Configuration.xml"},
-        False,
-    ),
-    ParityScenario(
-        "cfe-borrow-missing-inputs",
-        "unica.cfe.borrow",
-        "cfe-borrow",
-        "cfe-borrow.py",
-        {
-            "ExtensionPath": "missing-extension",
-            "ConfigPath": "missing-config",
-            "Object": "Catalog.ParityCatalog",
-        },
-        False,
-    ),
-    ParityScenario(
-        "cfe-diff-missing-extension",
-        "unica.cfe.diff",
-        "cfe-diff",
-        "cfe-diff.py",
-        {"ExtensionPath": "missing-extension", "ConfigPath": "missing-config"},
         False,
     ),
     ParityScenario(
@@ -3905,68 +1139,16 @@ MISSING_INPUT_SCENARIOS = [
         {"ExtensionPath": "missing-extension"},
         False,
     ),
-    ParityScenario(
-        "meta-edit-missing-object",
-        "unica.meta.edit",
-        "meta-edit",
-        "meta-edit.py",
-        {"ObjectPath": "missing/Catalog.xml", "Operation": "modify-property", "Value": "Synonym=Missing"},
-        False,
-    ),
-    ParityScenario(
-        "meta-info-missing-object",
-        "unica.meta.info",
-        "meta-info",
-        "meta-info.py",
-        {"ObjectPath": "missing/Catalog.xml", "Mode": "brief"},
-        False,
-    ),
-    ParityScenario(
-        "meta-remove-missing-config",
-        "unica.meta.remove",
-        "meta-remove",
-        "meta-remove.py",
-        {"ConfigDir": "missing-src", "Object": "Catalog.ParityCatalog", "Force": True},
-        False,
-    ),
+    # `unica.meta.info` has no missing-input scenario: the reference model fails
+    # on a missing file, the tool fails on an address it cannot prove, and those
+    # are different contracts by construction. The typed refusal is covered by
+    # `meta_info_reports_an_unknown_address_without_naming_a_path`.
     ParityScenario(
         "meta-validate-missing-object",
         "unica.meta.validate",
         "meta-validate",
         "meta-validate.py",
         {"ObjectPath": "missing/Catalog.xml", "Detailed": True},
-        False,
-    ),
-    ParityScenario(
-        "form-add-missing-object",
-        "unica.form.add",
-        "form-add",
-        "form-add.py",
-        {"ObjectPath": "missing/Catalog.xml", "FormName": "ФормаЭлемента", "Purpose": "Item"},
-        False,
-    ),
-    ParityScenario(
-        "form-edit-missing-form",
-        "unica.form.edit",
-        "form-edit",
-        "form-edit.py",
-        {"FormPath": "missing/Form.xml", "JsonPath": "missing/form-edit.json"},
-        False,
-    ),
-    ParityScenario(
-        "form-info-missing-form",
-        "unica.form.info",
-        "form-info",
-        "form-info.py",
-        {"FormPath": "missing/Form.xml"},
-        False,
-    ),
-    ParityScenario(
-        "form-remove-missing-object",
-        "unica.form.remove",
-        "form-remove",
-        "remove-form.py",
-        {"ObjectName": "ParityCatalog", "FormName": "ФормаЭлемента", "SrcDir": "missing-src/Catalogs"},
         False,
     ),
     ParityScenario(
@@ -3992,14 +1174,6 @@ MISSING_INPUT_SCENARIOS = [
         ),
     ),
     ParityScenario(
-        "interface-edit-missing-command-interface",
-        "unica.interface.edit",
-        "interface-edit",
-        "interface-edit.py",
-        {"CIPath": "missing/CommandInterface.xml", "Operation": "hide", "Value": "Catalog.ParityCatalog"},
-        False,
-    ),
-    ParityScenario(
         "interface-validate-missing-command-interface",
         "unica.interface.validate",
         "interface-validate",
@@ -4008,64 +1182,11 @@ MISSING_INPUT_SCENARIOS = [
         False,
     ),
     ParityScenario(
-        "subsystem-edit-missing-subsystem",
-        "unica.subsystem.edit",
-        "subsystem-edit",
-        "subsystem-edit.py",
-        {"SubsystemPath": "missing/Subsystem.xml", "Operation": "add-content", "Value": "Catalog.ParityCatalog"},
-        False,
-    ),
-    ParityScenario(
-        "subsystem-info-missing-subsystem",
-        "unica.subsystem.info",
-        "subsystem-info",
-        "subsystem-info.py",
-        {"SubsystemPath": "missing/Subsystem.xml", "Mode": "content"},
-        False,
-    ),
-    ParityScenario(
         "subsystem-validate-missing-subsystem",
         "unica.subsystem.validate",
         "subsystem-validate",
         "subsystem-validate.py",
         {"SubsystemPath": "missing/Subsystem.xml"},
-        False,
-    ),
-    ParityScenario(
-        "template-add-missing-object",
-        "unica.template.add",
-        "template-add",
-        "add-template.py",
-        {
-            "ObjectName": "ParityReport",
-            "TemplateName": "MainSchema",
-            "TemplateType": "DataCompositionSchema",
-            "SrcDir": "missing-src/Reports",
-        },
-        False,
-    ),
-    ParityScenario(
-        "template-remove-missing-object",
-        "unica.template.remove",
-        "template-remove",
-        "remove-template.py",
-        {"ObjectName": "ParityReport", "TemplateName": "MainSchema", "SrcDir": "missing-src/Reports"},
-        False,
-    ),
-    ParityScenario(
-        "dcs-edit-missing-template",
-        "unica.dcs.edit",
-        "dcs-edit",
-        "dcs-edit.py",
-        {"TemplatePath": "missing/Template.xml", "Operation": "add-field", "Value": "Amount: decimal(15,2)"},
-        False,
-    ),
-    ParityScenario(
-        "dcs-info-missing-template",
-        "unica.dcs.info",
-        "dcs-info",
-        "dcs-info.py",
-        {"TemplatePath": "missing/Template.xml", "Mode": "overview"},
         False,
     ),
     ParityScenario(
@@ -4085,27 +1206,11 @@ MISSING_INPUT_SCENARIOS = [
         False,
     ),
     ParityScenario(
-        "mxl-info-missing-template",
-        "unica.mxl.info",
-        "mxl-info",
-        "mxl-info.py",
-        {"TemplatePath": "missing/Template.xml", "Format": "text"},
-        False,
-    ),
-    ParityScenario(
         "mxl-validate-missing-template",
         "unica.mxl.validate",
         "mxl-validate",
         "mxl-validate.py",
         {"TemplatePath": "missing/Template.xml"},
-        False,
-    ),
-    ParityScenario(
-        "role-info-missing-rights",
-        "unica.role.info",
-        "role-info",
-        "role-info.py",
-        {"RightsPath": "missing/Rights.xml"},
         False,
     ),
     ParityScenario(
@@ -4122,134 +1227,95 @@ SCENARIOS = tuple(SUCCESS_SCENARIOS + VALIDATION_FAILURE_SCENARIOS + MISSING_INP
 MIN_NATIVE_PARITY_COVERAGE = 1.0
 
 NATIVE_PARITY_TOOLS = {
-    "unica.cf.edit",
-    "unica.cf.info",
-    "unica.cf.init",
     "unica.cf.validate",
-    "unica.cfe.borrow",
-    "unica.cfe.init",
-    "unica.cfe.diff",
-    "unica.cfe.patch_method",
     "unica.cfe.validate",
     "unica.form.validate",
     "unica.meta.compile",
-    "unica.meta.edit",
-    "unica.meta.info",
-    "unica.meta.remove",
     "unica.meta.validate",
-    "unica.help.add",
-    "unica.form.add",
     "unica.form.compile",
-    "unica.form.edit",
-    "unica.form.info",
-    "unica.form.remove",
     "unica.form.validate",
     "unica.subsystem.compile",
-    "unica.subsystem.edit",
-    "unica.subsystem.info",
     "unica.subsystem.validate",
-    "unica.interface.edit",
     "unica.interface.validate",
-    "unica.template.add",
-    "unica.template.remove",
     "unica.dcs.compile",
-    "unica.dcs.edit",
-    "unica.dcs.info",
     "unica.dcs.validate",
     "unica.mxl.compile",
     "unica.mxl.decompile",
-    "unica.mxl.info",
     "unica.mxl.validate",
     "unica.role.compile",
-    "unica.role.info",
     "unica.role.validate",
 }
 
 MUTATING_FORM_DCS_PARITY_TOOLS = {
-    "unica.form.add",
     "unica.form.compile",
-    "unica.form.edit",
-    "unica.form.remove",
     "unica.dcs.compile",
-    "unica.dcs.edit",
 }
 
-EXPECTED_TOOLS = {
+# A tool that answers with typed data has no prose to compare against the
+# reference model, so it leaves this stand as it migrates (ADR-0023). The stand
+# itself is scheduled for redesign; until then this list records what left and
+# why, instead of scenarios quietly disappearing.
+TYPED_RESULT_TOOLS = {
     "unica.cf.edit",
     "unica.cf.info",
     "unica.cf.init",
-    "unica.cf.validate",
     "unica.cfe.borrow",
     "unica.cfe.diff",
     "unica.cfe.init",
     "unica.cfe.patch_method",
-    "unica.cfe.validate",
-    "unica.meta.compile",
-    "unica.meta.edit",
-    "unica.meta.info",
-    "unica.meta.remove",
-    "unica.meta.validate",
-    "unica.help.add",
+    "unica.dcs.edit",
+    "unica.dcs.info",
     "unica.form.add",
-    "unica.form.compile",
     "unica.form.edit",
     "unica.form.info",
     "unica.form.remove",
-    "unica.form.validate",
+    "unica.help.add",
     "unica.interface.edit",
-    "unica.interface.validate",
-    "unica.subsystem.compile",
+    "unica.meta.edit",
+    "unica.meta.info",
+    "unica.meta.remove",
+    "unica.mxl.info",
+    "unica.role.info",
     "unica.subsystem.edit",
     "unica.subsystem.info",
-    "unica.subsystem.validate",
     "unica.template.add",
     "unica.template.remove",
+}
+
+EXPECTED_TOOLS = {
+    "unica.cf.validate",
+    "unica.cfe.validate",
+    "unica.meta.compile",
+    "unica.meta.validate",
+    "unica.form.compile",
+    "unica.form.validate",
+    "unica.interface.validate",
+    "unica.subsystem.compile",
+    "unica.subsystem.validate",
     "unica.dcs.compile",
-    "unica.dcs.edit",
-    "unica.dcs.info",
     "unica.dcs.validate",
     "unica.mxl.compile",
     "unica.mxl.decompile",
-    "unica.mxl.info",
     "unica.mxl.validate",
     "unica.role.compile",
-    "unica.role.info",
     "unica.role.validate",
 }
 
 BSP_PARITY_REQUIRED_TOOLS = {
-    "unica.cf.info",
     "unica.cf.validate",
-    "unica.cfe.borrow",
-    "unica.meta.info",
     "unica.meta.validate",
-    "unica.form.info",
     "unica.form.validate",
-    "unica.form.edit",
-    "unica.dcs.info",
     "unica.dcs.validate",
-    "unica.dcs.edit",
-    "unica.mxl.info",
     "unica.mxl.validate",
     "unica.mxl.decompile",
     "unica.mxl.compile",
-    "unica.role.info",
     "unica.role.validate",
-    "unica.subsystem.info",
     "unica.subsystem.validate",
     "unica.interface.validate",
-    "unica.interface.edit",
-    "unica.template.add",
-    "unica.template.remove",
 }
 
 BSP_MUTATING_REQUIRED_TOOLS = {
-    "unica.cfe.borrow",
-    "unica.form.edit",
-    "unica.dcs.edit",
     "unica.mxl.compile",
-    "unica.interface.edit",
-    "unica.template.add",
     "unica.template.remove",
 }
 
@@ -4311,11 +1377,6 @@ MCP_HANDSHAKE = [
 ]
 
 
-def dcs_edit_operations_in_args(arguments: dict[str, Any]) -> set[str]:
-    operation = arguments.get("Operation") or arguments.get("operation")
-    return {operation} if isinstance(operation, str) and operation else set()
-
-
 class UnicaMcpScriptParityTests(unittest.TestCase):
     unica_bin: Path
 
@@ -4335,6 +1396,10 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
     def test_every_in_scope_tool_has_a_parity_scenario(self) -> None:
         covered = {scenario.tool for scenario in SCENARIOS}
         self.assertEqual(covered, EXPECTED_TOOLS)
+        # A migrated tool must be gone from the stand, not merely unscheduled:
+        # a leftover scenario would compare a stdout that no longer exists.
+        self.assertEqual(covered & TYPED_RESULT_TOOLS, set())
+        self.assertEqual(NATIVE_PARITY_TOOLS & TYPED_RESULT_TOOLS, set())
         covered_by_success_snapshot = {
             scenario.tool
             for scenario in SCENARIOS
@@ -4351,37 +1416,11 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
         self.assertGreaterEqual(coverage, MIN_NATIVE_PARITY_COVERAGE)
         self.assertEqual(NATIVE_PARITY_TOOLS - covered, set())
 
-    def test_cfe_patch_method_parity_uses_only_the_supported_v1_contract(self) -> None:
-        scenarios = [
-            scenario
-            for scenario in SUCCESS_SCENARIOS
-            if scenario.tool == "unica.cfe.patch_method"
-        ]
-        self.assertGreater(len(scenarios), 0)
-        for scenario in scenarios:
-            with self.subTest(scenario=scenario.name):
-                self.assertIn(
-                    scenario.arguments.get("InterceptorType"),
-                    {"Before", "After"},
-                )
-                self.assertFalse(scenario.arguments.get("IsFunction", False))
-                self.assertEqual(
-                    scenario.arguments.get("MethodName"),
-                    "ОбновитьДанные",
-                    "the fixture exposes this caller-verified zero-parameter procedure",
-                )
-                self.assertTrue(
-                    any(step.tool == "unica.cfe.borrow" for step in scenario.setup_steps),
-                    "the target must be registered and adopted through the public borrow tool",
-                )
-                self.assertTrue(
-                    any(
-                        fixture.source
-                        == "cfe-patch-method/base-common-module.bsl"
-                        for fixture in scenario.fixtures
-                    ),
-                    "the base source must prove the documented procedure signature",
-                )
+    # The v1 interception contract (Before/After only, never a function) is
+    # asserted directly against the tool by the Rust test
+    # `cfe_patch_method_rejects_unsupported_v1_interception_shapes_atomically`.
+    # This guard checked the retired parity scenarios' arguments instead, so it
+    # left the stand with unica.cfe.patch_method (ADR-0023).
 
     def test_rust_registry_parity_list_matches_python_parity_harness(self) -> None:
         app_mod = (REPO_ROOT / "crates" / "unica-coder" / "src" / "application" / "mod.rs").read_text(
@@ -4682,18 +1721,28 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
             self.assertEqual(invalid_output.read_bytes(), invalid_before)
             self.assertEqual(valid_output.read_bytes(), valid_before)
 
-    def test_bsp_dcs_edit_parity_covers_documented_operations(self) -> None:
-        covered = set()
-        for scenario in SCENARIOS:
-            if not (
-                scenario.tool == "unica.dcs.edit"
-                and scenario.expect_ok
-                and scenario.compare_files
-            ):
-                continue
-            covered.update(dcs_edit_operations_in_args(scenario.arguments))
-
-        self.assertEqual(covered & DCS_EDIT_REQUIRED_OPS, DCS_EDIT_REQUIRED_OPS)
+    def test_every_documented_dcs_edit_operation_stays_under_test(self) -> None:
+        # unica.dcs.edit left the scenario stand for typed data (ADR-0023), so
+        # the "no documented operation goes untested" guard now points at the
+        # tests that live with the tool instead of at retired scenarios.
+        dcs_rs = (
+            REPO_ROOT
+            / "crates"
+            / "unica-coder"
+            / "src"
+            / "infrastructure"
+            / "native_operations"
+            / "dcs.rs"
+        ).read_text(encoding="utf-8")
+        marker = "mod tests"
+        self.assertIn(marker, dcs_rs)
+        tests_source = dcs_rs[dcs_rs.index(marker) :]
+        untested = {
+            operation
+            for operation in DCS_EDIT_REQUIRED_OPS
+            if f'"{operation}"' not in tests_source
+        }
+        self.assertEqual(untested, set())
 
     def test_every_skill_tools_call_example_executes_as_mcp_dry_run(self) -> None:
         examples = list(iter_skill_mcp_examples())
@@ -4806,8 +1855,16 @@ source-set:
                         / "Ext"
                         / "Form.xml"
                     )
-                    arguments["OutputPath"] = str(output_path.relative_to(workspace))
-                    if arguments.get("FromObject") is True:
+                    # Only the compiler takes an output path. The skill also
+                    # documents a `form.info` read, and injecting the argument
+                    # there sent the reader a selector it does not publish.
+                    if example.payload["params"]["name"] == "unica.form.compile":
+                        arguments["OutputPath"] = str(output_path.relative_to(workspace))
+                    elif example.payload["params"]["name"] == "unica.form.info":
+                        arguments["FormPath"] = str(output_path.relative_to(workspace))
+                    if example.payload["params"]["name"] != "unica.form.compile":
+                        pass
+                    elif arguments.get("FromObject") is True:
                         object_path = workspace / "src" / "cf" / "Catalogs" / "Валюты.xml"
                         object_path.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copyfile(FIXTURES_ROOT / BSP_META_CATALOG_FIXTURE, object_path)
@@ -4854,8 +1911,13 @@ source-set:
 """,
                         encoding="utf-8",
                     )
-                elif example.skill == "meta-edit":
+                elif (
+                    example.skill == "meta-edit"
+                    and example.payload["params"]["name"] == "unica.meta.edit"
+                ):
                     prepare_meta_edit_skill_example(workspace, example, arguments)
+                if example.payload["params"]["name"] == "unica.meta.info":
+                    prepare_meta_info_skill_example(source_roots, arguments)
             self.assertEqual(code_patch_source_sets, {"main", "myExtension"})
             messages = [
                 dry_run_message_for_example(example, index + 1, workspace)
@@ -4927,6 +1989,14 @@ source-set:
         relations = load_donor_relations()
         self.assertEqual(set(relations), cases)
 
+    def test_retired_donor_cases_are_not_compared(self) -> None:
+        # A retired case keeps its files in the snapshot but leaves the
+        # comparison, so it must not come back through the case iterator.
+        retired = set(load_donor_registry().get("retired", {}))
+        self.assertTrue(retired, "the retirement list records what left the stand")
+        cases = {case.case_id for case in iter_cc_1c_skill_cases()}
+        self.assertEqual(retired & cases, set())
+
     def test_donor_snapshot_integrity_and_provenance(self) -> None:
         errors = donor_contract.validate_repository_contract(REPO_ROOT)
         self.assertEqual(errors, [])
@@ -4954,7 +2024,9 @@ source-set:
             self.prepare_workspace(direct_ws, scenario, setup_mode="reference")
             self.prepare_workspace(mcp_ws, scenario, setup_mode="mcp", cache_dir=mcp_cache)
 
-            direct = run_unica_reference_model(scenario.skill, scenario.script, scenario.arguments, direct_ws)
+            direct = run_unica_reference_model(
+                scenario.skill, scenario.script, scenario.script_arguments, direct_ws
+            )
             mcp = self.call_mcp(scenario, mcp_ws, mcp_cache)
 
             direct_ok = direct.returncode == 0
@@ -4972,7 +2044,9 @@ source-set:
             if mcp.get("command") is not None:
                 self.assertEqual(
                     normalize_command(
-                        command_for_script(scenario.skill, scenario.script, scenario.arguments),
+                        command_for_script(
+                            scenario.skill, scenario.script, scenario.script_arguments
+                        ),
                         direct_ws,
                     ),
                     normalize_command(mcp["command"], mcp_ws),
@@ -5300,12 +2374,15 @@ def run_cc_python_script(
     )
 
 
+# Donor cases compare tool stdout against the cc-1c reference scripts. A tool
+# that migrated to typed data (ADR-0023) has no prose left to compare, so it
+# leaves this stand the same way it leaves the scenario stand. `cfe-borrow`
+# left with unica.cfe.borrow; the donor snapshot itself is untouched.
 CC_CASE_TOOLS = {
     "meta-compile": "unica.meta.compile",
     "skd-compile": "unica.dcs.compile",
     "form-compile": "unica.form.compile",
     "form-compile-from-object": "unica.form.compile",
-    "cfe-borrow": "unica.cfe.borrow",
 }
 
 
@@ -5336,8 +2413,12 @@ def iter_cc_1c_skill_cases() -> list[CcSkillCase]:
     return cases
 
 
+def load_donor_registry() -> dict[str, Any]:
+    return donor_contract.load_json(DONOR_RELATIONS_PATH)
+
+
 def load_donor_relations() -> dict[str, dict[str, Any]]:
-    registry = donor_contract.load_json(DONOR_RELATIONS_PATH)
+    registry = load_donor_registry()
     relations = registry.get("relations")
     if not isinstance(relations, dict):
         raise AssertionError("donor relation registry must contain an object")
@@ -5761,6 +2842,64 @@ def dry_run_message_for_example(
     arguments["cwd"] = str(workspace)
     arguments["dryRun"] = True
     return message
+
+
+META_INFO_SKILL_EXAMPLE_DIRECTORIES = {
+    "Catalog": "Catalogs",
+    "Document": "Documents",
+    "InformationRegister": "InformationRegisters",
+    "CommonModule": "CommonModules",
+    "HTTPService": "HTTPServices",
+    "WebService": "WebServices",
+    "EventSubscription": "EventSubscriptions",
+    "ScheduledJob": "ScheduledJobs",
+    "DefinedType": "DefinedTypes",
+}
+
+
+def prepare_meta_info_skill_example(
+    source_roots: dict[str, Path],
+    arguments: dict[str, Any],
+) -> None:
+    """Materialize the object a documented `unica.meta.info` example addresses.
+
+    The example names an object logically, so the fixture is derived from that
+    address instead of from a path spelled out in the document.
+    """
+    kind, _, name = arguments["metadataPath"].partition(".")
+    directory = META_INFO_SKILL_EXAMPLE_DIRECTORIES.get(kind)
+    if directory is None:
+        raise AssertionError(f"unsupported meta.info example kind: {kind}")
+    source_root = source_roots[arguments["sourceSet"]]
+    descriptor = source_root / directory / f"{name}.xml"
+    descriptor.parent.mkdir(parents=True, exist_ok=True)
+    drill = arguments.get("Name")
+    children = ""
+    if drill and kind == "HTTPService":
+        children = (
+            f"<URLTemplate><Properties><Name>{drill}</Name><Template>/{drill}</Template>"
+            f"</Properties><ChildObjects><Method><Properties><Name>Get</Name>"
+            f"<HTTPMethod>GET</HTTPMethod><Handler>Обработчик</Handler></Properties>"
+            f"</Method></ChildObjects></URLTemplate>"
+        )
+    elif drill and kind == "WebService":
+        children = (
+            f"<Operation><Properties><Name>{drill}</Name><XDTOReturningValueType>"
+            f"{{http://www.w3.org/2001/XMLSchema}}string</XDTOReturningValueType>"
+            f"<ProcedureName>Обработчик</ProcedureName></Properties></Operation>"
+        )
+    elif drill:
+        children = (
+            f"<Attribute><Properties><Name>{drill}</Name>"
+            f"<Type><v8:Type xmlns:v8=\"http://v8.1c.ru/8.1/data/core\">"
+            f"xs:string</v8:Type></Type></Properties></Attribute>"
+        )
+    descriptor.write_text(
+        '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">'
+        f"<{kind}><Properties><Name>{name}</Name></Properties>"
+        f"<ChildObjects>{children}</ChildObjects></{kind}></MetaDataObject>\n",
+        encoding="utf-8",
+    )
 
 
 def prepare_meta_edit_skill_example(

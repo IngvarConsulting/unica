@@ -6,7 +6,9 @@ use crate::application::source_navigation::{
     SourceResolveRequest, SourceResolveResult,
 };
 use crate::application::source_resources::{SourceReadRequest, SourceResourcesRequest};
-use crate::application::{project_map, project_status, AdapterOutcome, ToolHandler, ToolSpec};
+use crate::application::{
+    project_map, project_status, AdapterOutcome, ToolHandler, ToolSpec, TypedReadOutcome,
+};
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::{
@@ -235,9 +237,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                         )));
                     }
                 };
-                Ok(HandlerOutcome::plain(project_status(
-                    context, source_map, warning,
-                )))
+                Ok(typed_read(project_status(context, source_map, warning)))
             }
             ToolHandler::ProjectMap => {
                 let source_map =
@@ -259,7 +259,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                         )));
                     }
                 };
-                Ok(HandlerOutcome::plain(project_map(source_map, warning)))
+                Ok(typed_read(project_map(source_map, warning)))
             }
             ToolHandler::BuildRuntime { command, .. } => {
                 CliAdapter::new("v8-runner", command, "build/runtime")
@@ -313,7 +313,10 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                 command: ["graph"] | ["analyze"],
             } => BslAnalyzerMcpAdapter::new()
                 .invoke_cancellable(spec.name, args, context, dry_run, cancellation)
-                .map(HandlerOutcome::plain),
+                .map(|analyzer| match analyzer.data {
+                    Some(data) => HandlerOutcome::with_data(analyzer.outcome, data),
+                    None => HandlerOutcome::plain(analyzer.outcome),
+                }),
             ToolHandler::CodeAdapter { command } => {
                 CliAdapter::new("bsl-analyzer", command, "code analysis")
                     .invoke_cancellable(
@@ -326,9 +329,13 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     )
                     .map(HandlerOutcome::plain)
             }
-            ToolHandler::StandardsAdapter { operation } => Ok(HandlerOutcome::plain(
-                StandardsAdapter::invoke(operation, args),
-            )),
+            ToolHandler::StandardsAdapter { operation } => {
+                let standards = StandardsAdapter::invoke(operation, args);
+                Ok(match standards.data {
+                    Some(data) => HandlerOutcome::with_data(standards.outcome, data),
+                    None => HandlerOutcome::plain(standards.outcome),
+                })
+            }
         }
     }
 
@@ -470,6 +477,15 @@ fn verified_full_dump_invocation(
             Some(FullDumpInvocation::RuntimeExecute)
         }
         _ => None,
+    }
+}
+
+/// Publishes a typed read through the envelope: `data` when the handler proved
+/// a payload, plain outcome when it refused.
+fn typed_read(read: TypedReadOutcome) -> HandlerOutcome {
+    match read.data {
+        Some(data) => HandlerOutcome::with_data(read.outcome, data),
+        None => HandlerOutcome::plain(read.outcome),
     }
 }
 

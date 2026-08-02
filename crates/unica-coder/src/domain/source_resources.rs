@@ -131,6 +131,10 @@ pub enum SourceResourceErrorCode {
     ResourceNotFound,
     ResourceNotReadable,
     ResourceNotReplaceable,
+    /// The logical address named no target the provider could prove. Distinct
+    /// from `SourceUnavailable`, which means the source itself could not be
+    /// read, not that the caller asked for something that is not there.
+    TargetNotFound,
     InvalidCursor,
     InvalidRequest,
     LimitExceeded,
@@ -159,6 +163,7 @@ impl SourceResourceErrorCode {
             Self::ResourceNotFound => "resource_not_found",
             Self::ResourceNotReadable => "resource_not_readable",
             Self::ResourceNotReplaceable => "resource_not_replaceable",
+            Self::TargetNotFound => "target_not_found",
             Self::InvalidCursor => "invalid_cursor",
             Self::InvalidRequest => "invalid_request",
             Self::LimitExceeded => "limit_exceeded",
@@ -338,6 +343,24 @@ mod tests {
             ])
             .unwrap(),
             json!(["complete", "partial", "unavailable"])
+        );
+    }
+
+    /// A refusal the caller can act on is a different fact from an outage they
+    /// should retry, so the two never share one code.
+    #[test]
+    fn missing_targets_and_unavailable_sources_are_separate_public_codes() {
+        assert_eq!(
+            SourceResourceErrorCode::TargetNotFound.as_str(),
+            "target_not_found"
+        );
+        assert_eq!(
+            SourceResourceErrorCode::SourceUnavailable.as_str(),
+            "source_unavailable"
+        );
+        assert_eq!(
+            serde_json::to_value(SourceResourceErrorCode::TargetNotFound).unwrap(),
+            json!("target_not_found")
         );
     }
 }

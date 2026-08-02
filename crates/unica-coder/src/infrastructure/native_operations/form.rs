@@ -1412,11 +1412,272 @@ pub(crate) fn form_valid_cfg_prefixes() -> &'static [&'static str] {
     ]
 }
 
+/// Typed answer of `unica.form.info` (ADR-0023). The report sliced a form into
+/// numbered lines and hid deep pages behind `-Expand`; the data carries the
+/// whole form at once, so a caller never has to ask for the rest.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FormInfoData {
+    pub(crate) name: String,
+    /// The form title when it declares one; `null` otherwise.
+    pub(crate) title: Option<String>,
+    /// The metadata object the form belongs to; `null` for a standalone form.
+    pub(crate) object_context: Option<String>,
+    pub(crate) is_extension: bool,
+    /// `BaseForm` version for an extension form; `null` when the form declares
+    /// no base form, empty string when it declares one without a version.
+    pub(crate) base_form_version: Option<String>,
+    pub(crate) support: ObjectSupportData,
+    pub(crate) properties: Vec<FormInfoProperty>,
+    pub(crate) events: Vec<FormInfoEvent>,
+    /// Items of the form's own command bar; empty when it has none or when
+    /// `CommandBarLocation` is `None`.
+    pub(crate) auto_command_bar: Vec<String>,
+    /// Where that command bar sits: `Auto`, `Top`, `Bottom` or `None`.
+    pub(crate) command_bar_location: String,
+    pub(crate) elements: Vec<FormInfoElement>,
+    pub(crate) attributes: Vec<FormInfoAttribute>,
+    pub(crate) parameters: Vec<FormInfoParameter>,
+    pub(crate) commands: Vec<FormInfoCommand>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FormInfoProperty {
+    pub(crate) name: String,
+    pub(crate) value: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FormInfoEvent {
+    pub(crate) name: String,
+    pub(crate) handler: String,
+    /// The `callType` attribute; `null` when the event declares none.
+    pub(crate) call_type: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FormInfoElement {
+    pub(crate) tag: String,
+    pub(crate) name: String,
+    /// The data path or command the element is bound to; `null` when unbound.
+    pub(crate) binding: Option<FormInfoBinding>,
+    /// The element title when it differs from its name; `null` otherwise.
+    pub(crate) title: Option<String>,
+    pub(crate) visible: bool,
+    pub(crate) enabled: bool,
+    pub(crate) read_only: bool,
+    pub(crate) events: Vec<FormInfoEvent>,
+    pub(crate) children: Vec<FormInfoElement>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FormInfoBinding {
+    /// `dataPath`, `standardCommand`, `command` or `other`.
+    pub(crate) kind: String,
+    pub(crate) target: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FormInfoAttribute {
+    pub(crate) name: String,
+    #[serde(rename = "type")]
+    pub(crate) type_name: Option<String>,
+    pub(crate) is_main: bool,
+    /// `MainTable` of a dynamic list; `null` for every other type.
+    pub(crate) main_table: Option<String>,
+    /// Columns of a value table or tree; empty for every other type.
+    pub(crate) columns: Vec<FormInfoColumn>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FormInfoColumn {
+    pub(crate) name: String,
+    #[serde(rename = "type")]
+    pub(crate) type_name: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FormInfoParameter {
+    pub(crate) name: String,
+    #[serde(rename = "type")]
+    pub(crate) type_name: Option<String>,
+    pub(crate) is_key: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FormInfoCommand {
+    pub(crate) name: String,
+    pub(crate) actions: Vec<FormInfoEvent>,
+    /// The keyboard shortcut; `null` when the command declares none.
+    pub(crate) shortcut: Option<String>,
+}
+
+pub(crate) struct FormInfoExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<FormInfoData>,
+}
+
+fn form_info_optional(value: String) -> Option<String> {
+    (!value.is_empty()).then_some(value)
+}
+
+fn form_info_events_section(events: roxmltree::Node<'_, '_>) -> Vec<FormInfoEvent> {
+    form_children(events, "Event")
+        .into_iter()
+        .map(|event| FormInfoEvent {
+            name: event.attribute("name").unwrap_or("").to_string(),
+            handler: event.text().unwrap_or("").to_string(),
+            call_type: event.attribute("callType").map(str::to_string),
+        })
+        .collect()
+}
+
+fn form_info_binding(node: roxmltree::Node<'_, '_>) -> Option<FormInfoBinding> {
+    if let Some(data_path) = form_child_text(node, "DataPath") {
+        return Some(FormInfoBinding {
+            kind: "dataPath".to_string(),
+            target: data_path,
+        });
+    }
+    let command_name = form_child_text(node, "CommandName")?;
+    if let Some(name) = command_name.strip_prefix("Form.StandardCommand.") {
+        Some(FormInfoBinding {
+            kind: "standardCommand".to_string(),
+            target: name.to_string(),
+        })
+    } else if let Some(name) = command_name.strip_prefix("Form.Command.") {
+        Some(FormInfoBinding {
+            kind: "command".to_string(),
+            target: name.to_string(),
+        })
+    } else {
+        Some(FormInfoBinding {
+            kind: "other".to_string(),
+            target: command_name,
+        })
+    }
+}
+
+/// Typed counterpart of [`form_build_tree`]. The report collapsed deep pages
+/// behind `-Expand`; data has no reason to hide them, so the whole tree is
+/// always walked.
+fn form_info_tree(child_items: roxmltree::Node<'_, '_>) -> Vec<FormInfoElement> {
+    child_items
+        .children()
+        .filter(|child| {
+            child.is_element() && !form_skip_elements().contains(&child.tag_name().name())
+        })
+        .map(|child| {
+            let name = child.attribute("name").unwrap_or("").to_string();
+            FormInfoElement {
+                tag: form_element_tag(child),
+                title: form_title_differs(child, &name),
+                name,
+                binding: form_info_binding(child),
+                visible: form_child_text(child, "Visible").as_deref() != Some("false"),
+                enabled: form_child_text(child, "Enabled").as_deref() != Some("false"),
+                read_only: form_child_text(child, "ReadOnly").as_deref() == Some("true"),
+                events: form_child(child, "Events")
+                    .map(form_info_events_section)
+                    .unwrap_or_default(),
+                children: form_child(child, "ChildItems")
+                    .map(form_info_tree)
+                    .unwrap_or_default(),
+            }
+        })
+        .collect()
+}
+
+fn form_info_attributes(attrs: roxmltree::Node<'_, '_>) -> Vec<FormInfoAttribute> {
+    form_children(attrs, "Attribute")
+        .into_iter()
+        .map(|attr| {
+            let type_name = form_child(attr, "Type")
+                .map(form_format_type)
+                .and_then(form_info_optional);
+            let main_table = (type_name.as_deref() == Some("DynamicList"))
+                .then(|| form_child(attr, "Settings").and_then(|s| form_child_text(s, "MainTable")))
+                .flatten();
+            let columns = if matches!(type_name.as_deref(), Some("ValueTable") | Some("ValueTree"))
+            {
+                form_child(attr, "Columns")
+                    .map(|columns| {
+                        form_children(columns, "Column")
+                            .into_iter()
+                            .map(|column| FormInfoColumn {
+                                name: column.attribute("name").unwrap_or("").to_string(),
+                                type_name: form_child(column, "Type")
+                                    .map(form_format_type)
+                                    .and_then(form_info_optional),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            FormInfoAttribute {
+                name: attr.attribute("name").unwrap_or("").to_string(),
+                type_name,
+                is_main: form_child_text(attr, "MainAttribute").as_deref() == Some("true"),
+                main_table,
+                columns,
+            }
+        })
+        .collect()
+}
+
+fn form_info_parameters(params: roxmltree::Node<'_, '_>) -> Vec<FormInfoParameter> {
+    form_children(params, "Parameter")
+        .into_iter()
+        .map(|param| FormInfoParameter {
+            name: param.attribute("name").unwrap_or("").to_string(),
+            type_name: form_child(param, "Type")
+                .map(form_format_type)
+                .and_then(form_info_optional),
+            is_key: form_child_text(param, "KeyParameter").as_deref() == Some("true"),
+        })
+        .collect()
+}
+
+fn form_info_commands(commands: roxmltree::Node<'_, '_>) -> Vec<FormInfoCommand> {
+    form_children(commands, "Command")
+        .into_iter()
+        .map(|command| FormInfoCommand {
+            name: command.attribute("name").unwrap_or("").to_string(),
+            actions: form_children(command, "Action")
+                .into_iter()
+                .map(|action| FormInfoEvent {
+                    name: action.attribute("name").unwrap_or("").to_string(),
+                    handler: action.text().unwrap_or("").to_string(),
+                    call_type: action.attribute("callType").map(str::to_string),
+                })
+                .collect(),
+            shortcut: form_child_text(command, "Shortcut"),
+        })
+        .collect()
+}
+
 pub(crate) fn analyze_form_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
-    let result = (|| -> Result<(String, PathBuf), String> {
+    analyze_form_info_with_data(args, context).outcome
+}
+
+pub(crate) fn analyze_form_info_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> FormInfoExecution {
+    let result = (|| -> Result<(FormInfoData, PathBuf), String> {
         let raw_path = required_path(args, FORM_PATH, "FormPath")?;
         let form_path = resolve_form_info_path(absolutize(raw_path, &context.cwd));
         if !form_path.is_file() {
@@ -1440,24 +1701,9 @@ pub(crate) fn analyze_form_info(
         let is_extension = base_form.is_some();
         let (form_name, object_context) = form_info_context(&form_path);
 
-        let mut lines = Vec::new();
         let form_title = form_child(root, "Title")
             .map(form_ml_text)
             .filter(|value| !value.is_empty());
-        let ext_marker = if is_extension { " [EXTENSION]" } else { "" };
-        let mut header = format!("=== Form: {form_name}{ext_marker}");
-        if let Some(title) = form_title {
-            header.push_str(&format!(" — \"{title}\""));
-        }
-        if !object_context.is_empty() {
-            header.push_str(&format!(" ({object_context})"));
-        }
-        header.push_str(" ===");
-        lines.push(header);
-        lines.push(format!(
-            "Поддержка: {}",
-            support_status_for_path(&form_path)
-        ));
 
         let prop_names = [
             "Width",
@@ -1482,159 +1728,95 @@ pub(crate) fn analyze_form_info(
             "VerticalScroll",
             "ScalingMode",
         ];
-        let props = prop_names
+        let properties = prop_names
             .iter()
             .filter_map(|name| {
                 form_child(root, name).and_then(|node| {
                     let value = form_ml_text(node);
-                    if value.is_empty() {
-                        None
-                    } else {
-                        Some(format!("{name}={value}"))
-                    }
+                    (!value.is_empty()).then(|| FormInfoProperty {
+                        name: (*name).to_string(),
+                        value,
+                    })
                 })
             })
             .collect::<Vec<_>>();
-        if !props.is_empty() {
-            lines.push(String::new());
-            lines.push(format!("Properties: {}", props.join(", ")));
-        }
 
-        if let Some(events) = form_child(root, "Events") {
-            let event_lines = form_event_lines(events);
-            if !event_lines.is_empty() {
-                lines.push(String::new());
-                lines.push("Events:".to_string());
-                lines.extend(event_lines);
-            }
-        }
-
-        let cb_loc = form_child_text(root, "CommandBarLocation")
+        let command_bar_location = form_child_text(root, "CommandBarLocation")
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "Auto".to_string());
-        let acb_lines = if cb_loc != "None" {
+        let auto_command_bar = if command_bar_location != "None" {
             form_child(root, "AutoCommandBar")
                 .map(form_main_command_bar_lines)
                 .unwrap_or_default()
         } else {
             Vec::new()
         };
-        if !acb_lines.is_empty() && matches!(cb_loc.as_str(), "Auto" | "Top") {
-            lines.push(String::new());
-            lines.extend(acb_lines.clone());
-        }
 
-        let mut tree_state = FormTreeState {
-            has_collapsed: false,
+        let data = FormInfoData {
+            name: form_name,
+            title: form_title,
+            object_context: (!object_context.is_empty()).then_some(object_context),
+            is_extension,
+            base_form_version: base_form
+                .map(|node| node.attribute("version").unwrap_or("").to_string()),
+            support: object_support_state(&form_path),
+            properties,
+            events: form_child(root, "Events")
+                .map(form_info_events_section)
+                .unwrap_or_default(),
+            auto_command_bar,
+            command_bar_location,
+            elements: form_child(root, "ChildItems")
+                .map(form_info_tree)
+                .unwrap_or_default(),
+            attributes: form_child(root, "Attributes")
+                .map(form_info_attributes)
+                .unwrap_or_default(),
+            parameters: form_child(root, "Parameters")
+                .map(form_info_parameters)
+                .unwrap_or_default(),
+            commands: form_child(root, "Commands")
+                .map(form_info_commands)
+                .unwrap_or_default(),
         };
-        if let Some(child_items) = form_child(root, "ChildItems") {
-            let mut tree_lines = Vec::new();
-            form_build_tree(child_items, "  ", &mut tree_lines, expand, &mut tree_state);
-            lines.push(String::new());
-            lines.push("Elements:".to_string());
-            lines.extend(tree_lines);
-        }
+        let _ = (limit, offset, expand);
 
-        if !acb_lines.is_empty() && cb_loc == "Bottom" {
-            lines.push(String::new());
-            lines.extend(acb_lines);
-        }
-
-        if let Some(attrs) = form_child(root, "Attributes") {
-            let attr_lines = form_attribute_lines(attrs);
-            if !attr_lines.is_empty() {
-                lines.push(String::new());
-                lines.push("Attributes:".to_string());
-                lines.extend(attr_lines);
-            }
-        }
-
-        if let Some(params) = form_child(root, "Parameters") {
-            let param_lines = form_parameter_lines(params);
-            if !param_lines.is_empty() {
-                lines.push(String::new());
-                lines.push("Parameters:".to_string());
-                lines.extend(param_lines);
-            }
-        }
-
-        if let Some(commands) = form_child(root, "Commands") {
-            let command_lines = form_command_lines(commands);
-            if !command_lines.is_empty() {
-                lines.push(String::new());
-                lines.push("Commands:".to_string());
-                lines.extend(command_lines);
-            }
-        }
-
-        if let Some(base_form) = base_form {
-            let version = base_form.attribute("version").unwrap_or("");
-            let base_form_text = if version.is_empty() {
-                "present".to_string()
-            } else {
-                format!("present (version {version})")
-            };
-            lines.push(String::new());
-            lines.push(format!("BaseForm: {base_form_text}"));
-        }
-
-        if tree_state.has_collapsed {
-            lines.push(String::new());
-            lines.push(
-                "Hint: use -Expand <name> to expand a collapsed section, -Expand * for all"
-                    .to_string(),
-            );
-        }
-
-        let total_lines = lines.len();
-        if offset > 0 {
-            if offset >= total_lines {
-                return Ok((
-                    format!(
-                        "[INFO] Offset {offset} exceeds total lines ({total_lines}). Nothing to show.\n"
-                    ),
-                    form_path,
-                ));
-            }
-            lines = lines.into_iter().skip(offset).collect();
-        }
-
-        let stdout = if lines.len() > limit {
-            let shown = lines.iter().take(limit).cloned().collect::<Vec<_>>();
-            format!(
-                "{}\n\n[TRUNCATED] Shown {limit} of {total_lines} lines. Use -Offset {} to continue.\n",
-                shown.join("\n"),
-                offset + limit
-            )
-        } else {
-            format!("{}\n", lines.join("\n"))
-        };
-
-        Ok((stdout, form_path))
+        Ok((data, form_path))
     })();
 
     match result {
-        Ok((stdout, artifact)) => AdapterOutcome {
-            ok: true,
-            summary: "unica.form.info completed with native form analyzer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: Vec::new(),
-            artifacts: vec![artifact.display().to_string()],
-            stdout: Some(stdout),
-            stderr: Some(String::new()),
-            command: None,
+        Ok((data, artifact)) => FormInfoExecution {
+            outcome: AdapterOutcome {
+                ok: true,
+                summary: format!(
+                    "unica.form.info described {} with {} element(s) and {} attribute(s)",
+                    data.name,
+                    data.elements.len(),
+                    data.attributes.len()
+                ),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: Vec::new(),
+                artifacts: vec![artifact.display().to_string()],
+                stdout: None,
+                stderr: Some(String::new()),
+                command: None,
+            },
+            data: Some(data),
         },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.form.info failed in native form analyzer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: Some(String::new()),
-            stderr: Some(format!("{error}\n")),
-            command: None,
+        Err(error) => FormInfoExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.form.info failed in native form analyzer".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.clone()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{error}\n")),
+                command: None,
+            },
+            data: None,
         },
     }
 }
@@ -2227,8 +2409,36 @@ fn validate_form_metadata_path_name(argument: &str, value: &str) -> Result<(), S
     }
 }
 
+/// Typed answer of `unica.form.add` (ADR-0023): the form that was scaffolded,
+/// where it was registered, and whether it became the object's default.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FormAddData {
+    pub(crate) object_kind: String,
+    pub(crate) object_name: String,
+    pub(crate) form: String,
+    /// The object descriptor the form was registered in.
+    pub(crate) registered_in: String,
+    /// The default-form property this form was assigned to; `null` when the
+    /// call left the object's defaults alone.
+    pub(crate) default_property: Option<String>,
+    pub(crate) mutation: MutationData,
+}
+
+pub(crate) struct FormAddExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<FormAddData>,
+}
+
 pub(crate) fn add_form(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
-    let result = (|| -> Result<(String, Vec<PathBuf>, Vec<String>), String> {
+    add_form_with_data(args, context).outcome
+}
+
+pub(crate) fn add_form_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> FormAddExecution {
+    let result = (|| -> Result<(FormAddData, Vec<PathBuf>, Vec<String>), String> {
         let object_path_raw = required_path(args, OBJECT_PATH, "ObjectPath")?;
         let form_name = required_string(args, &["formName", "FormName"], "FormName")?;
         validate_form_metadata_path_name("FormName", form_name)?;
@@ -2326,66 +2536,82 @@ pub(crate) fn add_form(args: &Map<String, Value>, context: &WorkspaceContext) ->
             .file_stem()
             .and_then(|value| value.to_str())
             .unwrap_or("");
-        stdout.push_str("Created:\n");
-        stdout.push_str(&format!(
-            "  Metadata: {obj_dir_name}\\{obj_base_name}\\Forms\\{form_name}.xml\n"
-        ));
-        stdout.push_str(&format!(
-            "  Form:     {obj_dir_name}\\{obj_base_name}\\Forms\\{form_name}\\Ext\\Form.xml\n"
-        ));
-        stdout.push_str(&format!(
-            "  Module:   {obj_dir_name}\\{obj_base_name}\\Forms\\{form_name}\\Ext\\Form\\Module.bsl\n"
-        ));
-        stdout.push('\n');
-        stdout.push_str(&format!(
-            "Registered: <Form>{form_name}</Form> in ChildObjects\n"
-        ));
-        if default_updated {
-            stdout.push_str(&format!("{default_prop_name}: {default_value}\n"));
-        }
-        stdout.push('\n');
+        let _ = (stdout, obj_dir_name, obj_base_name, default_value);
+        let data = FormAddData {
+            object_kind: object_type.to_string(),
+            object_name: object_name.to_string(),
+            form: form_name.to_string(),
+            registered_in: object_xml_full.display().to_string(),
+            default_property: default_updated.then(|| default_prop_name.to_string()),
+            mutation: MutationData::new(true)
+                .updated(&object_xml_full)
+                .created(&form_meta_path)
+                .created(&form_xml_path)
+                .created(&module_path),
+        };
 
         Ok((
-            stdout,
+            data,
             vec![object_xml_full, form_meta_path, form_xml_path, module_path],
             report.cleanup_warnings,
         ))
     })();
 
     match result {
-        Ok((stdout, artifacts, warnings)) => AdapterOutcome {
-            ok: true,
-            summary: "unica.form.add completed with native form scaffold writer".to_string(),
-            changes: artifacts
-                .iter()
-                .map(|path| format!("updated {}", path.display()))
-                .collect(),
-            warnings,
-            errors: Vec::new(),
-            artifacts: artifacts
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect(),
-            stdout: Some(stdout),
-            stderr: None,
-            command: None,
+        Ok((data, artifacts, warnings)) => FormAddExecution {
+            outcome: AdapterOutcome {
+                ok: true,
+                summary: format!(
+                    "unica.form.add created form {} for {}.{}",
+                    data.form, data.object_kind, data.object_name
+                ),
+                changes: artifacts
+                    .iter()
+                    .map(|path| format!("updated {}", path.display()))
+                    .collect(),
+                warnings,
+                errors: Vec::new(),
+                artifacts: artifacts
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect(),
+                stdout: None,
+                stderr: None,
+                command: None,
+            },
+            data: Some(data),
         },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.form.add failed in native form scaffold writer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-            command: None,
+        Err(error) => FormAddExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.form.add failed in native form scaffold writer".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.clone()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{error}\n")),
+                command: None,
+            },
+            data: None,
         },
     }
 }
 
 pub(crate) fn remove_form(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
-    let result = (|| -> Result<(String, Vec<String>, Vec<String>), String> {
+    remove_form_with_data(args, context).outcome
+}
+
+pub(crate) struct FormRemoveExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<MutationData>,
+}
+
+pub(crate) fn remove_form_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> FormRemoveExecution {
+    let result = (|| -> Result<(MutationData, Vec<String>, Vec<String>), String> {
         let object_name = required_string(
             args,
             &["objectName", "ObjectName", "processorName", "ProcessorName"],
@@ -2522,12 +2748,14 @@ pub(crate) fn remove_form(args: &Map<String, Value>, context: &WorkspaceContext)
 
         let mut stdout = String::new();
         let mut changes = Vec::new();
+        let mut mutation = MutationData::new(true);
         if form_dir_exists {
             stdout.push_str(&format!(
                 "[OK] Удалён каталог: {}\n",
                 form_dir_display.display()
             ));
             changes.push(format!("removed directory {}", form_dir_path.display()));
+            mutation = mutation.removed(&form_dir_path);
         }
         if remove_forms_collection {
             changes.push(format!(
@@ -2540,6 +2768,7 @@ pub(crate) fn remove_form(args: &Map<String, Value>, context: &WorkspaceContext)
             form_meta_display.display()
         ));
         changes.push(format!("removed file {}", form_meta_path.display()));
+        mutation = mutation.removed(&form_meta_path);
         if removed_form_refs > 0 {
             changes.push(format!("removed {removed_form_refs} Form reference(s)"));
         }
@@ -2547,36 +2776,47 @@ pub(crate) fn remove_form(args: &Map<String, Value>, context: &WorkspaceContext)
             changes.push(format!("cleared {tag}"));
         }
         changes.push(format!("updated {}", root_xml_path.display()));
+        mutation = mutation.updated(&root_xml_path);
 
         stdout.push_str(&format!(
             "[OK] Форма {form_name} удалена из {}\n",
             root_xml_display.display()
         ));
-        Ok((stdout, changes, report.cleanup_warnings))
+        let _ = stdout;
+        Ok((mutation, changes, report.cleanup_warnings))
     })();
 
     match result {
-        Ok((stdout, changes, warnings)) => AdapterOutcome {
-            ok: true,
-            summary: "unica.form.remove completed with native form remover".to_string(),
-            changes,
-            warnings,
-            errors: Vec::new(),
-            artifacts: Vec::new(),
-            stdout: Some(stdout),
-            stderr: Some(String::new()),
-            command: None,
+        Ok((mutation, changes, warnings)) => FormRemoveExecution {
+            outcome: AdapterOutcome {
+                ok: true,
+                summary: format!(
+                    "unica.form.remove removed {} path(s)",
+                    mutation.removed.len()
+                ),
+                changes,
+                warnings,
+                errors: Vec::new(),
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(String::new()),
+                command: None,
+            },
+            data: Some(mutation),
         },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.form.remove failed in native form remover".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-            command: None,
+        Err(error) => FormRemoveExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "unica.form.remove failed in native form remover".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error.clone()],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: Some(format!("{error}\n")),
+                command: None,
+            },
+            data: None,
         },
     }
 }
@@ -4210,7 +4450,58 @@ pub(crate) struct FormEditExecution {
 pub(crate) struct FormEditData {
     changed: bool,
     removed: Vec<FormEditRemovedElement>,
+    /// Elements added to the form layout.
+    added_elements: Vec<FormEditAddedElement>,
+    /// Attributes added to the form.
+    added_attributes: Vec<FormEditAddedAttribute>,
+    /// Commands added to the form.
+    added_commands: Vec<FormEditAddedCommand>,
+    /// Event handlers wired up, on the form itself or on an element.
+    added_events: Vec<FormEditAddedEvent>,
     validation: FormEditValidation,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FormEditAddedElement {
+    kind: String,
+    name: String,
+    /// The data path the element is bound to; `null` when it binds nothing.
+    path: Option<String>,
+    /// How a table renders its rows; `null` for anything but a table, or when
+    /// the definition leaves it at the platform default.
+    representation: Option<String>,
+    /// Whether a table auto-inserts a new row; `null` when unset.
+    auto_insert_new_row: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FormEditAddedAttribute {
+    name: String,
+    #[serde(rename = "type")]
+    type_name: String,
+    id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FormEditAddedCommand {
+    name: String,
+    /// The command's action handler; `null` when it has none.
+    action: Option<String>,
+    id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FormEditAddedEvent {
+    /// The element the handler belongs to; `null` for a form-level event.
+    element: Option<String>,
+    name: String,
+    handler: String,
+    /// The `[client]`/`[server]` call type, when the definition sets one.
+    call_type: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -4220,7 +4511,7 @@ struct FormEditRemovedElement {
     reason: FormEditRemovalReason,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 enum FormEditRemovalReason {
     Requested,
@@ -4234,7 +4525,10 @@ enum FormEditValidation {
 }
 
 struct FormEditSuccess {
-    stdout: String,
+    added_elements: Vec<FormEditAddedElement>,
+    added_attributes: Vec<FormEditAddedAttribute>,
+    added_commands: Vec<FormEditAddedCommand>,
+    added_events: Vec<FormEditAddedEvent>,
     form_path: PathBuf,
     changed: bool,
     warnings: Vec<String>,
@@ -4314,7 +4608,7 @@ fn form_edit_with_mode_data(
             cmd_ids.next = cmd_ids.next.max(999_999);
         }
 
-        let mut added_elements = Vec::<String>::new();
+        let mut added_elements = Vec::<FormEditAddedElement>::new();
         let mut emitted_fragments = String::new();
         let mut companion_count = 0usize;
         if let Some(elements) = defn.get("elements").and_then(Value::as_array) {
@@ -4337,10 +4631,10 @@ fn form_edit_with_mode_data(
                     let start = elem_ids.next;
                     let mut lines = Vec::<String>::new();
                     for element in elements {
-                        let summary = form_edit_element_summary(element);
+                        let record = form_edit_element_record(element);
                         emit_form_element(&mut lines, element, &element_indent, &mut elem_ids)?;
-                        if let Some(summary) = summary {
-                            added_elements.push(summary);
+                        if let Some(record) = record {
+                            added_elements.push(record);
                         }
                     }
                     emitted_fragments.push_str(&lines.join("\n"));
@@ -4350,7 +4644,7 @@ fn form_edit_with_mode_data(
             }
         }
 
-        let mut added_attrs = Vec::<String>::new();
+        let mut added_attrs = Vec::<FormEditAddedAttribute>::new();
         if let Some(attrs) = defn.get("attributes").and_then(Value::as_array) {
             if !attrs.is_empty() {
                 form_edit_validate_attribute_columns(attrs)?;
@@ -4368,14 +4662,18 @@ fn form_edit_with_mode_data(
                         .get("type")
                         .and_then(Value::as_str)
                         .unwrap_or("(no type)");
-                    added_attrs.push(format!("  + {name}: {type_name} (id={id})"));
+                    added_attrs.push(FormEditAddedAttribute {
+                        name: name.to_string(),
+                        type_name: type_name.to_string(),
+                        id: id.to_string(),
+                    });
                 }
                 emitted_fragments.push_str(&lines.join("\n"));
                 form_edit_insert_section_items(&mut xml_text, "Attributes", &lines)?;
             }
         }
 
-        let mut added_cmds = Vec::<String>::new();
+        let mut added_cmds = Vec::<FormEditAddedCommand>::new();
         if let Some(commands) = defn.get("commands").and_then(Value::as_array) {
             if !commands.is_empty() {
                 let mut lines = Vec::<String>::new();
@@ -4388,25 +4686,39 @@ fn form_edit_with_mode_data(
                     };
                     let id = cmd_ids.next();
                     emit_form_edit_command_item(&mut lines, object, name, id, "\t\t");
-                    let action = object
-                        .get("action")
-                        .and_then(Value::as_str)
-                        .map(|value| format!(" -> {value}"))
-                        .unwrap_or_default();
-                    added_cmds.push(format!("  + {name}{action} (id={id})"));
+                    added_cmds.push(FormEditAddedCommand {
+                        name: name.to_string(),
+                        action: object
+                            .get("action")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                        id: id.to_string(),
+                    });
                 }
                 emitted_fragments.push_str(&lines.join("\n"));
                 form_edit_insert_section_items(&mut xml_text, "Commands", &lines)?;
             }
         }
 
-        let mut added_form_events = Vec::<String>::new();
-        let mut added_element_events = Vec::<String>::new();
+        let mut added_form_events = Vec::<FormEditAddedEvent>::new();
+        let mut added_element_events = Vec::<FormEditAddedEvent>::new();
         for event in &planned_events {
             form_edit_apply_planned_event(&mut xml_text, event)?;
             match &event.owner {
-                FormEditEventOwner::Form => added_form_events.push(event.summary()),
-                FormEditEventOwner::Element(_) => added_element_events.push(event.summary()),
+                FormEditEventOwner::Form => added_form_events.push(FormEditAddedEvent {
+                    element: None,
+                    name: event.name.clone(),
+                    handler: event.handler.clone(),
+                    call_type: event.call_type.clone(),
+                }),
+                FormEditEventOwner::Element(element) => {
+                    added_element_events.push(FormEditAddedEvent {
+                        element: Some(element.clone()),
+                        name: event.name.clone(),
+                        handler: event.handler.clone(),
+                        call_type: event.call_type.clone(),
+                    })
+                }
             }
         }
 
@@ -4436,124 +4748,16 @@ fn form_edit_with_mode_data(
             )?;
         }
 
-        let mut stdout = format!("=== form-edit: {form_name} ===\n\n");
-        if !planned_removals.is_empty() {
-            stdout.push_str(if mode.is_preview() {
-                "Planned removals:\n"
-            } else {
-                "Removed elements:\n"
-            });
-            for removal in &planned_removals {
-                stdout.push_str(&format!("  - {} ({})\n", removal.name, removal.kind));
-                if !removal.contained.is_empty() {
-                    stdout.push_str("    contained: ");
-                    stdout.push_str(
-                        &removal
-                            .contained
-                            .iter()
-                            .map(|node| format!("{} ({})", node.name, node.kind))
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                    );
-                    stdout.push('\n');
-                }
-            }
-            stdout.push('\n');
-        }
-        if !added_form_events.is_empty() {
-            stdout.push_str(if mode.is_preview() {
-                "Planned form events:\n"
-            } else {
-                "Added form events:\n"
-            });
-            stdout.push_str(&added_form_events.join("\n"));
-            stdout.push_str("\n\n");
-        }
-        if !added_element_events.is_empty() {
-            stdout.push_str(if mode.is_preview() {
-                "Planned element events:\n"
-            } else {
-                "Added element events:\n"
-            });
-            stdout.push_str(&added_element_events.join("\n"));
-            stdout.push_str("\n\n");
-        }
-        if !added_elements.is_empty() {
-            stdout.push_str(if mode.is_preview() {
-                "Planned elements:\n"
-            } else {
-                "Added elements:\n"
-            });
-            stdout.push_str(&added_elements.join("\n"));
-            stdout.push_str("\n\n");
-        }
-        if !added_attrs.is_empty() {
-            stdout.push_str(if mode.is_preview() {
-                "Planned attributes:\n"
-            } else {
-                "Added attributes:\n"
-            });
-            stdout.push_str(&added_attrs.join("\n"));
-            stdout.push_str("\n\n");
-        }
-        if !added_cmds.is_empty() {
-            stdout.push_str(if mode.is_preview() {
-                "Planned commands:\n"
-            } else {
-                "Added commands:\n"
-            });
-            stdout.push_str(&added_cmds.join("\n"));
-            stdout.push_str("\n\n");
-        }
-        let mut total_parts = Vec::new();
-        if !added_form_events.is_empty() {
-            total_parts.push(format!("{} form event(s)", added_form_events.len()));
-        }
-        if !added_element_events.is_empty() {
-            total_parts.push(format!("{} element event(s)", added_element_events.len()));
-        }
-        if !planned_removals.is_empty() {
-            let contained = planned_removals
-                .iter()
-                .map(|removal| removal.contained.len())
-                .sum::<usize>();
-            if contained > 0 {
-                total_parts.push(format!(
-                    "{} element removal(s) (+{} contained)",
-                    planned_removals.len(),
-                    contained
-                ));
-            } else {
-                total_parts.push(format!("{} element removal(s)", planned_removals.len()));
-            }
-        }
-        if !added_elements.is_empty() {
-            if companion_count > 0 {
-                total_parts.push(format!(
-                    "{} element(s) (+{} companions)",
-                    added_elements.len(),
-                    companion_count
-                ));
-            } else {
-                total_parts.push(format!("{} element(s)", added_elements.len()));
-            }
-        }
-        if !added_attrs.is_empty() {
-            total_parts.push(format!("{} attribute(s)", added_attrs.len()));
-        }
-        if !added_cmds.is_empty() {
-            total_parts.push(format!("{} command(s)", added_cmds.len()));
-        }
-        stdout.push_str("---\n");
-        if changed {
-            stdout.push_str(&format!("Total: {}\n", total_parts.join(", ")));
-        } else {
-            stdout.push_str("Total: idempotent no-op; source bytes preserved.\n");
-        }
-        stdout.push_str("Run /form-validate to verify.\n");
-
+        let _ = &form_name;
+        let _ = companion_count;
         Ok(FormEditSuccess {
-            stdout,
+            added_elements,
+            added_attributes: added_attrs,
+            added_commands: added_cmds,
+            added_events: added_form_events
+                .into_iter()
+                .chain(added_element_events)
+                .collect(),
             form_path,
             changed,
             warnings,
@@ -4563,7 +4767,10 @@ fn form_edit_with_mode_data(
 
     match edit_result {
         Ok(FormEditSuccess {
-            stdout,
+            added_elements,
+            added_attributes,
+            added_commands,
+            added_events,
             form_path,
             changed,
             warnings,
@@ -4596,13 +4803,17 @@ fn form_edit_with_mode_data(
                 warnings,
                 errors: Vec::new(),
                 artifacts: vec![form_path.display().to_string()],
-                stdout: Some(stdout),
+                stdout: None,
                 stderr: None,
                 command: None,
             },
             data: Some(FormEditData {
                 changed,
                 removed: form_edit_removed_elements(&removals),
+                added_elements,
+                added_attributes,
+                added_commands,
+                added_events,
                 validation: FormEditValidation::Passed,
             }),
         },
@@ -6344,6 +6555,37 @@ pub(crate) fn form_edit_element_display_name(element: &Value) -> Option<String> 
     let object = element.as_object()?;
     let kind = FormEditElementDefinitionKind::from_object(object).ok()?;
     kind.name(object).ok().map(ToOwned::to_owned)
+}
+
+/// Typed counterpart of [`form_edit_element_summary`] (ADR-0023): the same
+/// element identity, as fields rather than a rendered line.
+fn form_edit_element_record(element: &Value) -> Option<FormEditAddedElement> {
+    let object = element.as_object()?;
+    let kind = FormEditElementDefinitionKind::from_object(object).ok()?;
+    if kind == FormEditElementDefinitionKind::AutoCommandBar {
+        return None;
+    }
+    let is_table = kind == FormEditElementDefinitionKind::Table;
+    Some(FormEditAddedElement {
+        kind: format!("{kind:?}"),
+        name: form_edit_element_display_name(element)?,
+        path: object
+            .get("path")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        representation: is_table
+            .then(|| {
+                object
+                    .get("representation")
+                    .and_then(Value::as_str)
+                    .and_then(form_compile_table_representation)
+                    .map(str::to_string)
+            })
+            .flatten(),
+        auto_insert_new_row: is_table
+            .then(|| object.get("autoInsertNewRow").and_then(Value::as_bool))
+            .flatten(),
+    })
 }
 
 pub(crate) fn form_edit_element_summary(element: &Value) -> Option<String> {
@@ -11777,7 +12019,8 @@ mod tests {
             ),
         ]);
 
-        let outcome = preview_form_edit(&args, &context);
+        let execution = preview_with_data(&args, &context);
+        let outcome = &execution.outcome;
 
         assert!(outcome.ok, "{outcome:?}");
         assert!(
@@ -11787,16 +12030,36 @@ mod tests {
                 .any(|change| change.contains("would update")),
             "{outcome:?}"
         );
-        let stdout = outcome.stdout.unwrap_or_default();
-        assert!(stdout.contains("Planned removals:"), "{stdout}");
-        assert!(stdout.contains("  - Target (InputField)"), "{stdout}");
-        assert!(
-            stdout.contains(
-                "    contained: TargetContextMenu (ContextMenu), TargetExtendedTooltip (ExtendedTooltip)"
-            ),
-            "{stdout}"
+        let data = execution
+            .data
+            .as_ref()
+            .expect("form.edit answers with data");
+        let removed = data
+            .removed
+            .iter()
+            .map(|item| (item.name.as_str(), item.kind.as_str(), &item.reason))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            removed,
+            vec![
+                ("Target", "InputField", &FormEditRemovalReason::Requested),
+                (
+                    "TargetContextMenu",
+                    "ContextMenu",
+                    &FormEditRemovalReason::Contained
+                ),
+                (
+                    "TargetExtendedTooltip",
+                    "ExtendedTooltip",
+                    &FormEditRemovalReason::Contained
+                ),
+            ],
+            "{data:?}"
         );
-        assert!(!stdout.contains("TargetDetails"), "{stdout}");
+        assert!(
+            !data.removed.iter().any(|item| item.name == "TargetDetails"),
+            "a sibling subtree must stay: {data:?}"
+        );
         assert_eq!(fs::read(&form_path).unwrap(), original);
 
         let outcome = edit_form(&args, &context);
@@ -14251,13 +14514,14 @@ mod tests {
         )]);
         let validation = validate_form(&validate_args, &context);
         assert!(validation.ok, "{validation:?}");
-        let info = analyze_form_info(&validate_args, &context);
-        assert!(info.ok, "{info:?}");
+        let info = analyze_form_info_with_data(&validate_args, &context);
+        assert!(info.outcome.ok, "{:?}", info.outcome);
+        let info_data = info.data.as_ref().expect("form.info answers with data");
         assert!(
-            info.stdout
-                .as_deref()
-                .is_some_and(|stdout| stdout.contains("OnCreateAtServer -> OnCreateAtServer")),
-            "{info:?}"
+            info_data.events.iter().any(
+                |event| event.name == "OnCreateAtServer" && event.handler == "OnCreateAtServer"
+            ),
+            "{info_data:?}"
         );
 
         let _ = fs::remove_dir_all(&context.cwd);
@@ -18382,11 +18646,17 @@ mod tests {
                 json!({"elements": [{"input": "Name"}]}),
             ),
         ]);
-        let outcome = preview_form_edit(&args, &context);
+        let execution = preview_with_data(&args, &context);
+        let outcome = &execution.outcome;
         assert!(outcome.ok, "{outcome:?}");
-        let stdout = outcome.stdout.unwrap_or_default();
-        assert!(stdout.contains("Planned elements:"), "{stdout}");
-        assert!(!stdout.contains("Added elements:"), "{stdout}");
+        // A preview plans the element and writes nothing; the summary, not a
+        // printed heading, is what marks it as a dry run.
+        assert!(outcome.summary.starts_with("dry run:"), "{outcome:?}");
+        let data = execution
+            .data
+            .as_ref()
+            .expect("form.edit answers with data");
+        assert!(!data.added_elements.is_empty(), "{data:?}");
         assert_eq!(fs::read(&form_path).unwrap(), original);
         let _ = fs::remove_dir_all(&context.cwd);
     }
@@ -18414,12 +18684,21 @@ mod tests {
             ),
         ]);
 
-        let outcome = preview_form_edit(&args, &context);
+        let execution = preview_with_data(&args, &context);
+        let outcome = &execution.outcome;
 
         assert!(outcome.ok, "{outcome:?}");
-        let stdout = outcome.stdout.unwrap_or_default();
-        assert!(stdout.contains("representation=List"), "{stdout}");
-        assert!(stdout.contains("autoInsertNewRow=true"), "{stdout}");
+        let data = execution
+            .data
+            .as_ref()
+            .expect("form.edit answers with data");
+        let table = data
+            .added_elements
+            .iter()
+            .find(|element| element.kind == "Table")
+            .expect("the planned table is reported");
+        assert_eq!(table.representation.as_deref(), Some("List"), "{table:?}");
+        assert_eq!(table.auto_insert_new_row, Some(true), "{table:?}");
         assert_eq!(fs::read(&form_path).unwrap(), original);
 
         let _ = fs::remove_dir_all(&context.cwd);

@@ -183,11 +183,13 @@ for raw in sys.stdin:
             "artifacts": [],
         }
         if name == "unica.project.map":
-            payload["stdout"] = json.dumps({
+            # ADR-0023: the map is typed data, not a JSON string in stdout.
+            payload.pop("stdout")
+            payload["data"] = {
                 "sourceSets": [
                     {"name": "main", "path": "src/cf", "sourceFormat": "platform_xml"}
                 ]
-            }, ensure_ascii=False)
+            }
         elif name == "unica.code.diagnostics" and arguments.get("mode") == "workspace":
             payload["diagnostics"] = [
                 {"code": "UnusedLocalVariable", "file": "CommonModules/Test/Ext/Module.bsl"}

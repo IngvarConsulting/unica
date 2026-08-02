@@ -6,12 +6,13 @@ use crate::domain::format_profile::{
     classify_root_version, ExportFormatVersion, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
 };
 use crate::domain::source_target::{
-    MetadataAddress, SourceTarget, SourceTargetError, SourceTargetErrorCode,
-    PLATFORM_XML_8_3_27_FORMAT_2_20,
+    MetadataAddress, ResolvedTarget, SourceTarget, SourceTargetError, SourceTargetErrorCode,
+    TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform_xml_source_targets::{
     resolve_platform_xml_target, revalidate_platform_xml_target, ClosedPlatformXmlTarget,
+    TargetKindPolicy,
 };
 use crate::infrastructure::source_roots::normalize_path_identity;
 use roxmltree::Document;
@@ -1935,13 +1936,72 @@ pub(crate) fn code_patch_source_target(
     })
 }
 
+/// Builds the logical target of a read-only object reader from typed arguments.
+pub(crate) fn metadata_object_source_target(
+    args: &Map<String, Value>,
+) -> Result<SourceTarget, SourceTargetError> {
+    let source_set = args
+        .get("sourceSet")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            SourceTargetError::new(
+                SourceTargetErrorCode::SourceSetRequired,
+                "sourceSet must name an exact project source set",
+            )
+        })?;
+    let raw_metadata_path = args
+        .get("metadataPath")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            SourceTargetError::new(
+                SourceTargetErrorCode::MetadataAddressInvalid,
+                "metadataPath must identify one existing metadata object",
+            )
+        })?;
+    let metadata_path = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw_metadata_path)?;
+    Ok(SourceTarget {
+        source_set: source_set.to_string(),
+        metadata_path: Some(metadata_path),
+    })
+}
+
+/// Resolves a metadata object address to the descriptor that a reader parses.
+/// A module terminal is refused by name: reading a module is `unica.code.*`
+/// work, and silently reading its owner instead would answer another question.
+pub(crate) fn resolve_metadata_object_descriptor(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<(ResolvedTarget, PathBuf), String> {
+    let target = metadata_object_source_target(args).map_err(|error| error.to_string())?;
+    let resolution = resolve_platform_xml_target(context, &target, TargetKindPolicy::Any)
+        .map_err(|error| error.to_string())?;
+    if resolution.resolved.target_kind != TargetKind::MetadataObject {
+        return Err(format!(
+            "metadataPath `{}` names a module terminal; metadata object readers address the object itself",
+            target
+                .metadata_path
+                .as_ref()
+                .map(MetadataAddress::as_str)
+                .unwrap_or_default()
+        ));
+    }
+    let path = revalidate_platform_xml_target(context, &resolution.handle)
+        .map_err(|error| error.to_string())?
+        .path;
+    Ok((resolution.resolved, path))
+}
+
 pub(crate) fn resolve_code_patch_guard_path(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
     let target = code_patch_source_target(args).map_err(|error| error.to_string())?;
-    let resolution =
-        resolve_platform_xml_target(context, &target).map_err(|error| error.to_string())?;
+    let resolution = resolve_platform_xml_target(context, &target, TargetKindPolicy::ModuleOnly)
+        .map_err(|error| error.to_string())?;
     revalidate_platform_xml_target(context, &resolution.handle)
         .map(|target| target.path)
         .map_err(|error| error.to_string())
@@ -1952,6 +2012,15 @@ pub(crate) fn guard_code_patch_resolved_target(
     handle: &ClosedPlatformXmlTarget,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
+    // Belt and braces around the resolver policy: a handle that is not a module
+    // never reaches a writer, whatever produced it.
+    if handle.target_kind() != TargetKind::Module {
+        return Err(SourceTargetError::new(
+            SourceTargetErrorCode::TargetKindMismatch,
+            "metadataPath does not identify a module terminal",
+        )
+        .to_string());
+    }
     let target = revalidate_platform_xml_target(context, handle)
         .map_err(|error| error.to_string())?
         .path;
@@ -2190,6 +2259,99 @@ pub(crate) fn format_compatibility_warning(compatibility: &FormatCompatibility) 
     }
 }
 
+/// Typed answer shared by the writing tools (ADR-0023). Each tool builds it
+/// from the paths it actually touched, never by re-reading its own report: the
+/// point of the decision is to stop parsing prose, including our own.
+#[derive(Debug, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MutationData {
+    /// `false` when the call was a preview and nothing was written.
+    pub(crate) applied: bool,
+    pub(crate) created: Vec<String>,
+    pub(crate) updated: Vec<String>,
+    pub(crate) removed: Vec<String>,
+}
+
+impl MutationData {
+    pub(crate) fn new(applied: bool) -> Self {
+        Self {
+            applied,
+            ..Default::default()
+        }
+    }
+
+    pub(crate) fn created(mut self, path: &Path) -> Self {
+        self.created.push(path.display().to_string());
+        self
+    }
+
+    pub(crate) fn updated(mut self, path: &Path) -> Self {
+        self.updated.push(path.display().to_string());
+        self
+    }
+
+    pub(crate) fn removed(mut self, path: &Path) -> Self {
+        self.removed.push(path.display().to_string());
+        self
+    }
+}
+
+/// Typed support state for ADR-0023 readers. It lives beside `SupportState`
+/// because the counts are private there, and every reader needs the same
+/// four-state answer rather than its own rendering of it.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SupportData {
+    /// `notSupported`, `extension`, `removed` or `supported`.
+    pub(crate) state: &'static str,
+    pub(crate) editing_enabled: Option<bool>,
+    pub(crate) objects: Option<SupportCounts>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SupportCounts {
+    pub(crate) locked: u64,
+    pub(crate) editable: u64,
+    pub(crate) removed: u64,
+}
+
+pub(crate) fn support_state_data(config_path: &Path, is_extension: bool) -> SupportData {
+    let config_dir = if config_path.is_dir() {
+        config_path
+    } else {
+        config_path.parent().unwrap_or_else(|| Path::new(""))
+    };
+    let bin_path = config_dir.join("Ext").join("ParentConfigurations.bin");
+    let Some(state) = read_support_state(&bin_path) else {
+        return SupportData {
+            state: if is_extension {
+                "extension"
+            } else {
+                "notSupported"
+            },
+            editing_enabled: None,
+            objects: None,
+        };
+    };
+    if state.removed {
+        return SupportData {
+            state: "removed",
+            editing_enabled: None,
+            objects: None,
+        };
+    }
+    SupportData {
+        state: "supported",
+        editing_enabled: Some(state.global_editing_enabled),
+        objects: Some(SupportCounts {
+            locked: state.counts[0] as u64,
+            editable: state.counts[1] as u64,
+            removed: state.counts[2] as u64,
+        }),
+    }
+}
+
 pub(crate) fn support_state_lines_for_configuration(
     config_path: &Path,
     is_extension: bool,
@@ -2234,6 +2396,52 @@ pub(crate) fn support_state_lines_for_configuration(
         }
     }
     lines
+}
+
+/// Per-object support state (ADR-0023). The configuration-level [`SupportData`]
+/// cannot answer this: a supported configuration still holds one rule per
+/// object, and "locked" versus "editable while supported" is the fact that
+/// decides whether a direct edit breaks vendor updates.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ObjectSupportData {
+    /// `notSupported`, `removedFromSupport`, `configurationReadOnly`, `locked`
+    /// or `editableWithSupport`.
+    pub(crate) state: &'static str,
+    /// Whether editing this object directly is safe for vendor updates.
+    /// `null` when the object is not on support at all.
+    pub(crate) direct_edit_safe: Option<bool>,
+}
+
+pub(crate) fn object_support_state(target_path: &Path) -> ObjectSupportData {
+    fn data(state: &'static str, direct_edit_safe: Option<bool>) -> ObjectSupportData {
+        ObjectSupportData {
+            state,
+            direct_edit_safe,
+        }
+    }
+    let Some(config_dir) = find_support_config_dir(target_path) else {
+        return data("notSupported", None);
+    };
+    let bin_path = config_dir.join("Ext").join("ParentConfigurations.bin");
+    let Some(state) = read_support_state(&bin_path) else {
+        return data("notSupported", None);
+    };
+    if state.removed {
+        return data("removedFromSupport", Some(true));
+    }
+    if !state.global_editing_enabled {
+        return data("configurationReadOnly", Some(false));
+    }
+    let Some(object_uuid) = support_object_uuid_for_path(target_path) else {
+        return data("notSupported", None);
+    };
+    match state.object_rule(&object_uuid) {
+        Some(0) => data("locked", Some(false)),
+        Some(1) => data("editableWithSupport", Some(true)),
+        Some(2) => data("removedFromSupport", Some(true)),
+        _ => data("notSupported", None),
+    }
 }
 
 pub(crate) fn support_status_for_path(target_path: &Path) -> String {

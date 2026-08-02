@@ -18,8 +18,8 @@ use crate::infrastructure::native_operations::cfe::{
 use crate::infrastructure::native_operations::common::{
     find_support_config_dir, resolve_cf_edit_config_path, resolve_cf_read_config_path,
     resolve_cfe_validate_config_path, resolve_code_patch_guard_path, resolve_form_add_object_path,
-    resolve_form_info_path, resolve_role_read_rights_path, resolve_subsystem_edit_xml,
-    support_uuid_dependency_paths,
+    resolve_form_info_path, resolve_metadata_object_descriptor, resolve_role_read_rights_path,
+    resolve_subsystem_edit_xml, support_uuid_dependency_paths,
 };
 use crate::infrastructure::native_operations::dcs::{
     dcs_info_format_dependency_paths, resolve_dcs_validate_path,
@@ -1000,7 +1000,10 @@ fn handler_resolved_format_paths(
             "cfe-validate" => resolve_cfe_validate_config_path(args, context).ok(),
             "meta-edit" => raw
                 .and_then(|path| resolve_meta_edit_object_path(Path::new(path), &context.cwd).ok()),
-            "meta-info" | "meta-validate" => {
+            "meta-info" => resolve_metadata_object_descriptor(args, context)
+                .ok()
+                .map(|(_, path)| path),
+            "meta-validate" => {
                 raw.and_then(|path| resolve_meta_info_path(absolutize(path, &context.cwd)).ok())
             }
             "form-add" => raw
@@ -2686,6 +2689,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// `meta.info` has no path argument left, so its format guard has to reach
+    /// the descriptor through the same logical resolution its handler uses.
+    #[test]
+    fn meta_info_guards_the_descriptor_resolved_from_its_logical_address() {
+        let root = test_root("meta-info-logical");
+        let catalog_xml = root.join("src/Catalogs/Goods.xml");
+        std::fs::create_dir_all(catalog_xml.parent().unwrap()).unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration/></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &catalog_xml,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Goods</Name></Properties></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        let args = Map::from_iter([
+            ("sourceSet".to_string(), Value::String("main".to_string())),
+            (
+                "metadataPath".to_string(),
+                Value::String("Catalog.Goods".to_string()),
+            ),
+        ]);
+        let descriptor = native_operation_descriptor("meta-info").unwrap();
+
+        assert_eq!(
+            effective_format_paths(descriptor, &args, &context(&root)).unwrap(),
+            vec![normalized_path(&catalog_xml)]
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn read_only_xml_analyzers_preflight_the_exact_file_resolved_from_a_directory() {
         let root = test_root("read-resolved-xml");
@@ -2734,12 +2776,6 @@ mod tests {
         .unwrap();
 
         for (operation, argument, directory, expected) in [
-            (
-                "meta-info",
-                "path",
-                catalog_dir.clone(),
-                catalog_xml.clone(),
-            ),
             (
                 "meta-validate",
                 "Path",
@@ -2831,7 +2867,6 @@ mod tests {
         .unwrap();
 
         for (tool, argument, directory) in [
-            ("unica.meta.info", "ObjectPath", catalog_dir.clone()),
             ("unica.form.info", "FormPath", form_dir.clone()),
             ("unica.form.validate", "FormPath", form_dir),
             ("unica.dcs.validate", "TemplatePath", dcs_dir),
@@ -2873,7 +2908,6 @@ mod tests {
             .unwrap();
         }
         for (tool, argument, exact) in [
-            ("unica.meta.info", "ObjectPath", catalog_xml),
             ("unica.form.info", "FormPath", form_xml),
             ("unica.dcs.validate", "TemplatePath", dcs_xml),
             ("unica.mxl.validate", "TemplatePath", mxl_xml),

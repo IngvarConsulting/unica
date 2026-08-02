@@ -27,6 +27,10 @@ REQUIRED_TOOLS = REQUIRED_DCS_TOOLS | {
     "unica.source.children",
     "unica.source.resources",
     "unica.source.read",
+    # The packaged surface must publish the migrated reader; its logical flow is
+    # exercised against the real binary by tests/ci/test_unica_mcp_smoke.py,
+    # because this script runs against a canned source oracle at release time.
+    "unica.meta.info",
 }
 REMOVED_DCS_TOOL_ALIASES = {
     name.replace(".dcs.", ".s" + "kd.") for name in REQUIRED_DCS_TOOLS

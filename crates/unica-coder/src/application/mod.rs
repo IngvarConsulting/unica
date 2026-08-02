@@ -691,7 +691,10 @@ fn invoke_code_intelligence_search(
             warnings: execution.warnings,
             errors: execution.errors,
             artifacts,
-            stdout: Some(execution.text),
+            // ADR-0023: the sections are published as data, so a rendered copy
+            // of them in stdout would be the second representation the decision
+            // removes.
+            stdout: None,
             stderr: None,
             command: None,
         },
@@ -1187,11 +1190,28 @@ fn runtime_event(args: &Map<String, Value>) -> Option<DomainEventKind> {
         .and_then(runtime_event_kind)
 }
 
+/// A read whose result is data: ADR-0023 keeps the typed payload out of
+/// `stdout`, so the caller reads fields instead of parsing a rendered report.
+pub(crate) struct TypedReadOutcome {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<Value>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectStatusData {
+    workspace_root: String,
+    cache_root: String,
+    /// `null` when discovery failed: the caller must not read an empty list as
+    /// a workspace that has no source sets.
+    source_sets: Option<Vec<crate::domain::project_sources::ProjectSourceSet>>,
+}
+
 pub(crate) fn project_status(
     context: &WorkspaceContext,
     source_map: Result<crate::domain::project_sources::ProjectSourceMap, String>,
     tracked_config_dump_info_warning: Option<String>,
-) -> AdapterOutcome {
+) -> TypedReadOutcome {
     let mut outcome = AdapterOutcome::ok(format!(
         "workspace root: {}; cache root: {}",
         context.workspace_root.display(),
@@ -1203,29 +1223,39 @@ pub(crate) fn project_status(
     outcome
         .artifacts
         .push(context.cache_root.display().to_string());
-    match source_map {
+    let source_sets = match source_map {
         Ok(source_map) => {
             outcome
                 .summary
                 .push_str(&format!("; source sets: {}", source_map.source_sets.len()));
-            if !source_map.source_sets.is_empty() {
-                outcome.stdout = Some(source_set_summary(&source_map));
-            }
+            Some(source_map.source_sets)
         }
-        Err(error) => outcome
-            .warnings
-            .push(format!("source-set discovery failed: {error}")),
-    }
+        Err(error) => {
+            outcome
+                .warnings
+                .push(format!("source-set discovery failed: {error}"));
+            None
+        }
+    };
     if let Some(warning) = tracked_config_dump_info_warning {
         outcome.warnings.push(warning);
     }
-    outcome
+    let data = serde_json::to_value(ProjectStatusData {
+        workspace_root: context.workspace_root.display().to_string(),
+        cache_root: context.cache_root.display().to_string(),
+        source_sets,
+    })
+    .expect("project status data serializes");
+    TypedReadOutcome {
+        outcome,
+        data: Some(data),
+    }
 }
 
 pub(crate) fn project_map(
     source_map: Result<crate::domain::project_sources::ProjectSourceMap, String>,
     tracked_config_dump_info_warning: Option<String>,
-) -> AdapterOutcome {
+) -> TypedReadOutcome {
     match source_map {
         Ok(source_map) => {
             let mut outcome = AdapterOutcome::ok(format!(
@@ -1238,36 +1268,30 @@ pub(crate) fn project_map(
             if let Some(warning) = tracked_config_dump_info_warning {
                 outcome.warnings.push(warning);
             }
-            outcome.stdout =
-                Some(serde_json::to_string_pretty(&source_map).expect("source map serializes"));
-            outcome
+            // The map used to be serialized into `stdout`, which put a JSON
+            // string inside the JSON envelope -- exactly the shape ADR-0020
+            // rejected.
+            let data = serde_json::to_value(&source_map).expect("source map serializes");
+            TypedReadOutcome {
+                outcome,
+                data: Some(data),
+            }
         }
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "project map discovery failed".to_string(),
-            changes: Vec::new(),
-            warnings: tracked_config_dump_info_warning.into_iter().collect(),
-            errors: vec![error],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: None,
-            command: None,
+        Err(error) => TypedReadOutcome {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "project map discovery failed".to_string(),
+                changes: Vec::new(),
+                warnings: tracked_config_dump_info_warning.into_iter().collect(),
+                errors: vec![error],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: None,
+                command: None,
+            },
+            data: None,
         },
     }
-}
-
-fn source_set_summary(source_map: &crate::domain::project_sources::ProjectSourceMap) -> String {
-    source_map
-        .source_sets
-        .iter()
-        .map(|source_set| {
-            format!(
-                "{}: {:?} {:?} {}",
-                source_set.name, source_set.kind, source_set.source_format, source_set.path
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 fn configuration_tools() -> Vec<ToolSpec> {
@@ -2147,13 +2171,17 @@ mod tests {
                 {"name": "FirstInput", "kind": "InputField", "reason": "contained"},
                 {"name": "FirstInputContextMenu", "kind": "ContextMenu", "reason": "contained"}
             ],
+            "addedElements": [],
+            "addedAttributes": [],
+            "addedCommands": [],
+            "addedEvents": [],
             "validation": "passed"
         });
 
         let preview = app.call_tool("unica.form.edit", &args).unwrap();
         assert!(preview.ok, "{:?}", preview.errors);
         assert_eq!(preview.data, Some(expected_data.clone()));
-        assert!(preview.stdout.is_some());
+        assert!(preview.stdout.is_none(), "{preview:?}");
         assert!(preview.cache.events.is_empty());
         assert_eq!(std::fs::read(&form_path).unwrap(), original);
 
@@ -2162,7 +2190,7 @@ mod tests {
         assert!(applied.ok, "{:?}", applied.errors);
         assert_eq!(applied.data, Some(expected_data));
         assert_eq!(applied.cache.events, vec!["FormChanged"]);
-        assert!(applied.stdout.is_some());
+        assert!(applied.stdout.is_none(), "{applied:?}");
 
         let validation_args = json!({
             "cwd": workspace,
@@ -2203,7 +2231,22 @@ mod tests {
         assert!(non_removal.ok, "{:?}", non_removal.errors);
         assert_eq!(
             non_removal.data,
-            Some(json!({"changed": true, "removed": [], "validation": "passed"}))
+            Some(json!({
+                "changed": true,
+                "removed": [],
+                // The addition now shows up as data, not as a printed line.
+                "addedElements": [{
+                    "kind": "InputField",
+                    "name": "Added",
+                    "path": null,
+                    "representation": null,
+                    "autoInsertNewRow": null
+                }],
+                "addedAttributes": [],
+                "addedCommands": [],
+                "addedEvents": [],
+                "validation": "passed"
+            }))
         );
         assert_eq!(non_removal.cache.events, vec!["FormChanged"]);
 
@@ -2230,7 +2273,15 @@ mod tests {
         assert!(no_op.ok, "{:?}", no_op.errors);
         assert_eq!(
             no_op.data,
-            Some(json!({"changed": false, "removed": [], "validation": "passed"}))
+            Some(json!({
+                "changed": false,
+                "removed": [],
+                "addedElements": [],
+                "addedAttributes": [],
+                "addedCommands": [],
+                "addedEvents": [],
+                "validation": "passed"
+            }))
         );
         assert!(no_op.cache.events.is_empty());
         assert_eq!(
@@ -2339,6 +2390,10 @@ mod tests {
                 {"name": "TargetContextMenu", "kind": "ContextMenu", "reason": "contained"},
                 {"name": "TargetExtendedTooltip", "kind": "ExtendedTooltip", "reason": "contained"}
             ],
+            "addedElements": [],
+            "addedAttributes": [],
+            "addedCommands": [],
+            "addedEvents": [],
             "validation": "passed"
         });
         let app = UnicaApplication::new();
@@ -3141,49 +3196,56 @@ mod tests {
 
     #[test]
     fn xml_dsl_tools_route_to_parity_covered_native_handlers() {
+        // `unica.cf.info` left the parity stand when it started answering with
+        // typed data: there is no prose left to compare (ADR-0023).
         const PARITY_COVERED_TOOLS: &[&str] = &[
-            "unica.cf.edit",
-            "unica.cf.info",
-            "unica.cf.init",
             "unica.cf.validate",
-            "unica.cfe.borrow",
-            "unica.cfe.diff",
-            "unica.cfe.init",
-            "unica.cfe.patch_method",
             "unica.cfe.validate",
             "unica.meta.compile",
-            "unica.meta.edit",
-            "unica.meta.info",
-            "unica.meta.remove",
             "unica.meta.validate",
-            "unica.help.add",
-            "unica.form.add",
             "unica.form.compile",
-            "unica.form.edit",
-            "unica.form.info",
-            "unica.form.remove",
             "unica.form.validate",
-            "unica.interface.edit",
             "unica.interface.validate",
             "unica.subsystem.compile",
-            "unica.subsystem.edit",
-            "unica.subsystem.info",
             "unica.subsystem.validate",
-            "unica.template.add",
-            "unica.template.remove",
             "unica.dcs.compile",
-            "unica.dcs.edit",
-            "unica.dcs.info",
             "unica.dcs.validate",
             "unica.mxl.compile",
             "unica.mxl.decompile",
-            "unica.mxl.info",
             "unica.mxl.validate",
             "unica.role.compile",
-            "unica.role.info",
             "unica.role.validate",
         ];
         const REPO_OWNED_NATIVE_TOOLS: &[&str] = &["unica.support.edit"];
+        // A tool that answers with typed data has no prose left for the parity
+        // stand to compare, so it is covered by its own crate tests instead
+        // (ADR-0023).
+        const TYPED_RESULT_TOOLS: &[&str] = &[
+            "unica.cf.info",
+            "unica.role.info",
+            "unica.subsystem.info",
+            "unica.mxl.info",
+            "unica.cfe.diff",
+            "unica.meta.edit",
+            "unica.template.add",
+            "unica.template.remove",
+            "unica.help.add",
+            "unica.form.remove",
+            "unica.interface.edit",
+            "unica.meta.remove",
+            "unica.cfe.init",
+            "unica.cf.edit",
+            "unica.cf.init",
+            "unica.cfe.borrow",
+            "unica.cfe.patch_method",
+            "unica.subsystem.edit",
+            "unica.form.add",
+            "unica.dcs.edit",
+            "unica.form.edit",
+            "unica.form.info",
+            "unica.meta.info",
+            "unica.dcs.info",
+        ];
 
         for tool in tools() {
             if !tool.name.starts_with("unica.cf.")
@@ -3209,7 +3271,8 @@ mod tests {
                 ToolHandler::NativeOperation { operation, .. } => {
                     assert!(
                         PARITY_COVERED_TOOLS.contains(&tool.name)
-                            || REPO_OWNED_NATIVE_TOOLS.contains(&tool.name),
+                            || REPO_OWNED_NATIVE_TOOLS.contains(&tool.name)
+                            || TYPED_RESULT_TOOLS.contains(&tool.name),
                         "{} routes to native operation {} without a parity fixture or repo-owned native contract exception",
                         tool.name,
                         operation
@@ -3282,6 +3345,12 @@ mod tests {
         assert!(result.ok);
         assert_eq!(result.cache.mode, "read");
         assert!(result.summary.contains("workspace root"));
+        let data = result.data.unwrap();
+        assert!(data["workspaceRoot"].is_string());
+        assert!(data["cacheRoot"].is_string());
+        // Discovery either proves the sets or says it could not: an empty list
+        // must never stand in for "we did not look".
+        assert!(data["sourceSets"].is_array() || data["sourceSets"].is_null());
     }
 
     #[test]
@@ -3307,13 +3376,17 @@ mod tests {
 
         assert!(result.ok);
         assert_eq!(result.cache.mode, "read");
-        let stdout = result.stdout.unwrap();
-        assert!(stdout.contains("\"sourceSets\""));
-        assert!(stdout.contains("\"sourceFormat\": \"platform_xml\""));
-        assert!(stdout.contains("\"kind\": \"configuration\""));
-        assert!(stdout.contains(r#""effectiveSourceSet": "main""#));
-        assert!(stdout.contains(r#""effectiveSourceRoot""#));
-        assert!(!stdout.contains("sourceSelectionError"));
+        // ADR-0023: the map is the result, so it rides in `data` instead of
+        // being serialized into a JSON string inside the JSON envelope.
+        assert!(result.stdout.is_none(), "{:?}", result.stdout);
+        let data = result.data.unwrap();
+        let source_sets = data["sourceSets"].as_array().unwrap();
+        assert_eq!(source_sets.len(), 1);
+        assert_eq!(source_sets[0]["kind"], "configuration");
+        assert_eq!(source_sets[0]["sourceFormat"], "platform_xml");
+        assert_eq!(data["effectiveSourceSet"], "main");
+        assert!(data["effectiveSourceRoot"].is_string());
+        assert!(data.get("sourceSelectionError").is_none());
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -3416,12 +3489,16 @@ mod tests {
             .unwrap();
 
         assert!(result.ok);
+        let source_sets = result.data.as_ref().unwrap()["sourceSets"]
+            .as_array()
+            .unwrap()
+            .clone();
         assert_eq!(
-            result
-                .stdout
-                .as_deref()
-                .map(|stdout| stdout.matches(r#""sourceFormat": "platform_xml""#).count()),
-            Some(2)
+            source_sets
+                .iter()
+                .filter(|entry| entry["sourceFormat"] == "platform_xml")
+                .count(),
+            2
         );
         assert!(
             result
@@ -3640,11 +3717,18 @@ mod tests {
 
         assert!(result.ok);
         assert!(result.warnings.join("\n").contains("sourceDir"));
-        let stdout = result.stdout.unwrap();
-        assert!(stdout.contains(r#""name": "app""#));
-        assert!(stdout.contains(r#""name": "tests""#));
-        assert!(stdout.contains(r#""sourceSelectionError""#));
-        assert!(stdout.contains("sourceDir"));
+        let data = result.data.unwrap();
+        let names = data["sourceSets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["name"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["app".to_string(), "tests".to_string()]);
+        assert!(data["sourceSelectionError"]
+            .as_str()
+            .unwrap()
+            .contains("sourceDir"));
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -3687,10 +3771,14 @@ mod tests {
             .unwrap();
 
         assert!(result.ok);
-        let stdout = result.stdout.unwrap();
-        assert!(stdout.contains("Поддержка:      на поддержке"));
-        assert!(stdout.contains("Возможность изменения: включена"));
-        assert!(stdout.contains("Объектов: на замке 1 / редактируется 1 / снято 1"));
+        // ADR-0023: the support state is four typed values plus counts, not a
+        // sentence a consumer has to match.
+        let support = &result.data.unwrap()["support"];
+        assert_eq!(support["state"], "supported");
+        assert_eq!(support["editingEnabled"], true);
+        assert_eq!(support["objects"]["locked"], 1);
+        assert_eq!(support["objects"]["editable"], 1);
+        assert_eq!(support["objects"]["removed"], 1);
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -4025,12 +4113,8 @@ mod tests {
         assert!(result.ok, "{result:?}");
         assert!(result.changes.is_empty(), "{result:?}");
         assert!(result.cache.events.is_empty(), "{result:?}");
-        let stdout = result.stdout.unwrap_or_default();
-        assert!(
-            stdout.contains("[INFO] No Configuration.xml changes"),
-            "{stdout}"
-        );
-        assert!(!stdout.contains("[INFO] Saved:"), "{stdout}");
+        let data = result.data.as_ref().expect("cf.edit answers with data");
+        assert_eq!(data["configUpdated"], serde_json::json!(false), "{data:?}");
         assert_eq!(std::fs::read(&config_path).unwrap(), before);
         assert_no_cf_edit_stage_debris(&config_path);
         std::fs::remove_dir_all(root).unwrap();
@@ -4635,24 +4719,15 @@ mod tests {
             .call_tool("unica.cf.info", &args)
             .unwrap();
         assert!(overview.ok, "{overview:?}");
-        let overview_stdout = overview.stdout.unwrap();
-        assert!(
-            overview_stdout
-                .lines()
-                .any(|line| line.starts_with("  Боты") && line.ends_with('1')),
-            "{overview_stdout}"
-        );
+        let data = overview.data.unwrap();
+        let bots = data["childObjects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["kind"] == "Bot")
+            .expect("the configuration registers a Bot");
+        assert_eq!(bots["count"], 1);
 
-        args.insert("Mode".to_string(), Value::String("full".to_string()));
-        let full = UnicaApplication::new()
-            .call_tool("unica.cf.info", &args)
-            .unwrap();
-        assert!(full.ok, "{full:?}");
-        let full_stdout = full.stdout.unwrap();
-        assert!(full_stdout.contains("Боты (Bot): 1"), "{full_stdout}");
-        assert!(full_stdout.contains("    Assistant"), "{full_stdout}");
-
-        args.remove("Mode");
         let validation = UnicaApplication::new()
             .call_tool("unica.cf.validate", &args)
             .unwrap();
@@ -4936,12 +5011,15 @@ mod tests {
         assert!(result.ok, "{result:?}");
         assert!(result.changes.is_empty(), "{result:?}");
         assert!(result.cache.events.is_empty(), "{result:?}");
-        let stdout = result.stdout.unwrap_or_default();
-        assert!(
-            stdout.contains("[WARN] Already exists: Catalog.Валюты"),
-            "{stdout}"
-        );
-        assert!(!stdout.contains("[INFO] Saved:"), "{stdout}");
+        let data = result.data.as_ref().expect("cf.edit answers with data");
+        assert_eq!(data["configUpdated"], serde_json::json!(false), "{data:?}");
+        let skipped = data["operations"]
+            .as_array()
+            .expect("operations is a list")
+            .iter()
+            .find(|item| item["target"] == serde_json::json!("Catalog.Валюты"))
+            .expect("the duplicate add is reported");
+        assert_eq!(skipped["applied"], serde_json::json!(false), "{skipped:?}");
         assert_eq!(std::fs::read_to_string(&config_path).unwrap(), before);
 
         let _ = std::fs::remove_dir_all(root);
@@ -4985,9 +5063,10 @@ mod tests {
             "cwd".to_string(),
             Value::String(workspace.display().to_string()),
         );
+        args.insert("sourceSet".to_string(), Value::String("main".to_string()));
         args.insert(
-            "ObjectPath".to_string(),
-            Value::String("src/Catalogs/Items.xml".to_string()),
+            "metadataPath".to_string(),
+            Value::String("Catalog.Items".to_string()),
         );
 
         let result = UnicaApplication::new()
@@ -4995,10 +5074,20 @@ mod tests {
             .unwrap();
 
         assert!(result.ok);
-        let stdout = result.stdout.unwrap();
-        assert!(stdout.contains("Поддержка: на замке"));
-        assert!(stdout.contains("cfe-*"));
-        assert!(!stdout.contains("powershell.exe"));
+        // The locked rule is a per-object fact: the configuration is on
+        // support, but this object must not be edited directly.
+        let data = result.data.as_ref().expect("meta.info answers with data");
+        assert_eq!(
+            data["support"]["state"],
+            serde_json::json!("locked"),
+            "{data:?}"
+        );
+        assert_eq!(
+            data["support"]["directEditSafe"],
+            serde_json::json!(false),
+            "{data:?}"
+        );
+        assert!(result.stdout.is_none(), "{result:?}");
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -7347,10 +7436,7 @@ mod tests {
         let info = UnicaApplication::new()
             .call_tool("unica.cf.info", &info_args)
             .unwrap();
-        assert!(info
-            .stdout
-            .unwrap()
-            .contains("Возможность изменения: включена"));
+        assert_eq!(info.data.unwrap()["support"]["editingEnabled"], true);
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -7398,10 +7484,7 @@ mod tests {
         let info = UnicaApplication::new()
             .call_tool("unica.cf.info", &info_args)
             .unwrap();
-        assert!(info
-            .stdout
-            .unwrap()
-            .contains("Возможность изменения: выключена"));
+        assert_eq!(info.data.unwrap()["support"]["editingEnabled"], false);
 
         let mut set_args = Map::new();
         set_args.insert(
@@ -7456,17 +7539,20 @@ mod tests {
             "cwd".to_string(),
             Value::String(workspace.display().to_string()),
         );
+        info_args.insert("sourceSet".to_string(), Value::String("main".to_string()));
         info_args.insert(
-            "ObjectPath".to_string(),
-            Value::String("src/Catalogs/Items.xml".to_string()),
+            "metadataPath".to_string(),
+            Value::String("Catalog.Items".to_string()),
         );
         let info = UnicaApplication::new()
             .call_tool("unica.meta.info", &info_args)
             .unwrap();
-        assert!(info
-            .stdout
-            .unwrap()
-            .contains("редактируется с сохранением поддержки"));
+        let info_data = info.data.as_ref().expect("meta.info answers with data");
+        assert_eq!(
+            info_data["support"]["state"],
+            serde_json::json!("editableWithSupport"),
+            "{info_data:?}"
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -9597,7 +9683,9 @@ mod tests {
             ("unica.cf.info", "ConfigPath", "OutFile", "outFile"),
             ("unica.cf.validate", "ConfigPath", "OutFile", "outFile"),
             ("unica.cfe.validate", "ExtensionPath", "OutFile", "outFile"),
-            ("unica.meta.info", "ObjectPath", "OutFile", "outFile"),
+            // `unica.meta.info` selects logically and has no source path
+            // argument to pair a sink with; its own contract test covers the
+            // rejected sink.
             ("unica.meta.validate", "ObjectPath", "OutFile", "outFile"),
             ("unica.interface.validate", "CIPath", "OutFile", "outFile"),
             (
@@ -9697,21 +9785,33 @@ mod tests {
             .unwrap();
             std::fs::copy(&dcs_fixture, &template).unwrap();
 
-            for (tool, path_argument, path) in [
-                ("unica.meta.info", "ObjectPath", &object),
-                ("unica.meta.validate", "ObjectPath", &object),
-                ("unica.dcs.info", "TemplatePath", &template),
-                ("unica.dcs.validate", "TemplatePath", &template),
+            let logical_object = vec![
+                ("sourceSet".to_string(), Value::String("main".to_string())),
+                (
+                    "metadataPath".to_string(),
+                    Value::String("Catalog.Items".to_string()),
+                ),
+            ];
+            let path_selector = |name: &str, path: &std::path::Path| {
+                vec![(name.to_string(), Value::String(path.display().to_string()))]
+            };
+            for (tool, selector) in [
+                ("unica.meta.info", logical_object),
+                ("unica.meta.validate", path_selector("ObjectPath", &object)),
+                ("unica.dcs.info", path_selector("TemplatePath", &template)),
+                (
+                    "unica.dcs.validate",
+                    path_selector("TemplatePath", &template),
+                ),
             ] {
                 let mut args = Map::new();
                 args.insert(
                     "cwd".to_string(),
                     Value::String(workspace.display().to_string()),
                 );
-                args.insert(
-                    path_argument.to_string(),
-                    Value::String(path.display().to_string()),
-                );
+                for (key, value) in selector {
+                    args.insert(key, value);
+                }
                 let before = source_tree_snapshot(&src);
 
                 let result = UnicaApplication::new().call_tool(tool, &args).unwrap();

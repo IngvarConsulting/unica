@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use super::common::{
     absolutize, find_support_config_dir, guard_active_format_dependencies,
     guard_exact_preimage_if_unprotected, is_uuid_text, parse_support_header, path_arg,
-    support_root_uuid_from_bytes, support_uuid_dependency_paths,
+    support_root_uuid_from_bytes, support_uuid_dependency_paths, MutationData,
 };
 use super::compile_transaction::{CompileTransaction, DirectoryMembershipSelector};
 
@@ -93,28 +93,81 @@ pub(crate) fn invoke_mutation(
     }
 }
 
+/// Typed answer of `unica.support.edit` (ADR-0023). The prose said what changed
+/// and what to do next; the data says only what changed, and `applied: false`
+/// with a `reason` is how "nothing to switch" is now reported.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SupportEditData {
+    /// `capability` or `objectRule`.
+    pub(crate) action: String,
+    pub(crate) applied: bool,
+    /// Why nothing was applied; `null` when the edit went through.
+    pub(crate) reason: Option<String>,
+    /// For `capability`: whether configuration editing is now enabled.
+    pub(crate) editing_enabled: Option<bool>,
+    /// For `objectRule`: the object and the rule it now carries.
+    pub(crate) object_uuid: Option<String>,
+    pub(crate) rule: Option<String>,
+    /// Support records rewritten in `ParentConfigurations.bin`.
+    pub(crate) records_changed: usize,
+    /// Per-object rules reset to locked by a capability switch.
+    pub(crate) object_rules_reset: usize,
+    pub(crate) mutation: MutationData,
+}
+
+pub(crate) struct SupportEditExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<SupportEditData>,
+}
+
 fn edit_support(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
-    match edit_support_result(args, context) {
-        Ok(outcome) => outcome,
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "support-edit failed".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: None,
-            command: None,
+    edit_support_with_data(args, context).outcome
+}
+
+pub(crate) fn edit_support_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> SupportEditExecution {
+    match edit_support_execution(args, context) {
+        Ok((outcome, data)) => SupportEditExecution {
+            outcome,
+            data: Some(data),
+        },
+        Err(error) => SupportEditExecution {
+            outcome: AdapterOutcome {
+                ok: false,
+                summary: "support-edit failed".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: None,
+                command: None,
+            },
+            data: None,
         },
     }
 }
 
+#[cfg(test)]
 fn edit_support_result(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Result<AdapterOutcome, String> {
+    edit_support_execution(args, context).map(|(outcome, _)| outcome)
+}
+
+fn edit_support_execution(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<(AdapterOutcome, SupportEditData), String> {
     let action = support_edit_action(args)?;
+    let action_label = match &action {
+        SupportEditAction::Capability(_) => "capability",
+        SupportEditAction::Set(_) => "objectRule",
+    };
     let target_path = support_target_path(args, context)?;
     if !target_path.exists() {
         return Err(format!("Путь не найден: {}", target_path.display()));
@@ -159,6 +212,7 @@ fn edit_support_result(
     let bin_path = config_dir.join("Ext").join("ParentConfigurations.bin");
     if !bin_path.exists() {
         return Ok(noop_outcome(
+            action_label,
             "Конфигурация не на поддержке (Ext/ParentConfigurations.bin отсутствует) — переключать нечего.",
         ));
     }
@@ -166,6 +220,7 @@ fn edit_support_result(
         .map_err(|err| format!("failed to read {}: {err}", bin_path.display()))?;
     if raw.len() <= 32 {
         return Ok(noop_outcome(
+            action_label,
             "Поддержка снята полностью (пустой ParentConfigurations.bin) — переключать нечего.",
         ));
     }
@@ -175,11 +230,12 @@ fn edit_support_result(
     };
     if vendor_count == 0 {
         return Ok(noop_outcome(
+            action_label,
             "Поддержка снята полностью (пустой ParentConfigurations.bin) — переключать нечего.",
         ));
     }
 
-    let (mut outcome, updated) = match action {
+    let (mut outcome, updated, data) = match action {
         SupportEditAction::Capability(capability) => {
             if (global_flag == 0) == capability.enabled() {
                 let word = if capability.enabled() {
@@ -187,9 +243,10 @@ fn edit_support_result(
                 } else {
                     "выключена"
                 };
-                return Ok(noop_outcome(format!(
-                    "Возможность изменения конфигурации уже {word} — изменений нет."
-                )));
+                return Ok(noop_outcome(
+                    action_label,
+                    format!("Возможность изменения конфигурации уже {word} — изменений нет."),
+                ));
             }
             plan_capability(&bin_path, &text, capability, &resolved_path)
         }
@@ -226,7 +283,7 @@ fn edit_support_result(
         }
     }?;
     if outcome.changes.is_empty() {
-        return Ok(outcome);
+        return Ok((outcome, data));
     }
 
     let vendor_payload_reads = support_vendor_payload_preimages(&config_dir)?;
@@ -278,7 +335,7 @@ fn edit_support_result(
         Ok(())
     })?;
     outcome.warnings.extend(report.cleanup_warnings);
-    Ok(outcome)
+    Ok((outcome, data))
 }
 
 fn support_target_path(
@@ -329,7 +386,7 @@ fn plan_capability(
     text: &str,
     capability: SupportCapability,
     target_path: &Path,
-) -> Result<(AdapterOutcome, String), String> {
+) -> Result<(AdapterOutcome, String, SupportEditData), String> {
     let global_target = capability.target_flag();
     // Only the header slot is the global capability. The later vendor/object slots use
     // support-rule semantics: writing the global `off` value (`1`) into the vendor slot makes
@@ -343,14 +400,6 @@ fn plan_capability(
     } else {
         "Возможность изменения конфигурации ВЫКЛЮЧЕНА"
     };
-    let stdout = if capability.enabled() {
-        format!(
-            "{summary}. Все объекты поставщика — на замке.\nВключайте редактирование точечно: support-edit -Path <объект> -Set editable\n"
-        )
-    } else {
-        format!("{summary}. Вся конфигурация стала read-only; пообъектные правила сброшены.\n")
-    };
-
     Ok((
         AdapterOutcome {
             ok: true,
@@ -373,11 +422,22 @@ fn plan_capability(
                 bin_path.display().to_string(),
                 target_path.display().to_string(),
             ],
-            stdout: Some(stdout),
+            stdout: None,
             stderr: None,
             command: None,
         },
         updated,
+        SupportEditData {
+            action: "capability".to_string(),
+            applied: true,
+            reason: None,
+            editing_enabled: Some(capability.enabled()),
+            object_uuid: None,
+            rule: None,
+            records_changed: 0,
+            object_rules_reset: object_count,
+            mutation: MutationData::new(true).updated(bin_path),
+        },
     ))
 }
 
@@ -387,14 +447,15 @@ fn plan_object_rule(
     object_uuid: &str,
     rule: SupportObjectRule,
     target_path: &Path,
-) -> Result<(AdapterOutcome, String), String> {
+) -> Result<(AdapterOutcome, String, SupportEditData), String> {
     let mut updated = text.to_string();
     let changed = replace_object_rule_flags(&mut updated, object_uuid, rule.flag());
     if changed == 0 {
         let message = format!(
             "Объект (uuid {object_uuid}) не на поддержке (своё добавление или не найден в bin) — переключать нечего."
         );
-        return Ok((noop_outcome(message), text.to_string()));
+        let (outcome, data) = noop_outcome("objectRule", message);
+        return Ok((outcome, text.to_string(), data));
     }
     let summary = format!("Объект uuid {object_uuid} → {}.", rule.state_text());
     Ok((
@@ -419,30 +480,51 @@ fn plan_object_rule(
                 bin_path.display().to_string(),
                 target_path.display().to_string(),
             ],
-            stdout: Some(format!(
-                "{summary}\nЗаписей в bin изменено: {changed}. Цель: {}\n",
-                target_path.display()
-            )),
+            stdout: None,
             stderr: None,
             command: None,
         },
         updated,
+        SupportEditData {
+            action: "objectRule".to_string(),
+            applied: true,
+            reason: None,
+            editing_enabled: None,
+            object_uuid: Some(object_uuid.to_string()),
+            rule: Some(rule.state_text().to_string()),
+            records_changed: changed,
+            object_rules_reset: 0,
+            mutation: MutationData::new(true).updated(bin_path),
+        },
     ))
 }
 
-fn noop_outcome(message: impl Into<String>) -> AdapterOutcome {
+fn noop_outcome(action: &str, message: impl Into<String>) -> (AdapterOutcome, SupportEditData) {
     let message = message.into();
-    AdapterOutcome {
-        ok: true,
-        summary: message.clone(),
-        changes: Vec::new(),
-        warnings: Vec::new(),
-        errors: Vec::new(),
-        artifacts: Vec::new(),
-        stdout: Some(format!("{message}\n")),
-        stderr: None,
-        command: None,
-    }
+    (
+        AdapterOutcome {
+            ok: true,
+            summary: message.clone(),
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: Vec::new(),
+            artifacts: Vec::new(),
+            stdout: None,
+            stderr: None,
+            command: None,
+        },
+        SupportEditData {
+            action: action.to_string(),
+            applied: false,
+            reason: Some(message),
+            editing_enabled: None,
+            object_uuid: None,
+            rule: None,
+            records_changed: 0,
+            object_rules_reset: 0,
+            mutation: MutationData::default(),
+        },
+    )
 }
 
 fn parent_configurations_bytes(text: &str) -> Vec<u8> {
