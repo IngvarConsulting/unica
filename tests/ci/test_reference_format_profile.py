@@ -40,6 +40,8 @@ XDTO_SPEC = ROOT / "plugins/unica/references/specs/1c-xdto-spec.md"
 XDTO_FIXTURE = ROOT / "tests/fixtures/xdto/enterprise-data-minimal"
 XDTO_CONTRACT_START = "<!-- xdto-evidence-contract:start -->"
 XDTO_CONTRACT_END = "<!-- xdto-evidence-contract:end -->"
+XDTO_DONOR_START = "<!-- xdto-donor-evidence:start -->"
+XDTO_DONOR_END = "<!-- xdto-donor-evidence:end -->"
 
 
 class ReconfigurableStringIO(io.StringIO):
@@ -171,6 +173,34 @@ def analyze_xdto_qnames(
 
 
 class ReferenceFormatProfileTests(unittest.TestCase):
+    def test_xdto_spec_names_the_real_pinned_donor_evidence(self) -> None:
+        specification = XDTO_SPEC.read_text(encoding="utf-8")
+        expected_paths = {
+            "docs/xdto-guide.md",
+            "docs/xdto-dsl-spec.md",
+            ".claude/skills/xdto-compile/SKILL.md",
+            ".claude/skills/xdto-decompile/SKILL.md",
+            ".claude/skills/xdto-edit/SKILL.md",
+            ".claude/skills/xdto-info/SKILL.md",
+            ".claude/skills/xdto-validate/SKILL.md",
+            "tests/skills/cases/xdto-compile/",
+            "tests/skills/cases/xdto-decompile/",
+            "tests/skills/cases/xdto-edit/",
+            "tests/skills/cases/xdto-info/",
+            "tests/skills/cases/xdto-validate/",
+        }
+
+        start = specification.index(XDTO_DONOR_START) + len(XDTO_DONOR_START)
+        end = specification.index(XDTO_DONOR_END, start)
+        evidence = {
+            line.strip()
+            for line in specification[start:end].splitlines()
+            if line.strip() and not line.strip().startswith("```")
+        }
+
+        self.assertEqual(evidence, expected_paths)
+        self.assertNotIn("docs/1c-xdto-spec.md", evidence)
+
     def test_xdto_spec_is_indexed_and_declares_exact_evidence_contract(self) -> None:
         specification = XDTO_SPEC.read_text(encoding="utf-8")
         readme = (XDTO_SPEC.parent / "README.md").read_text(encoding="utf-8")

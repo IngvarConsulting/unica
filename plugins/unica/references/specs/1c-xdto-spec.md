@@ -6,10 +6,28 @@
 
 ## 1. Граница доказательств
 
-Контракт сверен с XDTO-материалами donor
-[`Nikolay-Shirokov/cc-1c-skills`](https://github.com/Nikolay-Shirokov/cc-1c-skills/tree/2067778ba3bad527bd1e5850304d1c82acb81fc8)
-на commit `2067778ba3bad527bd1e5850304d1c82acb81fc8`: `docs/1c-xdto-spec.md`,
-`docs/xdto-dsl-spec.md`, скиллами `xdto-*` и их XDTO cases. Локальная fixture
+Контракт сверен с XDTO-материалами donor `Nikolay-Shirokov/cc-1c-skills` на
+commit `2067778ba3bad527bd1e5850304d1c82acb81fc8`. Следующий блок — закреплённый
+inventory доказательств, а не маршруты выполнения и не ссылки внутри пакета:
+
+<!-- xdto-donor-evidence:start -->
+```text
+docs/xdto-guide.md
+docs/xdto-dsl-spec.md
+.claude/skills/xdto-compile/SKILL.md
+.claude/skills/xdto-decompile/SKILL.md
+.claude/skills/xdto-edit/SKILL.md
+.claude/skills/xdto-info/SKILL.md
+.claude/skills/xdto-validate/SKILL.md
+tests/skills/cases/xdto-compile/
+tests/skills/cases/xdto-decompile/
+tests/skills/cases/xdto-edit/
+tests/skills/cases/xdto-info/
+tests/skills/cases/xdto-validate/
+```
+<!-- xdto-donor-evidence:end -->
+
+Локальная fixture
 `tests/fixtures/xdto/enterprise-data-minimal/` закрепляет только ветви,
 необходимые домену ADR-0024: импорты, глобальное свойство, локальные типы,
 вложенный `ObjectType` и самозакрывающийся именованный `objectType`.

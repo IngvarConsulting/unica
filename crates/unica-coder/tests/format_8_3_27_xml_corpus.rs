@@ -2609,6 +2609,7 @@ fn family_for_root(namespace: &str, local_name: &str, label: &str) -> Result<Str
             "client-application-interface"
         }
         ("http://v8.1c.ru/8.2/roles", "Rights") => "roles",
+        ("http://v8.1c.ru/8.1/xdto", "package") => "xdto-package",
         _ => {
             return Err(format!(
                 "unclassified XML root {{{namespace}}}{local_name}: {}",
@@ -2940,7 +2941,7 @@ fn build_corpus_case(
         let family = family_for_xml_payload(payload, relative)?;
         let versionless = matches!(
             family.as_str(),
-            "dcs" | "mxl" | "client-application-interface"
+            "dcs" | "mxl" | "client-application-interface" | "xdto-package"
         );
         let owner = if versionless {
             unique_deepest_owner_for_path(relative, &owners)?
@@ -4343,6 +4344,70 @@ fn owner_assignment_requires_same_case_source_set_path() {
             .unwrap_err()
             .contains("unique deepest")
     );
+}
+
+#[test]
+fn tracked_xdto_package_fixture_flows_through_capture_and_owner_contract() {
+    let root = unique_temp_dir("xdto-package-pre-contract");
+    fs::create_dir_all(&root).unwrap();
+    let workspace = root.join("workspace");
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("tests/fixtures/xdto/enterprise-data-minimal");
+    copy_fixture_tree(&fixture, &workspace).unwrap();
+    let case = EXECUTABLE_CASES
+        .iter()
+        .find(|case| case.id == "xdto-add-nested-property")
+        .unwrap();
+
+    let captured = capture_xml_payloads(&workspace).unwrap();
+    assert!(captured.contains_key("XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin"));
+    let contract = build_pre_contract(case, &captured).unwrap();
+    let package = contract
+        .files
+        .iter()
+        .find(|file| file.path.ends_with("/Ext/Package.bin"))
+        .expect("tracked Package.bin must be represented in the pre-call corpus contract");
+
+    assert_eq!(package.family, "xdto-package");
+    assert_eq!(
+        package.owner_path.as_deref(),
+        Some("cases/xdto-add-nested-property/pre-xml/Configuration.xml")
+    );
+
+    let before = hashes_for_xml_payloads(&captured);
+    let after = before.clone();
+    let delta = classify_xml_delta(&before, &after);
+    let generated = build_corpus_case(
+        case,
+        &captured,
+        registry_entry_for_case(case.id),
+        CaseFileContracts {
+            pre_xml: contract,
+            non_xml: NonXmlContract {
+                pre_files: Vec::new(),
+                files: Vec::new(),
+                removed_paths: Vec::new(),
+            },
+            auxiliary_files: Vec::new(),
+        },
+        &before,
+        &after,
+        &delta,
+    )
+    .unwrap();
+    let post_package = generated
+        .files
+        .iter()
+        .find(|file| file.path.ends_with("/Ext/Package.bin"))
+        .expect("tracked Package.bin must remain represented after the corpus call");
+    assert_eq!(post_package.family, "xdto-package");
+    assert_eq!(
+        post_package.owner_path.as_deref(),
+        Some("cases/xdto-add-nested-property/workspace/Configuration.xml")
+    );
+
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

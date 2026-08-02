@@ -23,8 +23,12 @@ def load_module():
 
 
 class SmokeUnicaMcpTests(unittest.TestCase):
-    def test_requires_all_logical_source_tools(self) -> None:
+    def expected_tools(self) -> set[str]:
         module = load_module()
+        return module.expected_tool_names(REPO_ROOT / "plugins" / "unica")
+
+    def test_requires_all_logical_source_tools(self) -> None:
+        expected = self.expected_tools()
 
         self.assertTrue(
             {
@@ -32,12 +36,46 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                 "unica.source.children",
                 "unica.source.resources",
                 "unica.source.read",
-            }.issubset(module.REQUIRED_TOOLS)
+            }.issubset(expected)
         )
         # The bounded resource surface is read-only; BSL mutation belongs to
         # unica.code.patch, so the smoke must not demand a writer.
-        self.assertNotIn("unica.source.apply", module.REQUIRED_TOOLS
+        self.assertNotIn("unica.source.apply", expected)
+
+    def test_expected_tools_are_the_canonical_review_ledger_exact_set(self) -> None:
+        review = json.loads(
+            (REPO_ROOT / "spec/architecture/tool-surface-review.json").read_text(
+                encoding="utf-8"
+            )
         )
+
+        self.assertEqual(self.expected_tools(), set(review))
+        self.assertEqual(
+            {name for name in self.expected_tools() if name.startswith("unica.xdto.")},
+            {"unica.xdto.info", "unica.xdto.edit"},
+        )
+
+    def test_review_ledger_resolution_handles_source_and_packaged_plugin_roots(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            review_path = root / "spec/architecture/tool-surface-review.json"
+            review_path.parent.mkdir(parents=True)
+            review_path.write_text(
+                json.dumps({"unica.xdto.info": {}, "unica.xdto.edit": {}}),
+                encoding="utf-8",
+            )
+            source_plugin = root / "plugins/unica"
+            packaged_plugin = root / ".build/thin/marketplace/plugins/unica"
+            source_plugin.mkdir(parents=True)
+            packaged_plugin.mkdir(parents=True)
+
+            for plugin_root in (source_plugin, packaged_plugin):
+                with self.subTest(plugin_root=plugin_root):
+                    self.assertEqual(
+                        module.expected_tool_names(plugin_root),
+                        {"unica.xdto.info", "unica.xdto.edit"},
+                    )
 
     def run_smoke(
         self,
@@ -50,6 +88,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         read_writes: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         module = load_module()
+        expected_tools = self.expected_tools()
         source_schemas = json.loads(
             json.dumps(module.EXPECTED_SOURCE_INPUT_SCHEMAS)
         )
@@ -164,6 +203,14 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             root = Path(directory)
             server = root / "server.py"
             server.write_text(server_source, encoding="utf-8")
+            review_path = root / "spec/architecture/tool-surface-review.json"
+            review_path.parent.mkdir(parents=True)
+            review_path.write_text(
+                json.dumps({name: {} for name in sorted(expected_tools)}),
+                encoding="utf-8",
+            )
+            plugin_root = root / "packaged/plugins/unica"
+            plugin_root.mkdir(parents=True)
             return subprocess.run(
                 [
                     sys.executable,
@@ -173,7 +220,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                     "--binary-arg",
                     str(server),
                     "--plugin-root",
-                    str(root),
+                    str(plugin_root),
                     "--timeout-seconds",
                     "2",
                 ],
@@ -183,50 +230,56 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             )
 
     def test_accepts_initialize_and_required_tool_responses(self) -> None:
-        module = load_module()
-        result = self.run_smoke(module.REQUIRED_TOOLS)
+        result = self.run_smoke(self.expected_tools())
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("verified packaged Unica MCP source-resource flow", result.stdout)
 
     def test_rejects_runtime_missing_a_required_tool(self) -> None:
-        module = load_module()
-        result = self.run_smoke(module.REQUIRED_TOOLS - {"unica.source.read"})
+        result = self.run_smoke(self.expected_tools() - {"unica.xdto.edit"})
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("unica.source.read", result.stderr)
+        self.assertIn("missing", result.stderr)
+        self.assertIn("unica.xdto.edit", result.stderr)
 
-    def test_rejects_runtime_exposing_a_removed_dcs_alias(self) -> None:
-        module = load_module()
-        result = self.run_smoke(module.REQUIRED_TOOLS | {"unica.s" + "kd.compile"})
+    def test_rejects_runtime_exposing_an_unexpected_tool(self) -> None:
+        result = self.run_smoke(self.expected_tools() | {"unica.xdto.validate"})
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("removed DCS aliases", result.stderr)
+        self.assertIn("unexpected", result.stderr)
+        self.assertIn("unica.xdto.validate", result.stderr)
+
+    def test_reports_missing_and_unexpected_tools_together(self) -> None:
+        tools = self.expected_tools() - {"unica.xdto.edit"}
+        tools.add("unica.xdto.validate")
+        result = self.run_smoke(tools)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("missing", result.stderr)
+        self.assertIn("unica.xdto.edit", result.stderr)
+        self.assertIn("unexpected", result.stderr)
+        self.assertIn("unica.xdto.validate", result.stderr)
 
     def test_decodes_mcp_json_as_utf8_independently_of_windows_locale(self) -> None:
-        module = load_module()
-        result = self.run_smoke(module.REQUIRED_TOOLS, server_name="Уника")
+        result = self.run_smoke(self.expected_tools(), server_name="Уника")
 
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_rejects_incomplete_source_schema(self) -> None:
-        module = load_module()
-        result = self.run_smoke(module.REQUIRED_TOOLS, schema_drift=True)
+        result = self.run_smoke(self.expected_tools(), schema_drift=True)
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("schema", result.stderr)
 
     def test_rejects_stable_source_result_drift(self) -> None:
-        module = load_module()
-        result = self.run_smoke(module.REQUIRED_TOOLS, result_drift=True)
+        result = self.run_smoke(self.expected_tools(), result_drift=True)
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("stable", result.stderr)
 
     def test_rejects_provider_revision_leakage(self) -> None:
-        module = load_module()
         result = self.run_smoke(
-            module.REQUIRED_TOOLS,
+            self.expected_tools(),
             provider_revision=True,
         )
 
@@ -235,8 +288,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
 
     def test_rejects_a_read_that_writes(self) -> None:
         """The whole source surface is read-only, so any byte it changes fails."""
-        module = load_module()
-        result = self.run_smoke(module.REQUIRED_TOOLS, read_writes=True)
+        result = self.run_smoke(self.expected_tools(), read_writes=True)
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("read-only", result.stderr)

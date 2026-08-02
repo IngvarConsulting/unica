@@ -16,11 +16,16 @@ allowed-tools:
 
 - Используй только MCP `unica`: `unica.xdto.info` читает пакет, а
   `unica.xdto.edit` строит и применяет точечную мутацию.
-- Перед каждой мутацией вызывай `unica.xdto.edit` с `dryRun: true`. Передавай
-  `dryRun: false` лишь после явного подтверждения пользователя.
+- Всегда начинай с `unica.xdto.info`, затем перед каждой мутацией вызывай
+  `unica.xdto.edit` с `dryRun: true`. Повторяй ровно тот же запрос с
+  `dryRun: false` лишь после явного подтверждения пользователя; любое изменение
+  аргументов требует нового preview.
 - Передавай `sourceSet` и `metadataPath: "XDTOPackage.<Имя>"`. Никогда не
   передавай путь к `XDTOPackages/.../Ext/Package.bin`: он остаётся внутренней
   раскладкой платформенной выгрузки.
+- Не вызывай donor-команды compile, decompile или validate и не запускай их
+  скриптовые обёртки: публичная граница этого скилла состоит ровно из двух
+  нативных инструментов выше.
 
 `unica.xdto.edit` v1 поддерживает `add-value-type`, `add-object-type`,
 `add-property`, `remove-type` и `remove-property`. Для вложенного анонимного
@@ -28,20 +33,77 @@ allowed-tools:
 `ЛюбаяСсылка`. Writer сохраняет BOM и наблюдённые переводы строк, а повтор того
 же добавления возвращает no-op.
 
-## Пример preview
+## 1. Прочитать логическую цель
 
 ```json
 {
-  "sourceSet": "configuration",
-  "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
-  "operation": "add-property",
-  "typeName": "ЛюбаяСсылка",
-  "propertyPath": "СсылкаНаОбъект",
-  "property": {
-    "name": "Документ_НовыйДокумент",
-    "type": "Документ_НовыйДокумент",
-    "minOccurs": 0
-  },
-  "dryRun": true
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "unica.xdto.info",
+    "arguments": {
+      "cwd": "<workspace>",
+      "sourceSet": "configuration",
+      "metadataPath": "XDTOPackage.EnterpriseData_1_17_3"
+    }
+  }
+}
+```
+
+## 2. Построить preview
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/call",
+  "params": {
+    "name": "unica.xdto.edit",
+    "arguments": {
+      "cwd": "<workspace>",
+      "sourceSet": "configuration",
+      "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+      "operation": "add-property",
+      "typeName": "ЛюбаяСсылка",
+      "propertyPath": "СсылкаНаОбъект",
+      "property": {
+        "name": "Документ_НовыйДокумент",
+        "type": "Документ_НовыйДокумент",
+        "minOccurs": 0
+      },
+      "dryRun": true
+    }
+  }
+}
+```
+
+## 3. Применить только после подтверждения
+
+Только после явного подтверждения пользователя повтори без изменений все
+аргументы preview, кроме `dryRun`:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "tools/call",
+  "params": {
+    "name": "unica.xdto.edit",
+    "arguments": {
+      "cwd": "<workspace>",
+      "sourceSet": "configuration",
+      "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+      "operation": "add-property",
+      "typeName": "ЛюбаяСсылка",
+      "propertyPath": "СсылкаНаОбъект",
+      "property": {
+        "name": "Документ_НовыйДокумент",
+        "type": "Документ_НовыйДокумент",
+        "minOccurs": 0
+      },
+      "dryRun": false
+    }
+  }
 }
 ```

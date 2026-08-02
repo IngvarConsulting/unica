@@ -68,6 +68,7 @@ GROUP_TITLES = {
     "subsystem": "subsystem — подсистемы",
     "support": "support — поддержка поставщика",
     "template": "template — макеты объектов",
+    "xdto": "xdto — пакеты XDTO",
 }
 
 

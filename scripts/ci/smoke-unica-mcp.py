@@ -13,34 +13,48 @@ import threading
 from pathlib import Path
 
 
-REQUIRED_DCS_TOOLS = {
-    "unica.dcs.compile",
-    "unica.dcs.edit",
-    "unica.dcs.info",
-    "unica.dcs.validate",
-}
-REQUIRED_TOOLS = REQUIRED_DCS_TOOLS | {
-    "unica.project.status",
-    "unica.standards.search",
-    "unica.standards.explain",
-    "unica.source.resolve",
-    "unica.source.children",
-    "unica.source.resources",
-    "unica.source.read",
-    # The packaged surface must publish the migrated reader; its logical flow is
-    # exercised against the real binary by tests/ci/test_unica_mcp_smoke.py,
-    # because this script runs against a canned source oracle at release time.
-    "unica.meta.info",
-}
-REMOVED_DCS_TOOL_ALIASES = {
-    name.replace(".dcs.", ".s" + "kd.") for name in REQUIRED_DCS_TOOLS
-}
+TOOL_SURFACE_REVIEW_RELATIVE = Path("spec/architecture/tool-surface-review.json")
 SOURCE_TOOL_NAMES = {
     "unica.source.resolve",
     "unica.source.children",
     "unica.source.resources",
     "unica.source.read",
 }
+
+
+def tool_surface_review_path(plugin_root: Path) -> Path:
+    """Resolve the canonical public-tool ledger from any checkout-local package.
+
+    Release smoke runs with both source plugin roots and nested generated package
+    roots. Walking ancestors keeps the CI helper independent of either physical
+    layout while retaining one authored contract in `spec/architecture`.
+    """
+
+    resolved = plugin_root.resolve()
+    for root in (resolved, *resolved.parents):
+        candidate = root / TOOL_SURFACE_REVIEW_RELATIVE
+        if candidate.is_file():
+            return candidate
+    raise SystemExit(
+        "cannot resolve canonical tool-surface-review.json from plugin root: "
+        f"{resolved}"
+    )
+
+
+def expected_tool_names(plugin_root: Path) -> set[str]:
+    path = tool_surface_review_path(plugin_root)
+    try:
+        review = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise SystemExit(f"cannot read public tool ledger {path}: {error}") from error
+    if not isinstance(review, dict) or not review:
+        raise SystemExit(f"public tool ledger must be a non-empty object: {path}")
+    invalid = sorted(name for name in review if not name.startswith("unica."))
+    if invalid:
+        raise SystemExit(f"public tool ledger has invalid names: {invalid}")
+    return set(review)
+
+
 EXPECTED_SOURCE_INPUT_SCHEMAS = json.loads(
     r'''
 {
@@ -852,11 +866,36 @@ def _call(session: McpSession, request_id: int, name: str, arguments: dict) -> d
     )
 
 
-def _stable_tool_contract(tools: list[dict]) -> None:
-    by_name = {tool.get("name"): tool for tool in tools if isinstance(tool, dict)}
-    for name in sorted(REQUIRED_TOOLS):
-        if name not in by_name:
-            raise SystemExit(f"Unica MCP tools/list is missing: {name}")
+def _stable_tool_contract(tools: list[dict], expected_names: set[str]) -> None:
+    by_name = {}
+    name_counts = {}
+    malformed_count = 0
+    for tool in tools:
+        if not isinstance(tool, dict) or not isinstance(tool.get("name"), str):
+            malformed_count += 1
+            continue
+        name = tool["name"]
+        by_name[name] = tool
+        name_counts[name] = name_counts.get(name, 0) + 1
+    actual_names = set(by_name)
+    missing = sorted(expected_names - actual_names)
+    unexpected = sorted(actual_names - expected_names)
+    duplicates = sorted(name for name, count in name_counts.items() if count > 1)
+    if missing or unexpected or duplicates or malformed_count:
+        diagnostics = []
+        if missing:
+            diagnostics.append("missing: " + ", ".join(missing))
+        if unexpected:
+            diagnostics.append("unexpected: " + ", ".join(unexpected))
+        if duplicates:
+            diagnostics.append("duplicate: " + ", ".join(duplicates))
+        if malformed_count:
+            diagnostics.append(f"malformed entries: {malformed_count}")
+        raise SystemExit(
+            "Unica MCP tools/list differs from tool-surface-review.json ("
+            + "; ".join(diagnostics)
+            + ")"
+        )
     projected = {}
     for name in sorted(SOURCE_TOOL_NAMES):
         schema = by_name[name].get("inputSchema")
@@ -924,6 +963,7 @@ def _exercise_source_set(
 def smoke(command: list[str], plugin_root: Path, timeout_seconds: float) -> None:
     environment = os.environ.copy()
     environment["UNICA_PLUGIN_ROOT"] = str(plugin_root.resolve())
+    expected_names = expected_tool_names(plugin_root)
     with tempfile.TemporaryDirectory(prefix="unica-packaged-source-smoke-") as temporary:
         root = Path(temporary)
         workspace = root / "workspace"
@@ -944,11 +984,7 @@ def smoke(command: list[str], plugin_root: Path, timeout_seconds: float) -> None
             tools = listed.get("result", {}).get("tools")
             if not isinstance(tools, list):
                 raise SystemExit("Unica MCP tools/list response is missing")
-            _stable_tool_contract(tools)
-            names = {tool.get("name") for tool in tools if isinstance(tool, dict)}
-            removed_aliases = sorted(REMOVED_DCS_TOOL_ALIASES & names)
-            if removed_aliases:
-                raise SystemExit("Unica MCP tools/list exposes removed DCS aliases: " + ", ".join(removed_aliases))
+            _stable_tool_contract(tools, expected_names)
             cache_root = root / "cache"
             next_id, _ = _exercise_source_set(
                 session, 3, workspace, cache_root, "main"

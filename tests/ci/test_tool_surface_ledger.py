@@ -47,6 +47,23 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
         self.assertEqual(published - set(self.review), set())
         self.assertEqual(set(self.review) - published, set())
 
+    def test_xdto_surface_is_exactly_the_typed_info_edit_pair(self) -> None:
+        expected = {"unica.xdto.info", "unica.xdto.edit"}
+        published = {
+            tool["name"] for tool in self.tools if tool["name"].startswith("unica.xdto.")
+        }
+        reviewed = {name for name in self.review if name.startswith("unica.xdto.")}
+
+        self.assertEqual(published, expected)
+        self.assertEqual(reviewed, expected)
+        for name in sorted(expected):
+            with self.subTest(tool=name):
+                self.assertEqual(self.review[name]["scope"], "in")
+                self.assertEqual(self.review[name]["result"]["contract"], "typed")
+
+    def test_xdto_group_has_a_human_domain_title(self) -> None:
+        self.assertEqual(self.module.GROUP_TITLES.get("xdto"), "xdto — пакеты XDTO")
+
     def test_every_review_entry_states_a_contract_and_scenarios(self) -> None:
         for name, entry in sorted(self.review.items()):
             with self.subTest(tool=name):

@@ -25,18 +25,6 @@
         "crates/unica-coder/src/application/source_resources.rs",
         "tests/ci/test_unica_skills.py"
       ]
-    },
-    {
-      "skill": "xdto",
-      "notes": "Unica-owned skill routing the native XDTO package reader and writer through typed unica.xdto.* MCP tools.",
-      "localPaths": [
-        "plugins/unica/skills/xdto"
-      ],
-      "contractPaths": [
-        "crates/unica-coder/src/application/tool_contracts.rs",
-        "crates/unica-coder/src/infrastructure/native_operations/xdto.rs",
-        "tests/ci/test_unica_skills.py"
-      ]
     }
   ],
   "upstreams": [
@@ -1129,6 +1117,42 @@
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decision": "ignored-with-reason",
           "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+        },
+        {
+          "skill": "xdto",
+          "status": "adapted",
+          "notes": "Unica adapted the donor XDTO model, evidence corpus, and info/edit workflow. The deliberate MCP-first product boundary exposes exactly typed logical unica.xdto.info and unica.xdto.edit; donor compile, decompile, validate, and direct script wrappers are not packaged routes.",
+          "upstreamPaths": [
+            "docs/xdto-guide.md",
+            "docs/xdto-dsl-spec.md",
+            ".claude/skills/xdto-compile/**",
+            ".claude/skills/xdto-decompile/**",
+            ".claude/skills/xdto-edit/**",
+            ".claude/skills/xdto-info/**",
+            ".claude/skills/xdto-validate/**",
+            "tests/skills/cases/xdto-compile/**",
+            "tests/skills/cases/xdto-decompile/**",
+            "tests/skills/cases/xdto-edit/**",
+            "tests/skills/cases/xdto-info/**",
+            "tests/skills/cases/xdto-validate/**"
+          ],
+          "localPaths": [
+            "plugins/unica/skills/xdto",
+            "plugins/unica/references/specs/1c-xdto-spec.md",
+            "tests/fixtures/xdto/enterprise-data-minimal"
+          ],
+          "contractPaths": [
+            "spec/decisions/0024-xdto-package-domain.md",
+            "crates/unica-coder/src/application/tool_contracts.rs",
+            "crates/unica-coder/src/infrastructure/native_operations/xdto.rs",
+            "crates/unica-coder/tests/format_8_3_27_xml_corpus.rs",
+            "tests/ci/test_reference_format_profile.py",
+            "tests/ci/test_skill_provenance.py",
+            "tests/ci/test_unica_skills.py"
+          ],
+          "baselineCommit": "2067778ba3bad527bd1e5850304d1c82acb81fc8",
+          "decision": "ported",
+          "decisionReason": "Ported the approved logical read/edit subset and evidence-backed package grammar into native Rust and a single public MCP; broader donor tools remain outside ADR-0024."
         }
       ],
       "lastAdaptedLocalCommit": "795505f2243cf3c93a95918467f99135af758e1b",

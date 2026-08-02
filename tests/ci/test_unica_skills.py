@@ -13,6 +13,10 @@ DOCUMENT_LINK_PATTERNS = (
     re.compile(r"`([^`\s]*/[^`\s]*\.md)`"),
     re.compile(r"\]\((?!\w+:)([^)\s#]+\.md)(?:#[^)\s]*)?\)"),
 )
+XDTO_DONOR_EVIDENCE = re.compile(
+    r"<!-- xdto-donor-evidence:start -->.*?<!-- xdto-donor-evidence:end -->",
+    re.DOTALL,
+)
 
 
 def document_links(text: str) -> list[str]:
@@ -1375,6 +1379,10 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         for root in scanned_roots:
             for path in root.rglob("*.md"):
                 text = path.read_text(encoding="utf-8")
+                # A pinned source inventory is evidence, not prompt routing.
+                # The markers keep this narrow exception auditable while the
+                # rest of every packaged document remains under the stale-route guard.
+                text = XDTO_DONOR_EVIDENCE.sub("", text)
                 for pattern in forbidden_patterns:
                     with self.subTest(path=path.relative_to(self.repo_root()), pattern=pattern):
                         self.assertIsNone(re.search(pattern, text))
@@ -1542,6 +1550,57 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertRegex(text, r"Configuration.{0,120}Extension")
         self.assertIn("sourceSet", text)
         self.assertIn("metadataPath", text)
+
+    def test_xdto_skill_uses_one_confirmed_info_preview_apply_mcp_flow(self) -> None:
+        path = self.skill_root() / "xdto" / "SKILL.md"
+        text = path.read_text(encoding="utf-8")
+        blocks = list(re.finditer(r"```json\s*(.*?)```", text, re.DOTALL))
+        calls = [json.loads(block.group(1)) for block in blocks]
+
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(
+            [call.get("method") for call in calls],
+            ["tools/call", "tools/call", "tools/call"],
+        )
+        params = [call["params"] for call in calls]
+        self.assertEqual(
+            [item["name"] for item in params],
+            ["unica.xdto.info", "unica.xdto.edit", "unica.xdto.edit"],
+        )
+        self.assertEqual(
+            {item["name"] for item in params},
+            {"unica.xdto.info", "unica.xdto.edit"},
+        )
+
+        preview = dict(params[1]["arguments"])
+        apply = dict(params[2]["arguments"])
+        self.assertIs(preview.pop("dryRun"), True)
+        self.assertIs(apply.pop("dryRun"), False)
+        self.assertEqual(preview, apply)
+        confirmation_text = text[blocks[1].end() : blocks[2].start()].casefold()
+        self.assertIn("явного подтверждения", confirmation_text)
+
+        for item in params:
+            with self.subTest(tool=item["name"]):
+                arguments = item["arguments"]
+                self.assertIn("sourceSet", arguments)
+                self.assertIn("metadataPath", arguments)
+                self.assertNotIn("path", arguments)
+                self.assertNotIn("Package.bin", json.dumps(arguments, ensure_ascii=False))
+        for forbidden in (
+            "unica.xdto.validate",
+            "xdto-compile",
+            "xdto-decompile",
+            "xdto-validate",
+            "scripts/",
+            "powershell.exe",
+            ".ps1",
+            ".py",
+            "```bash",
+            "```shell",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, text)
 
     def test_source_access_skill_routes_reads_and_sends_writes_to_code_patch(
         self,

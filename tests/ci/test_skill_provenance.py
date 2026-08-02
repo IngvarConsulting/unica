@@ -318,6 +318,55 @@ class SkillProvenanceTests(unittest.TestCase):
         self.assertNotIn("upstreamPaths", owned["source-access"])
         self.assertNotIn("baselineCommit", owned["source-access"])
 
+    def test_xdto_records_adapted_donor_material_and_mcp_first_divergence(self) -> None:
+        data = self.load_provenance()
+        owned = {entry["skill"] for entry in data["unicaOwnedSkills"]}
+        cc = next(item for item in data["upstreams"] if item["id"] == "cc-1c-skills")
+        entries = {item["skill"]: item for item in cc["entries"]}
+        self.assertIn("xdto", entries)
+        entry = entries["xdto"]
+
+        self.assertNotIn("xdto", owned)
+        self.assertEqual(entry["status"], "adapted")
+        self.assertEqual(entry["decision"], "ported")
+        self.assertEqual(
+            entry["baselineCommit"],
+            "2067778ba3bad527bd1e5850304d1c82acb81fc8",
+        )
+        self.assertEqual(
+            set(entry["upstreamPaths"]),
+            {
+                "docs/xdto-guide.md",
+                "docs/xdto-dsl-spec.md",
+                ".claude/skills/xdto-compile/**",
+                ".claude/skills/xdto-decompile/**",
+                ".claude/skills/xdto-edit/**",
+                ".claude/skills/xdto-info/**",
+                ".claude/skills/xdto-validate/**",
+                "tests/skills/cases/xdto-compile/**",
+                "tests/skills/cases/xdto-decompile/**",
+                "tests/skills/cases/xdto-edit/**",
+                "tests/skills/cases/xdto-info/**",
+                "tests/skills/cases/xdto-validate/**",
+            },
+        )
+        self.assertEqual(
+            set(entry["localPaths"]),
+            {
+                "plugins/unica/skills/xdto",
+                "plugins/unica/references/specs/1c-xdto-spec.md",
+                "tests/fixtures/xdto/enterprise-data-minimal",
+            },
+        )
+        notes = entry["notes"]
+        self.assertIn("adapted", notes)
+        self.assertIn("MCP-first", notes)
+        self.assertIn("unica.xdto.info", notes)
+        self.assertIn("unica.xdto.edit", notes)
+        for excluded_route in ("compile", "decompile", "validate", "script wrappers"):
+            with self.subTest(excluded_route=excluded_route):
+                self.assertIn(excluded_route, notes)
+
     def test_tool_lock_ref_uses_tools_lock_as_single_binary_baseline(self) -> None:
         data = self.load_provenance()
         tool_lock = json.loads(
