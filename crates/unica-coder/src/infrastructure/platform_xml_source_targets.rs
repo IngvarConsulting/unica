@@ -1,3 +1,4 @@
+use crate::application::metadata::MetaFailure;
 use crate::application::source_navigation::{
     page_bounds, NavigationCompleteness, SourceChildrenRequest, SourceChildrenResult,
     SourceLocation, SourceMatchKind, SourceNavigationMode, SourceNode, SourceNodeAddressability,
@@ -7,6 +8,7 @@ use crate::application::source_navigation::{
     LocateRejection, SourceLocateRequest, SourceLocateResult,
 };
 use crate::domain::cancellation::{cancelled_error, CancellationToken};
+use crate::domain::metadata::{MetaDiagnostic, MetaDiagnosticCode};
 use crate::domain::project_sources::{
     classify_already_read_config_dump_info_xml, ConfigDumpInfoXmlKind,
 };
@@ -1886,6 +1888,101 @@ pub(crate) struct ClosedPlatformXmlTarget {
     target_kind: TargetKind,
     target_path: PathBuf,
     module_owner: Option<String>,
+}
+
+/// Closed provider handle for creation in one Platform XML source set. Public
+/// and domain results receive only logical addresses; physical state remains
+/// inside infrastructure.
+pub(crate) struct ResolvedSourceSet {
+    handle: ClosedPlatformXmlTarget,
+    pub(crate) source_root: PathBuf,
+    pub(crate) owner_path: PathBuf,
+    pub(crate) owner_preimage: Vec<u8>,
+    pub(crate) format_version: String,
+}
+
+impl fmt::Debug for ResolvedSourceSet {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ResolvedSourceSet")
+            .field("source_set", &self.handle.source_target.source_set)
+            .field("format_version", &self.format_version)
+            .field("physical_handle", &"<closed>")
+            .finish()
+    }
+}
+
+pub(crate) fn resolve_metadata_add_source(
+    context: &WorkspaceContext,
+    source_set: &str,
+) -> Result<ResolvedSourceSet, MetaFailure> {
+    let target = SourceTarget {
+        source_set: source_set.to_string(),
+        metadata_path: None,
+    };
+    let resolution = resolve_platform_xml_target(context, &target, TargetKindPolicy::Any)
+        .map_err(|error| metadata_source_failure(source_set, error))?;
+    let evidence = platform_xml_resource_evidence(context, &resolution.handle)
+        .map_err(|error| metadata_source_failure(source_set, error))?;
+    let format_version = crate::infrastructure::native_operations::common::detect_format_version(
+        &evidence.registration_path,
+        context,
+    )
+    .map_err(|_| {
+        MetaFailure::from(MetaDiagnostic::error(
+            MetaDiagnosticCode::CapabilityUnavailable,
+            format!(
+                "sourceSet `{source_set}` is outside the supported Platform XML format profile"
+            ),
+        ))
+    })?
+    .to_string();
+    let owner_preimage = fs::read(&evidence.registration_path).map_err(|_| {
+        MetaFailure::from(MetaDiagnostic::error(
+            MetaDiagnosticCode::ProviderUnavailable,
+            format!("sourceSet `{source_set}` owner image is unavailable"),
+        ))
+    })?;
+    Ok(ResolvedSourceSet {
+        handle: resolution.handle,
+        source_root: evidence.source_root,
+        owner_path: evidence.registration_path,
+        owner_preimage,
+        format_version,
+    })
+}
+
+pub(crate) fn revalidate_metadata_add_source(
+    context: &WorkspaceContext,
+    source: &ResolvedSourceSet,
+) -> Result<(), MetaFailure> {
+    revalidate_platform_xml_target(context, &source.handle)
+        .map(|_| ())
+        .map_err(|_| {
+            MetaFailure::from(MetaDiagnostic::error(
+                MetaDiagnosticCode::ConcurrentModification,
+                format!(
+                    "sourceSet `{}` changed after metadata creation was prepared",
+                    source.handle.source_target.source_set
+                ),
+            ))
+        })
+}
+
+fn metadata_source_failure(source_set: &str, error: SourceTargetError) -> MetaFailure {
+    let code = match error.code {
+        SourceTargetErrorCode::SourceSetNotFound => MetaDiagnosticCode::TargetNotFound,
+        SourceTargetErrorCode::ContainmentDenied => MetaDiagnosticCode::ProviderUnavailable,
+        _ => MetaDiagnosticCode::CapabilityUnavailable,
+    };
+    let message = match code {
+        MetaDiagnosticCode::TargetNotFound => format!("sourceSet `{source_set}` was not found"),
+        MetaDiagnosticCode::ProviderUnavailable => {
+            format!("sourceSet `{source_set}` could not be resolved safely")
+        }
+        _ => format!("sourceSet `{source_set}` does not provide Platform XML metadata creation"),
+    };
+    MetaDiagnostic::error(code, message).into()
 }
 
 impl ClosedPlatformXmlTarget {

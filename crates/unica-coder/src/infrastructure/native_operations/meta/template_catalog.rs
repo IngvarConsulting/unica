@@ -3,6 +3,7 @@
 use roxmltree::Document;
 use serde_json::{Map, Value};
 
+use super::super::common::is_1c_identifier;
 use super::super::common::{escape_xml, json_i64_value, json_value_to_python_string};
 use super::legacy_dsl::normalize_meta_object_type;
 use super::publisher::fresh_meta_compile_uuid;
@@ -10,9 +11,557 @@ use super::xml_model::{
     emit_meta_event_subscription_source_type_contents, emit_meta_fill_value, emit_meta_mltext,
     emit_meta_type_contents, emit_meta_value_type,
 };
+use crate::application::metadata::MetaFailure;
+use crate::domain::metadata::{MetaDiagnostic, MetaDiagnosticCode, MetadataKind};
+use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use crate::infrastructure::metadata_kinds::metadata_layout;
+use crate::infrastructure::platform_xml_source_targets::ResolvedSourceSet;
+use std::path::PathBuf;
+
+pub(crate) trait MetadataTemplateCatalog {
+    fn minimal_object(
+        &self,
+        source: &ResolvedSourceSet,
+        kind: MetadataKind,
+        name: &str,
+    ) -> Result<MetadataPostImage, MetaFailure>;
+}
+
+pub(crate) struct PlatformMetadataTemplateCatalog;
+
+pub(crate) struct MetadataPostImage {
+    pub(crate) metadata_path: MetadataAddress,
+    pub(crate) files: Vec<MetadataTemplateFile>,
+}
+
+pub(crate) struct MetadataTemplateFile {
+    pub(crate) role: MetadataTemplateFileRole,
+    pub(crate) mode: MetadataTemplateFileMode,
+    pub(crate) relative_path: PathBuf,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) preimage: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MetadataTemplateFileRole {
+    Descriptor,
+    Module,
+    Auxiliary,
+    Dependency(MetadataAddress),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MetadataTemplateFileMode {
+    Create,
+    Guard,
+    Replace,
+}
+
+struct MinimalTemplateContext {
+    chart_of_accounts: Option<String>,
+    chart_of_calculation_types: Option<String>,
+    method_name: Option<String>,
+    event_source: Option<String>,
+    event_handler: Option<String>,
+    dependencies: Vec<MetadataTemplateFile>,
+}
+
+impl MinimalTemplateContext {
+    fn from_source(
+        source: &ResolvedSourceSet,
+        kind: MetadataKind,
+        new_name: &str,
+    ) -> Result<Self, MetaFailure> {
+        let mut context = Self {
+            chart_of_accounts: None,
+            chart_of_calculation_types: None,
+            method_name: None,
+            event_source: None,
+            event_handler: None,
+            dependencies: Vec::new(),
+        };
+        match kind {
+            MetadataKind::AccountingRegister => {
+                let chart = required_registered_name(source, "ChartOfAccounts", kind)?;
+                context.chart_of_accounts = Some(format!("ChartOfAccounts.{chart}"));
+                context.dependencies.push(read_dependency(
+                    source,
+                    "ChartOfAccounts",
+                    &chart,
+                    MetadataTemplateFileMode::Guard,
+                    None,
+                )?);
+                context.dependencies.push(registrar_dependency(
+                    source,
+                    &format!("AccountingRegister.{new_name}"),
+                    kind,
+                )?);
+            }
+            MetadataKind::CalculationRegister => {
+                let chart = required_registered_name(source, "ChartOfCalculationTypes", kind)?;
+                context.chart_of_calculation_types =
+                    Some(format!("ChartOfCalculationTypes.{chart}"));
+                context.dependencies.push(read_dependency(
+                    source,
+                    "ChartOfCalculationTypes",
+                    &chart,
+                    MetadataTemplateFileMode::Guard,
+                    None,
+                )?);
+                context.dependencies.push(registrar_dependency(
+                    source,
+                    &format!("CalculationRegister.{new_name}"),
+                    kind,
+                )?);
+            }
+            MetadataKind::ScheduledJob => {
+                let (module, method, module_guard) =
+                    required_common_module_method(source, kind, 0)?;
+                context.method_name = Some(format!("CommonModule.{module}.{method}"));
+                context.dependencies.push(read_dependency(
+                    source,
+                    "CommonModule",
+                    &module,
+                    MetadataTemplateFileMode::Guard,
+                    None,
+                )?);
+                context.dependencies.push(module_guard);
+            }
+            MetadataKind::EventSubscription => {
+                let (module, method, module_guard) =
+                    required_common_module_method(source, kind, 2)?;
+                let catalog = required_registered_name(source, "Catalog", kind)?;
+                context.event_handler = Some(format!("CommonModule.{module}.{method}"));
+                context.event_source = Some(format!("CatalogRef.{catalog}"));
+                context.dependencies.push(read_dependency(
+                    source,
+                    "CommonModule",
+                    &module,
+                    MetadataTemplateFileMode::Guard,
+                    None,
+                )?);
+                context.dependencies.push(module_guard);
+                context.dependencies.push(read_dependency(
+                    source,
+                    "Catalog",
+                    &catalog,
+                    MetadataTemplateFileMode::Guard,
+                    None,
+                )?);
+            }
+            _ => {}
+        }
+        Ok(context)
+    }
+}
+
+fn required_common_module_method(
+    source: &ResolvedSourceSet,
+    requested: MetadataKind,
+    arity: usize,
+) -> Result<(String, String, MetadataTemplateFile), MetaFailure> {
+    for module in registered_names(&source.owner_preimage, "CommonModule") {
+        let relative_path = PathBuf::from("CommonModules")
+            .join(&module)
+            .join("Ext/Module.bsl");
+        let Ok(bytes) = std::fs::read(source.source_root.join(&relative_path)) else {
+            continue;
+        };
+        let Ok(text) = std::str::from_utf8(&bytes) else {
+            continue;
+        };
+        let Some(method) = first_exported_procedure(text.trim_start_matches('\u{feff}'), arity)
+        else {
+            continue;
+        };
+        return Ok((
+            module,
+            method,
+            MetadataTemplateFile {
+                role: MetadataTemplateFileRole::Auxiliary,
+                mode: MetadataTemplateFileMode::Guard,
+                relative_path,
+                bytes: bytes.clone(),
+                preimage: Some(bytes),
+            },
+        ));
+    }
+    Err(MetaDiagnostic::error(
+        MetaDiagnosticCode::CapabilityUnavailable,
+        format!(
+            "sourceSet does not contain an exported {arity}-argument common-module procedure required by {}",
+            requested.as_str()
+        ),
+    )
+    .into())
+}
+
+fn first_exported_procedure(source: &str, arity: usize) -> Option<String> {
+    source.lines().find_map(|line| {
+        let line = line.trim();
+        let lower = line.to_lowercase();
+        let signature = if lower.starts_with("procedure ") {
+            &line["procedure ".len()..]
+        } else if lower.starts_with("процедура ") {
+            &line["процедура ".len()..]
+        } else {
+            return None;
+        };
+        let open = signature.find('(')?;
+        let close = signature[open + 1..].find(')')? + open + 1;
+        let tail = signature[close + 1..].trim().to_lowercase();
+        if !tail
+            .split_whitespace()
+            .any(|part| matches!(part, "export" | "экспорт"))
+        {
+            return None;
+        }
+        let parameters = signature[open + 1..close].trim();
+        let actual_arity = if parameters.is_empty() {
+            0
+        } else {
+            parameters.split(',').count()
+        };
+        (actual_arity == arity)
+            .then(|| signature[..open].trim().to_string())
+            .filter(|name| is_1c_identifier(name))
+    })
+}
+
+fn required_registered_name(
+    source: &ResolvedSourceSet,
+    tag: &str,
+    requested: MetadataKind,
+) -> Result<String, MetaFailure> {
+    registered_names(&source.owner_preimage, tag)
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            MetaDiagnostic::error(
+                MetaDiagnosticCode::CapabilityUnavailable,
+                format!(
+                    "sourceSet does not contain the {tag} prerequisite required by {}",
+                    requested.as_str()
+                ),
+            )
+            .into()
+        })
+}
+
+fn registered_names(owner: &[u8], tag: &str) -> Vec<String> {
+    let Ok(xml) = std::str::from_utf8(owner) else {
+        return Vec::new();
+    };
+    let Ok(document) = Document::parse(xml.trim_start_matches('\u{feff}')) else {
+        return Vec::new();
+    };
+    document
+        .descendants()
+        .filter(|node| node.is_element() && node.tag_name().name() == tag)
+        .filter_map(|node| node.text().map(str::trim))
+        .filter(|name| !name.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn read_dependency(
+    source: &ResolvedSourceSet,
+    tag: &str,
+    name: &str,
+    mode: MetadataTemplateFileMode,
+    replacement: Option<Vec<u8>>,
+) -> Result<MetadataTemplateFile, MetaFailure> {
+    let layout = crate::infrastructure::metadata_kinds::metadata_kind(tag).ok_or_else(|| {
+        MetaFailure::from(MetaDiagnostic::error(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata prerequisite layout is unavailable",
+        ))
+    })?;
+    let relative_path = PathBuf::from(layout.directory).join(format!("{name}.xml"));
+    let preimage = std::fs::read(source.source_root.join(&relative_path)).map_err(|_| {
+        MetaFailure::from(MetaDiagnostic::error(
+            MetaDiagnosticCode::ProviderUnavailable,
+            format!("metadata prerequisite `{tag}.{name}` image is unavailable"),
+        ))
+    })?;
+    let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &format!("{tag}.{name}"))
+        .map_err(|_| {
+            MetaFailure::from(MetaDiagnostic::error(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata prerequisite identity is invalid",
+            ))
+        })?;
+    Ok(MetadataTemplateFile {
+        role: MetadataTemplateFileRole::Dependency(target),
+        mode,
+        relative_path,
+        bytes: replacement.unwrap_or_else(|| preimage.clone()),
+        preimage: Some(preimage),
+    })
+}
+
+fn registrar_dependency(
+    source: &ResolvedSourceSet,
+    register: &str,
+    requested: MetadataKind,
+) -> Result<MetadataTemplateFile, MetaFailure> {
+    let document = required_registered_name(source, "Document", requested)?;
+    let existing = read_dependency(
+        source,
+        "Document",
+        &document,
+        MetadataTemplateFileMode::Guard,
+        None,
+    )?;
+    let replacement = add_document_register_record(&existing.bytes, register).map_err(|_| {
+        MetaFailure::from(MetaDiagnostic::error(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "registrar document image cannot accept the mandatory register relation",
+        ))
+    })?;
+    read_dependency(
+        source,
+        "Document",
+        &document,
+        MetadataTemplateFileMode::Replace,
+        Some(replacement),
+    )
+}
+
+fn add_document_register_record(bytes: &[u8], register: &str) -> Result<Vec<u8>, String> {
+    let has_bom = bytes.starts_with(b"\xef\xbb\xbf");
+    let source = std::str::from_utf8(bytes)
+        .map_err(|_| "document is not UTF-8".to_string())?
+        .trim_start_matches('\u{feff}');
+    let escaped = escape_xml(register);
+    let item = format!("<xr:Item xsi:type=\"xr:MDObjectRef\">{escaped}</xr:Item>");
+    let updated = if source.contains("<RegisterRecords/>") {
+        source.replacen(
+            "<RegisterRecords/>",
+            &format!("<RegisterRecords>{item}</RegisterRecords>"),
+            1,
+        )
+    } else if let Some(end) = source.find("</RegisterRecords>") {
+        let mut updated = source.to_string();
+        updated.insert_str(end, &item);
+        updated
+    } else {
+        return Err("document has no RegisterRecords property".to_string());
+    };
+    let mut output = Vec::new();
+    if has_bom {
+        output.extend_from_slice(b"\xef\xbb\xbf");
+    }
+    output.extend_from_slice(updated.as_bytes());
+    Ok(output)
+}
+
+impl MetadataTemplateCatalog for PlatformMetadataTemplateCatalog {
+    fn minimal_object(
+        &self,
+        source: &ResolvedSourceSet,
+        kind: MetadataKind,
+        name: &str,
+    ) -> Result<MetadataPostImage, MetaFailure> {
+        if !is_1c_identifier(name) {
+            return Err(MetaDiagnostic::error(
+                MetaDiagnosticCode::InvalidArguments,
+                format!("metadata name `{name}` is not a valid 1C identifier"),
+            )
+            .with_field("name")
+            .into());
+        }
+        let metadata_path = MetadataAddress::parse(
+            PLATFORM_XML_8_3_27_FORMAT_2_20,
+            &format!("{}.{name}", kind.as_str()),
+        )
+        .map_err(|_| {
+            MetaFailure::from(
+                MetaDiagnostic::error(
+                    MetaDiagnosticCode::InvalidArguments,
+                    "metadata creation target is not a canonical logical address",
+                )
+                .with_field("name"),
+            )
+        })?;
+        let context = MinimalTemplateContext::from_source(source, kind, name)?;
+        let (xml, _) = minimal_metadata_xml(kind, name, &source.format_version, &context)
+            .map_err(|message| template_failure(&metadata_path, message))?;
+        let layout = metadata_layout(kind);
+        let mut files = vec![MetadataTemplateFile {
+            role: MetadataTemplateFileRole::Descriptor,
+            mode: MetadataTemplateFileMode::Create,
+            relative_path: PathBuf::from(layout.directory).join(format!("{name}.xml")),
+            bytes: with_utf8_bom(xml.as_bytes()),
+            preimage: None,
+        }];
+        let ext = PathBuf::from(layout.directory).join(name).join("Ext");
+        for module in minimal_module_files(kind) {
+            files.push(MetadataTemplateFile {
+                role: MetadataTemplateFileRole::Module,
+                mode: MetadataTemplateFileMode::Create,
+                relative_path: ext.join(module),
+                bytes: with_utf8_bom(&[]),
+                preimage: None,
+            });
+        }
+        for (file_name, content) in minimal_auxiliary_files(kind, &source.format_version) {
+            files.push(MetadataTemplateFile {
+                role: MetadataTemplateFileRole::Auxiliary,
+                mode: MetadataTemplateFileMode::Create,
+                relative_path: ext.join(file_name),
+                bytes: with_utf8_bom(content.as_bytes()),
+                preimage: None,
+            });
+        }
+        files.extend(context.dependencies);
+        Ok(MetadataPostImage {
+            metadata_path,
+            files,
+        })
+    }
+}
+
+fn template_failure(target: &MetadataAddress, message: String) -> MetaFailure {
+    MetaDiagnostic::error(MetaDiagnosticCode::ProviderUnavailable, message)
+        .with_metadata_path(target.clone())
+        .into()
+}
+
+fn with_utf8_bom(bytes: &[u8]) -> Vec<u8> {
+    let mut output = Vec::with_capacity(3 + bytes.len());
+    output.extend_from_slice(b"\xef\xbb\xbf");
+    output.extend_from_slice(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes));
+    output
+}
+
+pub(crate) fn minimal_module_files(kind: MetadataKind) -> &'static [&'static str] {
+    match kind {
+        MetadataKind::Catalog
+        | MetadataKind::Document
+        | MetadataKind::ChartOfAccounts
+        | MetadataKind::ChartOfCharacteristicTypes
+        | MetadataKind::ChartOfCalculationTypes
+        | MetadataKind::BusinessProcess
+        | MetadataKind::Task
+        | MetadataKind::ExchangePlan => &["ObjectModule.bsl"],
+        MetadataKind::Enum => &["ManagerModule.bsl"],
+        MetadataKind::Constant => &["ManagerModule.bsl", "ValueManagerModule.bsl"],
+        MetadataKind::InformationRegister
+        | MetadataKind::AccumulationRegister
+        | MetadataKind::AccountingRegister
+        | MetadataKind::CalculationRegister => &["RecordSetModule.bsl"],
+        MetadataKind::Report | MetadataKind::DataProcessor => {
+            &["ObjectModule.bsl", "ManagerModule.bsl"]
+        }
+        MetadataKind::CommonModule | MetadataKind::HTTPService | MetadataKind::WebService => {
+            &["Module.bsl"]
+        }
+        MetadataKind::ScheduledJob
+        | MetadataKind::EventSubscription
+        | MetadataKind::DocumentJournal
+        | MetadataKind::DefinedType => &[],
+    }
+}
+
+pub(crate) fn minimal_auxiliary_files(
+    kind: MetadataKind,
+    format_version: &str,
+) -> Vec<(&'static str, String)> {
+    match kind {
+        MetadataKind::ExchangePlan => vec![(
+            "Content.xml",
+            format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<ExchangePlanContent xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"{format_version}\"/>\r\n"
+            ),
+        )],
+        MetadataKind::BusinessProcess => vec![(
+            "Flowchart.xml",
+            format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n\
+<GraphicalSchema xmlns=\"http://v8.1c.ru/8.3/xcf/scheme\" xmlns:sch=\"http://v8.1c.ru/8.2/data/graphscheme\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\" xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"{format_version}\">\r\n\
+\t<BackColor>style:FieldBackColor</BackColor>\r\n\
+\t<GridEnabled>true</GridEnabled>\r\n\
+\t<DrawGridMode>Lines</DrawGridMode>\r\n\
+\t<GridHorizontalStep>20</GridHorizontalStep>\r\n\
+\t<GridVerticalStep>20</GridVerticalStep>\r\n\
+\t<PrintParameters>\r\n\
+\t\t<TopMargin>10</TopMargin>\r\n\
+\t\t<LeftMargin>10</LeftMargin>\r\n\
+\t\t<BottomMargin>10</BottomMargin>\r\n\
+\t\t<RightMargin>10</RightMargin>\r\n\
+\t\t<BlackAndWhite>false</BlackAndWhite>\r\n\
+\t\t<FitPageMode>Auto</FitPageMode>\r\n\
+\t</PrintParameters>\r\n\
+\t<Items/>\r\n\
+</GraphicalSchema>\r\n"
+            ),
+        )],
+        _ => Vec::new(),
+    }
+}
+
+pub(super) enum MetaTemplateDefinition<'a> {
+    Legacy(&'a Map<String, Value>),
+    Minimal(MinimalTemplateValues),
+}
+
+pub(super) struct MinimalTemplateValues {
+    chart_of_accounts: Option<String>,
+    chart_of_calculation_types: Option<String>,
+    method_name: Option<String>,
+    sources: Vec<String>,
+    handler: Option<String>,
+}
+
+impl<'a> MetaTemplateDefinition<'a> {
+    pub(super) fn legacy(value: &'a Map<String, Value>) -> Self {
+        Self::Legacy(value)
+    }
+
+    fn get(&self, key: &str) -> Option<&Value> {
+        match self {
+            Self::Legacy(value) => value.get(key),
+            Self::Minimal(_) => None,
+        }
+    }
+
+    fn string(&self, key: &str) -> Option<&str> {
+        match self {
+            Self::Legacy(value) => value.get(key).and_then(Value::as_str),
+            Self::Minimal(value) => match key {
+                "chartOfAccounts" => value.chart_of_accounts.as_deref(),
+                "chartOfCalculationTypes" => value.chart_of_calculation_types.as_deref(),
+                "methodName" => value.method_name.as_deref(),
+                "handler" => value.handler.as_deref(),
+                _ => None,
+            },
+        }
+    }
+
+    fn string_list(&self, key: &str) -> Vec<String> {
+        match self {
+            Self::Legacy(value) => meta_compile_string_list(value.get(key)),
+            Self::Minimal(value) if key == "source" => value.sources.clone(),
+            Self::Minimal(_) => Vec::new(),
+        }
+    }
+}
 
 pub(super) fn meta_compile_catalog_xml(
     defn: &Map<String, Value>,
+    obj_name: &str,
+    format_version: &str,
+) -> Result<(String, String), String> {
+    emit_meta_catalog_xml(
+        &MetaTemplateDefinition::legacy(defn),
+        obj_name,
+        format_version,
+    )
+}
+
+fn emit_meta_catalog_xml(
+    defn: &MetaTemplateDefinition<'_>,
     obj_name: &str,
     format_version: &str,
 ) -> Result<(String, String), String> {
@@ -60,6 +609,153 @@ pub(super) fn meta_compile_catalog_xml(
     }
 
     lines.push("\t</Catalog>".to_string());
+    lines.push("</MetaDataObject>".to_string());
+    Ok((format!("{}\n", lines.join("\n")), obj_uuid))
+}
+
+fn minimal_metadata_xml(
+    kind: crate::domain::metadata::MetadataKind,
+    obj_name: &str,
+    format_version: &str,
+    context: &MinimalTemplateContext,
+) -> Result<(String, String), String> {
+    let defn = MetaTemplateDefinition::Minimal(MinimalTemplateValues {
+        chart_of_accounts: context.chart_of_accounts.clone(),
+        chart_of_calculation_types: context.chart_of_calculation_types.clone(),
+        method_name: context.method_name.clone(),
+        sources: context.event_source.clone().into_iter().collect(),
+        handler: context.event_handler.clone(),
+    });
+    if kind == crate::domain::metadata::MetadataKind::Catalog {
+        return emit_meta_catalog_xml(&defn, obj_name, format_version);
+    }
+
+    let object_type = kind.as_str();
+    let mut next_uuid = fresh_meta_compile_uuid;
+    let obj_uuid = next_uuid();
+    let synonym = split_meta_camel_case(obj_name);
+    let mut lines = vec![
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string(),
+        format!(
+            "<MetaDataObject {} version=\"{}\">",
+            meta_xmlns_decl(),
+            escape_xml(format_version)
+        ),
+        format!("\t<{object_type} uuid=\"{obj_uuid}\">"),
+    ];
+    emit_meta_internal_info(&mut lines, "\t\t", object_type, obj_name, &mut next_uuid);
+    lines.push("\t\t<Properties>".to_string());
+    match kind {
+        crate::domain::metadata::MetadataKind::Catalog => unreachable!(),
+        crate::domain::metadata::MetadataKind::Document => {
+            emit_meta_document_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym)
+        }
+        crate::domain::metadata::MetadataKind::Enum => {
+            emit_meta_enum_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym)
+        }
+        crate::domain::metadata::MetadataKind::Constant => {
+            emit_meta_constant_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym)
+        }
+        crate::domain::metadata::MetadataKind::InformationRegister => {
+            emit_meta_information_register_properties(
+                &mut lines, "\t\t\t", &defn, obj_name, &synonym,
+            )
+        }
+        crate::domain::metadata::MetadataKind::AccumulationRegister => {
+            emit_meta_accumulation_register_properties(
+                &mut lines, "\t\t\t", &defn, obj_name, &synonym,
+            )
+        }
+        crate::domain::metadata::MetadataKind::AccountingRegister => {
+            emit_meta_accounting_register_properties(
+                &mut lines, "\t\t\t", &defn, obj_name, &synonym,
+            )
+        }
+        crate::domain::metadata::MetadataKind::CalculationRegister => {
+            emit_meta_calculation_register_properties(
+                &mut lines, "\t\t\t", &defn, obj_name, &synonym,
+            )
+        }
+        crate::domain::metadata::MetadataKind::ChartOfAccounts => {
+            emit_meta_chart_of_accounts_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym)
+        }
+        crate::domain::metadata::MetadataKind::ChartOfCharacteristicTypes => {
+            emit_meta_chart_of_characteristic_types_properties(
+                &mut lines, "\t\t\t", &defn, obj_name, &synonym,
+            )
+        }
+        crate::domain::metadata::MetadataKind::ChartOfCalculationTypes => {
+            emit_meta_chart_of_calculation_types_properties(
+                &mut lines, "\t\t\t", &defn, obj_name, &synonym,
+            )
+        }
+        crate::domain::metadata::MetadataKind::BusinessProcess => {
+            emit_meta_business_process_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym)
+        }
+        crate::domain::metadata::MetadataKind::Task => {
+            emit_meta_task_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym)
+        }
+        crate::domain::metadata::MetadataKind::ExchangePlan => {
+            emit_meta_exchange_plan_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym)
+        }
+        crate::domain::metadata::MetadataKind::DocumentJournal => {
+            emit_meta_document_journal_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym)
+        }
+        crate::domain::metadata::MetadataKind::Report => {
+            emit_meta_report_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym)
+        }
+        crate::domain::metadata::MetadataKind::DataProcessor => {
+            emit_meta_data_processor_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym)
+        }
+        crate::domain::metadata::MetadataKind::CommonModule => {
+            emit_meta_common_module_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym)
+        }
+        crate::domain::metadata::MetadataKind::ScheduledJob => {
+            emit_meta_scheduled_job_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym)
+        }
+        crate::domain::metadata::MetadataKind::EventSubscription => {
+            emit_meta_event_subscription_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym)
+        }
+        crate::domain::metadata::MetadataKind::HTTPService => {
+            emit_meta_http_service_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym)
+        }
+        crate::domain::metadata::MetadataKind::WebService => {
+            emit_meta_web_service_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym)
+        }
+        crate::domain::metadata::MetadataKind::DefinedType => {
+            emit_meta_defined_type_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym)
+        }
+    }
+    lines.push("\t\t</Properties>".to_string());
+    if matches!(
+        kind,
+        crate::domain::metadata::MetadataKind::AccountingRegister
+            | crate::domain::metadata::MetadataKind::CalculationRegister
+    ) {
+        lines.push("\t\t<ChildObjects>".to_string());
+        let field = MetaCompileAttr {
+            name: "Value".to_string(),
+            type_name: "Number(15,2)".to_string(),
+            synonym: "Value".to_string(),
+            flags: Vec::new(),
+            fill_checking: String::new(),
+            indexing: String::new(),
+            multi_line: false,
+            choice_history_on_input: String::new(),
+        };
+        emit_meta_register_field(
+            &mut lines,
+            "\t\t\t",
+            "Resource",
+            &field,
+            kind.as_str(),
+            &mut next_uuid,
+        );
+        lines.push("\t\t</ChildObjects>".to_string());
+    } else {
+        lines.push("\t\t<ChildObjects/>".to_string());
+    }
+    lines.push(format!("\t</{object_type}>"));
     lines.push("</MetaDataObject>".to_string());
     Ok((format!("{}\n", lines.join("\n")), obj_uuid))
 }
@@ -278,7 +974,7 @@ pub(crate) fn emit_meta_internal_info<F>(
 pub(super) fn emit_meta_catalog_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &Map<String, Value>,
+    defn: &MetaTemplateDefinition<'_>,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -408,7 +1104,7 @@ pub(super) fn emit_meta_catalog_properties(
     }
 }
 
-pub(super) fn meta_compile_synonym(defn: &Map<String, Value>, obj_name: &str) -> String {
+pub(super) fn meta_compile_synonym(defn: &MetaTemplateDefinition<'_>, obj_name: &str) -> String {
     defn.get("synonym")
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
@@ -418,7 +1114,7 @@ pub(super) fn meta_compile_synonym(defn: &Map<String, Value>, obj_name: &str) ->
 pub(super) fn emit_meta_base_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &Map<String, Value>,
+    defn: &MetaTemplateDefinition<'_>,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -438,7 +1134,7 @@ pub(super) fn emit_meta_base_properties(
 pub(super) fn emit_meta_enum_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &Map<String, Value>,
+    defn: &MetaTemplateDefinition<'_>,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -469,7 +1165,7 @@ pub(super) fn emit_meta_enum_properties(
 pub(super) fn emit_meta_constant_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &Map<String, Value>,
+    defn: &MetaTemplateDefinition<'_>,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -520,7 +1216,7 @@ pub(super) fn emit_meta_constant_properties(
 pub(super) fn emit_meta_document_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &Map<String, Value>,
+    defn: &MetaTemplateDefinition<'_>,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -623,7 +1319,7 @@ pub(super) fn emit_meta_document_properties(
 pub(super) fn emit_meta_information_register_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &Map<String, Value>,
+    defn: &MetaTemplateDefinition<'_>,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -685,7 +1381,7 @@ pub(super) fn emit_meta_information_register_properties(
 pub(super) fn emit_meta_accumulation_register_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &Map<String, Value>,
+    defn: &MetaTemplateDefinition<'_>,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -717,7 +1413,7 @@ pub(super) fn emit_meta_accumulation_register_properties(
 pub(super) fn emit_meta_accounting_register_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &Map<String, Value>,
+    defn: &MetaTemplateDefinition<'_>,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -732,7 +1428,7 @@ pub(super) fn emit_meta_accounting_register_properties(
         lines,
         indent,
         "ChartOfAccounts",
-        defn.get("chartOfAccounts").and_then(Value::as_str),
+        defn.string("chartOfAccounts"),
     );
     let correspondence = defn.get("correspondence").and_then(Value::as_bool) == Some(true);
     let period_adjustment_length = defn
@@ -767,7 +1463,7 @@ pub(super) fn emit_meta_accounting_register_properties(
 pub(super) fn emit_meta_calculation_register_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &Map<String, Value>,
+    defn: &MetaTemplateDefinition<'_>,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -809,7 +1505,7 @@ pub(super) fn emit_meta_calculation_register_properties(
         lines,
         indent,
         "ChartOfCalculationTypes",
-        defn.get("chartOfCalculationTypes").and_then(Value::as_str),
+        defn.string("chartOfCalculationTypes"),
     );
     lines.push(format!(
         "{indent}<IncludeHelpInContents>false</IncludeHelpInContents>"
@@ -824,7 +1520,7 @@ pub(super) fn emit_meta_calculation_register_properties(
 pub(super) fn emit_meta_chart_of_accounts_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &Map<String, Value>,
+    defn: &MetaTemplateDefinition<'_>,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -980,7 +1676,7 @@ pub(super) fn emit_meta_chart_of_accounts_properties(
 pub(super) fn emit_meta_chart_of_characteristic_types_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &Map<String, Value>,
+    defn: &MetaTemplateDefinition<'_>,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -1126,7 +1822,7 @@ pub(super) fn emit_meta_chart_of_characteristic_types_properties(
 pub(super) fn emit_meta_chart_of_calculation_types_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &Map<String, Value>,
+    defn: &MetaTemplateDefinition<'_>,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -1236,7 +1932,7 @@ pub(super) fn emit_meta_chart_of_calculation_types_properties(
 pub(super) fn emit_meta_business_process_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &Map<String, Value>,
+    defn: &MetaTemplateDefinition<'_>,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -1341,7 +2037,7 @@ pub(super) fn emit_meta_business_process_properties(
 pub(super) fn emit_meta_task_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &Map<String, Value>,
+    defn: &MetaTemplateDefinition<'_>,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -1442,7 +2138,7 @@ pub(super) fn emit_meta_task_properties(
 pub(super) fn emit_meta_exchange_plan_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &Map<String, Value>,
+    defn: &MetaTemplateDefinition<'_>,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -1549,7 +2245,7 @@ pub(super) fn emit_meta_exchange_plan_properties(
 pub(super) fn emit_meta_document_journal_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &Map<String, Value>,
+    defn: &MetaTemplateDefinition<'_>,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -1583,7 +2279,7 @@ pub(super) fn emit_meta_document_journal_properties(
 pub(super) fn emit_meta_report_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &Map<String, Value>,
+    defn: &MetaTemplateDefinition<'_>,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -1615,7 +2311,7 @@ pub(super) fn emit_meta_report_properties(
 pub(super) fn emit_meta_data_processor_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &Map<String, Value>,
+    defn: &MetaTemplateDefinition<'_>,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -1645,16 +2341,13 @@ pub(super) fn emit_meta_data_processor_properties(
 pub(super) fn emit_meta_scheduled_job_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &Map<String, Value>,
+    defn: &MetaTemplateDefinition<'_>,
     obj_name: &str,
     synonym: &str,
 ) {
     emit_meta_base_properties(lines, indent, defn, obj_name, synonym);
-    let method_name = meta_compile_common_module_method(
-        defn.get("methodName")
-            .and_then(Value::as_str)
-            .unwrap_or_default(),
-    );
+    let method_name =
+        meta_compile_common_module_method(defn.string("methodName").unwrap_or_default());
     lines.push(format!(
         "{indent}<MethodName>{}</MethodName>",
         escape_xml(&method_name)
@@ -1696,12 +2389,12 @@ pub(super) fn emit_meta_scheduled_job_properties(
 pub(super) fn emit_meta_event_subscription_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &Map<String, Value>,
+    defn: &MetaTemplateDefinition<'_>,
     obj_name: &str,
     synonym: &str,
 ) {
     emit_meta_base_properties(lines, indent, defn, obj_name, synonym);
-    let sources = meta_compile_string_list(defn.get("source"));
+    let sources = defn.string_list("source");
     if sources.is_empty() {
         lines.push(format!("{indent}<Source/>"));
     } else {
@@ -1721,11 +2414,7 @@ pub(super) fn emit_meta_event_subscription_properties(
                 .unwrap_or("BeforeWrite")
         )
     ));
-    let handler = meta_compile_common_module_method(
-        defn.get("handler")
-            .and_then(Value::as_str)
-            .unwrap_or_default(),
-    );
+    let handler = meta_compile_common_module_method(defn.string("handler").unwrap_or_default());
     lines.push(format!(
         "{indent}<Handler>{}</Handler>",
         escape_xml(&handler)
@@ -1735,7 +2424,7 @@ pub(super) fn emit_meta_event_subscription_properties(
 pub(super) fn emit_meta_http_service_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &Map<String, Value>,
+    defn: &MetaTemplateDefinition<'_>,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -1766,7 +2455,7 @@ pub(super) fn emit_meta_http_service_properties(
 pub(super) fn emit_meta_web_service_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &Map<String, Value>,
+    defn: &MetaTemplateDefinition<'_>,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -1804,7 +2493,7 @@ pub(super) fn emit_meta_web_service_properties(
     ));
 }
 
-pub(super) fn meta_compile_root_value_type(defn: &Map<String, Value>) -> String {
+pub(super) fn meta_compile_root_value_type(defn: &MetaTemplateDefinition<'_>) -> String {
     let mut type_name = defn
         .get("valueType")
         .and_then(Value::as_str)
@@ -1835,7 +2524,7 @@ pub(super) fn meta_compile_root_value_type(defn: &Map<String, Value>) -> String 
 pub(super) fn emit_meta_common_module_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &Map<String, Value>,
+    defn: &MetaTemplateDefinition<'_>,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -1889,7 +2578,7 @@ pub(super) fn emit_meta_common_module_properties(
 pub(super) fn emit_meta_defined_type_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &Map<String, Value>,
+    defn: &MetaTemplateDefinition<'_>,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -1908,11 +2597,11 @@ pub(super) fn emit_meta_defined_type_properties(
     lines.push(format!("{indent}</Type>"));
 }
 
-pub(super) fn bool_arg_from_json(defn: &Map<String, Value>, field_name: &str) -> bool {
+pub(super) fn bool_arg_from_json(defn: &MetaTemplateDefinition<'_>, field_name: &str) -> bool {
     defn.get(field_name).and_then(Value::as_bool) == Some(true)
 }
 
-pub(super) fn meta_compile_value_types(defn: &Map<String, Value>) -> Vec<String> {
+pub(super) fn meta_compile_value_types(defn: &MetaTemplateDefinition<'_>) -> Vec<String> {
     let value = defn.get("valueTypes").or_else(|| defn.get("valueType"));
     match value {
         Some(Value::Array(items)) => items
@@ -2047,7 +2736,7 @@ pub(super) fn emit_meta_lock_search_presentation_tail(
 pub(super) fn emit_meta_register_tail(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &Map<String, Value>,
+    defn: &MetaTemplateDefinition<'_>,
 ) {
     lines.push(format!(
         "{indent}<DataLockControlMode>{}</DataLockControlMode>",
@@ -2062,7 +2751,7 @@ pub(super) fn emit_meta_register_tail(
 pub(super) fn emit_meta_code_description_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &Map<String, Value>,
+    defn: &MetaTemplateDefinition<'_>,
     default_code_length: i64,
     default_description_length: i64,
     include_check_unique: bool,
@@ -2163,7 +2852,7 @@ pub(super) fn emit_meta_choice_object_tail(
 pub(super) fn emit_meta_number_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &Map<String, Value>,
+    defn: &MetaTemplateDefinition<'_>,
     default_number_length: i64,
 ) {
     lines.push(format!(
@@ -2298,7 +2987,7 @@ pub(super) fn emit_meta_enum_value<F>(
 pub(super) fn emit_meta_child_objects<F>(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &Map<String, Value>,
+    defn: &MetaTemplateDefinition<'_>,
     obj_type: &str,
     obj_name: &str,
     next_uuid: &mut F,
@@ -3037,7 +3726,11 @@ pub(super) fn emit_meta_operation_parameter<F>(
     lines.push(format!("{indent}</Parameter>"));
 }
 
-pub(super) fn meta_enum_prop(defn: &Map<String, Value>, field_name: &str, default: &str) -> String {
+pub(super) fn meta_enum_prop(
+    defn: &MetaTemplateDefinition<'_>,
+    field_name: &str,
+    default: &str,
+) -> String {
     defn.get(field_name)
         .and_then(Value::as_str)
         .map(normalize_meta_enum_value)
@@ -3670,5 +4363,93 @@ pub(super) fn split_meta_camel_case(name: &str) -> String {
     match chars.next() {
         Some(first) => format!("{}{}", first, chars.as_str().to_lowercase()),
         None => result,
+    }
+}
+
+#[cfg(test)]
+mod typed_template_tests {
+    use super::*;
+
+    fn context() -> MinimalTemplateContext {
+        MinimalTemplateContext {
+            chart_of_accounts: Some("ChartOfAccounts.MetaAddAccounts".to_string()),
+            chart_of_calculation_types: Some(
+                "ChartOfCalculationTypes.MetaAddCalculationTypes".to_string(),
+            ),
+            method_name: Some("CommonModule.MetaAddHandlers.Run".to_string()),
+            event_source: Some("CatalogRef.MetaAddSource".to_string()),
+            event_handler: Some("CommonModule.MetaAddHandlers.Handle".to_string()),
+            dependencies: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn typed_minimal_catalog_emits_parseable_platform_xml_for_every_metadata_kind() {
+        let context = context();
+        for kind in MetadataKind::ALL {
+            let name = format!("Typed{}", kind.as_str());
+            let (xml, uuid) = minimal_metadata_xml(*kind, &name, "2.20", &context)
+                .unwrap_or_else(|error| panic!("{}: {error}", kind.as_str()));
+            let document =
+                Document::parse(&xml).unwrap_or_else(|error| panic!("{}: {error}", kind.as_str()));
+            let object = document
+                .root_element()
+                .children()
+                .find(|node| node.is_element())
+                .expect("metadata object");
+            assert_eq!(object.tag_name().name(), kind.as_str());
+            assert_eq!(object.attribute("uuid"), Some(uuid.as_str()));
+            assert!(object.descendants().any(|node| {
+                node.is_element()
+                    && node.tag_name().name() == "Name"
+                    && node.text() == Some(name.as_str())
+            }));
+            let generated_types = metadata_generated_types_8_3_27(kind.as_str()).unwrap();
+            assert_eq!(
+                object
+                    .children()
+                    .any(|node| node.is_element() && node.tag_name().name() == "InternalInfo"),
+                !generated_types.is_empty(),
+                "{}",
+                kind.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn typed_minimal_catalog_declares_mandatory_modules_and_auxiliary_resources() {
+        assert_eq!(
+            minimal_module_files(MetadataKind::Catalog),
+            &["ObjectModule.bsl"]
+        );
+        assert_eq!(
+            minimal_module_files(MetadataKind::Constant),
+            &["ManagerModule.bsl", "ValueManagerModule.bsl"]
+        );
+        assert_eq!(
+            minimal_auxiliary_files(MetadataKind::ExchangePlan, "2.20")[0].0,
+            "Content.xml"
+        );
+        assert_eq!(
+            minimal_auxiliary_files(MetadataKind::BusinessProcess, "2.20")[0].0,
+            "Flowchart.xml"
+        );
+    }
+
+    #[test]
+    fn typed_minimal_catalog_selects_only_exported_procedures_with_required_arity() {
+        let module = concat!(
+            "Function Ignore() Export\nEndFunction\n",
+            "PROCEDURE Run() EXPORT\nEndProcedure\n",
+            "Процедура Обработать(Источник, Отказ) Экспорт\nКонецПроцедуры\n",
+            "Procedure Private(One, Two)\nEndProcedure\n",
+        );
+
+        assert_eq!(first_exported_procedure(module, 0).as_deref(), Some("Run"));
+        assert_eq!(
+            first_exported_procedure(module, 2).as_deref(),
+            Some("Обработать")
+        );
+        assert_eq!(first_exported_procedure(module, 1), None);
     }
 }

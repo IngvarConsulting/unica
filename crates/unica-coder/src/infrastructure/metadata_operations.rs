@@ -9,7 +9,7 @@ use crate::domain::metadata::{
     MetaRelatedSection, MetaRelatedSections, MetaRelatedStatus,
 };
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::native_operations::meta::MetadataValidator;
+use crate::infrastructure::native_operations::meta::{prepare_meta_add, MetadataValidator};
 
 pub(crate) struct MetadataOperations;
 
@@ -48,13 +48,18 @@ impl MetadataOperations {
     }
 
     pub(crate) fn prepare_mutation(
-        _request: &MetadataRequest,
-        _context: &WorkspaceContext,
-        _cancellation: &CancellationToken,
+        request: &MetadataRequest,
+        context: &WorkspaceContext,
+        cancellation: &CancellationToken,
     ) -> Result<Box<dyn PreparedMetadataMutation>, MetaFailure> {
-        Err(capability_unavailable(
-            "typed metadata mutation provider is not available yet",
-        ))
+        match request {
+            MetadataRequest::Add(request) => prepare_meta_add(request, context, cancellation),
+            MetadataRequest::Info(_) | MetadataRequest::Edit(_) | MetadataRequest::Remove(_) => {
+                Err(capability_unavailable(
+                    "typed metadata mutation provider is not available yet",
+                ))
+            }
+        }
     }
 }
 

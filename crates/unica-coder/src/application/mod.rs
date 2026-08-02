@@ -154,6 +154,42 @@ impl UnicaApplication {
             })?;
         call_tool(spec, args, self.ports.as_ref(), &cancellation)
     }
+
+    /// Exercises the not-yet-registered typed Meta add route from its dedicated
+    /// integration target. The public MCP registry intentionally does not call
+    /// this seam; Task 10 removes the need for it when the coordinated surface
+    /// switch publishes all four typed Meta operations together.
+    #[doc(hidden)]
+    pub fn call_unregistered_meta_add_for_integration_tests(
+        &self,
+        args: &Map<String, Value>,
+    ) -> Result<OperationResult, String> {
+        self.call_unregistered_meta_add_cancellable_for_integration_tests(
+            args,
+            CancellationToken::new(),
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn call_unregistered_meta_add_cancellable_for_integration_tests(
+        &self,
+        args: &Map<String, Value>,
+        cancellation: CancellationToken,
+    ) -> Result<OperationResult, String> {
+        let spec = ToolSpec {
+            name: "unica.meta.add",
+            description: "Create one minimal metadata object from a typed internal template.",
+            mutating: true,
+            cache_access: CacheAccess {
+                reads: &[],
+                writes: &["workspace_graph", "metadata_graph"],
+            },
+            handler: ToolHandler::Metadata {
+                operation: metadata::MetadataOperation::Add,
+            },
+        };
+        call_tool(spec, args, self.ports.as_ref(), &cancellation)
+    }
 }
 
 pub fn tools() -> Vec<ToolSpec> {

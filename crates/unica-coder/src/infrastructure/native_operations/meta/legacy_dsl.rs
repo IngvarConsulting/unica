@@ -53,6 +53,7 @@ use super::template_catalog::{
     meta_compile_root_value_type, meta_compile_string_list, meta_compile_synonym,
     meta_compile_tabular_sections, meta_compile_value_items, meta_compile_value_types,
     meta_xmlns_decl, normalize_meta_enum_value, MetaCompileAttr, MetaCompileTabularSection,
+    MetaTemplateDefinition,
 };
 use super::validation::{
     meta_validate_one_with_scope, meta_validate_property_values, meta_validate_valid_types,
@@ -777,9 +778,10 @@ pub(crate) fn meta_compile_object_xml(
         return meta_compile_catalog_xml(defn, obj_name, format_version);
     }
 
+    let template = MetaTemplateDefinition::legacy(defn);
     let mut next_uuid = fresh_meta_compile_uuid;
     let obj_uuid = next_uuid();
-    let synonym = meta_compile_synonym(defn, obj_name);
+    let synonym = meta_compile_synonym(&template, obj_name);
 
     let mut lines = Vec::<String>::new();
     lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
@@ -792,61 +794,67 @@ pub(crate) fn meta_compile_object_xml(
     emit_meta_internal_info(&mut lines, "\t\t", obj_type, obj_name, &mut next_uuid);
     lines.push("\t\t<Properties>".to_string());
     match obj_type {
-        "Document" => emit_meta_document_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym),
-        "Enum" => emit_meta_enum_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym),
-        "Constant" => emit_meta_constant_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym),
+        "Document" => {
+            emit_meta_document_properties(&mut lines, "\t\t\t", &template, obj_name, &synonym)
+        }
+        "Enum" => emit_meta_enum_properties(&mut lines, "\t\t\t", &template, obj_name, &synonym),
+        "Constant" => {
+            emit_meta_constant_properties(&mut lines, "\t\t\t", &template, obj_name, &synonym)
+        }
         "InformationRegister" => emit_meta_information_register_properties(
-            &mut lines, "\t\t\t", defn, obj_name, &synonym,
+            &mut lines, "\t\t\t", &template, obj_name, &synonym,
         ),
         "AccumulationRegister" => emit_meta_accumulation_register_properties(
-            &mut lines, "\t\t\t", defn, obj_name, &synonym,
+            &mut lines, "\t\t\t", &template, obj_name, &synonym,
         ),
-        "AccountingRegister" => {
-            emit_meta_accounting_register_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym)
-        }
+        "AccountingRegister" => emit_meta_accounting_register_properties(
+            &mut lines, "\t\t\t", &template, obj_name, &synonym,
+        ),
         "CalculationRegister" => emit_meta_calculation_register_properties(
-            &mut lines, "\t\t\t", defn, obj_name, &synonym,
+            &mut lines, "\t\t\t", &template, obj_name, &synonym,
         ),
-        "ChartOfAccounts" => {
-            emit_meta_chart_of_accounts_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym)
-        }
+        "ChartOfAccounts" => emit_meta_chart_of_accounts_properties(
+            &mut lines, "\t\t\t", &template, obj_name, &synonym,
+        ),
         "ChartOfCharacteristicTypes" => emit_meta_chart_of_characteristic_types_properties(
-            &mut lines, "\t\t\t", defn, obj_name, &synonym,
+            &mut lines, "\t\t\t", &template, obj_name, &synonym,
         ),
         "ChartOfCalculationTypes" => emit_meta_chart_of_calculation_types_properties(
-            &mut lines, "\t\t\t", defn, obj_name, &synonym,
+            &mut lines, "\t\t\t", &template, obj_name, &synonym,
         ),
-        "BusinessProcess" => {
-            emit_meta_business_process_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym)
-        }
-        "Task" => emit_meta_task_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym),
+        "BusinessProcess" => emit_meta_business_process_properties(
+            &mut lines, "\t\t\t", &template, obj_name, &synonym,
+        ),
+        "Task" => emit_meta_task_properties(&mut lines, "\t\t\t", &template, obj_name, &synonym),
         "ExchangePlan" => {
-            emit_meta_exchange_plan_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym)
+            emit_meta_exchange_plan_properties(&mut lines, "\t\t\t", &template, obj_name, &synonym)
         }
-        "DocumentJournal" => {
-            emit_meta_document_journal_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym)
+        "DocumentJournal" => emit_meta_document_journal_properties(
+            &mut lines, "\t\t\t", &template, obj_name, &synonym,
+        ),
+        "Report" => {
+            emit_meta_report_properties(&mut lines, "\t\t\t", &template, obj_name, &synonym)
         }
-        "Report" => emit_meta_report_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym),
         "DataProcessor" => {
-            emit_meta_data_processor_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym)
+            emit_meta_data_processor_properties(&mut lines, "\t\t\t", &template, obj_name, &synonym)
         }
         "CommonModule" => {
-            emit_meta_common_module_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym)
+            emit_meta_common_module_properties(&mut lines, "\t\t\t", &template, obj_name, &synonym)
         }
         "ScheduledJob" => {
-            emit_meta_scheduled_job_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym)
+            emit_meta_scheduled_job_properties(&mut lines, "\t\t\t", &template, obj_name, &synonym)
         }
-        "EventSubscription" => {
-            emit_meta_event_subscription_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym)
-        }
+        "EventSubscription" => emit_meta_event_subscription_properties(
+            &mut lines, "\t\t\t", &template, obj_name, &synonym,
+        ),
         "HTTPService" => {
-            emit_meta_http_service_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym)
+            emit_meta_http_service_properties(&mut lines, "\t\t\t", &template, obj_name, &synonym)
         }
         "WebService" => {
-            emit_meta_web_service_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym)
+            emit_meta_web_service_properties(&mut lines, "\t\t\t", &template, obj_name, &synonym)
         }
         "DefinedType" => {
-            emit_meta_defined_type_properties(&mut lines, "\t\t\t", defn, obj_name, &synonym)
+            emit_meta_defined_type_properties(&mut lines, "\t\t\t", &template, obj_name, &synonym)
         }
         _ => {
             return Err(format!(
@@ -858,7 +866,14 @@ pub(crate) fn meta_compile_object_xml(
     }
     lines.push("\t\t</Properties>".to_string());
 
-    emit_meta_child_objects(&mut lines, "\t\t", defn, obj_type, obj_name, &mut next_uuid)?;
+    emit_meta_child_objects(
+        &mut lines,
+        "\t\t",
+        &template,
+        obj_type,
+        obj_name,
+        &mut next_uuid,
+    )?;
 
     lines.push(format!("\t</{obj_type}>"));
     lines.push("</MetaDataObject>".to_string());
@@ -950,7 +965,7 @@ fn validate_meta_compile_type_contract(
         }
     }
     if obj_type == "Constant" {
-        let value_type = meta_compile_root_value_type(defn);
+        let value_type = meta_compile_root_value_type(&MetaTemplateDefinition::legacy(defn));
         validate_meta_type_union(std::iter::once(value_type.as_str()))?;
     }
     if obj_type == "EventSubscription" {
@@ -958,7 +973,7 @@ fn validate_meta_compile_type_contract(
         validate_meta_type_union(sources.iter().map(String::as_str))?;
     }
     if matches!(obj_type, "ChartOfCharacteristicTypes" | "DefinedType") {
-        let value_types = meta_compile_value_types(defn);
+        let value_types = meta_compile_value_types(&MetaTemplateDefinition::legacy(defn));
         validate_meta_type_union(value_types.iter().map(String::as_str))?;
     }
     if obj_type == "ChartOfAccounts" {

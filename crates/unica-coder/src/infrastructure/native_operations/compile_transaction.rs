@@ -730,6 +730,16 @@ impl CompileTransaction {
             .collect()
     }
 
+    /// Returns the exact in-memory post-image for one registration target.
+    /// Typed metadata mutations use it to validate the same bytes that the
+    /// transaction will publish, without reopening the physical owner.
+    pub(crate) fn planned_registration_image(&self, path: &Path) -> Option<Vec<u8>> {
+        let identity = normalize_transaction_path_identity(path).ok()?;
+        self.registrations
+            .get(&identity)
+            .map(|registration| registration.updated.clone())
+    }
+
     /// Stable, compact `changes` entries suitable for a dry-run result.
     pub(crate) fn dry_run_changes(&self) -> Vec<String> {
         let mut changes = self
