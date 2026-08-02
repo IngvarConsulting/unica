@@ -900,6 +900,8 @@ ChildObjects содержат `IntegrationServiceChannel` (каналы) — inl
 
 Каталог: `XDTOPackages/`. Файлы: `<Имя>.xml` (метаданные) + `<Имя>/Ext/Package.bin` (схема XDTO в UTF-8 XML). Расширение `Package.bin` не означает двоичный формат.
 
+Дескриптор задаёт логические `Name` и `Namespace`; доказанная грамматика и байтовый контракт ресурса описаны в [1c-xdto-spec.md](1c-xdto-spec.md).
+
 ```xml
 <XDTOPackage uuid="...">
   <Properties>

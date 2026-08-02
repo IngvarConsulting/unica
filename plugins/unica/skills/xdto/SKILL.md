@@ -9,6 +9,9 @@ allowed-tools:
 
 # /xdto — XDTO-пакеты 1С
 
+Перед чтением или мутацией сверяй поддерживаемую грамматику и байтовые гарантии
+с `../../references/specs/1c-xdto-spec.md`.
+
 ## MCP routing
 
 - Используй только MCP `unica`: `unica.xdto.info` читает пакет, а

@@ -51,7 +51,7 @@
 | XML-элемент | Каталог | Русское название | Спецификация |
 |-------------|---------|-----------------|--------------|
 | `ExchangePlan` | `ExchangePlans/` | Планы обмена | [1c-config-objects-spec.md § 15](1c-config-objects-spec.md#15-планы-обмена-exchangeplans) |
-| `XDTOPackage` | `XDTOPackages/` | XDTO-пакеты | [1c-configuration-spec.md § 6.14](1c-configuration-spec.md#614-xdtopackage--xdto-пакет) |
+| `XDTOPackage` | `XDTOPackages/` | XDTO-пакеты | [Дескриптор](1c-configuration-spec.md#614-xdtopackage--xdto-пакет), [`Ext/Package.bin`](1c-xdto-spec.md) |
 | `WebService` | `WebServices/` | Веб-сервисы | [1c-config-objects-spec.md § 25](1c-config-objects-spec.md#25-веб-сервисы-webservices) |
 | `HTTPService` | `HTTPServices/` | HTTP-сервисы | [1c-config-objects-spec.md § 24](1c-config-objects-spec.md#24-http-сервисы-httpservices) |
 | `WSReference` | `WSReferences/` | WS-ссылки | [1c-configuration-spec.md § 6.15](1c-configuration-spec.md#615-wsreference--ws-ссылка) |

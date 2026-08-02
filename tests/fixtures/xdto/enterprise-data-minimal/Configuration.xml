@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+	<Configuration uuid="00000000-0000-0000-0000-000000000001">
+		<Properties>
+			<Name>EnterpriseDataFixture</Name>
+		</Properties>
+		<ChildObjects>
+			<XDTOPackage>EnterpriseData_1_17_3</XDTOPackage>
+		</ChildObjects>
+	</Configuration>
+</MetaDataObject>

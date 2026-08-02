@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import codecs
 import contextlib
 import importlib.util
 import io
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -32,6 +34,10 @@ VALIDATOR_SCRIPTS = tuple(
 )
 MD_NS = "http://v8.1c.ru/8.3/MDClasses"
 MXL_NS = "http://v8.1c.ru/8.2/data/spreadsheet"
+XDTO_NS = "http://v8.1c.ru/8.1/xdto"
+XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
+XDTO_SPEC = ROOT / "plugins/unica/references/specs/1c-xdto-spec.md"
+XDTO_FIXTURE = ROOT / "tests/fixtures/xdto/enterprise-data-minimal"
 
 
 class ReconfigurableStringIO(io.StringIO):
@@ -75,6 +81,121 @@ def subsystem_xml(version: str | None) -> str:
 
 
 class ReferenceFormatProfileTests(unittest.TestCase):
+    def test_xdto_spec_is_indexed_and_bounded_by_evidence(self) -> None:
+        specification = XDTO_SPEC.read_text(encoding="utf-8")
+        readme = (XDTO_SPEC.parent / "README.md").read_text(encoding="utf-8")
+        index = (XDTO_SPEC.parent / "format-index.md").read_text(encoding="utf-8")
+        configuration = (XDTO_SPEC.parent / "1c-configuration-spec.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("1c-xdto-spec.md", readme)
+        self.assertIn("1c-xdto-spec.md", index)
+        self.assertIn("1c-xdto-spec.md", configuration)
+        self.assertIn("2067778ba3bad527bd1e5850304d1c82acb81fc8", specification)
+        self.assertIn("не является полной грамматикой XDTO", specification)
+        self.assertIn("import* → property* → valueType* → objectType*", specification)
+        self.assertIn("effective", specification)
+        self.assertIn("byte-local", specification)
+
+    def test_xdto_fixture_proves_profile_target_and_supported_package_shape(self) -> None:
+        package_name = "EnterpriseData_1_17_3"
+        target_namespace = "http://v8.1c.ru/edi/edi_stnd/EnterpriseData/1.17.3"
+        descriptor_path = XDTO_FIXTURE / "XDTOPackages" / f"{package_name}.xml"
+        package_path = (
+            XDTO_FIXTURE / "XDTOPackages" / package_name / "Ext" / "Package.bin"
+        )
+
+        configuration = ET.parse(XDTO_FIXTURE / "Configuration.xml").getroot()
+        self.assertEqual(configuration.tag, f"{{{MD_NS}}}MetaDataObject")
+        self.assertEqual(configuration.attrib.get("version"), "2.20")
+        self.assertEqual(
+            configuration.findtext(
+                f".//{{{MD_NS}}}ChildObjects/{{{MD_NS}}}XDTOPackage"
+            ),
+            package_name,
+        )
+
+        descriptor = ET.parse(descriptor_path).getroot()
+        self.assertEqual(descriptor.tag, f"{{{MD_NS}}}MetaDataObject")
+        self.assertEqual(descriptor.attrib.get("version"), "2.20")
+        self.assertEqual(
+            descriptor.findtext(f".//{{{MD_NS}}}Properties/{{{MD_NS}}}Name"),
+            package_name,
+        )
+        self.assertEqual(
+            descriptor.findtext(f".//{{{MD_NS}}}Properties/{{{MD_NS}}}Namespace"),
+            target_namespace,
+        )
+
+        package_bytes = package_path.read_bytes()
+        self.assertTrue(package_bytes.startswith(codecs.BOM_UTF8))
+        body = package_bytes[len(codecs.BOM_UTF8) :]
+        self.assertIn(b"\r\n", body)
+        self.assertNotIn(b"\n", body.replace(b"\r\n", b""))
+        self.assertIn(
+            '<objectType name="СоставнойЛюбойОбъект"/>\r\n'.encode(), body
+        )
+
+        package = ET.fromstring(package_bytes)
+        self.assertEqual(package.tag, f"{{{XDTO_NS}}}package")
+        self.assertEqual(package.attrib.get("targetNamespace"), target_namespace)
+        package_text = body.decode()
+        declared_prefixes = dict(
+            re.findall(r'xmlns:([\w]+)="([^"]+)"', package_text)
+        )
+        qname_prefixes = {
+            value.split(":", 1)[0]
+            for value in re.findall(r'(?:type|base|ref)="([^"]+)"', package_text)
+            if ":" in value
+        }
+        self.assertEqual(
+            qname_prefixes,
+            {"cfg", "tns", "v8", "xs"},
+        )
+        self.assertEqual(declared_prefixes["tns"], target_namespace)
+        self.assertEqual(declared_prefixes["v8"], "http://v8.1c.ru/8.1/data/core")
+        self.assertEqual(
+            declared_prefixes["cfg"],
+            "http://v8.1c.ru/8.1/data/enterprise/current-config",
+        )
+        child_kinds = [
+            child.tag.removeprefix(f"{{{XDTO_NS}}}") for child in package
+        ]
+        rank = {
+            name: position
+            for position, name in enumerate(
+                ("import", "property", "valueType", "objectType")
+            )
+        }
+        self.assertEqual(child_kinds, sorted(child_kinds, key=rank.__getitem__))
+        self.assertTrue(
+            {"import", "property", "valueType", "objectType"} <= set(child_kinds)
+        )
+
+        imports = {
+            child.attrib["namespace"]
+            for child in package.findall(f"{{{XDTO_NS}}}import")
+        }
+        self.assertIn("http://v8.1c.ru/8.1/data/core", imports)
+        self.assertIn("http://v8.1c.ru/8.1/data/enterprise/current-config", imports)
+
+        global_property = package.find(f"{{{XDTO_NS}}}property")
+        self.assertIsNotNone(global_property)
+        self.assertEqual(global_property.attrib.get("type"), "tns:EnterpriseData")
+
+        any_reference = package.find(
+            f"{{{XDTO_NS}}}objectType[@name='ЛюбаяСсылка']"
+        )
+        self.assertIsNotNone(any_reference)
+        reference_property = any_reference.find(
+            f"{{{XDTO_NS}}}property[@name='СсылкаНаОбъект']"
+        )
+        self.assertIsNotNone(reference_property)
+        nested = reference_property.find(f"{{{XDTO_NS}}}typeDef")
+        self.assertIsNotNone(nested)
+        self.assertEqual(nested.attrib.get(f"{{{XSI_NS}}}type"), "ObjectType")
+
     def test_dcs_compile_validates_before_printing_success(self) -> None:
         source = DCS_COMPILE.read_text(encoding="utf-8")
 
