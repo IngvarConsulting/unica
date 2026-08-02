@@ -59,6 +59,10 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         module = load_module()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            (root / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
+            manifest = root / "plugins/unica/.codex-plugin/plugin.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text("{}\n", encoding="utf-8")
             review_path = root / "spec/architecture/tool-surface-review.json"
             review_path.parent.mkdir(parents=True)
             review_path.write_text(
@@ -67,7 +71,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             )
             source_plugin = root / "plugins/unica"
             packaged_plugin = root / ".build/thin/marketplace/plugins/unica"
-            source_plugin.mkdir(parents=True)
+            source_plugin.mkdir(parents=True, exist_ok=True)
             packaged_plugin.mkdir(parents=True)
 
             for plugin_root in (source_plugin, packaged_plugin):
@@ -76,6 +80,33 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                         module.expected_tool_names(plugin_root),
                         {"unica.xdto.info", "unica.xdto.edit"},
                     )
+
+    def test_review_ledger_resolution_rejects_ledger_outside_checkout(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as directory:
+            outer = Path(directory)
+            unrelated = outer / "spec/architecture/tool-surface-review.json"
+            unrelated.parent.mkdir(parents=True)
+            unrelated.write_text(
+                json.dumps({"unica.source.read": {}}),
+                encoding="utf-8",
+            )
+            checkout = outer / "checkout"
+            (checkout / "Cargo.toml").parent.mkdir(parents=True)
+            (checkout / "Cargo.toml").write_text(
+                "[workspace]\n", encoding="utf-8"
+            )
+            manifest = checkout / "plugins/unica/.codex-plugin/plugin.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text("{}\n", encoding="utf-8")
+            packaged_plugin = checkout / ".build/thin/marketplace/plugins/unica"
+            packaged_plugin.mkdir(parents=True)
+
+            with self.assertRaisesRegex(
+                SystemExit,
+                "tool-surface-review.json.*checkout root",
+            ):
+                module.expected_tool_names(packaged_plugin)
 
     def tool_entries(self, names: set[str] | None = None) -> list[object]:
         module = load_module()
@@ -211,6 +242,10 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                 json.dumps({name: {} for name in sorted(expected_tools)}),
                 encoding="utf-8",
             )
+            (root / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
+            manifest = root / "plugins/unica/.codex-plugin/plugin.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text("{}\n", encoding="utf-8")
             plugin_root = root / "packaged/plugins/unica"
             plugin_root.mkdir(parents=True)
             return subprocess.run(
@@ -245,6 +280,16 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("missing", result.stderr)
         self.assertIn("unica.xdto.edit", result.stderr)
+
+    def test_reports_source_tool_missing_from_ledger_before_projection(self) -> None:
+        module = load_module()
+        expected = self.expected_tools() - {"unica.source.read"}
+
+        with self.assertRaisesRegex(
+            SystemExit,
+            "source tools.*unica.source.read",
+        ):
+            module._stable_tool_contract(self.tool_entries(expected), expected)
 
     def test_rejects_runtime_exposing_an_unexpected_tool(self) -> None:
         result = self.run_smoke(

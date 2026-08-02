@@ -1081,33 +1081,50 @@ fn is_xml_ncname(value: &str) -> bool {
     is_xml_ncname_start(first) && characters.all(is_xml_ncname_char)
 }
 
+// XML 1.0 Fifth Edition NCName ranges. The BMP grammar is shared by runtime
+// validation and the published JSON-Schema patterns. Astral ranges remain a
+// runtime-only addition because an ECMAScript pattern without Unicode mode
+// cannot portably represent them as single code points.
+const XML_NCNAME_START_BMP_RANGES: &[(char, char)] = &[
+    ('A', 'Z'),
+    ('_', '_'),
+    ('a', 'z'),
+    ('\u{00c0}', '\u{00d6}'),
+    ('\u{00d8}', '\u{00f6}'),
+    ('\u{00f8}', '\u{02ff}'),
+    ('\u{0370}', '\u{037d}'),
+    ('\u{037f}', '\u{1fff}'),
+    ('\u{200c}', '\u{200d}'),
+    ('\u{2070}', '\u{218f}'),
+    ('\u{2c00}', '\u{2fef}'),
+    ('\u{3001}', '\u{d7ff}'),
+    ('\u{f900}', '\u{fdcf}'),
+    ('\u{fdf0}', '\u{fffd}'),
+];
+const XML_NCNAME_START_ASTRAL_RANGES: &[(char, char)] = &[('\u{10000}', '\u{effff}')];
+const XML_NCNAME_CONTINUATION_RANGES: &[(char, char)] = &[
+    ('-', '-'),
+    ('.', '.'),
+    ('0', '9'),
+    ('\u{00b7}', '\u{00b7}'),
+    ('\u{0300}', '\u{036f}'),
+    ('\u{203f}', '\u{2040}'),
+];
+
+fn xml_character_is_in_ranges(character: char, ranges: &[(char, char)]) -> bool {
+    ranges
+        .iter()
+        .any(|&(start, end)| start <= character && character <= end)
+}
+
 fn is_xml_ncname_start(character: char) -> bool {
-    matches!(
-        character,
-        'A'..='Z'
-            | '_'
-            | 'a'..='z'
-            | '\u{00c0}'..='\u{00d6}'
-            | '\u{00d8}'..='\u{00f6}'
-            | '\u{00f8}'..='\u{02ff}'
-            | '\u{0370}'..='\u{037d}'
-            | '\u{037f}'..='\u{1fff}'
-            | '\u{200c}'..='\u{200d}'
-            | '\u{2070}'..='\u{218f}'
-            | '\u{2c00}'..='\u{2fef}'
-            | '\u{3001}'..='\u{d7ff}'
-            | '\u{f900}'..='\u{fdcf}'
-            | '\u{fdf0}'..='\u{fffd}'
-            | '\u{10000}'..='\u{effff}'
-    )
+    xml_character_is_in_ranges(character, XML_NCNAME_START_BMP_RANGES)
+        || xml_character_is_in_ranges(character, XML_NCNAME_START_ASTRAL_RANGES)
 }
 
 fn is_xml_ncname_char(character: char) -> bool {
     is_xml_ncname_start(character)
-        || matches!(
-            character,
-            '-' | '.' | '0'..='9' | '\u{00b7}' | '\u{0300}'..='\u{036f}' | '\u{203f}'..='\u{2040}'
-        )
+        || xml_character_is_in_ranges(character, XML_NCNAME_CONTINUATION_RANGES)
 }
 
 fn validate_source_resource_arguments(
@@ -2389,7 +2406,7 @@ fn property_schema(name: &str) -> Value {
 const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "base",
-        "Лексический QName с объявленным префиксом для новой XDTO valueType в unica.xdto.edit; например xs:string; пробелы по краям и голое имя не принимаются.",
+        "Prefixed lexical QName naming the base type of a new XDTO valueType in `unica.xdto.edit`, for example `xs:string`; an unprefixed name or surrounding whitespace is rejected.",
     ),
     (
         "allExtensions",
@@ -2413,15 +2430,15 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "property",
-        "Объект нового XDTO-свойства для unica.xdto.edit: обязательны NCName name и лексический QName type с объявленным префиксом; допустим minOccurs.",
+        "New XDTO property object for `unica.xdto.edit`: `name` must be an XML NCName and `type` a prefixed lexical QName; `minOccurs` is optional and must be 0 or 1.",
     ),
     (
         "propertyPath",
-        "Путь свойств к вложенному XDTO typeDef: неэкранированная точка разделяет сегменты, а `\\.` обозначает точку внутри NCName; например A\\.B.Child.",
+        "Property path to a nested XDTO `typeDef`: an unescaped dot separates segments and `\\.` denotes a literal dot inside one NCName, for example `A\\.B.Child`.",
     ),
     (
         "typeName",
-        "Имя XDTO valueType или objectType, либо целевого objectType для операции со свойством.",
+        "Name of the XDTO valueType or objectType, or of the target objectType for a property operation.",
     ),
     (
         "borrowMainAttribute",
@@ -2824,7 +2841,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "operation",
-        "Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; the metadata edit verbs for unica.meta.edit — read the enum published in the tool's own schema.",
+        "Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; the metadata edit verbs for unica.meta.edit; `add-value-type`, `add-object-type`, `add-property`, `remove-type` or `remove-property` for `unica.xdto.edit` — read the enum published in the tool's own schema.",
     ),
     (
         "output",
@@ -3154,7 +3171,7 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
                     r"^(?:XDTOPackage|ПакетXDTO)\.{}$",
                     xml_property_path_segment_pattern_body()
                 ),
-                "description": "Логический адрес пакета XDTO: XDTOPackage.<имя>; физический путь Package.bin не принимается."
+                "description": "Logical address of an XDTO package in the form `XDTOPackage.<name>`; the physical `Package.bin` path is rejected."
             }),
             "operation" => json!({
                 "type": "string",
@@ -3380,18 +3397,50 @@ fn xml_property_path_segment_pattern_body() -> String {
     )
 }
 
-fn xml_ncname_start_pattern_body() -> &'static str {
-    "[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-\u{1fff}\u{200c}-\u{200d}\u{2070}-\u{218f}\u{2c00}-\u{2fef}\u{3001}-\u{d7ff}\u{f900}-\u{fdcf}\u{fdf0}-\u{fffd}\u{10000}-\u{effff}]"
+fn xml_ncname_start_pattern_body() -> String {
+    xml_character_class(XML_NCNAME_START_BMP_RANGES.iter())
 }
 
-fn xml_ncname_char_without_dot_pattern_body() -> &'static str {
-    "[A-Z_a-z0-9\\-·À-ÖØ-öø-˿Ͱ-ͽͿ-\u{1fff}\u{200c}-\u{200d}\u{203f}-\u{2040}\u{2070}-\u{218f}\u{2c00}-\u{2fef}\u{3001}-\u{d7ff}\u{f900}-\u{fdcf}\u{fdf0}-\u{fffd}\u{10000}-\u{effff}\u{0300}-\u{036f}]"
+fn xml_ncname_char_without_dot_pattern_body() -> String {
+    xml_ncname_char_pattern_body(false)
 }
 
-fn xml_ncname_pattern_body() -> &'static str {
-    // XML 1.0 Fifth Edition NCName, represented with literal Unicode ranges so
-    // the JSON-Schema pattern and the runtime validator accept the same names.
-    "[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-\u{1fff}\u{200c}-\u{200d}\u{2070}-\u{218f}\u{2c00}-\u{2fef}\u{3001}-\u{d7ff}\u{f900}-\u{fdcf}\u{fdf0}-\u{fffd}\u{10000}-\u{effff}][A-Z_a-z0-9.\\-·À-ÖØ-öø-˿Ͱ-ͽͿ-\u{1fff}\u{200c}-\u{200d}\u{203f}-\u{2040}\u{2070}-\u{218f}\u{2c00}-\u{2fef}\u{3001}-\u{d7ff}\u{f900}-\u{fdcf}\u{fdf0}-\u{fffd}\u{10000}-\u{effff}\u{0300}-\u{036f}]*"
+fn xml_ncname_pattern_body() -> String {
+    format!(
+        "{}{}*",
+        xml_ncname_start_pattern_body(),
+        xml_ncname_char_pattern_body(true)
+    )
+}
+
+fn xml_ncname_char_pattern_body(include_dot: bool) -> String {
+    xml_character_class(
+        XML_NCNAME_START_BMP_RANGES.iter().chain(
+            XML_NCNAME_CONTINUATION_RANGES
+                .iter()
+                .filter(|&&(start, end)| include_dot || (start, end) != ('.', '.')),
+        ),
+    )
+}
+
+fn xml_character_class<'a>(ranges: impl IntoIterator<Item = &'a (char, char)>) -> String {
+    let mut pattern = String::from("[");
+    for &(start, end) in ranges {
+        append_xml_pattern_character(&mut pattern, start);
+        if start != end {
+            pattern.push('-');
+            append_xml_pattern_character(&mut pattern, end);
+        }
+    }
+    pattern.push(']');
+    pattern
+}
+
+fn append_xml_pattern_character(pattern: &mut String, character: char) {
+    if matches!(character, '\\' | '[' | ']' | '^' | '-') {
+        pattern.push('\\');
+    }
+    pattern.push(character);
 }
 
 fn validate_argument_type(tool_name: &str, key: &str, value: &Value) -> Result<(), String> {
@@ -3933,6 +3982,9 @@ mod tests {
             &["base", "typeName", "propertyPath", "property"][..],
             &["base", "property"][..],
         ];
+        assert_eq!(valid_operations.len(), XDTO_EDIT_OPERATIONS.len());
+        assert_eq!(branch_required.len(), valid_operations.len());
+        assert_eq!(branch_forbidden.len(), valid_operations.len());
         let field_value = |field: &str| match field {
             "name" => json!("Document"),
             "base" => json!("xs:string"),
@@ -4222,6 +4274,62 @@ mod tests {
                 "runtime accepted {call}"
             );
         }
+    }
+
+    #[test]
+    fn xdto_published_patterns_do_not_embed_astral_code_points() {
+        let info = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.xdto.info")
+            .unwrap();
+        let edit = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.xdto.edit")
+            .unwrap();
+        let info_schema = input_schema_for_tool(&info);
+        let edit_schema = input_schema_for_tool(&edit);
+        let patterns = [
+            &info_schema["properties"]["metadataPath"]["pattern"],
+            &info_schema["properties"]["typeName"]["pattern"],
+            &edit_schema["properties"]["metadataPath"]["pattern"],
+            &edit_schema["properties"]["name"]["pattern"],
+            &edit_schema["properties"]["typeName"]["pattern"],
+            &edit_schema["properties"]["base"]["pattern"],
+            &edit_schema["properties"]["propertyPath"]["pattern"],
+            &edit_schema["properties"]["property"]["properties"]["name"]["pattern"],
+            &edit_schema["properties"]["property"]["properties"]["type"]["pattern"],
+        ];
+
+        for pattern in patterns {
+            let pattern = pattern.as_str().expect("XDTO pattern must be a string");
+            assert!(
+                pattern.chars().all(|character| character <= '\u{ffff}'),
+                "published ECMAScript pattern embeds an astral code point: {pattern}"
+            );
+        }
+    }
+
+    #[test]
+    fn xdto_runtime_keeps_the_full_xml_ncname_range() {
+        let edit = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.xdto.edit")
+            .unwrap();
+        let astral_name = "\u{10000}";
+        let call = json!({
+            "sourceSet": "configuration",
+            "metadataPath": format!("XDTOPackage.{astral_name}"),
+            "operation": "add-property",
+            "typeName": astral_name,
+            "propertyPath": format!("{astral_name}.{astral_name}"),
+            "property": {
+                "name": astral_name,
+                "type": format!("{astral_name}:{astral_name}")
+            }
+        });
+
+        validate_tool_arguments(edit, call.as_object().unwrap(), true)
+            .unwrap_or_else(|error| panic!("runtime rejected XML astral NCNames: {error}"));
     }
 
     #[test]

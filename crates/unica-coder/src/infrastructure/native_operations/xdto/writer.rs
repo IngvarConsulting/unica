@@ -452,6 +452,23 @@ fn insert_before_explicit_close(
         .ok_or_else(|| {
             "unsupported_node: insertion target has no explicit closing tag".to_string()
         })?;
+    if sibling.is_none()
+        && target.parent_element().is_none()
+        && line_start(text, range.start) == line_start(text, close)
+        && target.children().all(|child| {
+            child.is_text()
+                && child.text().is_none_or(|value| {
+                    value
+                        .chars()
+                        .all(|character| matches!(character, ' ' | '\t' | '\r' | '\n'))
+                })
+        })
+    {
+        return Ok(TextEdit {
+            range: close..close,
+            replacement: fragment.to_string(),
+        });
+    }
     let child_indent = match sibling {
         Some(sibling) => exact_line_indent(text, sibling.range().start)?.to_string(),
         None => infer_child_indent(text, target)?,
@@ -485,7 +502,9 @@ fn infer_child_indent(text: &str, target: Node<'_, '_>) -> Result<String, String
         return exact_line_indent(text, child.range().start).map(str::to_string);
     }
     let target_indent = exact_line_indent(text, target.range().start)?;
-    let parent = target.parent_element().ok_or_else(unsupported_indent)?;
+    let parent = target
+        .parent_element()
+        .ok_or_else(unsupported_childless_root_indent)?;
     let parent_indent = exact_line_indent(text, parent.range().start)?;
     let unit = target_indent
         .strip_prefix(parent_indent)
@@ -496,6 +515,10 @@ fn infer_child_indent(text: &str, target: Node<'_, '_>) -> Result<String, String
 
 fn unsupported_indent() -> String {
     "unsupported_node: cannot prove the local indentation profile".to_string()
+}
+
+fn unsupported_childless_root_indent() -> String {
+    "unsupported_node: childless root has no indentation evidence for its first child".to_string()
 }
 
 fn observed_eol(text: &str, local: Option<LineEnding>) -> Result<&'static str, String> {
@@ -751,7 +774,7 @@ fn object_string<'a>(object: &'a Map<String, Value>, name: &str) -> Result<&'a s
     object
         .get(name)
         .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
+        .filter(|value| !value.trim().is_empty() && *value == value.trim())
         .ok_or_else(|| format!("property.{name} must be a non-empty string"))
 }
 
@@ -875,6 +898,39 @@ mod tests {
     }
 
     #[test]
+    fn xdto_writer_adds_the_first_value_type_without_inventing_inline_root_layout() {
+        let before = format!("<package {ROOT}></package>");
+        let planned = plan(
+            &before,
+            &args(&[("name", json!("Added")), ("base", json!("xs:string"))]),
+            "add-value-type",
+        )
+        .expect("an inline childless package must accept its first valueType");
+
+        assert_eq!(
+            planned.after,
+            format!("<package {ROOT}><valueType name=\"Added\" base=\"xs:string\"/></package>")
+        );
+        assert_edit_applies(&before, &planned);
+    }
+
+    #[test]
+    fn xdto_writer_names_missing_indent_evidence_for_a_multiline_childless_root() {
+        let before = package("");
+        let error = plan(
+            &before,
+            &args(&[("name", json!("Added")), ("base", json!("xs:string"))]),
+            "add-value-type",
+        )
+        .expect_err("a multiline childless root has no observed child indentation");
+
+        assert_eq!(
+            error,
+            "unsupported_node: childless root has no indentation evidence for its first child"
+        );
+    }
+
+    #[test]
     fn xdto_writer_expands_a_self_closing_object_for_its_first_property() {
         let before = package("\t<objectType name=\"Target\"/>\n");
         let plan = plan(
@@ -924,6 +980,27 @@ mod tests {
             assert!(
                 error.contains("property_path_invalid"),
                 "{property_path:?}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn xdto_writer_rejects_padded_property_fields_before_planning() {
+        let before = package("\t<objectType name=\"Target\"/>\n");
+        for (field, property) in [
+            ("name", json!({"name":" Added", "type":"xs:string"})),
+            ("type", json!({"name":"Added", "type":"xs:string "})),
+        ] {
+            let error = plan(
+                &before,
+                &args(&[("typeName", json!("Target")), ("property", property)]),
+                "add-property",
+            )
+            .expect_err("padded property fields must fail argument parsing");
+
+            assert_eq!(
+                error,
+                format!("property.{field} must be a non-empty string")
             );
         }
     }

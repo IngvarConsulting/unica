@@ -1920,6 +1920,16 @@ pub(crate) struct RevalidatedPlatformXmlTarget {
     pub(crate) path: PathBuf,
 }
 
+/// Revalidated resource paths whose field meaning follows the closed handle's
+/// target kind:
+///
+/// - `Module`: `target_path` is the BSL module and `descriptor_paths` contains
+///   the descriptors required by its layout; `module_paths` is empty.
+/// - `MetadataObject`: `target_path` is the object descriptor and
+///   `module_paths` contains its proven owned BSL modules; `descriptor_paths`
+///   is empty.
+/// - `SourceRoot`: `target_path` is the source root and `descriptor_paths`
+///   contains `Configuration.xml`; `module_paths` is empty.
 pub(crate) struct PlatformXmlResourceEvidence {
     pub(crate) target_path: PathBuf,
     pub(crate) source_root: PathBuf,

@@ -245,6 +245,19 @@ class ReferenceFormatProfileTests(unittest.TestCase):
             XDTO_FIXTURE / "XDTOPackages" / package_name / "Ext" / "Package.bin"
         )
 
+        for platform_xml_path in (
+            XDTO_FIXTURE / "Configuration.xml",
+            descriptor_path,
+        ):
+            with self.subTest(platform_xml_path=platform_xml_path):
+                platform_xml_bytes = platform_xml_path.read_bytes()
+                self.assertTrue(platform_xml_bytes.startswith(codecs.BOM_UTF8))
+                platform_xml_body = platform_xml_bytes[len(codecs.BOM_UTF8) :]
+                self.assertIn(b"\r\n", platform_xml_body)
+                self.assertNotIn(b"\n", platform_xml_body.replace(b"\r\n", b""))
+                self.assertNotIn(b"\r", platform_xml_body.replace(b"\r\n", b""))
+                self.assertTrue(platform_xml_body.endswith(b"\r\n"))
+
         configuration_root = ET.parse(XDTO_FIXTURE / "Configuration.xml").getroot()
         self.assertEqual(configuration_root.tag, f"{{{MD_NS}}}MetaDataObject")
         self.assertEqual(configuration_root.attrib.get("version"), "2.20")
@@ -404,7 +417,7 @@ class ReferenceFormatProfileTests(unittest.TestCase):
         self.assertEqual(effective_bounds["Версия"], (0, 1))
         self.assertEqual(effective_bounds["Идентификаторы"], (1, 3))
         self.assertEqual(effective_bounds["Документ_ЗаказКлиента"], (0, -1))
-        self.assertEqual(effective_bounds[f"ref:tns:EnterpriseData"], (1, 1))
+        self.assertEqual(effective_bounds["ref:tns:EnterpriseData"], (1, 1))
 
         global_property = package.find(f"{{{XDTO_NS}}}property")
         self.assertIsNotNone(global_property)

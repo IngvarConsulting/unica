@@ -2463,7 +2463,7 @@ mod tests {
     }
 
     #[test]
-    fn xdto_validation_diff_blocks_an_additional_finding_with_the_same_semantic_key() {
+    fn xdto_validation_diff_classifies_multiplicity_removal_and_fresh_keys() {
         use super::validation::{
             Finding, FindingLocation, FindingSeverity, FindingState, SourceSpanDto, ValidationDiff,
         };
@@ -2482,9 +2482,18 @@ mod tests {
 
         let diff = ValidationDiff::between(&[finding(10)], vec![finding(20), finding(30)]);
 
+        assert_eq!(diff.findings.len(), 2);
         assert_eq!(diff.findings[0].state, FindingState::PreExisting);
         assert_eq!(diff.findings[1].state, FindingState::Introduced);
         assert!(diff.blocks());
+
+        let removed = ValidationDiff::between(&[finding(40)], Vec::new());
+        assert!(removed.findings.is_empty());
+        assert!(!removed.blocks());
+
+        let fresh = ValidationDiff::between(&[], vec![finding(50)]);
+        assert_eq!(fresh.findings[0].state, FindingState::Introduced);
+        assert!(fresh.blocks());
     }
 
     #[test]
@@ -2552,6 +2561,7 @@ mod tests {
     #[test]
     fn xdto_validation_blocks_candidate_unknown_type_and_invalid_ncname() {
         let (context, mut args, package, _) = xdto_guard_fixture("validation-candidate");
+        let before = fs::read(&package).unwrap();
         args.insert("operation".to_string(), json!("add-property"));
         args.insert("typeName".to_string(), json!("ЛюбаяСсылка"));
         args.insert(
@@ -2571,8 +2581,8 @@ mod tests {
             codes.iter().any(|code| code == "unknown_type_reference"),
             "{codes:?}"
         );
+        assert_eq!(fs::read(&package).unwrap(), before);
         fs::remove_dir_all(context.workspace_root).unwrap();
-        assert!(!package.exists());
     }
 
     #[test]

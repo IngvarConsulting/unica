@@ -14,6 +14,10 @@ from pathlib import Path
 
 
 TOOL_SURFACE_REVIEW_RELATIVE = Path("spec/architecture/tool-surface-review.json")
+CHECKOUT_MARKERS = (
+    Path("Cargo.toml"),
+    Path("plugins/unica/.codex-plugin/plugin.json"),
+)
 SOURCE_TOOL_NAMES = {
     "unica.source.resolve",
     "unica.source.children",
@@ -65,18 +69,30 @@ def tool_surface_review_path(plugin_root: Path) -> Path:
     """Resolve the canonical public-tool ledger from any checkout-local package.
 
     Release smoke runs with both source plugin roots and nested generated package
-    roots. Walking ancestors keeps the CI helper independent of either physical
-    layout while retaining one authored contract in `spec/architecture`.
+    roots. The nearest checkout marker pair bounds lookup so a missing ledger
+    cannot be replaced by an unrelated file above the checkout.
     """
 
     resolved = plugin_root.resolve()
-    for root in (resolved, *resolved.parents):
-        candidate = root / TOOL_SURFACE_REVIEW_RELATIVE
-        if candidate.is_file():
-            return candidate
+    checkout_root = next(
+        (
+            root
+            for root in (resolved, *resolved.parents)
+            if all((root / marker).is_file() for marker in CHECKOUT_MARKERS)
+        ),
+        None,
+    )
+    if checkout_root is None:
+        raise SystemExit(
+            "cannot resolve validated checkout root from plugin root: "
+            f"{resolved}"
+        )
+    candidate = checkout_root / TOOL_SURFACE_REVIEW_RELATIVE
+    if candidate.is_file():
+        return candidate
     raise SystemExit(
-        "cannot resolve canonical tool-surface-review.json from plugin root: "
-        f"{resolved}"
+        "cannot resolve canonical tool-surface-review.json within checkout root: "
+        f"{checkout_root}"
     )
 
 
@@ -906,6 +922,12 @@ def _call(session: McpSession, request_id: int, name: str, arguments: dict) -> d
 
 
 def _stable_tool_contract(tools: list[object], expected_names: set[str]) -> None:
+    unledgered_source_tools = sorted(SOURCE_TOOL_NAMES - expected_names)
+    if unledgered_source_tools:
+        raise SystemExit(
+            "source tools are absent from tool-surface-review.json: "
+            + ", ".join(unledgered_source_tools)
+        )
     by_name = {}
     name_counts = {}
     malformed_count = 0
