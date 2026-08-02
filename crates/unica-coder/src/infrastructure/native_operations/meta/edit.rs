@@ -1,9 +1,52 @@
 #![allow(dead_code, unused_imports)]
 
-use super::internal::*;
+use crate::application::operation_descriptors::OBJECT_PATH;
+use crate::application::AdapterOutcome;
+use crate::domain::format_profile::ACTIVE_FORMAT_PROFILE;
+use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::platform_xml_owner::{
+    resolve_platform_xml_owners_with_provenance, PlatformXmlOwnerKind, PlatformXmlOwnerProvenance,
+};
+use diffy::{apply, DiffOptions, Patch};
+use roxmltree::Document;
+use serde_json::{Map, Value};
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+use super::super::cf::cf_validate_enum_allowed;
+use super::super::common::{
+    absolutize, escape_xml, guard_active_format_owner, json_value_to_python_string, read_utf8_sig,
+    required_path,
+};
+use super::super::compile_transaction::CompileTransaction;
+use super::legacy_dsl::{
+    meta_8_3_27_boolean_properties, meta_edit_apply_definition, meta_edit_apply_inline_operation,
+    meta_edit_definition_requests_line_number_length, meta_edit_inline_requests_line_number_length,
+    parse_meta_edit_dsl_input, read_meta_edit_definition,
+    validate_meta_8_3_27_boolean_property_value, validate_meta_8_3_27_property_value,
+    validate_meta_compile_attr_type, validate_meta_compile_name,
+    validate_meta_compile_tabular_section_types, validate_metadata_8_3_27_boolean_contract,
+    validate_metadata_8_3_27_enum_contract, MetaEditDslInput,
+};
+use super::publisher::fresh_meta_compile_uuid;
+use super::template_catalog::{
+    emit_meta_attribute, emit_meta_column, emit_meta_enum_value, emit_meta_register_field,
+    emit_meta_tabular_section, meta_compile_attributes, meta_compile_enum_values,
+    meta_compile_parse_attr, meta_line_number_length_is_applicable, normalize_meta_enum_value,
+    normalize_meta_object_ref, split_meta_camel_case, MetaCompileAttr, MetaCompileEnumValue,
+    MetaCompileTabularSection,
+};
+use super::xml_model::{
+    emit_meta_fill_value, emit_meta_mltext, emit_meta_value_type, meta_info_child,
+    meta_info_child_text, meta_info_children, validate_meta_type_union,
+};
+
+#[cfg(test)]
+use super::run_meta_edit_after_line_number_length_policy_hook;
 
 #[derive(Default)]
-pub(crate) struct MetaEditCounts {
+pub(super) struct MetaEditCounts {
     pub(crate) added: usize,
     pub(crate) modified: usize,
     pub(crate) removed: usize,
@@ -23,7 +66,7 @@ struct MetaEditSourceFormat {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) enum MetaEditLineNumberLengthPolicy {
+pub(super) enum MetaEditLineNumberLengthPolicy {
     Editable,
     FixedFive,
     NotApplicable,
@@ -61,7 +104,7 @@ pub(crate) struct MetaEditExecution {
     pub(crate) data: Option<MetaEditData>,
 }
 
-pub(crate) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
+pub(super) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
     edit_meta_with_data(args, context).outcome
 }
 
@@ -282,7 +325,7 @@ fn edit_meta_with_mode(
 
 /// Returns a verified diff or records a non-fatal renderer diagnostic. A
 /// renderer fault must not turn a valid edit into a failure.
-pub(crate) fn meta_edit_projected_diff(
+pub(super) fn meta_edit_projected_diff(
     warnings: &mut Vec<String>,
     rendered: Result<String, String>,
 ) -> Option<String> {
@@ -400,7 +443,7 @@ pub(crate) fn resolve_meta_edit_object_path(raw: &Path, cwd: &Path) -> Result<Pa
     Ok(path)
 }
 
-pub(crate) fn meta_edit_object_identity(xml_text: &str) -> Result<(String, String), String> {
+pub(super) fn meta_edit_object_identity(xml_text: &str) -> Result<(String, String), String> {
     let doc = Document::parse(xml_text.trim_start_matches('\u{feff}'))
         .map_err(|err| format!("XML parse error: {err}"))?;
     let root = doc.root_element();
@@ -488,13 +531,13 @@ fn meta_edit_line_number_length_policy(
     })
 }
 
-pub(crate) fn meta_edit_line_number_length_policy_from_mode(
+pub(super) fn meta_edit_line_number_length_policy_from_mode(
     mode: &str,
 ) -> MetaEditLineNumberLengthPolicy {
     meta_edit_line_number_length_policy_for_platform(mode, ACTIVE_FORMAT_PROFILE.platform_line)
 }
 
-pub(crate) fn meta_edit_line_number_length_policy_for_platform(
+pub(super) fn meta_edit_line_number_length_policy_for_platform(
     mode: &str,
     platform_line: &str,
 ) -> MetaEditLineNumberLengthPolicy {
@@ -514,7 +557,7 @@ pub(crate) fn meta_edit_line_number_length_policy_for_platform(
     }
 }
 
-pub(crate) fn meta_edit_parse_platform_line(value: &str) -> Option<(u32, u32, u32)> {
+pub(super) fn meta_edit_parse_platform_line(value: &str) -> Option<(u32, u32, u32)> {
     let mut parts = value.split('.');
     let major = parts.next()?.parse().ok()?;
     let minor = parts.next()?.parse().ok()?;
@@ -525,7 +568,7 @@ pub(crate) fn meta_edit_parse_platform_line(value: &str) -> Option<(u32, u32, u3
     Some((major, minor, patch))
 }
 
-pub(crate) fn meta_edit_parse_compatibility_version(value: &str) -> Option<(u32, u32, u32)> {
+pub(super) fn meta_edit_parse_compatibility_version(value: &str) -> Option<(u32, u32, u32)> {
     let mut parts = value.split('_');
     let major = parts.next()?.parse().ok()?;
     let minor = parts.next()?.parse().ok()?;
@@ -536,14 +579,14 @@ pub(crate) fn meta_edit_parse_compatibility_version(value: &str) -> Option<(u32,
     Some((major, minor, patch))
 }
 
-pub(crate) fn meta_edit_is_line_number_length_key(key: &str) -> bool {
+pub(super) fn meta_edit_is_line_number_length_key(key: &str) -> bool {
     matches!(
         key.trim().to_ascii_lowercase().as_str(),
         "linenumberlength" | "line_number_length" | "line-number-length"
     )
 }
 
-pub(crate) fn meta_edit_definition_info_lines(definition: &Value) -> Vec<String> {
+pub(super) fn meta_edit_definition_info_lines(definition: &Value) -> Vec<String> {
     let mut lines = Vec::new();
     let Some(object) = definition.as_object() else {
         return lines;
@@ -564,7 +607,7 @@ pub(crate) fn meta_edit_definition_info_lines(definition: &Value) -> Vec<String>
     lines
 }
 
-pub(crate) fn meta_edit_definition_add_info_lines(value: &Value) -> Vec<String> {
+pub(super) fn meta_edit_definition_add_info_lines(value: &Value) -> Vec<String> {
     let mut lines = Vec::new();
     let Some(object) = value.as_object() else {
         return lines;
@@ -587,7 +630,7 @@ pub(crate) fn meta_edit_definition_add_info_lines(value: &Value) -> Vec<String> 
     lines
 }
 
-pub(crate) fn meta_edit_definition_remove_info_lines(value: &Value) -> Vec<String> {
+pub(super) fn meta_edit_definition_remove_info_lines(value: &Value) -> Vec<String> {
     let mut lines = Vec::new();
     let Some(object) = value.as_object() else {
         return lines;
@@ -610,7 +653,7 @@ pub(crate) fn meta_edit_definition_remove_info_lines(value: &Value) -> Vec<Strin
     lines
 }
 
-pub(crate) fn meta_edit_definition_modify_info_lines(value: &Value) -> Vec<String> {
+pub(super) fn meta_edit_definition_modify_info_lines(value: &Value) -> Vec<String> {
     let mut lines = Vec::new();
     let Some(object) = value.as_object() else {
         return lines;
@@ -645,7 +688,7 @@ pub(crate) fn meta_edit_definition_modify_info_lines(value: &Value) -> Vec<Strin
     lines
 }
 
-pub(crate) fn meta_edit_tabular_section_definition_info_lines(value: &Value) -> Vec<String> {
+pub(super) fn meta_edit_tabular_section_definition_info_lines(value: &Value) -> Vec<String> {
     let mut lines = Vec::new();
     let Some(object) = value.as_object() else {
         return lines;
@@ -704,7 +747,7 @@ pub(crate) fn meta_edit_tabular_section_definition_info_lines(value: &Value) -> 
     lines
 }
 
-pub(crate) fn meta_edit_modify_child_info_lines(
+pub(super) fn meta_edit_modify_child_info_lines(
     xml_tag: &str,
     child_name: &str,
     changes: &Value,
@@ -727,7 +770,7 @@ pub(crate) fn meta_edit_modify_child_info_lines(
     lines
 }
 
-pub(crate) fn meta_edit_log_change_items(value: &Value) -> Vec<(String, String)> {
+pub(super) fn meta_edit_log_change_items(value: &Value) -> Vec<(String, String)> {
     if let Some(text) = value.as_str() {
         return split_meta_edit_commas_outside_parens(text)
             .into_iter()
@@ -746,7 +789,7 @@ pub(crate) fn meta_edit_log_change_items(value: &Value) -> Vec<(String, String)>
         .collect()
 }
 
-pub(crate) fn meta_edit_added_child_log_label(child_type: &str) -> &'static str {
+pub(super) fn meta_edit_added_child_log_label(child_type: &str) -> &'static str {
     match child_type {
         "attributes" => "attribute",
         "tabularSections" => "tabular section",
@@ -761,7 +804,7 @@ pub(crate) fn meta_edit_added_child_log_label(child_type: &str) -> &'static str 
     }
 }
 
-pub(crate) fn meta_edit_log_child_name(child_type: &str, value: &Value) -> Option<String> {
+pub(super) fn meta_edit_log_child_name(child_type: &str, value: &Value) -> Option<String> {
     let name = match child_type {
         "attributes" | "dimensions" | "resources" => meta_compile_parse_attr(value).name,
         "tabularSections" => meta_edit_tabular_section_from_value(value).ok()?.name,
@@ -777,7 +820,7 @@ pub(crate) fn meta_edit_log_child_name(child_type: &str, value: &Value) -> Optio
     }
 }
 
-pub(crate) fn meta_edit_modify_object_properties_from_pairs(
+pub(super) fn meta_edit_modify_object_properties_from_pairs(
     xml_text: &mut String,
     value: &str,
 ) -> Result<usize, String> {
@@ -799,7 +842,7 @@ pub(crate) fn meta_edit_modify_object_properties_from_pairs(
     Ok(modified)
 }
 
-pub(crate) fn meta_edit_modify_object_properties_from_map(
+pub(super) fn meta_edit_modify_object_properties_from_map(
     xml_text: &mut String,
     object_type: &str,
     object_name: &str,
@@ -828,7 +871,7 @@ pub(crate) fn meta_edit_modify_object_properties_from_map(
     Ok(())
 }
 
-pub(crate) fn meta_edit_set_scalar_property(
+pub(super) fn meta_edit_set_scalar_property(
     xml_text: &mut String,
     key: &str,
     raw_value: &str,
@@ -871,7 +914,7 @@ pub(crate) fn meta_edit_set_scalar_property(
     Ok(())
 }
 
-pub(crate) fn meta_edit_add_child_value(
+pub(super) fn meta_edit_add_child_value(
     xml_text: &mut String,
     object_type: &str,
     object_name: &str,
@@ -986,7 +1029,7 @@ pub(crate) fn meta_edit_add_child_value(
     }
 }
 
-pub(crate) fn meta_edit_remove_child_value(
+pub(super) fn meta_edit_remove_child_value(
     xml_text: &mut String,
     child_type: &str,
     value: &Value,
@@ -998,7 +1041,7 @@ pub(crate) fn meta_edit_remove_child_value(
     meta_edit_remove_top_child_by_name(xml_text, tag, &name)
 }
 
-pub(crate) fn meta_edit_modify_top_child(
+pub(super) fn meta_edit_modify_top_child(
     xml_text: &mut String,
     child_type: &str,
     name: &str,
@@ -1025,7 +1068,7 @@ pub(crate) fn meta_edit_modify_top_child(
     meta_edit_modify_top_child_properties(xml_text, tag, name, raw_changes, target)
 }
 
-pub(crate) fn meta_edit_modify_tabular_sections_from_definition(
+pub(super) fn meta_edit_modify_tabular_sections_from_definition(
     xml_text: &mut String,
     value: &Value,
     line_number_length_policy: MetaEditLineNumberLengthPolicy,
@@ -1100,7 +1143,7 @@ pub(crate) fn meta_edit_modify_tabular_sections_from_definition(
     Ok(())
 }
 
-pub(crate) fn meta_edit_apply_complex_property_action(
+pub(super) fn meta_edit_apply_complex_property_action(
     xml_text: &mut String,
     object_type: &str,
     object_name: &str,
@@ -1170,7 +1213,7 @@ pub(crate) fn meta_edit_apply_complex_property_action(
     }
 }
 
-pub(crate) fn meta_edit_complex_property_values(
+pub(super) fn meta_edit_complex_property_values(
     xml_text: &str,
     property: &str,
 ) -> Result<Vec<String>, String> {
@@ -1191,7 +1234,7 @@ pub(crate) fn meta_edit_complex_property_values(
         .collect())
 }
 
-pub(crate) fn meta_edit_replace_complex_property(
+pub(super) fn meta_edit_replace_complex_property(
     xml_text: &mut String,
     property: &str,
     values: &[String],
@@ -1208,7 +1251,7 @@ pub(crate) fn meta_edit_replace_complex_property(
     Ok(())
 }
 
-pub(crate) fn meta_edit_complex_property_xml(
+pub(super) fn meta_edit_complex_property_xml(
     xml_text: &str,
     property: &str,
     values: &[String],
@@ -1240,7 +1283,7 @@ pub(crate) fn meta_edit_complex_property_xml(
     Ok(lines.join("\n"))
 }
 
-pub(crate) fn meta_edit_line_indent(text: &str, pos: usize) -> String {
+pub(super) fn meta_edit_line_indent(text: &str, pos: usize) -> String {
     let line_start = text[..pos].rfind('\n').map_or(0, |index| index + 1);
     text[line_start..pos]
         .chars()
@@ -1249,17 +1292,17 @@ pub(crate) fn meta_edit_line_indent(text: &str, pos: usize) -> String {
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct MetaEditInsertPosition {
+pub(super) struct MetaEditInsertPosition {
     pub(crate) before: Option<String>,
     pub(crate) after: Option<String>,
 }
 
 impl MetaEditInsertPosition {
-    pub(crate) fn is_empty(&self) -> bool {
+    pub(super) fn is_empty(&self) -> bool {
         self.before.is_none() && self.after.is_none()
     }
 
-    pub(crate) fn target(&self) -> Option<(&str, bool)> {
+    pub(super) fn target(&self) -> Option<(&str, bool)> {
         if let Some(after) = self.after.as_deref() {
             Some((after, true))
         } else {
@@ -1268,7 +1311,7 @@ impl MetaEditInsertPosition {
     }
 }
 
-pub(crate) fn meta_edit_extract_insert_position(
+pub(super) fn meta_edit_extract_insert_position(
     value: &Value,
 ) -> Result<(Value, MetaEditInsertPosition), String> {
     if let Some(text) = value.as_str() {
@@ -1296,7 +1339,7 @@ pub(crate) fn meta_edit_extract_insert_position(
     Ok((value.clone(), MetaEditInsertPosition::default()))
 }
 
-pub(crate) fn meta_edit_extract_insert_position_from_text(
+pub(super) fn meta_edit_extract_insert_position_from_text(
     text: &str,
 ) -> Result<(String, MetaEditInsertPosition), String> {
     let after_marker = ">> after ";
@@ -1333,7 +1376,7 @@ pub(crate) fn meta_edit_extract_insert_position_from_text(
     Ok((cleaned, position))
 }
 
-pub(crate) fn meta_edit_normalize_complex_property_value(
+pub(super) fn meta_edit_normalize_complex_property_value(
     property: &str,
     object_type: &str,
     object_name: &str,
@@ -1369,7 +1412,7 @@ pub(crate) fn meta_edit_normalize_complex_property_value(
     }
 }
 
-pub(crate) fn meta_edit_complex_property_from_inline_target(target: &str) -> Option<&'static str> {
+pub(super) fn meta_edit_complex_property_from_inline_target(target: &str) -> Option<&'static str> {
     match target {
         "owner" | "owners" => Some("Owners"),
         "registerRecord" | "registerRecords" => Some("RegisterRecords"),
@@ -1379,7 +1422,7 @@ pub(crate) fn meta_edit_complex_property_from_inline_target(target: &str) -> Opt
     }
 }
 
-pub(crate) fn meta_edit_complex_property_kind(property: &str) -> Option<&'static str> {
+pub(super) fn meta_edit_complex_property_kind(property: &str) -> Option<&'static str> {
     match property {
         "Owners" | "owners" => Some("Owners"),
         "RegisterRecords" | "registerRecords" => Some("RegisterRecords"),
@@ -1389,7 +1432,7 @@ pub(crate) fn meta_edit_complex_property_kind(property: &str) -> Option<&'static
     }
 }
 
-pub(crate) fn meta_edit_operation_key(key: &str) -> Option<String> {
+pub(super) fn meta_edit_operation_key(key: &str) -> Option<String> {
     match key.to_lowercase().as_str() {
         "add" | "добавить" => Some("add".to_string()),
         "remove" | "удалить" => Some("remove".to_string()),
@@ -1398,7 +1441,7 @@ pub(crate) fn meta_edit_operation_key(key: &str) -> Option<String> {
     }
 }
 
-pub(crate) fn meta_edit_child_type_from_inline_target(target: &str) -> Option<&'static str> {
+pub(super) fn meta_edit_child_type_from_inline_target(target: &str) -> Option<&'static str> {
     match target {
         "attribute" => Some("attributes"),
         "ts" => Some("tabularSections"),
@@ -1413,7 +1456,7 @@ pub(crate) fn meta_edit_child_type_from_inline_target(target: &str) -> Option<&'
     }
 }
 
-pub(crate) fn meta_edit_child_type_key(key: &str) -> Option<&'static str> {
+pub(super) fn meta_edit_child_type_key(key: &str) -> Option<&'static str> {
     match key.to_lowercase().as_str() {
         "attributes" | "реквизиты" | "attrs" => Some("attributes"),
         "tabularsections" | "табличныечасти" | "тч" | "ts" => {
@@ -1431,7 +1474,7 @@ pub(crate) fn meta_edit_child_type_key(key: &str) -> Option<&'static str> {
     }
 }
 
-pub(crate) fn meta_edit_child_xml_tag(child_type: &str) -> Option<&'static str> {
+pub(super) fn meta_edit_child_xml_tag(child_type: &str) -> Option<&'static str> {
     match child_type {
         "attributes" => Some("Attribute"),
         "tabularSections" => Some("TabularSection"),
@@ -1446,7 +1489,7 @@ pub(crate) fn meta_edit_child_xml_tag(child_type: &str) -> Option<&'static str> 
     }
 }
 
-pub(crate) fn meta_edit_split_values(value: &str) -> Vec<String> {
+pub(super) fn meta_edit_split_values(value: &str) -> Vec<String> {
     value
         .split(";;")
         .map(str::trim)
@@ -1455,7 +1498,7 @@ pub(crate) fn meta_edit_split_values(value: &str) -> Vec<String> {
         .collect()
 }
 
-pub(crate) fn meta_edit_values_from_json(value: Option<&Value>) -> Vec<String> {
+pub(super) fn meta_edit_values_from_json(value: Option<&Value>) -> Vec<String> {
     match value {
         Some(Value::Array(items)) => items
             .iter()
@@ -1468,7 +1511,7 @@ pub(crate) fn meta_edit_values_from_json(value: Option<&Value>) -> Vec<String> {
     }
 }
 
-pub(crate) fn meta_edit_definition_items(value: &Value) -> Vec<Value> {
+pub(super) fn meta_edit_definition_items(value: &Value) -> Vec<Value> {
     match value {
         Value::Array(items) => items.clone(),
         Value::String(_) => vec![value.clone()],
@@ -1492,7 +1535,7 @@ pub(crate) fn meta_edit_definition_items(value: &Value) -> Vec<Value> {
     }
 }
 
-pub(crate) fn meta_edit_value_name(value: &Value) -> Option<String> {
+pub(super) fn meta_edit_value_name(value: &Value) -> Option<String> {
     value.as_str().map(ToOwned::to_owned).or_else(|| {
         value
             .as_object()
@@ -1502,7 +1545,7 @@ pub(crate) fn meta_edit_value_name(value: &Value) -> Option<String> {
     })
 }
 
-pub(crate) fn meta_edit_changes_to_inline(value: &Value) -> Result<String, String> {
+pub(super) fn meta_edit_changes_to_inline(value: &Value) -> Result<String, String> {
     if let Some(text) = value.as_str() {
         return Ok(text.to_string());
     }
@@ -1516,7 +1559,7 @@ pub(crate) fn meta_edit_changes_to_inline(value: &Value) -> Result<String, Strin
         .join(", "))
 }
 
-pub(crate) fn meta_edit_tabular_section_from_value(
+pub(super) fn meta_edit_tabular_section_from_value(
     value: &Value,
 ) -> Result<MetaCompileTabularSection, String> {
     if let Some(text) = value.as_str() {
@@ -1542,7 +1585,7 @@ pub(crate) fn meta_edit_tabular_section_from_value(
     Ok(section)
 }
 
-pub(crate) fn meta_edit_enum_value_from_value(
+pub(super) fn meta_edit_enum_value_from_value(
     value: &Value,
 ) -> Result<MetaCompileEnumValue, String> {
     let mut values = meta_compile_enum_values(Some(&Value::Array(vec![value.clone()])))?;
@@ -1551,7 +1594,7 @@ pub(crate) fn meta_edit_enum_value_from_value(
         .ok_or_else(|| "enum value is missing name".to_string())
 }
 
-pub(crate) fn meta_edit_column_value(value: &Value) -> Value {
+pub(super) fn meta_edit_column_value(value: &Value) -> Value {
     if let Some(text) = value.as_str() {
         if let Some((name, reference)) = text.split_once(':') {
             let mut object = Map::new();
@@ -1566,7 +1609,7 @@ pub(crate) fn meta_edit_column_value(value: &Value) -> Value {
     value.clone()
 }
 
-pub(crate) fn emit_meta_simple_child<F>(
+pub(super) fn emit_meta_simple_child<F>(
     lines: &mut Vec<String>,
     indent: &str,
     tag: &str,
@@ -1613,7 +1656,7 @@ pub(crate) fn emit_meta_simple_child<F>(
     lines.push(format!("{indent}</{tag}>"));
 }
 
-pub(crate) fn meta_edit_add_register_record(
+pub(super) fn meta_edit_add_register_record(
     xml_text: &mut String,
     object_type: &str,
     raw_value: &str,
@@ -1676,7 +1719,7 @@ pub(crate) fn meta_edit_add_register_record(
     Ok(())
 }
 
-pub(crate) fn meta_edit_register_record_exists(
+pub(super) fn meta_edit_register_record_exists(
     xml_text: &str,
     value: &str,
 ) -> Result<bool, String> {
@@ -1694,7 +1737,7 @@ pub(crate) fn meta_edit_register_record_exists(
         .any(|item| item.text().unwrap_or("").trim() == value))
 }
 
-pub(crate) fn meta_edit_add_attribute(
+pub(super) fn meta_edit_add_attribute(
     xml_text: &mut String,
     object_type: &str,
     raw_value: &str,
@@ -1712,7 +1755,7 @@ pub(crate) fn meta_edit_add_attribute(
     meta_edit_insert_top_child_object(xml_text, &lines)
 }
 
-pub(crate) fn meta_edit_add_tabular_section(
+pub(super) fn meta_edit_add_tabular_section(
     xml_text: &mut String,
     object_type: &str,
     object_name: &str,
@@ -1733,7 +1776,7 @@ pub(crate) fn meta_edit_add_tabular_section(
     meta_edit_insert_top_child_object(xml_text, &lines)
 }
 
-pub(crate) fn meta_edit_parse_tabular_section(
+pub(super) fn meta_edit_parse_tabular_section(
     raw_value: &str,
 ) -> Result<MetaCompileTabularSection, String> {
     let value = raw_value.trim();
@@ -1764,7 +1807,7 @@ pub(crate) fn meta_edit_parse_tabular_section(
     Ok(section)
 }
 
-pub(crate) fn meta_edit_parse_tabular_section_columns(
+pub(super) fn meta_edit_parse_tabular_section_columns(
     raw_columns: &str,
 ) -> Result<Vec<MetaCompileAttr>, String> {
     let mut column_defs = Vec::new();
@@ -1804,7 +1847,7 @@ pub(crate) fn meta_edit_parse_tabular_section_columns(
         .collect()
 }
 
-pub(crate) fn split_meta_edit_commas_outside_parens(value: &str) -> Vec<&str> {
+pub(super) fn split_meta_edit_commas_outside_parens(value: &str) -> Vec<&str> {
     let mut parts = Vec::new();
     let mut depth = 0usize;
     let mut start = 0usize;
@@ -1824,14 +1867,14 @@ pub(crate) fn split_meta_edit_commas_outside_parens(value: &str) -> Vec<&str> {
     parts
 }
 
-pub(crate) fn meta_edit_looks_like_attr_definition(value: &str) -> bool {
+pub(super) fn meta_edit_looks_like_attr_definition(value: &str) -> bool {
     value
         .split_once(':')
         .map(|(name, _)| !name.trim().is_empty())
         .unwrap_or(false)
 }
 
-pub(crate) fn meta_edit_add_tabular_section_attribute(
+pub(super) fn meta_edit_add_tabular_section_attribute(
     xml_text: &mut String,
     raw_value: &str,
 ) -> Result<(), String> {
@@ -1846,7 +1889,7 @@ pub(crate) fn meta_edit_add_tabular_section_attribute(
     )
 }
 
-pub(crate) fn meta_edit_add_tabular_section_attribute_value(
+pub(super) fn meta_edit_add_tabular_section_attribute_value(
     xml_text: &mut String,
     section_name: &str,
     value: &Value,
@@ -1870,7 +1913,7 @@ pub(crate) fn meta_edit_add_tabular_section_attribute_value(
     )
 }
 
-pub(crate) fn meta_edit_remove_tabular_section_attribute(
+pub(super) fn meta_edit_remove_tabular_section_attribute(
     xml_text: &mut String,
     raw_value: &str,
 ) -> Result<usize, String> {
@@ -1898,7 +1941,7 @@ pub(crate) fn meta_edit_remove_tabular_section_attribute(
     Ok(removed)
 }
 
-pub(crate) fn meta_edit_modify_attribute(
+pub(super) fn meta_edit_modify_attribute(
     xml_text: &mut String,
     raw_value: &str,
 ) -> Result<usize, String> {
@@ -1923,7 +1966,7 @@ pub(crate) fn meta_edit_modify_attribute(
     Ok(modified)
 }
 
-pub(crate) fn meta_edit_modify_tabular_section(
+pub(super) fn meta_edit_modify_tabular_section(
     xml_text: &mut String,
     raw_value: &str,
     line_number_length_policy: MetaEditLineNumberLengthPolicy,
@@ -1954,7 +1997,7 @@ pub(crate) fn meta_edit_modify_tabular_section(
     Ok(modified)
 }
 
-pub(crate) fn meta_edit_modify_tabular_section_attribute(
+pub(super) fn meta_edit_modify_tabular_section_attribute(
     xml_text: &mut String,
     raw_value: &str,
 ) -> Result<usize, String> {
@@ -1990,7 +2033,7 @@ pub(crate) fn meta_edit_modify_tabular_section_attribute(
     Ok(modified)
 }
 
-pub(crate) fn meta_edit_modify_top_attribute_properties(
+pub(super) fn meta_edit_modify_top_attribute_properties(
     xml_text: &mut String,
     attr_name: &str,
     raw_changes: &str,
@@ -2023,7 +2066,7 @@ pub(crate) fn meta_edit_modify_top_attribute_properties(
     meta_edit_modify_properties_range(xml_text, range, raw_changes, target_kind)
 }
 
-pub(crate) fn meta_edit_modify_top_child_properties(
+pub(super) fn meta_edit_modify_top_child_properties(
     xml_text: &mut String,
     tag: &str,
     child_name: &str,
@@ -2049,7 +2092,7 @@ pub(crate) fn meta_edit_modify_top_child_properties(
     meta_edit_modify_properties_range(xml_text, range, raw_changes, target_kind)
 }
 
-pub(crate) fn meta_edit_modify_tabular_section_properties(
+pub(super) fn meta_edit_modify_tabular_section_properties(
     xml_text: &mut String,
     section_name: &str,
     raw_changes: &str,
@@ -2083,7 +2126,7 @@ pub(crate) fn meta_edit_modify_tabular_section_properties(
     meta_edit_modify_properties_range(xml_text, range, raw_changes, target)
 }
 
-pub(crate) fn meta_edit_modify_tabular_attribute_properties(
+pub(super) fn meta_edit_modify_tabular_attribute_properties(
     xml_text: &mut String,
     section_name: &str,
     attr_name: &str,
@@ -2120,7 +2163,7 @@ pub(crate) fn meta_edit_modify_tabular_attribute_properties(
 }
 
 #[derive(Clone, Copy)]
-pub(crate) enum MetaEditModifyTarget {
+pub(super) enum MetaEditModifyTarget {
     Attribute {
         fill_value_allowed: bool,
     },
@@ -2132,7 +2175,7 @@ pub(crate) enum MetaEditModifyTarget {
     },
 }
 
-pub(crate) fn meta_edit_modify_properties_range(
+pub(super) fn meta_edit_modify_properties_range(
     xml_text: &mut String,
     range: std::ops::Range<usize>,
     raw_changes: &str,
@@ -2270,7 +2313,7 @@ pub(crate) fn meta_edit_modify_properties_range(
     Ok(modified)
 }
 
-pub(crate) fn meta_edit_canonical_attribute_property(
+pub(super) fn meta_edit_canonical_attribute_property(
     key: &str,
     target: MetaEditModifyTarget,
 ) -> Result<String, String> {
@@ -2366,7 +2409,7 @@ pub(crate) fn meta_edit_canonical_attribute_property(
     Ok(canonical)
 }
 
-pub(crate) fn meta_edit_line_number_length_value(raw_value: &str) -> Result<String, String> {
+pub(super) fn meta_edit_line_number_length_value(raw_value: &str) -> Result<String, String> {
     let parsed = raw_value.parse::<u8>().map_err(|_| {
         format!(
             "LineNumberLength must be an integer in 5..=9, got '{}'",
@@ -2381,7 +2424,7 @@ pub(crate) fn meta_edit_line_number_length_value(raw_value: &str) -> Result<Stri
     Ok(parsed.to_string())
 }
 
-pub(crate) fn meta_edit_fill_value_xml(indent: &str, raw_value: &str) -> String {
+pub(super) fn meta_edit_fill_value_xml(indent: &str, raw_value: &str) -> String {
     let value = raw_value.trim();
     if value.is_empty() || value.eq_ignore_ascii_case("nil") {
         return format!("{indent}<FillValue xsi:nil=\"true\"/>");
@@ -2487,7 +2530,7 @@ fn meta_edit_is_date_time_literal(value: &str) -> bool {
     (1..=max_day).contains(&day)
 }
 
-pub(crate) fn meta_edit_requested_name(
+pub(super) fn meta_edit_requested_name(
     raw_changes: &str,
     target: MetaEditModifyTarget,
 ) -> Result<Option<String>, String> {
@@ -2511,7 +2554,7 @@ pub(crate) fn meta_edit_requested_name(
     Ok(None)
 }
 
-pub(crate) fn meta_edit_ensure_sibling_name_free(
+pub(super) fn meta_edit_ensure_sibling_name_free(
     child_objects: roxmltree::Node<'_, '_>,
     tag: &str,
     current_range: std::ops::Range<usize>,
@@ -2532,7 +2575,7 @@ pub(crate) fn meta_edit_ensure_sibling_name_free(
     Ok(())
 }
 
-pub(crate) fn meta_edit_property_child_indent(properties: &str) -> String {
+pub(super) fn meta_edit_property_child_indent(properties: &str) -> String {
     for tag in ["Name", "Synonym", "Comment", "Type"] {
         let needle = format!("<{tag}");
         if let Some(pos) = properties.find(&needle) {
@@ -2549,7 +2592,7 @@ pub(crate) fn meta_edit_property_child_indent(properties: &str) -> String {
     "\t\t\t\t\t".to_string()
 }
 
-pub(crate) fn meta_edit_replace_or_insert_property(
+pub(super) fn meta_edit_replace_or_insert_property(
     properties: &mut String,
     tag: &str,
     replacement: &str,
@@ -2567,11 +2610,11 @@ pub(crate) fn meta_edit_replace_or_insert_property(
     Ok(())
 }
 
-pub(crate) fn meta_edit_property_exists(properties: &str, tag: &str) -> Result<bool, String> {
+pub(super) fn meta_edit_property_exists(properties: &str, tag: &str) -> Result<bool, String> {
     meta_edit_xml_element_range(properties, tag).map(|range| range.is_some())
 }
 
-pub(crate) fn meta_edit_xml_element_range(
+pub(super) fn meta_edit_xml_element_range(
     text: &str,
     tag: &str,
 ) -> Result<Option<std::ops::Range<usize>>, String> {
@@ -2605,7 +2648,7 @@ pub(crate) fn meta_edit_xml_element_range(
     Ok(None)
 }
 
-pub(crate) fn meta_edit_replace_or_insert_nested_v8_property(
+pub(super) fn meta_edit_replace_or_insert_nested_v8_property(
     properties: &mut String,
     parent_tag: &str,
     child_tag: &str,
@@ -2653,7 +2696,7 @@ pub(crate) fn meta_edit_replace_or_insert_nested_v8_property(
     Ok(())
 }
 
-pub(crate) fn meta_edit_remove_tabular_child_by_name(
+pub(super) fn meta_edit_remove_tabular_child_by_name(
     xml_text: &mut String,
     section_name: &str,
     tag: &str,
@@ -2676,7 +2719,7 @@ pub(crate) fn meta_edit_remove_tabular_child_by_name(
     Ok(())
 }
 
-pub(crate) fn meta_edit_remove_top_child_by_name(
+pub(super) fn meta_edit_remove_top_child_by_name(
     xml_text: &mut String,
     tag: &str,
     name: &str,
@@ -2696,7 +2739,7 @@ pub(crate) fn meta_edit_remove_top_child_by_name(
     Ok(())
 }
 
-pub(crate) fn meta_edit_attribute_context(object_type: &str) -> &str {
+pub(super) fn meta_edit_attribute_context(object_type: &str) -> &str {
     match object_type {
         "Catalog" => "catalog",
         "DataProcessor" | "Report" => "processor",
@@ -2708,7 +2751,7 @@ pub(crate) fn meta_edit_attribute_context(object_type: &str) -> &str {
     }
 }
 
-pub(crate) fn meta_edit_object_node<'a, 'input>(
+pub(super) fn meta_edit_object_node<'a, 'input>(
     doc: &'a Document<'input>,
 ) -> Result<roxmltree::Node<'a, 'input>, String> {
     let root = doc.root_element();
@@ -2723,11 +2766,11 @@ pub(crate) fn meta_edit_object_node<'a, 'input>(
         .ok_or_else(|| "No object element found under MetaDataObject".to_string())
 }
 
-pub(crate) fn meta_edit_child_object_name(node: roxmltree::Node<'_, '_>) -> Option<String> {
+pub(super) fn meta_edit_child_object_name(node: roxmltree::Node<'_, '_>) -> Option<String> {
     meta_info_child(node, "Properties").and_then(|props| meta_info_child_text(props, "Name"))
 }
 
-pub(crate) fn meta_edit_ensure_top_child_name_free(
+pub(super) fn meta_edit_ensure_top_child_name_free(
     xml_text: &str,
     tag: &str,
     name: &str,
@@ -2745,7 +2788,7 @@ pub(crate) fn meta_edit_ensure_top_child_name_free(
     Ok(())
 }
 
-pub(crate) fn meta_edit_find_tabular_section<'a, 'input>(
+pub(super) fn meta_edit_find_tabular_section<'a, 'input>(
     object: roxmltree::Node<'a, 'input>,
     section_name: &str,
 ) -> Option<roxmltree::Node<'a, 'input>> {
@@ -2755,7 +2798,7 @@ pub(crate) fn meta_edit_find_tabular_section<'a, 'input>(
         .find(|section| meta_edit_child_object_name(*section).as_deref() == Some(section_name))
 }
 
-pub(crate) fn meta_edit_ensure_tabular_child_name_free(
+pub(super) fn meta_edit_ensure_tabular_child_name_free(
     xml_text: &str,
     section_name: &str,
     tag: &str,
@@ -2776,7 +2819,7 @@ pub(crate) fn meta_edit_ensure_tabular_child_name_free(
     Ok(())
 }
 
-pub(crate) fn meta_edit_insert_top_child_object(
+pub(super) fn meta_edit_insert_top_child_object(
     xml_text: &mut String,
     lines: &[String],
 ) -> Result<(), String> {
@@ -2794,7 +2837,7 @@ pub(crate) fn meta_edit_insert_top_child_object(
     meta_edit_insert_child_objects_into_node(xml_text, range, &tag, "\t\t", lines)
 }
 
-pub(crate) fn meta_edit_insert_top_child_object_with_position(
+pub(super) fn meta_edit_insert_top_child_object_with_position(
     xml_text: &mut String,
     tag: &str,
     position: &MetaEditInsertPosition,
@@ -2821,7 +2864,7 @@ pub(crate) fn meta_edit_insert_top_child_object_with_position(
     Ok(())
 }
 
-pub(crate) fn meta_edit_insert_tabular_child_object(
+pub(super) fn meta_edit_insert_tabular_child_object(
     xml_text: &mut String,
     section_name: &str,
     lines: &[String],
@@ -2842,7 +2885,7 @@ pub(crate) fn meta_edit_insert_tabular_child_object(
     )
 }
 
-pub(crate) fn meta_edit_insert_tabular_child_object_with_position(
+pub(super) fn meta_edit_insert_tabular_child_object_with_position(
     xml_text: &mut String,
     section_name: &str,
     tag: &str,
@@ -2874,7 +2917,7 @@ pub(crate) fn meta_edit_insert_tabular_child_object_with_position(
     Ok(())
 }
 
-pub(crate) fn meta_edit_insert_lines_into_child_objects(
+pub(super) fn meta_edit_insert_lines_into_child_objects(
     xml_text: &mut String,
     range: std::ops::Range<usize>,
     close_indent: &str,
@@ -2912,7 +2955,7 @@ pub(crate) fn meta_edit_insert_lines_into_child_objects(
     Ok(())
 }
 
-pub(crate) fn meta_edit_mark_lxml_append_tail(xml_text: &mut String, insert_pos: usize) -> usize {
+pub(super) fn meta_edit_mark_lxml_append_tail(xml_text: &mut String, insert_pos: usize) -> usize {
     if insert_pos == 0 || xml_text[..insert_pos].ends_with("&#13;\n") {
         return insert_pos;
     }
@@ -2927,7 +2970,7 @@ pub(crate) fn meta_edit_mark_lxml_append_tail(xml_text: &mut String, insert_pos:
     insert_pos
 }
 
-pub(crate) fn meta_edit_insert_lines_near_node(
+pub(super) fn meta_edit_insert_lines_near_node(
     xml_text: &mut String,
     range: std::ops::Range<usize>,
     after: bool,
@@ -2958,7 +3001,7 @@ pub(crate) fn meta_edit_insert_lines_near_node(
     xml_text.insert_str(insert_pos, &format!("{content}\n"));
 }
 
-pub(crate) fn meta_edit_insert_child_objects_into_node(
+pub(super) fn meta_edit_insert_child_objects_into_node(
     xml_text: &mut String,
     range: std::ops::Range<usize>,
     tag: &str,
@@ -2986,7 +3029,7 @@ pub(crate) fn meta_edit_insert_child_objects_into_node(
     Ok(())
 }
 
-pub(crate) fn meta_edit_insert_lines_into_node_child_objects(
+pub(super) fn meta_edit_insert_lines_into_node_child_objects(
     xml_text: &mut String,
     range: std::ops::Range<usize>,
     tag: &str,
@@ -3011,7 +3054,7 @@ pub(crate) fn meta_edit_insert_lines_into_node_child_objects(
     meta_edit_insert_child_objects_into_node(xml_text, range, tag, close_indent, lines)
 }
 
-pub(crate) fn meta_edit_remove_xml_node_range(
+pub(super) fn meta_edit_remove_xml_node_range(
     xml_text: &mut String,
     range: std::ops::Range<usize>,
 ) {
@@ -3038,7 +3081,7 @@ pub(crate) fn meta_edit_remove_xml_node_range(
     xml_text.replace_range(start..end, "");
 }
 
-pub(crate) fn normalize_meta_edit_property_value(key: &str, value: &str) -> String {
+pub(super) fn normalize_meta_edit_property_value(key: &str, value: &str) -> String {
     match key {
         "HierarchyType" => normalize_meta_enum_value(value),
         "DefaultPresentation" => normalize_meta_enum_value(value),

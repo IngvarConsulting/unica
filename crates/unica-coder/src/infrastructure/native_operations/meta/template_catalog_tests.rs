@@ -1,6 +1,18 @@
 #![allow(dead_code, unused_imports)]
 
-use super::internal::*;
+use roxmltree::Document;
+use serde_json::{json, Map, Value};
+use std::fs;
+
+use super::info::resolve_meta_info_path;
+use super::legacy_dsl::{meta_compile_extra_ext_files, meta_compile_object_xml};
+use super::template_catalog::{
+    emit_meta_standard_attribute, emit_meta_standard_attributes, meta_compile_catalog_xml,
+};
+use super::xml_model::{
+    emit_meta_type_content, emit_meta_type_contents, meta_info_child, meta_info_child_text,
+    meta_info_children, meta_info_inner_text, validate_meta_type_union,
+};
 
 #[test]
 fn meta_info_directory_fallback_selects_first_xml_by_file_name() {

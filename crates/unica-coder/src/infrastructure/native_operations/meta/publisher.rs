@@ -1,12 +1,34 @@
 #![allow(dead_code, unused_imports)]
 
-use super::internal::*;
+use crate::application::AdapterOutcome;
+use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::metadata_kinds::metadata_kind;
+use roxmltree::Document;
+use serde_json::{Map, Value};
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use super::super::common::{
+    absolutize, guard_active_format_dependencies, read_utf8_sig, read_utf8_sig_snapshot, string_arg,
+};
+use super::super::compile_transaction::{CompileTransaction, RegistrationStatus};
+use super::legacy_dsl::{
+    compile_meta_value, meta_compile_definition_format_dependency_paths,
+    meta_compile_event_subscription_dependencies, read_meta_compile_definition_guarded,
+    require_meta_configuration_owner_validation,
+    validate_meta_compile_event_subscription_dependencies, validate_metadata_owner_shape_8_3_27,
+};
+
+#[cfg(test)]
+use super::{
+    run_meta_compile_after_format_plan_hook, run_meta_compile_after_owner_validation_hook,
+};
 
 pub(crate) fn fresh_meta_compile_uuid() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-pub(crate) fn register_compiled_meta_in_configuration(
+pub(super) fn register_compiled_meta_in_configuration(
     output_dir: &Path,
     child_tag: &str,
     obj_name: &str,
@@ -28,7 +50,7 @@ pub(crate) fn register_compiled_meta_in_configuration(
     ))
 }
 
-pub(crate) fn register_compiled_meta_in_transaction(
+pub(super) fn register_compiled_meta_in_transaction(
     transaction: &mut CompileTransaction,
     output_dir: &Path,
     child_tag: &str,
@@ -41,7 +63,7 @@ pub(crate) fn register_compiled_meta_in_transaction(
     )
 }
 
-pub(crate) type MetaCompilePlan = (
+pub(super) type MetaCompilePlan = (
     String,
     CompileTransaction,
     Vec<PathBuf>,
@@ -49,7 +71,7 @@ pub(crate) type MetaCompilePlan = (
     Vec<PathBuf>,
 );
 
-pub(crate) fn prepare_meta_compile(
+pub(super) fn prepare_meta_compile(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Result<MetaCompilePlan, String> {
@@ -126,7 +148,7 @@ fn validate_meta_compile_post_state(
     Ok(())
 }
 
-pub(crate) fn publish_meta_compile(
+pub(super) fn publish_meta_compile(
     planned: Result<MetaCompilePlan, String>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
@@ -191,7 +213,7 @@ pub(crate) fn publish_meta_compile(
     }
 }
 
-pub(crate) fn preview_prepared_meta_compile(
+pub(super) fn preview_prepared_meta_compile(
     planned: Result<MetaCompilePlan, String>,
 ) -> Result<AdapterOutcome, String> {
     let (_stdout, transaction, _validation_paths, _config_owner, _format_dependencies) = planned?;

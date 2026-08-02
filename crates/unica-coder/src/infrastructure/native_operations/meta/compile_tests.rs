@@ -1,10 +1,30 @@
 #![allow(dead_code, unused_imports)]
 
-use super::internal::*;
+use crate::application::AdapterOutcome;
+use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::metadata_kinds::metadata_kind;
+use serde_json::{json, Map, Value};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use super::super::cf::create_configuration_scaffold;
+use super::super::subsystem::compile_subsystem;
+use super::edit::meta_edit_fill_value_xml;
+use super::legacy_dsl::{
+    compile_meta, meta_compile_object_xml, meta_compile_type_plural, META_COMPILE_SUPPORTED_TYPES,
+};
+use super::publisher::{fresh_meta_compile_uuid, register_compiled_meta_in_configuration};
+use super::remove::{meta_remove_supported_types, meta_remove_type_plural, remove_metadata_object};
+use super::template_catalog::normalize_meta_enum_value;
+use super::validation::is_guid;
+use super::{
+    with_meta_compile_after_format_plan_hook, with_meta_compile_after_owner_validation_hook,
+};
 
 #[cfg(test)]
 mod uuid_tests {
-    use super::*;
+    use super::{fresh_meta_compile_uuid, is_guid};
 
     #[test]
     fn fresh_meta_compile_uuid_generates_uuid_v4() {
@@ -22,7 +42,7 @@ mod uuid_tests {
 
 #[cfg(test)]
 mod enum_contract_tests {
-    use super::*;
+    use super::{json, meta_compile_object_xml, normalize_meta_enum_value, Value};
 
     #[test]
     fn legacy_hierarchy_items_only_normalizes_to_platform_value() {
@@ -200,7 +220,7 @@ mod enum_contract_tests {
 
 #[cfg(test)]
 mod fill_value_contract_tests {
-    use super::*;
+    use super::meta_edit_fill_value_xml;
 
     #[test]
     fn fill_value_literals_use_documented_xsi_types() {
@@ -244,7 +264,11 @@ mod fill_value_contract_tests {
 
 #[cfg(test)]
 mod registration_tests {
-    use super::*;
+    use super::{
+        compile_meta, fs, json, meta_compile_object_xml, meta_compile_type_plural,
+        meta_remove_supported_types, meta_remove_type_plural, metadata_kind,
+        register_compiled_meta_in_configuration, Map, PathBuf, Value, META_COMPILE_SUPPORTED_TYPES,
+    };
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_output_dir(name: &str) -> PathBuf {
@@ -361,7 +385,12 @@ mod registration_tests {
 
 #[cfg(test)]
 mod owner_contract_tests {
-    use super::*;
+    use super::{
+        compile_meta, compile_subsystem, create_configuration_scaffold, fs, json,
+        meta_compile_object_xml, meta_compile_type_plural, remove_metadata_object,
+        with_meta_compile_after_format_plan_hook, with_meta_compile_after_owner_validation_hook,
+        AdapterOutcome, Map, Path, PathBuf, Value, WorkspaceContext,
+    };
     use crate::application::UnicaApplication;
     use std::time::{SystemTime, UNIX_EPOCH};
 

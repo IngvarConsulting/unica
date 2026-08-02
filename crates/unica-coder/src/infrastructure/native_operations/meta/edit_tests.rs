@@ -1,16 +1,36 @@
 #![allow(dead_code, unused_imports)]
 
-use super::internal::*;
+use crate::application::AdapterOutcome;
 use crate::application::UnicaApplication;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::compile_transaction::{
     with_commit_failpoint, CommitFailpoint,
 };
 use crate::infrastructure::native_operations::single_file_publisher::with_before_commit_hook;
+use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use super::super::common::write_utf8_bom;
+use super::edit::{
+    edit_meta, edit_meta_with_data, meta_edit_line_number_length_policy_for_platform,
+    meta_edit_line_number_length_policy_from_mode, meta_edit_modify_properties_range,
+    meta_edit_modify_top_attribute_properties, meta_edit_projected_diff, preview_meta_edit,
+    preview_meta_edit_with_data, MetaEditLineNumberLengthPolicy, MetaEditModifyTarget,
+};
+use super::legacy_dsl::{
+    meta_compile_type_plural, meta_edit_definition_requests_line_number_length,
+    meta_edit_inline_requests_line_number_length, validate_metadata_owner_shape_8_3_27,
+    META_COMPILE_SUPPORTED_TYPES,
+};
+use super::validation::{
+    meta_validate_format_dependency_paths, meta_validate_localized_values, validate_meta,
+};
+use super::validation_context::{inspect_meta_validation_reads, MetaValidationOwnerKind};
+use super::with_meta_edit_after_line_number_length_policy_hook;
+use super::xml_model::{meta_info_child, meta_info_child_text};
 
 fn temp_context(name: &str) -> WorkspaceContext {
     let nanos = SystemTime::now()

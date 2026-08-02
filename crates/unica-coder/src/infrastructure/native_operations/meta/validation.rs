@@ -1,8 +1,30 @@
 #![allow(dead_code, unused_imports)]
 
-use super::internal::*;
+use crate::application::AdapterOutcome;
+use crate::domain::format_profile::{
+    classify_root_version, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
+};
+use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::platform_xml_owner::root_version_literal;
+use roxmltree::Document;
+use serde_json::{Map, Value};
+use std::collections::{BTreeMap, HashSet};
+use std::path::{Path, PathBuf};
 
-pub(crate) struct MetaValidationReporter {
+use super::super::common::{
+    absolutize, bool_arg, child_text, format_compatibility_warning, int_arg, is_1c_identifier,
+    read_utf8_sig, required_path,
+};
+use super::info::resolve_meta_info_path;
+use super::validation_context::{
+    inspect_meta_validation_reads, meta_validate_registrar_document_scan,
+    meta_validate_types_with_list_presentation, MetaValidationOwnerKind,
+};
+use super::xml_model::{
+    meta_info_child, meta_info_child_text, meta_info_children, meta_info_inner_text,
+};
+
+pub(super) struct MetaValidationReporter {
     pub(crate) errors: usize,
     pub(crate) warnings: usize,
     pub(crate) ok_count: usize,
@@ -14,7 +36,7 @@ pub(crate) struct MetaValidationReporter {
     pub(crate) obj_name: String,
 }
 
-pub(crate) struct MetaValidationRun {
+pub(super) struct MetaValidationRun {
     pub(crate) ok: bool,
     pub(crate) stdout: String,
     pub(crate) artifacts: Vec<PathBuf>,
@@ -22,13 +44,13 @@ pub(crate) struct MetaValidationRun {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct MetaValidationOptions {
+pub(super) struct MetaValidationOptions {
     pub(crate) detailed: bool,
     pub(crate) max_errors: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MetaValidationScope {
+pub(super) enum MetaValidationScope {
     PublicOwnerAware,
     PostWriteLocal,
 }
@@ -39,7 +61,7 @@ struct MetaValidationReferenceInputs {
 }
 
 impl MetaValidationReporter {
-    pub(crate) fn new(max_errors: usize, detailed: bool) -> Self {
+    pub(super) fn new(max_errors: usize, detailed: bool) -> Self {
         Self {
             errors: 0,
             warnings: 0,
@@ -53,14 +75,14 @@ impl MetaValidationReporter {
         }
     }
 
-    pub(crate) fn ok(&mut self, message: impl Into<String>) {
+    pub(super) fn ok(&mut self, message: impl Into<String>) {
         self.ok_count += 1;
         if self.detailed {
             self.lines.push(format!("[OK]    {}", message.into()));
         }
     }
 
-    pub(crate) fn error(&mut self, message: impl Into<String>) {
+    pub(super) fn error(&mut self, message: impl Into<String>) {
         self.errors += 1;
         self.lines.push(format!("[ERROR] {}", message.into()));
         if self.errors >= self.max_errors {
@@ -68,12 +90,12 @@ impl MetaValidationReporter {
         }
     }
 
-    pub(crate) fn warn(&mut self, message: impl Into<String>) {
+    pub(super) fn warn(&mut self, message: impl Into<String>) {
         self.warnings += 1;
         self.lines.push(format!("[WARN]  {}", message.into()));
     }
 
-    pub(crate) fn finalize(mut self) -> (bool, String, Vec<String>) {
+    pub(super) fn finalize(mut self) -> (bool, String, Vec<String>) {
         let checks = self.ok_count + self.errors + self.warnings;
         let ok = self.errors == 0;
         if ok && self.warnings == 0 && !self.detailed {
@@ -171,7 +193,7 @@ pub(crate) fn validate_meta(
     }
 }
 
-pub(crate) fn meta_validation_options(args: &Map<String, Value>) -> MetaValidationOptions {
+pub(super) fn meta_validation_options(args: &Map<String, Value>) -> MetaValidationOptions {
     MetaValidationOptions {
         detailed: bool_arg(args, &["detailed", "Detailed"]),
         max_errors: int_arg(args, &["maxErrors", "MaxErrors"])
@@ -212,7 +234,7 @@ pub(crate) fn meta_validate_format_dependency_paths(
     Ok(dependencies)
 }
 
-pub(crate) fn meta_validate_batch(
+pub(super) fn meta_validate_batch(
     paths: Vec<PathBuf>,
     options: &MetaValidationOptions,
     context: &WorkspaceContext,
@@ -260,7 +282,7 @@ pub(crate) fn meta_validate_batch(
     })
 }
 
-pub(crate) fn meta_validate_one(
+pub(super) fn meta_validate_one(
     raw_path: PathBuf,
     options: &MetaValidationOptions,
     context: &WorkspaceContext,
@@ -273,7 +295,7 @@ pub(crate) fn meta_validate_one(
     )
 }
 
-pub(crate) fn meta_validate_one_with_scope(
+pub(super) fn meta_validate_one_with_scope(
     raw_path: PathBuf,
     options: &MetaValidationOptions,
     context: &WorkspaceContext,
@@ -494,7 +516,7 @@ pub(crate) fn meta_validate_one_with_scope(
     meta_validate_finish(report, resolved_path)
 }
 
-pub(crate) fn meta_validate_finish(
+pub(super) fn meta_validate_finish(
     report: MetaValidationReporter,
     artifact: PathBuf,
 ) -> Result<MetaValidationRun, String> {
@@ -507,7 +529,7 @@ pub(crate) fn meta_validate_finish(
     })
 }
 
-pub(crate) fn meta_validate_localized_values(
+pub(super) fn meta_validate_localized_values(
     node: Option<roxmltree::Node<'_, '_>>,
 ) -> Vec<(Option<String>, String)> {
     const V8_CORE_NS: &str = "http://v8.1c.ru/8.1/data/core";
@@ -540,7 +562,7 @@ pub(crate) fn meta_validate_localized_values(
         .collect()
 }
 
-pub(crate) fn meta_validate_check_internal_info(
+pub(super) fn meta_validate_check_internal_info(
     report: &mut MetaValidationReporter,
     md_type: &str,
     type_node: roxmltree::Node<'_, '_>,
@@ -644,7 +666,7 @@ pub(crate) fn meta_validate_check_internal_info(
     }
 }
 
-pub(crate) fn meta_validate_check_properties(
+pub(super) fn meta_validate_check_properties(
     report: &mut MetaValidationReporter,
     md_type: &str,
     props_node: Option<roxmltree::Node<'_, '_>>,
@@ -743,7 +765,7 @@ fn meta_validate_warn_long_command_text(
     ));
 }
 
-pub(crate) fn meta_validate_check_property_values(
+pub(super) fn meta_validate_check_property_values(
     report: &mut MetaValidationReporter,
     props_node: Option<roxmltree::Node<'_, '_>>,
 ) {
@@ -774,7 +796,7 @@ pub(crate) fn meta_validate_check_property_values(
     }
 }
 
-pub(crate) fn meta_validate_check_standard_attributes(
+pub(super) fn meta_validate_check_standard_attributes(
     report: &mut MetaValidationReporter,
     md_type: &str,
     props_node: Option<roxmltree::Node<'_, '_>>,
@@ -830,7 +852,7 @@ pub(crate) fn meta_validate_check_standard_attributes(
     }
 }
 
-pub(crate) fn meta_validate_check_child_objects(
+pub(super) fn meta_validate_check_child_objects(
     report: &mut MetaValidationReporter,
     md_type: &str,
     child_obj_node: Option<roxmltree::Node<'_, '_>>,
@@ -868,7 +890,7 @@ pub(crate) fn meta_validate_check_child_objects(
     }
 }
 
-pub(crate) fn meta_validate_check_child_elements(
+pub(super) fn meta_validate_check_child_elements(
     report: &mut MetaValidationReporter,
     child_obj_node: Option<roxmltree::Node<'_, '_>>,
 ) {
@@ -898,7 +920,7 @@ pub(crate) fn meta_validate_check_child_elements(
     }
 }
 
-pub(crate) fn meta_validate_check_child_element(
+pub(super) fn meta_validate_check_child_element(
     report: &mut MetaValidationReporter,
     node: roxmltree::Node<'_, '_>,
     kind: &str,
@@ -943,7 +965,7 @@ pub(crate) fn meta_validate_check_child_element(
     true
 }
 
-pub(crate) fn meta_validate_check_reserved_attr_names(
+pub(super) fn meta_validate_check_reserved_attr_names(
     report: &mut MetaValidationReporter,
     child_obj_node: Option<roxmltree::Node<'_, '_>>,
 ) {
@@ -967,7 +989,7 @@ pub(crate) fn meta_validate_check_reserved_attr_names(
     }
 }
 
-pub(crate) fn meta_validate_check_uniqueness(
+pub(super) fn meta_validate_check_uniqueness(
     report: &mut MetaValidationReporter,
     child_obj_node: Option<roxmltree::Node<'_, '_>>,
 ) {
@@ -994,7 +1016,7 @@ pub(crate) fn meta_validate_check_uniqueness(
     }
 }
 
-pub(crate) fn meta_validate_names_unique(
+pub(super) fn meta_validate_names_unique(
     report: &mut MetaValidationReporter,
     nodes: Vec<roxmltree::Node<'_, '_>>,
     kind: &str,
@@ -1016,7 +1038,7 @@ pub(crate) fn meta_validate_names_unique(
     ok
 }
 
-pub(crate) fn meta_validate_check_tabular_sections(
+pub(super) fn meta_validate_check_tabular_sections(
     report: &mut MetaValidationReporter,
     child_obj_node: Option<roxmltree::Node<'_, '_>>,
 ) {
@@ -1101,7 +1123,7 @@ pub(crate) fn meta_validate_check_tabular_sections(
     }
 }
 
-pub(crate) fn meta_validate_check_cross_properties(
+pub(super) fn meta_validate_check_cross_properties(
     report: &mut MetaValidationReporter,
     md_type: &str,
     props_node: Option<roxmltree::Node<'_, '_>>,
@@ -1268,7 +1290,7 @@ pub(crate) fn meta_validate_check_cross_properties(
     }
 }
 
-pub(crate) fn meta_validate_check_document_register_records(
+pub(super) fn meta_validate_check_document_register_records(
     report: &mut MetaValidationReporter,
     md_type: &str,
     props_node: roxmltree::Node<'_, '_>,
@@ -1307,7 +1329,7 @@ pub(crate) fn meta_validate_check_document_register_records(
     }
 }
 
-pub(crate) fn meta_validate_check_register_registrar(
+pub(super) fn meta_validate_check_register_registrar(
     report: &mut MetaValidationReporter,
     md_type: &str,
     props_node: roxmltree::Node<'_, '_>,
@@ -1347,7 +1369,7 @@ pub(crate) fn meta_validate_check_register_registrar(
     }
 }
 
-pub(crate) fn meta_validate_check_services(
+pub(super) fn meta_validate_check_services(
     report: &mut MetaValidationReporter,
     md_type: &str,
     child_obj_node: Option<roxmltree::Node<'_, '_>>,
@@ -1443,7 +1465,7 @@ pub(crate) fn meta_validate_check_services(
     }
 }
 
-pub(crate) fn meta_validate_check_forbidden_properties(
+pub(super) fn meta_validate_check_forbidden_properties(
     report: &mut MetaValidationReporter,
     md_type: &str,
     props_node: Option<roxmltree::Node<'_, '_>>,
@@ -1468,7 +1490,7 @@ pub(crate) fn meta_validate_check_forbidden_properties(
     }
 }
 
-pub(crate) fn meta_validate_check_method_reference(
+pub(super) fn meta_validate_check_method_reference(
     report: &mut MetaValidationReporter,
     md_type: &str,
     props_node: Option<roxmltree::Node<'_, '_>>,
@@ -1536,7 +1558,7 @@ pub(crate) fn meta_validate_check_method_reference(
     report.ok(format!("13. Method reference: {property} = '{method_ref}'"));
 }
 
-pub(crate) fn meta_validate_check_document_journal_columns(
+pub(super) fn meta_validate_check_document_journal_columns(
     report: &mut MetaValidationReporter,
     md_type: &str,
     child_obj_node: Option<roxmltree::Node<'_, '_>>,
@@ -1577,7 +1599,7 @@ pub(crate) fn meta_validate_check_document_journal_columns(
     }
 }
 
-pub(crate) fn meta_validate_bsl_has_export(content: &str, proc_name: &str) -> bool {
+pub(super) fn meta_validate_bsl_has_export(content: &str, proc_name: &str) -> bool {
     content.lines().any(|line| {
         let trimmed = line.trim_start();
         let starts = ["Procedure", "Function", "Процедура", "Функция"]
@@ -1589,7 +1611,7 @@ pub(crate) fn meta_validate_bsl_has_export(content: &str, proc_name: &str) -> bo
     })
 }
 
-pub(crate) fn is_guid(value: &str) -> bool {
+pub(super) fn is_guid(value: &str) -> bool {
     let bytes = value.as_bytes();
     value.len() == 36
         && [8, 13, 18, 23].iter().all(|index| bytes[*index] == b'-')
@@ -1599,7 +1621,7 @@ pub(crate) fn is_guid(value: &str) -> bool {
             .all(|(index, ch)| [8, 13, 18, 23].contains(&index) || ch.is_ascii_hexdigit())
 }
 
-pub(crate) fn meta_validate_valid_types() -> &'static [&'static str] {
+pub(super) fn meta_validate_valid_types() -> &'static [&'static str] {
     &[
         "Catalog",
         "Document",
@@ -1629,7 +1651,7 @@ pub(crate) fn meta_validate_valid_types() -> &'static [&'static str] {
     ]
 }
 
-pub(crate) fn meta_validate_generated_categories(md_type: &str) -> Option<&'static [&'static str]> {
+pub(super) fn meta_validate_generated_categories(md_type: &str) -> Option<&'static [&'static str]> {
     match md_type {
         "Catalog" | "Document" => Some(&["Object", "Ref", "Selection", "List", "Manager"]),
         "Enum" => Some(&["Ref", "Manager", "List"]),
@@ -1716,11 +1738,11 @@ pub(crate) fn meta_validate_generated_categories(md_type: &str) -> Option<&'stat
     }
 }
 
-pub(crate) fn meta_validate_types_without_internal_info() -> &'static [&'static str] {
+pub(super) fn meta_validate_types_without_internal_info() -> &'static [&'static str] {
     &["CommonModule", "ScheduledJob", "EventSubscription"]
 }
 
-pub(crate) fn meta_validate_types_with_std_attrs() -> &'static [&'static str] {
+pub(super) fn meta_validate_types_with_std_attrs() -> &'static [&'static str] {
     &[
         "Catalog",
         "Document",
@@ -1739,7 +1761,7 @@ pub(crate) fn meta_validate_types_with_std_attrs() -> &'static [&'static str] {
     ]
 }
 
-pub(crate) fn meta_validate_standard_attributes(md_type: &str) -> Option<&'static [&'static str]> {
+pub(super) fn meta_validate_standard_attributes(md_type: &str) -> Option<&'static [&'static str]> {
     match md_type {
         "Catalog" => Some(&[
             "PredefinedDataName",
@@ -1844,7 +1866,7 @@ pub(crate) fn meta_validate_standard_attributes(md_type: &str) -> Option<&'stati
     }
 }
 
-pub(crate) fn meta_validate_dynamic_standard_attr(md_type: &str, name: &str) -> bool {
+pub(super) fn meta_validate_dynamic_standard_attr(md_type: &str, name: &str) -> bool {
     (md_type == "AccountingRegister"
         && (name == "PeriodAdjustment"
             || name
@@ -1864,7 +1886,7 @@ pub(crate) fn meta_validate_dynamic_standard_attr(md_type: &str, name: &str) -> 
             ))
 }
 
-pub(crate) fn meta_validate_child_rules(md_type: &str) -> Option<&'static [&'static str]> {
+pub(super) fn meta_validate_child_rules(md_type: &str) -> Option<&'static [&'static str]> {
     match md_type {
         "Catalog"
         | "Document"
@@ -1922,7 +1944,7 @@ pub(crate) fn meta_validate_child_rules(md_type: &str) -> Option<&'static [&'sta
     }
 }
 
-pub(crate) fn meta_validate_property_values() -> &'static [(&'static str, &'static [&'static str])]
+pub(super) fn meta_validate_property_values() -> &'static [(&'static str, &'static [&'static str])]
 {
     &[
         ("CodeType", &["String", "Number"]),
@@ -2040,7 +2062,7 @@ pub(crate) fn meta_validate_property_values() -> &'static [(&'static str, &'stat
     ]
 }
 
-pub(crate) fn meta_validate_reserved_attr_names() -> &'static [&'static str] {
+pub(super) fn meta_validate_reserved_attr_names() -> &'static [&'static str] {
     &[
         "Ref",
         "DeletionMark",
@@ -2079,13 +2101,13 @@ pub(crate) fn meta_validate_reserved_attr_names() -> &'static [&'static str] {
     ]
 }
 
-pub(crate) fn meta_validate_valid_http_methods() -> &'static [&'static str] {
+pub(super) fn meta_validate_valid_http_methods() -> &'static [&'static str] {
     &[
         "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "MERGE", "CONNECT",
     ]
 }
 
-pub(crate) fn meta_validate_forbidden_properties(md_type: &str) -> Option<&'static [&'static str]> {
+pub(super) fn meta_validate_forbidden_properties(md_type: &str) -> Option<&'static [&'static str]> {
     match md_type {
         "ChartOfCharacteristicTypes" => Some(&["CodeType"]),
         "ChartOfAccounts" => Some(&["Autonumbering", "Hierarchical"]),

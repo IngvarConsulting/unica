@@ -1,6 +1,14 @@
 #![allow(dead_code, unused_imports)]
 
-use super::internal::*;
+use std::collections::BTreeMap;
+
+use super::super::common::{escape_xml, multilang_text};
+use super::super::form::form_is_xml_ncname;
+use super::super::role::role_info_element;
+use super::info::meta_info_object_type_ru;
+use super::legacy_dsl::{
+    meta_compile_is_config_type, parse_meta_number_type, parse_meta_string_type, resolve_meta_type,
+};
 
 pub(crate) fn meta_info_child<'a, 'input>(
     node: roxmltree::Node<'a, 'input>,
@@ -30,7 +38,7 @@ pub(crate) fn meta_info_inner_text(node: roxmltree::Node<'_, '_>) -> String {
     node.text().unwrap_or("").to_string()
 }
 
-pub(crate) fn meta_info_ml_text(node: roxmltree::Node<'_, '_>) -> String {
+pub(super) fn meta_info_ml_text(node: roxmltree::Node<'_, '_>) -> String {
     let value = multilang_text(node);
     if value.is_empty() {
         node.text().unwrap_or("").trim().to_string()
@@ -39,7 +47,7 @@ pub(crate) fn meta_info_ml_text(node: roxmltree::Node<'_, '_>) -> String {
     }
 }
 
-pub(crate) fn meta_info_ml_child_text(
+pub(super) fn meta_info_ml_child_text(
     node: Option<roxmltree::Node<'_, '_>>,
     local_name: &str,
 ) -> Option<String> {
@@ -47,7 +55,7 @@ pub(crate) fn meta_info_ml_child_text(
         .map(meta_info_ml_text)
 }
 
-pub(crate) fn meta_info_attr_by_local<'a>(
+pub(super) fn meta_info_attr_by_local<'a>(
     node: roxmltree::Node<'a, '_>,
     local_name: &str,
 ) -> Option<&'a str> {
@@ -56,7 +64,7 @@ pub(crate) fn meta_info_attr_by_local<'a>(
         .map(|attr| attr.value())
 }
 
-pub(crate) fn meta_info_normalize_cfg_prefix(raw: &str) -> String {
+pub(super) fn meta_info_normalize_cfg_prefix(raw: &str) -> String {
     let Some((prefix, rest)) = raw.split_once(':') else {
         return raw.to_string();
     };
@@ -71,7 +79,7 @@ pub(crate) fn meta_info_normalize_cfg_prefix(raw: &str) -> String {
     }
 }
 
-pub(crate) fn meta_info_format_source_type(raw: &str) -> String {
+pub(super) fn meta_info_format_source_type(raw: &str) -> String {
     let normalized = meta_info_normalize_cfg_prefix(raw);
     let Some(rest) = normalized.strip_prefix("cfg:") else {
         return normalized;
@@ -86,7 +94,7 @@ pub(crate) fn meta_info_format_source_type(raw: &str) -> String {
     }
 }
 
-pub(crate) fn emit_meta_mltext(lines: &mut Vec<String>, indent: &str, tag: &str, text: &str) {
+pub(super) fn emit_meta_mltext(lines: &mut Vec<String>, indent: &str, tag: &str, text: &str) {
     if text.is_empty() {
         lines.push(format!("{indent}<{tag}/>"));
         return;
@@ -102,17 +110,17 @@ pub(crate) fn emit_meta_mltext(lines: &mut Vec<String>, indent: &str, tag: &str,
     lines.push(format!("{indent}</{tag}>"));
 }
 
-pub(crate) fn emit_meta_value_type(lines: &mut Vec<String>, indent: &str, type_name: &str) {
+pub(super) fn emit_meta_value_type(lines: &mut Vec<String>, indent: &str, type_name: &str) {
     lines.push(format!("{indent}<Type>"));
     emit_meta_type_content(lines, &format!("{indent}\t"), type_name);
     lines.push(format!("{indent}</Type>"));
 }
 
-pub(crate) fn emit_meta_type_content(lines: &mut Vec<String>, indent: &str, type_name: &str) {
+pub(super) fn emit_meta_type_content(lines: &mut Vec<String>, indent: &str, type_name: &str) {
     emit_meta_type_contents(lines, indent, std::iter::once(type_name));
 }
 
-pub(crate) fn emit_meta_type_contents<'a>(
+pub(super) fn emit_meta_type_contents<'a>(
     lines: &mut Vec<String>,
     indent: &str,
     type_names: impl IntoIterator<Item = &'a str>,
@@ -120,7 +128,7 @@ pub(crate) fn emit_meta_type_contents<'a>(
     emit_meta_type_contents_with_string_length(lines, indent, type_names, None);
 }
 
-pub(crate) fn emit_meta_event_subscription_source_type_contents<'a>(
+pub(super) fn emit_meta_event_subscription_source_type_contents<'a>(
     lines: &mut Vec<String>,
     indent: &str,
     type_names: impl IntoIterator<Item = &'a str>,
@@ -205,7 +213,7 @@ fn meta_type_wire_contract(resolved: &str) -> (&'static str, String) {
     }
 }
 
-pub(crate) fn validate_meta_type_union<'a>(
+pub(super) fn validate_meta_type_union<'a>(
     type_names: impl IntoIterator<Item = &'a str>,
 ) -> Result<(), String> {
     let mut seen = BTreeMap::<(String, String), String>::new();
@@ -238,7 +246,7 @@ pub(crate) fn validate_meta_type_union<'a>(
     Ok(())
 }
 
-pub(crate) fn validate_meta_resolved_type(raw: &str, resolved: &str) -> Result<(), String> {
+pub(super) fn validate_meta_resolved_type(raw: &str, resolved: &str) -> Result<(), String> {
     if resolved == "String" {
         return Ok(());
     }
@@ -285,7 +293,7 @@ pub(crate) fn validate_meta_resolved_type(raw: &str, resolved: &str) -> Result<(
     ))
 }
 
-pub(crate) fn emit_meta_type_tag(lines: &mut Vec<String>, indent: &str, resolved: &str) {
+pub(super) fn emit_meta_type_tag(lines: &mut Vec<String>, indent: &str, resolved: &str) {
     let (tag, wire_name) = meta_type_wire_contract(resolved);
     lines.push(format!(
         "{indent}<v8:{tag}>{}</v8:{tag}>",
@@ -293,7 +301,7 @@ pub(crate) fn emit_meta_type_tag(lines: &mut Vec<String>, indent: &str, resolved
     ));
 }
 
-pub(crate) fn emit_meta_number_qualifiers(lines: &mut Vec<String>, indent: &str, resolved: &str) {
+pub(super) fn emit_meta_number_qualifiers(lines: &mut Vec<String>, indent: &str, resolved: &str) {
     let number = if resolved == "Number" {
         Some((10, 0, false))
     } else {
@@ -313,7 +321,7 @@ pub(crate) fn emit_meta_number_qualifiers(lines: &mut Vec<String>, indent: &str,
     }
 }
 
-pub(crate) fn emit_meta_string_qualifiers(lines: &mut Vec<String>, indent: &str, resolved: &str) {
+pub(super) fn emit_meta_string_qualifiers(lines: &mut Vec<String>, indent: &str, resolved: &str) {
     emit_meta_string_qualifiers_with_length(lines, indent, resolved, None);
 }
 
@@ -338,7 +346,7 @@ fn emit_meta_string_qualifiers_with_length(
     }
 }
 
-pub(crate) fn emit_meta_date_qualifiers(lines: &mut Vec<String>, indent: &str, resolved: &str) {
+pub(super) fn emit_meta_date_qualifiers(lines: &mut Vec<String>, indent: &str, resolved: &str) {
     if matches!(resolved, "Date" | "DateTime") {
         lines.push(format!("{indent}<v8:DateQualifiers>"));
         lines.push(format!(
@@ -348,7 +356,7 @@ pub(crate) fn emit_meta_date_qualifiers(lines: &mut Vec<String>, indent: &str, r
     }
 }
 
-pub(crate) fn emit_meta_fill_value(lines: &mut Vec<String>, indent: &str, type_name: &str) {
+pub(super) fn emit_meta_fill_value(lines: &mut Vec<String>, indent: &str, type_name: &str) {
     if type_name.is_empty() {
         lines.push(format!("{indent}<FillValue xsi:nil=\"true\"/>"));
         return;

@@ -1,8 +1,72 @@
 #![allow(dead_code, unused_imports)]
 
-use super::internal::*;
+use crate::application::AdapterOutcome;
+use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::metadata_kinds::metadata_kind;
+use roxmltree::Document;
+use serde_json::{Map, Value};
+use std::collections::HashSet;
+use std::fs;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 
-pub(crate) const META_COMPILE_SUPPORTED_TYPES: &[&str] = &[
+use super::super::cf::validate_cf_owner_path;
+use super::super::common::{
+    absolutize, detect_format_version, escape_xml, is_1c_identifier, json_i64_value, path_arg,
+    read_utf8_sig, required_path, string_arg, FileBackedJson,
+};
+use super::super::compile_transaction::{CompileTransaction, RegistrationStatus};
+use super::super::subsystem::validate_subsystem_owner_path;
+use super::edit::{
+    meta_edit_add_child_value, meta_edit_add_tabular_section_attribute,
+    meta_edit_apply_complex_property_action, meta_edit_changes_to_inline,
+    meta_edit_child_type_from_inline_target, meta_edit_child_type_key,
+    meta_edit_complex_property_from_inline_target, meta_edit_definition_items,
+    meta_edit_is_line_number_length_key, meta_edit_modify_object_properties_from_map,
+    meta_edit_modify_object_properties_from_pairs, meta_edit_modify_tabular_section_attribute,
+    meta_edit_modify_tabular_sections_from_definition, meta_edit_modify_top_child,
+    meta_edit_object_node, meta_edit_operation_key, meta_edit_remove_child_value,
+    meta_edit_remove_tabular_section_attribute, meta_edit_split_values, meta_edit_value_name,
+    meta_edit_values_from_json, split_meta_edit_commas_outside_parens, MetaEditCounts,
+    MetaEditLineNumberLengthPolicy,
+};
+use super::publisher::{
+    fresh_meta_compile_uuid, prepare_meta_compile, preview_prepared_meta_compile,
+    publish_meta_compile, register_compiled_meta_in_transaction,
+};
+use super::template_catalog::{
+    emit_meta_accounting_register_properties, emit_meta_accumulation_register_properties,
+    emit_meta_business_process_properties, emit_meta_calculation_register_properties,
+    emit_meta_catalog_properties, emit_meta_chart_of_accounts_properties,
+    emit_meta_chart_of_calculation_types_properties,
+    emit_meta_chart_of_characteristic_types_properties, emit_meta_child_objects,
+    emit_meta_common_module_properties, emit_meta_constant_properties,
+    emit_meta_data_processor_properties, emit_meta_defined_type_properties,
+    emit_meta_document_journal_properties, emit_meta_document_properties,
+    emit_meta_enum_properties, emit_meta_event_subscription_properties,
+    emit_meta_exchange_plan_properties, emit_meta_http_service_properties,
+    emit_meta_information_register_properties, emit_meta_internal_info,
+    emit_meta_report_properties, emit_meta_scheduled_job_properties, emit_meta_task_properties,
+    emit_meta_web_service_properties, meta_compile_attributes, meta_compile_catalog_xml,
+    meta_compile_enum_values, meta_compile_named_items, meta_compile_parse_attr,
+    meta_compile_root_value_type, meta_compile_string_list, meta_compile_synonym,
+    meta_compile_tabular_sections, meta_compile_value_items, meta_compile_value_types,
+    meta_xmlns_decl, normalize_meta_enum_value, MetaCompileAttr, MetaCompileTabularSection,
+};
+use super::validation::{
+    meta_validate_one_with_scope, meta_validate_property_values, meta_validate_valid_types,
+    MetaValidationOptions, MetaValidationScope,
+};
+use super::xml_model::{
+    meta_info_child, meta_info_child_text, validate_meta_resolved_type, validate_meta_type_union,
+};
+
+#[cfg(test)]
+use super::{
+    run_meta_compile_after_format_plan_hook, run_meta_compile_after_owner_validation_hook,
+};
+
+pub(super) const META_COMPILE_SUPPORTED_TYPES: &[&str] = &[
     "Catalog",
     "Document",
     "Enum",
@@ -28,14 +92,14 @@ pub(crate) const META_COMPILE_SUPPORTED_TYPES: &[&str] = &[
     "DefinedType",
 ];
 
-pub(crate) const META_COMPILE_PENDING_TYPES: &[&str] = &[];
+pub(super) const META_COMPILE_PENDING_TYPES: &[&str] = &[];
 
-pub(crate) enum MetaEditDslInput {
+pub(super) enum MetaEditDslInput {
     File(PathBuf),
     Inline { operation: String, value: String },
 }
 
-pub(crate) fn parse_meta_edit_dsl_input(
+pub(super) fn parse_meta_edit_dsl_input(
     args: &Map<String, Value>,
 ) -> Result<MetaEditDslInput, String> {
     let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
@@ -56,7 +120,7 @@ pub(crate) fn parse_meta_edit_dsl_input(
     }
 }
 
-pub(crate) fn read_meta_edit_definition(
+pub(super) fn read_meta_edit_definition(
     definition_file: &Path,
     context: &WorkspaceContext,
     transaction: &mut CompileTransaction,
@@ -74,21 +138,21 @@ pub(crate) fn read_meta_edit_definition(
     .bind_to(transaction)
 }
 
-pub(crate) fn meta_compile_type_plural(obj_type: &str) -> Option<&'static str> {
+pub(super) fn meta_compile_type_plural(obj_type: &str) -> Option<&'static str> {
     if !META_COMPILE_SUPPORTED_TYPES.contains(&obj_type) {
         return None;
     }
     metadata_kind(obj_type).map(|kind| kind.directory)
 }
 
-pub(crate) fn meta_compile_uses_object_subdir(obj_type: &str) -> bool {
+pub(super) fn meta_compile_uses_object_subdir(obj_type: &str) -> bool {
     !matches!(
         obj_type,
         "DefinedType" | "ScheduledJob" | "EventSubscription"
     )
 }
 
-pub(crate) fn meta_compile_module_files(obj_type: &str) -> &'static [&'static str] {
+pub(super) fn meta_compile_module_files(obj_type: &str) -> &'static [&'static str] {
     match obj_type {
         "Catalog"
         | "Document"
@@ -110,7 +174,7 @@ pub(crate) fn meta_compile_module_files(obj_type: &str) -> &'static [&'static st
     }
 }
 
-pub(crate) fn meta_compile_extra_ext_files(
+pub(super) fn meta_compile_extra_ext_files(
     obj_type: &str,
     format_version: &str,
 ) -> Vec<(&'static str, String)> {
@@ -162,14 +226,14 @@ pub(crate) fn meta_compile_format_dependency_paths(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct MetaCompileEventSubscriptionDependency {
+pub(super) struct MetaCompileEventSubscriptionDependency {
     subscription_name: String,
     subscription_descriptor_path: PathBuf,
     source_type: String,
     source_descriptor_path: PathBuf,
 }
 
-pub(crate) fn meta_compile_event_subscription_dependencies(
+pub(super) fn meta_compile_event_subscription_dependencies(
     definition: &Value,
     output_dir: &Path,
 ) -> Vec<MetaCompileEventSubscriptionDependency> {
@@ -253,7 +317,7 @@ pub(crate) fn meta_compile_event_subscription_dependencies(
     dependencies
 }
 
-pub(crate) fn validate_meta_compile_event_subscription_dependencies(
+pub(super) fn validate_meta_compile_event_subscription_dependencies(
     dependencies: &[MetaCompileEventSubscriptionDependency],
     transaction: &CompileTransaction,
 ) -> Result<(), String> {
@@ -298,7 +362,7 @@ pub(crate) fn validate_meta_compile_event_subscription_dependencies(
     Ok(())
 }
 
-pub(crate) fn meta_compile_definition_format_dependency_paths(
+pub(super) fn meta_compile_definition_format_dependency_paths(
     definition: &Value,
     output_dir: &Path,
 ) -> Vec<PathBuf> {
@@ -353,7 +417,7 @@ pub(crate) fn meta_compile_definition_format_dependency_paths(
     paths
 }
 
-pub(crate) fn compile_meta(
+pub(super) fn compile_meta(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
@@ -383,7 +447,7 @@ fn read_meta_compile_definition(
         .map_err(|err| format!("failed to parse metadata JSON: {err}"))
 }
 
-pub(crate) fn read_meta_compile_definition_guarded(
+pub(super) fn read_meta_compile_definition_guarded(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
     transaction: &mut CompileTransaction,
@@ -399,7 +463,7 @@ pub(crate) fn read_meta_compile_definition_guarded(
     .bind_to(transaction)
 }
 
-pub(crate) fn require_meta_configuration_owner_validation(
+pub(super) fn require_meta_configuration_owner_validation(
     config_path: &Path,
     context: &WorkspaceContext,
     operation: &str,
@@ -413,7 +477,7 @@ pub(crate) fn require_meta_configuration_owner_validation(
     })
 }
 
-pub(crate) fn compile_meta_value(
+pub(super) fn compile_meta_value(
     defn: Value,
     output_dir_label: &str,
     output_dir: &Path,
@@ -679,7 +743,7 @@ fn compile_meta_object(
     Ok((stdout, artifacts))
 }
 
-pub(crate) fn meta_compile_collection_count(value: &Value) -> usize {
+pub(super) fn meta_compile_collection_count(value: &Value) -> usize {
     value
         .as_array()
         .map(Vec::len)
@@ -687,7 +751,7 @@ pub(crate) fn meta_compile_collection_count(value: &Value) -> usize {
         .unwrap_or(0)
 }
 
-pub(crate) fn normalize_meta_object_type(raw: &str) -> String {
+pub(super) fn normalize_meta_object_type(raw: &str) -> String {
     match raw {
         "Справочник" | "Каталог" => "Catalog",
         "Документ" => "Document",
@@ -934,7 +998,7 @@ fn validate_meta_compile_type_contract(
     Ok(())
 }
 
-pub(crate) fn validate_meta_compile_name(context: &str, name: &str) -> Result<(), String> {
+pub(super) fn validate_meta_compile_name(context: &str, name: &str) -> Result<(), String> {
     if is_1c_identifier(name) {
         Ok(())
     } else {
@@ -1092,7 +1156,7 @@ fn validate_meta_compile_enum_field(
     validate_meta_8_3_27_property_value("meta.compile", property_name, raw_value)
 }
 
-pub(crate) fn validate_meta_8_3_27_property_value(
+pub(super) fn validate_meta_8_3_27_property_value(
     context: &str,
     property_name: &str,
     raw_value: &str,
@@ -1114,7 +1178,7 @@ pub(crate) fn validate_meta_8_3_27_property_value(
     }
 }
 
-pub(crate) fn meta_8_3_27_boolean_properties(object_type: &str) -> &'static [&'static str] {
+pub(super) fn meta_8_3_27_boolean_properties(object_type: &str) -> &'static [&'static str] {
     match object_type {
         "AccountingFlag" | "AddressingAttribute" | "Attribute" | "ExtDimensionAccountingFlag" => &[
             "PasswordMode",
@@ -1277,7 +1341,7 @@ pub(crate) fn meta_8_3_27_boolean_properties(object_type: &str) -> &'static [&'s
     }
 }
 
-pub(crate) fn validate_meta_8_3_27_boolean_property_value(
+pub(super) fn validate_meta_8_3_27_boolean_property_value(
     context: &str,
     object_type: &str,
     property_name: &str,
@@ -1295,7 +1359,7 @@ pub(crate) fn validate_meta_8_3_27_boolean_property_value(
     }
 }
 
-pub(crate) fn validate_metadata_8_3_27_boolean_contract(
+pub(super) fn validate_metadata_8_3_27_boolean_contract(
     xml_text: &str,
     context: &str,
 ) -> Result<(), String> {
@@ -1334,7 +1398,7 @@ pub(crate) fn validate_metadata_8_3_27_boolean_contract(
     Ok(())
 }
 
-pub(crate) fn validate_metadata_8_3_27_enum_contract(
+pub(super) fn validate_metadata_8_3_27_enum_contract(
     xml_text: &str,
     context: &str,
 ) -> Result<(), String> {
@@ -1409,7 +1473,7 @@ pub(crate) fn validate_metadata_owner_shape_8_3_27(
     }
 }
 
-pub(crate) fn validate_meta_compile_attr_type(
+pub(super) fn validate_meta_compile_attr_type(
     attr: &MetaCompileAttr,
     context: &str,
 ) -> Result<(), String> {
@@ -1431,7 +1495,7 @@ pub(crate) fn validate_meta_compile_attr_type(
     })
 }
 
-pub(crate) fn validate_meta_compile_tabular_section_types(
+pub(super) fn validate_meta_compile_tabular_section_types(
     section: &MetaCompileTabularSection,
     context: &str,
 ) -> Result<(), String> {
@@ -1442,7 +1506,7 @@ pub(crate) fn validate_meta_compile_tabular_section_types(
     Ok(())
 }
 
-pub(crate) fn split_meta_edit_batch_items<'a>(
+pub(super) fn split_meta_edit_batch_items<'a>(
     raw_value: &'a str,
     operation: &str,
 ) -> Result<Vec<&'a str>, String> {
@@ -1457,7 +1521,7 @@ pub(crate) fn split_meta_edit_batch_items<'a>(
     Ok(items)
 }
 
-pub(crate) fn meta_compile_is_config_type(type_name: &str) -> bool {
+pub(super) fn meta_compile_is_config_type(type_name: &str) -> bool {
     [
         "CatalogRef.",
         "CatalogObject.",
@@ -1484,7 +1548,7 @@ pub(crate) fn meta_compile_is_config_type(type_name: &str) -> bool {
     .any(|prefix| type_name.starts_with(prefix))
 }
 
-pub(crate) fn resolve_meta_type(type_name: &str) -> String {
+pub(super) fn resolve_meta_type(type_name: &str) -> String {
     if let Some(open) = type_name.find('(') {
         if type_name.ends_with(')') {
             let base = type_name[..open].trim();
@@ -1506,7 +1570,7 @@ pub(crate) fn resolve_meta_type(type_name: &str) -> String {
         .to_string()
 }
 
-pub(crate) fn meta_type_synonym(value: &str) -> Option<&'static str> {
+pub(super) fn meta_type_synonym(value: &str) -> Option<&'static str> {
     match value.to_lowercase().as_str() {
         "число" | "number" => Some("Number"),
         "строка" | "string" => Some("String"),
@@ -1534,7 +1598,7 @@ pub(crate) fn meta_type_synonym(value: &str) -> Option<&'static str> {
     }
 }
 
-pub(crate) fn parse_meta_string_type(value: &str) -> Option<u32> {
+pub(super) fn parse_meta_string_type(value: &str) -> Option<u32> {
     let rest = value.strip_prefix("String(")?.strip_suffix(')')?.trim();
     if rest.is_empty() || rest.contains(',') {
         return None;
@@ -1542,7 +1606,7 @@ pub(crate) fn parse_meta_string_type(value: &str) -> Option<u32> {
     rest.parse().ok().filter(|length| *length <= 1024)
 }
 
-pub(crate) fn parse_meta_number_type(value: &str) -> Option<(u32, u32, bool)> {
+pub(super) fn parse_meta_number_type(value: &str) -> Option<(u32, u32, bool)> {
     let rest = value.strip_prefix("Number(")?.strip_suffix(')')?;
     let parts = rest.split(',').map(str::trim).collect::<Vec<_>>();
     if !matches!(parts.len(), 2 | 3)
@@ -1559,14 +1623,14 @@ pub(crate) fn parse_meta_number_type(value: &str) -> Option<(u32, u32, bool)> {
     Some((digits, fraction, parts.len() == 3))
 }
 
-pub(crate) fn meta_edit_changes_request_line_number_length(raw_changes: &str) -> bool {
+pub(super) fn meta_edit_changes_request_line_number_length(raw_changes: &str) -> bool {
     split_meta_edit_commas_outside_parens(raw_changes)
         .into_iter()
         .filter_map(|change| change.split_once('='))
         .any(|(key, _)| meta_edit_is_line_number_length_key(key))
 }
 
-pub(crate) fn meta_edit_inline_requests_line_number_length(operation: &str, value: &str) -> bool {
+pub(super) fn meta_edit_inline_requests_line_number_length(operation: &str, value: &str) -> bool {
     if !operation.eq_ignore_ascii_case("modify-ts") {
         return false;
     }
@@ -1577,7 +1641,7 @@ pub(crate) fn meta_edit_inline_requests_line_number_length(operation: &str, valu
         .any(|(_, changes)| meta_edit_changes_request_line_number_length(changes))
 }
 
-pub(crate) fn meta_edit_definition_requests_line_number_length(definition: &Value) -> bool {
+pub(super) fn meta_edit_definition_requests_line_number_length(definition: &Value) -> bool {
     let Some(definition) = definition.as_object() else {
         return false;
     };
@@ -1603,7 +1667,7 @@ pub(crate) fn meta_edit_definition_requests_line_number_length(definition: &Valu
     })
 }
 
-pub(crate) fn meta_edit_apply_inline_operation(
+pub(super) fn meta_edit_apply_inline_operation(
     xml_text: &mut String,
     object_type: &str,
     object_name: &str,
@@ -1704,7 +1768,7 @@ pub(crate) fn meta_edit_apply_inline_operation(
     Ok(())
 }
 
-pub(crate) fn meta_edit_apply_definition(
+pub(super) fn meta_edit_apply_definition(
     xml_text: &mut String,
     object_type: &str,
     object_name: &str,
@@ -1767,7 +1831,7 @@ pub(crate) fn meta_edit_apply_definition(
     Ok(())
 }
 
-pub(crate) fn meta_edit_apply_definition_add(
+pub(super) fn meta_edit_apply_definition_add(
     xml_text: &mut String,
     object_type: &str,
     object_name: &str,
@@ -1788,7 +1852,7 @@ pub(crate) fn meta_edit_apply_definition_add(
     Ok(())
 }
 
-pub(crate) fn meta_edit_apply_definition_remove(
+pub(super) fn meta_edit_apply_definition_remove(
     xml_text: &mut String,
     value: &Value,
     counts: &mut MetaEditCounts,
@@ -1807,7 +1871,7 @@ pub(crate) fn meta_edit_apply_definition_remove(
     Ok(())
 }
 
-pub(crate) fn meta_edit_apply_definition_modify(
+pub(super) fn meta_edit_apply_definition_modify(
     xml_text: &mut String,
     object_type: &str,
     object_name: &str,

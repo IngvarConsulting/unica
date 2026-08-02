@@ -1,32 +1,48 @@
 #![allow(dead_code, unused_imports)]
 
-use super::internal::*;
+use crate::application::AdapterOutcome;
+use crate::domain::source_target::ResolvedTarget;
+use crate::domain::workspace::WorkspaceContext;
+use roxmltree::Document;
+use serde_json::{Map, Value};
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use super::super::common::{
+    int_arg, object_support_state, read_utf8_sig, resolve_metadata_object_descriptor,
+    ObjectSupportData,
+};
+use super::xml_model::{
+    meta_info_attr_by_local, meta_info_child, meta_info_child_text, meta_info_children,
+    meta_info_format_source_type, meta_info_inner_text, meta_info_ml_child_text, meta_info_ml_text,
+    meta_info_normalize_cfg_prefix,
+};
 
 #[derive(Clone)]
-pub(crate) struct MetaInfoAttr<'a, 'input> {
+pub(super) struct MetaInfoAttr<'a, 'input> {
     pub(crate) name: String,
     pub(crate) type_name: String,
     pub(crate) flags: String,
     pub(crate) _marker: std::marker::PhantomData<roxmltree::Node<'a, 'input>>,
 }
 
-pub(crate) struct MetaInfoTabularSection<'a, 'input> {
+pub(super) struct MetaInfoTabularSection<'a, 'input> {
     pub(crate) name: String,
     pub(crate) columns: Vec<MetaInfoAttr<'a, 'input>>,
 }
 
-pub(crate) struct MetaInfoHttpMethod {
+pub(super) struct MetaInfoHttpMethod {
     pub(crate) http_method: String,
     pub(crate) handler: String,
 }
 
-pub(crate) struct MetaInfoHttpEndpoint {
+pub(super) struct MetaInfoHttpEndpoint {
     pub(crate) name: String,
     pub(crate) template: String,
     pub(crate) methods: Vec<MetaInfoHttpMethod>,
 }
 
-pub(crate) struct MetaInfoWsOperation {
+pub(super) struct MetaInfoWsOperation {
     pub(crate) name: String,
     pub(crate) params: String,
     pub(crate) return_type: String,
@@ -153,7 +169,7 @@ pub(crate) struct MetaInfoExecution {
     pub(crate) data: Option<MetaInfoData>,
 }
 
-pub(crate) fn analyze_meta_info(
+pub(super) fn analyze_meta_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
@@ -338,7 +354,7 @@ pub(crate) fn resolve_meta_info_path(mut object_path: PathBuf) -> Result<PathBuf
     Ok(object_path)
 }
 
-pub(crate) fn meta_info_main_lines(
+pub(super) fn meta_info_main_lines(
     md_type: &str,
     props: Option<roxmltree::Node<'_, '_>>,
     child_objs: Option<roxmltree::Node<'_, '_>>,
@@ -395,7 +411,7 @@ pub(crate) fn meta_info_main_lines(
     Ok(lines)
 }
 
-pub(crate) fn meta_info_append_brief(
+pub(super) fn meta_info_append_brief(
     lines: &mut Vec<String>,
     md_type: &str,
     props: Option<roxmltree::Node<'_, '_>>,
@@ -523,7 +539,7 @@ pub(crate) fn meta_info_append_brief(
     }
 }
 
-pub(crate) fn meta_info_append_overview_or_full(
+pub(super) fn meta_info_append_overview_or_full(
     lines: &mut Vec<String>,
     md_type: &str,
     props: Option<roxmltree::Node<'_, '_>>,
@@ -603,7 +619,7 @@ pub(crate) fn meta_info_append_overview_or_full(
     }
 }
 
-pub(crate) fn meta_info_drill_lines(
+pub(super) fn meta_info_drill_lines(
     md_type: &str,
     child_objs: Option<roxmltree::Node<'_, '_>>,
     drill_name: &str,
@@ -713,7 +729,7 @@ pub(crate) fn meta_info_drill_lines(
     Err(format!("[ERROR] '{drill_name}' not found in {obj_name}"))
 }
 
-pub(crate) fn meta_info_drill_attr_lines(
+pub(super) fn meta_info_drill_attr_lines(
     label: &str,
     name: &str,
     props: roxmltree::Node<'_, '_>,
@@ -799,7 +815,7 @@ pub(crate) fn meta_info_drill_attr_lines(
     lines
 }
 
-pub(crate) fn meta_info_append_document_header(
+pub(super) fn meta_info_append_document_header(
     lines: &mut Vec<String>,
     props: Option<roxmltree::Node<'_, '_>>,
 ) {
@@ -839,7 +855,7 @@ pub(crate) fn meta_info_append_document_header(
 /// declares `<Owners>` always reports it. Silence would be read as "the tool
 /// does not know", which is exactly the ambiguity that sends a reader to the
 /// raw XML.
-pub(crate) fn meta_info_append_owners(
+pub(super) fn meta_info_append_owners(
     lines: &mut Vec<String>,
     props: Option<roxmltree::Node<'_, '_>>,
 ) {
@@ -863,7 +879,7 @@ pub(crate) fn meta_info_append_owners(
     }
 }
 
-pub(crate) fn meta_info_append_catalog_header(
+pub(super) fn meta_info_append_catalog_header(
     lines: &mut Vec<String>,
     props: Option<roxmltree::Node<'_, '_>>,
 ) {
@@ -919,7 +935,7 @@ pub(crate) fn meta_info_append_catalog_header(
     }
 }
 
-pub(crate) fn meta_info_append_register_header(
+pub(super) fn meta_info_append_register_header(
     lines: &mut Vec<String>,
     md_type: &str,
     props: Option<roxmltree::Node<'_, '_>>,
@@ -954,7 +970,7 @@ pub(crate) fn meta_info_append_register_header(
     }
 }
 
-pub(crate) fn meta_info_append_defined_type(
+pub(super) fn meta_info_append_defined_type(
     lines: &mut Vec<String>,
     props: Option<roxmltree::Node<'_, '_>>,
 ) {
@@ -974,7 +990,7 @@ pub(crate) fn meta_info_append_defined_type(
     }
 }
 
-pub(crate) fn meta_info_append_scheduled_job(
+pub(super) fn meta_info_append_scheduled_job(
     lines: &mut Vec<String>,
     props: Option<roxmltree::Node<'_, '_>>,
 ) {
@@ -1018,7 +1034,7 @@ pub(crate) fn meta_info_append_scheduled_job(
     lines.push(parts.join(" | "));
 }
 
-pub(crate) fn meta_info_append_event_subscription_brief(
+pub(super) fn meta_info_append_event_subscription_brief(
     lines: &mut Vec<String>,
     props: Option<roxmltree::Node<'_, '_>>,
 ) {
@@ -1047,7 +1063,7 @@ pub(crate) fn meta_info_append_event_subscription_brief(
     }
 }
 
-pub(crate) fn meta_info_append_event_subscription(
+pub(super) fn meta_info_append_event_subscription(
     lines: &mut Vec<String>,
     props: Option<roxmltree::Node<'_, '_>>,
     mode: &str,
@@ -1083,7 +1099,7 @@ pub(crate) fn meta_info_append_event_subscription(
     }
 }
 
-pub(crate) fn meta_info_append_http_service(
+pub(super) fn meta_info_append_http_service(
     lines: &mut Vec<String>,
     props: Option<roxmltree::Node<'_, '_>>,
     child_objs: Option<roxmltree::Node<'_, '_>>,
@@ -1110,7 +1126,7 @@ pub(crate) fn meta_info_append_http_service(
     }
 }
 
-pub(crate) fn meta_info_append_web_service(
+pub(super) fn meta_info_append_web_service(
     lines: &mut Vec<String>,
     props: Option<roxmltree::Node<'_, '_>>,
     child_objs: Option<roxmltree::Node<'_, '_>>,
@@ -1134,7 +1150,7 @@ pub(crate) fn meta_info_append_web_service(
     }
 }
 
-pub(crate) fn meta_info_append_enum_values(
+pub(super) fn meta_info_append_enum_values(
     lines: &mut Vec<String>,
     child_objs: Option<roxmltree::Node<'_, '_>>,
 ) {
@@ -1174,7 +1190,7 @@ pub(crate) fn meta_info_append_enum_values(
     }
 }
 
-pub(crate) fn meta_info_append_attribute_section(
+pub(super) fn meta_info_append_attribute_section(
     lines: &mut Vec<String>,
     header: &str,
     child_objs: Option<roxmltree::Node<'_, '_>>,
@@ -1194,7 +1210,7 @@ pub(crate) fn meta_info_append_attribute_section(
     }
 }
 
-pub(crate) fn meta_info_append_tabular_sections(
+pub(super) fn meta_info_append_tabular_sections(
     lines: &mut Vec<String>,
     child_objs: Option<roxmltree::Node<'_, '_>>,
     mode: &str,
@@ -1234,7 +1250,7 @@ pub(crate) fn meta_info_append_tabular_sections(
     }
 }
 
-pub(crate) fn meta_info_append_simple_children(
+pub(super) fn meta_info_append_simple_children(
     lines: &mut Vec<String>,
     child_objs: Option<roxmltree::Node<'_, '_>>,
 ) {
@@ -1252,7 +1268,7 @@ pub(crate) fn meta_info_append_simple_children(
     }
 }
 
-pub(crate) fn meta_info_append_full_tail(
+pub(super) fn meta_info_append_full_tail(
     lines: &mut Vec<String>,
     md_type: &str,
     props: Option<roxmltree::Node<'_, '_>>,
@@ -1305,7 +1321,7 @@ pub(crate) fn meta_info_append_full_tail(
     meta_info_append_simple_children(lines, child_objs);
 }
 
-pub(crate) fn meta_info_attributes<'a, 'input>(
+pub(super) fn meta_info_attributes<'a, 'input>(
     parent_node: Option<roxmltree::Node<'a, 'input>>,
     child_tag: &str,
     is_dimension: bool,
@@ -1332,7 +1348,7 @@ pub(crate) fn meta_info_attributes<'a, 'input>(
         .collect()
 }
 
-pub(crate) fn meta_info_tabular_sections<'a, 'input>(
+pub(super) fn meta_info_tabular_sections<'a, 'input>(
     parent_node: Option<roxmltree::Node<'a, 'input>>,
 ) -> Vec<MetaInfoTabularSection<'a, 'input>> {
     let Some(parent_node) = parent_node else {
@@ -1352,7 +1368,7 @@ pub(crate) fn meta_info_tabular_sections<'a, 'input>(
         .collect()
 }
 
-pub(crate) fn meta_info_http_endpoints(
+pub(super) fn meta_info_http_endpoints(
     child_objs: Option<roxmltree::Node<'_, '_>>,
 ) -> Vec<MetaInfoHttpEndpoint> {
     let Some(child_objs) = child_objs else {
@@ -1395,7 +1411,7 @@ pub(crate) fn meta_info_http_endpoints(
         .collect()
 }
 
-pub(crate) fn meta_info_ws_operations(
+pub(super) fn meta_info_ws_operations(
     child_objs: Option<roxmltree::Node<'_, '_>>,
 ) -> Vec<MetaInfoWsOperation> {
     let Some(child_objs) = child_objs else {
@@ -1447,7 +1463,7 @@ pub(crate) fn meta_info_ws_operations(
         .collect()
 }
 
-pub(crate) fn meta_info_common_module_flags(props: Option<roxmltree::Node<'_, '_>>) -> Vec<String> {
+pub(super) fn meta_info_common_module_flags(props: Option<roxmltree::Node<'_, '_>>) -> Vec<String> {
     let Some(props) = props else {
         return Vec::new();
     };
@@ -1476,7 +1492,7 @@ pub(crate) fn meta_info_common_module_flags(props: Option<roxmltree::Node<'_, '_
     flags
 }
 
-pub(crate) fn meta_info_format_type(type_node: roxmltree::Node<'_, '_>) -> String {
+pub(super) fn meta_info_format_type(type_node: roxmltree::Node<'_, '_>) -> String {
     let mut types = Vec::new();
     for type_item in meta_info_children(type_node, "Type") {
         types.push(meta_info_format_single_type(
@@ -1497,7 +1513,7 @@ pub(crate) fn meta_info_format_type(type_node: roxmltree::Node<'_, '_>) -> Strin
     types.join(" | ")
 }
 
-pub(crate) fn meta_info_format_single_type(
+pub(super) fn meta_info_format_single_type(
     raw: String,
     parent_node: roxmltree::Node<'_, '_>,
 ) -> String {
@@ -1545,7 +1561,7 @@ pub(crate) fn meta_info_format_single_type(
     }
 }
 
-pub(crate) fn meta_info_format_cfg_type(raw: &str) -> String {
+pub(super) fn meta_info_format_cfg_type(raw: &str) -> String {
     let normalized = meta_info_normalize_cfg_prefix(raw);
     if let Some(rest) = normalized.strip_prefix("cfg:") {
         if let Some((prefix, name)) = rest.split_once('.') {
@@ -1564,7 +1580,7 @@ pub(crate) fn meta_info_format_cfg_type(raw: &str) -> String {
     normalized
 }
 
-pub(crate) fn meta_info_format_flags(props: roxmltree::Node<'_, '_>, is_dimension: bool) -> String {
+pub(super) fn meta_info_format_flags(props: roxmltree::Node<'_, '_>, is_dimension: bool) -> String {
     let mut flags = Vec::new();
     if meta_info_child_text(props, "FillChecking").as_deref() == Some("ShowError") {
         flags.push("обязательный");
@@ -1596,7 +1612,7 @@ pub(crate) fn meta_info_format_flags(props: roxmltree::Node<'_, '_>, is_dimensio
     }
 }
 
-pub(crate) fn meta_info_sort_attrs_ref_first<'a, 'input>(
+pub(super) fn meta_info_sort_attrs_ref_first<'a, 'input>(
     attrs: Vec<MetaInfoAttr<'a, 'input>>,
 ) -> Vec<MetaInfoAttr<'a, 'input>> {
     let mut refs = Vec::new();
@@ -1612,7 +1628,7 @@ pub(crate) fn meta_info_sort_attrs_ref_first<'a, 'input>(
     refs
 }
 
-pub(crate) fn meta_info_type_is_reference(type_name: &str) -> bool {
+pub(super) fn meta_info_type_is_reference(type_name: &str) -> bool {
     type_name.contains("Ссылка.")
         || type_name.contains("Характеристика.")
         || type_name.contains("ОпределяемыйТип.")
@@ -1621,11 +1637,11 @@ pub(crate) fn meta_info_type_is_reference(type_name: &str) -> bool {
         || type_name.contains("ПВРСсылка")
 }
 
-pub(crate) fn meta_info_format_attr_line(attr: &MetaInfoAttr<'_, '_>, width: usize) -> String {
+pub(super) fn meta_info_format_attr_line(attr: &MetaInfoAttr<'_, '_>, width: usize) -> String {
     format!("  {:<width$} {}{}", attr.name, attr.type_name, attr.flags)
 }
 
-pub(crate) fn meta_info_max_name_len(attrs: &[MetaInfoAttr<'_, '_>]) -> usize {
+pub(super) fn meta_info_max_name_len(attrs: &[MetaInfoAttr<'_, '_>]) -> usize {
     let max_len = attrs
         .iter()
         .map(|attr| attr.name.chars().count())
@@ -1635,7 +1651,7 @@ pub(crate) fn meta_info_max_name_len(attrs: &[MetaInfoAttr<'_, '_>]) -> usize {
     (max_len + 2).min(40)
 }
 
-pub(crate) fn meta_info_simple_children(
+pub(super) fn meta_info_simple_children(
     parent_node: Option<roxmltree::Node<'_, '_>>,
     tag: &str,
 ) -> Vec<String> {
@@ -1648,7 +1664,7 @@ pub(crate) fn meta_info_simple_children(
         .collect()
 }
 
-pub(crate) fn meta_info_enum_values(parent_node: Option<roxmltree::Node<'_, '_>>) -> Vec<String> {
+pub(super) fn meta_info_enum_values(parent_node: Option<roxmltree::Node<'_, '_>>) -> Vec<String> {
     let Some(parent_node) = parent_node else {
         return Vec::new();
     };
@@ -1661,7 +1677,7 @@ pub(crate) fn meta_info_enum_values(parent_node: Option<roxmltree::Node<'_, '_>>
         .collect()
 }
 
-pub(crate) fn meta_info_paginate(lines: Vec<String>, args: &Map<String, Value>) -> String {
+pub(super) fn meta_info_paginate(lines: Vec<String>, args: &Map<String, Value>) -> String {
     let total_lines = lines.len();
     let offset = int_arg(args, &["offset", "Offset"]).unwrap_or(0).max(0) as usize;
     let limit = int_arg(args, &["limit", "Limit"]).unwrap_or(150).max(0) as usize;
@@ -1687,7 +1703,7 @@ pub(crate) fn meta_info_paginate(lines: Vec<String>, args: &Map<String, Value>) 
     out_lines.join("\n")
 }
 
-pub(crate) fn meta_info_type_ru(md_type: &str) -> String {
+pub(super) fn meta_info_type_ru(md_type: &str) -> String {
     match md_type {
         "Catalog" => "Справочник",
         "Document" => "Документ",
@@ -1717,7 +1733,7 @@ pub(crate) fn meta_info_type_ru(md_type: &str) -> String {
     .to_string()
 }
 
-pub(crate) fn meta_info_is_reference_metadata_type(md_type: &str) -> bool {
+pub(super) fn meta_info_is_reference_metadata_type(md_type: &str) -> bool {
     matches!(
         md_type,
         "Catalog"
@@ -1732,7 +1748,7 @@ pub(crate) fn meta_info_is_reference_metadata_type(md_type: &str) -> bool {
     )
 }
 
-pub(crate) fn meta_info_ref_type_ru(prefix: &str) -> Option<&'static str> {
+pub(super) fn meta_info_ref_type_ru(prefix: &str) -> Option<&'static str> {
     match prefix {
         "CatalogRef" => Some("СправочникСсылка"),
         "DocumentRef" => Some("ДокументСсылка"),
@@ -1747,7 +1763,7 @@ pub(crate) fn meta_info_ref_type_ru(prefix: &str) -> Option<&'static str> {
     }
 }
 
-pub(crate) fn meta_info_object_type_ru(prefix: &str) -> Option<&'static str> {
+pub(super) fn meta_info_object_type_ru(prefix: &str) -> Option<&'static str> {
     match prefix {
         "CatalogObject" => Some("СправочникОбъект"),
         "DocumentObject" => Some("ДокументОбъект"),
@@ -1763,7 +1779,7 @@ pub(crate) fn meta_info_object_type_ru(prefix: &str) -> Option<&'static str> {
     }
 }
 
-pub(crate) fn meta_info_period_ru(value: &str) -> &str {
+pub(super) fn meta_info_period_ru(value: &str) -> &str {
     match value {
         "Nonperiodical" => "Непериодический",
         "Day" => "День",
@@ -1775,7 +1791,7 @@ pub(crate) fn meta_info_period_ru(value: &str) -> &str {
     }
 }
 
-pub(crate) fn meta_info_write_mode_ru(value: &str) -> &str {
+pub(super) fn meta_info_write_mode_ru(value: &str) -> &str {
     match value {
         "Independent" => "независимая",
         "RecorderSubordinate" => "подчинение регистратору",
@@ -1783,7 +1799,7 @@ pub(crate) fn meta_info_write_mode_ru(value: &str) -> &str {
     }
 }
 
-pub(crate) fn meta_info_reuse_ru(value: &str) -> &str {
+pub(super) fn meta_info_reuse_ru(value: &str) -> &str {
     match value {
         "DontUse" => "нет",
         "DuringRequest" => "на время вызова",
@@ -1792,7 +1808,7 @@ pub(crate) fn meta_info_reuse_ru(value: &str) -> &str {
     }
 }
 
-pub(crate) fn meta_info_event_ru(value: &str) -> &str {
+pub(super) fn meta_info_event_ru(value: &str) -> &str {
     match value {
         "BeforeWrite" => "ПередЗаписью",
         "OnWrite" => "ПриЗаписи",
@@ -1806,7 +1822,7 @@ pub(crate) fn meta_info_event_ru(value: &str) -> &str {
     }
 }
 
-pub(crate) fn meta_info_number_period_ru(value: &str) -> &str {
+pub(super) fn meta_info_number_period_ru(value: &str) -> &str {
     match value {
         "Year" => "по году",
         "Quarter" => "по кварталу",
@@ -1817,7 +1833,7 @@ pub(crate) fn meta_info_number_period_ru(value: &str) -> &str {
     }
 }
 
-pub(crate) fn meta_info_register_short(value: &str) -> &str {
+pub(super) fn meta_info_register_short(value: &str) -> &str {
     match value {
         "AccumulationRegister" => "РН",
         "AccountingRegister" => "РБ",
@@ -1827,7 +1843,7 @@ pub(crate) fn meta_info_register_short(value: &str) -> &str {
     }
 }
 
-pub(crate) fn meta_info_decline_cols(n: usize) -> &'static str {
+pub(super) fn meta_info_decline_cols(n: usize) -> &'static str {
     let m = n % 10;
     let h = n % 100;
     if (11..=19).contains(&h) {
@@ -1841,7 +1857,7 @@ pub(crate) fn meta_info_decline_cols(n: usize) -> &'static str {
     }
 }
 
-pub(crate) struct MetaRemoveError {
+pub(super) struct MetaRemoveError {
     pub(crate) stdout: String,
     pub(crate) stderr: String,
     pub(crate) message: String,

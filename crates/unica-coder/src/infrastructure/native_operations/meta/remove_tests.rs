@@ -1,10 +1,26 @@
 #![allow(dead_code, unused_imports)]
 
-use super::internal::*;
-
+use super::super::cf::create_configuration_scaffold;
+use super::super::common::utf8_bom_bytes;
 use super::super::compile_transaction::{with_commit_failpoint, CommitFailpoint};
+use super::super::compile_transaction::{CompileTransaction, RegistrationStatus};
 use super::super::single_file_publisher::with_before_commit_hook;
-use super::*;
+use super::super::subsystem::compile_subsystem;
+use super::remove::{
+    metadata_files_recursive_bounded, metadata_files_recursive_with_limits,
+    plan_meta_remove_subsystem_replacements, plan_meta_remove_subsystem_replacements_bounded,
+    remove_metadata_object, MetaRemoveTraversalLimits,
+};
+use super::{
+    force_meta_remove_reparse_path, with_before_meta_remove_subsystem_child_inspection_hook,
+    with_meta_remove_forced_reparse_paths,
+};
+use crate::domain::workspace::WorkspaceContext;
+use roxmltree::Document;
+use serde_json::{json, Map, Value};
+use std::collections::HashSet;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn temp_context(name: &str) -> WorkspaceContext {

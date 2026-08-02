@@ -1,36 +1,13 @@
 #![allow(dead_code, unused_imports)]
 
-use crate::application::operation_descriptors::OBJECT_PATH;
 use crate::application::AdapterOutcome;
-use crate::domain::format_profile::{
-    classify_root_version, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
-};
-use crate::domain::source_target::ResolvedTarget;
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::metadata_kinds::metadata_kind;
-use crate::infrastructure::platform_xml_owner::{
-    resolve_platform_xml_owners_with_provenance, root_version_literal, PlatformXmlOwnerKind,
-    PlatformXmlOwnerProvenance,
-};
-use diffy::{apply, DiffOptions, Patch};
-use roxmltree::Document;
-use serde_json::{json, Map, Value};
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs;
-use std::io::{ErrorKind, Write};
-use std::path::{Path, PathBuf};
+use serde_json::{Map, Value};
 
-use self::validation_context::{
-    inspect_meta_validation_reads, meta_validate_registrar_document_scan,
-    meta_validate_types_with_list_presentation, MetaValidationOwnerKind,
-};
-use super::common::*;
-use super::compile_transaction::{
-    CompileTransaction, DirectoryTopologyEntry, DirectoryTopologyEntryKind, RegistrationStatus,
-};
-use super::{
-    cf::*, cfe::*, dcs::*, form::*, interface::*, mxl::*, role::*, subsystem::*, template::*,
-};
+#[cfg(test)]
+use std::collections::HashSet;
+#[cfg(test)]
+use std::path::{Path, PathBuf};
 
 #[cfg(test)]
 type MetaCompileAfterOwnerValidationHook = Box<dyn FnOnce(&Path)>;
@@ -236,45 +213,6 @@ pub(crate) use validation::{meta_validate_format_dependency_paths, validate_meta
 pub(crate) use xml_model::{
     meta_info_child, meta_info_child_text, meta_info_children, meta_info_inner_text,
 };
-
-// During the extraction, native-operation implementations share internal XML,
-// transaction, and DSL helpers without widening the compatibility facade.
-mod internal {
-    pub(super) use super::super::common::*;
-    pub(super) use super::super::{
-        cf::*, cfe::*, dcs::*, form::*, interface::*, mxl::*, role::*, subsystem::*, template::*,
-    };
-    pub(super) use super::{
-        apply, classify_root_version, fs, json, metadata_kind,
-        resolve_platform_xml_owners_with_provenance, root_version_literal, Write, OBJECT_PATH,
-    };
-    pub(super) use super::{
-        edit::*, info::*, legacy_dsl::*, publisher::*, remove::*, template_catalog::*,
-        validation::*, xml_model::*, AdapterOutcome, Map, Path, PathBuf, ResolvedTarget, Value,
-        WorkspaceContext,
-    };
-    #[cfg(test)]
-    pub(super) use super::{
-        force_meta_remove_reparse_path, run_before_meta_remove_subsystem_child_inspection_hook,
-        run_meta_compile_after_format_plan_hook, run_meta_compile_after_owner_validation_hook,
-        run_meta_edit_after_line_number_length_policy_hook,
-        with_before_meta_remove_subsystem_child_inspection_hook,
-        with_meta_compile_after_format_plan_hook, with_meta_compile_after_owner_validation_hook,
-        with_meta_edit_after_line_number_length_policy_hook, with_meta_remove_forced_reparse_paths,
-        META_REMOVE_FORCED_REPARSE_PATHS,
-    };
-    pub(super) use super::{
-        inspect_meta_validation_reads, meta_validate_registrar_document_scan,
-        meta_validate_types_with_list_presentation, MetaValidationOwnerKind,
-    };
-    pub(super) use super::{
-        BTreeMap, DiffOptions, Document, ErrorKind, FormatCompatibility, HashMap, HashSet, Patch,
-        PlatformXmlOwnerKind, PlatformXmlOwnerProvenance, ACTIVE_FORMAT_PROFILE,
-    };
-    pub(super) use super::{
-        CompileTransaction, DirectoryTopologyEntry, DirectoryTopologyEntryKind, RegistrationStatus,
-    };
-}
 
 use edit::edit_meta;
 use info::analyze_meta_info;

@@ -1,8 +1,17 @@
 #![allow(dead_code, unused_imports)]
 
-use super::internal::*;
+use roxmltree::Document;
+use serde_json::{Map, Value};
 
-pub(crate) fn meta_compile_catalog_xml(
+use super::super::common::{escape_xml, json_i64_value, json_value_to_python_string};
+use super::legacy_dsl::normalize_meta_object_type;
+use super::publisher::fresh_meta_compile_uuid;
+use super::xml_model::{
+    emit_meta_event_subscription_source_type_contents, emit_meta_fill_value, emit_meta_mltext,
+    emit_meta_type_contents, emit_meta_value_type,
+};
+
+pub(super) fn meta_compile_catalog_xml(
     defn: &Map<String, Value>,
     obj_name: &str,
     format_version: &str,
@@ -55,7 +64,7 @@ pub(crate) fn meta_compile_catalog_xml(
     Ok((format!("{}\n", lines.join("\n")), obj_uuid))
 }
 
-pub(crate) fn meta_xmlns_decl() -> &'static str {
+pub(super) fn meta_xmlns_decl() -> &'static str {
     "xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:app=\"http://v8.1c.ru/8.2/managed-application/core\" xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\" xmlns:cmi=\"http://v8.1c.ru/8.2/managed-application/cmi\" xmlns:ent=\"http://v8.1c.ru/8.1/data/enterprise\" xmlns:lf=\"http://v8.1c.ru/8.2/managed-application/logform\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\" xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\" xmlns:xen=\"http://v8.1c.ru/8.3/xcf/enums\" xmlns:xpr=\"http://v8.1c.ru/8.3/xcf/predef\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\""
 }
 
@@ -266,7 +275,7 @@ pub(crate) fn emit_meta_internal_info<F>(
     lines.push(format!("{indent}</InternalInfo>"));
 }
 
-pub(crate) fn emit_meta_catalog_properties(
+pub(super) fn emit_meta_catalog_properties(
     lines: &mut Vec<String>,
     indent: &str,
     defn: &Map<String, Value>,
@@ -399,14 +408,14 @@ pub(crate) fn emit_meta_catalog_properties(
     }
 }
 
-pub(crate) fn meta_compile_synonym(defn: &Map<String, Value>, obj_name: &str) -> String {
+pub(super) fn meta_compile_synonym(defn: &Map<String, Value>, obj_name: &str) -> String {
     defn.get("synonym")
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| split_meta_camel_case(obj_name))
 }
 
-pub(crate) fn emit_meta_base_properties(
+pub(super) fn emit_meta_base_properties(
     lines: &mut Vec<String>,
     indent: &str,
     defn: &Map<String, Value>,
@@ -426,7 +435,7 @@ pub(crate) fn emit_meta_base_properties(
     }
 }
 
-pub(crate) fn emit_meta_enum_properties(
+pub(super) fn emit_meta_enum_properties(
     lines: &mut Vec<String>,
     indent: &str,
     defn: &Map<String, Value>,
@@ -457,7 +466,7 @@ pub(crate) fn emit_meta_enum_properties(
     ));
 }
 
-pub(crate) fn emit_meta_constant_properties(
+pub(super) fn emit_meta_constant_properties(
     lines: &mut Vec<String>,
     indent: &str,
     defn: &Map<String, Value>,
@@ -508,7 +517,7 @@ pub(crate) fn emit_meta_constant_properties(
     }
 }
 
-pub(crate) fn emit_meta_document_properties(
+pub(super) fn emit_meta_document_properties(
     lines: &mut Vec<String>,
     indent: &str,
     defn: &Map<String, Value>,
@@ -611,7 +620,7 @@ pub(crate) fn emit_meta_document_properties(
     emit_meta_lock_search_presentation_tail(lines, indent, "Use");
 }
 
-pub(crate) fn emit_meta_information_register_properties(
+pub(super) fn emit_meta_information_register_properties(
     lines: &mut Vec<String>,
     indent: &str,
     defn: &Map<String, Value>,
@@ -673,7 +682,7 @@ pub(crate) fn emit_meta_information_register_properties(
     }
 }
 
-pub(crate) fn emit_meta_accumulation_register_properties(
+pub(super) fn emit_meta_accumulation_register_properties(
     lines: &mut Vec<String>,
     indent: &str,
     defn: &Map<String, Value>,
@@ -705,7 +714,7 @@ pub(crate) fn emit_meta_accumulation_register_properties(
     lines.push(format!("{indent}<Explanation/>"));
 }
 
-pub(crate) fn emit_meta_accounting_register_properties(
+pub(super) fn emit_meta_accounting_register_properties(
     lines: &mut Vec<String>,
     indent: &str,
     defn: &Map<String, Value>,
@@ -755,7 +764,7 @@ pub(crate) fn emit_meta_accounting_register_properties(
     lines.push(format!("{indent}<Explanation/>"));
 }
 
-pub(crate) fn emit_meta_calculation_register_properties(
+pub(super) fn emit_meta_calculation_register_properties(
     lines: &mut Vec<String>,
     indent: &str,
     defn: &Map<String, Value>,
@@ -812,7 +821,7 @@ pub(crate) fn emit_meta_calculation_register_properties(
     lines.push(format!("{indent}<Explanation/>"));
 }
 
-pub(crate) fn emit_meta_chart_of_accounts_properties(
+pub(super) fn emit_meta_chart_of_accounts_properties(
     lines: &mut Vec<String>,
     indent: &str,
     defn: &Map<String, Value>,
@@ -968,7 +977,7 @@ pub(crate) fn emit_meta_chart_of_accounts_properties(
     }
 }
 
-pub(crate) fn emit_meta_chart_of_characteristic_types_properties(
+pub(super) fn emit_meta_chart_of_characteristic_types_properties(
     lines: &mut Vec<String>,
     indent: &str,
     defn: &Map<String, Value>,
@@ -1114,7 +1123,7 @@ pub(crate) fn emit_meta_chart_of_characteristic_types_properties(
     }
 }
 
-pub(crate) fn emit_meta_chart_of_calculation_types_properties(
+pub(super) fn emit_meta_chart_of_calculation_types_properties(
     lines: &mut Vec<String>,
     indent: &str,
     defn: &Map<String, Value>,
@@ -1224,7 +1233,7 @@ pub(crate) fn emit_meta_chart_of_calculation_types_properties(
     }
 }
 
-pub(crate) fn emit_meta_business_process_properties(
+pub(super) fn emit_meta_business_process_properties(
     lines: &mut Vec<String>,
     indent: &str,
     defn: &Map<String, Value>,
@@ -1329,7 +1338,7 @@ pub(crate) fn emit_meta_business_process_properties(
     }
 }
 
-pub(crate) fn emit_meta_task_properties(
+pub(super) fn emit_meta_task_properties(
     lines: &mut Vec<String>,
     indent: &str,
     defn: &Map<String, Value>,
@@ -1430,7 +1439,7 @@ pub(crate) fn emit_meta_task_properties(
     }
 }
 
-pub(crate) fn emit_meta_exchange_plan_properties(
+pub(super) fn emit_meta_exchange_plan_properties(
     lines: &mut Vec<String>,
     indent: &str,
     defn: &Map<String, Value>,
@@ -1537,7 +1546,7 @@ pub(crate) fn emit_meta_exchange_plan_properties(
     }
 }
 
-pub(crate) fn emit_meta_document_journal_properties(
+pub(super) fn emit_meta_document_journal_properties(
     lines: &mut Vec<String>,
     indent: &str,
     defn: &Map<String, Value>,
@@ -1571,7 +1580,7 @@ pub(crate) fn emit_meta_document_journal_properties(
     lines.push(format!("{indent}<Explanation/>"));
 }
 
-pub(crate) fn emit_meta_report_properties(
+pub(super) fn emit_meta_report_properties(
     lines: &mut Vec<String>,
     indent: &str,
     defn: &Map<String, Value>,
@@ -1603,7 +1612,7 @@ pub(crate) fn emit_meta_report_properties(
     }
 }
 
-pub(crate) fn emit_meta_data_processor_properties(
+pub(super) fn emit_meta_data_processor_properties(
     lines: &mut Vec<String>,
     indent: &str,
     defn: &Map<String, Value>,
@@ -1633,7 +1642,7 @@ pub(crate) fn emit_meta_data_processor_properties(
     lines.push(format!("{indent}<Explanation/>"));
 }
 
-pub(crate) fn emit_meta_scheduled_job_properties(
+pub(super) fn emit_meta_scheduled_job_properties(
     lines: &mut Vec<String>,
     indent: &str,
     defn: &Map<String, Value>,
@@ -1684,7 +1693,7 @@ pub(crate) fn emit_meta_scheduled_job_properties(
     ));
 }
 
-pub(crate) fn emit_meta_event_subscription_properties(
+pub(super) fn emit_meta_event_subscription_properties(
     lines: &mut Vec<String>,
     indent: &str,
     defn: &Map<String, Value>,
@@ -1723,7 +1732,7 @@ pub(crate) fn emit_meta_event_subscription_properties(
     ));
 }
 
-pub(crate) fn emit_meta_http_service_properties(
+pub(super) fn emit_meta_http_service_properties(
     lines: &mut Vec<String>,
     indent: &str,
     defn: &Map<String, Value>,
@@ -1754,7 +1763,7 @@ pub(crate) fn emit_meta_http_service_properties(
     ));
 }
 
-pub(crate) fn emit_meta_web_service_properties(
+pub(super) fn emit_meta_web_service_properties(
     lines: &mut Vec<String>,
     indent: &str,
     defn: &Map<String, Value>,
@@ -1795,7 +1804,7 @@ pub(crate) fn emit_meta_web_service_properties(
     ));
 }
 
-pub(crate) fn meta_compile_root_value_type(defn: &Map<String, Value>) -> String {
+pub(super) fn meta_compile_root_value_type(defn: &Map<String, Value>) -> String {
     let mut type_name = defn
         .get("valueType")
         .and_then(Value::as_str)
@@ -1823,7 +1832,7 @@ pub(crate) fn meta_compile_root_value_type(defn: &Map<String, Value>) -> String 
     type_name
 }
 
-pub(crate) fn emit_meta_common_module_properties(
+pub(super) fn emit_meta_common_module_properties(
     lines: &mut Vec<String>,
     indent: &str,
     defn: &Map<String, Value>,
@@ -1877,7 +1886,7 @@ pub(crate) fn emit_meta_common_module_properties(
     ));
 }
 
-pub(crate) fn emit_meta_defined_type_properties(
+pub(super) fn emit_meta_defined_type_properties(
     lines: &mut Vec<String>,
     indent: &str,
     defn: &Map<String, Value>,
@@ -1899,11 +1908,11 @@ pub(crate) fn emit_meta_defined_type_properties(
     lines.push(format!("{indent}</Type>"));
 }
 
-pub(crate) fn bool_arg_from_json(defn: &Map<String, Value>, field_name: &str) -> bool {
+pub(super) fn bool_arg_from_json(defn: &Map<String, Value>, field_name: &str) -> bool {
     defn.get(field_name).and_then(Value::as_bool) == Some(true)
 }
 
-pub(crate) fn meta_compile_value_types(defn: &Map<String, Value>) -> Vec<String> {
+pub(super) fn meta_compile_value_types(defn: &Map<String, Value>) -> Vec<String> {
     let value = defn.get("valueTypes").or_else(|| defn.get("valueType"));
     match value {
         Some(Value::Array(items)) => items
@@ -1916,7 +1925,7 @@ pub(crate) fn meta_compile_value_types(defn: &Map<String, Value>) -> Vec<String>
     }
 }
 
-pub(crate) fn emit_meta_optional_text(
+pub(super) fn emit_meta_optional_text(
     lines: &mut Vec<String>,
     indent: &str,
     tag: &str,
@@ -1928,7 +1937,7 @@ pub(crate) fn emit_meta_optional_text(
     }
 }
 
-pub(crate) fn meta_compile_string_list(value: Option<&Value>) -> Vec<String> {
+pub(super) fn meta_compile_string_list(value: Option<&Value>) -> Vec<String> {
     match value {
         Some(Value::Array(items)) => items
             .iter()
@@ -1949,7 +1958,7 @@ pub(crate) fn meta_compile_string_list(value: Option<&Value>) -> Vec<String> {
     }
 }
 
-pub(crate) fn meta_compile_named_items(value: Option<&Value>) -> Vec<String> {
+pub(super) fn meta_compile_named_items(value: Option<&Value>) -> Vec<String> {
     match value {
         Some(Value::Array(items)) => items
             .iter()
@@ -1968,7 +1977,7 @@ pub(crate) fn meta_compile_named_items(value: Option<&Value>) -> Vec<String> {
     }
 }
 
-pub(crate) fn normalize_meta_object_ref(value: &str) -> String {
+pub(super) fn normalize_meta_object_ref(value: &str) -> String {
     let Some((prefix, suffix)) = value.split_once('.') else {
         return value.to_string();
     };
@@ -1976,7 +1985,7 @@ pub(crate) fn normalize_meta_object_ref(value: &str) -> String {
     format!("{normalized}.{suffix}")
 }
 
-pub(crate) fn emit_meta_md_object_refs(
+pub(super) fn emit_meta_md_object_refs(
     lines: &mut Vec<String>,
     indent: &str,
     tag: &str,
@@ -1996,7 +2005,7 @@ pub(crate) fn emit_meta_md_object_refs(
     lines.push(format!("{indent}</{tag}>"));
 }
 
-pub(crate) fn meta_compile_common_module_method(value: &str) -> String {
+pub(super) fn meta_compile_common_module_method(value: &str) -> String {
     if value.is_empty() || value.starts_with("CommonModule.") {
         value.to_string()
     } else {
@@ -2004,7 +2013,7 @@ pub(crate) fn meta_compile_common_module_method(value: &str) -> String {
     }
 }
 
-pub(crate) fn emit_meta_lock_search_presentation_tail(
+pub(super) fn emit_meta_lock_search_presentation_tail(
     lines: &mut Vec<String>,
     indent: &str,
     full_text_search_default: &str,
@@ -2035,7 +2044,7 @@ pub(crate) fn emit_meta_lock_search_presentation_tail(
     }
 }
 
-pub(crate) fn emit_meta_register_tail(
+pub(super) fn emit_meta_register_tail(
     lines: &mut Vec<String>,
     indent: &str,
     defn: &Map<String, Value>,
@@ -2050,7 +2059,7 @@ pub(crate) fn emit_meta_register_tail(
     ));
 }
 
-pub(crate) fn emit_meta_code_description_properties(
+pub(super) fn emit_meta_code_description_properties(
     lines: &mut Vec<String>,
     indent: &str,
     defn: &Map<String, Value>,
@@ -2093,7 +2102,7 @@ pub(crate) fn emit_meta_code_description_properties(
     ));
 }
 
-pub(crate) fn emit_meta_choice_object_tail(
+pub(super) fn emit_meta_choice_object_tail(
     lines: &mut Vec<String>,
     indent: &str,
     object_type: &str,
@@ -2151,7 +2160,7 @@ pub(crate) fn emit_meta_choice_object_tail(
     }
 }
 
-pub(crate) fn emit_meta_number_properties(
+pub(super) fn emit_meta_number_properties(
     lines: &mut Vec<String>,
     indent: &str,
     defn: &Map<String, Value>,
@@ -2180,7 +2189,7 @@ pub(crate) fn emit_meta_number_properties(
     ));
 }
 
-pub(crate) fn emit_meta_numbered_object_tail(
+pub(super) fn emit_meta_numbered_object_tail(
     lines: &mut Vec<String>,
     indent: &str,
     object_type: &str,
@@ -2212,13 +2221,13 @@ pub(crate) fn emit_meta_numbered_object_tail(
     emit_meta_lock_search_presentation_tail(lines, indent, "Use");
 }
 
-pub(crate) struct MetaCompileEnumValue {
+pub(super) struct MetaCompileEnumValue {
     pub(crate) name: String,
     pub(crate) synonym: String,
     pub(crate) comment: String,
 }
 
-pub(crate) fn meta_compile_enum_values(
+pub(super) fn meta_compile_enum_values(
     value: Option<&Value>,
 ) -> Result<Vec<MetaCompileEnumValue>, String> {
     let Some(Value::Array(items)) = value else {
@@ -2259,7 +2268,7 @@ pub(crate) fn meta_compile_enum_values(
     Ok(values)
 }
 
-pub(crate) fn emit_meta_enum_value<F>(
+pub(super) fn emit_meta_enum_value<F>(
     lines: &mut Vec<String>,
     indent: &str,
     value: &MetaCompileEnumValue,
@@ -2286,7 +2295,7 @@ pub(crate) fn emit_meta_enum_value<F>(
     lines.push(format!("{indent}</EnumValue>"));
 }
 
-pub(crate) fn emit_meta_child_objects<F>(
+pub(super) fn emit_meta_child_objects<F>(
     lines: &mut Vec<String>,
     indent: &str,
     defn: &Map<String, Value>,
@@ -2500,7 +2509,7 @@ where
     Ok(())
 }
 
-pub(crate) fn meta_compile_value_items(value: Option<&Value>) -> Vec<Value> {
+pub(super) fn meta_compile_value_items(value: Option<&Value>) -> Vec<Value> {
     match value {
         Some(Value::Array(items)) => items.clone(),
         Some(Value::Object(object)) => object
@@ -2521,7 +2530,7 @@ pub(crate) fn meta_compile_value_items(value: Option<&Value>) -> Vec<Value> {
     }
 }
 
-pub(crate) fn emit_meta_register_field<F>(
+pub(super) fn emit_meta_register_field<F>(
     lines: &mut Vec<String>,
     indent: &str,
     field_tag: &str,
@@ -2663,7 +2672,7 @@ pub(crate) fn emit_meta_register_field<F>(
     lines.push(format!("{indent}</{field_tag}>"));
 }
 
-pub(crate) fn emit_meta_boolean_child<F>(
+pub(super) fn emit_meta_boolean_child<F>(
     lines: &mut Vec<String>,
     indent: &str,
     tag: &str,
@@ -2713,7 +2722,7 @@ pub(crate) fn emit_meta_boolean_child<F>(
     lines.push(format!("{indent}</{tag}>"));
 }
 
-pub(crate) fn emit_meta_addressing_attribute<F>(
+pub(super) fn emit_meta_addressing_attribute<F>(
     lines: &mut Vec<String>,
     indent: &str,
     value: &Value,
@@ -2761,7 +2770,7 @@ pub(crate) fn emit_meta_addressing_attribute<F>(
     lines.push(format!("{indent}</AddressingAttribute>"));
 }
 
-pub(crate) fn emit_meta_column<F>(
+pub(super) fn emit_meta_column<F>(
     lines: &mut Vec<String>,
     indent: &str,
     value: &Value,
@@ -2805,7 +2814,7 @@ pub(crate) fn emit_meta_column<F>(
     lines.push(format!("{indent}</Column>"));
 }
 
-pub(crate) fn emit_meta_url_template<F>(
+pub(super) fn emit_meta_url_template<F>(
     lines: &mut Vec<String>,
     indent: &str,
     name: &str,
@@ -2864,7 +2873,7 @@ pub(crate) fn emit_meta_url_template<F>(
     lines.push(format!("{indent}</URLTemplate>"));
 }
 
-pub(crate) fn emit_meta_http_method<F>(
+pub(super) fn emit_meta_http_method<F>(
     lines: &mut Vec<String>,
     indent: &str,
     template_name: &str,
@@ -2900,7 +2909,7 @@ pub(crate) fn emit_meta_http_method<F>(
     lines.push(format!("{indent}</Method>"));
 }
 
-pub(crate) fn emit_meta_operation<F>(
+pub(super) fn emit_meta_operation<F>(
     lines: &mut Vec<String>,
     indent: &str,
     name: &str,
@@ -2979,7 +2988,7 @@ pub(crate) fn emit_meta_operation<F>(
     lines.push(format!("{indent}</Operation>"));
 }
 
-pub(crate) fn emit_meta_operation_parameter<F>(
+pub(super) fn emit_meta_operation_parameter<F>(
     lines: &mut Vec<String>,
     indent: &str,
     name: &str,
@@ -3028,7 +3037,7 @@ pub(crate) fn emit_meta_operation_parameter<F>(
     lines.push(format!("{indent}</Parameter>"));
 }
 
-pub(crate) fn meta_enum_prop(defn: &Map<String, Value>, field_name: &str, default: &str) -> String {
+pub(super) fn meta_enum_prop(defn: &Map<String, Value>, field_name: &str, default: &str) -> String {
     defn.get(field_name)
         .and_then(Value::as_str)
         .map(normalize_meta_enum_value)
@@ -3036,7 +3045,7 @@ pub(crate) fn meta_enum_prop(defn: &Map<String, Value>, field_name: &str, defaul
         .unwrap_or_else(|| escape_xml(default))
 }
 
-pub(crate) fn normalize_meta_enum_value(value: &str) -> String {
+pub(super) fn normalize_meta_enum_value(value: &str) -> String {
     match value {
         // Keep old DSL requests readable while emitting only the platform enum value.
         "HierarchyItemsOnly" => "HierarchyOfItems",
@@ -3084,7 +3093,7 @@ pub(crate) fn normalize_meta_enum_value(value: &str) -> String {
     .to_string()
 }
 
-pub(crate) fn emit_meta_standard_attributes(
+pub(super) fn emit_meta_standard_attributes(
     lines: &mut Vec<String>,
     indent: &str,
     object_type: &str,
@@ -3201,7 +3210,7 @@ pub(crate) fn emit_meta_standard_attributes(
     lines.push(format!("{indent}</StandardAttributes>"));
 }
 
-pub(crate) fn meta_standard_attribute_type_reduction_mode(
+pub(super) fn meta_standard_attribute_type_reduction_mode(
     object_type: &str,
     attr_name: &str,
 ) -> Option<&'static str> {
@@ -3212,7 +3221,7 @@ pub(crate) fn meta_standard_attribute_type_reduction_mode(
     }
 }
 
-pub(crate) fn emit_meta_standard_attribute(
+pub(super) fn emit_meta_standard_attribute(
     lines: &mut Vec<String>,
     indent: &str,
     object_type: &str,
@@ -3264,7 +3273,7 @@ pub(crate) fn emit_meta_standard_attribute(
 }
 
 #[derive(Clone)]
-pub(crate) struct MetaCompileAttr {
+pub(super) struct MetaCompileAttr {
     pub(crate) name: String,
     pub(crate) type_name: String,
     pub(crate) synonym: String,
@@ -3275,12 +3284,12 @@ pub(crate) struct MetaCompileAttr {
     pub(crate) choice_history_on_input: String,
 }
 
-pub(crate) struct MetaCompileTabularSection {
+pub(super) struct MetaCompileTabularSection {
     pub(crate) name: String,
     pub(crate) columns: Vec<MetaCompileAttr>,
 }
 
-pub(crate) fn meta_compile_attributes(value: Option<&Value>) -> Vec<MetaCompileAttr> {
+pub(super) fn meta_compile_attributes(value: Option<&Value>) -> Vec<MetaCompileAttr> {
     let Some(value) = value else {
         return Vec::new();
     };
@@ -3301,7 +3310,7 @@ pub(crate) fn meta_compile_attributes(value: Option<&Value>) -> Vec<MetaCompileA
         .unwrap_or_default()
 }
 
-pub(crate) fn meta_compile_tabular_sections(
+pub(super) fn meta_compile_tabular_sections(
     value: Option<&Value>,
 ) -> Result<Vec<MetaCompileTabularSection>, String> {
     let Some(value) = value else {
@@ -3334,7 +3343,7 @@ pub(crate) fn meta_compile_tabular_sections(
     Ok(result)
 }
 
-pub(crate) fn meta_compile_parse_attr(value: &Value) -> MetaCompileAttr {
+pub(super) fn meta_compile_parse_attr(value: &Value) -> MetaCompileAttr {
     if let Some(text) = value.as_str() {
         let mut pieces = text.splitn(2, '|');
         let main = pieces.next().unwrap_or_default().trim();
@@ -3413,7 +3422,7 @@ pub(crate) fn meta_compile_parse_attr(value: &Value) -> MetaCompileAttr {
     }
 }
 
-pub(crate) fn meta_compile_build_type(object: &Map<String, Value>) -> String {
+pub(super) fn meta_compile_build_type(object: &Map<String, Value>) -> String {
     let mut type_name = object
         .get("valueType")
         .or_else(|| object.get("type"))
@@ -3445,7 +3454,7 @@ pub(crate) fn meta_compile_build_type(object: &Map<String, Value>) -> String {
     type_name
 }
 
-pub(crate) fn emit_meta_attribute<F>(
+pub(super) fn emit_meta_attribute<F>(
     lines: &mut Vec<String>,
     indent: &str,
     attr: &MetaCompileAttr,
@@ -3551,7 +3560,7 @@ pub(crate) fn emit_meta_attribute<F>(
     lines.push(format!("{indent}</Attribute>"));
 }
 
-pub(crate) fn emit_meta_tabular_section<F>(
+pub(super) fn emit_meta_tabular_section<F>(
     lines: &mut Vec<String>,
     indent: &str,
     section: &MetaCompileTabularSection,
@@ -3637,14 +3646,14 @@ pub(crate) fn emit_meta_tabular_section<F>(
     lines.push(format!("{indent}</TabularSection>"));
 }
 
-pub(crate) fn meta_line_number_length_is_applicable(object_type: &str) -> bool {
+pub(super) fn meta_line_number_length_is_applicable(object_type: &str) -> bool {
     !matches!(
         object_type,
         "Report" | "DataProcessor" | "ExternalReport" | "ExternalDataProcessor"
     )
 }
 
-pub(crate) fn split_meta_camel_case(name: &str) -> String {
+pub(super) fn split_meta_camel_case(name: &str) -> String {
     if name.is_empty() {
         return String::new();
     }

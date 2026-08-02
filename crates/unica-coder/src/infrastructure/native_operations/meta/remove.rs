@@ -1,6 +1,35 @@
 #![allow(dead_code, unused_imports)]
 
-use super::internal::*;
+use crate::application::AdapterOutcome;
+use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::metadata_kinds::metadata_kind;
+use roxmltree::Document;
+use serde_json::{Map, Value};
+use std::collections::HashSet;
+use std::fs;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
+
+use super::super::common::{
+    absolutize, bool_arg, ensure_trailing_newline, file_stem_string, first_tag_text_in_xml,
+    guard_active_format_dependencies_and_xml_trees, read_utf8_sig, read_utf8_sig_snapshot,
+    relative_display, required_string, utf8_bom_bytes, MutationData,
+};
+use super::super::compile_transaction::{
+    CompileTransaction, DirectoryTopologyEntry, DirectoryTopologyEntryKind,
+};
+use super::super::form::form_is_xml_ncname;
+use super::super::role::role_info_element;
+use super::super::subsystem::subsystem_validation_format_dependency_paths;
+use super::info::MetaRemoveError;
+use super::legacy_dsl::{
+    require_meta_configuration_owner_validation, validate_metadata_owner_shape_8_3_27,
+};
+
+#[cfg(test)]
+use super::{
+    run_before_meta_remove_subsystem_child_inspection_hook, META_REMOVE_FORCED_REPARSE_PATHS,
+};
 
 struct MetaRemoveSuccess {
     data: MetaRemoveData,
@@ -29,7 +58,7 @@ pub(crate) struct MetaRemoveExecution {
     pub(crate) data: Option<MetaRemoveData>,
 }
 
-pub(crate) fn meta_remove_stdout_error(message: String) -> MetaRemoveError {
+pub(super) fn meta_remove_stdout_error(message: String) -> MetaRemoveError {
     MetaRemoveError {
         stdout: format!("{message}\n"),
         stderr: String::new(),
@@ -54,7 +83,7 @@ fn validate_meta_remove_object_name(name: &str) -> Result<(), String> {
     }
 }
 
-pub(crate) struct MetaRemoveSubsystemReplacement {
+pub(super) struct MetaRemoveSubsystemReplacement {
     path: PathBuf,
     original: Vec<u8>,
     replacement: Vec<u8>,
@@ -62,7 +91,7 @@ pub(crate) struct MetaRemoveSubsystemReplacement {
     removed_references: usize,
 }
 
-pub(crate) struct MetaRemoveTextRead {
+pub(super) struct MetaRemoveTextRead {
     path: PathBuf,
     raw: Vec<u8>,
     text: String,
@@ -79,7 +108,7 @@ struct MetaRemoveDirectoryRead {
     direct_entries: Vec<DirectoryTopologyEntry>,
 }
 
-pub(crate) struct MetaRemoveTraversal {
+pub(super) struct MetaRemoveTraversal {
     files: Vec<PathBuf>,
     directories: Vec<MetaRemoveDirectoryRead>,
 }
@@ -88,7 +117,7 @@ const META_REMOVE_MAX_TRAVERSAL_DEPTH: usize = 256;
 const META_REMOVE_MAX_TRAVERSAL_ENTRIES: usize = 1_000_000;
 
 #[derive(Clone, Copy)]
-pub(crate) struct MetaRemoveTraversalLimits {
+pub(super) struct MetaRemoveTraversalLimits {
     pub(crate) max_depth: usize,
     pub(crate) max_entries: usize,
 }
@@ -167,7 +196,7 @@ fn require_meta_remove_real_path(
     }
 }
 
-pub(crate) fn plan_meta_remove_subsystem_replacements(
+pub(super) fn plan_meta_remove_subsystem_replacements(
     dir: &Path,
     qualified_object_name: &str,
     replacements: &mut Vec<MetaRemoveSubsystemReplacement>,
@@ -191,7 +220,7 @@ pub(crate) fn plan_meta_remove_subsystem_replacements(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn plan_meta_remove_subsystem_replacements_bounded(
+pub(super) fn plan_meta_remove_subsystem_replacements_bounded(
     dir: &Path,
     qualified_object_name: &str,
     replacements: &mut Vec<MetaRemoveSubsystemReplacement>,
@@ -479,7 +508,7 @@ fn meta_remove_payload_file_count(path: &Path) -> Result<Option<usize>, String> 
     }
 }
 
-pub(crate) fn remove_metadata_object(
+pub(super) fn remove_metadata_object(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
@@ -1056,12 +1085,12 @@ pub(crate) fn remove_metadata_child_text_with_flag(
     }
 }
 
-pub(crate) struct MetaRemoveReference {
+pub(super) struct MetaRemoveReference {
     pub(crate) file: String,
     pub(crate) pattern: String,
 }
 
-pub(crate) fn metadata_object_registered(
+pub(super) fn metadata_object_registered(
     config_xml: &Path,
     obj_type: &str,
     obj_name: &str,
@@ -1181,7 +1210,7 @@ fn metadata_files_recursive(root: &Path) -> Result<MetaRemoveTraversal, String> 
     )
 }
 
-pub(crate) fn metadata_files_recursive_with_limits(
+pub(super) fn metadata_files_recursive_with_limits(
     root: &Path,
     limits: MetaRemoveTraversalLimits,
 ) -> Result<MetaRemoveTraversal, String> {
@@ -1196,7 +1225,7 @@ pub(crate) fn metadata_files_recursive_with_limits(
     )
 }
 
-pub(crate) fn metadata_files_recursive_bounded(
+pub(super) fn metadata_files_recursive_bounded(
     root: &Path,
     depth: usize,
     limits: MetaRemoveTraversalLimits,
@@ -1349,7 +1378,7 @@ pub(crate) fn metadata_files_recursive_bounded(
     Ok(result)
 }
 
-pub(crate) fn meta_remove_should_skip_file(
+pub(super) fn meta_remove_should_skip_file(
     file: &Path,
     config_dir: &Path,
     obj_xml: &Path,
@@ -1367,7 +1396,7 @@ pub(crate) fn meta_remove_should_skip_file(
     rel == "Configuration.xml" || rel == "ConfigDumpInfo.xml" || rel.starts_with("Subsystems")
 }
 
-pub(crate) fn meta_remove_search_patterns(
+pub(super) fn meta_remove_search_patterns(
     obj_type: &str,
     obj_name: &str,
     type_plural: &str,
@@ -1388,7 +1417,7 @@ pub(crate) fn meta_remove_search_patterns(
     patterns
 }
 
-pub(crate) fn meta_remove_supported_types() -> &'static [&'static str] {
+pub(super) fn meta_remove_supported_types() -> &'static [&'static str] {
     &[
         "Catalog",
         "Document",
@@ -1439,7 +1468,7 @@ pub(crate) fn meta_remove_type_plural(obj_type: &str) -> Option<&'static str> {
     metadata_kind(obj_type).map(|kind| kind.directory)
 }
 
-pub(crate) fn meta_remove_type_ref_names(obj_type: &str) -> Option<&'static [&'static str]> {
+pub(super) fn meta_remove_type_ref_names(obj_type: &str) -> Option<&'static [&'static str]> {
     match obj_type {
         "Catalog" => Some(&["CatalogRef", "CatalogObject"]),
         "Document" => Some(&["DocumentRef", "DocumentObject"]),
@@ -1460,7 +1489,7 @@ pub(crate) fn meta_remove_type_ref_names(obj_type: &str) -> Option<&'static [&'s
     }
 }
 
-pub(crate) fn meta_remove_ru_manager(obj_type: &str) -> Option<&'static str> {
+pub(super) fn meta_remove_ru_manager(obj_type: &str) -> Option<&'static str> {
     match obj_type {
         "Catalog" => Some("Справочники"),
         "Document" => Some("Документы"),
