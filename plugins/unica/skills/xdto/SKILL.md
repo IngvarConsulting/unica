@@ -44,7 +44,7 @@ allowed-tools:
     "name": "unica.xdto.info",
     "arguments": {
       "cwd": "<workspace>",
-      "sourceSet": "configuration",
+      "sourceSet": "main",
       "metadataPath": "XDTOPackage.EnterpriseData_1_17_3"
     }
   }
@@ -62,14 +62,14 @@ allowed-tools:
     "name": "unica.xdto.edit",
     "arguments": {
       "cwd": "<workspace>",
-      "sourceSet": "configuration",
+      "sourceSet": "main",
       "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
       "operation": "add-property",
       "typeName": "ЛюбаяСсылка",
       "propertyPath": "СсылкаНаОбъект",
       "property": {
         "name": "Документ_НовыйДокумент",
-        "type": "Документ_НовыйДокумент",
+        "type": "xs:string",
         "minOccurs": 0
       },
       "dryRun": true
@@ -92,14 +92,14 @@ allowed-tools:
     "name": "unica.xdto.edit",
     "arguments": {
       "cwd": "<workspace>",
-      "sourceSet": "configuration",
+      "sourceSet": "main",
       "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
       "operation": "add-property",
       "typeName": "ЛюбаяСсылка",
       "propertyPath": "СсылкаНаОбъект",
       "property": {
         "name": "Документ_НовыйДокумент",
-        "type": "Документ_НовыйДокумент",
+        "type": "xs:string",
         "minOccurs": 0
       },
       "dryRun": false

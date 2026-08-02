@@ -77,26 +77,42 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                         {"unica.xdto.info", "unica.xdto.edit"},
                     )
 
+    def tool_entries(self, names: set[str] | None = None) -> list[object]:
+        module = load_module()
+        source_schemas = json.loads(
+            json.dumps(module.EXPECTED_SOURCE_INPUT_SCHEMAS)
+        )
+        selected_names = self.expected_tools() if names is None else names
+        return [
+            {
+                "name": name,
+                "inputSchema": source_schemas.get(
+                    name,
+                    {
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                        "additionalProperties": False,
+                    },
+                ),
+            }
+            for name in sorted(selected_names)
+        ]
+
     def run_smoke(
         self,
-        tools: set[str],
+        tool_entries: list[object],
         *,
         server_name: str = "unica",
-        schema_drift: bool = False,
         result_drift: bool = False,
         provider_revision: bool = False,
         read_writes: bool = False,
     ) -> subprocess.CompletedProcess[str]:
-        module = load_module()
         expected_tools = self.expected_tools()
-        source_schemas = json.loads(
-            json.dumps(module.EXPECTED_SOURCE_INPUT_SCHEMAS)
-        )
+        module = load_module()
         source_flows = json.loads(
             json.dumps(module.EXPECTED_SOURCE_FLOW_PROJECTIONS)
         )
-        if schema_drift:
-            source_schemas["unica.source.read"]["required"].remove("resourceId")
         if result_drift:
             source_flows["main"]["resolve"]["summary"] = (
                 "source.resolve returned a drifted result"
@@ -110,8 +126,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             import sys
             from pathlib import Path
 
-            tools = __TOOLS__
-            source_schemas = json.loads(r'''__SOURCE_SCHEMAS__''')
+            tools = json.loads(r'''__TOOLS__''')
             source_flows = json.loads(r'''__SOURCE_FLOWS__''')
             read_writes = __READ_WRITES__
 
@@ -167,19 +182,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                 if message.get("method") == "initialize":
                     print(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": {"serverInfo": {"name": __NAME__}}}), flush=True)
                 elif message.get("method") == "tools/list":
-                    listed = []
-                    for name in tools:
-                        schema = source_schemas.get(
-                            name,
-                            {
-                                "type": "object",
-                                "properties": {},
-                                "required": [],
-                                "additionalProperties": False,
-                            },
-                        )
-                        listed.append({"name": name, "inputSchema": schema})
-                    print(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": {"tools": listed}}), flush=True)
+                    print(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": {"tools": tools}}), flush=True)
                 elif message.get("method") == "tools/call":
                     name = message["params"]["name"]
                     args = message["params"]["arguments"]
@@ -187,10 +190,9 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                     print(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": {"content": [{"type": "text", "text": json.dumps(payload)}]}}), flush=True)
         """)
         server_source = (
-            server_source.replace("__TOOLS__", json.dumps(sorted(tools)))
-            .replace(
-                "__SOURCE_SCHEMAS__",
-                json.dumps(source_schemas, ensure_ascii=False),
+            server_source.replace(
+                "__TOOLS__",
+                json.dumps(tool_entries, ensure_ascii=False),
             )
             .replace(
                 "__SOURCE_FLOWS__",
@@ -230,20 +232,24 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             )
 
     def test_accepts_initialize_and_required_tool_responses(self) -> None:
-        result = self.run_smoke(self.expected_tools())
+        result = self.run_smoke(self.tool_entries())
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("verified packaged Unica MCP source-resource flow", result.stdout)
 
     def test_rejects_runtime_missing_a_required_tool(self) -> None:
-        result = self.run_smoke(self.expected_tools() - {"unica.xdto.edit"})
+        result = self.run_smoke(
+            self.tool_entries(self.expected_tools() - {"unica.xdto.edit"})
+        )
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("missing", result.stderr)
         self.assertIn("unica.xdto.edit", result.stderr)
 
     def test_rejects_runtime_exposing_an_unexpected_tool(self) -> None:
-        result = self.run_smoke(self.expected_tools() | {"unica.xdto.validate"})
+        result = self.run_smoke(
+            self.tool_entries(self.expected_tools() | {"unica.xdto.validate"})
+        )
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("unexpected", result.stderr)
@@ -252,7 +258,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
     def test_reports_missing_and_unexpected_tools_together(self) -> None:
         tools = self.expected_tools() - {"unica.xdto.edit"}
         tools.add("unica.xdto.validate")
-        result = self.run_smoke(tools)
+        result = self.run_smoke(self.tool_entries(tools))
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("missing", result.stderr)
@@ -261,25 +267,125 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         self.assertIn("unica.xdto.validate", result.stderr)
 
     def test_decodes_mcp_json_as_utf8_independently_of_windows_locale(self) -> None:
-        result = self.run_smoke(self.expected_tools(), server_name="Уника")
+        result = self.run_smoke(self.tool_entries(), server_name="Уника")
 
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_rejects_incomplete_source_schema(self) -> None:
-        result = self.run_smoke(self.expected_tools(), schema_drift=True)
+        entries = self.tool_entries()
+        source_read = next(
+            entry
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("name") == "unica.source.read"
+        )
+        source_read["inputSchema"]["required"].remove("resourceId")
+        result = self.run_smoke(entries)
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("schema", result.stderr)
 
+    def test_rejects_expected_xdto_tool_without_input_schema(self) -> None:
+        entries = self.tool_entries()
+        xdto_info = next(
+            entry
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("name") == "unica.xdto.info"
+        )
+        xdto_info.pop("inputSchema")
+
+        result = self.run_smoke(entries)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("input schema", result.stderr)
+        self.assertIn("unica.xdto.info", result.stderr)
+
+    def test_rejects_expected_xdto_tool_with_non_object_input_schema(self) -> None:
+        entries = self.tool_entries()
+        xdto_edit = next(
+            entry
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("name") == "unica.xdto.edit"
+        )
+        xdto_edit["inputSchema"] = []
+
+        result = self.run_smoke(entries)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("input schema", result.stderr)
+        self.assertIn("unica.xdto.edit", result.stderr)
+
+    def test_rejects_expected_xdto_schema_not_declaring_an_object(self) -> None:
+        entries = self.tool_entries()
+        xdto_edit = next(
+            entry
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("name") == "unica.xdto.edit"
+        )
+        xdto_edit["inputSchema"] = {
+            "type": "array",
+            "properties": {},
+            "required": [],
+            "additionalProperties": False,
+        }
+
+        result = self.run_smoke(entries)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("type object", result.stderr)
+        self.assertIn("unica.xdto.edit", result.stderr)
+
+    def test_rejects_duplicate_expected_tool_name(self) -> None:
+        entries = self.tool_entries()
+        duplicate = next(
+            entry
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("name") == "unica.xdto.info"
+        )
+        entries.append(json.loads(json.dumps(duplicate)))
+
+        result = self.run_smoke(entries)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("duplicate", result.stderr)
+        self.assertIn("unica.xdto.info", result.stderr)
+
+    def test_rejects_malformed_non_object_tool_entry(self) -> None:
+        entries = self.tool_entries()
+        entries.append("not-a-tool")
+
+        result = self.run_smoke(entries)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("malformed entries", result.stderr)
+
+    def test_rejects_empty_tool_name_as_malformed(self) -> None:
+        entries = self.tool_entries()
+        entries.append(
+            {
+                "name": "",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                    "additionalProperties": False,
+                },
+            }
+        )
+
+        result = self.run_smoke(entries)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("malformed entries", result.stderr)
+
     def test_rejects_stable_source_result_drift(self) -> None:
-        result = self.run_smoke(self.expected_tools(), result_drift=True)
+        result = self.run_smoke(self.tool_entries(), result_drift=True)
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("stable", result.stderr)
 
     def test_rejects_provider_revision_leakage(self) -> None:
         result = self.run_smoke(
-            self.expected_tools(),
+            self.tool_entries(),
             provider_revision=True,
         )
 
@@ -288,7 +394,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
 
     def test_rejects_a_read_that_writes(self) -> None:
         """The whole source surface is read-only, so any byte it changes fails."""
-        result = self.run_smoke(self.expected_tools(), read_writes=True)
+        result = self.run_smoke(self.tool_entries(), read_writes=True)
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("read-only", result.stderr)

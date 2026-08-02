@@ -22,6 +22,45 @@ SOURCE_TOOL_NAMES = {
 }
 
 
+def _valid_unica_tool_name(value: object) -> bool:
+    if not isinstance(value, str) or not 1 <= len(value) <= 128:
+        return False
+    parts = value.split(".")
+    return (
+        len(parts) >= 2
+        and parts[0] == "unica"
+        and all(
+            part
+            and all(
+                character.isascii()
+                and (character.isalnum() or character in {"_", "-"})
+                for character in part
+            )
+            for part in parts[1:]
+        )
+    )
+
+
+def _input_schema_shape_error(value: object) -> str | None:
+    if not isinstance(value, dict):
+        return "must be an object"
+    if value.get("type") != "object":
+        return "must declare type object"
+    properties = value.get("properties")
+    if not isinstance(properties, dict):
+        return "must declare object properties"
+    required = value.get("required")
+    if not isinstance(required, list) or not all(
+        isinstance(name, str) and name in properties for name in required
+    ):
+        return "must declare required as property names"
+    if len(required) != len(set(required)):
+        return "must not repeat required property names"
+    if value.get("additionalProperties") is not False:
+        return "must reject additional properties"
+    return None
+
+
 def tool_surface_review_path(plugin_root: Path) -> Path:
     """Resolve the canonical public-tool ledger from any checkout-local package.
 
@@ -49,7 +88,7 @@ def expected_tool_names(plugin_root: Path) -> set[str]:
         raise SystemExit(f"cannot read public tool ledger {path}: {error}") from error
     if not isinstance(review, dict) or not review:
         raise SystemExit(f"public tool ledger must be a non-empty object: {path}")
-    invalid = sorted(name for name in review if not name.startswith("unica."))
+    invalid = sorted(name for name in review if not _valid_unica_tool_name(name))
     if invalid:
         raise SystemExit(f"public tool ledger has invalid names: {invalid}")
     return set(review)
@@ -866,15 +905,21 @@ def _call(session: McpSession, request_id: int, name: str, arguments: dict) -> d
     )
 
 
-def _stable_tool_contract(tools: list[dict], expected_names: set[str]) -> None:
+def _stable_tool_contract(tools: list[object], expected_names: set[str]) -> None:
     by_name = {}
     name_counts = {}
     malformed_count = 0
     for tool in tools:
-        if not isinstance(tool, dict) or not isinstance(tool.get("name"), str):
+        if not isinstance(tool, dict) or not _valid_unica_tool_name(tool.get("name")):
             malformed_count += 1
             continue
         name = tool["name"]
+        schema_error = _input_schema_shape_error(tool.get("inputSchema"))
+        if schema_error is not None:
+            raise SystemExit(
+                f"Unica MCP tools/list has malformed input schema for {name}: "
+                f"{schema_error}"
+            )
         by_name[name] = tool
         name_counts[name] = name_counts.get(name, 0) + 1
     actual_names = set(by_name)
@@ -898,9 +943,7 @@ def _stable_tool_contract(tools: list[dict], expected_names: set[str]) -> None:
         )
     projected = {}
     for name in sorted(SOURCE_TOOL_NAMES):
-        schema = by_name[name].get("inputSchema")
-        if not isinstance(schema, dict):
-            raise SystemExit(f"Unica MCP tools/list has no input schema for {name}")
+        schema = by_name[name]["inputSchema"]
         _assert_path_free(schema)
         projected[name] = schema
     if projected != EXPECTED_SOURCE_INPUT_SCHEMAS:
