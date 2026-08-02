@@ -15,6 +15,7 @@ pub(crate) use tool_contracts::{
 };
 
 pub(crate) mod code_intelligence;
+pub(crate) mod metadata;
 pub(crate) mod operation_descriptors;
 mod outcome;
 pub(crate) mod ports;
@@ -32,8 +33,12 @@ pub struct ToolSpec {
     pub handler: ToolHandler,
 }
 
+#[allow(private_interfaces)] // Metadata is intentionally off-registry until the public switch.
 #[derive(Debug, Clone, Copy)]
 pub enum ToolHandler {
+    Metadata {
+        operation: metadata::MetadataOperation,
+    },
     NativeOperation {
         operation: &'static str,
         event: Option<DomainEventKind>,

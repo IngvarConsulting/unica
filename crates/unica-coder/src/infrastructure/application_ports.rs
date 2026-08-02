@@ -203,6 +203,10 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                 .map(HandlerOutcome::plain);
         }
         match spec.handler {
+            ToolHandler::Metadata { .. } => Err(format!(
+                "{} metadata handler is not registered for infrastructure dispatch yet",
+                spec.name
+            )),
             ToolHandler::NativeOperation { operation, .. } => {
                 NativeOperationAdapter::invoke_with_data(
                     operation,

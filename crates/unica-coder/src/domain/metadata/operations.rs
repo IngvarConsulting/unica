@@ -16,6 +16,47 @@ pub(crate) enum MetaCollection {
     Commands,
 }
 
+impl MetaCollection {
+    pub(crate) const ALL: &'static [Self] = &[
+        Self::Attributes,
+        Self::TabularSections,
+        Self::Dimensions,
+        Self::Resources,
+        Self::EnumValues,
+        Self::Columns,
+        Self::Forms,
+        Self::Templates,
+        Self::Commands,
+    ];
+
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Attributes => "attributes",
+            Self::TabularSections => "tabularSections",
+            Self::Dimensions => "dimensions",
+            Self::Resources => "resources",
+            Self::EnumValues => "enumValues",
+            Self::Columns => "columns",
+            Self::Forms => "forms",
+            Self::Templates => "templates",
+            Self::Commands => "commands",
+        }
+    }
+
+    pub(crate) fn parse(value: &str) -> Result<Self, MetaDiagnostic> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|candidate| candidate.as_str() == value)
+            .ok_or_else(|| {
+                invalid_operation(
+                    "collection",
+                    format!("unsupported metadata collection `{value}`"),
+                )
+            })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MetaScope {
     pub(crate) tabular_section: String,
@@ -317,11 +358,106 @@ pub(crate) enum MetaRelation {
     InputByString,
 }
 
+impl MetaRelation {
+    pub(crate) const ALL: &'static [Self] = &[
+        Self::Owners,
+        Self::RegisterRecords,
+        Self::BasedOn,
+        Self::InputByString,
+    ];
+
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Owners => "owners",
+            Self::RegisterRecords => "registerRecords",
+            Self::BasedOn => "basedOn",
+            Self::InputByString => "inputByString",
+        }
+    }
+
+    pub(crate) fn parse(value: &str) -> Result<Self, MetaDiagnostic> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|candidate| candidate.as_str() == value)
+            .ok_or_else(|| {
+                invalid_operation(
+                    "relation",
+                    format!("unsupported metadata relation `{value}`"),
+                )
+            })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RelationEditMode {
     Add,
     Remove,
     Replace,
+}
+
+impl RelationEditMode {
+    pub(crate) const ALL: &'static [Self] = &[Self::Add, Self::Remove, Self::Replace];
+
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Add => "add",
+            Self::Remove => "remove",
+            Self::Replace => "replace",
+        }
+    }
+
+    pub(crate) fn parse(value: &str) -> Result<Self, MetaDiagnostic> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|candidate| candidate.as_str() == value)
+            .ok_or_else(|| {
+                invalid_operation("mode", format!("unsupported relation mode `{value}`"))
+            })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MetaEditOperationTag {
+    SetProperties,
+    Add,
+    Update,
+    Remove,
+    EditRelations,
+}
+
+impl MetaEditOperationTag {
+    pub(crate) const ALL: &'static [Self] = &[
+        Self::SetProperties,
+        Self::Add,
+        Self::Update,
+        Self::Remove,
+        Self::EditRelations,
+    ];
+
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::SetProperties => "setProperties",
+            Self::Add => "add",
+            Self::Update => "update",
+            Self::Remove => "remove",
+            Self::EditRelations => "editRelations",
+        }
+    }
+
+    pub(crate) fn parse(value: &str) -> Result<Self, MetaDiagnostic> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|candidate| candidate.as_str() == value)
+            .ok_or_else(|| {
+                invalid_operation(
+                    "op",
+                    format!("unsupported metadata edit operation `{value}`"),
+                )
+            })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -519,6 +655,74 @@ mod tests {
     use super::*;
     use crate::domain::metadata::MetaDiagnosticCode;
     use std::collections::HashSet;
+
+    #[test]
+    fn public_operation_vocabulary_is_owned_by_closed_domain_registries() {
+        assert_eq!(
+            MetaCollection::ALL
+                .iter()
+                .copied()
+                .map(MetaCollection::as_str)
+                .collect::<Vec<_>>(),
+            [
+                "attributes",
+                "tabularSections",
+                "dimensions",
+                "resources",
+                "enumValues",
+                "columns",
+                "forms",
+                "templates",
+                "commands",
+            ]
+        );
+        assert_eq!(
+            MetaRelation::ALL
+                .iter()
+                .copied()
+                .map(MetaRelation::as_str)
+                .collect::<Vec<_>>(),
+            ["owners", "registerRecords", "basedOn", "inputByString"]
+        );
+        assert_eq!(
+            RelationEditMode::ALL
+                .iter()
+                .copied()
+                .map(RelationEditMode::as_str)
+                .collect::<Vec<_>>(),
+            ["add", "remove", "replace"]
+        );
+        assert_eq!(
+            MetaEditOperationTag::ALL
+                .iter()
+                .copied()
+                .map(MetaEditOperationTag::as_str)
+                .collect::<Vec<_>>(),
+            ["setProperties", "add", "update", "remove", "editRelations"]
+        );
+
+        assert_eq!(
+            MetaCollection::parse("attributes"),
+            Ok(MetaCollection::Attributes)
+        );
+        assert_eq!(MetaRelation::parse("owners"), Ok(MetaRelation::Owners));
+        assert_eq!(
+            RelationEditMode::parse("replace"),
+            Ok(RelationEditMode::Replace)
+        );
+        assert_eq!(
+            MetaEditOperationTag::parse("setProperties"),
+            Ok(MetaEditOperationTag::SetProperties)
+        );
+        for diagnostic in [
+            MetaCollection::parse("attribute").unwrap_err(),
+            MetaRelation::parse("owner").unwrap_err(),
+            RelationEditMode::parse("set").unwrap_err(),
+            MetaEditOperationTag::parse("patch").unwrap_err(),
+        ] {
+            assert_eq!(diagnostic.code, MetaDiagnosticCode::InvalidArguments);
+        }
+    }
 
     #[test]
     fn position_requires_exactly_one_anchor() {

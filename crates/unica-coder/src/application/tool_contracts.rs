@@ -638,6 +638,9 @@ const STANDARDS_ARGS: &[&str] = &[
 ];
 
 pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
+    if let ToolHandler::Metadata { operation } = tool.handler {
+        return super::metadata::metadata_input_schema(operation);
+    }
     let mut property_names = allowed_args(tool);
     if let ToolHandler::NativeOperation { operation, .. } = tool.handler {
         // ADR-0019: aliases remain accepted by normalize_native_path_aliases,
@@ -2129,6 +2132,7 @@ fn argument_name_distance(left: &str, right: &str) -> usize {
 fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
     let mut names = COMMON_ARGS.to_vec();
     match tool.handler {
+        ToolHandler::Metadata { .. } => names.clear(),
         ToolHandler::NativeOperation { operation, .. } => {
             match operation {
                 "code-patch" => names.extend(CODE_PATCH_ARGS),
@@ -3574,7 +3578,255 @@ fn expected_scalar_type(key: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::metadata::MetadataOperation;
     use crate::application::tools;
+
+    fn metadata_tool(operation: MetadataOperation) -> ToolSpec {
+        ToolSpec {
+            name: match operation {
+                MetadataOperation::Info => "unica.meta.info",
+                MetadataOperation::Add => "unica.meta.add",
+                MetadataOperation::Edit => "unica.meta.edit",
+                MetadataOperation::Remove => "unica.meta.remove",
+            },
+            description: "direct metadata contract test",
+            mutating: !matches!(operation, MetadataOperation::Info),
+            cache_access: crate::domain::cache::CacheAccess::default(),
+            handler: ToolHandler::Metadata { operation },
+        }
+    }
+
+    fn sorted_property_names(value: &Value) -> Vec<&str> {
+        let mut names = value["properties"]
+            .as_object()
+            .expect("schema node must publish properties")
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        names.sort_unstable();
+        names
+    }
+
+    fn assert_no_composition(value: &Value) {
+        match value {
+            Value::Object(object) => {
+                for keyword in ["oneOf", "anyOf", "allOf"] {
+                    assert!(!object.contains_key(keyword), "found {keyword} in {value}");
+                }
+                for nested in object.values() {
+                    assert_no_composition(nested);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    assert_no_composition(item);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn collect_schema_property_names<'a>(value: &'a Value, names: &mut Vec<&'a str>) {
+        match value {
+            Value::Object(object) => {
+                if let Some(properties) = object.get("properties").and_then(Value::as_object) {
+                    names.extend(properties.keys().map(String::as_str));
+                }
+                for nested in object.values() {
+                    collect_schema_property_names(nested, names);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    collect_schema_property_names(item, names);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn meta_new_contract_schema_snapshots_are_closed_and_off_registry() {
+        let cases = [
+            (
+                MetadataOperation::Info,
+                vec!["limit", "metadataPath", "sections", "sourceSet"],
+                json!(["sourceSet", "metadataPath"]),
+            ),
+            (
+                MetadataOperation::Add,
+                vec!["dryRun", "kind", "name", "sourceSet"],
+                json!(["sourceSet", "kind", "name"]),
+            ),
+            (
+                MetadataOperation::Edit,
+                vec!["dryRun", "metadataPath", "operations", "sourceSet"],
+                json!(["sourceSet", "metadataPath", "operations"]),
+            ),
+            (
+                MetadataOperation::Remove,
+                vec!["confirm", "dryRun", "force", "metadataPath", "sourceSet"],
+                json!(["sourceSet", "metadataPath"]),
+            ),
+        ];
+
+        for (operation, properties, required) in cases {
+            let schema = input_schema_for_tool(&metadata_tool(operation));
+            assert_eq!(schema["type"], "object");
+            assert_eq!(schema["additionalProperties"], false);
+            assert_eq!(sorted_property_names(&schema), properties);
+            assert_eq!(schema["required"], required);
+        }
+
+        let info = input_schema_for_tool(&metadata_tool(MetadataOperation::Info));
+        assert_eq!(
+            info["properties"]["sections"]["default"],
+            json!(["modules", "roles", "subscriptions", "functionalOptions"])
+        );
+        assert_eq!(info["properties"]["limit"]["default"], 20);
+        assert_eq!(
+            info["properties"]["sections"]["items"]["enum"],
+            json!([
+                "modules",
+                "roles",
+                "subscriptions",
+                "functionalOptions",
+                "predefinedItems"
+            ])
+        );
+
+        for operation in [
+            MetadataOperation::Add,
+            MetadataOperation::Edit,
+            MetadataOperation::Remove,
+        ] {
+            let schema = input_schema_for_tool(&metadata_tool(operation));
+            assert_eq!(schema["properties"]["dryRun"]["default"], true);
+        }
+
+        let add = input_schema_for_tool(&metadata_tool(MetadataOperation::Add));
+        assert_eq!(
+            add["properties"]["kind"]["enum"],
+            json!([
+                "Catalog",
+                "Document",
+                "Enum",
+                "Constant",
+                "InformationRegister",
+                "AccumulationRegister",
+                "AccountingRegister",
+                "CalculationRegister",
+                "ChartOfAccounts",
+                "ChartOfCharacteristicTypes",
+                "ChartOfCalculationTypes",
+                "BusinessProcess",
+                "Task",
+                "ExchangePlan",
+                "DocumentJournal",
+                "Report",
+                "DataProcessor",
+                "CommonModule",
+                "ScheduledJob",
+                "EventSubscription",
+                "HTTPService",
+                "WebService",
+                "DefinedType"
+            ])
+        );
+
+        let edit = input_schema_for_tool(&metadata_tool(MetadataOperation::Edit));
+        let item = &edit["properties"]["operations"]["items"];
+        assert_eq!(item["additionalProperties"], false);
+        assert_eq!(item["required"], json!(["op"]));
+        assert_eq!(
+            sorted_property_names(item),
+            vec![
+                "collection",
+                "elements",
+                "mode",
+                "names",
+                "op",
+                "relation",
+                "scope",
+                "targets",
+                "values"
+            ]
+        );
+        assert_eq!(
+            item["properties"]["op"]["enum"],
+            json!(["setProperties", "add", "update", "remove", "editRelations"])
+        );
+        assert_eq!(
+            item["properties"]["collection"]["enum"],
+            json!([
+                "attributes",
+                "tabularSections",
+                "dimensions",
+                "resources",
+                "enumValues",
+                "columns",
+                "forms",
+                "templates",
+                "commands"
+            ])
+        );
+        assert_eq!(
+            item["properties"]["relation"]["enum"],
+            json!(["owners", "registerRecords", "basedOn", "inputByString"])
+        );
+        assert_eq!(
+            item["properties"]["mode"]["enum"],
+            json!(["add", "remove", "replace"])
+        );
+        assert_no_composition(item);
+
+        let schemas = [
+            info,
+            add,
+            edit,
+            input_schema_for_tool(&metadata_tool(MetadataOperation::Remove)),
+        ];
+        let mut published_property_names = Vec::new();
+        for schema in &schemas {
+            collect_schema_property_names(schema, &mut published_property_names);
+        }
+        for retired in [
+            "JsonPath",
+            "DefinitionFile",
+            "Operation",
+            "Value",
+            "ObjectPath",
+            "ConfigDir",
+            "Object",
+            "jsonPath",
+            "definitionFile",
+            "operation",
+            "objectPath",
+            "configDir",
+            "object",
+            "Path",
+            "path",
+        ] {
+            assert!(!published_property_names.contains(&retired), "{retired}");
+        }
+
+        let published = tools()
+            .into_iter()
+            .filter(|tool| tool.name.starts_with("unica.meta."))
+            .map(|tool| tool.name)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            published,
+            vec![
+                "unica.meta.compile",
+                "unica.meta.edit",
+                "unica.meta.info",
+                "unica.meta.profile",
+                "unica.meta.remove",
+                "unica.meta.validate"
+            ]
+        );
+    }
 
     #[test]
     fn every_published_argument_is_described() {
