@@ -73,15 +73,23 @@ impl MetaPosition {
         before: Option<String>,
         after: Option<String>,
     ) -> Result<Self, MetaDiagnostic> {
+        Self::new_at(before, after, "position")
+    }
+
+    pub(crate) fn new_at(
+        before: Option<String>,
+        after: Option<String>,
+        field: &str,
+    ) -> Result<Self, MetaDiagnostic> {
         if before.is_some() == after.is_some() {
             return Err(invalid_operation(
-                "position",
+                field,
                 "position requires exactly one of before or after",
             ));
         }
         if before.as_deref() == Some("") || after.as_deref() == Some("") {
             return Err(invalid_operation(
-                "position",
+                field,
                 "position anchor must not be empty",
             ));
         }
@@ -235,23 +243,43 @@ impl MetaElementDefinition {
         collection: MetaCollection,
         input: MetaElementInput,
     ) -> Result<Self, MetaDiagnostic> {
-        validate_name(&input.name, "elements.name")?;
+        Self::convert_at(collection, input, "elements")
+    }
+
+    fn convert_at(
+        collection: MetaCollection,
+        input: MetaElementInput,
+        field: &str,
+    ) -> Result<Self, MetaDiagnostic> {
+        validate_name(&input.name, &format!("{field}.name"))?;
         let spec = collection_spec_for(collection);
         validate_element_fields(
             spec,
+            field,
             input.r#type.is_some(),
             input.required.is_some(),
             input.fill_value.is_some(),
             input.attributes.is_some(),
             input.position.is_some(),
         )?;
+        let attributes_field = format!("{field}.attributes");
         let attributes = input
             .attributes
             .unwrap_or_default()
             .into_iter()
-            .map(|nested| Self::convert(MetaCollection::Attributes, nested))
+            .enumerate()
+            .map(|(index, nested)| {
+                Self::convert_at(
+                    MetaCollection::Attributes,
+                    nested,
+                    &format!("{attributes_field}[{index}]"),
+                )
+            })
             .collect::<Result<Vec<_>, _>>()?;
-        reject_duplicate_names(attributes.iter().map(|attribute| attribute.name.as_str()))?;
+        reject_duplicate_names(
+            attributes.iter().map(|attribute| attribute.name.as_str()),
+            &attributes_field,
+        )?;
         Ok(Self {
             name: input.name,
             synonym: input.synonym,
@@ -270,9 +298,17 @@ impl MetaElementUpdate {
         collection: MetaCollection,
         input: MetaElementUpdateInput,
     ) -> Result<Self, MetaDiagnostic> {
-        validate_name(&input.name, "elements.name")?;
+        Self::convert_at(collection, input, "elements")
+    }
+
+    fn convert_at(
+        collection: MetaCollection,
+        input: MetaElementUpdateInput,
+        field: &str,
+    ) -> Result<Self, MetaDiagnostic> {
+        validate_name(&input.name, &format!("{field}.name"))?;
         if let Some(new_name) = &input.new_name {
-            validate_name(new_name, "elements.newName")?;
+            validate_name(new_name, &format!("{field}.newName"))?;
         }
         let renames = input
             .new_name
@@ -287,13 +323,14 @@ impl MetaElementUpdate {
             && input.position.is_none()
         {
             return Err(invalid_operation(
-                "elements",
+                field,
                 "update must change at least one field",
             ));
         }
         let spec = collection_spec_for(collection);
         validate_element_fields(
             spec,
+            field,
             input.r#type.is_some(),
             input.required.is_some(),
             input.fill_value.is_some(),
@@ -315,26 +352,27 @@ impl MetaElementUpdate {
 
 fn validate_element_fields(
     spec: &MetaCollectionSpec,
+    field: &str,
     has_type: bool,
     has_required: bool,
     has_fill_value: bool,
     has_nested_attributes: bool,
     has_position: bool,
 ) -> Result<(), MetaDiagnostic> {
-    for (present, allowed, field) in [
-        (has_type, spec.allows_type, "elements.type"),
-        (has_required, spec.allows_required, "elements.required"),
-        (has_fill_value, spec.allows_fill_value, "elements.fillValue"),
+    for (present, allowed, suffix) in [
+        (has_type, spec.allows_type, "type"),
+        (has_required, spec.allows_required, "required"),
+        (has_fill_value, spec.allows_fill_value, "fillValue"),
         (
             has_nested_attributes,
             spec.allows_nested_attributes,
-            "elements.attributes",
+            "attributes",
         ),
-        (has_position, spec.allows_position, "elements.position"),
+        (has_position, spec.allows_position, "position"),
     ] {
         if present && !allowed {
             return Err(invalid_operation(
-                field,
+                format!("{field}.{suffix}"),
                 "field is not legal for collection",
             ));
         }
@@ -502,9 +540,15 @@ impl MetaEditOperation {
         }
         let elements = inputs
             .into_iter()
-            .map(|input| MetaElementDefinition::convert(collection, input))
+            .enumerate()
+            .map(|(index, input)| {
+                MetaElementDefinition::convert_at(collection, input, &format!("elements[{index}]"))
+            })
             .collect::<Result<Vec<_>, _>>()?;
-        reject_duplicate_names(elements.iter().map(|element| element.name.as_str()))?;
+        reject_duplicate_names(
+            elements.iter().map(|element| element.name.as_str()),
+            "elements",
+        )?;
         Ok(Self::Add {
             collection,
             scope,
@@ -526,9 +570,15 @@ impl MetaEditOperation {
         }
         let elements = inputs
             .into_iter()
-            .map(|input| MetaElementUpdate::convert(collection, input))
+            .enumerate()
+            .map(|(index, input)| {
+                MetaElementUpdate::convert_at(collection, input, &format!("elements[{index}]"))
+            })
             .collect::<Result<Vec<_>, _>>()?;
-        reject_duplicate_names(elements.iter().map(|element| element.name.as_str()))?;
+        reject_duplicate_names(
+            elements.iter().map(|element| element.name.as_str()),
+            "elements",
+        )?;
         Ok(Self::Update {
             collection,
             scope,
@@ -545,10 +595,10 @@ impl MetaEditOperation {
         if names.is_empty() {
             return Err(invalid_operation("names", "remove names must not be empty"));
         }
-        for name in &names {
-            validate_name(name, "names")?;
+        for (index, name) in names.iter().enumerate() {
+            validate_name(name, &format!("names[{index}]"))?;
         }
-        reject_duplicate_names(names.iter().map(String::as_str))?;
+        reject_duplicate_values(names.iter().map(String::as_str), "names")?;
         Ok(Self::Remove {
             collection,
             scope,
@@ -580,20 +630,23 @@ impl MetaEditOperation {
     ) -> Result<(), MetaDiagnostic> {
         match self {
             Self::Add { elements, .. } => {
-                for element in elements {
+                for (index, element) in elements.iter().enumerate() {
                     if existing_names.contains(&element.name) {
                         return Err(MetaDiagnostic::error(
                             MetaDiagnosticCode::AlreadyExists,
                             format!("element `{}` already exists", element.name),
                         )
-                        .with_field("elements.name"));
+                        .with_field(format!("elements[{index}].name")));
                     }
                 }
             }
             Self::Update { elements, .. } => {
-                for element in elements {
+                for (index, element) in elements.iter().enumerate() {
                     if !existing_names.contains(&element.name) {
-                        return Err(missing_target(&element.name));
+                        return Err(missing_target(
+                            &element.name,
+                            format!("elements[{index}].name"),
+                        ));
                     }
                 }
 
@@ -601,21 +654,21 @@ impl MetaEditOperation {
                 for element in elements {
                     final_names.remove(&element.name);
                 }
-                for element in elements {
+                for (index, element) in elements.iter().enumerate() {
                     let final_name = element.new_name.as_ref().unwrap_or(&element.name);
                     if !final_names.insert(final_name.clone()) {
                         return Err(MetaDiagnostic::error(
                             MetaDiagnosticCode::AlreadyExists,
                             format!("element `{final_name}` already exists after update"),
                         )
-                        .with_field("elements.newName"));
+                        .with_field(format!("elements[{index}].newName")));
                     }
                 }
             }
             Self::Remove { names, .. } => {
-                for name in names {
+                for (index, name) in names.iter().enumerate() {
                     if !existing_names.contains(name) {
-                        return Err(missing_target(name));
+                        return Err(missing_target(name, format!("names[{index}]")));
                     }
                 }
             }
@@ -625,12 +678,15 @@ impl MetaEditOperation {
     }
 }
 
-fn reject_duplicate_names<'a>(names: impl Iterator<Item = &'a str>) -> Result<(), MetaDiagnostic> {
+fn reject_duplicate_names<'a>(
+    names: impl Iterator<Item = &'a str>,
+    field: &str,
+) -> Result<(), MetaDiagnostic> {
     let mut seen = HashSet::new();
-    for name in names {
+    for (index, name) in names.enumerate() {
         if !seen.insert(name) {
             return Err(invalid_operation(
-                "elements.name",
+                format!("{field}[{index}].name"),
                 "element name is duplicated",
             ));
         }
@@ -638,12 +694,28 @@ fn reject_duplicate_names<'a>(names: impl Iterator<Item = &'a str>) -> Result<()
     Ok(())
 }
 
-fn missing_target(name: &str) -> MetaDiagnostic {
+fn reject_duplicate_values<'a>(
+    values: impl Iterator<Item = &'a str>,
+    field: &str,
+) -> Result<(), MetaDiagnostic> {
+    let mut seen = HashSet::new();
+    for (index, value) in values.enumerate() {
+        if !seen.insert(value) {
+            return Err(invalid_operation(
+                format!("{field}[{index}]"),
+                "value is duplicated",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn missing_target(name: &str, field: impl Into<String>) -> MetaDiagnostic {
     MetaDiagnostic::error(
         MetaDiagnosticCode::TargetNotFound,
         format!("element `{name}` was not found"),
     )
-    .with_field("elements.name")
+    .with_field(field)
 }
 
 fn invalid_operation(field: impl Into<String>, message: impl Into<String>) -> MetaDiagnostic {
@@ -833,6 +905,76 @@ mod tests {
             remove.validate_targets(&existing).unwrap_err().code,
             MetaDiagnosticCode::TargetNotFound
         );
+    }
+
+    #[test]
+    fn target_validation_reports_exact_array_item_paths() {
+        let existing = HashSet::from(["A".to_string(), "B".to_string(), "Occupied".to_string()]);
+
+        let add = MetaEditOperation::add(
+            MetaCollection::Attributes,
+            None,
+            vec![
+                MetaElementInput::named("Fresh"),
+                MetaElementInput::named("A"),
+            ],
+        )
+        .unwrap();
+        let error = add.validate_targets(&existing).unwrap_err();
+        assert_eq!(error.code, MetaDiagnosticCode::AlreadyExists);
+        assert_eq!(error.field.as_deref(), Some("elements[1].name"));
+
+        let update = MetaEditOperation::update(
+            MetaCollection::Attributes,
+            None,
+            vec![
+                MetaElementUpdateInput {
+                    name: "A".into(),
+                    comment: Some("changed".into()),
+                    ..MetaElementUpdateInput::default()
+                },
+                MetaElementUpdateInput {
+                    name: "Missing".into(),
+                    comment: Some("changed".into()),
+                    ..MetaElementUpdateInput::default()
+                },
+            ],
+        )
+        .unwrap();
+        let error = update.validate_targets(&existing).unwrap_err();
+        assert_eq!(error.code, MetaDiagnosticCode::TargetNotFound);
+        assert_eq!(error.field.as_deref(), Some("elements[1].name"));
+
+        let rename = MetaEditOperation::update(
+            MetaCollection::Attributes,
+            None,
+            vec![
+                MetaElementUpdateInput {
+                    name: "A".into(),
+                    new_name: Some("Fresh".into()),
+                    ..MetaElementUpdateInput::default()
+                },
+                MetaElementUpdateInput {
+                    name: "B".into(),
+                    new_name: Some("Occupied".into()),
+                    ..MetaElementUpdateInput::default()
+                },
+            ],
+        )
+        .unwrap();
+        let error = rename.validate_targets(&existing).unwrap_err();
+        assert_eq!(error.code, MetaDiagnosticCode::AlreadyExists);
+        assert_eq!(error.field.as_deref(), Some("elements[1].newName"));
+
+        let remove = MetaEditOperation::remove(
+            MetaCollection::Attributes,
+            None,
+            vec!["A".into(), "Missing".into()],
+        )
+        .unwrap();
+        let error = remove.validate_targets(&existing).unwrap_err();
+        assert_eq!(error.code, MetaDiagnosticCode::TargetNotFound);
+        assert_eq!(error.field.as_deref(), Some("names[1]"));
     }
 
     #[test]

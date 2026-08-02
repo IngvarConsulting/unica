@@ -246,7 +246,10 @@ fn parse_edit_operation(
             let scope = parse_scope(object.get("scope"))?;
             let elements = required_array(object, "elements")?
                 .iter()
-                .map(|element| parse_element_input(element, false))
+                .enumerate()
+                .map(|(index, element)| {
+                    parse_element_input(element, &format!("elements[{index}]"), true)
+                })
                 .collect::<Result<Vec<_>, _>>()?;
             MetaEditOperation::add(collection, scope, elements)
         }
@@ -256,7 +259,10 @@ fn parse_edit_operation(
             let scope = parse_scope(object.get("scope"))?;
             let elements = required_array(object, "elements")?
                 .iter()
-                .map(parse_element_update)
+                .enumerate()
+                .map(|(index, element)| {
+                    parse_element_update(element, &format!("elements[{index}]"))
+                })
                 .collect::<Result<Vec<_>, _>>()?;
             MetaEditOperation::update(collection, scope, elements)
         }
@@ -269,7 +275,8 @@ fn parse_edit_operation(
             let scope = parse_scope(object.get("scope"))?;
             let names = required_array(object, "names")?
                 .iter()
-                .map(|value| nonempty_string(value, "names"))
+                .enumerate()
+                .map(|(index, value)| nonempty_string(value, &format!("names[{index}]")))
                 .collect::<Result<Vec<_>, _>>()?;
             MetaEditOperation::remove(collection, scope, names)
         }
@@ -284,7 +291,8 @@ fn parse_edit_operation(
             let mode = RelationEditMode::parse(&mode_name)?;
             let targets = required_array(object, "targets")?
                 .iter()
-                .map(parse_reference)
+                .enumerate()
+                .map(|(index, target)| parse_reference(target, &format!("targets[{index}]")))
                 .collect::<Result<Vec<_>, _>>()?;
             MetaEditOperation::edit_relations(relation, mode, targets)
         }
@@ -359,21 +367,15 @@ fn parse_property_changes(
     MetaPropertyChanges::convert(kind, inputs)
 }
 
-fn parse_element_input(value: &Value, nested: bool) -> Result<MetaElementInput, MetaDiagnostic> {
+fn parse_element_input(
+    value: &Value,
+    field: &str,
+    allows_attributes: bool,
+) -> Result<MetaElementInput, MetaDiagnostic> {
     let object = value
         .as_object()
-        .ok_or_else(|| invalid("elements", "elements must contain objects"))?;
-    let allowed = if nested {
-        &[
-            "name",
-            "synonym",
-            "comment",
-            "type",
-            "required",
-            "fillValue",
-            "position",
-        ][..]
-    } else {
+        .ok_or_else(|| invalid(field, "element must be an object"))?;
+    let allowed = if allows_attributes {
         &[
             "name",
             "synonym",
@@ -384,46 +386,66 @@ fn parse_element_input(value: &Value, nested: bool) -> Result<MetaElementInput, 
             "attributes",
             "position",
         ][..]
+    } else {
+        &[
+            "name",
+            "synonym",
+            "comment",
+            "type",
+            "required",
+            "fillValue",
+            "position",
+        ][..]
     };
-    reject_unknown_fields(object, allowed, "elements.")?;
+    reject_unknown_fields(object, allowed, &format!("{field}."))?;
+    let attributes_field = format!("{field}.attributes");
     let attributes = object
         .get("attributes")
         .map(|_| {
-            let attributes = required_array_at(object, "attributes", "elements.attributes")?;
+            let attributes = required_array_at(object, "attributes", &attributes_field)?;
             if attributes.is_empty() {
                 return Err(invalid(
-                    "elements.attributes",
+                    &attributes_field,
                     "nested attributes must not be empty",
                 ));
             }
             attributes
                 .iter()
-                .map(|element| parse_element_input(element, true))
+                .enumerate()
+                .map(|(index, element)| {
+                    parse_element_input(element, &format!("{attributes_field}[{index}]"), false)
+                })
                 .collect::<Result<Vec<_>, _>>()
         })
         .transpose()?;
     Ok(MetaElementInput {
-        name: required_string_at(object, "name", "elements.name")?,
-        synonym: optional_string_at(object, "synonym", "elements.synonym")?,
-        comment: optional_string_at(object, "comment", "elements.comment")?,
+        name: required_string_at(object, "name", &format!("{field}.name"))?,
+        synonym: optional_string_at(object, "synonym", &format!("{field}.synonym"))?,
+        comment: optional_string_at(object, "comment", &format!("{field}.comment"))?,
         r#type: object
             .get("type")
-            .map(|value| parse_metadata_type(value, "elements.type"))
+            .map(|value| parse_metadata_type(value, &format!("{field}.type")))
             .transpose()?,
-        required: optional_bool_at(object, "required", "elements.required")?,
+        required: optional_bool_at(object, "required", &format!("{field}.required"))?,
         fill_value: object
             .get("fillValue")
-            .map(|value| parse_fill_value(value, "elements.fillValue"))
+            .map(|value| parse_fill_value(value, &format!("{field}.fillValue")))
             .transpose()?,
         attributes,
-        position: object.get("position").map(parse_position).transpose()?,
+        position: object
+            .get("position")
+            .map(|value| parse_position(value, &format!("{field}.position")))
+            .transpose()?,
     })
 }
 
-fn parse_element_update(value: &Value) -> Result<MetaElementUpdateInput, MetaDiagnostic> {
+fn parse_element_update(
+    value: &Value,
+    field: &str,
+) -> Result<MetaElementUpdateInput, MetaDiagnostic> {
     let object = value
         .as_object()
-        .ok_or_else(|| invalid("elements", "elements must contain objects"))?;
+        .ok_or_else(|| invalid(field, "element must be an object"))?;
     reject_unknown_fields(
         object,
         &[
@@ -436,34 +458,38 @@ fn parse_element_update(value: &Value) -> Result<MetaElementUpdateInput, MetaDia
             "fillValue",
             "position",
         ],
-        "elements.",
+        &format!("{field}."),
     )?;
     Ok(MetaElementUpdateInput {
-        name: required_string_at(object, "name", "elements.name")?,
-        new_name: optional_string_at(object, "newName", "elements.newName")?,
-        synonym: optional_string_at(object, "synonym", "elements.synonym")?,
-        comment: optional_string_at(object, "comment", "elements.comment")?,
+        name: required_string_at(object, "name", &format!("{field}.name"))?,
+        new_name: optional_string_at(object, "newName", &format!("{field}.newName"))?,
+        synonym: optional_string_at(object, "synonym", &format!("{field}.synonym"))?,
+        comment: optional_string_at(object, "comment", &format!("{field}.comment"))?,
         r#type: object
             .get("type")
-            .map(|value| parse_metadata_type(value, "elements.type"))
+            .map(|value| parse_metadata_type(value, &format!("{field}.type")))
             .transpose()?,
-        required: optional_bool_at(object, "required", "elements.required")?,
+        required: optional_bool_at(object, "required", &format!("{field}.required"))?,
         fill_value: object
             .get("fillValue")
-            .map(|value| parse_fill_value(value, "elements.fillValue"))
+            .map(|value| parse_fill_value(value, &format!("{field}.fillValue")))
             .transpose()?,
-        position: object.get("position").map(parse_position).transpose()?,
+        position: object
+            .get("position")
+            .map(|value| parse_position(value, &format!("{field}.position")))
+            .transpose()?,
     })
 }
 
-fn parse_position(value: &Value) -> Result<MetaPosition, MetaDiagnostic> {
+fn parse_position(value: &Value, field: &str) -> Result<MetaPosition, MetaDiagnostic> {
     let object = value
         .as_object()
-        .ok_or_else(|| invalid("position", "position must be an object"))?;
-    reject_unknown_fields(object, &["before", "after"], "position.")?;
-    MetaPosition::new(
-        optional_string_at(object, "before", "position.before")?,
-        optional_string_at(object, "after", "position.after")?,
+        .ok_or_else(|| invalid(field, "position must be an object"))?;
+    reject_unknown_fields(object, &["before", "after"], &format!("{field}."))?;
+    MetaPosition::new_at(
+        optional_string_at(object, "before", &format!("{field}.before"))?,
+        optional_string_at(object, "after", &format!("{field}.after"))?,
+        field,
     )
 }
 
@@ -637,14 +663,15 @@ fn parse_fill_value(value: &Value, field: &str) -> Result<MetaFillValue, MetaDia
     Ok(converted)
 }
 
-fn parse_reference(value: &Value) -> Result<MetadataReference, MetaDiagnostic> {
+fn parse_reference(value: &Value, field: &str) -> Result<MetadataReference, MetaDiagnostic> {
     let object = value
         .as_object()
-        .ok_or_else(|| invalid("targets", "relation targets must be objects"))?;
-    reject_unknown_fields(object, &["metadataPath"], "targets.")?;
-    let raw = required_string_at(object, "metadataPath", "targets.metadataPath")?;
+        .ok_or_else(|| invalid(field, "relation target must be an object"))?;
+    reject_unknown_fields(object, &["metadataPath"], &format!("{field}."))?;
+    let path_field = format!("{field}.metadataPath");
+    let raw = required_string_at(object, "metadataPath", &path_field)?;
     Ok(MetadataReference {
-        metadata_path: parse_address(&raw, "targets.metadataPath")?,
+        metadata_path: parse_address(&raw, &path_field)?,
     })
 }
 
@@ -1328,35 +1355,35 @@ mod tests {
             ),
             (
                 json!({"op": "add", "collection": "attributes", "elements": [{"name": "A", "position": {"before": "B", "after": "C"}}]}),
-                "position",
+                "elements[0].position",
             ),
             (
                 json!({"op": "add", "collection": "attributes", "elements": [{"name": "A", "type": "String(10) | req"}]}),
-                "elements.type",
+                "elements[0].type",
             ),
             (
                 json!({"op": "add", "collection": "attributes", "elements": [{"name": "A", "type": {"variants": [{"kind": "number", "digits": 10, "fraction": 2}]}}]}),
-                "elements.type.variants[0].sign",
+                "elements[0].type.variants[0].sign",
             ),
             (
                 json!({"op": "add", "collection": "attributes", "elements": [{"name": "A", "type": {"variants": "number"}}]}),
-                "elements.type.variants",
+                "elements[0].type.variants",
             ),
             (
                 json!({"op": "add", "collection": "attributes", "elements": [{"name": "A", "fillValue": {"kind": "reference"}}]}),
-                "elements.fillValue.metadataPath",
+                "elements[0].fillValue.metadataPath",
             ),
             (
                 json!({"op": "add", "collection": "attributes", "elements": [{"name": "A", "unknown": true}]}),
-                "elements.unknown",
+                "elements[0].unknown",
             ),
             (
                 json!({"op": "add", "collection": "tabularSections", "elements": [{"name": "Lines", "attributes": []}]}),
-                "elements.attributes",
+                "elements[0].attributes",
             ),
             (
                 json!({"op": "add", "collection": "tabularSections", "elements": [{"name": "Lines", "attributes": "Quantity"}]}),
-                "elements.attributes",
+                "elements[0].attributes",
             ),
             (
                 json!({"op": "setProperties", "values": {"UnknownProperty": true}}),
@@ -1384,6 +1411,134 @@ mod tests {
             }),
         );
         assert_eq!(error.field.as_deref(), Some("operations"));
+    }
+
+    #[test]
+    fn parse_reports_exact_paths_for_later_and_nested_array_items() {
+        let cases = [
+            (
+                json!({
+                    "op": "add",
+                    "collection": "attributes",
+                    "elements": [{"name": "First"}, {"comment": "missing name"}]
+                }),
+                "elements[1].name",
+            ),
+            (
+                json!({
+                    "op": "add",
+                    "collection": "forms",
+                    "elements": [
+                        {"name": "First"},
+                        {"name": "Second", "type": {"variants": [{"kind": "boolean"}]}}
+                    ]
+                }),
+                "elements[1].type",
+            ),
+            (
+                json!({
+                    "op": "add",
+                    "collection": "attributes",
+                    "elements": [{"name": "Duplicate"}, {"name": "Duplicate"}]
+                }),
+                "elements[1].name",
+            ),
+            (
+                json!({
+                    "op": "update",
+                    "collection": "attributes",
+                    "elements": [
+                        {"name": "First", "comment": "changed"},
+                        {"name": "Second", "position": {"before": "A", "after": "B"}}
+                    ]
+                }),
+                "elements[1].position",
+            ),
+            (
+                json!({
+                    "op": "add",
+                    "collection": "tabularSections",
+                    "elements": [{
+                        "name": "Lines",
+                        "attributes": [{"name": "First"}, {"type": {"variants": []}}]
+                    }]
+                }),
+                "elements[0].attributes[1].name",
+            ),
+            (
+                json!({
+                    "op": "add",
+                    "collection": "tabularSections",
+                    "elements": [{
+                        "name": "Lines",
+                        "attributes": [{"name": "Duplicate"}, {"name": "Duplicate"}]
+                    }]
+                }),
+                "elements[0].attributes[1].name",
+            ),
+            (
+                json!({
+                    "op": "remove",
+                    "collection": "attributes",
+                    "names": ["First", ""]
+                }),
+                "names[1]",
+            ),
+            (
+                json!({
+                    "op": "remove",
+                    "collection": "attributes",
+                    "names": ["Duplicate", "Duplicate"]
+                }),
+                "names[1]",
+            ),
+            (
+                json!({
+                    "op": "editRelations",
+                    "relation": "owners",
+                    "mode": "add",
+                    "targets": [
+                        {"metadataPath": "Catalog.Items"},
+                        {"metadataPath": ""}
+                    ]
+                }),
+                "targets[1].metadataPath",
+            ),
+            (
+                json!({
+                    "op": "add",
+                    "collection": "attributes",
+                    "elements": [{
+                        "name": "Typed",
+                        "type": {"variants": [
+                            {"kind": "boolean"},
+                            {"kind": "number", "digits": 10, "fraction": 2}
+                        ]}
+                    }]
+                }),
+                "elements[0].type.variants[1].sign",
+            ),
+        ];
+
+        for (operation, expected_field) in cases {
+            let error = diagnostic(MetadataOperation::Edit, edit(operation));
+            assert_eq!(error.operation_index, Some(0), "{error:?}");
+            assert_eq!(error.field.as_deref(), Some(expected_field), "{error:?}");
+        }
+
+        let error = diagnostic(
+            MetadataOperation::Edit,
+            json!({
+                "sourceSet": "main",
+                "metadataPath": "Document.Order",
+                "operations": [
+                    {"op": "setProperties", "values": {"Comment": "valid"}},
+                    {"op": "remove", "collection": "attributes", "names": ["First", ""]}
+                ]
+            }),
+        );
+        assert_eq!(error.operation_index, Some(1));
+        assert_eq!(error.field.as_deref(), Some("names[1]"));
     }
 
     #[test]
