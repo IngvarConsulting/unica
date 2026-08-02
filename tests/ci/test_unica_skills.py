@@ -1638,7 +1638,11 @@ Use `.claude/commands/xdto.md` as the execution route.
                 )
                 self.assertNotIn("path", arguments)
                 self.assertNotIn("Package.bin", json.dumps(arguments, ensure_ascii=False))
-        self.assertEqual(preview["property"]["type"], "xs:string")
+        self.assertEqual(
+            preview["property"]["type"], "tns:Документ_ЗаказКлиента"
+        )
+        self.assertIn("одну атомарную мутацию", text)
+        self.assertIn("неатомарную последовательность", text)
         for forbidden in (
             "unica.xdto.validate",
             "xdto-compile",

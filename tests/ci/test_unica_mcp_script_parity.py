@@ -1801,7 +1801,10 @@ source-set:
                     self.assertEqual(arguments.get("sourceSet"), "main")
                     self.assertEqual(arguments.get("metadataPath"), xdto_target)
                     if example.payload["params"]["name"] == "unica.xdto.edit":
-                        self.assertEqual(arguments["property"]["type"], "xs:string")
+                        self.assertEqual(
+                            arguments["property"]["type"],
+                            "tns:Документ_ЗаказКлиента",
+                        )
 
                 fixture_configuration = ET.parse(
                     fixture_root / "Configuration.xml"
