@@ -10,6 +10,17 @@ use super::legacy_dsl::{
     meta_compile_is_config_type, parse_meta_number_type, parse_meta_string_type, resolve_meta_type,
 };
 
+pub(crate) fn parse_metadata_image(
+    bytes: &[u8],
+) -> Result<(&str, roxmltree::Document<'_>), String> {
+    let source = std::str::from_utf8(bytes)
+        .map_err(|error| format!("metadata image is not UTF-8: {error}"))?
+        .trim_start_matches('\u{feff}');
+    let document = roxmltree::Document::parse(source)
+        .map_err(|error| format!("metadata XML parse failed: {error}"))?;
+    Ok((source, document))
+}
+
 pub(crate) fn meta_info_child<'a, 'input>(
     node: roxmltree::Node<'a, 'input>,
     local_name: &str,

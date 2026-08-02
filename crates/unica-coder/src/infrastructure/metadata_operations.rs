@@ -6,10 +6,10 @@ use crate::application::ports::{
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::metadata::{
     MetaCompleteness, MetaDiagnostic, MetaDiagnosticCode, MetaFreshness, MetaRelatedItem,
-    MetaRelatedSection, MetaRelatedSections, MetaRelatedStatus, MetaValidationData,
-    MetaValidationStatus,
+    MetaRelatedSection, MetaRelatedSections, MetaRelatedStatus,
 };
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::native_operations::meta::MetadataValidator;
 
 pub(crate) struct MetadataOperations;
 
@@ -40,15 +40,11 @@ impl MetadataOperations {
     }
 
     pub(crate) fn validate(
-        _subject: &MetadataValidationSubject,
-        _context: &WorkspaceContext,
+        subject: &MetadataValidationSubject,
+        context: &WorkspaceContext,
         _cancellation: &CancellationToken,
     ) -> MetadataValidationResult {
-        MetaValidationData {
-            status: MetaValidationStatus::Failed,
-            diagnostics: capability_unavailable("typed metadata validator is not available yet")
-                .diagnostics,
-        }
+        MetadataValidator.validate(subject, context)
     }
 
     pub(crate) fn prepare_mutation(

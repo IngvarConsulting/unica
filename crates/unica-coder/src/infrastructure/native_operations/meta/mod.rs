@@ -209,7 +209,9 @@ pub(crate) use remove::{
     remove_metadata_child_text_with_flag, remove_metadata_object_with_data,
 };
 pub(crate) use template_catalog::{emit_meta_internal_info, metadata_generated_types_8_3_27};
-pub(crate) use validation::{meta_validate_format_dependency_paths, validate_meta};
+pub(crate) use validation::{
+    meta_validate_format_dependency_paths, validate_meta, MetadataValidator,
+};
 pub(crate) use xml_model::{
     meta_info_child, meta_info_child_text, meta_info_children, meta_info_inner_text,
 };

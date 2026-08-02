@@ -1,5 +1,6 @@
 use super::super::common::read_utf8_sig;
 use super::validation::meta_validate_valid_types;
+use super::xml_model::parse_metadata_image;
 use super::{meta_info_child, meta_info_inner_text};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform_xml_owner::{
@@ -60,6 +61,125 @@ pub(crate) struct MetaValidationOwnerContext {
 pub(crate) struct MetaValidationReadInspection {
     pub paths: Vec<PathBuf>,
     pub context: Result<MetaValidationOwnerContext, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MetaValidationImageIdentity {
+    pub(crate) object_type: String,
+    pub(crate) object_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MetaValidationRegistrationImage {
+    pub(crate) registrations: Vec<(String, String)>,
+    pub(crate) registered_languages: Vec<String>,
+}
+
+pub(crate) fn inspect_metadata_image_identity(
+    bytes: &[u8],
+) -> Result<MetaValidationImageIdentity, String> {
+    let (_, document) = parse_metadata_image(bytes)?;
+    let root = document.root_element();
+    if root.tag_name().namespace() != Some(MD_CLASSES_NS)
+        || root.tag_name().name() != "MetaDataObject"
+    {
+        return Err("image is not an MDClasses MetaDataObject".to_string());
+    }
+    let artifacts = root
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().namespace() == Some(MD_CLASSES_NS))
+        .collect::<Vec<_>>();
+    let [artifact] = artifacts.as_slice() else {
+        return Err("image must contain exactly one metadata descriptor".to_string());
+    };
+    let object_type = artifact.tag_name().name();
+    if !meta_validate_valid_types().contains(&object_type) {
+        return Err(format!("unrecognized metadata type: {object_type}"));
+    }
+    let object_name = meta_info_child(*artifact, "Properties")
+        .and_then(|properties| meta_info_child(properties, "Name"))
+        .map(meta_info_inner_text)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| format!("{object_type} Name is missing"))?;
+    Ok(MetaValidationImageIdentity {
+        object_type: object_type.to_string(),
+        object_name,
+    })
+}
+
+pub(crate) fn inspect_metadata_registration_image(
+    bytes: &[u8],
+) -> Result<MetaValidationRegistrationImage, String> {
+    let (_, document) = parse_metadata_image(bytes)?;
+    let root = document.root_element();
+    if root.tag_name().namespace() != Some(MD_CLASSES_NS)
+        || root.tag_name().name() != "MetaDataObject"
+    {
+        return Err("registration image is not an MDClasses MetaDataObject".to_string());
+    }
+    let artifacts = root
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().namespace() == Some(MD_CLASSES_NS))
+        .collect::<Vec<_>>();
+    let [configuration] = artifacts.as_slice() else {
+        return Err("registration image must contain exactly one Configuration".to_string());
+    };
+    if configuration.tag_name().name() != "Configuration" {
+        return Err("registration image does not contain Configuration".to_string());
+    }
+
+    let mut registrations = Vec::new();
+    let mut registered_languages = Vec::new();
+    if let Some(children) = meta_info_child(*configuration, "ChildObjects") {
+        for child in children.children().filter(roxmltree::Node::is_element) {
+            if child.tag_name().namespace() != Some(MD_CLASSES_NS) {
+                continue;
+            }
+            let object_type = child.tag_name().name();
+            let object_name = meta_info_inner_text(child).trim().to_string();
+            if object_name.is_empty() {
+                continue;
+            }
+            if object_type == "Language" {
+                registered_languages.push(object_name);
+            } else {
+                registrations.push((object_type.to_string(), object_name));
+            }
+        }
+    }
+    Ok(MetaValidationRegistrationImage {
+        registrations,
+        registered_languages,
+    })
+}
+
+pub(crate) fn inspect_metadata_language_image(
+    bytes: &[u8],
+) -> Result<Option<(String, String)>, String> {
+    let (_, document) = parse_metadata_image(bytes)?;
+    let root = document.root_element();
+    let language = root.children().find(|node| {
+        node.is_element()
+            && node.tag_name().namespace() == Some(MD_CLASSES_NS)
+            && node.tag_name().name() == "Language"
+    });
+    let Some(language) = language else {
+        return Ok(None);
+    };
+    let properties = meta_info_child(language, "Properties");
+    let name = properties
+        .and_then(|properties| meta_info_child(properties, "Name"))
+        .map(meta_info_inner_text)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Language Name is missing".to_string())?;
+    let code = properties
+        .and_then(|properties| meta_info_child(properties, "LanguageCode"))
+        .map(meta_info_inner_text)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("Language {name} has empty LanguageCode"))?;
+    Ok(Some((name, code)))
 }
 
 pub(crate) fn meta_validate_types_with_list_presentation() -> &'static [&'static str] {
