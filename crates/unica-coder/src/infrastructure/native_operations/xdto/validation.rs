@@ -3,7 +3,7 @@ use super::model::{
     TypeKind, XML_SCHEMA_NS,
 };
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -81,31 +81,37 @@ pub(super) struct ValidationDiff {
 
 impl ValidationDiff {
     pub(super) fn between(before: &[Finding], after: Vec<Finding>) -> Self {
-        let mut baseline = HashMap::new();
+        let mut baseline = HashMap::<(String, String), VecDeque<&Finding>>::new();
         for finding in before {
             let (code, key) = finding.semantic_key();
-            *baseline
+            baseline
                 .entry((code.to_string(), key.to_string()))
-                .or_insert(0_usize) += 1;
+                .or_default()
+                .push_back(finding);
         }
         let findings = after
             .into_iter()
             .map(|finding| {
-                let remaining = baseline
+                let pre_existing = baseline
                     .entry((finding.code.clone(), finding.location.key.clone()))
-                    .or_insert(0);
-                let state = if *remaining > 0 {
-                    *remaining -= 1;
-                    FindingState::PreExisting
+                    .or_default()
+                    .pop_front();
+                if let Some(pre_existing) = pre_existing {
+                    ClassifiedFinding {
+                        code: pre_existing.code.clone(),
+                        severity: pre_existing.severity,
+                        state: FindingState::PreExisting,
+                        message: pre_existing.message.clone(),
+                        location: pre_existing.location.clone(),
+                    }
                 } else {
-                    FindingState::Introduced
-                };
-                ClassifiedFinding {
-                    code: finding.code,
-                    severity: finding.severity,
-                    state,
-                    message: finding.message,
-                    location: finding.location,
+                    ClassifiedFinding {
+                        code: finding.code,
+                        severity: finding.severity,
+                        state: FindingState::Introduced,
+                        message: finding.message,
+                        location: finding.location,
+                    }
                 }
             })
             .collect();
@@ -572,7 +578,7 @@ fn decimal_less_than_or_equal(left: &str, right: &str) -> bool {
     left.len() < right.len() || (left.len() == right.len() && left <= right)
 }
 
-fn is_ncname(value: &str) -> bool {
+pub(super) fn is_ncname(value: &str) -> bool {
     let mut characters = value.chars();
     let Some(first) = characters.next() else {
         return false;

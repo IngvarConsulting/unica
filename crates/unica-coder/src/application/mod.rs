@@ -600,7 +600,7 @@ fn call_tool(
     }
     let events = if dry_run && !projected_events.is_empty() {
         projected_events
-    } else if should_emit_events(spec, args, dry_run, &outcome) {
+    } else if should_emit_events(spec, args, dry_run, &outcome, handler_outcome.data.as_ref()) {
         if handler_events.is_empty() {
             domain_events(spec, args)
         } else {
@@ -1020,12 +1020,27 @@ fn should_emit_events(
     args: &Map<String, Value>,
     dry_run: bool,
     outcome: &AdapterOutcome,
+    data: Option<&Value>,
 ) -> bool {
     if !spec.mutating || !outcome.ok {
         return false;
     }
     if !dry_run {
-        return !outcome.changes.is_empty();
+        return if spec.name == "unica.xdto.edit" {
+            data.and_then(|data| data.get("noOp"))
+                .and_then(Value::as_bool)
+                == Some(false)
+                && !outcome.changes.is_empty()
+        } else {
+            !outcome.changes.is_empty()
+        };
+    }
+
+    if spec.name == "unica.xdto.edit" {
+        return data
+            .and_then(|data| data.get("noOp"))
+            .and_then(Value::as_bool)
+            == Some(false);
     }
 
     if spec.name == "unica.code.patch" {
@@ -2863,17 +2878,18 @@ mod tests {
         };
 
         let args = Map::new();
-        assert!(!should_emit_events(spec, &args, false, &outcome));
+        assert!(!should_emit_events(spec, &args, false, &outcome, None));
 
         outcome
             .changes
             .push("updated Configuration.xml".to_string());
-        assert!(should_emit_events(spec, &args, false, &outcome));
+        assert!(should_emit_events(spec, &args, false, &outcome, None));
         assert!(should_emit_events(
             spec,
             &args,
             true,
-            &AdapterOutcome::ok("generic dry run")
+            &AdapterOutcome::ok("generic dry run"),
+            None,
         ));
 
         let code_patch_spec = ToolSpec {
@@ -2890,7 +2906,8 @@ mod tests {
             code_patch_spec,
             &args,
             true,
-            &AdapterOutcome::ok("code patch preview")
+            &AdapterOutcome::ok("code patch preview"),
+            None,
         ));
 
         let form_edit_spec = ToolSpec {
@@ -2911,7 +2928,8 @@ mod tests {
             form_edit_spec,
             &semantic_args,
             true,
-            &AdapterOutcome::ok("semantic dry run no-op")
+            &AdapterOutcome::ok("semantic dry run no-op"),
+            None,
         ));
 
         let mut planned = AdapterOutcome::ok("dry run planned change");
@@ -2920,7 +2938,8 @@ mod tests {
             form_edit_spec,
             &semantic_args,
             true,
-            &planned
+            &planned,
+            None,
         ));
 
         let mut rejected = AdapterOutcome::ok("dry run rejected");
@@ -2930,7 +2949,8 @@ mod tests {
             form_edit_spec,
             &semantic_args,
             true,
-            &rejected
+            &rejected,
+            None,
         ));
     }
 

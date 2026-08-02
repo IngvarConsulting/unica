@@ -1,3 +1,6 @@
+use crate::application::source_navigation::{
+    page_bounds, SOURCE_NAVIGATION_LIMIT_DEFAULT, SOURCE_NAVIGATION_LIMIT_MAX,
+};
 use crate::application::{AdapterOutcome, SupportGuardRequirement};
 use crate::domain::source_target::{
     MetadataAddress, SourceTarget, SourceTargetError, SourceTargetErrorCode, TargetKind,
@@ -16,8 +19,10 @@ use crate::infrastructure::source_roots::normalize_path_identity;
 use crate::infrastructure::support_guard::{
     evaluate_resolved_support_guard, ResolvedSupportGuardCheck,
 };
-use roxmltree::{Document, Node};
-use serde_json::{json, Map, Value};
+use roxmltree::Document;
+use serde::Serialize;
+use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -31,9 +36,246 @@ use validation::{validate, ValidationDiff};
 
 const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
-pub(crate) struct XdtoExecution {
+pub(crate) struct XdtoExecution<T> {
     pub(crate) outcome: AdapterOutcome,
-    pub(crate) data: Option<Value>,
+    pub(crate) data: Option<T>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub(crate) enum XdtoLocation {
+    Addressed {
+        source_set: String,
+        metadata_path: String,
+        target_kind: TargetKind,
+    },
+    Unaddressable {
+        source_set: String,
+        owner_metadata_path: String,
+        node_key: String,
+        body_byte_range: XdtoByteRange,
+    },
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct XdtoByteRange {
+    /// UTF-8 byte offset in the decoded XML body. A leading BOM is excluded.
+    start: usize,
+    /// Exclusive UTF-8 byte offset in the decoded XML body.
+    end: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct XdtoTypeCounts {
+    total: usize,
+    value_types: usize,
+    object_types: usize,
+    global_properties: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct XdtoImportInfo {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    namespace: Option<String>,
+    location: XdtoLocation,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+pub(crate) enum XdtoTypeKind {
+    #[serde(rename = "valueType")]
+    Value,
+    #[serde(rename = "objectType")]
+    Object,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct XdtoBoundsInfo {
+    lower: String,
+    upper: String,
+    lower_explicit: bool,
+    upper_explicit: bool,
+    unbounded: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct XdtoAnonymousTypeInfo {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    discriminator: Option<String>,
+    properties: Vec<XdtoPropertyInfo>,
+    location: XdtoLocation,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct XdtoPropertyInfo {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reference: Option<XdtoQNameInfo>,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    type_name: Option<XdtoQNameInfo>,
+    bounds: XdtoBoundsInfo,
+    type_defs: Vec<XdtoAnonymousTypeInfo>,
+    location: XdtoLocation,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct XdtoQNameInfo {
+    raw: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prefix: Option<String>,
+    local: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    namespace: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct XdtoTypeInfo {
+    kind: XdtoTypeKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    base: Option<XdtoQNameInfo>,
+    properties: Vec<XdtoPropertyInfo>,
+    location: XdtoLocation,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct XdtoTypeSummary {
+    kind: XdtoTypeKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    base: Option<XdtoQNameInfo>,
+    location: XdtoLocation,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct XdtoInfoData {
+    source_set: String,
+    metadata_path: String,
+    location: XdtoLocation,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_namespace: Option<String>,
+    imports: Vec<XdtoImportInfo>,
+    counts: XdtoTypeCounts,
+    global_properties: Vec<XdtoPropertyInfo>,
+    types: Vec<XdtoTypeSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    type_detail: Option<XdtoTypeInfo>,
+    findings: Vec<XdtoFinding>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_cursor: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+pub(crate) enum XdtoEditOperation {
+    #[serde(rename = "add-value-type")]
+    AddValueType,
+    #[serde(rename = "add-object-type")]
+    AddObjectType,
+    #[serde(rename = "add-property")]
+    AddProperty,
+    #[serde(rename = "remove-type")]
+    RemoveType,
+    #[serde(rename = "remove-property")]
+    RemoveProperty,
+}
+
+impl XdtoEditOperation {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "add-value-type" => Ok(Self::AddValueType),
+            "add-object-type" => Ok(Self::AddObjectType),
+            "add-property" => Ok(Self::AddProperty),
+            "remove-type" => Ok(Self::RemoveType),
+            "remove-property" => Ok(Self::RemoveProperty),
+            _ => Err("unsupported_node: supported operations are add-value-type, add-object-type, add-property, remove-type, remove-property".to_string()),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::AddValueType => "add-value-type",
+            Self::AddObjectType => "add-object-type",
+            Self::AddProperty => "add-property",
+            Self::RemoveType => "remove-type",
+            Self::RemoveProperty => "remove-property",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum XdtoFindingSeverity {
+    Info,
+    Error,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum XdtoFindingState {
+    PreExisting,
+    Introduced,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum XdtoFindingPhase {
+    Before,
+    After,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct XdtoFinding {
+    code: String,
+    severity: XdtoFindingSeverity,
+    state: XdtoFindingState,
+    phase: XdtoFindingPhase,
+    message: String,
+    location: XdtoLocation,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum XdtoChangeKind {
+    PackageTextEdit,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct XdtoProjectedChange {
+    kind: XdtoChangeKind,
+    location: XdtoLocation,
+    body_byte_range: XdtoByteRange,
+    removed_byte_count: usize,
+    replacement_byte_count: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct XdtoEditData {
+    source_set: String,
+    metadata_path: String,
+    location: XdtoLocation,
+    operation: XdtoEditOperation,
+    no_op: bool,
+    change: Option<XdtoProjectedChange>,
+    findings: Vec<XdtoFinding>,
 }
 
 pub(crate) fn invoke_read(
@@ -48,7 +290,7 @@ pub(crate) fn invoke_read(
 pub(crate) fn info_with_data(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Result<XdtoExecution, String> {
+) -> Result<XdtoExecution<XdtoInfoData>, String> {
     info(args, context)
 }
 
@@ -62,43 +304,124 @@ pub(crate) fn resolve_xdto_guard_path(
 pub(crate) fn preview_with_data(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> XdtoExecution {
+) -> XdtoExecution<XdtoEditData> {
     edit(args, context, true)
 }
 pub(crate) fn apply_with_data(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> XdtoExecution {
+) -> XdtoExecution<XdtoEditData> {
     edit(args, context, false)
 }
 
-fn info(args: &Map<String, Value>, context: &WorkspaceContext) -> Result<XdtoExecution, String> {
+fn info(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<XdtoExecution<XdtoInfoData>, String> {
     let package = resolve_package(args, context)?;
     let raw =
         fs::read(&package.path).map_err(|error| format!("package_resource_missing: {error}"))?;
     let text = decode(&raw)?;
-    let doc = parse(&text)?;
-    let root = doc.root_element();
-    let types = root.children().filter(|node| {
-        node.is_element() && matches!(node.tag_name().name(), "valueType" | "objectType")
-    });
+    let model = PackageModel::parse(&text).map_err(model_error)?;
+    let descriptor_namespace = descriptor_namespace(&package.descriptor_path)?;
+    if model.target_namespace() != Some(descriptor_namespace.as_str()) {
+        return Err(
+            "namespace_mismatch: descriptor Namespace must equal package targetNamespace"
+                .to_string(),
+        );
+    }
     let requested = args
         .get("typeName")
         .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|name| !name.is_empty());
-    let listed = types
-        .filter(|node| requested.is_none_or(|name| node.attribute("name") == Some(name)))
-        .map(type_json)
-        .collect::<Vec<_>>();
-    let data = json!({
-        "sourceSet": package.source_set,
-        "metadataPath": package.metadata_path,
-        "location": {"addressability":"addressed"},
-        "targetNamespace": root.attribute("targetNamespace"),
-        "imports": root.children().filter(|node| node.has_tag_name((XDTO_NS, "import"))).filter_map(|node| node.attribute("namespace")).collect::<Vec<_>>(),
-        "types": listed,
-    });
+        .filter(|name| !name.trim().is_empty());
+    if requested.is_some() && (args.contains_key("limit") || args.contains_key("cursor")) {
+        return Err("xdto info `typeName` detail does not accept `limit` or `cursor`".to_string());
+    }
+    if requested.is_some_and(|name| !validation::is_ncname(name)) {
+        return Err("xdto info `typeName` must be an XML NCName".to_string());
+    }
+
+    let value_types = model
+        .types
+        .iter()
+        .filter(|named| named.kind == model::TypeKind::Value)
+        .count();
+    let counts = XdtoTypeCounts {
+        total: model.types.len(),
+        value_types,
+        object_types: model.types.len() - value_types,
+        global_properties: model.global_properties.len(),
+    };
+    let (selected, type_detail, next_cursor) = if let Some(name) = requested {
+        let matches = model
+            .types
+            .iter()
+            .filter(|named| named.name.as_ref().is_some_and(|value| value.value == name))
+            .collect::<Vec<_>>();
+        if matches.len() != 1 {
+            return Err(if matches.is_empty() {
+                format!("target_not_found: XDTO type `{name}` was not found")
+            } else {
+                format!("duplicate_type: XDTO type `{name}` is ambiguous")
+            });
+        }
+        (Vec::new(), Some(type_info(&package, matches[0])), None)
+    } else {
+        let limit = xdto_info_limit(args)?;
+        let cursor = optional_string(args, "cursor")?;
+        let cursor_key = xdto_info_cursor_key(&package, &raw, limit);
+        let (start, end, next_cursor) =
+            page_bounds(cursor.as_deref(), &cursor_key, limit, model.types.len()).map_err(
+                |error| {
+                    format!(
+                        "cursor_invalid: {}",
+                        error.replacen("source navigation", "xdto info", 1)
+                    )
+                },
+            )?;
+        (
+            model.types[start..end].iter().collect::<Vec<_>>(),
+            None,
+            next_cursor,
+        )
+    };
+    let location = addressed_location(&package);
+    let data = XdtoInfoData {
+        source_set: package.source_set.clone(),
+        metadata_path: package.metadata_path.clone(),
+        location,
+        target_namespace: model
+            .target_namespace
+            .as_ref()
+            .map(|value| value.value.clone()),
+        imports: model
+            .imports
+            .iter()
+            .map(|import| XdtoImportInfo {
+                namespace: import
+                    .namespace
+                    .as_ref()
+                    .map(|namespace| namespace.value.clone()),
+                location: internal_location(&package, &import.key, &import.span),
+            })
+            .collect(),
+        counts,
+        global_properties: model
+            .global_properties
+            .iter()
+            .map(|property| property_info(&package, property))
+            .collect(),
+        types: selected
+            .into_iter()
+            .map(|named| type_summary(&package, named))
+            .collect(),
+        type_detail,
+        findings: validate(&model)
+            .into_iter()
+            .map(|finding| baseline_finding(&package, finding))
+            .collect(),
+        next_cursor,
+    };
     Ok(XdtoExecution {
         outcome: AdapterOutcome {
             ok: true,
@@ -118,7 +441,230 @@ fn info(args: &Map<String, Value>, context: &WorkspaceContext) -> Result<XdtoExe
     })
 }
 
-fn edit(args: &Map<String, Value>, context: &WorkspaceContext, preview: bool) -> XdtoExecution {
+fn addressed_location(package: &Package) -> XdtoLocation {
+    XdtoLocation::Addressed {
+        source_set: package.source_set.clone(),
+        metadata_path: package.metadata_path.clone(),
+        target_kind: TargetKind::MetadataObject,
+    }
+}
+
+fn internal_location(package: &Package, node_key: &str, span: &model::SourceSpan) -> XdtoLocation {
+    XdtoLocation::Unaddressable {
+        source_set: package.source_set.clone(),
+        owner_metadata_path: package.metadata_path.clone(),
+        node_key: node_key.to_string(),
+        body_byte_range: XdtoByteRange {
+            start: span.start,
+            end: span.end,
+        },
+    }
+}
+
+fn qname_info(qname: &model::QNameRef) -> XdtoQNameInfo {
+    XdtoQNameInfo {
+        raw: qname.raw.clone(),
+        prefix: qname.prefix.clone(),
+        local: qname.local.clone(),
+        namespace: qname.namespace.clone(),
+    }
+}
+
+fn type_info(package: &Package, named: &model::NamedType) -> XdtoTypeInfo {
+    XdtoTypeInfo {
+        kind: match named.kind {
+            model::TypeKind::Value => XdtoTypeKind::Value,
+            model::TypeKind::Object => XdtoTypeKind::Object,
+        },
+        name: named.name.as_ref().map(|name| name.value.clone()),
+        base: named.base.as_ref().map(qname_info),
+        properties: named
+            .properties
+            .iter()
+            .map(|property| property_info(package, property))
+            .collect(),
+        location: internal_location(package, &named.key, &named.span),
+    }
+}
+
+fn type_summary(package: &Package, named: &model::NamedType) -> XdtoTypeSummary {
+    XdtoTypeSummary {
+        kind: match named.kind {
+            model::TypeKind::Value => XdtoTypeKind::Value,
+            model::TypeKind::Object => XdtoTypeKind::Object,
+        },
+        name: named.name.as_ref().map(|name| name.value.clone()),
+        base: named.base.as_ref().map(qname_info),
+        location: internal_location(package, &named.key, &named.span),
+    }
+}
+
+fn property_info(package: &Package, property: &model::Property) -> XdtoPropertyInfo {
+    let lower = property
+        .lower_bound
+        .as_ref()
+        .map_or("1", |value| value.value.as_str());
+    let upper = property
+        .upper_bound
+        .as_ref()
+        .map_or("1", |value| value.value.as_str());
+    XdtoPropertyInfo {
+        name: property.name.as_ref().map(|name| name.value.clone()),
+        reference: property.reference.as_ref().map(qname_info),
+        type_name: property.type_ref.as_ref().map(qname_info),
+        bounds: XdtoBoundsInfo {
+            lower: lower.to_string(),
+            upper: upper.to_string(),
+            lower_explicit: property.lower_bound.is_some(),
+            upper_explicit: property.upper_bound.is_some(),
+            unbounded: upper == "-1",
+        },
+        type_defs: property
+            .type_defs
+            .iter()
+            .map(|anonymous| anonymous_type_info(package, anonymous))
+            .collect(),
+        location: internal_location(package, &property.key, &property.span),
+    }
+}
+
+fn anonymous_type_info(
+    package: &Package,
+    anonymous: &model::AnonymousObject,
+) -> XdtoAnonymousTypeInfo {
+    XdtoAnonymousTypeInfo {
+        discriminator: anonymous
+            .discriminator
+            .as_ref()
+            .map(|value| value.value.clone()),
+        properties: anonymous
+            .properties
+            .iter()
+            .map(|property| property_info(package, property))
+            .collect(),
+        location: internal_location(package, &anonymous.key, &anonymous.span),
+    }
+}
+
+fn baseline_finding(package: &Package, finding: validation::Finding) -> XdtoFinding {
+    XdtoFinding {
+        code: finding.code,
+        severity: XdtoFindingSeverity::Error,
+        state: XdtoFindingState::PreExisting,
+        phase: XdtoFindingPhase::Before,
+        message: finding.message,
+        location: XdtoLocation::Unaddressable {
+            source_set: package.source_set.clone(),
+            owner_metadata_path: package.metadata_path.clone(),
+            node_key: finding.location.key,
+            body_byte_range: XdtoByteRange {
+                start: finding.location.span.start,
+                end: finding.location.span.end,
+            },
+        },
+    }
+}
+
+fn classified_finding(package: &Package, finding: &validation::ClassifiedFinding) -> XdtoFinding {
+    XdtoFinding {
+        code: finding.code.clone(),
+        severity: XdtoFindingSeverity::Error,
+        state: match finding.state {
+            validation::FindingState::PreExisting => XdtoFindingState::PreExisting,
+            validation::FindingState::Introduced => XdtoFindingState::Introduced,
+        },
+        phase: match finding.state {
+            validation::FindingState::PreExisting => XdtoFindingPhase::Before,
+            validation::FindingState::Introduced => XdtoFindingPhase::After,
+        },
+        message: finding.message.clone(),
+        location: XdtoLocation::Unaddressable {
+            source_set: package.source_set.clone(),
+            owner_metadata_path: package.metadata_path.clone(),
+            node_key: finding.location.key.clone(),
+            body_byte_range: XdtoByteRange {
+                start: finding.location.span.start,
+                end: finding.location.span.end,
+            },
+        },
+    }
+}
+
+fn writer_finding(package: &Package, finding: &writer::WriterFinding) -> XdtoFinding {
+    XdtoFinding {
+        code: finding.code.to_string(),
+        severity: match finding.severity {
+            writer::WriterFindingSeverity::Info => XdtoFindingSeverity::Info,
+            writer::WriterFindingSeverity::Error => XdtoFindingSeverity::Error,
+        },
+        state: match finding.state {
+            writer::WriterFindingState::PreExisting => XdtoFindingState::PreExisting,
+            writer::WriterFindingState::Introduced => XdtoFindingState::Introduced,
+        },
+        phase: match finding.state {
+            writer::WriterFindingState::PreExisting => XdtoFindingPhase::Before,
+            writer::WriterFindingState::Introduced => XdtoFindingPhase::After,
+        },
+        message: finding.message.clone(),
+        location: XdtoLocation::Unaddressable {
+            source_set: package.source_set.clone(),
+            owner_metadata_path: package.metadata_path.clone(),
+            node_key: finding.location.key.clone(),
+            body_byte_range: XdtoByteRange {
+                start: finding.location.span.start,
+                end: finding.location.span.end,
+            },
+        },
+    }
+}
+
+fn xdto_info_limit(args: &Map<String, Value>) -> Result<usize, String> {
+    let limit = args
+        .get("limit")
+        .map(|value| {
+            value
+                .as_u64()
+                .and_then(|value| usize::try_from(value).ok())
+                .ok_or_else(|| "xdto info `limit` must be an integer".to_string())
+        })
+        .transpose()?
+        .unwrap_or(SOURCE_NAVIGATION_LIMIT_DEFAULT);
+    if !(1..=SOURCE_NAVIGATION_LIMIT_MAX).contains(&limit) {
+        return Err(format!(
+            "xdto info `limit` must be between 1 and {SOURCE_NAVIGATION_LIMIT_MAX}"
+        ));
+    }
+    Ok(limit)
+}
+
+fn optional_string(args: &Map<String, Value>, name: &str) -> Result<Option<String>, String> {
+    args.get(name)
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|value| !value.trim().is_empty() && *value == value.trim())
+                .map(str::to_string)
+                .ok_or_else(|| format!("xdto info `{name}` must be a non-empty string"))
+        })
+        .transpose()
+}
+
+fn xdto_info_cursor_key(package: &Package, raw: &[u8], limit: usize) -> String {
+    let digest = Sha256::digest(raw)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!(
+        "xdto-info-v1:{}:{}:list:limit={limit}:sha256={digest}",
+        package.source_set, package.metadata_path
+    )
+}
+
+fn edit(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+    preview: bool,
+) -> XdtoExecution<XdtoEditData> {
     let planned = (|| -> Result<MutationPlan, PlanningFailure> {
         let package = resolve_package(args, context)?;
         let before = fs::read(&package.path)
@@ -132,25 +678,43 @@ fn edit(args: &Map<String, Value>, context: &WorkspaceContext, preview: bool) ->
             ));
         }
         let baseline_findings = validate(&before_model);
-        let operation = required(args, "operation")?;
-        let writer_plan = writer::plan(&text, args, operation)?;
+        let operation = XdtoEditOperation::parse(required(args, "operation")?)?;
+        let writer_plan = writer::plan(&text, args, operation.as_str())?;
         let after = encode_like(&before, &writer_plan.after);
         let post = decode(&after)?;
         let after_model = PackageModel::parse(&post).map_err(model_error)?;
         let validation = ValidationDiff::between(&baseline_findings, validate(&after_model));
-        let no_op = before == after;
-        let mut findings = serde_json::to_value(&validation.findings)
-            .expect("typed XDTO findings must serialize")
-            .as_array()
-            .cloned()
-            .expect("typed XDTO findings serialize as an array");
+        let blocked = writer_plan.blocks() || validation.blocks();
+        let no_op = before == after && !blocked;
+        debug_assert!(writer_plan.edits.len() <= 1);
+        let change = writer_plan.edits.first().map(|edit| XdtoProjectedChange {
+            kind: XdtoChangeKind::PackageTextEdit,
+            location: addressed_location(&package),
+            body_byte_range: XdtoByteRange {
+                start: edit.range.start,
+                end: edit.range.end,
+            },
+            removed_byte_count: edit.range.end - edit.range.start,
+            replacement_byte_count: edit.replacement.len(),
+        });
+        let mut findings = validation
+            .findings
+            .iter()
+            .map(|finding| classified_finding(&package, finding))
+            .collect::<Vec<_>>();
         if let Some(finding) = &writer_plan.finding {
-            findings.push(
-                serde_json::to_value(finding).expect("typed XDTO writer finding must serialize"),
-            );
+            findings.push(writer_finding(&package, finding));
         }
-        let data = json!({"sourceSet": package.source_set, "metadataPath": package.metadata_path, "operation": operation, "noOp": no_op, "findings": findings});
-        if writer_plan.blocks() || validation.blocks() {
+        let data = XdtoEditData {
+            source_set: package.source_set.clone(),
+            metadata_path: package.metadata_path.clone(),
+            location: addressed_location(&package),
+            operation,
+            no_op,
+            change,
+            findings,
+        };
+        if blocked {
             let mut codes = validation
                 .findings
                 .iter()
@@ -226,13 +790,14 @@ fn edit(args: &Map<String, Value>, context: &WorkspaceContext, preview: bool) ->
             Ok(())
         })();
         if let Err(error) = publish_result {
+            let error = public_publish_error(&error, &package, context);
             return XdtoExecution {
                 outcome: AdapterOutcome {
                     ok: false,
                     summary: "unica.xdto.edit could not publish XDTO mutation".to_string(),
                     changes: Vec::new(),
                     warnings: Vec::new(),
-                    errors: vec![error.to_string()],
+                    errors: vec![error],
                     artifacts: Vec::new(),
                     stdout: None,
                     stderr: None,
@@ -275,6 +840,22 @@ fn edit(args: &Map<String, Value>, context: &WorkspaceContext, preview: bool) ->
     }
 }
 
+fn public_publish_error(error: &str, package: &Package, context: &WorkspaceContext) -> String {
+    let mut public = error.to_string();
+    for (path, replacement) in [
+        (&package.path, "XDTO package resource"),
+        (&package.descriptor_path, "XDTO package descriptor"),
+        (&context.workspace_root, "<workspace>"),
+        (&context.cwd, "<workspace>"),
+    ] {
+        let rendered = path.to_string_lossy();
+        if !rendered.is_empty() {
+            public = public.replace(rendered.as_ref(), replacement);
+        }
+    }
+    format!("publication_failed: {public}")
+}
+
 struct Package {
     path: PathBuf,
     descriptor_path: PathBuf,
@@ -287,13 +868,13 @@ struct MutationPlan {
     package: Package,
     before: Vec<u8>,
     after: Vec<u8>,
-    data: Value,
+    data: XdtoEditData,
     no_op: bool,
 }
 
 struct PlanningFailure {
     error: String,
-    data: Option<Value>,
+    data: Option<XdtoEditData>,
 }
 
 impl PlanningFailure {
@@ -522,24 +1103,20 @@ fn parse(text: &str) -> Result<Document<'_>, String> {
 fn required<'a>(args: &'a Map<String, Value>, name: &str) -> Result<&'a str, String> {
     args.get(name)
         .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+        .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| format!("{name} must be a non-empty string"))
 }
-fn type_json(node: Node<'_, '_>) -> Value {
-    json!({"kind": node.tag_name().name(), "name": node.attribute("name"), "base": node.attribute("base"), "properties": node.children().filter(|child| child.has_tag_name((XDTO_NS, "property"))).map(|child| json!({"name": child.attribute("name"), "type": child.attribute("type"), "lowerBound": child.attribute("lowerBound")})).collect::<Vec<_>>()})
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{apply_with_data, decode, encode_like, preview_with_data, writer};
-    use crate::application::SupportGuardRequirement;
+    use super::{apply_with_data, decode, encode_like, info_with_data, preview_with_data, writer};
+    use crate::application::{SupportGuardRequirement, UnicaApplication};
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::native_operations::common::support_guard_violation;
     use crate::infrastructure::native_operations::single_file_publisher::with_before_commit_hook;
     use crate::infrastructure::platform::testing::{
         create_file_link_fixture_for_test, FileLinkFixtureOutcome,
     };
+    use serde::Serialize;
     use serde_json::{json, Map, Value};
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -657,11 +1234,13 @@ mod tests {
         (context, args, package, descriptor)
     }
 
-    fn finding_codes(execution: &super::XdtoExecution, state: &str) -> Vec<String> {
-        execution
-            .data
-            .as_ref()
-            .and_then(|data| data.get("findings"))
+    fn finding_codes(
+        execution: &super::XdtoExecution<super::XdtoEditData>,
+        state: &str,
+    ) -> Vec<String> {
+        serde_json::to_value(execution.data.as_ref().expect("edit data"))
+            .unwrap()
+            .get("findings")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
@@ -669,6 +1248,376 @@ mod tests {
             .filter_map(|finding| finding.get("code").and_then(Value::as_str))
             .map(str::to_string)
             .collect()
+    }
+
+    fn data_json<T: Serialize>(data: Option<T>) -> Value {
+        serde_json::to_value(data.expect("typed XDTO execution must carry data")).unwrap()
+    }
+
+    #[test]
+    fn xdto_info_returns_typed_summary_nested_detail_and_logical_locations() {
+        let (context, _, package, _) = xdto_guard_fixture("info-detail");
+        fs::write(
+            &package,
+            r#"<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:tns="urn:test" xmlns:ext="urn:external" targetNamespace="urn:test">
+	<import namespace="urn:external"/>
+	<property name="Global" type="xs:string"/>
+	<valueType name="Scalar" base="xs:string"/>
+	<objectType name="NestedHolder">
+		<property name="Items" type="ext:Remote" lowerBound="0" upperBound="-1"/>
+		<property name="Nested">
+			<typeDef xsi:type="ObjectType">
+				<property name="Leaf" type="xs:string" upperBound="123456789012345678901234567890"/>
+			</typeDef>
+		</property>
+	</objectType>
+	<objectType name="Last"/>
+</package>"#,
+        )
+        .unwrap();
+        let request = args(&[
+            ("sourceSet", json!("main")),
+            ("metadataPath", json!("ПакетXDTO.Sample")),
+            ("typeName", json!("NestedHolder")),
+        ]);
+
+        let data = data_json(info_with_data(&request, &context).unwrap().data);
+
+        assert_eq!(data["sourceSet"], "main");
+        assert_eq!(data["metadataPath"], "XDTOPackage.Sample");
+        assert_eq!(data["location"]["kind"], "addressed");
+        assert_eq!(data["location"]["sourceSet"], "main");
+        assert_eq!(data["location"]["metadataPath"], "XDTOPackage.Sample");
+        assert_eq!(data["location"]["targetKind"], "metadataObject");
+        assert_eq!(data["targetNamespace"], "urn:test");
+        assert_eq!(
+            data["counts"],
+            json!({"total":3,"valueTypes":1,"objectTypes":2,"globalProperties":1})
+        );
+        assert_eq!(data["globalProperties"][0]["name"], "Global");
+        assert_eq!(data["globalProperties"][0]["type"]["raw"], "xs:string");
+        assert_eq!(data["imports"][0]["namespace"], "urn:external");
+        assert_eq!(data["imports"][0]["location"]["kind"], "unaddressable");
+        assert_eq!(
+            data["imports"][0]["location"]["ownerMetadataPath"],
+            "XDTOPackage.Sample"
+        );
+        assert!(data["types"].as_array().unwrap().is_empty());
+        let detail = &data["typeDetail"];
+        assert_eq!(detail["kind"], "objectType");
+        assert_eq!(detail["name"], "NestedHolder");
+        assert_eq!(detail["location"]["kind"], "unaddressable");
+        assert_eq!(detail["properties"][0]["bounds"]["lower"], "0");
+        assert_eq!(detail["properties"][0]["bounds"]["upper"], "-1");
+        assert_eq!(detail["properties"][0]["bounds"]["lowerExplicit"], true);
+        assert_eq!(detail["properties"][0]["bounds"]["upperExplicit"], true);
+        assert_eq!(detail["properties"][0]["bounds"]["unbounded"], true);
+        let leaf = &detail["properties"][1]["typeDefs"][0]["properties"][0];
+        assert_eq!(leaf["name"], "Leaf");
+        assert_eq!(leaf["bounds"]["lower"], "1");
+        assert_eq!(leaf["bounds"]["upper"], "123456789012345678901234567890");
+        assert_eq!(leaf["bounds"]["lowerExplicit"], false);
+        assert_eq!(leaf["bounds"]["upperExplicit"], true);
+        assert_eq!(leaf["location"]["kind"], "unaddressable");
+        let rendered = serde_json::to_string(&data).unwrap();
+        assert!(!rendered.contains(package.to_string_lossy().as_ref()));
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn xdto_info_pages_in_document_order_and_binds_cursor_to_request_and_snapshot() {
+        let (context, _, package, _) = xdto_guard_fixture("info-cursor");
+        fs::write(
+            &package,
+            r#"<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:test">
+	<valueType name="First" base="xs:string"/>
+	<objectType name="Second"/>
+	<objectType name="Third"/>
+</package>"#,
+        )
+        .unwrap();
+        let mut first_request = args(&[
+            ("sourceSet", json!("main")),
+            ("metadataPath", json!("XDTOPackage.Sample")),
+            ("limit", json!(1)),
+        ]);
+        let first = data_json(info_with_data(&first_request, &context).unwrap().data);
+        assert_eq!(first["types"][0]["name"], "First");
+        let cursor = first["nextCursor"].as_str().unwrap().to_string();
+
+        first_request.insert("cursor".to_string(), json!(cursor));
+        let second = data_json(info_with_data(&first_request, &context).unwrap().data);
+        assert_eq!(second["types"][0]["name"], "Second");
+        let terminal_cursor = second["nextCursor"].as_str().unwrap().to_string();
+        first_request.insert("cursor".to_string(), json!(terminal_cursor));
+        let terminal = data_json(info_with_data(&first_request, &context).unwrap().data);
+        assert_eq!(terminal["types"][0]["name"], "Third");
+        assert!(terminal.get("nextCursor").is_none());
+
+        for limit in [None, Some(50)] {
+            let mut request = args(&[
+                ("sourceSet", json!("main")),
+                ("metadataPath", json!("XDTOPackage.Sample")),
+            ]);
+            if let Some(limit) = limit {
+                request.insert("limit".to_string(), json!(limit));
+            }
+            let page = data_json(info_with_data(&request, &context).unwrap().data);
+            assert_eq!(page["types"].as_array().unwrap().len(), 3);
+            assert!(page.get("nextCursor").is_none());
+        }
+
+        let mut foreign_request = first_request.clone();
+        foreign_request.insert("limit".to_string(), json!(2));
+        assert!(info_with_data(&foreign_request, &context)
+            .err()
+            .expect("foreign cursor must fail")
+            .starts_with("cursor_invalid:"));
+
+        let mut malformed_request = first_request.clone();
+        malformed_request.insert("cursor".to_string(), json!("not-a-cursor"));
+        assert!(info_with_data(&malformed_request, &context)
+            .err()
+            .expect("malformed cursor must fail")
+            .starts_with("cursor_invalid:"));
+
+        fs::write(
+            &package,
+            format!("{}\n", fs::read_to_string(&package).unwrap()),
+        )
+        .unwrap();
+        assert!(info_with_data(&first_request, &context)
+            .err()
+            .expect("stale cursor must fail")
+            .starts_with("cursor_invalid:"));
+
+        for incompatible in [
+            args(&[
+                ("sourceSet", json!("main")),
+                ("metadataPath", json!("XDTOPackage.Sample")),
+                ("typeName", json!("First")),
+                ("limit", json!(1)),
+            ]),
+            args(&[
+                ("sourceSet", json!("main")),
+                ("metadataPath", json!("XDTOPackage.Sample")),
+                ("limit", json!(51)),
+            ]),
+        ] {
+            assert!(info_with_data(&incompatible, &context).is_err());
+        }
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn xdto_info_rejects_missing_or_ambiguous_detail_and_reports_unsupported_baseline() {
+        let (context, _, package, _) = xdto_guard_fixture("info-detail-errors");
+        let request = |name| {
+            args(&[
+                ("sourceSet", json!("main")),
+                ("metadataPath", json!("XDTOPackage.Sample")),
+                ("typeName", json!(name)),
+            ])
+        };
+        let missing = info_with_data(&request("Missing"), &context)
+            .err()
+            .expect("missing detail must fail");
+        assert!(missing.starts_with("target_not_found:"), "{missing}");
+
+        fs::write(
+            &package,
+            r#"<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" targetNamespace="urn:test">
+	<valueType name="Duplicate" base="xs:string"/>
+	<objectType name="Duplicate"/>
+</package>"#,
+        )
+        .unwrap();
+        let ambiguous = info_with_data(&request("Duplicate"), &context)
+            .err()
+            .expect("ambiguous joint identity must fail");
+        assert!(ambiguous.starts_with("duplicate_type:"), "{ambiguous}");
+
+        fs::write(
+            &package,
+            r#"<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" targetNamespace="urn:test">
+	<objectType name="Container">
+		<property name="Nested">
+			<typeDef xsi:type="ObjectType"><property name="First" type="xs:string"/></typeDef>
+			<typeDef xsi:type="ObjectType"><property name="Second" type="xs:string"/></typeDef>
+		</property>
+	</objectType>
+</package>"#,
+        )
+        .unwrap();
+        let data = data_json(
+            info_with_data(&request("Container"), &context)
+                .unwrap()
+                .data,
+        );
+        assert_eq!(
+            data["typeDetail"]["properties"][0]["typeDefs"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(data["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| finding["code"] == "type_definition_conflict"
+                && finding["state"] == "pre_existing"
+                && finding["location"]["kind"] == "unaddressable"));
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn xdto_info_body_byte_ranges_exclude_bom_and_count_multibyte_names_as_utf8() {
+        let (context, _, package, _) = xdto_guard_fixture("info-byte-range");
+        let body = r#"<package xmlns="http://v8.1c.ru/8.1/xdto" targetNamespace="urn:test">
+	<objectType name="Тип"/>
+</package>"#;
+        fs::write(&package, format!("\u{feff}{body}")).unwrap();
+        let request = args(&[
+            ("sourceSet", json!("main")),
+            ("metadataPath", json!("XDTOPackage.Sample")),
+            ("typeName", json!("Тип")),
+        ]);
+
+        let data = data_json(info_with_data(&request, &context).unwrap().data);
+        let range = &data["typeDetail"]["location"]["bodyByteRange"];
+        assert_eq!(
+            range["start"].as_u64().unwrap() as usize,
+            body.find("<objectType").unwrap()
+        );
+        assert_eq!(
+            range["end"].as_u64().unwrap() as usize,
+            body.find("<objectType").unwrap() + "<objectType name=\"Тип\"/>".len()
+        );
+        assert_eq!(data["typeDetail"]["location"]["kind"], "unaddressable");
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn xdto_events_follow_changed_plan_and_exact_noop_for_preview_and_apply() {
+        let (context, base_args, package, _) = xdto_guard_fixture("events");
+        let before = fs::read(&package).unwrap();
+        let call_args = |dry_run| {
+            let mut args = base_args.clone();
+            args.insert(
+                "cwd".to_string(),
+                json!(context.workspace_root.to_string_lossy()),
+            );
+            args.insert("dryRun".to_string(), json!(dry_run));
+            args
+        };
+
+        let preview = UnicaApplication::new()
+            .call_tool("unica.xdto.edit", &call_args(true))
+            .unwrap();
+        assert!(preview.ok, "{:?}", preview.errors);
+        assert_eq!(preview.cache.mode, "dry-run");
+        assert_eq!(preview.cache.events, vec!["MetadataChanged"]);
+        assert!(preview
+            .cache
+            .invalidated
+            .contains(&"metadata_graph".to_string()));
+        assert_eq!(preview.data.as_ref().unwrap()["noOp"], false);
+        assert!(preview.data.as_ref().unwrap()["change"].is_object());
+        assert_eq!(fs::read(&package).unwrap(), before);
+
+        let applied = UnicaApplication::new()
+            .call_tool("unica.xdto.edit", &call_args(false))
+            .unwrap();
+        assert!(applied.ok, "{:?}", applied.errors);
+        assert_eq!(applied.cache.mode, "applied");
+        assert_eq!(applied.cache.events, vec!["MetadataChanged"]);
+        assert!(applied
+            .cache
+            .invalidated
+            .contains(&"metadata_graph".to_string()));
+        let after = fs::read(&package).unwrap();
+        assert_ne!(after, before);
+
+        for dry_run in [true, false] {
+            let repeated = UnicaApplication::new()
+                .call_tool("unica.xdto.edit", &call_args(dry_run))
+                .unwrap();
+            assert!(repeated.ok, "{:?}", repeated.errors);
+            assert_eq!(repeated.data.as_ref().unwrap()["noOp"], true);
+            assert!(repeated.data.as_ref().unwrap()["change"].is_null());
+            assert!(repeated.cache.events.is_empty(), "dryRun={dry_run}");
+            assert!(repeated.cache.invalidated.is_empty(), "dryRun={dry_run}");
+            assert_eq!(fs::read(&package).unwrap(), after);
+        }
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn xdto_events_rejected_or_commit_failed_plans_never_emit_or_write_package() {
+        let (context, base_args, package, descriptor) = xdto_guard_fixture("events-failures");
+        let before = fs::read(&package).unwrap();
+        let call = |mut args: Map<String, Value>, dry_run| {
+            args.insert(
+                "cwd".to_string(),
+                json!(context.workspace_root.to_string_lossy()),
+            );
+            args.insert("dryRun".to_string(), json!(dry_run));
+            UnicaApplication::new()
+                .call_tool("unica.xdto.edit", &args)
+                .unwrap()
+        };
+
+        let conflicting = args(&[
+            ("sourceSet", json!("main")),
+            ("metadataPath", json!("XDTOPackage.Sample")),
+            ("operation", json!("add-value-type")),
+            ("name", json!("ЛюбаяСсылка")),
+            ("base", json!("xs:string")),
+        ]);
+        for dry_run in [true, false] {
+            let rejected = call(conflicting.clone(), dry_run);
+            assert!(!rejected.ok);
+            assert_eq!(rejected.data.as_ref().unwrap()["noOp"], false);
+            assert!(rejected.data.as_ref().unwrap()["change"].is_null());
+            assert!(rejected.cache.events.is_empty());
+            assert_eq!(fs::read(&package).unwrap(), before);
+        }
+
+        let semantic = args(&[
+            ("sourceSet", json!("main")),
+            ("metadataPath", json!("XDTOPackage.Sample")),
+            ("operation", json!("add-property")),
+            ("typeName", json!("ЛюбаяСсылка")),
+            ("property", json!({"name":"Broken", "type":"tns:Missing"})),
+        ]);
+        for dry_run in [true, false] {
+            let rejected = call(semantic.clone(), dry_run);
+            assert!(!rejected.ok);
+            assert_eq!(rejected.data.as_ref().unwrap()["noOp"], false);
+            assert!(rejected.data.as_ref().unwrap()["change"].is_object());
+            assert!(rejected.cache.events.is_empty());
+            assert_eq!(fs::read(&package).unwrap(), before);
+        }
+
+        let descriptor_for_hook = descriptor.clone();
+        let failed_publish = with_before_commit_hook(
+            move |_| fs::write(&descriptor_for_hook, "<concurrent/>").unwrap(),
+            || call(base_args, false),
+        );
+        assert!(!failed_publish.ok);
+        assert!(failed_publish.cache.events.is_empty());
+        assert_eq!(fs::read(&package).unwrap(), before);
+        assert_eq!(fs::read_to_string(&descriptor).unwrap(), "<concurrent/>");
+        assert!(
+            !failed_publish
+                .errors
+                .join("\n")
+                .contains(context.workspace_root.to_string_lossy().as_ref()),
+            "{:?}",
+            failed_publish.errors
+        );
+        fs::remove_dir_all(context.workspace_root).unwrap();
     }
 
     #[test]
@@ -680,8 +1629,9 @@ mod tests {
 
         let exact = preview_with_data(&args, &context);
         assert!(exact.outcome.ok, "{:?}", exact.outcome);
-        assert_eq!(exact.data.as_ref().unwrap()["noOp"], json!(true));
-        let exact_finding = exact.data.as_ref().unwrap()["findings"]
+        let exact_data = data_json(exact.data);
+        assert_eq!(exact_data["noOp"], json!(true));
+        let exact_finding = exact_data["findings"]
             .as_array()
             .unwrap()
             .iter()
@@ -695,8 +1645,10 @@ mod tests {
         conflicting_args.insert("base".to_string(), json!("xs:string"));
         let conflict = preview_with_data(&conflicting_args, &context);
         assert!(!conflict.outcome.ok, "{:?}", conflict.outcome);
-        assert_eq!(conflict.data.as_ref().unwrap()["noOp"], json!(true));
-        let conflict_finding = conflict.data.as_ref().unwrap()["findings"]
+        let conflict_data = data_json(conflict.data);
+        assert_eq!(conflict_data["noOp"], json!(false));
+        assert!(conflict_data["change"].is_null());
+        let conflict_finding = conflict_data["findings"]
             .as_array()
             .unwrap()
             .iter()
@@ -722,11 +1674,11 @@ mod tests {
 
         let repeated = preview_with_data(&args, &context);
         assert!(repeated.outcome.ok, "{:?}", repeated.outcome);
-        assert_eq!(repeated.data.as_ref().unwrap()["noOp"], json!(true));
         assert_eq!(
             finding_codes(&repeated, "pre_existing"),
             vec!["duplicate_type"]
         );
+        assert_eq!(data_json(repeated.data)["noOp"], json!(true));
         assert_eq!(fs::read(&package).unwrap(), after);
         fs::remove_dir_all(context.workspace_root).unwrap();
     }
@@ -863,6 +1815,8 @@ mod tests {
 
         assert_eq!(diff.findings.len(), 1);
         assert_eq!(diff.findings[0].state, FindingState::PreExisting);
+        assert_eq!(diff.findings[0].message, "old wording");
+        assert_eq!(diff.findings[0].location.span.start, 10);
         assert!(!diff.blocks());
     }
 
