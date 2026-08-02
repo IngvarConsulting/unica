@@ -205,6 +205,23 @@ pub(crate) fn inspect_meta_validation_reads(
     object_path: &Path,
     workspace: &WorkspaceContext,
 ) -> MetaValidationReadInspection {
+    inspect_meta_validation_reads_with_policy(object_path, workspace, true)
+}
+
+/// Resolve the provider read-set without deciding semantic owner membership.
+/// The byte validator owns registration and empty-language-profile diagnostics.
+pub(crate) fn inspect_meta_validation_subject_reads(
+    object_path: &Path,
+    workspace: &WorkspaceContext,
+) -> MetaValidationReadInspection {
+    inspect_meta_validation_reads_with_policy(object_path, workspace, false)
+}
+
+fn inspect_meta_validation_reads_with_policy(
+    object_path: &Path,
+    workspace: &WorkspaceContext,
+    require_semantic_owner: bool,
+) -> MetaValidationReadInspection {
     let object_path = match normalize_path_identity(object_path) {
         Ok(path) => path,
         Err(error) => {
@@ -255,13 +272,13 @@ pub(crate) fn inspect_meta_validation_reads(
         Ok(owner) => owner,
         Err(error) => return inspection_error(paths, error),
     };
-    if !owner
+    let is_registered = owner
         .registrations
         .iter()
         .any(|(object_type, object_name)| {
             object_type == &identity.object_type && object_name == &identity.object_name
-        })
-    {
+        });
+    if require_semantic_owner && !is_registered {
         return inspection_error(
             paths,
             format!(
@@ -275,7 +292,9 @@ pub(crate) fn inspect_meta_validation_reads(
 
     let mut language_codes = Vec::new();
     let mut seen_codes = HashSet::new();
-    if meta_validate_types_with_list_presentation().contains(&identity.object_type.as_str()) {
+    if meta_validate_types_with_list_presentation().contains(&identity.object_type.as_str())
+        && (require_semantic_owner || is_registered)
+    {
         for language_name in &owner.registered_languages {
             let language_path = owner
                 .path
@@ -292,7 +311,7 @@ pub(crate) fn inspect_meta_validation_reads(
                 language_codes.push(code);
             }
         }
-        if language_codes.is_empty() {
+        if require_semantic_owner && language_codes.is_empty() {
             return inspection_error(
                 paths,
                 format!(

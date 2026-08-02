@@ -95,20 +95,33 @@ impl HandlerOutcome {
 }
 
 #[allow(dead_code)] // Concrete providers land after this orchestration seam.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum MetadataResourceRole {
     Descriptor,
     Registration,
-    Module,
-    Form,
-    Template,
-    Command,
-    Dependency,
+    Module {
+        owner: MetadataAddress,
+    },
+    Form {
+        owner: MetadataAddress,
+        name: String,
+    },
+    Template {
+        owner: MetadataAddress,
+        name: String,
+    },
+    Command {
+        owner: MetadataAddress,
+        name: String,
+    },
+    Dependency {
+        target: MetadataAddress,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MetadataResourceImage {
-    /// Logical resource role only; provider paths and identities stay opaque.
+    /// Provider-neutral logical role and identity; physical paths stay opaque.
     pub(crate) role: MetadataResourceRole,
     pub(crate) bytes: Vec<u8>,
 }
