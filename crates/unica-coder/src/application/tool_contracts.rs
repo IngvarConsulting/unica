@@ -894,12 +894,13 @@ fn validate_xdto_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Result<
             1,
             SOURCE_NAVIGATION_LIMIT_MAX as u64,
         )?;
-        if args
-            .get("cursor")
-            .is_some_and(|cursor| cursor.as_str().is_none_or(|value| value.trim().is_empty()))
-        {
+        if args.get("cursor").is_some_and(|cursor| {
+            cursor
+                .as_str()
+                .is_none_or(|value| value.is_empty() || value.chars().any(char::is_whitespace))
+        }) {
             return Err(format!(
-                "{} argument `cursor` must be a non-empty string",
+                "{} argument `cursor` must be a non-empty string without whitespace",
                 tool.name
             ));
         }
@@ -950,9 +951,9 @@ fn validate_xdto_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Result<
         }
     }
     if let Some(base) = xdto_optional_string(tool.name, args, "base")? {
-        if !is_xml_qname(base) {
+        if !is_xml_prefixed_qname(base) {
             return Err(format!(
-                "{} argument `base` must be an XML QName",
+                "{} argument `base` must be a prefixed XML QName without surrounding whitespace",
                 tool.name
             ));
         }
@@ -960,7 +961,7 @@ fn validate_xdto_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Result<
     if let Some(path) = xdto_optional_string(tool.name, args, "propertyPath")? {
         if !is_xdto_property_path(path) {
             return Err(format!(
-                "{} argument `propertyPath` must contain dot-separated XML NCNames",
+                "{} argument `propertyPath` must contain dot-separated XML NCNames with literal dots escaped as `\\.`",
                 tool.name
             ));
         }
@@ -992,10 +993,10 @@ fn validate_xdto_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Result<
         let property_type = property
             .get("type")
             .and_then(Value::as_str)
-            .filter(|value| is_xml_qname(value))
+            .filter(|value| is_xml_prefixed_qname(value))
             .ok_or_else(|| {
                 format!(
-                    "{} argument `property.type` must be an XML QName",
+                    "{} argument `property.type` must be a prefixed XML QName without surrounding whitespace",
                     tool.name
                 )
             })?;
@@ -1040,14 +1041,36 @@ fn xdto_optional_string<'a>(
 }
 
 fn is_xdto_property_path(value: &str) -> bool {
-    !value.is_empty() && value.split('.').all(is_xml_ncname)
+    if value.is_empty() {
+        return false;
+    }
+    let mut segment = String::new();
+    let mut characters = value.chars();
+    while let Some(character) = characters.next() {
+        match character {
+            '\\' => {
+                if characters.next() != Some('.') {
+                    return false;
+                }
+                segment.push('.');
+            }
+            '.' => {
+                if !is_xml_ncname(&segment) {
+                    return false;
+                }
+                segment.clear();
+            }
+            _ => segment.push(character),
+        }
+    }
+    is_xml_ncname(&segment)
 }
 
-fn is_xml_qname(value: &str) -> bool {
+fn is_xml_prefixed_qname(value: &str) -> bool {
     let mut parts = value.split(':');
-    let first = parts.next().unwrap_or_default();
-    let second = parts.next();
-    parts.next().is_none() && is_xml_ncname(first) && second.is_none_or(is_xml_ncname)
+    let prefix = parts.next().unwrap_or_default();
+    let local = parts.next().unwrap_or_default();
+    parts.next().is_none() && is_xml_ncname(prefix) && is_xml_ncname(local)
 }
 
 fn is_xml_ncname(value: &str) -> bool {
@@ -2366,7 +2389,7 @@ fn property_schema(name: &str) -> Value {
 const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "base",
-        "Базовый QName для новой XDTO valueType в unica.xdto.edit; например xs:string.",
+        "Лексический QName с объявленным префиксом для новой XDTO valueType в unica.xdto.edit; например xs:string; пробелы по краям и голое имя не принимаются.",
     ),
     (
         "allExtensions",
@@ -2390,11 +2413,11 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "property",
-        "Объект нового XDTO-свойства для unica.xdto.edit: обязательны name и type, допустим minOccurs.",
+        "Объект нового XDTO-свойства для unica.xdto.edit: обязательны NCName name и лексический QName type с объявленным префиксом; допустим minOccurs.",
     ),
     (
         "propertyPath",
-        "Точечный путь свойств к вложенному XDTO typeDef, например СсылкаНаОбъект.",
+        "Путь свойств к вложенному XDTO typeDef: неэкранированная точка разделяет сегменты, а `\\.` обозначает точку внутри NCName; например A\\.B.Child.",
     ),
     (
         "typeName",
@@ -3142,7 +3165,7 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
                 "minimum": 1,
                 "maximum": SOURCE_NAVIGATION_LIMIT_MAX
             }),
-            "cursor" => json!({"type": "string", "minLength": 1, "pattern": r"\S"}),
+            "cursor" => json!({"type": "string", "minLength": 1, "pattern": r"^\S+$"}),
             "property" => json!({
                 "type": "object",
                 "additionalProperties": false,
@@ -3339,19 +3362,30 @@ fn xml_ncname_pattern() -> String {
 
 fn xml_qname_pattern() -> String {
     let ncname = xml_ncname_pattern_body();
-    format!("^(?:{ncname}:)?{ncname}$")
+    format!("^{ncname}:{ncname}$")
 }
 
 fn xml_property_path_pattern() -> String {
-    let ncname = xml_property_path_segment_pattern_body();
-    format!("^{ncname}(?:\\.{ncname})*$")
+    let ncname_without_dot = xml_property_path_segment_pattern_body();
+    let continuation = xml_ncname_char_without_dot_pattern_body();
+    let segment = format!(r"{ncname_without_dot}(?:\\\.{continuation}*)*");
+    format!(r"^{segment}(?:\.{segment})*$")
 }
 
-fn xml_property_path_segment_pattern_body() -> &'static str {
-    // A dot is the public path separator. Although XML NCName permits a dot
-    // after the first character, accepting it inside a segment would make the
-    // selector ambiguous, so the path grammar intentionally excludes it.
-    "[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-\u{1fff}\u{200c}-\u{200d}\u{2070}-\u{218f}\u{2c00}-\u{2fef}\u{3001}-\u{d7ff}\u{f900}-\u{fdcf}\u{fdf0}-\u{fffd}\u{10000}-\u{effff}][A-Z_a-z0-9\\-·À-ÖØ-öø-˿Ͱ-ͽͿ-\u{1fff}\u{200c}-\u{200d}\u{203f}-\u{2040}\u{2070}-\u{218f}\u{2c00}-\u{2fef}\u{3001}-\u{d7ff}\u{f900}-\u{fdcf}\u{fdf0}-\u{fffd}\u{10000}-\u{effff}\u{0300}-\u{036f}]*"
+fn xml_property_path_segment_pattern_body() -> String {
+    format!(
+        "{}{}*",
+        xml_ncname_start_pattern_body(),
+        xml_ncname_char_without_dot_pattern_body()
+    )
+}
+
+fn xml_ncname_start_pattern_body() -> &'static str {
+    "[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-\u{1fff}\u{200c}-\u{200d}\u{2070}-\u{218f}\u{2c00}-\u{2fef}\u{3001}-\u{d7ff}\u{f900}-\u{fdcf}\u{fdf0}-\u{fffd}\u{10000}-\u{effff}]"
+}
+
+fn xml_ncname_char_without_dot_pattern_body() -> &'static str {
+    "[A-Z_a-z0-9\\-·À-ÖØ-öø-˿Ͱ-ͽͿ-\u{1fff}\u{200c}-\u{200d}\u{203f}-\u{2040}\u{2070}-\u{218f}\u{2c00}-\u{2fef}\u{3001}-\u{d7ff}\u{f900}-\u{fdcf}\u{fdf0}-\u{fffd}\u{10000}-\u{effff}\u{0300}-\u{036f}]"
 }
 
 fn xml_ncname_pattern_body() -> &'static str {
@@ -4139,6 +4173,130 @@ mod tests {
         assert!(
             validate_tool_arguments(edit, invalid_property.as_object().unwrap(), false).is_err()
         );
+    }
+
+    #[test]
+    fn xdto_qname_schema_and_runtime_require_an_unpadded_prefix() {
+        let edit = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.xdto.edit")
+            .unwrap();
+        let schema = input_schema_for_tool(&edit);
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let value_type = |base: &str| {
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "operation": "add-value-type",
+                "name": "Document",
+                "base": base
+            })
+        };
+        let property = |type_ref: &str| {
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "operation": "add-property",
+                "typeName": "AnyRef",
+                "property": {"name": "Document", "type": type_ref}
+            })
+        };
+
+        for call in [value_type("xs:string"), property("tns:Document")] {
+            assert!(validator.is_valid(&call), "schema rejected {call}");
+            validate_tool_arguments(edit, call.as_object().unwrap(), true)
+                .unwrap_or_else(|error| panic!("runtime rejected {call}: {error}"));
+        }
+
+        for call in [
+            value_type("string"),
+            value_type(" xs:string"),
+            value_type("xs:string "),
+            property("Document"),
+            property(" tns:Document"),
+            property("tns:Document "),
+        ] {
+            assert!(!validator.is_valid(&call), "schema accepted {call}");
+            assert!(
+                validate_tool_arguments(edit, call.as_object().unwrap(), true).is_err(),
+                "runtime accepted {call}"
+            );
+        }
+    }
+
+    #[test]
+    fn xdto_property_path_schema_and_runtime_share_the_escape_grammar() {
+        let edit = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.xdto.edit")
+            .unwrap();
+        let schema = input_schema_for_tool(&edit);
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let call = |property_path: &str| {
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "operation": "add-property",
+                "typeName": "AnyRef",
+                "propertyPath": property_path,
+                "property": {"name": "Document", "type": "tns:Document"}
+            })
+        };
+
+        for property_path in [r"A\.B", r"A\.B.Child", "A.Child"] {
+            let call = call(property_path);
+            assert!(validator.is_valid(&call), "schema rejected {call}");
+            validate_tool_arguments(edit, call.as_object().unwrap(), true)
+                .unwrap_or_else(|error| panic!("runtime rejected {call}: {error}"));
+        }
+
+        for property_path in [
+            "", ".A", "A.", "A..B", r"\A", r"A\B", "A\\", r"A\\.B", r"A\.B\C",
+        ] {
+            let call = call(property_path);
+            assert!(!validator.is_valid(&call), "schema accepted {call}");
+            assert!(
+                validate_tool_arguments(edit, call.as_object().unwrap(), true).is_err(),
+                "runtime accepted {call}"
+            );
+        }
+    }
+
+    #[test]
+    fn xdto_cursor_schema_and_runtime_reject_all_whitespace() {
+        let info = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.xdto.info")
+            .unwrap();
+        let schema = input_schema_for_tool(&info);
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let call = |cursor: &str| {
+            json!({
+                "sourceSet": "configuration",
+                "metadataPath": "XDTOPackage.EnterpriseData_1_17_3",
+                "cursor": cursor
+            })
+        };
+
+        assert_eq!(schema["properties"]["cursor"]["pattern"], r"^\S+$");
+        let valid = call("nav1-token");
+        assert!(validator.is_valid(&valid));
+        validate_tool_arguments(info, valid.as_object().unwrap(), false).unwrap();
+
+        for cursor in [
+            " nav1-token",
+            "nav1-token ",
+            "nav1 token",
+            "nav1\ttoken",
+            "nav1\u{00a0}token",
+        ] {
+            let call = call(cursor);
+            assert!(!validator.is_valid(&call), "schema accepted {call}");
+            assert!(
+                validate_tool_arguments(info, call.as_object().unwrap(), false).is_err(),
+                "runtime accepted {call}"
+            );
+        }
     }
 
     #[test]

@@ -139,7 +139,10 @@ pub(super) fn plan(
                 type_name,
                 args.get("propertyPath").and_then(Value::as_str),
             )?;
-            let desired_qname = desired_property_qname(root, target, type_name_value)?;
+            let desired_qname = DesiredPropertyQName {
+                raw: type_name_value.to_string(),
+                semantic: semantic_qname(target, type_name_value),
+            };
             let desired_lower = property
                 .get("minOccurs")
                 .and_then(Value::as_u64)
@@ -161,13 +164,11 @@ pub(super) fn plan(
                     .and_then(Value::as_u64)
                     .map(|value| format!(" lowerBound=\"{value}\""))
                     .unwrap_or_default();
-                let rendered_qname = render_property_qname(root, target, &desired_qname)?;
                 let element_name = lexical_xdto_child_name(before, target, "property")?;
                 let fragment = format!(
-                    "<{element_name}{} name=\"{}\" type=\"{}\"{lower}/>",
-                    rendered_qname.namespace_attribute,
+                    "<{element_name} name=\"{}\" type=\"{}\"{lower}/>",
                     escape_attribute(name),
-                    escape_attribute(&rendered_qname.value)
+                    escape_attribute(&desired_qname.raw)
                 );
                 Some(insert_child(before, target, &fragment)?)
             }
@@ -219,105 +220,6 @@ struct SemanticQName {
 struct DesiredPropertyQName {
     raw: String,
     semantic: SemanticQName,
-    bare_local: bool,
-}
-
-struct RenderedPropertyQName {
-    value: String,
-    namespace_attribute: String,
-}
-
-fn desired_property_qname(
-    root: Node<'_, '_>,
-    target: Node<'_, '_>,
-    raw: &str,
-) -> Result<DesiredPropertyQName, String> {
-    if raw.contains(':') {
-        return Ok(DesiredPropertyQName {
-            raw: raw.to_string(),
-            semantic: semantic_qname(target, raw),
-            bare_local: false,
-        });
-    }
-    let target_namespace = root
-        .attribute("targetNamespace")
-        .filter(|namespace| !namespace.is_empty())
-        .ok_or_else(|| {
-            "unsupported_node: cannot resolve a bare property type without targetNamespace"
-                .to_string()
-        })?;
-    Ok(DesiredPropertyQName {
-        raw: raw.to_string(),
-        semantic: SemanticQName {
-            namespace: Some(target_namespace.to_string()),
-            unresolved_prefix: None,
-            local: raw.to_string(),
-            lexical_valid: !raw.is_empty(),
-        },
-        bare_local: true,
-    })
-}
-
-fn render_property_qname(
-    root: Node<'_, '_>,
-    target: Node<'_, '_>,
-    desired: &DesiredPropertyQName,
-) -> Result<RenderedPropertyQName, String> {
-    if !desired.bare_local {
-        return Ok(RenderedPropertyQName {
-            value: desired.raw.clone(),
-            namespace_attribute: String::new(),
-        });
-    }
-    let namespace = desired
-        .semantic
-        .namespace
-        .as_deref()
-        .expect("a bare local QName carries targetNamespace");
-    let (prefix, in_scope) = existing_non_default_prefix(root, target, namespace).ok_or_else(|| {
-        "unsupported_node: bare local property type requires an existing non-default prefix for targetNamespace"
-            .to_string()
-    })?;
-    Ok(RenderedPropertyQName {
-        value: format!("{prefix}:{}", desired.semantic.local),
-        namespace_attribute: if in_scope {
-            String::new()
-        } else {
-            format!(
-                " xmlns:{}=\"{}\"",
-                escape_attribute(&prefix),
-                escape_attribute(namespace)
-            )
-        },
-    })
-}
-
-fn existing_non_default_prefix(
-    root: Node<'_, '_>,
-    target: Node<'_, '_>,
-    namespace: &str,
-) -> Option<(String, bool)> {
-    for node in target.ancestors().filter(Node::is_element) {
-        for declaration in node.namespaces() {
-            if declaration.uri() == namespace {
-                if let Some(prefix) = declaration.name().filter(|prefix| !prefix.is_empty()) {
-                    if target.lookup_namespace_uri(Some(prefix)) == Some(namespace) {
-                        return Some((prefix.to_string(), true));
-                    }
-                }
-            }
-        }
-    }
-    for node in root.descendants().filter(Node::is_element) {
-        for declaration in node.namespaces() {
-            if declaration.uri() == namespace {
-                if let Some(prefix) = declaration.name().filter(|prefix| !prefix.is_empty()) {
-                    return Some((prefix.to_string(), false));
-                }
-            }
-        }
-    }
-    None
 }
 
 fn semantic_qname(node: Node<'_, '_>, raw: &str) -> SemanticQName {
@@ -682,7 +584,7 @@ fn property_target<'a>(
     };
     let segments = strict_property_path(property_path)?;
     for segment in segments {
-        let properties = direct_named_properties(target, segment);
+        let properties = direct_named_properties(target, &segment);
         let property = exactly_one(properties, "property path segment")?;
         let type_defs = property
             .children()
@@ -705,22 +607,41 @@ fn property_target<'a>(
     Ok(target)
 }
 
-fn strict_property_path(property_path: Option<&str>) -> Result<Vec<&str>, String> {
+fn strict_property_path(property_path: Option<&str>) -> Result<Vec<String>, String> {
     let Some(path) = property_path else {
         return Ok(Vec::new());
     };
-    let segments = path.split('.').collect::<Vec<_>>();
-    if segments.is_empty()
-        || segments.iter().any(|segment| {
-            segment.is_empty()
-                || segment.trim().is_empty()
-                || segment.chars().any(char::is_whitespace)
-        })
-    {
-        return Err(
-            "property_path_invalid: propertyPath must contain non-empty property names".to_string(),
-        );
+    let invalid = || {
+        "property_path_invalid: propertyPath must contain dot-separated XML NCNames and escape literal dots as `\\.`"
+            .to_string()
+    };
+    if path.is_empty() {
+        return Err(invalid());
     }
+    let mut segments = Vec::new();
+    let mut segment = String::new();
+    let mut characters = path.chars();
+    while let Some(character) = characters.next() {
+        match character {
+            '\\' => {
+                if characters.next() != Some('.') {
+                    return Err(invalid());
+                }
+                segment.push('.');
+            }
+            '.' => {
+                if !super::validation::is_ncname(&segment) {
+                    return Err(invalid());
+                }
+                segments.push(std::mem::take(&mut segment));
+            }
+            _ => segment.push(character),
+        }
+    }
+    if !super::validation::is_ncname(&segment) {
+        return Err(invalid());
+    }
+    segments.push(segment);
     Ok(segments)
 }
 
@@ -776,8 +697,7 @@ fn object_string<'a>(object: &'a Map<String, Value>, name: &str) -> Result<&'a s
     object
         .get(name)
         .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+        .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| format!("property.{name} must be a non-empty string"))
 }
 
@@ -924,7 +844,18 @@ mod tests {
     #[test]
     fn xdto_writer_rejects_every_invalid_property_path_shape() {
         let before = package("\t<objectType name=\"Target\"></objectType>\n");
-        for property_path in [".", ".Foo", "Foo.", "Foo..Bar", "Foo. .Bar"] {
+        for property_path in [
+            ".",
+            ".Foo",
+            "Foo.",
+            "Foo..Bar",
+            "Foo. .Bar",
+            r"\Foo",
+            r"Foo\Bar",
+            "Foo\\",
+            r"Foo\\.Bar",
+            r"Foo\.Bar\Baz",
+        ] {
             let error = plan(
                 &before,
                 &args(&[
@@ -941,6 +872,63 @@ mod tests {
                 "{property_path:?}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn xdto_writer_addresses_a_dotted_property_identity_with_an_escape() {
+        let before = package(
+            "\t<objectType name=\"Target\">\n\t\t<property name=\"A.B\">\n\t\t\t<typeDef xsi:type=\"ObjectType\"/>\n\t\t</property>\n\t</objectType>\n",
+        );
+        let before_model = super::super::model::PackageModel::parse(&before).unwrap();
+        assert_eq!(
+            before_model.types[0].properties[0].logical_identity(),
+            "A.B"
+        );
+
+        let planned = plan(
+            &before,
+            &args(&[
+                ("typeName", json!("Target")),
+                ("propertyPath", json!(r"A\.B")),
+                ("property", json!({"name":"Added", "type":"xs:string"})),
+            ]),
+            "add-property",
+        )
+        .expect("escaped dot must select the A.B property identity");
+
+        let after_model = super::super::model::PackageModel::parse(&planned.after).unwrap();
+        let dotted = &after_model.types[0].properties[0];
+        assert_eq!(dotted.logical_identity(), "A.B");
+        assert_eq!(
+            dotted.type_defs[0].properties[0].logical_identity(),
+            "Added"
+        );
+        assert!(super::super::validation::validate(&after_model).is_empty());
+    }
+
+    #[test]
+    fn xdto_writer_separates_only_unescaped_property_path_dots() {
+        let before = package(
+            "\t<objectType name=\"Target\">\n\t\t<property name=\"A.B\">\n\t\t\t<typeDef xsi:type=\"ObjectType\">\n\t\t\t\t<property name=\"Child\">\n\t\t\t\t\t<typeDef xsi:type=\"ObjectType\"/>\n\t\t\t\t</property>\n\t\t\t</typeDef>\n\t\t</property>\n\t</objectType>\n",
+        );
+
+        let planned = plan(
+            &before,
+            &args(&[
+                ("typeName", json!("Target")),
+                ("propertyPath", json!(r"A\.B.Child")),
+                ("property", json!({"name":"Added", "type":"xs:string"})),
+            ]),
+            "add-property",
+        )
+        .expect("A\\.B.Child must resolve as the A.B and Child segments");
+
+        let model = super::super::model::PackageModel::parse(&planned.after).unwrap();
+        let dotted = &model.types[0].properties[0];
+        let child = &dotted.type_defs[0].properties[0];
+        assert_eq!(child.logical_identity(), "Child");
+        assert_eq!(child.type_defs[0].properties[0].logical_identity(), "Added");
+        assert!(super::super::validation::validate(&model).is_empty());
     }
 
     #[test]
@@ -1067,7 +1055,7 @@ mod tests {
                 ("typeName", json!("Target")),
                 (
                     "property",
-                    json!({"name":"Existing", "type":"Local", "minOccurs":1}),
+                    json!({"name":"Existing", "type":"tns:Local", "minOccurs":1}),
                 ),
             ]),
             "add-property",
@@ -1079,8 +1067,8 @@ mod tests {
 
         for property in [
             json!({"name":"Existing", "type":"xs:string", "minOccurs":1}),
-            json!({"name":"Existing", "type":"Local", "minOccurs":0}),
-            json!({"name":"Structured", "type":"Local", "minOccurs":1}),
+            json!({"name":"Existing", "type":"tns:Local", "minOccurs":0}),
+            json!({"name":"Structured", "type":"tns:Local", "minOccurs":1}),
         ] {
             let conflict = plan(
                 &before,
@@ -1417,12 +1405,26 @@ mod tests {
     }
 
     #[test]
-    fn xdto_writer_reuses_an_arbitrary_self_namespace_prefix_for_a_bare_local_type() {
+    fn xdto_writer_preserves_bare_qnames_for_validation_to_reject() {
         let root = ROOT.replace("xmlns:tns=\"urn:test\"", "xmlns:self=\"urn:test\"");
         let before = format!(
             "<package {root}>\n\t<valueType name=\"Local\" base=\"xs:string\"/>\n\t<objectType name=\"Target\"/>\n</package>"
         );
-        let plan = plan(
+        let value_plan = plan(
+            &before,
+            &args(&[("name", json!("AddedValue")), ("base", json!("Local"))]),
+            "add-value-type",
+        )
+        .unwrap();
+        assert!(value_plan
+            .after
+            .contains("name=\"AddedValue\" base=\"Local\""));
+        let value_model = super::super::model::PackageModel::parse(&value_plan.after).unwrap();
+        let value_findings = super::super::validation::validate(&value_model);
+        assert_eq!(value_findings.len(), 1);
+        assert_eq!(value_findings[0].code, "invalid_qname");
+
+        let property_plan = plan(
             &before,
             &args(&[
                 ("typeName", json!("Target")),
@@ -1432,27 +1434,90 @@ mod tests {
         )
         .unwrap();
 
-        assert!(plan.after.contains("name=\"Added\" type=\"self:Local\""));
-        assert!(!plan.after.contains("type=\"tns:Local\""));
+        assert!(property_plan
+            .after
+            .contains("name=\"Added\" type=\"Local\""));
+        assert!(!property_plan.after.contains("type=\"self:Local\""));
+        let property_model =
+            super::super::model::PackageModel::parse(&property_plan.after).unwrap();
+        let property_findings = super::super::validation::validate(&property_model);
+        assert_eq!(property_findings.len(), 1);
+        assert_eq!(property_findings[0].code, "invalid_qname");
     }
 
     #[test]
-    fn xdto_writer_fails_closed_for_bare_local_type_without_a_non_default_self_prefix() {
-        let root = ROOT.replace(" xmlns:tns=\"urn:test\"", "");
+    fn xdto_writer_preserves_declared_prefixed_qnames_exactly() {
+        let root = ROOT.replace("xmlns:tns=\"urn:test\"", "xmlns:self=\"urn:test\"");
         let before = format!(
             "<package {root}>\n\t<valueType name=\"Local\" base=\"xs:string\"/>\n\t<objectType name=\"Target\"/>\n</package>"
         );
-        let error = plan(
+        let value_plan = plan(
+            &before,
+            &args(&[("name", json!("Alias")), ("base", json!("self:Local"))]),
+            "add-value-type",
+        )
+        .unwrap();
+        assert!(value_plan
+            .after
+            .contains("name=\"Alias\" base=\"self:Local\""));
+        let value_model = super::super::model::PackageModel::parse(&value_plan.after).unwrap();
+        assert!(super::super::validation::validate(&value_model).is_empty());
+
+        let property_plan = plan(
             &before,
             &args(&[
                 ("typeName", json!("Target")),
-                ("property", json!({"name":"Added", "type":"Local"})),
+                ("property", json!({"name":"Added", "type":"self:Local"})),
             ]),
             "add-property",
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert!(error.contains("unsupported_node"), "{error}");
+        assert!(property_plan
+            .after
+            .contains("name=\"Added\" type=\"self:Local\""));
+        let property_model =
+            super::super::model::PackageModel::parse(&property_plan.after).unwrap();
+        assert!(super::super::validation::validate(&property_model).is_empty());
+    }
+
+    #[test]
+    fn xdto_writer_preserves_undeclared_qnames_for_validation_to_reject() {
+        let before = package(
+            "\t<valueType name=\"Local\" base=\"xs:string\"/>\n\t<objectType name=\"Target\"/>\n",
+        );
+        let value_plan = plan(
+            &before,
+            &args(&[("name", json!("Alias")), ("base", json!("missing:Local"))]),
+            "add-value-type",
+        )
+        .unwrap();
+        assert!(value_plan
+            .after
+            .contains("name=\"Alias\" base=\"missing:Local\""));
+        let value_model = super::super::model::PackageModel::parse(&value_plan.after).unwrap();
+        let value_findings = super::super::validation::validate(&value_model);
+        assert_eq!(value_findings.len(), 1);
+        assert_eq!(value_findings[0].code, "undeclared_prefix");
+
+        let property_plan = plan(
+            &before,
+            &args(&[
+                ("typeName", json!("Target")),
+                ("property", json!({"name":"Added", "type":"missing:Local"})),
+            ]),
+            "add-property",
+        )
+        .unwrap();
+
+        assert!(property_plan
+            .after
+            .contains("name=\"Added\" type=\"missing:Local\""));
+        let property_model =
+            super::super::model::PackageModel::parse(&property_plan.after).unwrap();
+        let property_findings = super::super::validation::validate(&property_model);
+        assert_eq!(property_findings.len(), 1);
+        assert_eq!(property_findings[0].code, "undeclared_prefix");
     }
 
     #[test]
