@@ -658,7 +658,11 @@ fn call_tool(
     } else if !dry_run && spec.mutating && outcome.ok && !handler_events.is_empty() {
         handler_events
     } else if should_emit_events(spec, args, dry_run, &outcome, handler_outcome.data.as_ref()) {
-        domain_events(spec, args)
+        if handler_events.is_empty() {
+            domain_events(spec, args)
+        } else {
+            handler_events
+        }
     } else {
         Vec::new()
     };
@@ -2947,6 +2951,97 @@ mod tests {
             .events
             .contains(&"SourceSetChanged".to_string()));
         assert!(result.command.unwrap().join(" ").contains(" dump"));
+    }
+
+    #[test]
+    fn legacy_dry_run_explicit_handler_event_reaches_preview_cache_unchanged() {
+        struct ExplicitPreviewEventPorts;
+
+        impl ports::ApplicationPorts for ExplicitPreviewEventPorts {
+            fn discover_workspace(
+                &self,
+                requested_cwd: Option<PathBuf>,
+            ) -> Result<WorkspaceContext, String> {
+                let cwd = requested_cwd.unwrap_or_default();
+                Ok(WorkspaceContext {
+                    cwd: cwd.clone(),
+                    workspace_root: cwd.clone(),
+                    cache_root: cwd.join(".build/unica"),
+                    workspace_epoch: 1,
+                })
+            }
+
+            fn validate_tool_context(
+                &self,
+                _spec: ToolSpec,
+                _args: &Map<String, Value>,
+                _dry_run: bool,
+                _context: &WorkspaceContext,
+            ) -> Result<(), String> {
+                Ok(())
+            }
+
+            fn evaluate_support_guard(
+                &self,
+                _spec: ToolSpec,
+                _args: &Map<String, Value>,
+                _context: &WorkspaceContext,
+            ) -> Result<SupportGuardCheck, String> {
+                Ok(SupportGuardCheck::Allow)
+            }
+
+            fn invoke_handler(
+                &self,
+                _spec: ToolSpec,
+                _args: &Map<String, Value>,
+                _context: &WorkspaceContext,
+                _dry_run: bool,
+                _cancellation: &CancellationToken,
+            ) -> Result<ports::HandlerOutcome, String> {
+                Ok(ports::HandlerOutcome::with_data_and_events(
+                    AdapterOutcome::ok("legacy preview with an explicit event"),
+                    json!({"preview": true}),
+                    vec![DomainEvent::new(
+                        DomainEventKind::ModuleChanged,
+                        "src/CommonModules/Preview/Ext/Module.bsl",
+                    )],
+                ))
+            }
+
+            fn cache_report(
+                &self,
+                context: &WorkspaceContext,
+                events: &[DomainEvent],
+                dry_run: bool,
+                _cache_access: CacheAccess,
+            ) -> Result<CacheReport, String> {
+                Ok(CacheReport {
+                    mode: if dry_run { "dry-run" } else { "applied" }.to_string(),
+                    root: context.cache_root.display().to_string(),
+                    workspace_epoch: context.workspace_epoch,
+                    events: events
+                        .iter()
+                        .map(|event| event.name().to_string())
+                        .collect(),
+                    invalidated: Vec::new(),
+                    refreshed: Vec::new(),
+                    lazy_rebuilt: Vec::new(),
+                    stale: Vec::new(),
+                    fresh: Vec::new(),
+                    publication_warnings: Vec::new(),
+                })
+            }
+
+            fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
+        }
+
+        let result = UnicaApplication::with_ports(Arc::new(ExplicitPreviewEventPorts))
+            .call_tool("unica.build.load", &Map::new())
+            .unwrap();
+
+        assert!(result.ok);
+        assert_eq!(result.cache.mode, "dry-run");
+        assert_eq!(result.cache.events, ["ModuleChanged"]);
     }
 
     #[test]
