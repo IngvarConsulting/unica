@@ -2,7 +2,106 @@ use std::fs;
 #[cfg(unix)]
 use std::fs::File;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Returns a short, private directory suitable as a child process' Unix runtime
+/// directory.  It deliberately lives below `/tmp`: macOS's `TMPDIR` and a
+/// caller's `XDG_RUNTIME_DIR` can both be too long once a Unix socket name is
+/// appended.
+pub(crate) fn short_private_runtime_dir() -> io::Result<Option<PathBuf>> {
+    #[cfg(unix)]
+    {
+        short_private_runtime_dir_unix().map(Some)
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(None)
+    }
+}
+
+#[cfg(unix)]
+fn short_private_runtime_dir_unix() -> io::Result<PathBuf> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    use std::os::unix::io::FromRawFd;
+
+    // SAFETY: `geteuid` has no preconditions and only reads the effective UID
+    // of this process.
+    let uid = unsafe { libc::geteuid() };
+    let path = PathBuf::from("/tmp").join(format!("unica-bsl-{uid}"));
+
+    for _ in 0..2 {
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) => {
+                let mode = metadata.permissions().mode() & 0o777;
+                if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("short runtime path {} is not a directory", path.display()),
+                    ));
+                }
+                if metadata.uid() != uid || mode != 0o700 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        format!(
+                            "short runtime directory {} must be owned by the current user and have mode 0700",
+                            path.display()
+                        ),
+                    ));
+                }
+                return Ok(path);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                match fs::DirBuilder::new().mode(0o700).create(&path) {
+                    Ok(()) => {
+                        // `DirBuilder::mode` is filtered through the caller's
+                        // umask. The directory is part of an authentication
+                        // boundary for the local socket, so normalize it before
+                        // accepting the newly created path.
+                        let encoded =
+                            CString::new(path.as_os_str().as_bytes()).map_err(|error| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidInput,
+                                    format!("short runtime path contains an embedded NUL: {error}"),
+                                )
+                            })?;
+                        // SAFETY: `encoded` is NUL-terminated and remains live for
+                        // the call. `O_NOFOLLOW` prevents a raced symlink from being
+                        // opened before the directory descriptor is owned below.
+                        let descriptor = unsafe {
+                            libc::open(
+                                encoded.as_ptr(),
+                                libc::O_RDONLY
+                                    | libc::O_DIRECTORY
+                                    | libc::O_CLOEXEC
+                                    | libc::O_NOFOLLOW,
+                            )
+                        };
+                        if descriptor < 0 {
+                            return Err(io::Error::last_os_error());
+                        }
+                        // SAFETY: `open` returned a new owned descriptor.
+                        let directory = unsafe { File::from_raw_fd(descriptor) };
+                        directory.set_permissions(fs::Permissions::from_mode(0o700))?;
+                        continue;
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        format!(
+            "short runtime directory {} disappeared during setup",
+            path.display()
+        ),
+    ))
+}
 
 #[cfg(all(test, unix))]
 pub(crate) fn create_test_directory_link(target: &Path, link: &Path) -> io::Result<()> {
