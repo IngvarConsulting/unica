@@ -1,15 +1,26 @@
-use crate::application::AdapterOutcome;
-use crate::domain::project_sources::SourceFormat;
-use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
-use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::native_operations::single_file_publisher::{
-    publish, PublishMode, PublishRequest,
+use crate::application::{AdapterOutcome, SupportGuardRequirement};
+use crate::domain::source_target::{
+    MetadataAddress, SourceTarget, SourceTargetError, SourceTargetErrorCode, TargetKind,
+    PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
-use crate::infrastructure::source_roots::resolve_named_source_set;
+use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::native_operations::common::guard_resolved_platform_xml_target_dependencies;
+use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
+use crate::infrastructure::path_policy::WorkspacePathPolicy;
+use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
+use crate::infrastructure::platform_xml_source_targets::{
+    platform_xml_resource_evidence, resolve_platform_xml_target, ClosedPlatformXmlTarget,
+    PlatformXmlResourceEvidence, TargetKindPolicy,
+};
+use crate::infrastructure::source_roots::normalize_path_identity;
+use crate::infrastructure::support_guard::{
+    evaluate_resolved_support_guard, ResolvedSupportGuardCheck,
+};
 use roxmltree::{Document, Node};
 use serde_json::{json, Map, Value};
 use std::fs;
-use std::path::PathBuf;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 
 const XDTO_NS: &str = "http://v8.1c.ru/8.1/xdto";
 
@@ -147,13 +158,26 @@ fn edit(args: &Map<String, Value>, context: &WorkspaceContext, preview: bool) ->
         }
     };
     if !preview && !no_op {
-        if let Err(error) = publish(PublishRequest {
-            target: &package.path,
-            replacement: &after,
-            mode: PublishMode::ReplaceExisting {
-                expected_preimage: &before,
-            },
-        }) {
+        let publish_result = (|| -> Result<(), String> {
+            let mut transaction = CompileTransaction::new();
+            transaction.replace_bytes(&package.path, &before, after.clone())?;
+            let descriptor = guard_resolved_platform_xml_target_dependencies(
+                &mut transaction,
+                &package.handle,
+                context,
+            )?;
+            if descriptor != package.descriptor_path {
+                return Err("target_not_found: resolved XDTO descriptor changed".to_string());
+            }
+            let resource = resolve_xdto_resource(&package.handle, context)?;
+            if resource != package.path {
+                return Err("containment_denied: resolved XDTO resource changed".to_string());
+            }
+            guard_resolved_support(&resource, context)?;
+            transaction.commit()?;
+            Ok(())
+        })();
+        if let Err(error) = publish_result {
             return XdtoExecution {
                 outcome: AdapterOutcome {
                     ok: false,
@@ -205,6 +229,8 @@ fn edit(args: &Map<String, Value>, context: &WorkspaceContext, preview: bool) ->
 
 struct Package {
     path: PathBuf,
+    descriptor_path: PathBuf,
+    handle: ClosedPlatformXmlTarget,
     source_set: String,
     metadata_path: String,
 }
@@ -233,33 +259,139 @@ fn resolve_package(
     {
         return Err("containment_denied: XDTO package name is not a path segment".to_string());
     }
-    let selected = resolve_named_source_set(context, source_set)
-        .map_err(|_| format!("source_set_unknown: `{source_set}`"))?;
-    if selected.source_set.source_format != SourceFormat::PlatformXml {
-        return Err("not_an_xdto_package: sourceSet is not Platform XML".to_string());
+    let target = SourceTarget {
+        source_set: source_set.to_string(),
+        metadata_path: Some(address),
+    };
+    let resolution = resolve_platform_xml_target(context, &target, TargetKindPolicy::Any)
+        .map_err(map_xdto_target_error)?;
+    if resolution.resolved.target_kind != TargetKind::MetadataObject {
+        return Err("not_an_xdto_package: metadataPath must identify an XDTO package".to_string());
     }
-    let path = selected
-        .path
-        .join("XDTOPackages")
-        .join(parts[1])
-        .join("Ext")
-        .join("Package.bin");
-    if !path.is_file() {
-        return Err(
-            "package_resource_missing: logical XDTO package has no Package.bin resource"
-                .to_string(),
-        );
-    }
-    let identity = crate::infrastructure::source_roots::normalize_path_identity(&path)
-        .map_err(|_| "containment_denied: cannot resolve XDTO package resource".to_string())?;
-    if !identity.starts_with(&selected.path) {
-        return Err("containment_denied: XDTO package resource escapes sourceSet".to_string());
-    }
+    let evidence = platform_xml_resource_evidence(context, &resolution.handle)
+        .map_err(map_xdto_target_error)?;
+    let path = prove_xdto_resource(&evidence, context)?;
     Ok(Package {
         path,
-        source_set: selected.source_set.name,
-        metadata_path: address.as_str().to_string(),
+        descriptor_path: evidence.target_path,
+        handle: resolution.handle,
+        source_set: resolution.resolved.source_set,
+        metadata_path: resolution
+            .resolved
+            .metadata_path
+            .expect("an XDTO object resolution carries its address")
+            .as_str()
+            .to_string(),
     })
+}
+
+fn resolve_xdto_resource(
+    handle: &ClosedPlatformXmlTarget,
+    context: &WorkspaceContext,
+) -> Result<PathBuf, String> {
+    let evidence =
+        platform_xml_resource_evidence(context, handle).map_err(map_xdto_target_error)?;
+    prove_xdto_resource(&evidence, context)
+}
+
+fn prove_xdto_resource(
+    evidence: &PlatformXmlResourceEvidence,
+    context: &WorkspaceContext,
+) -> Result<PathBuf, String> {
+    let descriptor_stem = evidence
+        .target_path
+        .file_stem()
+        .filter(|stem| !stem.is_empty())
+        .ok_or_else(|| "target_not_found: XDTO descriptor has no file stem".to_string())?;
+    let descriptor_parent = evidence
+        .target_path
+        .parent()
+        .ok_or_else(|| "containment_denied: XDTO descriptor has no parent".to_string())?;
+    let resource = WorkspacePathPolicy::new(context)
+        .resolve_write(
+            descriptor_parent
+                .join(descriptor_stem)
+                .join("Ext")
+                .join("Package.bin"),
+        )
+        .map_err(|_| "containment_denied: cannot resolve XDTO package resource".to_string())?;
+    ensure_no_link_components(&evidence.source_root, &resource)?;
+    let metadata = match fs::symlink_metadata(&resource) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return Err(
+                "package_resource_missing: logical XDTO package has no Package.bin resource"
+                    .to_string(),
+            )
+        }
+        Err(_) => {
+            return Err("containment_denied: cannot inspect XDTO package resource".to_string())
+        }
+    };
+    if metadata_is_link_or_reparse_point(&metadata) {
+        return Err("containment_denied: XDTO package resource must not be a link".to_string());
+    }
+    if !metadata.is_file() {
+        return Err("package_resource_missing: Package.bin is not a regular file".to_string());
+    }
+    let source_root = normalize_path_identity(&evidence.source_root)
+        .map_err(|_| "containment_denied: cannot resolve XDTO sourceSet".to_string())?;
+    let resource_identity = normalize_path_identity(&resource)
+        .map_err(|_| "containment_denied: cannot resolve XDTO package resource".to_string())?;
+    if !resource_identity.starts_with(&source_root) {
+        return Err("containment_denied: XDTO package resource escapes sourceSet".to_string());
+    }
+    Ok(resource)
+}
+
+fn ensure_no_link_components(source_root: &Path, path: &Path) -> Result<(), String> {
+    let relative = path
+        .strip_prefix(source_root)
+        .map_err(|_| "containment_denied: XDTO package resource escapes sourceSet".to_string())?;
+    let mut current = source_root.to_path_buf();
+    for component in relative.components() {
+        current.push(component.as_os_str());
+        let metadata = match fs::symlink_metadata(&current) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == ErrorKind::NotFound => break,
+            Err(_) => {
+                return Err("containment_denied: cannot inspect XDTO package path".to_string())
+            }
+        };
+        if metadata_is_link_or_reparse_point(&metadata) {
+            return Err("containment_denied: XDTO package path contains a link".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn map_xdto_target_error(error: SourceTargetError) -> String {
+    let code = match error.code {
+        SourceTargetErrorCode::SourceSetRequired | SourceTargetErrorCode::SourceSetNotFound => {
+            "source_set_unknown"
+        }
+        SourceTargetErrorCode::SourceRootNotAddressable
+            if error.message.contains("must be a Platform XML") =>
+        {
+            "not_an_xdto_package"
+        }
+        SourceTargetErrorCode::SourceRootNotAddressable => "source_set_unknown",
+        SourceTargetErrorCode::TargetKindMismatch => "not_an_xdto_package",
+        SourceTargetErrorCode::ContainmentDenied => "containment_denied",
+        SourceTargetErrorCode::MetadataAddressInvalid
+        | SourceTargetErrorCode::MetadataAddressNotFound
+        | SourceTargetErrorCode::AddressProfileUnsupported => "target_not_found",
+    };
+    format!("{code}: {}", error.message)
+}
+
+fn guard_resolved_support(target: &Path, context: &WorkspaceContext) -> Result<(), String> {
+    match evaluate_resolved_support_guard(target, SupportGuardRequirement::Editable, context) {
+        ResolvedSupportGuardCheck::Allow | ResolvedSupportGuardCheck::Warn(_) => Ok(()),
+        ResolvedSupportGuardCheck::Block(violation) => {
+            Err(format!("support_locked: {}", violation.reason))
+        }
+    }
 }
 
 fn mutation(text: &str, args: &Map<String, Value>, operation: &str) -> Result<String, String> {
@@ -451,13 +583,22 @@ fn type_json(node: Node<'_, '_>) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode, encode_like, mutation};
+    use super::{apply_with_data, decode, encode_like, mutation};
+    use crate::domain::workspace::WorkspaceContext;
+    use crate::infrastructure::native_operations::single_file_publisher::with_before_commit_hook;
+    use crate::infrastructure::platform::testing::{
+        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+    };
     use serde_json::{json, Map, Value};
+    use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     const PACKAGE: &str = r#"<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" targetNamespace="urn:test">
 	<objectType name="ЛюбаяСсылка"><property name="СсылкаНаОбъект"><typeDef xsi:type="ObjectType"></typeDef></property></objectType>
 	<objectType name="СоставнойЛюбойОбъект"/>
 </package>"#;
+
+    static TEMP_NONCE: AtomicU64 = AtomicU64::new(0);
 
     fn args(entries: &[(&str, Value)]) -> Map<String, Value> {
         entries
@@ -502,5 +643,159 @@ mod tests {
         let bytes = encode_like(&before, &after);
         assert!(bytes.starts_with(&[0xef, 0xbb, 0xbf]));
         assert!(decode(&bytes).unwrap().contains("\r\n"));
+    }
+
+    fn xdto_guard_fixture(
+        name: &str,
+    ) -> (
+        WorkspaceContext,
+        Map<String, Value>,
+        std::path::PathBuf,
+        std::path::PathBuf,
+    ) {
+        let root = std::env::temp_dir().join(format!(
+            "unica-xdto-guard-{name}-{}-{}",
+            std::process::id(),
+            TEMP_NONCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let descriptor = root.join("src/XDTOPackages/Sample.xml");
+        let package = root.join("src/XDTOPackages/Sample/Ext/Package.bin");
+        fs::create_dir_all(package.parent().unwrap()).unwrap();
+        fs::create_dir_all(root.join("src/Ext")).unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"><Properties><Name>Main</Name></Properties></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            &descriptor,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><XDTOPackage uuid="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"><Properties><Name>Sample</Name></Properties></XDTOPackage></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(&package, PACKAGE).unwrap();
+        let context = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let args = args(&[
+            ("sourceSet", json!("main")),
+            ("metadataPath", json!("XDTOPackage.Sample")),
+            ("operation", json!("add-value-type")),
+            ("name", json!("Added")),
+            ("base", json!("xs:string")),
+        ]);
+        (context, args, package, descriptor)
+    }
+
+    #[test]
+    fn xdto_guard_rejects_descriptor_identity_drift_before_commit() {
+        let (context, args, package, descriptor) = xdto_guard_fixture("descriptor-drift");
+        let before = fs::read(&package).unwrap();
+        let descriptor_for_hook = descriptor.clone();
+
+        let execution = with_before_commit_hook(
+            move |_| fs::write(&descriptor_for_hook, "<concurrent/>").unwrap(),
+            || apply_with_data(&args, &context),
+        );
+
+        assert!(!execution.outcome.ok, "{:?}", execution.outcome);
+        assert_eq!(fs::read(&package).unwrap(), before);
+        assert_eq!(fs::read_to_string(&descriptor).unwrap(), "<concurrent/>");
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn xdto_guard_rejects_source_identity_drift_before_commit() {
+        let (context, args, package, _) = xdto_guard_fixture("source-drift");
+        let before = fs::read(&package).unwrap();
+        let project = context.workspace_root.join("v8project.yaml");
+        let project_for_hook = project.clone();
+        let concurrent = "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: moved\n";
+
+        let execution = with_before_commit_hook(
+            move |_| fs::write(&project_for_hook, concurrent).unwrap(),
+            || apply_with_data(&args, &context),
+        );
+
+        assert!(!execution.outcome.ok, "{:?}", execution.outcome);
+        assert_eq!(fs::read(&package).unwrap(), before);
+        assert_eq!(fs::read_to_string(&project).unwrap(), concurrent);
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn xdto_guard_rejects_support_state_drift_before_commit() {
+        let (context, args, package, _) = xdto_guard_fixture("support-drift");
+        let before = fs::read(&package).unwrap();
+        let support = context
+            .workspace_root
+            .join("src/Ext/ParentConfigurations.bin");
+        let support_for_hook = support.clone();
+
+        let execution = with_before_commit_hook(
+            move |_| fs::write(&support_for_hook, "concurrent support state").unwrap(),
+            || apply_with_data(&args, &context),
+        );
+
+        assert!(!execution.outcome.ok, "{:?}", execution.outcome);
+        assert_eq!(fs::read(&package).unwrap(), before);
+        assert_eq!(
+            fs::read_to_string(&support).unwrap(),
+            "concurrent support state"
+        );
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn xdto_guard_rejects_resource_preimage_drift_before_commit() {
+        let (context, args, package, _) = xdto_guard_fixture("preimage-drift");
+        let concurrent = b"concurrent package bytes".to_vec();
+        let concurrent_for_hook = concurrent.clone();
+
+        let execution = with_before_commit_hook(
+            move |target| fs::write(target, &concurrent_for_hook).unwrap(),
+            || apply_with_data(&args, &context),
+        );
+
+        assert!(!execution.outcome.ok, "{:?}", execution.outcome);
+        assert_eq!(fs::read(&package).unwrap(), concurrent);
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn xdto_guard_rejects_resource_outside_selected_source_set() {
+        let (context, args, package, _) = xdto_guard_fixture("outside-source-set");
+        let outside = context.workspace_root.join("outside/Package.bin");
+        fs::create_dir_all(outside.parent().unwrap()).unwrap();
+        fs::write(&outside, PACKAGE).unwrap();
+        fs::remove_file(&package).unwrap();
+        let outcome = create_file_link_fixture_for_test(&outside, &package)
+            .expect("unexpected file-link creation error must fail the fixture test");
+        if outcome != FileLinkFixtureOutcome::Created {
+            fs::remove_dir_all(context.workspace_root).unwrap();
+            return;
+        }
+
+        let execution = apply_with_data(&args, &context);
+
+        assert!(!execution.outcome.ok, "{:?}", execution.outcome);
+        assert!(
+            execution
+                .outcome
+                .errors
+                .join("\n")
+                .contains("containment_denied"),
+            "{:?}",
+            execution.outcome.errors
+        );
+        assert_eq!(fs::read(&outside).unwrap(), PACKAGE.as_bytes());
+        fs::remove_dir_all(context.workspace_root).unwrap();
     }
 }
