@@ -46,6 +46,7 @@ pub(super) struct MetaValidationReporter {
     pub(crate) lines: Vec<String>,
     pub(crate) md_type: String,
     pub(crate) obj_name: String,
+    pub(crate) suppress_artifact: bool,
 }
 
 pub(super) struct MetaValidationRun {
@@ -68,9 +69,10 @@ pub(super) enum MetaValidationScope {
     PostWriteLocal,
 }
 
-struct MetaValidationReferenceInputs {
+struct MetaValidationReferenceInputs<'a> {
     config_dir: Option<PathBuf>,
     language_codes: Vec<String>,
+    proof_subject: Option<&'a MetadataValidationSubject>,
 }
 
 pub(crate) struct MetadataValidator;
@@ -88,6 +90,7 @@ impl MetadataValidator {
                 detailed: true,
                 max_errors: 30,
             },
+            None,
         )
         .0
     }
@@ -97,6 +100,7 @@ impl MetadataValidator {
         subject: &MetadataValidationSubject,
         _context: &WorkspaceContext,
         options: &MetaValidationOptions,
+        artifact: Option<PathBuf>,
     ) -> (MetadataValidationResult, Option<MetaValidationRun>) {
         let mut diagnostics = Vec::new();
         let mut legacy_run = None;
@@ -230,40 +234,17 @@ impl MetadataValidator {
                     .with_metadata_path(subject.target.clone())
                     .with_field("resources"),
                 );
-            } else if has_registration_image
-                && !registrations
-                    .iter()
-                    .any(|(kind, name)| kind == target_type && name == target_name)
-            {
-                let registration_index = subject
-                    .resources
-                    .iter()
-                    .position(|resource| {
-                        matches!(resource.role, MetadataResourceRole::Registration)
-                    })
-                    .unwrap_or(descriptor_index);
-                diagnostics.push(validation_diagnostic(
-                    subject,
-                    &format!("resources[{registration_index}].bytes"),
-                    format!(
-                        "{}.{} is not registered in the owner image",
-                        target_type, target_name
-                    ),
-                ));
             }
 
             let mut language_codes = Vec::new();
             let mut seen_codes = HashSet::new();
+            let is_registered = registrations
+                .iter()
+                .any(|(kind, name)| kind == target_type && name == target_name);
             if meta_validate_types_with_list_presentation().contains(&target_type) {
                 if owns_itself {
                     // External descriptors own themselves and have no Configuration image.
-                } else if registered_languages.is_empty() {
-                    diagnostics.push(validation_diagnostic(
-                        subject,
-                        "resources",
-                        "owner image has no registered language profile",
-                    ));
-                } else {
+                } else if is_registered && !registered_languages.is_empty() {
                     for language in &registered_languages {
                         match language_images.get(language) {
                             Some(code) if seen_codes.insert(code.clone()) => {
@@ -285,18 +266,36 @@ impl MetadataValidator {
                 }
             }
 
+            if diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.severity == MetaDiagnosticSeverity::Error)
+            {
+                return (failed_validation(diagnostics), legacy_run);
+            }
+
             let inputs = MetaValidationReferenceInputs {
                 config_dir: None,
                 language_codes,
+                proof_subject: Some(subject),
             };
-            match meta_validate_source(&descriptor.bytes, options, &inputs, None) {
+            match meta_validate_source(&descriptor.bytes, options, &inputs, artifact) {
                 Ok(run) => {
                     diagnostics.extend(run.errors.iter().map(|error| {
-                        validation_diagnostic(
-                            subject,
-                            validation_field_for_legacy_error(error),
-                            error.trim_start_matches("[ERROR] "),
-                        )
+                        let field = if error.contains("is not registered in the owner image") {
+                            subject
+                                .resources
+                                .iter()
+                                .position(|resource| {
+                                    matches!(resource.role, MetadataResourceRole::Registration)
+                                })
+                                .map(|index| format!("resources[{index}].bytes"))
+                                .unwrap_or_else(|| "resources".to_string())
+                        } else if error.contains("no registered language profile") {
+                            "resources".to_string()
+                        } else {
+                            validation_field_for_legacy_error(error).to_string()
+                        };
+                        validation_diagnostic(subject, &field, error.trim_start_matches("[ERROR] "))
                     }));
                     diagnostics.extend(run.warnings.iter().map(|warning| {
                         validation_warning(
@@ -311,7 +310,6 @@ impl MetadataValidator {
                     diagnostics.push(provider_diagnostic(subject, descriptor_index, error))
                 }
             }
-            validate_image_references(subject, descriptor_index, &mut diagnostics);
         } else {
             for (index, resource) in subject.resources.iter().enumerate() {
                 match resource.role {
@@ -465,153 +463,6 @@ fn validation_field_for_legacy_error(error: &str) -> &'static str {
     }
 }
 
-fn validate_image_references(
-    subject: &MetadataValidationSubject,
-    descriptor_index: usize,
-    diagnostics: &mut Vec<MetaDiagnostic>,
-) {
-    let descriptor = &subject.resources[descriptor_index].bytes;
-    let Ok((_, document)) = parse_metadata_image(descriptor) else {
-        return;
-    };
-    let Some(object) = document.root_element().children().find(|node| {
-        node.is_element() && node.tag_name().namespace() == Some("http://v8.1c.ru/8.3/MDClasses")
-    }) else {
-        return;
-    };
-    let object_type = object.tag_name().name();
-    let properties = meta_info_child(object, "Properties");
-
-    if object_type == "Document" {
-        let references = properties
-            .and_then(|properties| meta_info_child(properties, "RegisterRecords"))
-            .map(|records| {
-                meta_info_children(records, "Item")
-                    .into_iter()
-                    .map(meta_info_inner_text)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        for reference in references {
-            let found = subject.resources.iter().any(|resource| {
-                matches!(
-                    &resource.role,
-                    MetadataResourceRole::Dependency { target } if target.as_str() == reference
-                )
-            });
-            if !found {
-                diagnostics.push(validation_diagnostic(
-                    subject,
-                    "properties.registerRecords",
-                    format!("Document.RegisterRecords reference `{reference}` is unavailable"),
-                ));
-            }
-        }
-    }
-
-    let is_subordinate_register = matches!(
-        object_type,
-        "AccumulationRegister" | "AccountingRegister" | "CalculationRegister"
-    ) || (object_type == "InformationRegister"
-        && properties
-            .and_then(|node| meta_info_child_text(node, "WriteMode"))
-            .is_some_and(|value| value == "RecorderSubordinate"));
-    if is_subordinate_register {
-        let register_reference = subject.target.as_str();
-        let registrar_found = subject.resources.iter().any(|resource| {
-            matches!(
-                &resource.role,
-                MetadataResourceRole::Dependency { target }
-                    if target.segments().next() == Some("Document")
-            ) && image_contains_reference(&resource.bytes, register_reference)
-        });
-        if !registrar_found {
-            diagnostics.push(validation_warning(
-                subject,
-                "resources",
-                format!(
-                    "10. {object_type}: no registrar document found (none references '{register_reference}' in RegisterRecords)"
-                ),
-            ));
-        }
-    }
-
-    if matches!(object_type, "EventSubscription" | "ScheduledJob") {
-        let property = if object_type == "EventSubscription" {
-            "Handler"
-        } else {
-            "MethodName"
-        };
-        let Some(reference) = properties
-            .and_then(|properties| meta_info_child_text(properties, property))
-            .filter(|value| !value.trim().is_empty())
-        else {
-            return;
-        };
-        let parts = reference.split('.').collect::<Vec<_>>();
-        let parsed = if parts.len() == 3 && parts[0] == "CommonModule" {
-            Some((parts[1], parts[2]))
-        } else if parts.len() == 2 {
-            Some((parts[0], parts[1]))
-        } else {
-            None
-        };
-        let Some((module_name, procedure_name)) = parsed else {
-            diagnostics.push(validation_diagnostic(
-                subject,
-                &format!("properties.{property}"),
-                format!("{object_type}.{property} must use CommonModule.ModuleName.ProcedureName"),
-            ));
-            return;
-        };
-        let module_reference = format!("CommonModule.{module_name}");
-        let module_target =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &module_reference)
-                .expect("validated CommonModule metadata address");
-        let descriptor_found = subject.resources.iter().any(|resource| {
-            matches!(
-                &resource.role,
-                MetadataResourceRole::Dependency { target } if target == &module_target
-            )
-        });
-        if !descriptor_found {
-            diagnostics.push(validation_diagnostic(
-                subject,
-                &format!("properties.{property}"),
-                format!("CommonModule `{module_name}` referenced by {property} is unavailable"),
-            ));
-            return;
-        }
-        let module = subject.resources.iter().find(|resource| {
-            matches!(
-                &resource.role,
-                MetadataResourceRole::Module { owner } if owner == &module_target
-            )
-        });
-        let Some(module) = module else {
-            diagnostics.push(validation_warning(
-                subject,
-                &format!("properties.{property}"),
-                format!(
-                    "13. {object_type}.{property}: BSL file not found, cannot verify procedure"
-                ),
-            ));
-            return;
-        };
-        let content = std::str::from_utf8(&module.bytes)
-            .expect("module encodings are validated before reference checks");
-        if !meta_validate_bsl_has_export(content, procedure_name) {
-            diagnostics.push(validation_warning(
-                subject,
-                &format!("properties.{property}"),
-                format!(
-                    "13. {object_type}.{property}: procedure '{procedure_name}' not found as exported in CommonModule '{module_name}'"
-                ),
-            ));
-        }
-    }
-}
-
 impl MetaValidationReporter {
     pub(super) fn new(max_errors: usize, detailed: bool) -> Self {
         Self {
@@ -624,6 +475,7 @@ impl MetaValidationReporter {
             lines: vec![String::new()],
             md_type: "(unknown)".to_string(),
             obj_name: "(unknown)".to_string(),
+            suppress_artifact: false,
         }
     }
 
@@ -1041,61 +893,30 @@ fn metadata_validation_run(
     context: &WorkspaceContext,
     artifact: PathBuf,
 ) -> MetaValidationRun {
-    let (result, legacy_run) = MetadataValidator.evaluate(subject, context, options);
+    let (result, legacy_run) =
+        MetadataValidator.evaluate(subject, context, options, Some(artifact));
     let ok = result.status == MetaValidationStatus::Passed;
-    let legacy_messages = legacy_run
-        .as_ref()
-        .into_iter()
-        .flat_map(|run| run.errors.iter().chain(run.warnings.iter()))
-        .map(|message| {
-            message
-                .trim_start_matches("[ERROR] ")
-                .trim_start_matches("[WARN]  ")
-        })
-        .collect::<HashSet<_>>();
-    let supplemental_errors = result
+    if let Some(run) = legacy_run {
+        debug_assert_eq!(run.ok, ok, "report and validation status diverged");
+        return run;
+    }
+    let mut errors = result
         .diagnostics
         .iter()
-        .filter(|diagnostic| {
-            diagnostic.severity == MetaDiagnosticSeverity::Error
-                && !legacy_messages.contains(diagnostic.message.as_str())
-        })
+        .filter(|diagnostic| diagnostic.severity == MetaDiagnosticSeverity::Error)
+        .take(options.max_errors)
         .map(|diagnostic| format!("[ERROR] {}", diagnostic.message))
         .collect::<Vec<_>>();
-    let supplemental_warnings = result
+    let warnings = result
         .diagnostics
         .iter()
-        .filter(|diagnostic| {
-            diagnostic.severity == MetaDiagnosticSeverity::Warning
-                && !legacy_messages.contains(diagnostic.message.as_str())
-        })
+        .filter(|diagnostic| diagnostic.severity == MetaDiagnosticSeverity::Warning)
         .map(|diagnostic| format!("[WARN]  {}", diagnostic.message))
         .collect::<Vec<_>>();
-    let mut errors = legacy_run
-        .as_ref()
-        .map(|run| run.errors.clone())
-        .unwrap_or_default();
-    errors.extend(supplemental_errors.iter().cloned());
-    errors.truncate(options.max_errors);
-    let mut warnings = legacy_run
-        .as_ref()
-        .map(|run| run.warnings.clone())
-        .unwrap_or_default();
-    warnings.extend(supplemental_warnings.iter().cloned());
     if errors.is_empty() && !ok {
         errors.push("[ERROR] metadata validation failed".to_string());
     }
-    let stdout = if let Some(run) = legacy_run {
-        if supplemental_errors.is_empty() && supplemental_warnings.is_empty() {
-            run.stdout
-        } else {
-            let mut lines = vec![run.stdout.trim_end().to_string(), String::new()];
-            lines.push("=== Subject proof diagnostics ===".to_string());
-            lines.extend(supplemental_errors);
-            lines.extend(supplemental_warnings);
-            lines.join("\n")
-        }
-    } else if errors.is_empty() && warnings.is_empty() && !options.detailed {
+    let stdout = if errors.is_empty() && warnings.is_empty() && !options.detailed {
         format!("=== Validation OK: {} ===", subject.target)
     } else {
         let mut lines = vec![format!("=== Validation: {} ===", subject.target)];
@@ -1112,7 +933,7 @@ fn metadata_validation_run(
     MetaValidationRun {
         ok,
         stdout,
-        artifacts: vec![artifact],
+        artifacts: Vec::new(),
         errors,
         warnings,
     }
@@ -1157,6 +978,7 @@ pub(super) fn meta_validate_one_with_scope(
         MetaValidationScope::PostWriteLocal => MetaValidationReferenceInputs {
             config_dir: None,
             language_codes: Vec::new(),
+            proof_subject: None,
         },
     };
     meta_validate_source(
@@ -1263,6 +1085,10 @@ fn meta_validate_source(
         .unwrap_or_else(|| "(unknown)".to_string());
     report.obj_name = obj_name.clone();
 
+    if let Some(subject) = reference_inputs.proof_subject {
+        meta_validate_check_subject_owner_proof(&mut report, md_type, &obj_name, subject);
+    }
+
     if check1_ok {
         report.ok(format!(
             "1. Root structure: MetaDataObject/{md_type}, version {version}"
@@ -1323,6 +1149,7 @@ fn meta_validate_source(
         props_node,
         child_obj_node,
         reference_inputs.config_dir.as_deref(),
+        reference_inputs.proof_subject,
         &obj_name,
     );
     if report.stopped {
@@ -1341,6 +1168,7 @@ fn meta_validate_source(
         md_type,
         props_node,
         reference_inputs.config_dir.as_deref(),
+        reference_inputs.proof_subject,
     );
     if report.stopped {
         return meta_validate_finish(report, resolved_path);
@@ -1350,12 +1178,51 @@ fn meta_validate_source(
     meta_validate_finish(report, resolved_path)
 }
 
+fn meta_validate_check_subject_owner_proof(
+    report: &mut MetaValidationReporter,
+    md_type: &str,
+    obj_name: &str,
+    subject: &MetadataValidationSubject,
+) {
+    if matches!(md_type, "ExternalReport" | "ExternalDataProcessor") {
+        return;
+    }
+    let registrations = subject
+        .resources
+        .iter()
+        .filter(|resource| matches!(resource.role, MetadataResourceRole::Registration))
+        .filter_map(|resource| inspect_metadata_registration_image(&resource.bytes).ok())
+        .collect::<Vec<_>>();
+    let is_registered = registrations.iter().any(|registration| {
+        registration
+            .registrations
+            .iter()
+            .any(|(kind, name)| kind == md_type && name == obj_name)
+    });
+    if !is_registered {
+        report.error(format!(
+            "{md_type}.{obj_name} is not registered in the owner image"
+        ));
+        report.suppress_artifact = true;
+        return;
+    }
+    if meta_validate_types_with_list_presentation().contains(&md_type)
+        && registrations
+            .iter()
+            .all(|registration| registration.registered_languages.is_empty())
+    {
+        report.error("owner image has no registered language profile");
+        report.suppress_artifact = true;
+    }
+}
+
 pub(super) fn meta_validate_finish(
     report: MetaValidationReporter,
     artifact: PathBuf,
 ) -> Result<MetaValidationRun, String> {
+    let suppress_artifact = report.suppress_artifact;
     let (ok, result_text, errors, warnings) = report.finalize();
-    let artifacts = if artifact.as_os_str().is_empty() {
+    let artifacts = if artifact.as_os_str().is_empty() || suppress_artifact {
         Vec::new()
     } else {
         vec![artifact]
@@ -1969,6 +1836,7 @@ pub(super) fn meta_validate_check_cross_properties(
     props_node: Option<roxmltree::Node<'_, '_>>,
     child_obj_node: Option<roxmltree::Node<'_, '_>>,
     config_dir: Option<&Path>,
+    proof_subject: Option<&MetadataValidationSubject>,
     obj_name: &str,
 ) {
     let Some(props_node) = props_node else {
@@ -2115,6 +1983,7 @@ pub(super) fn meta_validate_check_cross_properties(
         md_type,
         props_node,
         config_dir,
+        proof_subject,
         &mut issues,
     );
     meta_validate_check_register_registrar(
@@ -2122,6 +1991,7 @@ pub(super) fn meta_validate_check_cross_properties(
         md_type,
         props_node,
         config_dir,
+        proof_subject,
         obj_name,
         &mut issues,
     );
@@ -2135,20 +2005,37 @@ pub(super) fn meta_validate_check_document_register_records(
     md_type: &str,
     props_node: roxmltree::Node<'_, '_>,
     config_dir: Option<&Path>,
+    proof_subject: Option<&MetadataValidationSubject>,
     issues: &mut usize,
 ) {
     if md_type != "Document" {
         return;
     }
-    let Some(config_dir) = config_dir else {
-        return;
-    };
     let Some(register_records) = meta_info_child(props_node, "RegisterRecords") else {
         return;
     };
     for item in meta_info_children(register_records, "Item") {
         let ref_value = meta_info_inner_text(item).trim().to_string();
         let Some((ref_type, ref_name)) = ref_value.split_once('.') else {
+            continue;
+        };
+        if let Some(subject) = proof_subject {
+            let found = subject.resources.iter().any(|resource| {
+                matches!(
+                    &resource.role,
+                    MetadataResourceRole::Dependency { target }
+                        if target.as_str() == ref_value
+                )
+            });
+            if !found {
+                report.warn(format!(
+                    "10. Document.RegisterRecords references '{ref_value}' but object not found in config"
+                ));
+                *issues += 1;
+            }
+            continue;
+        }
+        let Some(config_dir) = config_dir else {
             continue;
         };
         let ref_dir = match ref_type {
@@ -2174,6 +2061,7 @@ pub(super) fn meta_validate_check_register_registrar(
     md_type: &str,
     props_node: roxmltree::Node<'_, '_>,
     config_dir: Option<&Path>,
+    proof_subject: Option<&MetadataValidationSubject>,
     obj_name: &str,
     issues: &mut usize,
 ) {
@@ -2192,15 +2080,24 @@ pub(super) fn meta_validate_check_register_registrar(
     {
         return;
     }
-    let Some(config_dir) = config_dir else {
+    let reg_ref = format!("{md_type}.{obj_name}");
+    let has_registrar = if let Some(subject) = proof_subject {
+        subject.resources.iter().any(|resource| {
+            matches!(
+                &resource.role,
+                MetadataResourceRole::Dependency { target }
+                    if target.segments().next() == Some("Document")
+            ) && image_contains_reference(&resource.bytes, &reg_ref)
+        })
+    } else if let Some(config_dir) = config_dir {
+        let docs_dir = config_dir.join("Documents");
+        docs_dir.is_dir()
+            && meta_validate_registrar_document_scan(&docs_dir, &reg_ref)
+                .map(|(_, found)| found)
+                .unwrap_or(false)
+    } else {
         return;
     };
-    let docs_dir = config_dir.join("Documents");
-    let reg_ref = format!("{md_type}.{obj_name}");
-    let has_registrar = docs_dir.is_dir()
-        && meta_validate_registrar_document_scan(&docs_dir, &reg_ref)
-            .map(|(_, found)| found)
-            .unwrap_or(false);
     if !has_registrar {
         report.warn(format!(
             "10. {md_type}: no registrar document found (none references '{reg_ref}' in RegisterRecords)"
@@ -2335,11 +2232,12 @@ pub(super) fn meta_validate_check_method_reference(
     md_type: &str,
     props_node: Option<roxmltree::Node<'_, '_>>,
     config_dir: Option<&Path>,
+    proof_subject: Option<&MetadataValidationSubject>,
 ) {
     if !matches!(md_type, "EventSubscription" | "ScheduledJob") {
         return;
     }
-    let (Some(props_node), Some(config_dir)) = (props_node, config_dir) else {
+    let Some(props_node) = props_node else {
         return;
     };
     let (property, method_ref) = if md_type == "EventSubscription" {
@@ -2362,6 +2260,49 @@ pub(super) fn meta_validate_check_method_reference(
         report.error(format!(
             "13. {md_type}.{property} = '{method_ref}': expected format 'CommonModule.ModuleName.ProcedureName'"
         ));
+        return;
+    };
+    if let Some(subject) = proof_subject {
+        let module_reference = format!("CommonModule.{module_name}");
+        let module_target =
+            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &module_reference)
+                .expect("validated CommonModule metadata address");
+        let descriptor_found = subject.resources.iter().any(|resource| {
+            matches!(
+                &resource.role,
+                MetadataResourceRole::Dependency { target } if target == &module_target
+            )
+        });
+        if !descriptor_found {
+            report.error(format!(
+                "13. {md_type}.{property}: CommonModule `{module_name}` referenced by {property} is unavailable"
+            ));
+            return;
+        }
+        let module = subject.resources.iter().find(|resource| {
+            matches!(
+                &resource.role,
+                MetadataResourceRole::Module { owner } if owner == &module_target
+            )
+        });
+        let Some(module) = module else {
+            report.warn(format!(
+                "13. {md_type}.{property}: BSL file not found, cannot verify procedure"
+            ));
+            return;
+        };
+        let content = std::str::from_utf8(&module.bytes)
+            .expect("module encodings are validated before semantic reporting");
+        if !meta_validate_bsl_has_export(content, proc_name) {
+            report.warn(format!(
+                "13. {md_type}.{property}: procedure '{proc_name}' not found as exported in CommonModule '{module_name}'"
+            ));
+            return;
+        }
+        report.ok(format!("13. Method reference: {property} = '{method_ref}'"));
+        return;
+    }
+    let Some(config_dir) = config_dir else {
         return;
     };
     let module_xml = config_dir
@@ -3185,6 +3126,36 @@ mod tests {
         internal
     }
 
+    fn assert_report_summary_matches_lines(stdout: &str) {
+        let summary = stdout
+            .lines()
+            .find(|line| line.starts_with("=== Result:"))
+            .unwrap_or_else(|| panic!("missing reporter summary: {stdout}"));
+        let parts = summary.split_whitespace().collect::<Vec<_>>();
+        let reported_errors = parts[2].parse::<usize>().unwrap();
+        let reported_warnings = parts[4].parse::<usize>().unwrap();
+        let reported_checks = parts[6].trim_start_matches('(').parse::<usize>().unwrap();
+        let actual_errors = stdout
+            .lines()
+            .filter(|line| line.starts_with("[ERROR] "))
+            .count();
+        let actual_warnings = stdout
+            .lines()
+            .filter(|line| line.starts_with("[WARN]  "))
+            .count();
+        let actual_checks = stdout
+            .lines()
+            .filter(|line| {
+                line.starts_with("[OK]    ")
+                    || line.starts_with("[ERROR] ")
+                    || line.starts_with("[WARN]  ")
+            })
+            .count();
+        assert_eq!(reported_errors, actual_errors, "{stdout}");
+        assert_eq!(reported_warnings, actual_warnings, "{stdout}");
+        assert_eq!(reported_checks, actual_checks, "{stdout}");
+    }
+
     #[test]
     fn internal_valid_and_semantically_invalid_images_match_legacy_classification() {
         let registration = owner(&[("CommonModule", "Service")]);
@@ -3244,6 +3215,81 @@ mod tests {
         assert!(stdout.contains("[OK]"), "{stdout}");
         assert!(stdout.contains("checks) ==="), "{stdout}");
         assert_eq!(outcome.artifacts.len(), 1, "{outcome:?}");
+    }
+
+    #[test]
+    fn real_public_method_proof_is_counted_by_the_single_reporter() {
+        let descriptor = scheduled_job("Nightly", "CommonModule.Target.Run");
+        let registration = owner(&[("ScheduledJob", "Nightly"), ("CommonModule", "Target")]);
+        let module_descriptor = common_module("Target");
+        let mut valid = subject(
+            "ScheduledJob.Nightly",
+            Some(&descriptor),
+            &registration,
+            &[("CommonModule.Target", &module_descriptor)],
+        );
+        valid.resources.push(image(
+            MetadataResourceRole::Module {
+                owner: address("CommonModule.Target"),
+            },
+            b"Procedure Run() Export\nEndProcedure".to_vec(),
+        ));
+
+        let outcome = real_legacy_outcome("method-reporter", &valid);
+        let stdout = outcome.stdout.clone().unwrap_or_default();
+
+        assert!(outcome.ok, "{outcome:?}");
+        assert!(
+            stdout.contains("[OK]    13. Method reference: MethodName = 'CommonModule.Target.Run'"),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("Subject proof diagnostics"), "{stdout}");
+        assert_report_summary_matches_lines(&stdout);
+    }
+
+    #[test]
+    fn real_public_registrar_proof_is_counted_by_the_single_reporter() {
+        let descriptor = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/InformationRegisters/SubordinateRegister.xml"
+        ));
+        let registration = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Configuration.xml"
+        ));
+        let language = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Languages/Русский.xml"
+        ));
+        let registrar = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Documents/Регистратор.xml"
+        ))
+        .replace(
+            "InformationRegister.SubordinateRegister",
+            "InformationRegister.Other",
+        );
+        let invalid = subject(
+            "InformationRegister.SubordinateRegister",
+            Some(descriptor),
+            registration,
+            &[
+                ("Language.Русский", language),
+                ("Document.Регистратор", &registrar),
+            ],
+        );
+
+        let outcome = real_legacy_outcome("registrar-reporter", &invalid);
+        let stdout = outcome.stdout.clone().unwrap_or_default();
+
+        assert!(outcome.ok, "{outcome:?}");
+        assert!(stdout.contains("no registrar document found"), "{stdout}");
+        assert!(
+            !stdout.contains("[OK]    10. Cross-property consistency"),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("Subject proof diagnostics"), "{stdout}");
+        assert_report_summary_matches_lines(&stdout);
     }
 
     #[test]

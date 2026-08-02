@@ -3088,6 +3088,7 @@ fn validate_meta_rejects_object_missing_from_owner_registration() {
         outcome.errors.join("\n").contains("not registered"),
         "{outcome:?}"
     );
+    assert!(outcome.artifacts.is_empty(), "{outcome:?}");
     let _ = fs::remove_dir_all(&context.cwd);
 }
 
@@ -3162,6 +3163,7 @@ fn validate_meta_rejects_list_type_without_registered_languages() {
             .contains("has no registered language profile"),
         "{outcome:?}"
     );
+    assert!(outcome.artifacts.is_empty(), "{outcome:?}");
     let _ = fs::remove_dir_all(&context.cwd);
 }
 
