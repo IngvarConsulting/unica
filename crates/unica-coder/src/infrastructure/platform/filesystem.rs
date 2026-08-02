@@ -29,10 +29,42 @@ fn short_private_runtime_dir_unix() -> io::Result<PathBuf> {
 }
 
 #[cfg(unix)]
+fn runtime_directory_permissions_error(path: &Path) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        format!(
+            "short runtime directory {} must be owned by the current user and have mode 0700",
+            path.display()
+        ),
+    )
+}
+
+#[cfg(unix)]
+fn runtime_directory_metadata_is_ready(
+    path: &Path,
+    metadata: &fs::Metadata,
+    uid: libc::uid_t,
+) -> io::Result<bool> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("short runtime path {} is not a directory", path.display()),
+        ));
+    }
+    if metadata.uid() != uid {
+        return Err(runtime_directory_permissions_error(path));
+    }
+
+    Ok(metadata.permissions().mode() & 0o777 == 0o700)
+}
+
+#[cfg(unix)]
 fn ensure_short_private_runtime_dir_unix(path: &Path, uid: libc::uid_t) -> io::Result<PathBuf> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
     use std::os::unix::io::FromRawFd;
     use std::time::Duration;
 
@@ -42,23 +74,7 @@ fn ensure_short_private_runtime_dir_unix(path: &Path, uid: libc::uid_t) -> io::R
     for _ in 0..SETUP_ATTEMPTS {
         match fs::symlink_metadata(path) {
             Ok(metadata) => {
-                let mode = metadata.permissions().mode() & 0o777;
-                if !metadata.is_dir() || metadata.file_type().is_symlink() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("short runtime path {} is not a directory", path.display()),
-                    ));
-                }
-                if metadata.uid() != uid {
-                    return Err(io::Error::new(
-                        io::ErrorKind::PermissionDenied,
-                        format!(
-                            "short runtime directory {} must be owned by the current user and have mode 0700",
-                            path.display()
-                        ),
-                    ));
-                }
-                if mode == 0o700 {
+                if runtime_directory_metadata_is_ready(path, &metadata, uid)? {
                     return Ok(path.to_path_buf());
                 }
 
@@ -113,27 +129,10 @@ fn ensure_short_private_runtime_dir_unix(path: &Path, uid: libc::uid_t) -> io::R
     // Always validate once after the retry budget. In particular, a successful
     // creation on the last iteration must not be reported as disappeared.
     match fs::symlink_metadata(path) {
-        Ok(metadata)
-            if metadata.is_dir()
-                && !metadata.file_type().is_symlink()
-                && metadata.uid() == uid
-                && metadata.permissions().mode() & 0o777 == 0o700 =>
-        {
+        Ok(metadata) if runtime_directory_metadata_is_ready(path, &metadata, uid)? => {
             Ok(path.to_path_buf())
         }
-        Ok(metadata) if !metadata.is_dir() || metadata.file_type().is_symlink() => {
-            Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("short runtime path {} is not a directory", path.display()),
-            ))
-        }
-        Ok(_) => Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            format!(
-                "short runtime directory {} must be owned by the current user and have mode 0700",
-                path.display()
-            ),
-        )),
+        Ok(_) => Err(runtime_directory_permissions_error(path)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Err(io::Error::new(
             io::ErrorKind::NotFound,
             format!(
