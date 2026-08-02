@@ -1,5 +1,6 @@
 use crate::application::source_navigation::{
-    page_bounds, SOURCE_NAVIGATION_LIMIT_DEFAULT, SOURCE_NAVIGATION_LIMIT_MAX,
+    authenticate_cursor, page_bounds_from_offset, SOURCE_NAVIGATION_LIMIT_DEFAULT,
+    SOURCE_NAVIGATION_LIMIT_MAX,
 };
 use crate::application::{AdapterOutcome, SupportGuardRequirement};
 use crate::domain::source_target::{
@@ -321,6 +322,26 @@ fn info(
     let package = resolve_package(args, context)?;
     let raw =
         fs::read(&package.path).map_err(|error| format!("package_resource_missing: {error}"))?;
+    let requested = optional_string(args, "typeName")?;
+    if requested.is_some() && (args.contains_key("limit") || args.contains_key("cursor")) {
+        return Err("xdto info `typeName` detail does not accept `limit` or `cursor`".to_string());
+    }
+    if requested
+        .as_deref()
+        .is_some_and(|name| !validation::is_ncname(name))
+    {
+        return Err("xdto info `typeName` must be an XML NCName".to_string());
+    }
+    let pagination = if requested.is_none() {
+        let limit = xdto_info_limit(args)?;
+        let cursor = optional_cursor(args)?;
+        let cursor_key = xdto_info_cursor_key(&package, &raw, limit);
+        let offset =
+            authenticate_cursor(cursor.as_deref(), &cursor_key).map_err(xdto_cursor_error)?;
+        Some((limit, cursor_key, offset))
+    } else {
+        None
+    };
     let text = decode(&raw)?;
     let model = PackageModel::parse(&text).map_err(model_error)?;
     let descriptor_namespace = descriptor_namespace(&package.descriptor_path)?;
@@ -330,17 +351,6 @@ fn info(
                 .to_string(),
         );
     }
-    let requested = args
-        .get("typeName")
-        .and_then(Value::as_str)
-        .filter(|name| !name.trim().is_empty());
-    if requested.is_some() && (args.contains_key("limit") || args.contains_key("cursor")) {
-        return Err("xdto info `typeName` detail does not accept `limit` or `cursor`".to_string());
-    }
-    if requested.is_some_and(|name| !validation::is_ncname(name)) {
-        return Err("xdto info `typeName` must be an XML NCName".to_string());
-    }
-
     let value_types = model
         .types
         .iter()
@@ -352,7 +362,7 @@ fn info(
         object_types: model.types.len() - value_types,
         global_properties: model.global_properties.len(),
     };
-    let (selected, type_detail, next_cursor) = if let Some(name) = requested {
+    let (selected, type_detail, next_cursor) = if let Some(name) = requested.as_deref() {
         let matches = model
             .types
             .iter()
@@ -367,18 +377,11 @@ fn info(
         }
         (Vec::new(), Some(type_info(&package, matches[0])), None)
     } else {
-        let limit = xdto_info_limit(args)?;
-        let cursor = optional_string(args, "cursor")?;
-        let cursor_key = xdto_info_cursor_key(&package, &raw, limit);
+        let (limit, cursor_key, offset) =
+            pagination.expect("list-mode pagination was authenticated before parsing");
         let (start, end, next_cursor) =
-            page_bounds(cursor.as_deref(), &cursor_key, limit, model.types.len()).map_err(
-                |error| {
-                    format!(
-                        "cursor_invalid: {}",
-                        error.replacen("source navigation", "xdto info", 1)
-                    )
-                },
-            )?;
+            page_bounds_from_offset(offset, &cursor_key, limit, model.types.len())
+                .map_err(xdto_cursor_error)?;
         (
             model.types[start..end].iter().collect::<Vec<_>>(),
             None,
@@ -649,6 +652,23 @@ fn optional_string(args: &Map<String, Value>, name: &str) -> Result<Option<Strin
         .transpose()
 }
 
+fn optional_cursor(args: &Map<String, Value>) -> Result<Option<String>, String> {
+    args.get("cursor")
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|value| {
+                    !value.is_empty() && value.chars().all(|character| !character.is_whitespace())
+                })
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    "cursor_invalid: cursor must be a non-empty token without whitespace"
+                        .to_string()
+                })
+        })
+        .transpose()
+}
+
 fn xdto_info_cursor_key(package: &Package, raw: &[u8], limit: usize) -> String {
     let digest = Sha256::digest(raw)
         .iter()
@@ -657,6 +677,13 @@ fn xdto_info_cursor_key(package: &Package, raw: &[u8], limit: usize) -> String {
     format!(
         "xdto-info-v1:{}:{}:list:limit={limit}:sha256={digest}",
         package.source_set, package.metadata_path
+    )
+}
+
+fn xdto_cursor_error(error: String) -> String {
+    format!(
+        "cursor_invalid: {}",
+        error.replacen("source navigation", "xdto info", 1)
     )
 }
 
@@ -1325,17 +1352,76 @@ mod tests {
     }
 
     #[test]
+    fn xdto_info_and_edit_share_the_escaped_dotted_property_identity() {
+        let (context, _, package, _) = xdto_guard_fixture("dotted-property-identity");
+        let before = r#"<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" targetNamespace="urn:test">
+	<objectType name="Holder">
+		<property name="A.B">
+			<typeDef xsi:type="ObjectType">
+			</typeDef>
+		</property>
+	</objectType>
+</package>"#;
+        fs::write(&package, before).unwrap();
+        let app = UnicaApplication::new();
+        let public_args = |entries: &[(&str, Value)]| {
+            let mut call = args(entries);
+            call.insert(
+                "cwd".to_string(),
+                json!(context.workspace_root.to_string_lossy()),
+            );
+            call.insert("sourceSet".to_string(), json!("main"));
+            call.insert("metadataPath".to_string(), json!("XDTOPackage.Sample"));
+            call
+        };
+
+        let info = app
+            .call_tool(
+                "unica.xdto.info",
+                &public_args(&[("typeName", json!("Holder"))]),
+            )
+            .unwrap();
+        assert!(info.ok, "{info:?}");
+        let dotted = &info.data.as_ref().unwrap()["typeDetail"]["properties"][0];
+        assert_eq!(dotted["name"], "A.B");
+        assert!(info.data.as_ref().unwrap()["findings"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+
+        let edit = app
+            .call_tool(
+                "unica.xdto.edit",
+                &public_args(&[
+                    ("dryRun", json!(false)),
+                    ("operation", json!("add-property")),
+                    ("typeName", json!("Holder")),
+                    ("propertyPath", json!(r"A\.B")),
+                    ("property", json!({"name":"Child", "type":"xs:string"})),
+                ]),
+            )
+            .unwrap();
+        assert!(edit.ok, "{edit:?}");
+        assert_eq!(edit.data.as_ref().unwrap()["noOp"], false);
+        let after = fs::read_to_string(&package).unwrap();
+        assert!(after.contains(r#"<property name="A.B">"#), "{after}");
+        assert!(
+            after.contains(r#"<property name="Child" type="xs:string"/>"#),
+            "{after}"
+        );
+
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
     fn xdto_info_pages_in_document_order_and_binds_cursor_to_request_and_snapshot() {
         let (context, _, package, _) = xdto_guard_fixture("info-cursor");
-        fs::write(
-            &package,
-            r#"<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:test">
+        let snapshot = r#"<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:test">
 	<valueType name="First" base="xs:string"/>
 	<objectType name="Second"/>
 	<objectType name="Third"/>
-</package>"#,
-        )
-        .unwrap();
+</package>"#;
+        fs::write(&package, snapshot).unwrap();
         let mut first_request = args(&[
             ("sourceSet", json!("main")),
             ("metadataPath", json!("XDTOPackage.Sample")),
@@ -1381,11 +1467,38 @@ mod tests {
             .expect("malformed cursor must fail")
             .starts_with("cursor_invalid:"));
 
+        for whitespace_cursor in [" nav1-token", "nav1 token", "nav1-token "] {
+            let mut whitespace_request = first_request.clone();
+            whitespace_request.insert("cursor".to_string(), json!(whitespace_cursor));
+            assert!(
+                info_with_data(&whitespace_request, &context)
+                    .err()
+                    .expect("cursor whitespace must fail in the handler")
+                    .starts_with("cursor_invalid:"),
+                "{whitespace_cursor:?}"
+            );
+        }
+
+        fs::write(&package, b"<package").unwrap();
+        assert!(info_with_data(&first_request, &context)
+            .err()
+            .expect("malformed replacement snapshot must invalidate the cursor before parsing")
+            .starts_with("cursor_invalid:"));
+
         fs::write(
             &package,
-            format!("{}\n", fs::read_to_string(&package).unwrap()),
+            snapshot.replace(
+                "targetNamespace=\"urn:test\"",
+                "targetNamespace=\"urn:other\"",
+            ),
         )
         .unwrap();
+        assert!(info_with_data(&first_request, &context)
+            .err()
+            .expect("namespace-changing replacement must invalidate the cursor before validation")
+            .starts_with("cursor_invalid:"));
+
+        fs::write(&package, format!("{snapshot}\n")).unwrap();
         assert!(info_with_data(&first_request, &context)
             .err()
             .expect("stale cursor must fail")
@@ -1888,7 +2001,7 @@ mod tests {
     }
 
     #[test]
-    fn xdto_validation_writer_prefixes_bare_self_qname_before_validation() {
+    fn xdto_validation_rejects_bare_property_qname_without_rewriting() {
         let (context, mut args, _, _) = xdto_guard_fixture("validation-bare-qname");
         args.insert("operation".to_string(), json!("add-property"));
         args.insert("typeName".to_string(), json!("ЛюбаяСсылка"));
@@ -1902,7 +2015,7 @@ mod tests {
         assert!(!execution.outcome.ok, "{:?}", execution.outcome);
         assert_eq!(
             finding_codes(&execution, "introduced"),
-            vec!["unknown_type_reference"]
+            vec!["invalid_qname"]
         );
         fs::remove_dir_all(context.workspace_root).unwrap();
     }

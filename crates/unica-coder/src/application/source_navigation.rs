@@ -329,10 +329,23 @@ pub(crate) fn page_bounds(
     limit: usize,
     total: usize,
 ) -> Result<(usize, usize, Option<String>), String> {
-    let offset = match cursor {
-        Some(cursor) => decode_cursor(cursor, cursor_key)?,
-        None => 0,
-    };
+    let offset = authenticate_cursor(cursor, cursor_key)?;
+    page_bounds_from_offset(offset, cursor_key, limit, total)
+}
+
+pub(crate) fn authenticate_cursor(cursor: Option<&str>, cursor_key: &str) -> Result<usize, String> {
+    match cursor {
+        Some(cursor) => decode_cursor(cursor, cursor_key),
+        None => Ok(0),
+    }
+}
+
+pub(crate) fn page_bounds_from_offset(
+    offset: usize,
+    cursor_key: &str,
+    limit: usize,
+    total: usize,
+) -> Result<(usize, usize, Option<String>), String> {
     if offset > total {
         return Err("source navigation cursor is outside the current result set".to_string());
     }
