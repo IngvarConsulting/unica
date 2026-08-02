@@ -5,6 +5,7 @@ use crate::infrastructure::native_operations::text_snapshot::{
 use roxmltree::Node;
 use serde::Serialize;
 use serde_json::{Map, Value};
+use std::collections::BTreeSet;
 use std::ops::Range;
 
 #[allow(dead_code)]
@@ -87,10 +88,11 @@ pub(super) fn plan(
         "add-value-type" => {
             let name = super::required(args, "name")?;
             let base = super::required(args, "base")?;
+            let desired_base = desired_qname(root, root, base);
             let existing = named_types(root, name);
             if !existing.is_empty() {
                 let exact = existing.len() == 1
-                    && compatible_value_type(existing[0], &semantic_qname(root, base));
+                    && compatible_value_type(existing[0], &desired_base.semantic);
                 finding = Some(duplicate_finding(
                     "duplicate_type",
                     existing[0],
@@ -101,9 +103,10 @@ pub(super) fn plan(
             } else {
                 let element_name = lexical_xdto_child_name(before, root, "valueType")?;
                 let fragment = format!(
-                    "<{element_name} name=\"{}\" base=\"{}\"/>",
+                    "<{element_name}{} name=\"{}\" base=\"{}\"/>",
+                    desired_base.namespace_declaration(),
                     escape_attribute(name),
-                    escape_attribute(base)
+                    escape_attribute(&desired_base.raw)
                 );
                 Some(insert_top_level(before, root, TopLevelInsert::ValueType, &fragment)?)
             }
@@ -139,10 +142,7 @@ pub(super) fn plan(
                 type_name,
                 args.get("propertyPath").and_then(Value::as_str),
             )?;
-            let desired_qname = DesiredPropertyQName {
-                raw: type_name_value.to_string(),
-                semantic: semantic_qname(target, type_name_value),
-            };
+            let desired_qname = desired_qname(root, target, type_name_value);
             let desired_lower = property
                 .get("minOccurs")
                 .and_then(Value::as_u64)
@@ -166,7 +166,8 @@ pub(super) fn plan(
                     .unwrap_or_default();
                 let element_name = lexical_xdto_child_name(before, target, "property")?;
                 let fragment = format!(
-                    "<{element_name} name=\"{}\" type=\"{}\"{lower}/>",
+                    "<{element_name}{} name=\"{}\" type=\"{}\"{lower}/>",
+                    desired_qname.namespace_declaration(),
                     escape_attribute(name),
                     escape_attribute(&desired_qname.raw)
                 );
@@ -217,9 +218,62 @@ struct SemanticQName {
     lexical_valid: bool,
 }
 
-struct DesiredPropertyQName {
+struct NamespaceBinding {
+    prefix: String,
+    uri: String,
+}
+
+struct DesiredQName {
     raw: String,
     semantic: SemanticQName,
+    local_binding: Option<NamespaceBinding>,
+}
+
+impl DesiredQName {
+    fn namespace_declaration(&self) -> String {
+        self.local_binding
+            .as_ref()
+            .map_or_else(String::new, |binding| {
+                format!(
+                    " xmlns:{}=\"{}\"",
+                    binding.prefix,
+                    escape_attribute(&binding.uri)
+                )
+            })
+    }
+}
+
+fn desired_qname(root: Node<'_, '_>, target: Node<'_, '_>, raw: &str) -> DesiredQName {
+    let mut semantic = semantic_qname(target, raw);
+    let local_binding = semantic
+        .unresolved_prefix
+        .as_deref()
+        .and_then(|prefix| unique_package_namespace_binding(root, prefix));
+    if let Some(binding) = &local_binding {
+        semantic.namespace = Some(binding.uri.clone());
+        semantic.unresolved_prefix = None;
+    }
+    DesiredQName {
+        raw: raw.to_string(),
+        semantic,
+        local_binding,
+    }
+}
+
+fn unique_package_namespace_binding(root: Node<'_, '_>, prefix: &str) -> Option<NamespaceBinding> {
+    let uris = root
+        .descendants()
+        .filter(Node::is_element)
+        .flat_map(|node| node.namespaces())
+        .filter(|namespace| namespace.name() == Some(prefix))
+        .map(|namespace| namespace.uri().to_string())
+        .collect::<BTreeSet<_>>();
+    let mut uris = uris.into_iter();
+    let uri = uris.next()?;
+    uris.next().is_none().then(|| NamespaceBinding {
+        prefix: prefix.to_string(),
+        uri,
+    })
 }
 
 fn semantic_qname(node: Node<'_, '_>, raw: &str) -> SemanticQName {
@@ -1460,6 +1514,10 @@ mod tests {
         assert!(value_plan
             .after
             .contains("name=\"Alias\" base=\"self:Local\""));
+        assert_eq!(
+            value_plan.after.matches("xmlns:self=\"urn:test\"").count(),
+            1
+        );
         let value_model = super::super::model::PackageModel::parse(&value_plan.after).unwrap();
         assert!(super::super::validation::validate(&value_model).is_empty());
 
@@ -1476,13 +1534,20 @@ mod tests {
         assert!(property_plan
             .after
             .contains("name=\"Added\" type=\"self:Local\""));
+        assert_eq!(
+            property_plan
+                .after
+                .matches("xmlns:self=\"urn:test\"")
+                .count(),
+            1
+        );
         let property_model =
             super::super::model::PackageModel::parse(&property_plan.after).unwrap();
         assert!(super::super::validation::validate(&property_model).is_empty());
     }
 
     #[test]
-    fn xdto_writer_preserves_undeclared_qnames_for_validation_to_reject() {
+    fn xdto_writer_leaves_unbound_qnames_for_validation_to_reject() {
         let before = package(
             "\t<valueType name=\"Local\" base=\"xs:string\"/>\n\t<objectType name=\"Target\"/>\n",
         );
@@ -1492,9 +1557,7 @@ mod tests {
             "add-value-type",
         )
         .unwrap();
-        assert!(value_plan
-            .after
-            .contains("name=\"Alias\" base=\"missing:Local\""));
+        assert!(!value_plan.after.contains("xmlns:missing="));
         let value_model = super::super::model::PackageModel::parse(&value_plan.after).unwrap();
         let value_findings = super::super::validation::validate(&value_model);
         assert_eq!(value_findings.len(), 1);
@@ -1509,15 +1572,121 @@ mod tests {
             "add-property",
         )
         .unwrap();
-
-        assert!(property_plan
-            .after
-            .contains("name=\"Added\" type=\"missing:Local\""));
+        assert!(!property_plan.after.contains("xmlns:missing="));
         let property_model =
             super::super::model::PackageModel::parse(&property_plan.after).unwrap();
         let property_findings = super::super::validation::validate(&property_model);
         assert_eq!(property_findings.len(), 1);
         assert_eq!(property_findings[0].code, "undeclared_prefix");
+    }
+
+    #[test]
+    fn xdto_writer_repeats_one_package_wide_binding_on_each_new_qname_element() {
+        let root = ROOT.replace(" xmlns:tns=\"urn:test\"", "");
+        let before = format!(
+            "<package {root}>\n\t<property xmlns:self=\"urn:test\" name=\"Anchor\" type=\"xs:string\"/>\n\t<valueType name=\"Local\" base=\"xs:string\"/>\n\t<objectType name=\"Target\"/>\n</package>"
+        );
+
+        let value_plan = plan(
+            &before,
+            &args(&[("name", json!("Alias")), ("base", json!("self:Local"))]),
+            "add-value-type",
+        )
+        .expect("one package-wide prefix identity must be reusable");
+        assert!(value_plan
+            .after
+            .contains("<valueType xmlns:self=\"urn:test\" name=\"Alias\" base=\"self:Local\"/>"));
+        let value_model = super::super::model::PackageModel::parse(&value_plan.after).unwrap();
+        assert!(super::super::validation::validate(&value_model).is_empty());
+
+        let property_plan = plan(
+            &before,
+            &args(&[
+                ("typeName", json!("Target")),
+                ("property", json!({"name":"Added", "type":"self:Local"})),
+            ]),
+            "add-property",
+        )
+        .expect("one package-wide prefix identity must be reusable");
+        assert!(property_plan
+            .after
+            .contains("<property xmlns:self=\"urn:test\" name=\"Added\" type=\"self:Local\"/>"));
+        let property_model =
+            super::super::model::PackageModel::parse(&property_plan.after).unwrap();
+        assert!(super::super::validation::validate(&property_model).is_empty());
+    }
+
+    #[test]
+    fn xdto_writer_rejects_ambiguous_package_wide_prefix_identity() {
+        let root = ROOT.replace(" xmlns:tns=\"urn:test\"", "");
+        let before = format!(
+            "<package {root}>\n\t<property xmlns:self=\"urn:first\" name=\"First\" type=\"xs:string\"/>\n\t<property xmlns:self=\"urn:second\" name=\"Second\" type=\"xs:string\"/>\n\t<valueType name=\"Local\" base=\"xs:string\"/>\n\t<objectType name=\"Target\"/>\n</package>"
+        );
+
+        for (operation, arguments) in [
+            (
+                "add-value-type",
+                args(&[("name", json!("Alias")), ("base", json!("self:Local"))]),
+            ),
+            (
+                "add-property",
+                args(&[
+                    ("typeName", json!("Target")),
+                    ("property", json!({"name":"Added", "type":"self:Local"})),
+                ]),
+            ),
+        ] {
+            let planned = plan(&before, &arguments, operation).unwrap();
+            assert!(!planned
+                .after
+                .contains("xmlns:self=\"urn:first\" name=\"Alias\""));
+            assert!(!planned
+                .after
+                .contains("xmlns:self=\"urn:second\" name=\"Alias\""));
+            let model = super::super::model::PackageModel::parse(&planned.after).unwrap();
+            let findings = super::super::validation::validate(&model);
+            assert!(
+                findings
+                    .iter()
+                    .any(|finding| finding.code == "undeclared_prefix"),
+                "{operation}: {findings:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn xdto_writer_compares_duplicates_against_the_proven_package_binding() {
+        let root = ROOT.replace(" xmlns:tns=\"urn:test\"", "");
+        let before = format!(
+            "<package {root}>\n\t<property xmlns:self=\"urn:test\" name=\"Anchor\" type=\"xs:string\"/>\n\t<valueType name=\"Local\" base=\"xs:string\"/>\n\t<valueType xmlns:self=\"urn:test\" name=\"ExistingValue\" base=\"self:Local\"/>\n\t<objectType name=\"Target\">\n\t\t<property xmlns:self=\"urn:test\" name=\"ExistingProperty\" type=\"self:Local\"/>\n\t</objectType>\n</package>"
+        );
+
+        let value = plan(
+            &before,
+            &args(&[
+                ("name", json!("ExistingValue")),
+                ("base", json!("self:Local")),
+            ]),
+            "add-value-type",
+        )
+        .unwrap();
+        assert_eq!(value.after, before);
+        assert!(!value.conflict());
+
+        let property = plan(
+            &before,
+            &args(&[
+                ("typeName", json!("Target")),
+                (
+                    "property",
+                    json!({"name":"ExistingProperty", "type":"self:Local"}),
+                ),
+            ]),
+            "add-property",
+        )
+        .unwrap();
+        assert_eq!(property.after, before);
+        assert!(!property.conflict());
     }
 
     #[test]

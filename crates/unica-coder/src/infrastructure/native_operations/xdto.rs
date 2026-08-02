@@ -799,44 +799,67 @@ fn edit(
             }
         }
     };
-    if !preview && !no_op {
-        let publish_result = (|| -> Result<(), String> {
+    let publication_warnings = if !preview && !no_op {
+        let publish_result = (|| -> Result<Vec<String>, XdtoPublicationFailure> {
             let mut transaction = CompileTransaction::new();
-            transaction.replace_bytes(&package.path, &before, after.clone())?;
+            transaction
+                .replace_bytes(&package.path, &before, after.clone())
+                .map_err(|error| XdtoPublicationFailure::new(XdtoPublicationStage::Plan, error))?;
             let descriptor = guard_resolved_platform_xml_target_dependencies(
                 &mut transaction,
                 &package.handle,
                 context,
-            )?;
+            )
+            .map_err(|error| {
+                XdtoPublicationFailure::new(XdtoPublicationStage::DependencyGuard, error)
+            })?;
             if descriptor != package.descriptor_path {
-                return Err("target_not_found: resolved XDTO descriptor changed".to_string());
+                return Err(XdtoPublicationFailure::new(
+                    XdtoPublicationStage::TargetIdentity,
+                    "resolved XDTO descriptor changed",
+                ));
             }
-            let resource = resolve_xdto_resource(&package.handle, context)?;
+            let resource = resolve_xdto_resource(&package.handle, context)
+                .map_err(XdtoPublicationFailure::from_resolution)?;
             if resource != package.path {
-                return Err("containment_denied: resolved XDTO resource changed".to_string());
+                return Err(XdtoPublicationFailure::new(
+                    XdtoPublicationStage::TargetIdentity,
+                    "resolved XDTO resource changed",
+                ));
             }
-            guard_resolved_support(&resource, context)?;
-            transaction.commit()?;
-            Ok(())
+            guard_resolved_support(&resource, context).map_err(|error| {
+                XdtoPublicationFailure::new(XdtoPublicationStage::SupportGuard, error)
+            })?;
+            let report = transaction.commit().map_err(|error| {
+                XdtoPublicationFailure::new(XdtoPublicationStage::Commit, error)
+            })?;
+            Ok(xdto_publication_cleanup_warnings(
+                &package,
+                !report.cleanup_warnings.is_empty(),
+            ))
         })();
-        if let Err(error) = publish_result {
-            let error = public_publish_error(&error, &package, context);
-            return XdtoExecution {
-                outcome: AdapterOutcome {
-                    ok: false,
-                    summary: "unica.xdto.edit could not publish XDTO mutation".to_string(),
-                    changes: Vec::new(),
-                    warnings: Vec::new(),
-                    errors: vec![error],
-                    artifacts: Vec::new(),
-                    stdout: None,
-                    stderr: None,
-                    command: None,
-                },
-                data: Some(data),
-            };
+        match publish_result {
+            Ok(warnings) => warnings,
+            Err(error) => {
+                return XdtoExecution {
+                    outcome: AdapterOutcome {
+                        ok: false,
+                        summary: "unica.xdto.edit could not publish XDTO mutation".to_string(),
+                        changes: Vec::new(),
+                        warnings: Vec::new(),
+                        errors: vec![error.public_projection(&package)],
+                        artifacts: Vec::new(),
+                        stdout: None,
+                        stderr: None,
+                        command: None,
+                    },
+                    data: Some(data),
+                };
+            }
         }
-    }
+    } else {
+        Vec::new()
+    };
     XdtoExecution {
         outcome: AdapterOutcome {
             ok: true,
@@ -856,7 +879,7 @@ fn edit(
                 })
                 .into_iter()
                 .collect(),
-            warnings: Vec::new(),
+            warnings: publication_warnings,
             errors: Vec::new(),
             artifacts: vec![format!(
                 "{} + {}",
@@ -870,20 +893,80 @@ fn edit(
     }
 }
 
-fn public_publish_error(error: &str, package: &Package, context: &WorkspaceContext) -> String {
-    let mut public = error.to_string();
-    for (path, replacement) in [
-        (&package.path, "XDTO package resource"),
-        (&package.descriptor_path, "XDTO package descriptor"),
-        (&context.workspace_root, "<workspace>"),
-        (&context.cwd, "<workspace>"),
-    ] {
-        let rendered = path.to_string_lossy();
-        if !rendered.is_empty() {
-            public = public.replace(rendered.as_ref(), replacement);
+#[derive(Clone, Copy, Debug)]
+enum XdtoPublicationFailureCode {
+    PublicationFailed,
+}
+
+impl XdtoPublicationFailureCode {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::PublicationFailed => "publication_failed",
         }
     }
-    format!("publication_failed: {public}")
+}
+
+#[derive(Clone, Copy, Debug)]
+enum XdtoPublicationStage {
+    Plan,
+    DependencyGuard,
+    TargetIdentity,
+    ResourceResolution,
+    SupportGuard,
+    Commit,
+}
+
+#[derive(Debug)]
+struct XdtoPublicationFailure {
+    code: XdtoPublicationFailureCode,
+    stage: XdtoPublicationStage,
+    internal_cause: String,
+}
+
+impl XdtoPublicationFailure {
+    fn new(stage: XdtoPublicationStage, internal_cause: impl Into<String>) -> Self {
+        Self {
+            code: XdtoPublicationFailureCode::PublicationFailed,
+            stage,
+            internal_cause: internal_cause.into(),
+        }
+    }
+
+    fn from_resolution(error: XdtoResolutionError) -> Self {
+        Self::new(
+            XdtoPublicationStage::ResourceResolution,
+            format!("{}: {}", error.code.as_str(), error.internal_cause),
+        )
+    }
+
+    fn public_projection(&self, package: &Package) -> String {
+        format!(
+            "{}: XDTO package {} + {} could not be published",
+            self.code.as_str(),
+            package.source_set,
+            package.metadata_path
+        )
+    }
+}
+
+impl std::fmt::Display for XdtoPublicationFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{:?}: {}", self.stage, self.internal_cause)
+    }
+}
+
+impl std::error::Error for XdtoPublicationFailure {}
+
+fn xdto_publication_cleanup_warnings(package: &Package, cleanup_incomplete: bool) -> Vec<String> {
+    cleanup_incomplete
+        .then(|| {
+            format!(
+                "publication_cleanup_incomplete: XDTO package {} + {} was committed; private recovery cleanup is incomplete",
+                package.source_set, package.metadata_path
+            )
+        })
+        .into_iter()
+        .collect()
 }
 
 #[derive(Debug)]
@@ -1042,11 +1125,10 @@ fn resolve_package(
 fn resolve_xdto_resource(
     handle: &ClosedPlatformXmlTarget,
     context: &WorkspaceContext,
-) -> Result<PathBuf, String> {
+) -> Result<PathBuf, XdtoResolutionError> {
     let evidence = platform_xml_resource_evidence(context, handle)
-        .map_err(XdtoResolutionError::from_source_target)
-        .map_err(|error| error.to_string())?;
-    prove_xdto_resource(&evidence, context).map_err(|error| error.to_string())
+        .map_err(XdtoResolutionError::from_source_target)?;
+    prove_xdto_resource(&evidence, context)
 }
 
 fn prove_xdto_resource(
@@ -1173,9 +1255,15 @@ fn guard_resolved_support(target: &Path, context: &WorkspaceContext) -> Result<(
 }
 
 fn decode(raw: &[u8]) -> Result<String, String> {
-    std::str::from_utf8(raw)
-        .map(|value| value.trim_start_matches('\u{feff}').to_string())
-        .map_err(|_| "unsupported_node: Package.bin is not UTF-8".to_string())
+    let value = std::str::from_utf8(raw)
+        .map_err(|_| "unsupported_node: Package.bin is not UTF-8".to_string())?;
+    let body = value.strip_prefix('\u{feff}').unwrap_or(value);
+    if body.starts_with('\u{feff}') {
+        return Err(
+            "unsupported_node: Package.bin must begin with at most one UTF-8 BOM".to_string(),
+        );
+    }
+    Ok(body.to_string())
 }
 fn encode_like(before: &[u8], text: &str) -> Vec<u8> {
     let mut bytes = Vec::new();
@@ -1241,7 +1329,10 @@ mod tests {
     use crate::application::{SupportGuardRequirement, UnicaApplication};
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::native_operations::common::support_guard_violation;
-    use crate::infrastructure::native_operations::single_file_publisher::with_before_commit_hook;
+    use crate::infrastructure::native_operations::single_file_publisher::{
+        with_before_commit_hook, with_publish_failpoints, PublishCheckpoint,
+    };
+    use crate::infrastructure::platform::filesystem::create_dir_symlink_for_test;
     use crate::infrastructure::platform::testing::{
         create_file_link_fixture_for_test, FileLinkFixtureOutcome,
     };
@@ -1315,6 +1406,67 @@ mod tests {
         assert!(decode(&bytes).unwrap().contains("\r\n"));
     }
 
+    #[test]
+    fn enterprise_data_public_edit_reuses_local_tns_binding_byte_exactly_and_repeats() {
+        let (context, arguments, package) = enterprise_xdto_fixture("local-tns");
+        let before = fs::read(&package).unwrap();
+        let marker = b"\t\t\t</typeDef>\r\n";
+        let insertion = concat!(
+            "\t\t\t\t<property xmlns:tns=\"http://v8.1c.ru/edi/edi_stnd/EnterpriseData/1.17.3\" ",
+            "name=\"Документ_НовыйДокумент\" type=\"tns:Документ_ЗаказКлиента\" ",
+            "lowerBound=\"0\"/>\r\n"
+        )
+        .as_bytes();
+        let marker_offset = before
+            .windows(marker.len())
+            .position(|window| window == marker)
+            .expect("tracked EnterpriseData fixture must contain the nested typeDef close");
+        assert_eq!(
+            before
+                .windows(marker.len())
+                .filter(|window| *window == marker)
+                .count(),
+            1
+        );
+        let mut expected = Vec::with_capacity(before.len() + insertion.len());
+        expected.extend_from_slice(&before[..marker_offset]);
+        expected.extend_from_slice(insertion);
+        expected.extend_from_slice(&before[marker_offset..]);
+
+        let preview = UnicaApplication::new()
+            .call_tool(
+                "unica.xdto.edit",
+                &public_edit_args(&context, &arguments, true),
+            )
+            .unwrap();
+        assert!(preview.ok, "{preview:?}");
+        assert_eq!(preview.data.as_ref().unwrap()["noOp"], false);
+        assert_eq!(preview.cache.events, vec!["MetadataChanged"]);
+        assert_eq!(fs::read(&package).unwrap(), before);
+
+        let applied = UnicaApplication::new()
+            .call_tool(
+                "unica.xdto.edit",
+                &public_edit_args(&context, &arguments, false),
+            )
+            .unwrap();
+        assert!(applied.ok, "{applied:?}");
+        assert_eq!(applied.cache.events, vec!["MetadataChanged"]);
+        assert_eq!(fs::read(&package).unwrap(), expected);
+
+        let repeated = UnicaApplication::new()
+            .call_tool(
+                "unica.xdto.edit",
+                &public_edit_args(&context, &arguments, true),
+            )
+            .unwrap();
+        assert!(repeated.ok, "{repeated:?}");
+        assert_eq!(repeated.data.as_ref().unwrap()["noOp"], true);
+        assert!(repeated.cache.events.is_empty());
+        assert_eq!(fs::read(&package).unwrap(), expected);
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
     fn xdto_guard_fixture(
         name: &str,
     ) -> (
@@ -1381,6 +1533,110 @@ mod tests {
 
     fn data_json<T: Serialize>(data: Option<T>) -> Value {
         serde_json::to_value(data.expect("typed XDTO execution must carry data")).unwrap()
+    }
+
+    fn public_edit_args(
+        context: &WorkspaceContext,
+        base: &Map<String, Value>,
+        dry_run: bool,
+    ) -> Map<String, Value> {
+        let mut arguments = base.clone();
+        arguments.insert(
+            "cwd".to_string(),
+            json!(context.workspace_root.to_string_lossy()),
+        );
+        arguments.insert("dryRun".to_string(), json!(dry_run));
+        arguments
+    }
+
+    fn transaction_debris(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+        fn visit(path: &std::path::Path, debris: &mut Vec<std::path::PathBuf>) {
+            let Ok(entries) = fs::read_dir(path) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.contains(".unica-recovery-"))
+                {
+                    debris.push(path.clone());
+                }
+                if path.is_dir() {
+                    visit(&path, debris);
+                }
+            }
+        }
+
+        let mut debris = Vec::new();
+        visit(root, &mut debris);
+        debris
+    }
+
+    fn enterprise_xdto_fixture(
+        name: &str,
+    ) -> (WorkspaceContext, Map<String, Value>, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "unica-xdto-enterprise-{name}-{}-{}",
+            std::process::id(),
+            TEMP_NONCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let source = root.join("src");
+        let descriptor = source.join("XDTOPackages/EnterpriseData_1_17_3.xml");
+        let package = source.join("XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin");
+        fs::create_dir_all(package.parent().unwrap()).unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        fs::write(
+            source.join("Configuration.xml"),
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/fixtures/xdto/enterprise-data-minimal/Configuration.xml"
+            )),
+        )
+        .unwrap();
+        fs::write(
+            &descriptor,
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/fixtures/xdto/enterprise-data-minimal/XDTOPackages/EnterpriseData_1_17_3.xml"
+            )),
+        )
+        .unwrap();
+        fs::write(
+            &package,
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/fixtures/xdto/enterprise-data-minimal/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin"
+            )),
+        )
+        .unwrap();
+        let context = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let arguments = args(&[
+            ("sourceSet", json!("main")),
+            ("metadataPath", json!("XDTOPackage.EnterpriseData_1_17_3")),
+            ("operation", json!("add-property")),
+            ("typeName", json!("ЛюбаяСсылка")),
+            ("propertyPath", json!("СсылкаНаОбъект")),
+            (
+                "property",
+                json!({
+                    "name":"Документ_НовыйДокумент",
+                    "type":"tns:Документ_ЗаказКлиента",
+                    "minOccurs":0
+                }),
+            ),
+        ]);
+        (context, arguments, package)
     }
 
     #[test]
@@ -1765,6 +2021,178 @@ mod tests {
             assert!(repeated.cache.invalidated.is_empty(), "dryRun={dry_run}");
             assert_eq!(fs::read(&package).unwrap(), after);
         }
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn xdto_public_edit_rejects_two_or_more_boms_without_bytes_or_cache_events() {
+        let (context, mut arguments, package, _) = xdto_guard_fixture("multiple-bom");
+        arguments.insert("name".to_string(), json!("СоставнойЛюбойОбъект"));
+
+        for bom_count in [2, 3] {
+            let mut before = Vec::new();
+            for _ in 0..bom_count {
+                before.extend_from_slice(&[0xef, 0xbb, 0xbf]);
+            }
+            before.extend_from_slice(PACKAGE.as_bytes());
+            fs::write(&package, &before).unwrap();
+
+            for dry_run in [true, false] {
+                let result = UnicaApplication::new()
+                    .call_tool(
+                        "unica.xdto.edit",
+                        &public_edit_args(&context, &arguments, dry_run),
+                    )
+                    .unwrap();
+                assert!(
+                    !result.ok,
+                    "bomCount={bom_count}, dryRun={dry_run}: {result:?}"
+                );
+                assert_eq!(
+                    result.errors,
+                    ["unsupported_node: Package.bin must begin with at most one UTF-8 BOM"]
+                );
+                assert!(
+                    result.cache.events.is_empty(),
+                    "bomCount={bom_count}, dryRun={dry_run}"
+                );
+                assert!(
+                    result.cache.invalidated.is_empty(),
+                    "bomCount={bom_count}, dryRun={dry_run}"
+                );
+                assert_eq!(
+                    fs::read(&package).unwrap(),
+                    before,
+                    "bomCount={bom_count}, dryRun={dry_run}"
+                );
+            }
+        }
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn xdto_public_edit_surfaces_logical_cleanup_warning_after_committed_bytes() {
+        let (context, arguments, package, _) = xdto_guard_fixture("cleanup-warning");
+        let before = fs::read(&package).unwrap();
+
+        let result = with_publish_failpoints(&[PublishCheckpoint::Cleanup], || {
+            apply_with_data(&arguments, &context)
+        });
+
+        assert!(result.outcome.ok, "{:?}", result.outcome);
+        let expected_warning = concat!(
+            "publication_cleanup_incomplete: XDTO package main + XDTOPackage.Sample ",
+            "was committed; private recovery cleanup is incomplete"
+        );
+        assert_eq!(result.outcome.warnings, [expected_warning]);
+        let committed = fs::read(&package).unwrap();
+        assert_ne!(committed, before);
+        assert!(String::from_utf8_lossy(&committed).contains("name=\"Added\""));
+        let debris = transaction_debris(&context.workspace_root);
+        assert_eq!(debris.len(), 1, "{debris:?}");
+        assert_eq!(fs::read(debris[0].join("original")).unwrap(), before);
+        let public = serde_json::to_string(&json!({
+            "outcome": result.outcome,
+            "data": result.data,
+        }))
+        .unwrap();
+        for forbidden in [
+            context.workspace_root.to_string_lossy().as_ref(),
+            package.to_string_lossy().as_ref(),
+            "Package.bin",
+            ".unica-recovery-",
+            "injected publication cleanup failure",
+        ] {
+            assert!(
+                !public.contains(forbidden),
+                "leaked {forbidden:?}: {public}"
+            );
+        }
+        fs::remove_dir_all(&debris[0]).unwrap();
+        assert!(transaction_debris(&context.workspace_root).is_empty());
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn xdto_publication_failure_from_symlinked_cwd_is_closed_and_logical() {
+        let (context, arguments, package, _) = xdto_guard_fixture("symlink-publication");
+        let alias = context.workspace_root.parent().unwrap().join(format!(
+            "{}-alias",
+            context
+                .workspace_root
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+        ));
+        let Some(link) = create_dir_symlink_for_test(&context.workspace_root, &alias) else {
+            fs::remove_dir_all(context.workspace_root).unwrap();
+            return;
+        };
+        link.unwrap();
+        let support = context
+            .workspace_root
+            .join("src/Ext/ParentConfigurations.bin");
+        let support_for_hook = support.clone();
+        let mut public_arguments = arguments.clone();
+        public_arguments.insert("cwd".to_string(), json!(alias.to_string_lossy()));
+        public_arguments.insert("dryRun".to_string(), json!(false));
+
+        let result = with_before_commit_hook(
+            move |_| fs::write(&support_for_hook, b"concurrent support state").unwrap(),
+            || {
+                UnicaApplication::new()
+                    .call_tool("unica.xdto.edit", &public_arguments)
+                    .unwrap()
+            },
+        );
+
+        assert!(!result.ok, "{result:?}");
+        assert_eq!(
+            result.errors,
+            [concat!(
+                "publication_failed: XDTO package main + XDTOPackage.Sample ",
+                "could not be published"
+            )]
+        );
+        assert!(result.cache.events.is_empty());
+        assert!(result.cache.invalidated.is_empty());
+        let public = serde_json::to_string(&json!({
+            "summary": result.summary,
+            "changes": result.changes,
+            "warnings": result.warnings,
+            "errors": result.errors,
+            "artifacts": result.artifacts,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "command": result.command,
+            "diagnostics": result.diagnostics,
+            "data": result.data,
+            "job": result.job,
+        }))
+        .unwrap();
+        for forbidden in [
+            context.workspace_root.to_string_lossy().as_ref(),
+            alias.to_string_lossy().as_ref(),
+            package.to_string_lossy().as_ref(),
+            support.to_string_lossy().as_ref(),
+            "ParentConfigurations.bin",
+            "Package.bin",
+            "Configuration.xml",
+            "provider",
+            "absence guard",
+            "compile transaction",
+            ".unica-recovery-",
+        ] {
+            assert!(
+                !public.contains(forbidden),
+                "leaked {forbidden:?}: {public}"
+            );
+        }
+        assert!(support.is_file());
+        #[cfg(windows)]
+        fs::remove_dir(&alias).unwrap();
+        #[cfg(not(windows))]
+        fs::remove_file(&alias).unwrap();
         fs::remove_dir_all(context.workspace_root).unwrap();
     }
 
@@ -2228,7 +2656,7 @@ mod tests {
     }
 
     #[test]
-    fn xdto_guard_rejects_support_state_drift_before_commit() {
+    fn xdto_guard_rejects_support_state_drift_without_public_path_leak() {
         let (context, args, package, _) = xdto_guard_fixture("support-drift");
         let before = fs::read(&package).unwrap();
         let support = context
@@ -2260,8 +2688,15 @@ mod tests {
 
         assert!(!execution.outcome.ok, "{:?}", execution.outcome);
         let error = execution.outcome.errors.join("\n");
-        assert!(error.contains("absence guard"), "{error}");
-        assert!(error.contains("ParentConfigurations.bin"), "{error}");
+        assert_eq!(
+            error,
+            concat!(
+                "publication_failed: XDTO package main + XDTOPackage.Sample ",
+                "could not be published"
+            )
+        );
+        assert!(!error.contains("ParentConfigurations.bin"), "{error}");
+        assert!(!error.contains(context.workspace_root.to_string_lossy().as_ref()));
         assert_eq!(fs::read(&package).unwrap(), before);
         assert_eq!(fs::read(&support).unwrap(), concurrent_support);
         let violation = support_guard_violation(&package, SupportGuardRequirement::Editable)
