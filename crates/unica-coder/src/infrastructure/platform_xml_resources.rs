@@ -1140,6 +1140,35 @@ mod tests {
     }
 
     #[test]
+    fn source_resources_keep_unsupported_source_format_as_a_missing_target() {
+        let fixture = Fixture::new(b"Procedure Run()\nEndProcedure\n");
+        fs::create_dir_all(fixture.root.join("external")).unwrap();
+        fs::write(
+            fixture.root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n  - name: external\n    type: EXTERNAL_DATA_PROCESSORS\n    path: external\n",
+        )
+        .unwrap();
+        let (provider, _) = provider();
+
+        let error = provider
+            .resources(
+                SourceResourcesRequest::Open(OpenResourceSnapshotRequest {
+                    target: SourceTarget {
+                        source_set: "external".to_string(),
+                        metadata_path: None,
+                    },
+                    scope: ResourceScope::SelfOnly,
+                    limit: 50,
+                }),
+                &fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code, SourceResourceErrorCode::TargetNotFound);
+    }
+
+    #[test]
     fn source_resources_report_a_missing_source_set_name_as_an_invalid_request() {
         let fixture = Fixture::new(b"Procedure Run()\nEndProcedure\n");
         let (provider, _) = provider();

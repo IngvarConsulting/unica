@@ -77,10 +77,10 @@ fn support_guard_target(
     match policy {
         SupportGuardPolicy::HandlerResolved { requirement } => {
             let resolved = match operation {
-                "xdto-edit" => resolve_xdto_guard_path(args, context),
-                _ => resolve_code_patch_guard_path(args, context),
+                "xdto-edit" => resolve_xdto_guard_path(args, context).ok(),
+                _ => resolve_code_patch_guard_path(args, context).ok(),
             };
-            resolved.ok().map(|path| (path, requirement))
+            resolved.map(|path| (path, requirement))
         }
         SupportGuardPolicy::PathArgs { names, requirement } => {
             support_guard_path_arg(args, context, names, requirement)

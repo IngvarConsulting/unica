@@ -15,6 +15,7 @@ use crate::domain::source_resources::{
 };
 use crate::domain::workspace::WorkspaceContext;
 use serde_json::{Map, Value};
+use std::fmt;
 use std::path::PathBuf;
 
 pub(crate) struct HandlerOutcome {
@@ -98,6 +99,83 @@ pub(crate) enum FormatGuardCheck {
         diagnostic: Value,
     },
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum XdtoPublicErrorCode {
+    SourceSetUnknown,
+    TargetNotFound,
+    NotAnXdtoPackage,
+    PackageResourceMissing,
+    ContainmentDenied,
+}
+
+impl XdtoPublicErrorCode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::SourceSetUnknown => "source_set_unknown",
+            Self::TargetNotFound => "target_not_found",
+            Self::NotAnXdtoPackage => "not_an_xdto_package",
+            Self::PackageResourceMissing => "package_resource_missing",
+            Self::ContainmentDenied => "containment_denied",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PublicFormatGuardError {
+    code: XdtoPublicErrorCode,
+    message: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FormatGuardError {
+    public: Option<PublicFormatGuardError>,
+    internal_cause: String,
+}
+
+impl FormatGuardError {
+    pub(crate) fn internal(cause: impl Into<String>) -> Self {
+        Self {
+            public: None,
+            internal_cause: cause.into(),
+        }
+    }
+
+    pub(crate) fn xdto(
+        code: XdtoPublicErrorCode,
+        public_message: impl Into<String>,
+        internal_cause: impl Into<String>,
+    ) -> Self {
+        Self {
+            public: Some(PublicFormatGuardError {
+                code,
+                message: public_message.into(),
+            }),
+            internal_cause: internal_cause.into(),
+        }
+    }
+
+    pub(crate) fn public_projection(&self) -> Option<(XdtoPublicErrorCode, &str)> {
+        self.public
+            .as_ref()
+            .map(|public| (public.code, public.message.as_str()))
+    }
+
+    pub(crate) fn into_internal_cause(self) -> String {
+        self.internal_cause
+    }
+}
+
+impl fmt::Display for FormatGuardError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.public.as_ref() {
+            Some(public) => write!(formatter, "{}: {}", public.code.as_str(), public.message),
+            None => formatter.write_str(&self.internal_cause),
+        }
+    }
+}
+
+impl std::error::Error for FormatGuardError {}
 
 pub(crate) trait ApplicationPorts: Send + Sync {
     fn discover_workspace(
@@ -189,7 +267,7 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         _spec: ToolSpec,
         _args: &Map<String, Value>,
         _context: &WorkspaceContext,
-    ) -> Result<FormatGuardCheck, String> {
+    ) -> Result<FormatGuardCheck, FormatGuardError> {
         Ok(FormatGuardCheck::Allow)
     }
 

@@ -5,7 +5,7 @@ use crate::domain::events::{runtime_event_kind, DomainEvent, DomainEventKind};
 use crate::domain::workspace::WorkspaceContext;
 pub(crate) use operation_descriptors::SupportGuardRequirement;
 pub(crate) use outcome::AdapterOutcome;
-use ports::{ApplicationPorts, FormatGuardCheck, SupportGuardCheck};
+use ports::{ApplicationPorts, FormatGuardCheck, FormatGuardError, SupportGuardCheck};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
@@ -489,9 +489,7 @@ fn call_tool(
     let mut format_diagnostic = None;
     let format_guard = ports
         .evaluate_format_guard(spec, args, &context)
-        .map_err(|error| {
-            project_xdto_guard_error(xdto_target.as_ref(), "format_guard_failed", error)
-        })?;
+        .map_err(|error| project_xdto_format_guard_error(xdto_target.as_ref(), error))?;
     match format_guard {
         FormatGuardCheck::Allow => {}
         FormatGuardCheck::Warn {
@@ -779,6 +777,24 @@ fn project_xdto_guard_error(
     target.map_or(internal_error, |target| {
         format!("{code}: guard evaluation failed for {}", target.identity())
     })
+}
+
+fn project_xdto_format_guard_error(
+    target: Option<&XdtoLogicalTarget>,
+    error: FormatGuardError,
+) -> String {
+    let Some(target) = target else {
+        return error.into_internal_cause();
+    };
+    match error.public_projection() {
+        Some((code, message)) => {
+            format!("{}: {} — {message}", code.as_str(), target.identity())
+        }
+        None => format!(
+            "format_guard_failed: guard evaluation failed for {}",
+            target.identity()
+        ),
+    }
 }
 
 fn invoke_code_intelligence_search(
@@ -2327,6 +2343,91 @@ mod tests {
             assert!(!error.contains("/private/provider"), "{guard:?}: {error}");
             assert!(!error.contains("Package.bin"), "{guard:?}: {error}");
         }
+    }
+
+    #[test]
+    fn xdto_format_guard_preserves_known_resolver_codes_without_physical_handles() {
+        let (root, workspace) =
+            xdto_public_guard_workspace("unica-xdto-resolver-errors", "2.20", None);
+        std::fs::create_dir_all(workspace.join("external")).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n  - name: external\n    type: EXTERNAL_DATA_PROCESSORS\n    path: external\n",
+        )
+        .unwrap();
+
+        let cases = [
+            (
+                "source_set_unknown",
+                "missing + XDTOPackage.Sample",
+                UnicaApplication::new()
+                    .call_tool(
+                        "unica.xdto.info",
+                        &xdto_public_info_args(&workspace, "missing", "XDTOPackage.Sample"),
+                    )
+                    .expect_err("unknown source set must remain an application error"),
+            ),
+            (
+                "target_not_found",
+                "main + XDTOPackage.Missing",
+                UnicaApplication::new()
+                    .call_tool(
+                        "unica.xdto.info",
+                        &xdto_public_info_args(&workspace, "main", "XDTOPackage.Missing"),
+                    )
+                    .expect_err("missing logical target must remain an application error"),
+            ),
+            (
+                "not_an_xdto_package",
+                "external + XDTOPackage.Sample",
+                UnicaApplication::new()
+                    .call_tool(
+                        "unica.xdto.info",
+                        &xdto_public_info_args(&workspace, "external", "XDTOPackage.Sample"),
+                    )
+                    .expect_err("unsupported source format must remain an application error"),
+            ),
+        ];
+
+        std::fs::remove_file(workspace.join("src/XDTOPackages/Sample/Ext/Package.bin")).unwrap();
+        let missing_resource = UnicaApplication::new()
+            .call_tool(
+                "unica.xdto.info",
+                &xdto_public_info_args(&workspace, "main", "XDTOPackage.Sample"),
+            )
+            .expect_err("missing Package.bin must remain an application error");
+        let expected_codes = [
+            "source_set_unknown",
+            "target_not_found",
+            "not_an_xdto_package",
+            "package_resource_missing",
+        ];
+        let actual_codes = cases
+            .iter()
+            .map(|(_, _, error)| {
+                error
+                    .split_once(':')
+                    .map_or(error.as_str(), |(code, _)| code)
+            })
+            .chain(std::iter::once(
+                missing_resource
+                    .split_once(':')
+                    .map_or(missing_resource.as_str(), |(code, _)| code),
+            ))
+            .collect::<Vec<_>>();
+        assert_eq!(actual_codes, expected_codes);
+
+        for (expected_code, expected_target, error) in &cases {
+            assert_xdto_public_error_is_logical(error, expected_code, expected_target, &workspace);
+        }
+        assert_xdto_public_error_is_logical(
+            &missing_resource,
+            "package_resource_missing",
+            "main + XDTOPackage.Sample",
+            &workspace,
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -7184,7 +7285,7 @@ mod tests {
                 _spec: ToolSpec,
                 args: &Map<String, Value>,
                 _context: &WorkspaceContext,
-            ) -> Result<FormatGuardCheck, String> {
+            ) -> Result<FormatGuardCheck, FormatGuardError> {
                 self.record("format", args);
                 Ok(FormatGuardCheck::Allow)
             }
@@ -9835,12 +9936,12 @@ mod tests {
             _spec: ToolSpec,
             _args: &Map<String, Value>,
             _context: &WorkspaceContext,
-        ) -> Result<FormatGuardCheck, String> {
+        ) -> Result<FormatGuardCheck, FormatGuardError> {
             match self.guard {
-                FailingXdtoGuard::Format => Err(
+                FailingXdtoGuard::Format => Err(FormatGuardError::internal(
                     "failed to inspect /private/provider/workspace/src/Configuration.xml"
                         .to_string(),
-                ),
+                )),
                 FailingXdtoGuard::Support => Ok(FormatGuardCheck::Allow),
             }
         }
@@ -10093,6 +10194,48 @@ mod tests {
             ("operation".to_string(), json!("add-object-type")),
             ("name".to_string(), json!("Added")),
         ])
+    }
+
+    fn xdto_public_info_args(
+        workspace: &std::path::Path,
+        source_set: &str,
+        metadata_path: &str,
+    ) -> Map<String, Value> {
+        Map::from_iter([
+            (
+                "cwd".to_string(),
+                Value::String(workspace.display().to_string()),
+            ),
+            ("sourceSet".to_string(), json!(source_set)),
+            ("metadataPath".to_string(), json!(metadata_path)),
+        ])
+    }
+
+    fn assert_xdto_public_error_is_logical(
+        error: &str,
+        expected_code: &str,
+        expected_target: &str,
+        workspace: &std::path::Path,
+    ) {
+        assert!(error.starts_with(expected_code), "{error}");
+        assert!(error.contains(expected_target), "{error}");
+        let serialized = serde_json::to_string(error).unwrap();
+        for forbidden in [
+            workspace.display().to_string(),
+            workspace.join("src").display().to_string(),
+            "XDTOPackages/Sample/Ext/Package.bin".to_string(),
+            "XDTOPackages\\Sample\\Ext\\Package.bin".to_string(),
+            "XDTOPackages/Sample.xml".to_string(),
+            "XDTOPackages\\Sample.xml".to_string(),
+            "Package.bin".to_string(),
+            "Configuration.xml".to_string(),
+            "provider".to_string(),
+        ] {
+            assert!(
+                !serialized.contains(&forbidden),
+                "leaked {forbidden:?}: {serialized}"
+            );
+        }
     }
 
     fn assert_xdto_public_fields_are_logical(

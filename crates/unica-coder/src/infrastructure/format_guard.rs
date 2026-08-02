@@ -1,7 +1,7 @@
 use crate::application::operation_descriptors::{
     native_operation_descriptor, FormatGuardPolicy, FormatPathPolicy,
 };
-use crate::application::ports::FormatGuardCheck;
+use crate::application::ports::{FormatGuardCheck, FormatGuardError};
 use crate::application::{AdapterOutcome, ToolHandler, ToolSpec};
 use crate::domain::format_profile::{
     classify_root_version, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
@@ -62,7 +62,7 @@ pub(crate) fn evaluate_format_guard(
     spec: ToolSpec,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Result<FormatGuardCheck, String> {
+) -> Result<FormatGuardCheck, FormatGuardError> {
     let ToolHandler::NativeOperation { operation, .. } = spec.handler else {
         return Ok(FormatGuardCheck::Allow);
     };
@@ -253,6 +253,7 @@ fn effective_format_paths(
 ) -> Result<Vec<PathBuf>, String> {
     let planned_new_outputs = create_only_planned_xml_paths(descriptor.operation, args, context);
     effective_format_paths_with_planned_outputs(descriptor, args, context, &planned_new_outputs)
+        .map_err(FormatGuardError::into_internal_cause)
 }
 
 fn effective_format_paths_with_planned_outputs(
@@ -260,7 +261,7 @@ fn effective_format_paths_with_planned_outputs(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
     planned_new_outputs: &[PathBuf],
-) -> Result<Vec<PathBuf>, String> {
+) -> Result<Vec<PathBuf>, FormatGuardError> {
     let mut paths = if matches!(
         descriptor.operation,
         "cf-init" | "epf-init" | "erf-init" | "support-edit" | "meta-validate"
@@ -297,7 +298,8 @@ fn effective_format_paths_with_planned_outputs(
             FormatPathPolicy::FormCompile => form_compile_format_paths(args, context),
         }
     };
-    add_operation_format_dependencies(descriptor.operation, args, context, &mut paths)?;
+    add_operation_format_dependencies(descriptor.operation, args, context, &mut paths)
+        .map_err(FormatGuardError::internal)?;
     if matches!(descriptor.operation, "epf-init" | "erf-init") {
         if let Some(output_dir) = planned_new_outputs
             .first()
@@ -987,7 +989,7 @@ fn handler_resolved_format_paths(
     descriptor: &crate::application::operation_descriptors::OperationDescriptor,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Result<Vec<PathBuf>, String> {
+) -> Result<Vec<PathBuf>, FormatGuardError> {
     let raw = descriptor
         .source_path_args
         .iter()
@@ -1024,7 +1026,9 @@ fn handler_resolved_format_paths(
         };
     let paths = resolved.or(fallback).into_iter().collect::<Vec<_>>();
     if matches!(descriptor.operation, "xdto-info" | "xdto-edit") && paths.is_empty() {
-        return Err("format guard contract: XDTO HandlerResolved target is empty".to_string());
+        return Err(FormatGuardError::internal(
+            "format guard contract: XDTO HandlerResolved target is empty",
+        ));
     }
     Ok(paths)
 }
@@ -1087,7 +1091,7 @@ fn absolutize(raw: &str, cwd: &Path) -> PathBuf {
 mod tests {
     use super::{effective_format_paths, evaluate_format_guard};
     use crate::application::operation_descriptors::native_operation_descriptor;
-    use crate::application::ports::FormatGuardCheck;
+    use crate::application::ports::{FormatGuardCheck, XdtoPublicErrorCode};
     use crate::application::tools;
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::native_operations::cfe::cfe_borrow_format_dependency_inspection;
@@ -2346,7 +2350,11 @@ mod tests {
             Err(error) => error,
         };
 
-        assert!(error.contains("target_not_found"), "{error}");
+        assert_eq!(
+            error.public_projection().map(|(code, _)| code),
+            Some(XdtoPublicErrorCode::TargetNotFound)
+        );
+        assert!(error.to_string().contains("target_not_found"), "{error}");
         let _ = std::fs::remove_dir_all(root);
     }
 

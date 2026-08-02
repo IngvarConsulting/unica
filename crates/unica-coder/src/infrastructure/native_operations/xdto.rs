@@ -1,11 +1,12 @@
+use crate::application::ports::{FormatGuardError, XdtoPublicErrorCode};
 use crate::application::source_navigation::{
     authenticate_cursor, page_bounds_from_offset, SOURCE_NAVIGATION_LIMIT_DEFAULT,
     SOURCE_NAVIGATION_LIMIT_MAX,
 };
 use crate::application::{AdapterOutcome, SupportGuardRequirement};
 use crate::domain::source_target::{
-    MetadataAddress, SourceTarget, SourceTargetError, SourceTargetErrorCode, TargetKind,
-    PLATFORM_XML_8_3_27_FORMAT_2_20,
+    MetadataAddress, SourceTarget, SourceTargetError, SourceTargetErrorCode,
+    SourceTargetErrorReason, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::common::guard_resolved_platform_xml_target_dependencies;
@@ -298,8 +299,10 @@ pub(crate) fn info_with_data(
 pub(crate) fn resolve_xdto_guard_path(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Result<PathBuf, String> {
-    resolve_package(args, context).map(|package| package.path)
+) -> Result<PathBuf, FormatGuardError> {
+    resolve_package(args, context)
+        .map(|package| package.path)
+        .map_err(XdtoResolutionError::into_format_guard)
 }
 
 pub(crate) fn preview_with_data(
@@ -319,7 +322,7 @@ fn info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Result<XdtoExecution<XdtoInfoData>, String> {
-    let package = resolve_package(args, context)?;
+    let package = resolve_package(args, context).map_err(|error| error.to_string())?;
     let raw =
         fs::read(&package.path).map_err(|error| format!("package_resource_missing: {error}"))?;
     let requested = optional_string(args, "typeName")?;
@@ -693,7 +696,7 @@ fn edit(
     preview: bool,
 ) -> XdtoExecution<XdtoEditData> {
     let planned = (|| -> Result<MutationPlan, PlanningFailure> {
-        let package = resolve_package(args, context)?;
+        let package = resolve_package(args, context).map_err(|error| error.to_string())?;
         let before = fs::read(&package.path)
             .map_err(|error| format!("package_resource_missing: {error}"))?;
         let text = decode(&before)?;
@@ -883,6 +886,70 @@ fn public_publish_error(error: &str, package: &Package, context: &WorkspaceConte
     format!("publication_failed: {public}")
 }
 
+#[derive(Debug)]
+struct XdtoResolutionError {
+    code: XdtoPublicErrorCode,
+    public_message: String,
+    internal_cause: String,
+}
+
+impl XdtoResolutionError {
+    fn new(code: XdtoPublicErrorCode, internal_cause: impl Into<String>) -> Self {
+        let public_message = match code {
+            XdtoPublicErrorCode::SourceSetUnknown => "the selected XDTO source set is unavailable",
+            XdtoPublicErrorCode::TargetNotFound => {
+                "the logical XDTO package target could not be resolved"
+            }
+            XdtoPublicErrorCode::NotAnXdtoPackage => "the logical target is not an XDTO package",
+            XdtoPublicErrorCode::PackageResourceMissing => {
+                "the logical XDTO package resource is missing"
+            }
+            XdtoPublicErrorCode::ContainmentDenied => {
+                "the logical XDTO package target is outside the permitted source boundary"
+            }
+        };
+        Self {
+            code,
+            public_message: public_message.to_string(),
+            internal_cause: internal_cause.into(),
+        }
+    }
+
+    fn from_source_target(error: SourceTargetError) -> Self {
+        let code = match (error.code, error.reason()) {
+            (
+                SourceTargetErrorCode::SourceRootNotAddressable,
+                SourceTargetErrorReason::SourceFormatUnsupported,
+            ) => XdtoPublicErrorCode::NotAnXdtoPackage,
+            (SourceTargetErrorCode::SourceSetRequired, _)
+            | (SourceTargetErrorCode::SourceSetNotFound, _)
+            | (SourceTargetErrorCode::SourceRootNotAddressable, _) => {
+                XdtoPublicErrorCode::SourceSetUnknown
+            }
+            (SourceTargetErrorCode::TargetKindMismatch, _) => XdtoPublicErrorCode::NotAnXdtoPackage,
+            (SourceTargetErrorCode::ContainmentDenied, _) => XdtoPublicErrorCode::ContainmentDenied,
+            (SourceTargetErrorCode::MetadataAddressInvalid, _)
+            | (SourceTargetErrorCode::MetadataAddressNotFound, _)
+            | (SourceTargetErrorCode::AddressProfileUnsupported, _) => {
+                XdtoPublicErrorCode::TargetNotFound
+            }
+        };
+        Self::new(code, error.to_string())
+    }
+
+    fn into_format_guard(self) -> FormatGuardError {
+        FormatGuardError::xdto(self.code, self.public_message, self.internal_cause)
+    }
+}
+
+impl std::fmt::Display for XdtoResolutionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}: {}", self.code.as_str(), self.public_message)
+    }
+}
+
+impl std::error::Error for XdtoResolutionError {}
+
 struct Package {
     path: PathBuf,
     descriptor_path: PathBuf,
@@ -922,30 +989,41 @@ impl From<String> for PlanningFailure {
 fn resolve_package(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Result<Package, String> {
-    let source_set = required(args, "sourceSet")?;
-    let raw_address = required(args, "metadataPath")?;
+) -> Result<Package, XdtoResolutionError> {
+    let source_set = required(args, "sourceSet")
+        .map_err(|error| XdtoResolutionError::new(XdtoPublicErrorCode::SourceSetUnknown, error))?;
+    let raw_address = required(args, "metadataPath")
+        .map_err(|error| XdtoResolutionError::new(XdtoPublicErrorCode::TargetNotFound, error))?;
     let address = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw_address)
-        .map_err(|error| format!("target_not_found: {error}"))?;
+        .map_err(XdtoResolutionError::from_source_target)?;
     let parts = address.as_str().split('.').collect::<Vec<_>>();
     if parts.len() != 2 || parts[0] != "XDTOPackage" {
-        return Err("not_an_xdto_package: metadataPath must be XDTOPackage.<name>".to_string());
+        return Err(XdtoResolutionError::new(
+            XdtoPublicErrorCode::NotAnXdtoPackage,
+            "metadataPath must be XDTOPackage.<name>",
+        ));
     }
     if parts[1].is_empty() || parts[1].contains(['/', '\\']) || parts[1] == "." || parts[1] == ".."
     {
-        return Err("containment_denied: XDTO package name is not a path segment".to_string());
+        return Err(XdtoResolutionError::new(
+            XdtoPublicErrorCode::ContainmentDenied,
+            "XDTO package name is not a path segment",
+        ));
     }
     let target = SourceTarget {
         source_set: source_set.to_string(),
         metadata_path: Some(address),
     };
     let resolution = resolve_platform_xml_target(context, &target, TargetKindPolicy::Any)
-        .map_err(map_xdto_target_error)?;
+        .map_err(XdtoResolutionError::from_source_target)?;
     if resolution.resolved.target_kind != TargetKind::MetadataObject {
-        return Err("not_an_xdto_package: metadataPath must identify an XDTO package".to_string());
+        return Err(XdtoResolutionError::new(
+            XdtoPublicErrorCode::NotAnXdtoPackage,
+            "metadataPath must identify an XDTO package",
+        ));
     }
     let evidence = platform_xml_resource_evidence(context, &resolution.handle)
-        .map_err(map_xdto_target_error)?;
+        .map_err(XdtoResolutionError::from_source_target)?;
     let path = prove_xdto_resource(&evidence, context)?;
     Ok(Package {
         path,
@@ -965,24 +1043,32 @@ fn resolve_xdto_resource(
     handle: &ClosedPlatformXmlTarget,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
-    let evidence =
-        platform_xml_resource_evidence(context, handle).map_err(map_xdto_target_error)?;
-    prove_xdto_resource(&evidence, context)
+    let evidence = platform_xml_resource_evidence(context, handle)
+        .map_err(XdtoResolutionError::from_source_target)
+        .map_err(|error| error.to_string())?;
+    prove_xdto_resource(&evidence, context).map_err(|error| error.to_string())
 }
 
 fn prove_xdto_resource(
     evidence: &PlatformXmlResourceEvidence,
     context: &WorkspaceContext,
-) -> Result<PathBuf, String> {
+) -> Result<PathBuf, XdtoResolutionError> {
     let descriptor_stem = evidence
         .target_path
         .file_stem()
         .filter(|stem| !stem.is_empty())
-        .ok_or_else(|| "target_not_found: XDTO descriptor has no file stem".to_string())?;
-    let descriptor_parent = evidence
-        .target_path
-        .parent()
-        .ok_or_else(|| "containment_denied: XDTO descriptor has no parent".to_string())?;
+        .ok_or_else(|| {
+            XdtoResolutionError::new(
+                XdtoPublicErrorCode::TargetNotFound,
+                "XDTO descriptor has no file stem",
+            )
+        })?;
+    let descriptor_parent = evidence.target_path.parent().ok_or_else(|| {
+        XdtoResolutionError::new(
+            XdtoPublicErrorCode::ContainmentDenied,
+            "XDTO descriptor has no parent",
+        )
+    })?;
     let resource = WorkspacePathPolicy::new(context)
         .resolve_write(
             descriptor_parent
@@ -990,32 +1076,68 @@ fn prove_xdto_resource(
                 .join("Ext")
                 .join("Package.bin"),
         )
-        .map_err(|_| "containment_denied: cannot resolve XDTO package resource".to_string())?;
-    ensure_no_link_components(&evidence.source_root, &resource)?;
+        .map_err(|error| {
+            XdtoResolutionError::new(
+                XdtoPublicErrorCode::ContainmentDenied,
+                format!("cannot resolve XDTO package resource: {error}"),
+            )
+        })?;
+    ensure_no_link_components(&evidence.source_root, &resource)
+        .map_err(|error| XdtoResolutionError::new(XdtoPublicErrorCode::ContainmentDenied, error))?;
     let metadata = match fs::symlink_metadata(&resource) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == ErrorKind::NotFound => {
-            return Err(
-                "package_resource_missing: logical XDTO package has no Package.bin resource"
-                    .to_string(),
-            )
+            return Err(XdtoResolutionError::new(
+                XdtoPublicErrorCode::PackageResourceMissing,
+                format!("{}: {error}", resource.display()),
+            ));
         }
-        Err(_) => {
-            return Err("containment_denied: cannot inspect XDTO package resource".to_string())
+        Err(error) => {
+            return Err(XdtoResolutionError::new(
+                XdtoPublicErrorCode::ContainmentDenied,
+                format!("cannot inspect {}: {error}", resource.display()),
+            ));
         }
     };
     if metadata_is_link_or_reparse_point(&metadata) {
-        return Err("containment_denied: XDTO package resource must not be a link".to_string());
+        return Err(XdtoResolutionError::new(
+            XdtoPublicErrorCode::ContainmentDenied,
+            format!(
+                "XDTO package resource must not be a link: {}",
+                resource.display()
+            ),
+        ));
     }
     if !metadata.is_file() {
-        return Err("package_resource_missing: Package.bin is not a regular file".to_string());
+        return Err(XdtoResolutionError::new(
+            XdtoPublicErrorCode::PackageResourceMissing,
+            format!(
+                "XDTO package resource is not a regular file: {}",
+                resource.display()
+            ),
+        ));
     }
-    let source_root = normalize_path_identity(&evidence.source_root)
-        .map_err(|_| "containment_denied: cannot resolve XDTO sourceSet".to_string())?;
-    let resource_identity = normalize_path_identity(&resource)
-        .map_err(|_| "containment_denied: cannot resolve XDTO package resource".to_string())?;
+    let source_root = normalize_path_identity(&evidence.source_root).map_err(|error| {
+        XdtoResolutionError::new(
+            XdtoPublicErrorCode::ContainmentDenied,
+            format!("cannot resolve XDTO sourceSet identity: {error}"),
+        )
+    })?;
+    let resource_identity = normalize_path_identity(&resource).map_err(|error| {
+        XdtoResolutionError::new(
+            XdtoPublicErrorCode::ContainmentDenied,
+            format!("cannot resolve XDTO package resource identity: {error}"),
+        )
+    })?;
     if !resource_identity.starts_with(&source_root) {
-        return Err("containment_denied: XDTO package resource escapes sourceSet".to_string());
+        return Err(XdtoResolutionError::new(
+            XdtoPublicErrorCode::ContainmentDenied,
+            format!(
+                "XDTO package resource {} escapes sourceSet {}",
+                resource_identity.display(),
+                source_root.display()
+            ),
+        ));
     }
     Ok(resource)
 }
@@ -1039,26 +1161,6 @@ fn ensure_no_link_components(source_root: &Path, path: &Path) -> Result<(), Stri
         }
     }
     Ok(())
-}
-
-fn map_xdto_target_error(error: SourceTargetError) -> String {
-    let code = match error.code {
-        SourceTargetErrorCode::SourceSetRequired | SourceTargetErrorCode::SourceSetNotFound => {
-            "source_set_unknown"
-        }
-        SourceTargetErrorCode::SourceRootNotAddressable
-            if error.message.contains("must be a Platform XML") =>
-        {
-            "not_an_xdto_package"
-        }
-        SourceTargetErrorCode::SourceRootNotAddressable => "source_set_unknown",
-        SourceTargetErrorCode::TargetKindMismatch => "not_an_xdto_package",
-        SourceTargetErrorCode::ContainmentDenied => "containment_denied",
-        SourceTargetErrorCode::MetadataAddressInvalid
-        | SourceTargetErrorCode::MetadataAddressNotFound
-        | SourceTargetErrorCode::AddressProfileUnsupported => "target_not_found",
-    };
-    format!("{code}: {}", error.message)
 }
 
 fn guard_resolved_support(target: &Path, context: &WorkspaceContext) -> Result<(), String> {

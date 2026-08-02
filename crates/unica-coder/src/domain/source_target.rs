@@ -90,11 +90,19 @@ pub enum SourceTargetErrorCode {
     ContainmentDenied,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SourceTargetErrorReason {
+    General,
+    SourceFormatUnsupported,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceTargetError {
     pub code: SourceTargetErrorCode,
     pub message: String,
+    #[serde(skip)]
+    reason: SourceTargetErrorReason,
 }
 
 impl SourceTargetError {
@@ -102,7 +110,20 @@ impl SourceTargetError {
         Self {
             code,
             message: message.into(),
+            reason: SourceTargetErrorReason::General,
         }
+    }
+
+    pub(crate) fn source_format_unsupported(message: impl Into<String>) -> Self {
+        Self {
+            code: SourceTargetErrorCode::SourceRootNotAddressable,
+            message: message.into(),
+            reason: SourceTargetErrorReason::SourceFormatUnsupported,
+        }
+    }
+
+    pub(crate) fn reason(&self) -> SourceTargetErrorReason {
+        self.reason
     }
 
     fn invalid(message: impl Into<String>) -> Self {
