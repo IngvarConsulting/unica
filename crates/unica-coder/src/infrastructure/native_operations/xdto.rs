@@ -1332,7 +1332,9 @@ mod tests {
     use crate::infrastructure::native_operations::single_file_publisher::{
         with_before_commit_hook, with_publish_failpoints, PublishCheckpoint,
     };
-    use crate::infrastructure::platform::filesystem::create_dir_symlink_for_test;
+    use crate::infrastructure::platform::filesystem::{
+        create_dir_symlink_for_test, remove_dir_symlink_for_test,
+    };
     use crate::infrastructure::platform::testing::{
         create_file_link_fixture_for_test, FileLinkFixtureOutcome,
     };
@@ -2189,10 +2191,7 @@ mod tests {
             );
         }
         assert!(support.is_file());
-        #[cfg(windows)]
-        fs::remove_dir(&alias).unwrap();
-        #[cfg(not(windows))]
-        fs::remove_file(&alias).unwrap();
+        remove_dir_symlink_for_test(&alias).unwrap();
         fs::remove_dir_all(context.workspace_root).unwrap();
     }
 
