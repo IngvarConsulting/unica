@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 
 mod model;
 mod validation;
+mod writer;
 
 use model::{PackageModel, XDTO_NS};
 use validation::{validate, ValidationDiff};
@@ -132,8 +133,8 @@ fn edit(args: &Map<String, Value>, context: &WorkspaceContext, preview: bool) ->
         }
         let baseline_findings = validate(&before_model);
         let operation = required(args, "operation")?;
-        let after_text = mutation(&text, args, operation)?;
-        let after = encode_like(&before, &after_text);
+        let writer_plan = writer::plan(&text, args, operation)?;
+        let after = encode_like(&before, &writer_plan.after);
         let post = decode(&after)?;
         let after_model = PackageModel::parse(&post).map_err(model_error)?;
         let validation = ValidationDiff::between(&baseline_findings, validate(&after_model));
@@ -143,26 +144,31 @@ fn edit(args: &Map<String, Value>, context: &WorkspaceContext, preview: bool) ->
             .as_array()
             .cloned()
             .expect("typed XDTO findings serialize as an array");
-        if no_op {
-            findings.push(json!({
-                "code": "duplicate_or_already_applied",
-                "severity": "info",
-                "state": "pre_existing",
-                "message": "the requested XDTO mutation is already applied",
-                "location": {"key": "$operation", "span": {"start": 0, "end": 0}}
-            }));
+        if let Some(finding) = &writer_plan.finding {
+            findings.push(
+                serde_json::to_value(finding).expect("typed XDTO writer finding must serialize"),
+            );
         }
         let data = json!({"sourceSet": package.source_set, "metadataPath": package.metadata_path, "operation": operation, "noOp": no_op, "findings": findings});
-        if validation.blocks() {
-            let codes = validation
+        if writer_plan.blocks() || validation.blocks() {
+            let mut codes = validation
                 .findings
                 .iter()
                 .filter(|finding| finding.state == validation::FindingState::Introduced)
                 .map(|finding| finding.code.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
+                .collect::<Vec<_>>();
+            if let Some(finding) = writer_plan
+                .finding
+                .as_ref()
+                .filter(|_| writer_plan.blocks())
+            {
+                codes.push(finding.code);
+            }
             return Err(PlanningFailure {
-                error: format!("xdto_validation_failed: introduced findings: {codes}"),
+                error: format!(
+                    "xdto_validation_failed: introduced findings: {}",
+                    codes.join(", ")
+                ),
                 data: Some(data),
             });
         }
@@ -456,146 +462,6 @@ fn guard_resolved_support(target: &Path, context: &WorkspaceContext) -> Result<(
     }
 }
 
-fn mutation(text: &str, args: &Map<String, Value>, operation: &str) -> Result<String, String> {
-    let doc = parse(text)?;
-    let root = doc.root_element();
-    match operation {
-        "add-value-type" => {
-            let name = required(args, "name")?; let base = required(args, "base")?;
-            if named_type(root, name).is_some() { return Ok(text.to_string()); }
-            insert_before_close(text, root, &format!("<valueType name=\"{}\" base=\"{}\"/>", esc(name), esc(base)))
-        }
-        "add-object-type" => {
-            let name = required(args, "name")?;
-            if named_type(root, name).is_some() { return Ok(text.to_string()); }
-            insert_before_close(
-                text,
-                root,
-                &format!("<objectType name=\"{}\"></objectType>", esc(name)),
-            )
-        }
-        "add-property" => {
-            let type_name = required(args, "typeName")?;
-            let property = args.get("property").and_then(Value::as_object).ok_or_else(|| "property must be an object".to_string())?;
-            let name = object_string(property, "name")?; let kind = object_string(property, "type")?;
-            let target = property_target(root, type_name, args.get("propertyPath").and_then(Value::as_str))?;
-            if target.children().any(|node| node.has_tag_name((XDTO_NS, "property")) && node.attribute("name") == Some(name)) { return Ok(text.to_string()); }
-            let lower = property.get("minOccurs").or_else(|| property.get("lowerBound")).and_then(Value::as_u64).map(|value| format!(" lowerBound=\"{value}\"")).unwrap_or_default();
-            insert_before_close(text, target, &format!("<property name=\"{}\" type=\"{}\"{lower}/>", esc(name), esc(kind)))
-        }
-        "remove-type" => remove_named(text, named_type(root, required(args, "name")?).ok_or_else(|| "target_not_found: type does not exist".to_string())?),
-        "remove-property" => {
-            let target = property_target(root, required(args, "typeName")?, args.get("propertyPath").and_then(Value::as_str))?;
-            let name = required(args, "name")?;
-            remove_named(text, target.children().find(|node| node.has_tag_name((XDTO_NS, "property")) && node.attribute("name") == Some(name)).ok_or_else(|| "target_not_found: property does not exist".to_string())?)
-        }
-        _ => Err("unsupported_node: supported operations are add-value-type, add-object-type, add-property, remove-type, remove-property".to_string()),
-    }
-}
-
-fn property_target<'a>(
-    root: Node<'a, 'a>,
-    type_name: &str,
-    property_path: Option<&str>,
-) -> Result<Node<'a, 'a>, String> {
-    let mut node = named_type(root, type_name)
-        .ok_or_else(|| "target_not_found: type does not exist".to_string())?;
-    for segment in property_path
-        .unwrap_or("")
-        .split('.')
-        .filter(|part| !part.is_empty())
-    {
-        let property = node
-            .children()
-            .find(|child| {
-                child.has_tag_name((XDTO_NS, "property"))
-                    && child.attribute("name") == Some(segment)
-            })
-            .ok_or_else(|| {
-                format!("target_not_found: property path segment `{segment}` does not exist")
-            })?;
-        node = property
-            .children()
-            .find(|child| child.has_tag_name((XDTO_NS, "typeDef")))
-            .ok_or_else(|| {
-                format!("unsupported_node: property path segment `{segment}` has no nested typeDef")
-            })?;
-    }
-    Ok(node)
-}
-fn named_type<'a>(root: Node<'a, 'a>, name: &str) -> Option<Node<'a, 'a>> {
-    root.children().find(|node| {
-        node.is_element()
-            && matches!(node.tag_name().name(), "valueType" | "objectType")
-            && node.attribute("name") == Some(name)
-    })
-}
-fn remove_named(text: &str, node: Node<'_, '_>) -> Result<String, String> {
-    let range = node.range();
-    let line_start = text[..range.start]
-        .rfind('\n')
-        .map(|index| index + 1)
-        .unwrap_or(0);
-    let leading_is_whitespace = text[line_start..range.start]
-        .chars()
-        .all(|character| matches!(character, ' ' | '\t' | '\r'));
-    let start = if leading_is_whitespace {
-        line_start
-    } else {
-        range.start
-    };
-    let end = text[range.end..]
-        .strip_prefix("\r\n")
-        .map(|_| range.end + 2)
-        .or_else(|| text[range.end..].strip_prefix('\n').map(|_| range.end + 1))
-        .unwrap_or(range.end);
-    Ok(format!("{}{}", &text[..start], &text[end..]))
-}
-fn insert_before_close(text: &str, node: Node<'_, '_>, fragment: &str) -> Result<String, String> {
-    let range = node.range();
-    let close = text[range.start..range.end]
-        .rfind("</")
-        .map(|index| range.start + index)
-        .ok_or_else(|| {
-            "unsupported_node: insertion target must have an explicit closing tag".to_string()
-        })?;
-    let parent_indent = line_indent(text, close);
-    let close_line_start = text[..close]
-        .rfind('\n')
-        .map(|index| index + 1)
-        .unwrap_or(0);
-    let prefix_end = if text[close_line_start..close] == *parent_indent {
-        close_line_start
-    } else {
-        close
-    };
-    let child_indent = format!("{parent_indent}\t");
-    let eol = if text.contains("\r\n") { "\r\n" } else { "\n" };
-    Ok(format!(
-        "{}{}{}{}{}{}{}",
-        &text[..prefix_end],
-        eol,
-        child_indent,
-        fragment,
-        eol,
-        parent_indent,
-        &text[close..]
-    ))
-}
-fn line_indent(text: &str, offset: usize) -> &str {
-    let start = text[..offset]
-        .rfind('\n')
-        .map(|index| index + 1)
-        .unwrap_or(0);
-    let line = &text[start..offset];
-    let width = line
-        .char_indices()
-        .take_while(|(_, character)| matches!(character, ' ' | '\t' | '\r'))
-        .last()
-        .map(|(index, character)| index + character.len_utf8())
-        .unwrap_or(0);
-    &line[..width]
-}
 fn decode(raw: &[u8]) -> Result<String, String> {
     std::str::from_utf8(raw)
         .map(|value| value.trim_start_matches('\u{feff}').to_string())
@@ -660,27 +526,13 @@ fn required<'a>(args: &'a Map<String, Value>, name: &str) -> Result<&'a str, Str
         .filter(|value| !value.is_empty())
         .ok_or_else(|| format!("{name} must be a non-empty string"))
 }
-fn object_string<'a>(object: &'a Map<String, Value>, name: &str) -> Result<&'a str, String> {
-    object
-        .get(name)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| format!("property.{name} must be a non-empty string"))
-}
-fn esc(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('"', "&quot;")
-        .replace('<', "&lt;")
-}
 fn type_json(node: Node<'_, '_>) -> Value {
     json!({"kind": node.tag_name().name(), "name": node.attribute("name"), "base": node.attribute("base"), "properties": node.children().filter(|child| child.has_tag_name((XDTO_NS, "property"))).map(|child| json!({"name": child.attribute("name"), "type": child.attribute("type"), "lowerBound": child.attribute("lowerBound")})).collect::<Vec<_>>()})
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_with_data, decode, encode_like, mutation, preview_with_data};
+    use super::{apply_with_data, decode, encode_like, preview_with_data, writer};
     use crate::application::SupportGuardRequirement;
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::native_operations::common::support_guard_violation;
@@ -693,7 +545,12 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     const PACKAGE: &str = r#"<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:tns="urn:test" targetNamespace="urn:test">
-	<objectType name="ЛюбаяСсылка"><property name="СсылкаНаОбъект"><typeDef xsi:type="ObjectType"></typeDef></property></objectType>
+	<objectType name="ЛюбаяСсылка">
+		<property name="СсылкаНаОбъект">
+			<typeDef xsi:type="ObjectType">
+			</typeDef>
+		</property>
+	</objectType>
 	<objectType name="СоставнойЛюбойОбъект"/>
 </package>"#;
 
@@ -716,29 +573,37 @@ mod tests {
                 json!({"name":"Документ_Новый", "type":"tns:Документ_Новый", "minOccurs":0}),
             ),
         ]);
-        let once = mutation(PACKAGE, &args, "add-property").unwrap();
+        let once = writer::plan(PACKAGE, &args, "add-property").unwrap();
         assert_eq!(
-            once,
+            once.after,
             r#"<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:tns="urn:test" targetNamespace="urn:test">
-	<objectType name="ЛюбаяСсылка"><property name="СсылкаНаОбъект"><typeDef xsi:type="ObjectType">
-		<property name="Документ_Новый" type="tns:Документ_Новый" lowerBound="0"/>
-	</typeDef></property></objectType>
+	<objectType name="ЛюбаяСсылка">
+		<property name="СсылкаНаОбъект">
+			<typeDef xsi:type="ObjectType">
+				<property name="Документ_Новый" type="tns:Документ_Новый" lowerBound="0"/>
+			</typeDef>
+		</property>
+	</objectType>
 	<objectType name="СоставнойЛюбойОбъект"/>
 </package>"#
         );
-        assert_eq!(mutation(&once, &args, "add-property").unwrap(), once);
+        let repeated = writer::plan(&once.after, &args, "add-property").unwrap();
+        assert_eq!(repeated.after, once.after);
+        assert!(repeated.edits.is_empty());
+        assert_eq!(repeated.finding.unwrap().code, "duplicate_property");
     }
 
     #[test]
     fn byte_encoding_keeps_bom_and_crlf() {
         let before = format!("\u{feff}{}", PACKAGE.replace('\n', "\r\n")).into_bytes();
         let text = decode(&before).unwrap();
-        let after = mutation(
+        let after = writer::plan(
             &text,
             &args(&[("name", json!("Новый")), ("base", json!("xs:string"))]),
             "add-value-type",
         )
-        .unwrap();
+        .unwrap()
+        .after;
         let bytes = encode_like(&before, &after);
         assert!(bytes.starts_with(&[0xef, 0xbb, 0xbf]));
         assert!(decode(&bytes).unwrap().contains("\r\n"));
@@ -804,6 +669,66 @@ mod tests {
             .filter_map(|finding| finding.get("code").and_then(Value::as_str))
             .map(str::to_string)
             .collect()
+    }
+
+    #[test]
+    fn xdto_writer_orchestration_reports_exact_and_conflicting_duplicates_without_bytes() {
+        let (context, args, package, _) = xdto_guard_fixture("writer-duplicates");
+        let applied = apply_with_data(&args, &context);
+        assert!(applied.outcome.ok, "{:?}", applied.outcome);
+        let after_first_apply = fs::read(&package).unwrap();
+
+        let exact = preview_with_data(&args, &context);
+        assert!(exact.outcome.ok, "{:?}", exact.outcome);
+        assert_eq!(exact.data.as_ref().unwrap()["noOp"], json!(true));
+        let exact_finding = exact.data.as_ref().unwrap()["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|finding| finding["code"] == "duplicate_type")
+            .unwrap();
+        assert_eq!(exact_finding["severity"], "info");
+        assert_eq!(exact_finding["state"], "pre_existing");
+
+        let mut conflicting_args = args.clone();
+        conflicting_args.insert("operation".to_string(), json!("add-value-type"));
+        conflicting_args.insert("base".to_string(), json!("xs:string"));
+        let conflict = preview_with_data(&conflicting_args, &context);
+        assert!(!conflict.outcome.ok, "{:?}", conflict.outcome);
+        assert_eq!(conflict.data.as_ref().unwrap()["noOp"], json!(true));
+        let conflict_finding = conflict.data.as_ref().unwrap()["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|finding| finding["code"] == "duplicate_type")
+            .unwrap();
+        assert_eq!(conflict_finding["severity"], "error");
+        assert_eq!(conflict_finding["state"], "introduced");
+        assert_eq!(fs::read(&package).unwrap(), after_first_apply);
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn xdto_writer_orchestration_preserves_bom_crlf_and_repeat_preview_is_no_op() {
+        let (context, args, package, _) = xdto_guard_fixture("writer-bom-crlf");
+        let original = format!("\u{feff}{}", PACKAGE.replace('\n', "\r\n")).into_bytes();
+        fs::write(&package, &original).unwrap();
+
+        let applied = apply_with_data(&args, &context);
+        assert!(applied.outcome.ok, "{:?}", applied.outcome);
+        let after = fs::read(&package).unwrap();
+        assert!(after.starts_with(&[0xef, 0xbb, 0xbf]));
+        assert!(!decode(&after).unwrap().replace("\r\n", "").contains('\n'));
+
+        let repeated = preview_with_data(&args, &context);
+        assert!(repeated.outcome.ok, "{:?}", repeated.outcome);
+        assert_eq!(repeated.data.as_ref().unwrap()["noOp"], json!(true));
+        assert_eq!(
+            finding_codes(&repeated, "pre_existing"),
+            vec!["duplicate_type"]
+        );
+        assert_eq!(fs::read(&package).unwrap(), after);
+        fs::remove_dir_all(context.workspace_root).unwrap();
     }
 
     #[test]
@@ -974,7 +899,7 @@ mod tests {
     }
 
     #[test]
-    fn xdto_validation_rejects_bare_self_qname_until_the_writer_emits_a_prefix() {
+    fn xdto_validation_writer_prefixes_bare_self_qname_before_validation() {
         let (context, mut args, _, _) = xdto_guard_fixture("validation-bare-qname");
         args.insert("operation".to_string(), json!("add-property"));
         args.insert("typeName".to_string(), json!("ЛюбаяСсылка"));
@@ -988,7 +913,7 @@ mod tests {
         assert!(!execution.outcome.ok, "{:?}", execution.outcome);
         assert_eq!(
             finding_codes(&execution, "introduced"),
-            vec!["invalid_qname"]
+            vec!["unknown_type_reference"]
         );
         fs::remove_dir_all(context.workspace_root).unwrap();
     }
