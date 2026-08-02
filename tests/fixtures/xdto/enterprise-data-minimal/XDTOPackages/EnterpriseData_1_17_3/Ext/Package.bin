@@ -4,15 +4,16 @@
 	<property xmlns:tns="http://v8.1c.ru/edi/edi_stnd/EnterpriseData/1.17.3" name="EnterpriseData" type="tns:EnterpriseData"/>
 	<valueType name="ВерсияФормата" base="xs:string"/>
 	<objectType name="EnterpriseData">
-		<property xmlns:tns="http://v8.1c.ru/edi/edi_stnd/EnterpriseData/1.17.3" name="Версия" type="tns:ВерсияФормата"/>
+		<property xmlns:tns="http://v8.1c.ru/edi/edi_stnd/EnterpriseData/1.17.3" name="Версия" type="tns:ВерсияФормата" lowerBound="0"/>
+		<property xmlns:tns="http://v8.1c.ru/edi/edi_stnd/EnterpriseData/1.17.3" ref="tns:EnterpriseData"/>
 	</objectType>
 	<objectType name="Документ_ЗаказКлиента">
-		<property xmlns:v8="http://v8.1c.ru/8.1/data/core" name="Идентификатор" type="v8:UUID"/>
+		<property xmlns:v8="http://v8.1c.ru/8.1/data/core" name="Идентификаторы" type="v8:UUID" lowerBound="1" upperBound="3"/>
 	</objectType>
 	<objectType name="ЛюбаяСсылка">
 		<property name="СсылкаНаОбъект" lowerBound="0">
 			<typeDef xsi:type="ObjectType">
-				<property xmlns:tns="http://v8.1c.ru/edi/edi_stnd/EnterpriseData/1.17.3" name="Документ_ЗаказКлиента" type="tns:Документ_ЗаказКлиента" lowerBound="0"/>
+				<property xmlns:tns="http://v8.1c.ru/edi/edi_stnd/EnterpriseData/1.17.3" name="Документ_ЗаказКлиента" type="tns:Документ_ЗаказКлиента" lowerBound="0" upperBound="-1"/>
 				<property xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" name="ЛюбаяСсылкаКонфигурации" type="cfg:AnyRef" lowerBound="0"/>
 			</typeDef>
 		</property>

@@ -51,14 +51,33 @@ import* → property* → valueType* → objectType*
 
 ## 4. Поддерживаемые контейнеры
 
-Поддерживаются только следующие отношения вложенности:
+Следующая таблица — машинно проверяемая граница контракта writer-а. Статус
+`supported` означает, что конструкция закреплена fixture и разрешена контрактом
+writer-а; `unsupported` означает, что donor такую форму знает, но этот контракт
+writer-а её не обещает.
 
-```text
-package    > import | property | valueType | objectType
-objectType > property
-property   > typeDef
-typeDef    > property
-```
+<!-- xdto-evidence-contract:start -->
+| Status | Construct | Rule |
+| --- | --- | --- |
+| `supported` | `package/import` | `direct-child` |
+| `supported` | `package/property` | `direct-child` |
+| `supported` | `package/valueType` | `direct-child` |
+| `supported` | `package/objectType` | `direct-child` |
+| `supported` | `objectType/property` | `direct-child` |
+| `supported` | `property/typeDef:ObjectType` | `direct-child` |
+| `supported` | `typeDef:ObjectType/property` | `direct-child` |
+| `supported` | `property-identity` | `exactly-one(name,ref)` |
+| `supported` | `ref-target` | `global-property` |
+| `supported` | `owned-type` | `zero-or-one(type,typeDef:ObjectType)` |
+| `supported` | `lowerBound` | `0-or-1;default=1` |
+| `supported` | `upperBound` | `-1-or-integer>=1;default=1` |
+| `supported` | `finite-bounds` | `lower<=upper` |
+| `unsupported` | `valueType/enumeration` | `writer-contract` |
+| `unsupported` | `valueType/pattern` | `writer-contract` |
+| `unsupported` | `valueType/typeDef:ValueType` | `writer-contract` |
+| `unsupported` | `property/typeDef:ValueType` | `writer-contract` |
+| `unsupported` | `valueType/memberTypes` | `writer-contract` |
+<!-- xdto-evidence-contract:end -->
 
 Именованные `valueType` и `objectType` являются локальными типами пакета.
 `typeDef` в границе ADR-0024 поддерживается как анонимный
@@ -67,9 +86,9 @@ typeDef    > property
 путь `ЛюбаяСсылка/СсылкаНаОбъект` разрешается до вложенного `typeDef`, тогда как
 `СоставнойЛюбойОбъект` разрешается прямо до именованного `objectType`.
 
-Формы `enumeration`, `pattern`, `ValueType`-`typeDef` и иные контейнеры,
-встречающиеся в donor, этой fixture не покрыты и контрактом writer-а ADR-0024
-не объявляются.
+Иные отношения вложенности и атрибуты вне таблицы требуют нового evidence и
+намеренного расширения таблицы; присутствие формы в donor само по себе не
+расширяет контракт writer-а ADR-0024.
 
 ## 5. Имена, ссылки и уникальность
 
@@ -78,31 +97,36 @@ typeDef    > property
 - Значения `type`, `base` и `ref` — QName. Каждый префикс должен быть объявлен
   в области видимости. `xs:` и `xsi:` обозначают стандартные пространства;
   ссылка на тип из `targetNamespace`, включая self-reference, также использует
-  объявленный префикс, а не голое имя.
+  объявленный префикс, а не голое имя. `ref` отличается от `type`: он разрешает
+  идентичность глобального `property`, а не тип значения.
 - QName во внешнем namespace разрешим только при наличии соответствующего
   `import`. Ссылки на локальный именованный тип разрешаются в текущем пакете.
 - `valueType/@name` и `objectType/@name` уникальны совместно в пределах
-  `targetNamespace`. `property/@name` уникально среди непосредственных свойств
-  одного `objectType` или одного `typeDef`.
+  `targetNamespace`. Идентичности непосредственных свойств одного `objectType`
+  или одного `typeDef` уникальны: для собственного объявления это `name`, для
+  ссылки — разрешённый QName глобального свойства.
 
 ## 6. Свойства и effective bounds
 
-В поддерживаемой ветви `property` имеет `name`. Тип разрешается из QName в
-`type`, QName в `ref` либо вложенного `typeDef`; отсутствие всех трёх означает
-произвольный тип. Одновременное присутствие нескольких способов fixture не
-доказывает и writer считает неподдерживаемым. Donor подтверждает атрибуты
-`lowerBound`, `upperBound`, `nillable` и `form` (`Element`, `Attribute`, `Text`).
+Каждый `property` имеет ровно одну идентичность: собственное `name` либо QName
+в `ref`, но не оба. `ref` обязан разрешаться в глобальное свойство пакета или
+объявленного `import` и не сочетается с `type` или вложенным `typeDef`.
+
+Собственное объявление с `name` имеет не более одного определения типа: QName
+в `type` либо вложенный `typeDef xsi:type="ObjectType"`. Они взаимоисключающие;
+отсутствие обоих означает произвольный тип. Остальные формы `typeDef` таблица
+явно оставляет unsupported.
 
 Для проверки и типизированного ответа используются effective bounds:
 
-- отсутствующий `lowerBound` означает `1`;
-- отсутствующий `upperBound` означает `1`;
+- отсутствующий `lowerBound` означает `1`; допустимые явные литералы — только
+  `0` и `1`;
+- отсутствующий `upperBound` означает `1`; допустимый конечный литерал — целое
+  не меньше `1`;
 - `upperBound="-1"` означает неограниченную верхнюю границу;
+- для конечной верхней границы выполняется `lowerBound <= upperBound` после
+  подстановки effective значений;
 - явно записанные литералы сохраняются без канонизации.
-
-Новые границы writer принимает как неотрицательные целые; для верхней границы
-отдельно допустим литерал `-1`. Иные литералы fixture не доказывает и writer
-считает неподдерживаемыми.
 
 ## 7. Byte-local writer
 
