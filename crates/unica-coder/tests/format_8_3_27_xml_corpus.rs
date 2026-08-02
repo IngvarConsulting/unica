@@ -1790,33 +1790,38 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
     }
 
     if case.id == "xdto-add-nested-property" {
-        seed_configuration(workspace)?;
-        let package = workspace.join("src/XDTOPackages/CorpusPackage/Ext/Package.bin");
-        fs::create_dir_all(package.parent().expect("XDTO package parent"))
-            .map_err(|error| format!("cannot create XDTO package directory: {error}"))?;
-        fs::write(
-            &package,
-            b"\xef\xbb\xbf<package xmlns=\"http://v8.1c.ru/8.1/xdto\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" targetNamespace=\"urn:corpus\">\r\n\t<objectType name=\"Root\">\r\n\t\t<property name=\"Nested\">\r\n\t\t\t<typeDef xsi:type=\"ObjectType\"></typeDef>\r\n\t\t</property>\r\n\t</objectType>\r\n</package>\r\n",
-        )
-        .map_err(|error| format!("cannot write XDTO package: {error}"))?;
+        fs::create_dir_all(workspace)
+            .map_err(|error| format!("cannot create XDTO corpus workspace: {error}"))?;
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("tests/fixtures/xdto/enterprise-data-minimal");
+        copy_fixture_tree(&fixture, &workspace.join("src"))?;
+        write_designer_project(workspace, &[("main", "CONFIGURATION", "src")])?;
         let mut args = common_args(workspace);
         args.insert("sourceSet".to_string(), Value::String("main".to_string()));
         args.insert(
             "metadataPath".to_string(),
-            Value::String("XDTOPackage.CorpusPackage".to_string()),
+            Value::String("XDTOPackage.EnterpriseData_1_17_3".to_string()),
         );
         args.insert(
             "operation".to_string(),
             Value::String("add-property".to_string()),
         );
-        args.insert("typeName".to_string(), Value::String("Root".to_string()));
+        args.insert(
+            "typeName".to_string(),
+            Value::String("ЛюбаяСсылка".to_string()),
+        );
         args.insert(
             "propertyPath".to_string(),
-            Value::String("Nested".to_string()),
+            Value::String("СсылкаНаОбъект".to_string()),
         );
         args.insert(
             "property".to_string(),
-            json!({"name": "Inserted", "type": "xs:string", "minOccurs": 0}),
+            json!({
+                "name": "Документ_Корпус",
+                "type": "tns:Документ_ЗаказКлиента",
+                "minOccurs": 0
+            }),
         );
         return Ok(args);
     }
@@ -4347,21 +4352,42 @@ fn owner_assignment_requires_same_case_source_set_path() {
 }
 
 #[test]
-fn tracked_xdto_package_fixture_flows_through_capture_and_owner_contract() {
+fn tracked_xdto_package_fixture_executes_public_corpus_preview_apply_and_noop() {
     let root = unique_temp_dir("xdto-package-pre-contract");
     fs::create_dir_all(&root).unwrap();
     let workspace = root.join("workspace");
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join("tests/fixtures/xdto/enterprise-data-minimal");
-    copy_fixture_tree(&fixture, &workspace).unwrap();
     let case = EXECUTABLE_CASES
         .iter()
         .find(|case| case.id == "xdto-add-nested-property")
         .unwrap();
+    let args = prepare_target(case, &workspace).unwrap();
+    let package_path = workspace.join("src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin");
+    let package_before = fs::read(&package_path).unwrap();
+    let marker = b"\t\t\t</typeDef>\r\n";
+    let insertion = concat!(
+        "\t\t\t\t<property xmlns:tns=\"http://v8.1c.ru/edi/edi_stnd/EnterpriseData/1.17.3\" ",
+        "name=\"Документ_Корпус\" type=\"tns:Документ_ЗаказКлиента\" ",
+        "lowerBound=\"0\"/>\r\n"
+    )
+    .as_bytes();
+    let marker_offset = package_before
+        .windows(marker.len())
+        .position(|window| window == marker)
+        .expect("tracked EnterpriseData fixture must contain the nested typeDef close");
+    assert_eq!(
+        package_before
+            .windows(marker.len())
+            .filter(|window| *window == marker)
+            .count(),
+        1
+    );
+    let mut expected_package = Vec::with_capacity(package_before.len() + insertion.len());
+    expected_package.extend_from_slice(&package_before[..marker_offset]);
+    expected_package.extend_from_slice(insertion);
+    expected_package.extend_from_slice(&package_before[marker_offset..]);
 
     let captured = capture_xml_payloads(&workspace).unwrap();
-    assert!(captured.contains_key("XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin"));
+    assert!(captured.contains_key("src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin"));
     let contract = build_pre_contract(case, &captured).unwrap();
     let package = contract
         .files
@@ -4372,15 +4398,42 @@ fn tracked_xdto_package_fixture_flows_through_capture_and_owner_contract() {
     assert_eq!(package.family, "xdto-package");
     assert_eq!(
         package.owner_path.as_deref(),
-        Some("cases/xdto-add-nested-property/pre-xml/Configuration.xml")
+        Some("cases/xdto-add-nested-property/pre-xml/src/Configuration.xml")
     );
 
     let before = hashes_for_xml_payloads(&captured);
-    let after = before.clone();
-    let delta = classify_xml_delta(&before, &after);
+    let mut preview_args = args.clone();
+    preview_args.insert("dryRun".to_string(), Value::Bool(true));
+    let preview = UnicaApplication::new()
+        .call_tool(case.tool, &preview_args)
+        .unwrap();
+    assert!(preview.ok, "{preview:?}");
+    assert_eq!(preview.data.as_ref().unwrap()["noOp"], false);
+    assert_eq!(fs::read(&package_path).unwrap(), package_before);
+
+    let applied = UnicaApplication::new().call_tool(case.tool, &args).unwrap();
+    assert!(applied.ok, "{applied:?}");
+    let package_after = fs::read(&package_path).unwrap();
+    assert_eq!(package_after, expected_package);
+
+    let repeated = UnicaApplication::new()
+        .call_tool(case.tool, &preview_args)
+        .unwrap();
+    assert!(repeated.ok, "{repeated:?}");
+    assert_eq!(repeated.data.as_ref().unwrap()["noOp"], true);
+    assert!(repeated.cache.events.is_empty());
+    assert_eq!(fs::read(&package_path).unwrap(), package_after);
+
+    let post_payloads = capture_xml_payloads(&workspace).unwrap();
+    let after = hashes_for_xml_payloads(&post_payloads);
+    let delta = enforce_xml_impact(effective_xml_impact(case.id), &before, &after).unwrap();
+    assert_eq!(
+        delta.modified,
+        ["src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin"]
+    );
     let generated = build_corpus_case(
         case,
-        &captured,
+        &post_payloads,
         registry_entry_for_case(case.id),
         CaseFileContracts {
             pre_xml: contract,
@@ -4404,7 +4457,7 @@ fn tracked_xdto_package_fixture_flows_through_capture_and_owner_contract() {
     assert_eq!(post_package.family, "xdto-package");
     assert_eq!(
         post_package.owner_path.as_deref(),
-        Some("cases/xdto-add-nested-property/workspace/Configuration.xml")
+        Some("cases/xdto-add-nested-property/workspace/src/Configuration.xml")
     );
 
     fs::remove_dir_all(root).unwrap();
