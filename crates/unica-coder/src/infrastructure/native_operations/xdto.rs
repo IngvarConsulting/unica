@@ -22,7 +22,13 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-const XDTO_NS: &str = "http://v8.1c.ru/8.1/xdto";
+mod model;
+mod validation;
+
+use model::{PackageModel, XDTO_NS};
+use validation::{validate, ValidationDiff};
+
+const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
 pub(crate) struct XdtoExecution {
     pub(crate) outcome: AdapterOutcome,
@@ -112,18 +118,54 @@ fn info(args: &Map<String, Value>, context: &WorkspaceContext) -> Result<XdtoExe
 }
 
 fn edit(args: &Map<String, Value>, context: &WorkspaceContext, preview: bool) -> XdtoExecution {
-    let planned = (|| -> Result<MutationPlan, String> {
+    let planned = (|| -> Result<MutationPlan, PlanningFailure> {
         let package = resolve_package(args, context)?;
         let before = fs::read(&package.path)
             .map_err(|error| format!("package_resource_missing: {error}"))?;
         let text = decode(&before)?;
+        let before_model = PackageModel::parse(&text).map_err(model_error)?;
+        let descriptor_namespace = descriptor_namespace(&package.descriptor_path)?;
+        if before_model.target_namespace() != Some(descriptor_namespace.as_str()) {
+            return Err(PlanningFailure::plain(
+                "namespace_mismatch: descriptor Namespace must equal package targetNamespace",
+            ));
+        }
+        let baseline_findings = validate(&before_model);
         let operation = required(args, "operation")?;
         let after_text = mutation(&text, args, operation)?;
         let after = encode_like(&before, &after_text);
         let post = decode(&after)?;
-        parse(&post)?;
+        let after_model = PackageModel::parse(&post).map_err(model_error)?;
+        let validation = ValidationDiff::between(&baseline_findings, validate(&after_model));
         let no_op = before == after;
-        let data = json!({"sourceSet": package.source_set, "metadataPath": package.metadata_path, "operation": operation, "noOp": no_op, "findings": if no_op { vec![json!({"code":"duplicate_or_already_applied"})] } else { Vec::new() }});
+        let mut findings = serde_json::to_value(&validation.findings)
+            .expect("typed XDTO findings must serialize")
+            .as_array()
+            .cloned()
+            .expect("typed XDTO findings serialize as an array");
+        if no_op {
+            findings.push(json!({
+                "code": "duplicate_or_already_applied",
+                "severity": "info",
+                "state": "pre_existing",
+                "message": "the requested XDTO mutation is already applied",
+                "location": {"key": "$operation", "span": {"start": 0, "end": 0}}
+            }));
+        }
+        let data = json!({"sourceSet": package.source_set, "metadataPath": package.metadata_path, "operation": operation, "noOp": no_op, "findings": findings});
+        if validation.blocks() {
+            let codes = validation
+                .findings
+                .iter()
+                .filter(|finding| finding.state == validation::FindingState::Introduced)
+                .map(|finding| finding.code.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(PlanningFailure {
+                error: format!("xdto_validation_failed: introduced findings: {codes}"),
+                data: Some(data),
+            });
+        }
         Ok(MutationPlan {
             package,
             before,
@@ -140,20 +182,20 @@ fn edit(args: &Map<String, Value>, context: &WorkspaceContext, preview: bool) ->
         no_op,
     } = match planned {
         Ok(plan) => plan,
-        Err(error) => {
+        Err(failure) => {
             return XdtoExecution {
                 outcome: AdapterOutcome {
                     ok: false,
                     summary: "unica.xdto.edit rejected XDTO mutation".to_string(),
                     changes: Vec::new(),
                     warnings: Vec::new(),
-                    errors: vec![error.clone()],
+                    errors: vec![failure.error.clone()],
                     artifacts: Vec::new(),
                     stdout: None,
-                    stderr: Some(format!("{error}\n")),
+                    stderr: Some(format!("{}\n", failure.error)),
                     command: None,
                 },
-                data: None,
+                data: failure.data,
             }
         }
     };
@@ -241,6 +283,26 @@ struct MutationPlan {
     after: Vec<u8>,
     data: Value,
     no_op: bool,
+}
+
+struct PlanningFailure {
+    error: String,
+    data: Option<Value>,
+}
+
+impl PlanningFailure {
+    fn plain(error: impl Into<String>) -> Self {
+        Self {
+            error: error.into(),
+            data: None,
+        }
+    }
+}
+
+impl From<String> for PlanningFailure {
+    fn from(error: String) -> Self {
+        Self::plain(error)
+    }
 }
 
 fn resolve_package(
@@ -547,6 +609,41 @@ fn encode_like(before: &[u8], text: &str) -> Vec<u8> {
     bytes.extend_from_slice(text.as_bytes());
     bytes
 }
+fn model_error(error: model::ModelError) -> String {
+    format!(
+        "{}: {} at byte {}",
+        error.code, error.message, error.span.start
+    )
+}
+fn descriptor_namespace(path: &Path) -> Result<String, String> {
+    let bytes = fs::read(path)
+        .map_err(|_| "target_not_found: cannot read proven XDTO descriptor".to_string())?;
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|_| "not_an_xdto_package: XDTO descriptor is not UTF-8".to_string())?;
+    let document = Document::parse(text)
+        .map_err(|_| "not_an_xdto_package: XDTO descriptor is not valid XML".to_string())?;
+    let root = document.root_element();
+    if !root.has_tag_name((MD_CLASSES_NS, "MetaDataObject")) {
+        return Err(
+            "not_an_xdto_package: descriptor root must be an MDClasses MetaDataObject".to_string(),
+        );
+    }
+    let package = root
+        .children()
+        .find(|child| child.has_tag_name((MD_CLASSES_NS, "XDTOPackage")))
+        .ok_or_else(|| "not_an_xdto_package: descriptor must contain an XDTOPackage".to_string())?;
+    let properties = package
+        .children()
+        .find(|child| child.has_tag_name((MD_CLASSES_NS, "Properties")))
+        .ok_or_else(|| "namespace_mismatch: XDTO descriptor has no Properties".to_string())?;
+    properties
+        .children()
+        .find(|child| child.has_tag_name((MD_CLASSES_NS, "Namespace")))
+        .and_then(|namespace| namespace.text())
+        .filter(|namespace| !namespace.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "namespace_mismatch: XDTO descriptor has no Namespace".to_string())
+}
 fn parse(text: &str) -> Result<Document<'_>, String> {
     let doc = Document::parse(text)
         .map_err(|error| format!("unsupported_node: invalid XDTO XML: {error}"))?;
@@ -583,7 +680,7 @@ fn type_json(node: Node<'_, '_>) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_with_data, decode, encode_like, mutation};
+    use super::{apply_with_data, decode, encode_like, mutation, preview_with_data};
     use crate::application::SupportGuardRequirement;
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::native_operations::common::support_guard_violation;
@@ -595,7 +692,7 @@ mod tests {
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    const PACKAGE: &str = r#"<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" targetNamespace="urn:test">
+    const PACKAGE: &str = r#"<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:tns="urn:test" targetNamespace="urn:test">
 	<objectType name="ЛюбаяСсылка"><property name="СсылкаНаОбъект"><typeDef xsi:type="ObjectType"></typeDef></property></objectType>
 	<objectType name="СоставнойЛюбойОбъект"/>
 </package>"#;
@@ -616,15 +713,15 @@ mod tests {
             ("propertyPath", json!("СсылкаНаОбъект")),
             (
                 "property",
-                json!({"name":"Документ_Новый", "type":"Документ_Новый", "minOccurs":0}),
+                json!({"name":"Документ_Новый", "type":"tns:Документ_Новый", "minOccurs":0}),
             ),
         ]);
         let once = mutation(PACKAGE, &args, "add-property").unwrap();
         assert_eq!(
             once,
-            r#"<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" targetNamespace="urn:test">
+            r#"<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:tns="urn:test" targetNamespace="urn:test">
 	<objectType name="ЛюбаяСсылка"><property name="СсылкаНаОбъект"><typeDef xsi:type="ObjectType">
-		<property name="Документ_Новый" type="Документ_Новый" lowerBound="0"/>
+		<property name="Документ_Новый" type="tns:Документ_Новый" lowerBound="0"/>
 	</typeDef></property></objectType>
 	<objectType name="СоставнойЛюбойОбъект"/>
 </package>"#
@@ -676,7 +773,7 @@ mod tests {
         .unwrap();
         fs::write(
             &descriptor,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><XDTOPackage uuid="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"><Properties><Name>Sample</Name></Properties></XDTOPackage></MetaDataObject>"#,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><XDTOPackage uuid="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"><Properties><Name>Sample</Name><Namespace>urn:test</Namespace></Properties></XDTOPackage></MetaDataObject>"#,
         )
         .unwrap();
         fs::write(&package, PACKAGE).unwrap();
@@ -689,11 +786,280 @@ mod tests {
         let args = args(&[
             ("sourceSet", json!("main")),
             ("metadataPath", json!("XDTOPackage.Sample")),
-            ("operation", json!("add-value-type")),
+            ("operation", json!("add-object-type")),
             ("name", json!("Added")),
-            ("base", json!("xs:string")),
         ]);
         (context, args, package, descriptor)
+    }
+
+    fn finding_codes(execution: &super::XdtoExecution, state: &str) -> Vec<String> {
+        execution
+            .data
+            .as_ref()
+            .and_then(|data| data.get("findings"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|finding| finding.get("state").and_then(Value::as_str) == Some(state))
+            .filter_map(|finding| finding.get("code").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn xdto_validation_reports_unrelated_baseline_findings_without_blocking() {
+        let (context, mut args, package, _) = xdto_guard_fixture("validation-baseline");
+        fs::write(
+            &package,
+            r#"<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:tns="urn:test" xmlns:ext="urn:external" targetNamespace="urn:test">
+	<property name="Global" type="xs:string"/>
+	<valueType name="Duplicate" base="xs:string"><enumeration value="x"/></valueType>
+	<import namespace="urn:other"/>
+	<objectType name="Duplicate">
+		<property name="bad:name" type="ext:Remote" lowerBound="2" upperBound="1"/>
+		<property name="bad:name" type="xs:string"><typeDef xsi:type="ObjectType"/></property>
+		<property name="Nested"><typeDef xsi:type="ValueType"/></property>
+		<property name="Undeclared" type="ghost:Remote"/>
+		<property name="MissingLocal" type="tns:Missing"/>
+		<property name="Both" ref="tns:Global"/>
+		<property ref="tns:MissingGlobal"/>
+	</objectType>
+</package>"#,
+        )
+        .unwrap();
+        args.insert("operation".to_string(), json!("add-object-type"));
+        args.insert("name".to_string(), json!("Safe"));
+
+        let execution = preview_with_data(&args, &context);
+
+        assert!(execution.outcome.ok, "{:?}", execution.outcome);
+        let codes = finding_codes(&execution, "pre_existing");
+        for expected in [
+            "invalid_group_order",
+            "unsupported_node",
+            "duplicate_type",
+            "duplicate_property",
+            "invalid_ncname",
+            "missing_import",
+            "undeclared_prefix",
+            "unknown_type_reference",
+            "unknown_property_reference",
+            "invalid_property_identity",
+            "type_definition_conflict",
+            "invalid_bounds",
+        ] {
+            assert!(
+                codes.iter().any(|code| code == expected),
+                "{expected}: {codes:?}"
+            );
+        }
+        let rendered = serde_json::to_string(&execution.data).unwrap();
+        assert!(!rendered.contains(package.to_string_lossy().as_ref()));
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn xdto_validation_accepts_the_untouched_enterprise_data_fixture() {
+        let bytes = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/xdto/enterprise-data-minimal/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin"
+        ));
+        let text = decode(bytes).unwrap();
+        let model = super::model::PackageModel::parse(&text).unwrap();
+
+        let findings = super::validation::validate(&model);
+
+        assert!(findings.is_empty(), "{findings:#?}");
+    }
+
+    #[test]
+    fn xdto_validation_diff_uses_code_and_logical_key_not_message_or_span() {
+        use super::validation::{
+            Finding, FindingLocation, FindingSeverity, FindingState, SourceSpanDto, ValidationDiff,
+        };
+        let baseline = vec![Finding {
+            code: "unknown_type_reference".to_string(),
+            severity: FindingSeverity::Error,
+            message: "old wording".to_string(),
+            location: FindingLocation {
+                key: "$package/objectType:Consumer/property:Value/@type".to_string(),
+                span: SourceSpanDto { start: 10, end: 18 },
+            },
+        }];
+        let candidate = vec![Finding {
+            code: "unknown_type_reference".to_string(),
+            severity: FindingSeverity::Error,
+            message: "new wording".to_string(),
+            location: FindingLocation {
+                key: "$package/objectType:Consumer/property:Value/@type".to_string(),
+                span: SourceSpanDto {
+                    start: 110,
+                    end: 118,
+                },
+            },
+        }];
+
+        let diff = ValidationDiff::between(&baseline, candidate);
+
+        assert_eq!(diff.findings.len(), 1);
+        assert_eq!(diff.findings[0].state, FindingState::PreExisting);
+        assert!(!diff.blocks());
+    }
+
+    #[test]
+    fn xdto_validation_diff_blocks_an_additional_finding_with_the_same_semantic_key() {
+        use super::validation::{
+            Finding, FindingLocation, FindingSeverity, FindingState, SourceSpanDto, ValidationDiff,
+        };
+        let finding = |start| Finding {
+            code: "duplicate_property".to_string(),
+            severity: FindingSeverity::Error,
+            message: "duplicate".to_string(),
+            location: FindingLocation {
+                key: "$package/objectType:Consumer/property:Value/@unique".to_string(),
+                span: SourceSpanDto {
+                    start,
+                    end: start + 1,
+                },
+            },
+        };
+
+        let diff = ValidationDiff::between(&[finding(10)], vec![finding(20), finding(30)]);
+
+        assert_eq!(diff.findings[0].state, FindingState::PreExisting);
+        assert_eq!(diff.findings[1].state, FindingState::Introduced);
+        assert!(diff.blocks());
+    }
+
+    #[test]
+    fn xdto_validation_requires_exact_root_and_target_namespace() {
+        let wrong_root = super::model::PackageModel::parse(
+            r#"<package xmlns="urn:not-xdto" targetNamespace="urn:test"/>"#,
+        )
+        .unwrap_err();
+        assert_eq!(wrong_root.code, "not_an_xdto_package");
+
+        let missing_namespace =
+            super::model::PackageModel::parse(r#"<package xmlns="http://v8.1c.ru/8.1/xdto"/>"#)
+                .unwrap();
+        let findings = super::validation::validate(&missing_namespace);
+        assert_eq!(findings.len(), 1, "{findings:#?}");
+        assert_eq!(findings[0].code, "target_namespace_required");
+        assert_eq!(findings[0].location.key, "$package/@targetNamespace");
+    }
+
+    #[test]
+    fn xdto_validation_uses_xml_ncname_character_ranges() {
+        let model = super::model::PackageModel::parse(
+            r#"<package xmlns="http://v8.1c.ru/8.1/xdto" targetNamespace="urn:test">
+	<objectType name="_ok"/>
+	<objectType name="Имя"/>
+	<objectType name="A·B"/>
+	<objectType name="Á"/>
+	<objectType name="1bad"/>
+	<objectType name="bad:name"/>
+</package>"#,
+        )
+        .unwrap();
+
+        let invalid_names = super::validation::validate(&model)
+            .into_iter()
+            .filter(|finding| finding.code == "invalid_ncname")
+            .map(|finding| finding.location.key)
+            .collect::<Vec<_>>();
+
+        assert_eq!(invalid_names.len(), 2, "{invalid_names:#?}");
+        assert!(invalid_names.iter().any(|key| key.contains("1bad")));
+        assert!(invalid_names.iter().any(|key| key.contains("bad:name")));
+    }
+
+    #[test]
+    fn xdto_validation_rejects_bare_self_qname_until_the_writer_emits_a_prefix() {
+        let (context, mut args, _, _) = xdto_guard_fixture("validation-bare-qname");
+        args.insert("operation".to_string(), json!("add-property"));
+        args.insert("typeName".to_string(), json!("ЛюбаяСсылка"));
+        args.insert(
+            "property".to_string(),
+            json!({"name":"BareSelf", "type":"Missing"}),
+        );
+
+        let execution = preview_with_data(&args, &context);
+
+        assert!(!execution.outcome.ok, "{:?}", execution.outcome);
+        assert_eq!(
+            finding_codes(&execution, "introduced"),
+            vec!["invalid_qname"]
+        );
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn xdto_validation_blocks_candidate_unknown_type_and_invalid_ncname() {
+        let (context, mut args, package, _) = xdto_guard_fixture("validation-candidate");
+        args.insert("operation".to_string(), json!("add-property"));
+        args.insert("typeName".to_string(), json!("ЛюбаяСсылка"));
+        args.insert(
+            "property".to_string(),
+            json!({"name":"bad:name", "type":"tns:Missing"}),
+        );
+
+        let execution = preview_with_data(&args, &context);
+
+        assert!(!execution.outcome.ok, "{:?}", execution.outcome);
+        let codes = finding_codes(&execution, "introduced");
+        assert!(
+            codes.iter().any(|code| code == "invalid_ncname"),
+            "{codes:?}"
+        );
+        assert!(
+            codes.iter().any(|code| code == "unknown_type_reference"),
+            "{codes:?}"
+        );
+        fs::remove_dir_all(context.workspace_root).unwrap();
+        assert!(!package.exists());
+    }
+
+    #[test]
+    fn xdto_validation_blocks_removing_a_referenced_local_type() {
+        let (context, mut args, package, _) = xdto_guard_fixture("validation-remove-type");
+        fs::write(
+            &package,
+            r#"<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:tns="urn:test" targetNamespace="urn:test">
+	<valueType name="Used" base="xs:string"/>
+	<objectType name="Consumer"><property name="Value" type="tns:Used"/></objectType>
+</package>"#,
+        )
+        .unwrap();
+        args.insert("operation".to_string(), json!("remove-type"));
+        args.insert("name".to_string(), json!("Used"));
+
+        let execution = preview_with_data(&args, &context);
+
+        assert!(!execution.outcome.ok, "{:?}", execution.outcome);
+        assert_eq!(
+            finding_codes(&execution, "introduced"),
+            vec!["unknown_type_reference"]
+        );
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn xdto_validation_rejects_descriptor_namespace_mismatch_without_path_leak() {
+        let (context, args, package, descriptor) = xdto_guard_fixture("validation-descriptor");
+        fs::write(
+            &descriptor,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><XDTOPackage uuid="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"><Properties><Name>Sample</Name><Namespace>urn:other</Namespace></Properties></XDTOPackage></MetaDataObject>"#,
+        )
+        .unwrap();
+
+        let execution = preview_with_data(&args, &context);
+
+        assert!(!execution.outcome.ok, "{:?}", execution.outcome);
+        let rendered = format!("{:?}", execution.outcome.errors);
+        assert!(rendered.contains("namespace_mismatch"), "{rendered}");
+        assert!(!rendered.contains(package.to_string_lossy().as_ref()));
+        assert!(!rendered.contains(descriptor.to_string_lossy().as_ref()));
+        fs::remove_dir_all(context.workspace_root).unwrap();
     }
 
     #[test]
