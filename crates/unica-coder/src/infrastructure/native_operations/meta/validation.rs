@@ -79,9 +79,27 @@ impl MetadataValidator {
     pub(crate) fn validate(
         &self,
         subject: &MetadataValidationSubject,
-        _context: &WorkspaceContext,
+        context: &WorkspaceContext,
     ) -> MetadataValidationResult {
+        self.evaluate(
+            subject,
+            context,
+            &MetaValidationOptions {
+                detailed: true,
+                max_errors: 30,
+            },
+        )
+        .0
+    }
+
+    fn evaluate(
+        &self,
+        subject: &MetadataValidationSubject,
+        _context: &WorkspaceContext,
+        options: &MetaValidationOptions,
+    ) -> (MetadataValidationResult, Option<MetaValidationRun>) {
         let mut diagnostics = Vec::new();
+        let mut legacy_run = None;
         let descriptor_indices = subject
             .resources
             .iter()
@@ -176,7 +194,7 @@ impl MetadataValidator {
             .iter()
             .any(|diagnostic| diagnostic.code == MetaDiagnosticCode::ProviderUnavailable)
         {
-            return failed_validation(diagnostics);
+            return (failed_validation(diagnostics), legacy_run);
         }
 
         let (target_type, target_name) = subject_target_identity(subject);
@@ -267,30 +285,27 @@ impl MetadataValidator {
                 }
             }
 
-            let options = MetaValidationOptions {
-                detailed: true,
-                max_errors: 30,
-            };
             let inputs = MetaValidationReferenceInputs {
                 config_dir: None,
                 language_codes,
             };
-            match meta_validate_source(&descriptor.bytes, &options, &inputs, None) {
+            match meta_validate_source(&descriptor.bytes, options, &inputs, None) {
                 Ok(run) => {
-                    diagnostics.extend(run.errors.into_iter().map(|error| {
+                    diagnostics.extend(run.errors.iter().map(|error| {
                         validation_diagnostic(
                             subject,
-                            validation_field_for_legacy_error(&error),
+                            validation_field_for_legacy_error(error),
                             error.trim_start_matches("[ERROR] "),
                         )
                     }));
-                    diagnostics.extend(run.warnings.into_iter().map(|warning| {
+                    diagnostics.extend(run.warnings.iter().map(|warning| {
                         validation_warning(
                             subject,
-                            validation_field_for_legacy_error(&warning),
+                            validation_field_for_legacy_error(warning),
                             warning.trim_start_matches("[WARN]  "),
                         )
                     }));
+                    legacy_run = Some(run);
                 }
                 Err(error) => {
                     diagnostics.push(provider_diagnostic(subject, descriptor_index, error))
@@ -334,7 +349,7 @@ impl MetadataValidator {
             }
         }
 
-        if diagnostics.iter().any(|diagnostic| {
+        let result = if diagnostics.iter().any(|diagnostic| {
             diagnostic.severity == MetaDiagnosticSeverity::Error
                 && matches!(
                     diagnostic.code,
@@ -347,7 +362,8 @@ impl MetadataValidator {
                 status: MetaValidationStatus::Passed,
                 diagnostics,
             }
-        }
+        };
+        (result, legacy_run)
     }
 }
 
@@ -1025,25 +1041,61 @@ fn metadata_validation_run(
     context: &WorkspaceContext,
     artifact: PathBuf,
 ) -> MetaValidationRun {
-    let result = MetadataValidator.validate(subject, context);
+    let (result, legacy_run) = MetadataValidator.evaluate(subject, context, options);
     let ok = result.status == MetaValidationStatus::Passed;
-    let mut errors = result
+    let legacy_messages = legacy_run
+        .as_ref()
+        .into_iter()
+        .flat_map(|run| run.errors.iter().chain(run.warnings.iter()))
+        .map(|message| {
+            message
+                .trim_start_matches("[ERROR] ")
+                .trim_start_matches("[WARN]  ")
+        })
+        .collect::<HashSet<_>>();
+    let supplemental_errors = result
         .diagnostics
         .iter()
-        .filter(|diagnostic| diagnostic.severity == MetaDiagnosticSeverity::Error)
-        .take(options.max_errors)
+        .filter(|diagnostic| {
+            diagnostic.severity == MetaDiagnosticSeverity::Error
+                && !legacy_messages.contains(diagnostic.message.as_str())
+        })
         .map(|diagnostic| format!("[ERROR] {}", diagnostic.message))
         .collect::<Vec<_>>();
-    let warnings = result
+    let supplemental_warnings = result
         .diagnostics
         .iter()
-        .filter(|diagnostic| diagnostic.severity == MetaDiagnosticSeverity::Warning)
+        .filter(|diagnostic| {
+            diagnostic.severity == MetaDiagnosticSeverity::Warning
+                && !legacy_messages.contains(diagnostic.message.as_str())
+        })
         .map(|diagnostic| format!("[WARN]  {}", diagnostic.message))
         .collect::<Vec<_>>();
+    let mut errors = legacy_run
+        .as_ref()
+        .map(|run| run.errors.clone())
+        .unwrap_or_default();
+    errors.extend(supplemental_errors.iter().cloned());
+    errors.truncate(options.max_errors);
+    let mut warnings = legacy_run
+        .as_ref()
+        .map(|run| run.warnings.clone())
+        .unwrap_or_default();
+    warnings.extend(supplemental_warnings.iter().cloned());
     if errors.is_empty() && !ok {
         errors.push("[ERROR] metadata validation failed".to_string());
     }
-    let stdout = if errors.is_empty() && warnings.is_empty() && !options.detailed {
+    let stdout = if let Some(run) = legacy_run {
+        if supplemental_errors.is_empty() && supplemental_warnings.is_empty() {
+            run.stdout
+        } else {
+            let mut lines = vec![run.stdout.trim_end().to_string(), String::new()];
+            lines.push("=== Subject proof diagnostics ===".to_string());
+            lines.extend(supplemental_errors);
+            lines.extend(supplemental_warnings);
+            lines.join("\n")
+        }
+    } else if errors.is_empty() && warnings.is_empty() && !options.detailed {
         format!("=== Validation OK: {} ===", subject.target)
     } else {
         let mut lines = vec![format!("=== Validation: {} ===", subject.target)];
@@ -3172,6 +3224,26 @@ mod tests {
         );
         assert_eq!(result.diagnostics[0].operation_index, None);
         assert!(result.diagnostics[0].field.is_some());
+    }
+
+    #[test]
+    fn real_public_adapter_preserves_detailed_legacy_stdout_and_artifact() {
+        let descriptor = common_module("Service");
+        let registration = owner(&[("CommonModule", "Service")]);
+        let valid = subject(
+            "CommonModule.Service",
+            Some(&descriptor),
+            &registration,
+            &[],
+        );
+
+        let outcome = real_legacy_outcome("detailed-stdout", &valid);
+        let stdout = outcome.stdout.clone().unwrap_or_default();
+
+        assert!(outcome.ok, "{outcome:?}");
+        assert!(stdout.contains("[OK]"), "{stdout}");
+        assert!(stdout.contains("checks) ==="), "{stdout}");
+        assert_eq!(outcome.artifacts.len(), 1, "{outcome:?}");
     }
 
     #[test]
