@@ -271,7 +271,11 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
         {
             Ok(output) => {
                 let mut section = parse_bsl_analyzer_search(&output.result_text);
-                if !output.stderr.trim().is_empty() {
+                let retain_stderr = match section.status {
+                    ProviderSectionStatus::Ok | ProviderSectionStatus::Empty => false,
+                    ProviderSectionStatus::Unavailable | ProviderSectionStatus::Failed => true,
+                };
+                if retain_stderr && !output.stderr.trim().is_empty() {
                     section
                         .diagnostics
                         .push(format!("bsl-analyzer stderr: {}", output.stderr.trim()));
@@ -1404,7 +1408,7 @@ mod tests {
             calls: Mutex::new(Vec::new()),
             output: WorkspaceServiceBslOutput {
                 result_text: "No results found.".to_string(),
-                stderr: String::new(),
+                stderr: "building call graph for unrelated modules".to_string(),
             },
         };
         let provider = BslAnalyzerProvider::with_client(&client);
@@ -1420,6 +1424,7 @@ mod tests {
         );
 
         assert_eq!(section.status, ProviderSectionStatus::Empty);
+        assert!(section.diagnostics.is_empty());
         let calls = client.calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, PathBuf::from("/workspace/src"));
@@ -1427,6 +1432,89 @@ mod tests {
         assert_eq!(calls[0].1["query"], "Post");
         assert_eq!(calls[0].1["limit"], 50);
         assert!(calls[0].2 <= Duration::from_secs(120));
+    }
+
+    #[test]
+    fn bsl_analyzer_successful_search_omits_provider_stderr() {
+        let client = FakeBslClient {
+            calls: Mutex::new(Vec::new()),
+            output: WorkspaceServiceBslOutput {
+                result_text: "#1 [L] CommonModules/Sales/Ext/Module.bsl:42 :: Post (procedure)\n"
+                    .to_string(),
+                stderr: "building call graph for unrelated modules\nwarning: unrelated module"
+                    .to_string(),
+            },
+        };
+
+        let section = BslAnalyzerProvider::with_client(&client).search(
+            &SearchRequest {
+                query: "Post".to_string(),
+                limit: 20,
+            },
+            &context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
+            &CancellationToken::new(),
+        );
+
+        assert_eq!(section.status, ProviderSectionStatus::Ok);
+        assert_eq!(section.hits.len(), 1);
+        assert!(section.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn bsl_analyzer_unavailable_search_keeps_provider_stderr() {
+        let client = FakeBslClient {
+            calls: Mutex::new(Vec::new()),
+            output: WorkspaceServiceBslOutput {
+                result_text:
+                    r#"{"status":"not_ready","detail":"indexing 40%","retry_after_ms":1500}"#
+                        .to_string(),
+                stderr: "waiting for the BSL index".to_string(),
+            },
+        };
+
+        let section = BslAnalyzerProvider::with_client(&client).search(
+            &SearchRequest {
+                query: "Post".to_string(),
+                limit: 20,
+            },
+            &context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
+            &CancellationToken::new(),
+        );
+
+        assert_eq!(section.status, ProviderSectionStatus::Unavailable);
+        assert!(section
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.contains("waiting for the BSL index")));
+    }
+
+    #[test]
+    fn bsl_analyzer_failed_search_keeps_provider_stderr() {
+        let client = FakeBslClient {
+            calls: Mutex::new(Vec::new()),
+            output: WorkspaceServiceBslOutput {
+                result_text: "incompatible analyzer output".to_string(),
+                stderr: "fatal: graph database is unavailable".to_string(),
+            },
+        };
+
+        let section = BslAnalyzerProvider::with_client(&client).search(
+            &SearchRequest {
+                query: "Post".to_string(),
+                limit: 20,
+            },
+            &context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
+            &CancellationToken::new(),
+        );
+
+        assert_eq!(section.status, ProviderSectionStatus::Failed);
+        assert!(section
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.contains("fatal: graph database is unavailable")));
     }
 
     #[test]
