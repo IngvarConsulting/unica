@@ -763,7 +763,7 @@ fn edit(
                     "xdto_validation_failed: introduced findings: {}",
                     codes.join(", ")
                 ),
-                data: Some(data),
+                data: Some(Box::new(data)),
             });
         }
         Ok(MutationPlan {
@@ -795,7 +795,7 @@ fn edit(
                     stderr: Some(format!("{}\n", failure.error)),
                     command: None,
                 },
-                data: failure.data,
+                data: failure.data.map(|data| *data),
             }
         }
     };
@@ -968,7 +968,7 @@ struct MutationPlan {
 
 struct PlanningFailure {
     error: String,
-    data: Option<XdtoEditData>,
+    data: Option<Box<XdtoEditData>>,
 }
 
 impl PlanningFailure {

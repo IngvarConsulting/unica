@@ -344,7 +344,7 @@ fn insert_top_level(
             return insert_line_before_node(text, object, fragment);
         }
     }
-    let sibling = root.children().filter(Node::is_element).next_back();
+    let sibling = root.children().rfind(Node::is_element);
     insert_before_explicit_close(text, root, sibling, fragment)
 }
 
@@ -381,7 +381,7 @@ fn insert_child(text: &str, target: Node<'_, '_>, fragment: &str) -> Result<Text
             ),
         });
     }
-    let sibling = target.children().filter(Node::is_element).next_back();
+    let sibling = target.children().rfind(Node::is_element);
     insert_before_explicit_close(text, target, sibling, fragment)
 }
 

@@ -281,8 +281,10 @@ fn validate_named_type(
     if let Some(base) = &named.base {
         validate_qname(
             base,
-            ReferenceKind::Type,
-            &format!("{}/@base", named.key),
+            ReferenceSite {
+                kind: ReferenceKind::Type,
+                key: &format!("{}/@base", named.key),
+            },
             target_namespace,
             imports,
             local_types,
@@ -365,8 +367,10 @@ fn validate_property(
     if let Some(reference) = &property.reference {
         validate_qname(
             reference,
-            ReferenceKind::Property,
-            &format!("{}/@ref", property.key),
+            ReferenceSite {
+                kind: ReferenceKind::Property,
+                key: &format!("{}/@ref", property.key),
+            },
             target_namespace,
             imports,
             local_types,
@@ -377,8 +381,10 @@ fn validate_property(
     if let Some(type_ref) = &property.type_ref {
         validate_qname(
             type_ref,
-            ReferenceKind::Type,
-            &format!("{}/@type", property.key),
+            ReferenceSite {
+                kind: ReferenceKind::Type,
+                key: &format!("{}/@type", property.key),
+            },
             target_namespace,
             imports,
             local_types,
@@ -457,16 +463,21 @@ enum ReferenceKind {
     Property,
 }
 
+struct ReferenceSite<'a> {
+    kind: ReferenceKind,
+    key: &'a str,
+}
+
 fn validate_qname(
     qname: &QNameRef,
-    kind: ReferenceKind,
-    key: &str,
+    site: ReferenceSite<'_>,
     target_namespace: &str,
     imports: &HashSet<&str>,
     local_types: &HashSet<&str>,
     global_properties: &HashSet<&str>,
     findings: &mut Vec<Finding>,
 ) {
+    let ReferenceSite { kind, key } = site;
     if !qname.lexical_valid
         || qname
             .prefix
