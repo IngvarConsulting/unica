@@ -179,7 +179,7 @@ Unica. Каждая запись формулирует одно нормати�
 - **Rule:** `unica.xdto.info` и `unica.xdto.edit` принимают XDTO-пакет только
   через `sourceSet` и `metadataPath` вида `XDTOPackage.<Имя>`; публичная схема
   не принимает физический путь к `Package.bin`.
-- **Decision:** ADR-0023
+- **Decision:** ADR-0024
 - **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
 - **Check:** `ci-test` — `tests/ci/test_unica_skills.py`
 - **Scope:** source, packaged, runtime
