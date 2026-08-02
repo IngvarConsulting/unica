@@ -172,18 +172,29 @@ fn validate_variant(variant: &MetadataTypeVariant, index: usize) -> Result<(), M
     }
 }
 
-fn variant_identity(variant: &MetadataTypeVariant) -> String {
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum MetadataTypeIdentity {
+    String,
+    Number,
+    Boolean,
+    Date,
+    ValueStorage,
+    Reference(MetadataAddress),
+    DefinedType(MetadataAddress),
+}
+
+fn variant_identity(variant: &MetadataTypeVariant) -> MetadataTypeIdentity {
     match variant {
-        MetadataTypeVariant::String { .. } => "xs:string".into(),
-        MetadataTypeVariant::Number { .. } => "xs:decimal".into(),
-        MetadataTypeVariant::Boolean => "xs:boolean".into(),
-        MetadataTypeVariant::Date { .. } => "xs:dateTime".into(),
-        MetadataTypeVariant::ValueStorage => "v8:ValueStorage".into(),
+        MetadataTypeVariant::String { .. } => MetadataTypeIdentity::String,
+        MetadataTypeVariant::Number { .. } => MetadataTypeIdentity::Number,
+        MetadataTypeVariant::Boolean => MetadataTypeIdentity::Boolean,
+        MetadataTypeVariant::Date { .. } => MetadataTypeIdentity::Date,
+        MetadataTypeVariant::ValueStorage => MetadataTypeIdentity::ValueStorage,
         MetadataTypeVariant::Reference { metadata_path } => {
-            format!("reference:{}", metadata_path.as_str())
+            MetadataTypeIdentity::Reference(metadata_path.clone())
         }
         MetadataTypeVariant::DefinedType { metadata_path } => {
-            format!("defined:{}", metadata_path.as_str())
+            MetadataTypeIdentity::DefinedType(metadata_path.clone())
         }
     }
 }
@@ -332,6 +343,57 @@ mod tests {
             sign: NumberSign::Any,
         }])
         .is_err());
+    }
+
+    #[test]
+    fn metadata_type_identity_uses_domain_discriminants_and_logical_addresses() {
+        let catalog =
+            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Products").unwrap();
+        assert_eq!(
+            variant_identity(&MetadataTypeVariant::String {
+                length: 10,
+                allowed_length: StringLengthMode::Variable,
+            }),
+            MetadataTypeIdentity::String
+        );
+        assert_eq!(
+            variant_identity(&MetadataTypeVariant::Number {
+                digits: 15,
+                fraction: 2,
+                sign: NumberSign::Any,
+            }),
+            MetadataTypeIdentity::Number
+        );
+        assert_eq!(
+            variant_identity(&MetadataTypeVariant::ValueStorage),
+            MetadataTypeIdentity::ValueStorage
+        );
+        assert_eq!(
+            variant_identity(&MetadataTypeVariant::Reference {
+                metadata_path: catalog.clone(),
+            }),
+            MetadataTypeIdentity::Reference(catalog)
+        );
+    }
+
+    #[test]
+    fn metadata_type_serialization_contains_no_provider_qnames() {
+        let value_type = MetadataType::new(vec![
+            MetadataTypeVariant::String {
+                length: 10,
+                allowed_length: StringLengthMode::Variable,
+            },
+            MetadataTypeVariant::Number {
+                digits: 15,
+                fraction: 2,
+                sign: NumberSign::Any,
+            },
+        ])
+        .unwrap();
+
+        let serialized = serde_json::to_string(&value_type).unwrap();
+        assert!(!serialized.contains("xs:"), "{serialized}");
+        assert!(!serialized.contains("v8:"), "{serialized}");
     }
 
     #[test]

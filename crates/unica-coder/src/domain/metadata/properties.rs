@@ -73,16 +73,20 @@ const CODE_KINDS: &[MetadataKind] = &[
     MetadataKind::Catalog,
     MetadataKind::ChartOfAccounts,
     MetadataKind::ChartOfCharacteristicTypes,
+    MetadataKind::ChartOfCalculationTypes,
     MetadataKind::ExchangePlan,
-    MetadataKind::BusinessProcess,
-    MetadataKind::Task,
 ];
-const HIERARCHICAL_KINDS: &[MetadataKind] = &[
+const DESCRIPTION_KINDS: &[MetadataKind] = &[
     MetadataKind::Catalog,
     MetadataKind::ChartOfAccounts,
     MetadataKind::ChartOfCharacteristicTypes,
-    MetadataKind::BusinessProcess,
+    MetadataKind::ChartOfCalculationTypes,
     MetadataKind::Task,
+    MetadataKind::ExchangePlan,
+];
+const HIERARCHICAL_KINDS: &[MetadataKind] = &[
+    MetadataKind::Catalog,
+    MetadataKind::ChartOfCharacteristicTypes,
 ];
 const CHECK_UNIQUE_KINDS: &[MetadataKind] = &[
     MetadataKind::Catalog,
@@ -95,10 +99,28 @@ const CHECK_UNIQUE_KINDS: &[MetadataKind] = &[
 const AUTONUMBER_KINDS: &[MetadataKind] = &[
     MetadataKind::Catalog,
     MetadataKind::Document,
-    MetadataKind::ChartOfAccounts,
     MetadataKind::ChartOfCharacteristicTypes,
     MetadataKind::BusinessProcess,
     MetadataKind::Task,
+];
+const STANDARD_COMMAND_KINDS: &[MetadataKind] = &[
+    MetadataKind::Catalog,
+    MetadataKind::Document,
+    MetadataKind::Enum,
+    MetadataKind::Constant,
+    MetadataKind::InformationRegister,
+    MetadataKind::AccumulationRegister,
+    MetadataKind::AccountingRegister,
+    MetadataKind::CalculationRegister,
+    MetadataKind::ChartOfAccounts,
+    MetadataKind::ChartOfCharacteristicTypes,
+    MetadataKind::ChartOfCalculationTypes,
+    MetadataKind::BusinessProcess,
+    MetadataKind::Task,
+    MetadataKind::ExchangePlan,
+    MetadataKind::DocumentJournal,
+    MetadataKind::Report,
+    MetadataKind::DataProcessor,
 ];
 
 pub(crate) const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
@@ -136,7 +158,7 @@ pub(crate) const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         public_name: "DescriptionLength",
         key: MetaPropertyKey::DescriptionLength,
         value_kind: MetaPropertyValueKind::UnsignedInteger,
-        allowed_kinds: CODE_KINDS,
+        allowed_kinds: DESCRIPTION_KINDS,
     },
     MetadataPropertySpec {
         public_name: "Hierarchical",
@@ -154,7 +176,7 @@ pub(crate) const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         public_name: "UseStandardCommands",
         key: MetaPropertyKey::UseStandardCommands,
         value_kind: MetaPropertyValueKind::Boolean,
-        allowed_kinds: MetadataKind::ALL,
+        allowed_kinds: STANDARD_COMMAND_KINDS,
     },
 ];
 
@@ -228,6 +250,110 @@ impl MetaPropertyChanges {
 mod tests {
     use super::*;
     use crate::domain::metadata::{MetaDiagnosticCode, MetadataKind};
+
+    fn assert_property_kind_matrix(
+        property_name: &str,
+        value: MetaPropertyValue,
+        allowed: &[MetadataKind],
+    ) {
+        for kind in MetadataKind::ALL {
+            let result = MetaPropertyChanges::convert(
+                *kind,
+                vec![MetaPropertyInput::new(property_name, value.clone())],
+            );
+            assert_eq!(
+                result.is_ok(),
+                allowed.contains(kind),
+                "{property_name} for {}",
+                kind.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn code_length_uses_the_current_writer_kind_matrix() {
+        assert_property_kind_matrix(
+            "CodeLength",
+            MetaPropertyValue::UnsignedInteger(9),
+            &[
+                MetadataKind::Catalog,
+                MetadataKind::ChartOfAccounts,
+                MetadataKind::ChartOfCharacteristicTypes,
+                MetadataKind::ChartOfCalculationTypes,
+                MetadataKind::ExchangePlan,
+            ],
+        );
+    }
+
+    #[test]
+    fn description_length_uses_its_distinct_current_writer_kind_matrix() {
+        assert_property_kind_matrix(
+            "DescriptionLength",
+            MetaPropertyValue::UnsignedInteger(100),
+            &[
+                MetadataKind::Catalog,
+                MetadataKind::ChartOfAccounts,
+                MetadataKind::ChartOfCharacteristicTypes,
+                MetadataKind::ChartOfCalculationTypes,
+                MetadataKind::Task,
+                MetadataKind::ExchangePlan,
+            ],
+        );
+    }
+
+    #[test]
+    fn hierarchical_uses_the_current_writer_and_validator_kind_matrix() {
+        assert_property_kind_matrix(
+            "Hierarchical",
+            MetaPropertyValue::Boolean(true),
+            &[
+                MetadataKind::Catalog,
+                MetadataKind::ChartOfCharacteristicTypes,
+            ],
+        );
+    }
+
+    #[test]
+    fn autonumbering_excludes_both_chart_kinds_forbidden_by_the_validator() {
+        assert_property_kind_matrix(
+            "Autonumbering",
+            MetaPropertyValue::Boolean(true),
+            &[
+                MetadataKind::Catalog,
+                MetadataKind::Document,
+                MetadataKind::ChartOfCharacteristicTypes,
+                MetadataKind::BusinessProcess,
+                MetadataKind::Task,
+            ],
+        );
+    }
+
+    #[test]
+    fn use_standard_commands_uses_the_current_writer_kind_matrix() {
+        assert_property_kind_matrix(
+            "UseStandardCommands",
+            MetaPropertyValue::Boolean(true),
+            &[
+                MetadataKind::Catalog,
+                MetadataKind::Document,
+                MetadataKind::Enum,
+                MetadataKind::Constant,
+                MetadataKind::InformationRegister,
+                MetadataKind::AccumulationRegister,
+                MetadataKind::AccountingRegister,
+                MetadataKind::CalculationRegister,
+                MetadataKind::ChartOfAccounts,
+                MetadataKind::ChartOfCharacteristicTypes,
+                MetadataKind::ChartOfCalculationTypes,
+                MetadataKind::BusinessProcess,
+                MetadataKind::Task,
+                MetadataKind::ExchangePlan,
+                MetadataKind::DocumentJournal,
+                MetadataKind::Report,
+                MetadataKind::DataProcessor,
+            ],
+        );
+    }
 
     #[test]
     fn property_conversion_rejects_unknown_public_key() {

@@ -210,6 +210,7 @@ impl MetaElementDefinition {
             .into_iter()
             .map(|nested| Self::convert(MetaCollection::Attributes, nested))
             .collect::<Result<Vec<_>, _>>()?;
+        reject_duplicate_names(attributes.iter().map(|attribute| attribute.name.as_str()))?;
         Ok(Self {
             name: input.name,
             synonym: input.synonym,
@@ -458,14 +459,20 @@ impl MetaEditOperation {
                     if !existing_names.contains(&element.name) {
                         return Err(missing_target(&element.name));
                     }
-                    if let Some(new_name) = &element.new_name {
-                        if new_name != &element.name && existing_names.contains(new_name) {
-                            return Err(MetaDiagnostic::error(
-                                MetaDiagnosticCode::AlreadyExists,
-                                format!("element `{new_name}` already exists"),
-                            )
-                            .with_field("elements.newName"));
-                        }
+                }
+
+                let mut final_names = existing_names.clone();
+                for element in elements {
+                    final_names.remove(&element.name);
+                }
+                for element in elements {
+                    let final_name = element.new_name.as_ref().unwrap_or(&element.name);
+                    if !final_names.insert(final_name.clone()) {
+                        return Err(MetaDiagnostic::error(
+                            MetaDiagnosticCode::AlreadyExists,
+                            format!("element `{final_name}` already exists after update"),
+                        )
+                        .with_field("elements.newName"));
                     }
                 }
             }
@@ -566,6 +573,27 @@ mod tests {
     }
 
     #[test]
+    fn new_tabular_section_rejects_duplicate_nested_attribute_names() {
+        let result = MetaEditOperation::add(
+            MetaCollection::TabularSections,
+            None,
+            vec![MetaElementInput {
+                name: "Lines".into(),
+                attributes: Some(vec![
+                    MetaElementInput::named("Quantity"),
+                    MetaElementInput::named("Quantity"),
+                ]),
+                ..MetaElementInput::default()
+            }],
+        );
+
+        assert_eq!(
+            result.unwrap_err().code,
+            MetaDiagnosticCode::InvalidArguments
+        );
+    }
+
+    #[test]
     fn add_rejects_duplicates_while_update_and_remove_reject_missing_targets() {
         let existing = HashSet::from(["Existing".to_string()]);
         let add = MetaEditOperation::add(
@@ -625,5 +653,56 @@ mod tests {
         )
         .is_err());
         assert!(MetaEditOperation::remove(MetaCollection::Attributes, None, vec![]).is_err());
+    }
+
+    #[test]
+    fn update_rejects_duplicate_final_names_after_all_renames() {
+        let existing = HashSet::from(["A".to_string(), "B".to_string()]);
+        let update = MetaEditOperation::update(
+            MetaCollection::Attributes,
+            None,
+            vec![
+                MetaElementUpdateInput {
+                    name: "A".into(),
+                    new_name: Some("X".into()),
+                    ..MetaElementUpdateInput::default()
+                },
+                MetaElementUpdateInput {
+                    name: "B".into(),
+                    new_name: Some("X".into()),
+                    ..MetaElementUpdateInput::default()
+                },
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            update.validate_targets(&existing).unwrap_err().code,
+            MetaDiagnosticCode::AlreadyExists
+        );
+    }
+
+    #[test]
+    fn update_allows_a_destination_vacated_by_another_rename() {
+        let existing = HashSet::from(["A".to_string(), "B".to_string()]);
+        let update = MetaEditOperation::update(
+            MetaCollection::Attributes,
+            None,
+            vec![
+                MetaElementUpdateInput {
+                    name: "A".into(),
+                    new_name: Some("B".into()),
+                    ..MetaElementUpdateInput::default()
+                },
+                MetaElementUpdateInput {
+                    name: "B".into(),
+                    new_name: Some("C".into()),
+                    ..MetaElementUpdateInput::default()
+                },
+            ],
+        )
+        .unwrap();
+
+        assert!(update.validate_targets(&existing).is_ok());
     }
 }
