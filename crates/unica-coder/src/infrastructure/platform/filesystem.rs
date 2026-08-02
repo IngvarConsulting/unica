@@ -21,18 +21,26 @@ pub(crate) fn short_private_runtime_dir() -> io::Result<Option<PathBuf>> {
 
 #[cfg(unix)]
 fn short_private_runtime_dir_unix() -> io::Result<PathBuf> {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
-    use std::os::unix::io::FromRawFd;
-
     // SAFETY: `geteuid` has no preconditions and only reads the effective UID
     // of this process.
     let uid = unsafe { libc::geteuid() };
     let path = PathBuf::from("/tmp").join(format!("unica-bsl-{uid}"));
+    ensure_short_private_runtime_dir_unix(&path, uid)
+}
 
-    for _ in 0..2 {
-        match fs::symlink_metadata(&path) {
+#[cfg(unix)]
+fn ensure_short_private_runtime_dir_unix(path: &Path, uid: libc::uid_t) -> io::Result<PathBuf> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    use std::os::unix::io::FromRawFd;
+    use std::time::Duration;
+
+    const SETUP_ATTEMPTS: usize = 8;
+    const RETRY_DELAY: Duration = Duration::from_millis(1);
+
+    for _ in 0..SETUP_ATTEMPTS {
+        match fs::symlink_metadata(path) {
             Ok(metadata) => {
                 let mode = metadata.permissions().mode() & 0o777;
                 if !metadata.is_dir() || metadata.file_type().is_symlink() {
@@ -41,7 +49,7 @@ fn short_private_runtime_dir_unix() -> io::Result<PathBuf> {
                         format!("short runtime path {} is not a directory", path.display()),
                     ));
                 }
-                if metadata.uid() != uid || mode != 0o700 {
+                if metadata.uid() != uid {
                     return Err(io::Error::new(
                         io::ErrorKind::PermissionDenied,
                         format!(
@@ -50,10 +58,17 @@ fn short_private_runtime_dir_unix() -> io::Result<PathBuf> {
                         ),
                     ));
                 }
-                return Ok(path);
+                if mode == 0o700 {
+                    return Ok(path.to_path_buf());
+                }
+
+                // Another process with the same UID can observe a directory
+                // between its creation and the creator's permission
+                // normalization. Give that bounded race time to settle.
+                std::thread::sleep(RETRY_DELAY);
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                match fs::DirBuilder::new().mode(0o700).create(&path) {
+                match fs::DirBuilder::new().mode(0o700).create(path) {
                     Ok(()) => {
                         // `DirBuilder::mode` is filtered through the caller's
                         // umask. The directory is part of an authentication
@@ -84,9 +99,10 @@ fn short_private_runtime_dir_unix() -> io::Result<PathBuf> {
                         // SAFETY: `open` returned a new owned descriptor.
                         let directory = unsafe { File::from_raw_fd(descriptor) };
                         directory.set_permissions(fs::Permissions::from_mode(0o700))?;
-                        continue;
                     }
-                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                        std::thread::sleep(RETRY_DELAY);
+                    }
                     Err(error) => return Err(error),
                 }
             }
@@ -94,13 +110,39 @@ fn short_private_runtime_dir_unix() -> io::Result<PathBuf> {
         }
     }
 
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        format!(
-            "short runtime directory {} disappeared during setup",
-            path.display()
-        ),
-    ))
+    // Always validate once after the retry budget. In particular, a successful
+    // creation on the last iteration must not be reported as disappeared.
+    match fs::symlink_metadata(path) {
+        Ok(metadata)
+            if metadata.is_dir()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == uid
+                && metadata.permissions().mode() & 0o777 == 0o700 =>
+        {
+            Ok(path.to_path_buf())
+        }
+        Ok(metadata) if !metadata.is_dir() || metadata.file_type().is_symlink() => {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("short runtime path {} is not a directory", path.display()),
+            ))
+        }
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "short runtime directory {} must be owned by the current user and have mode 0700",
+                path.display()
+            ),
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "short runtime directory {} disappeared during setup",
+                path.display()
+            ),
+        )),
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -3247,6 +3289,93 @@ mod tests {
             "unica-filesystem-{name}-{}-{nanos}",
             std::process::id()
         ))
+    }
+
+    #[cfg(unix)]
+    mod unix_runtime_directory {
+        use super::{fs, unique_temp_root};
+        use crate::infrastructure::platform::filesystem::ensure_short_private_runtime_dir_unix;
+        use std::io;
+        use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
+
+        fn fixture(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+            let root = unique_temp_root(name);
+            fs::create_dir_all(&root).unwrap();
+            let runtime = root.join("runtime");
+            (root, runtime)
+        }
+
+        fn effective_uid() -> libc::uid_t {
+            // SAFETY: `geteuid` has no preconditions and only reads the
+            // effective UID of this process.
+            unsafe { libc::geteuid() }
+        }
+
+        #[test]
+        fn creates_owner_only_runtime_directory() {
+            let (root, runtime) = fixture("short-runtime-create");
+
+            let actual = ensure_short_private_runtime_dir_unix(&runtime, effective_uid()).unwrap();
+            let metadata = fs::symlink_metadata(&runtime).unwrap();
+
+            assert_eq!(actual, runtime);
+            assert!(metadata.is_dir());
+            assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn rejects_symlink_at_runtime_path() {
+            let (root, runtime) = fixture("short-runtime-symlink");
+            let target = root.join("target");
+            fs::create_dir(&target).unwrap();
+            symlink(&target, &runtime).unwrap();
+
+            let error =
+                ensure_short_private_runtime_dir_unix(&runtime, effective_uid()).unwrap_err();
+
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn rejects_regular_file_at_runtime_path() {
+            let (root, runtime) = fixture("short-runtime-file");
+            fs::write(&runtime, b"not a directory").unwrap();
+
+            let error =
+                ensure_short_private_runtime_dir_unix(&runtime, effective_uid()).unwrap_err();
+
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn rejects_runtime_directory_owned_by_another_uid() {
+            let (root, runtime) = fixture("short-runtime-owner");
+            fs::create_dir(&runtime).unwrap();
+            fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();
+            let actual_uid = fs::symlink_metadata(&runtime).unwrap().uid();
+
+            let error = ensure_short_private_runtime_dir_unix(&runtime, actual_uid.wrapping_add(1))
+                .unwrap_err();
+
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn rejects_runtime_directory_with_non_private_mode() {
+            let (root, runtime) = fixture("short-runtime-mode");
+            fs::create_dir(&runtime).unwrap();
+            fs::set_permissions(&runtime, fs::Permissions::from_mode(0o755)).unwrap();
+
+            let error =
+                ensure_short_private_runtime_dir_unix(&runtime, effective_uid()).unwrap_err();
+
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     fn windows_api_path_text(path: &str, absolute: bool) -> String {
