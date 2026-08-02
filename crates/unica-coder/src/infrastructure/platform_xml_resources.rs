@@ -81,7 +81,9 @@ struct SnapshotCapacityReservation<'a> {
 
 impl SnapshotCapacityReservation<'_> {
     fn publish(mut self, snapshot: StoredSnapshot) -> Result<(), SourceResourceError> {
-        debug_assert!(snapshot.byte_size <= self.byte_size);
+        if snapshot.byte_size > self.byte_size {
+            return Err(capacity_error());
+        }
         let mut store = self.store.lock().map_err(|_| {
             public_error(
                 SourceResourceErrorCode::SourceUnavailable,
@@ -372,10 +374,9 @@ impl PlatformXmlResourceProvider {
         Ok(page)
     }
 
-    /// Bytes this snapshot may buffer, bounded by what the live store could
-    /// actually accept. Without it a request that the store has no room for
-    /// still reads its way to the single-snapshot ceiling before the capacity
-    /// check at insertion time rejects it.
+    /// Atomically reserves live count and byte capacity before construction.
+    /// Publishing replaces the reservation with the actual snapshot size;
+    /// dropping the guard releases it on every other exit path.
     fn reserve_snapshot_capacity(
         &self,
     ) -> Result<SnapshotCapacityReservation<'_>, SourceResourceError> {
@@ -870,10 +871,11 @@ mod tests {
 
     use std::fs;
     use std::sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc, Arc, Barrier,
     };
-    use std::time::Duration;
+    use std::thread;
+    use std::time::{Duration, Instant};
     use uuid::{Uuid, Version};
 
     #[derive(Default)]
@@ -1487,26 +1489,97 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_capacity_reservations_are_atomic_and_released_on_drop() {
+    fn source_resources_reservations_are_atomic_across_threads_and_released_on_drop() {
+        const WORKERS: usize = 8;
+        const MAX_CONCURRENT_RESERVATIONS: usize = 4;
+
         let (provider, _) = provider();
-        let first = provider.reserve_snapshot_capacity().unwrap();
-        let second = provider.reserve_snapshot_capacity().unwrap();
-        let third = provider.reserve_snapshot_capacity().unwrap();
-        let fourth = provider.reserve_snapshot_capacity().unwrap();
+        let provider = Arc::new(provider);
+        let start = Arc::new(Barrier::new(WORKERS + 1));
+        let release = Arc::new(AtomicBool::new(false));
+        let (outcomes, received) = mpsc::channel();
+        let workers = (0..WORKERS)
+            .map(|_| {
+                let provider = Arc::clone(&provider);
+                let start = Arc::clone(&start);
+                let release = Arc::clone(&release);
+                let outcomes = outcomes.clone();
+                thread::spawn(move || {
+                    start.wait();
+                    match provider.reserve_snapshot_capacity() {
+                        Ok(reservation) => {
+                            outcomes.send(true).unwrap();
+                            let deadline = Instant::now() + Duration::from_secs(5);
+                            while !release.load(Ordering::Acquire) {
+                                assert!(
+                                    Instant::now() < deadline,
+                                    "timed out waiting to release snapshot reservation"
+                                );
+                                thread::yield_now();
+                            }
+                            drop(reservation);
+                        }
+                        Err(error) => {
+                            assert_eq!(
+                                error.code,
+                                SourceResourceErrorCode::SnapshotCapacityExceeded
+                            );
+                            outcomes.send(false).unwrap();
+                        }
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        drop(outcomes);
 
-        for reservation in [&first, &second, &third, &fourth] {
-            assert_eq!(reservation.byte_size, MAX_SNAPSHOT_BYTES);
+        start.wait();
+        let successful = (0..WORKERS)
+            .map(|_| received.recv_timeout(Duration::from_secs(5)).unwrap())
+            .filter(|reserved| *reserved)
+            .count();
+        assert_eq!(successful, MAX_CONCURRENT_RESERVATIONS);
+
+        release.store(true, Ordering::Release);
+        for worker in workers {
+            worker.join().unwrap();
         }
-        assert!(matches!(
-            provider.reserve_snapshot_capacity(),
-            Err(error) if error.code == SourceResourceErrorCode::SnapshotCapacityExceeded
-        ));
-
-        drop(first);
         assert_eq!(
             provider.reserve_snapshot_capacity().unwrap().byte_size,
             MAX_SNAPSHOT_BYTES
         );
+    }
+
+    #[test]
+    fn source_resources_publish_rejects_snapshot_larger_than_its_reservation() {
+        let fixture = Fixture::new(b"x");
+        let (provider, _) = provider();
+        let page = provider
+            .resources(
+                fixture.module_request(ResourceScope::SelfOnly, 50),
+                &fixture.context,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut snapshot = provider
+            .snapshots
+            .lock()
+            .unwrap()
+            .snapshots
+            .remove(&page.snapshot_id)
+            .unwrap();
+        let reservation = provider.reserve_snapshot_capacity().unwrap();
+        snapshot.byte_size = reservation.byte_size + 1;
+
+        let error = reservation.publish(snapshot).unwrap_err();
+
+        assert_eq!(
+            error.code,
+            SourceResourceErrorCode::SnapshotCapacityExceeded
+        );
+        let store = provider.snapshots.lock().unwrap();
+        assert!(store.snapshots.is_empty());
+        assert_eq!(store.reserved_bytes, 0);
+        assert_eq!(store.reserved_count, 0);
     }
 
     #[test]
