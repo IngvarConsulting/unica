@@ -3048,7 +3048,8 @@ mod tests {
     };
     use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
     use crate::domain::source_target::{
-        MetadataAddress, SourceTarget, SourceTargetErrorCode, PLATFORM_XML_8_3_27_FORMAT_2_20,
+        MetadataAddress, SourceTarget, SourceTargetErrorCode, SourceTargetErrorReason,
+        PLATFORM_XML_8_3_27_FORMAT_2_20,
     };
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::platform::filesystem::create_dir_symlink_for_test;
@@ -3194,6 +3195,11 @@ mod tests {
             assert_eq!(
                 error.code,
                 SourceTargetErrorCode::SourceRootNotAddressable,
+                "{source_set}: {error}"
+            );
+            assert_eq!(
+                error.reason(),
+                SourceTargetErrorReason::SourceFormatUnsupported,
                 "{source_set}: {error}"
             );
             assert!(

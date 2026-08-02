@@ -110,14 +110,19 @@ class SmokeUnicaMcpTests(unittest.TestCase):
 
     def tool_entries(self, names: set[str] | None = None) -> list[object]:
         module = load_module()
-        source_schemas = json.loads(
-            json.dumps(module.EXPECTED_SOURCE_INPUT_SCHEMAS)
+        stable_schemas = json.loads(
+            json.dumps(
+                {
+                    **module.EXPECTED_SOURCE_INPUT_SCHEMAS,
+                    **module.EXPECTED_XDTO_INPUT_SCHEMAS,
+                }
+            )
         )
         selected_names = self.expected_tools() if names is None else names
         return [
             {
                 "name": name,
-                "inputSchema": source_schemas.get(
+                "inputSchema": stable_schemas.get(
                     name,
                     {
                         "type": "object",
@@ -328,6 +333,39 @@ class SmokeUnicaMcpTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("schema", result.stderr)
+
+    def test_rejects_xdto_info_schema_missing_required_target(self) -> None:
+        entries = self.tool_entries()
+        xdto_info = next(
+            entry
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("name") == "unica.xdto.info"
+        )
+        xdto_info["inputSchema"]["required"].remove("metadataPath")
+
+        result = self.run_smoke(entries)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("XDTO input schema", result.stderr)
+
+    def test_rejects_xdto_edit_schema_missing_operation_branch_requirement(self) -> None:
+        entries = self.tool_entries()
+        xdto_edit = next(
+            entry
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("name") == "unica.xdto.edit"
+        )
+        add_value_type = next(
+            branch
+            for branch in xdto_edit["inputSchema"]["oneOf"]
+            if branch["properties"]["operation"]["const"] == "add-value-type"
+        )
+        add_value_type["required"].remove("base")
+
+        result = self.run_smoke(entries)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("XDTO input schema", result.stderr)
 
     def test_rejects_expected_xdto_tool_without_input_schema(self) -> None:
         entries = self.tool_entries()
