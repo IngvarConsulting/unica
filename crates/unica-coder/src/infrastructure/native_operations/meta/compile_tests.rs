@@ -1,6 +1,7 @@
 #![allow(dead_code, unused_imports)]
 
 use crate::application::AdapterOutcome;
+use crate::domain::metadata::MetadataKind;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::metadata_kinds::metadata_kind;
 use serde_json::{json, Map, Value};
@@ -11,9 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use super::super::cf::create_configuration_scaffold;
 use super::super::subsystem::compile_subsystem;
 use super::edit::meta_edit_fill_value_xml;
-use super::legacy_dsl::{
-    compile_meta, meta_compile_object_xml, meta_compile_type_plural, META_COMPILE_SUPPORTED_TYPES,
-};
+use super::legacy_dsl::{compile_meta, meta_compile_object_xml, meta_compile_type_plural};
 use super::publisher::{fresh_meta_compile_uuid, register_compiled_meta_in_configuration};
 use super::remove::{meta_remove_supported_types, meta_remove_type_plural, remove_metadata_object};
 use super::template_catalog::normalize_meta_enum_value;
@@ -267,7 +266,7 @@ mod registration_tests {
     use super::{
         compile_meta, fs, json, meta_compile_object_xml, meta_compile_type_plural,
         meta_remove_supported_types, meta_remove_type_plural, metadata_kind,
-        register_compiled_meta_in_configuration, Map, PathBuf, Value, META_COMPILE_SUPPORTED_TYPES,
+        register_compiled_meta_in_configuration, Map, MetadataKind, PathBuf, Value,
     };
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -370,9 +369,9 @@ mod registration_tests {
             );
         }
 
-        assert_eq!(META_COMPILE_SUPPORTED_TYPES.len(), 23);
-        assert!(!META_COMPILE_SUPPORTED_TYPES.contains(&"Bot"));
-        for object_type in META_COMPILE_SUPPORTED_TYPES {
+        assert_eq!(MetadataKind::ALL.len(), 23);
+        for kind in MetadataKind::ALL {
+            let object_type = kind.as_str();
             assert_eq!(
                 meta_compile_type_plural(object_type),
                 metadata_kind(object_type).map(|kind| kind.directory)

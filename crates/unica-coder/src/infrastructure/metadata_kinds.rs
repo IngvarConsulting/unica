@@ -1,5 +1,7 @@
+use crate::domain::metadata::MetadataKind;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct MetadataKind {
+pub(crate) struct MetadataLayout {
     pub(crate) tag: &'static str,
     pub(crate) directory: &'static str,
     pub(crate) display_name_ru: &'static str,
@@ -19,8 +21,8 @@ macro_rules! metadata_kind_registry {
             config_dump_module_suffix: $config_dump_module_suffix:expr $(,)?
         }
     ),+ $(,)?) => {
-        pub(crate) const METADATA_KINDS: &[MetadataKind] = &[
-            $(MetadataKind {
+        pub(crate) const METADATA_KINDS: &[MetadataLayout] = &[
+            $(MetadataLayout {
                 tag: $tag,
                 directory: $directory,
                 display_name_ru: $display_name_ru,
@@ -81,14 +83,18 @@ metadata_kind_registry! {
     "IntegrationService" => { directory: "IntegrationServices", display_name_ru: "Сервисы интеграции", config_dump_prefix: None, config_dump_module_suffix: None },
 }
 
-pub(crate) fn metadata_kind(tag: &str) -> Option<&'static MetadataKind> {
+pub(crate) fn metadata_kind(tag: &str) -> Option<&'static MetadataLayout> {
     METADATA_KINDS.iter().find(|kind| kind.tag == tag)
 }
 
-pub(crate) fn metadata_kind_by_directory(directory: &str) -> Option<&'static MetadataKind> {
+pub(crate) fn metadata_kind_by_directory(directory: &str) -> Option<&'static MetadataLayout> {
     METADATA_KINDS
         .iter()
         .find(|kind| kind.directory.eq_ignore_ascii_case(directory))
+}
+
+pub(crate) fn metadata_layout(kind: MetadataKind) -> &'static MetadataLayout {
+    metadata_kind(kind.as_str()).expect("every domain metadata kind must have a physical layout")
 }
 
 pub(crate) fn metadata_kind_index(tag: &str) -> Option<usize> {
@@ -172,7 +178,17 @@ pub(crate) fn supports_nested_form_or_command(tag: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::metadata::MetadataKind as DomainMetadataKind;
     use std::collections::HashSet;
+
+    #[test]
+    fn every_creation_kind_keys_one_physical_layout() {
+        for kind in DomainMetadataKind::ALL {
+            let layout = metadata_layout(*kind);
+            assert_eq!(layout.tag, kind.as_str());
+            assert!(!layout.directory.is_empty());
+        }
+    }
 
     #[test]
     fn registry_has_unique_canonical_tags_and_directories() {

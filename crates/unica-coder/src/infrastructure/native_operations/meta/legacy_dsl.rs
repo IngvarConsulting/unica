@@ -1,8 +1,9 @@
 #![allow(dead_code, unused_imports)]
 
 use crate::application::AdapterOutcome;
+use crate::domain::metadata::MetadataKind;
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::metadata_kinds::metadata_kind;
+use crate::infrastructure::metadata_kinds::{metadata_kind, metadata_layout};
 use roxmltree::Document;
 use serde_json::{Map, Value};
 use std::collections::HashSet;
@@ -66,32 +67,6 @@ use super::{
     run_meta_compile_after_format_plan_hook, run_meta_compile_after_owner_validation_hook,
 };
 
-pub(super) const META_COMPILE_SUPPORTED_TYPES: &[&str] = &[
-    "Catalog",
-    "Document",
-    "Enum",
-    "Constant",
-    "InformationRegister",
-    "AccumulationRegister",
-    "AccountingRegister",
-    "CalculationRegister",
-    "ChartOfAccounts",
-    "ChartOfCharacteristicTypes",
-    "ChartOfCalculationTypes",
-    "BusinessProcess",
-    "Task",
-    "ExchangePlan",
-    "DocumentJournal",
-    "Report",
-    "DataProcessor",
-    "CommonModule",
-    "ScheduledJob",
-    "EventSubscription",
-    "HTTPService",
-    "WebService",
-    "DefinedType",
-];
-
 pub(super) const META_COMPILE_PENDING_TYPES: &[&str] = &[];
 
 pub(super) enum MetaEditDslInput {
@@ -139,10 +114,17 @@ pub(super) fn read_meta_edit_definition(
 }
 
 pub(super) fn meta_compile_type_plural(obj_type: &str) -> Option<&'static str> {
-    if !META_COMPILE_SUPPORTED_TYPES.contains(&obj_type) {
-        return None;
-    }
-    metadata_kind(obj_type).map(|kind| kind.directory)
+    MetadataKind::parse(obj_type)
+        .ok()
+        .map(|kind| metadata_layout(kind).directory)
+}
+
+fn meta_compile_supported_type_names() -> String {
+    MetadataKind::ALL
+        .iter()
+        .map(|kind| kind.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 pub(super) fn meta_compile_uses_object_subdir(obj_type: &str) -> bool {
@@ -577,7 +559,7 @@ fn compile_meta_object(
     let type_plural = meta_compile_type_plural(&obj_type).ok_or_else(|| {
         format!(
             "Unsupported type: {obj_type}. Supported: {}. Documented pending: {}",
-            META_COMPILE_SUPPORTED_TYPES.join(", "),
+            meta_compile_supported_type_names(),
             META_COMPILE_PENDING_TYPES.join(", ")
         )
     })?;
@@ -869,7 +851,7 @@ pub(crate) fn meta_compile_object_xml(
         _ => {
             return Err(format!(
                 "Unsupported type: {obj_type}. Supported: {}. Documented pending: {}",
-                META_COMPILE_SUPPORTED_TYPES.join(", "),
+                meta_compile_supported_type_names(),
                 META_COMPILE_PENDING_TYPES.join(", ")
             ));
         }

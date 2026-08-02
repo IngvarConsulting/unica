@@ -18,7 +18,7 @@ use crate::domain::source_target::{
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::metadata_kinds::{
     metadata_kind, metadata_kind_by_directory, supports_direct_module_role,
-    supports_nested_form_or_command, MetadataKind, METADATA_KINDS,
+    supports_nested_form_or_command, MetadataLayout, METADATA_KINDS,
 };
 use crate::infrastructure::path_policy::WorkspacePathPolicy;
 use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
@@ -696,7 +696,7 @@ fn push_module_candidate(
 /// the child names whose own descriptor proves them.
 fn proven_child_names(
     source_root: &Path,
-    kind: &MetadataKind,
+    kind: &MetadataLayout,
     owner: &str,
     child_kind: &str,
     child_directory: &str,
@@ -744,7 +744,7 @@ fn proven_child_names(
 /// so a narrow query never pays to parse the whole collection.
 fn proven_object_names(
     source_root: &Path,
-    kind: &MetadataKind,
+    kind: &MetadataLayout,
     name_prefix: Option<&str>,
     partial: &mut bool,
     cancellation: &CancellationToken,
@@ -2820,7 +2820,7 @@ impl PlatformXmlModuleLayoutDescriptor {
 
 #[derive(Debug, Default)]
 struct ModuleLayoutCaptures<'a> {
-    kind: Option<&'static MetadataKind>,
+    kind: Option<&'static MetadataLayout>,
     owner_name: Option<&'a str>,
     child_name: Option<&'a str>,
     role: Option<PlatformXmlModuleRole>,

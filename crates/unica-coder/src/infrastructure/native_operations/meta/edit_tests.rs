@@ -2,6 +2,7 @@
 
 use crate::application::AdapterOutcome;
 use crate::application::UnicaApplication;
+use crate::domain::metadata::MetadataKind;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::compile_transaction::{
     with_commit_failpoint, CommitFailpoint,
@@ -23,7 +24,6 @@ use super::edit::{
 use super::legacy_dsl::{
     meta_compile_type_plural, meta_edit_definition_requests_line_number_length,
     meta_edit_inline_requests_line_number_length, validate_metadata_owner_shape_8_3_27,
-    META_COMPILE_SUPPORTED_TYPES,
 };
 use super::validation::{
     meta_validate_format_dependency_paths, meta_validate_localized_values, validate_meta,
@@ -573,7 +573,7 @@ fn boolean_contract_cases() -> &'static [(&'static str, &'static [&'static str])
 }
 
 fn sample_with_invalid_boolean_node(node_type: &str, property: &str) -> String {
-    if META_COMPILE_SUPPORTED_TYPES.contains(&node_type) {
+    if MetadataKind::parse(node_type).is_ok() {
         return sample_meta_object_xml(
             node_type,
             "BooleanProbe",
