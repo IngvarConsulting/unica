@@ -932,6 +932,7 @@ pub(crate) fn plan_typed_remove(
             target: target.clone(),
             resources: validation_resources,
             child_footprints: Vec::new(),
+            registrar_evidence: Default::default(),
         },
         transaction,
         resolved,

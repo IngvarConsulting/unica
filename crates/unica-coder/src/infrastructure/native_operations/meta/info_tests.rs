@@ -81,6 +81,23 @@ fn typed_info_marks_nonphysical_children_without_properties_incomplete() {
 }
 
 #[test]
+fn typed_info_preserves_structured_children_with_missing_or_empty_names_as_incomplete() {
+    let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Catalog><ChildObjects><Attribute><Properties><Synonym/></Properties></Attribute><Attribute><Properties><Name> </Name></Properties></Attribute></ChildObjects></Catalog></MetaDataObject>"#;
+    let document = roxmltree::Document::parse(xml).unwrap();
+    let object = document.root_element().first_element_child().unwrap();
+    let children = meta_info_child(object, "ChildObjects");
+
+    let attributes = typed_elements(xml, children, "Attribute", false);
+    let value = serde_json::to_value(&attributes).unwrap();
+
+    assert_eq!(value.as_array().unwrap().len(), 2);
+    assert_eq!(value[0]["name"], "");
+    assert_eq!(value[0]["incomplete"], true);
+    assert_eq!(value[1]["name"], "");
+    assert_eq!(value[1]["incomplete"], true);
+}
+
+#[test]
 fn meta_info_reads_the_descriptor_named_by_a_logical_address() {
     let context = workspace("reads");
 

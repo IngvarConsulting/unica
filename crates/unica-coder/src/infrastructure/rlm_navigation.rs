@@ -12,17 +12,27 @@ use crate::domain::metadata::{MetaProfileResult, MetaProfileSection};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::workspace_index::IndexReadiness;
 use crate::infrastructure::workspace_services::{
-    workspace_source_snapshot, WorkspaceRlmOperation, WorkspaceServiceManager,
-    WorkspaceServiceRlmOutput, WorkspaceSourceSnapshot,
+    WorkspaceRlmOperation, WorkspaceServiceManager, WorkspaceServiceRlmOutput,
 };
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
+use std::fs;
+use std::io::Read;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 const RLM_NAVIGATION_TIMEOUT: Duration = Duration::from_secs(45);
 const RELATED_READINESS_SETTLE_LIMIT: Duration = Duration::from_millis(500);
 const RELATED_READINESS_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const RELATED_SOURCE_MAX_FILES: usize = 20_000;
+const RELATED_SOURCE_MAX_BYTES: u64 = 64 * 1024 * 1024;
+const RELATED_SOURCE_READ_BUFFER: usize = 64 * 1024;
+
+/// Opaque identity of the exact relevant source paths and bytes observed by a
+/// typed related-info read. It is deliberately not serializable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WorkspaceSourceSnapshot([u8; 32]);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RelatedReadinessState {
@@ -33,7 +43,7 @@ enum RelatedReadinessState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RelatedReadinessProof {
     state: RelatedReadinessState,
-    source: WorkspaceSourceSnapshot,
+    source: Option<WorkspaceSourceSnapshot>,
 }
 
 trait RlmNavigationClient: Send + Sync {
@@ -315,10 +325,9 @@ fn related_readiness_proof(
         if settle_remaining.is_zero() {
             return Some(RelatedReadinessProof {
                 state: RelatedReadinessState::Stale,
-                source: workspace_source_snapshot(&context.source_root.path),
+                source: None,
             });
         }
-        let source_before = workspace_source_snapshot(&context.source_root.path);
         let readiness = client
             .readiness(
                 &context.workspace,
@@ -330,29 +339,35 @@ fn related_readiness_proof(
                 cancellation,
             )
             .ok()?;
-        let source_after = workspace_source_snapshot(&context.source_root.path);
         match readiness {
-            IndexReadiness::Ready { .. } if source_before == source_after => {
-                if ready_snapshot == Some(source_after) {
+            IndexReadiness::Ready { .. } => {
+                let source = related_source_content_snapshot(
+                    &context.source_root.path,
+                    deadline,
+                    settle_until,
+                    cancellation,
+                )
+                .ok()?;
+                if ready_snapshot == Some(source) {
                     return Some(RelatedReadinessProof {
                         state: RelatedReadinessState::Ready,
-                        source: source_after,
+                        source: Some(source),
                     });
                 }
-                ready_snapshot = Some(source_after);
+                ready_snapshot = Some(source);
             }
             IndexReadiness::Stale { .. } => {
                 return Some(RelatedReadinessProof {
                     state: RelatedReadinessState::Stale,
-                    source: source_after,
+                    source: None,
                 });
             }
-            IndexReadiness::Building | IndexReadiness::Ready { .. } => {
+            IndexReadiness::Building => {
                 ready_snapshot = None;
                 if Instant::now() >= settle_until {
                     return Some(RelatedReadinessProof {
                         state: RelatedReadinessState::Stale,
-                        source: source_after,
+                        source: None,
                     });
                 }
             }
@@ -374,6 +389,121 @@ fn related_readiness_proof(
                 .min(settle_remaining),
         );
     }
+}
+
+fn related_source_content_snapshot(
+    source_root: &Path,
+    deadline: ProviderDeadline,
+    settle_until: Instant,
+    cancellation: &CancellationToken,
+) -> Result<WorkspaceSourceSnapshot, ()> {
+    ensure_snapshot_budget(deadline, settle_until, cancellation)?;
+    let root_metadata = fs::symlink_metadata(source_root).map_err(|_| ())?;
+    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        return Err(());
+    }
+
+    let mut directories = vec![source_root.to_path_buf()];
+    let mut files = Vec::new();
+    while let Some(directory) = directories.pop() {
+        ensure_snapshot_budget(deadline, settle_until, cancellation)?;
+        let entries = fs::read_dir(&directory)
+            .map_err(|_| ())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| ())?;
+        for entry in entries {
+            ensure_snapshot_budget(deadline, settle_until, cancellation)?;
+            let path = entry.path();
+            let file_type = entry.file_type().map_err(|_| ())?;
+            if file_type.is_symlink() {
+                return Err(());
+            }
+            if file_type.is_dir() {
+                if entry.file_name() != ".build" {
+                    directories.push(path);
+                }
+                continue;
+            }
+            if !is_related_source_file(&path) {
+                continue;
+            }
+            if !file_type.is_file() {
+                return Err(());
+            }
+            let relative = path.strip_prefix(source_root).map_err(|_| ())?;
+            let logical_path = relative
+                .components()
+                .map(|component| component.as_os_str().to_str().ok_or(()))
+                .collect::<Result<Vec<_>, _>>()?
+                .join("/");
+            files.push((logical_path, path));
+            if files.len() > RELATED_SOURCE_MAX_FILES {
+                return Err(());
+            }
+        }
+    }
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let mut total_bytes = 0_u64;
+    let mut hasher = Sha256::new();
+    hasher.update(b"unica-related-source-content-v1");
+    for (logical_path, path) in files {
+        ensure_snapshot_budget(deadline, settle_until, cancellation)?;
+        let metadata = fs::symlink_metadata(&path).map_err(|_| ())?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(());
+        }
+        total_bytes = total_bytes.checked_add(metadata.len()).ok_or(())?;
+        if total_bytes > RELATED_SOURCE_MAX_BYTES {
+            return Err(());
+        }
+        let mut file = fs::File::open(&path).map_err(|_| ())?;
+        let mut bytes = Vec::with_capacity(metadata.len().try_into().map_err(|_| ())?);
+        let mut buffer = [0_u8; RELATED_SOURCE_READ_BUFFER];
+        loop {
+            ensure_snapshot_budget(deadline, settle_until, cancellation)?;
+            let read = file.read(&mut buffer).map_err(|_| ())?;
+            if read == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&buffer[..read]);
+            if bytes.len() as u64 > RELATED_SOURCE_MAX_BYTES {
+                return Err(());
+            }
+        }
+        if bytes.len() as u64 != metadata.len() {
+            return Err(());
+        }
+        hasher.update((logical_path.len() as u64).to_le_bytes());
+        hasher.update(logical_path.as_bytes());
+        hasher.update((bytes.len() as u64).to_le_bytes());
+        hasher.update(&bytes);
+    }
+    Ok(WorkspaceSourceSnapshot(hasher.finalize().into()))
+}
+
+fn ensure_snapshot_budget(
+    deadline: ProviderDeadline,
+    settle_until: Instant,
+    cancellation: &CancellationToken,
+) -> Result<(), ()> {
+    if cancellation.is_cancelled()
+        || deadline.remaining().is_zero()
+        || settle_until
+            .saturating_duration_since(Instant::now())
+            .is_zero()
+    {
+        Err(())
+    } else {
+        Ok(())
+    }
+}
+
+fn is_related_source_file(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some("bsl" | "xml" | "yaml" | "yml")
+    )
 }
 
 fn unavailable_related_sections(
@@ -1130,6 +1260,8 @@ mod tests {
     }
 
     fn unready_index_context() -> CodeIntelligenceContext {
+        let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/unica_mcp_script_parity/meta-validate-language-aware");
         CodeIntelligenceContext::new(
             WorkspaceContext {
                 cwd: PathBuf::from("/workspace"),
@@ -1139,7 +1271,7 @@ mod tests {
             },
             ResolvedSourceRoot {
                 source_set: Some("main".to_string()),
-                path: PathBuf::from("/workspace/src"),
+                path: source_root,
             },
         )
     }
@@ -1527,6 +1659,8 @@ mod tests {
 
     struct SourceChangingRelatedClient {
         source_file: PathBuf,
+        replacement: Vec<u8>,
+        original_modified: std::time::SystemTime,
     }
 
     impl RlmNavigationClient for SourceChangingRelatedClient {
@@ -1550,7 +1684,13 @@ mod tests {
             _timeout: Duration,
             _cancellation: &CancellationToken,
         ) -> Result<WorkspaceServiceRlmOutput, String> {
-            std::fs::write(&self.source_file, "changed during profile read").unwrap();
+            std::fs::write(&self.source_file, &self.replacement).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&self.source_file)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(self.original_modified))
+                .unwrap();
             Ok(WorkspaceServiceRlmOutput {
                 result_text: json!({
                     "object_name": "Catalog.Items",
@@ -1572,7 +1712,11 @@ mod tests {
         let source_root = root.join("src");
         std::fs::create_dir_all(source_root.join("CommonModules/Test/Ext")).unwrap();
         let source_file = source_root.join("CommonModules/Test/Ext/Module.bsl");
-        std::fs::write(&source_file, "initial snapshot").unwrap();
+        let initial = b"initial snapshot";
+        let replacement = b"changed snapshot";
+        assert_eq!(initial.len(), replacement.len());
+        std::fs::write(&source_file, initial).unwrap();
+        let original_modified = std::fs::metadata(&source_file).unwrap().modified().unwrap();
         let context = CodeIntelligenceContext::new(
             WorkspaceContext {
                 cwd: root.clone(),
@@ -1586,20 +1730,138 @@ mod tests {
             },
         );
 
-        let result =
-            RlmNavigationAdapter::with_client(&SourceChangingRelatedClient { source_file })
-                .metadata_related(
-                    "Catalog.Items",
-                    &["modules".to_string()],
-                    20,
-                    &context,
-                    ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
-                    &CancellationToken::new(),
-                );
+        let result = RlmNavigationAdapter::with_client(&SourceChangingRelatedClient {
+            source_file,
+            replacement: replacement.to_vec(),
+            original_modified,
+        })
+        .metadata_related(
+            "Catalog.Items",
+            &["modules".to_string()],
+            20,
+            &context,
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
+            &CancellationToken::new(),
+        );
 
         assert_eq!(
             result.modules.unwrap().freshness,
             crate::domain::metadata::MetaFreshness::Stale
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn metadata_related_does_not_claim_current_for_an_oversized_source_corpus() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-related-oversized-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let source_root = root.join("src");
+        std::fs::create_dir_all(&source_root).unwrap();
+        std::fs::File::create(source_root.join("Oversized.bsl"))
+            .unwrap()
+            .set_len(64 * 1024 * 1024 + 1)
+            .unwrap();
+        let context = CodeIntelligenceContext::new(
+            WorkspaceContext {
+                cwd: root.clone(),
+                workspace_root: root.clone(),
+                cache_root: root.join(".build/unica"),
+                workspace_epoch: 1,
+            },
+            ResolvedSourceRoot {
+                source_set: Some("main".to_string()),
+                path: source_root,
+            },
+        );
+        let client = related_client(
+            IndexReadiness::Ready {
+                db_path: PathBuf::from("/private/index.db"),
+            },
+            json!({
+                "object_name": "Catalog.Items",
+                "sections": {"modules": {"status": "ok", "total": 1, "returned": 1, "items": [{"name": "ObjectModule"}]}}
+            }),
+        );
+
+        let result = RlmNavigationAdapter::with_client(&client).metadata_related(
+            "Catalog.Items",
+            &["modules".to_string()],
+            20,
+            &context,
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
+            &CancellationToken::new(),
+        );
+
+        let modules = result.modules.unwrap();
+        assert_eq!(
+            modules.status,
+            crate::domain::metadata::MetaRelatedStatus::Unavailable
+        );
+        assert_eq!(
+            modules.freshness,
+            crate::domain::metadata::MetaFreshness::Unknown
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn metadata_related_does_not_claim_current_through_a_symlinked_source_subtree() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "unica-related-symlink-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let source_root = root.join("src");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&source_root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("Module.bsl"), "Procedure Run()\nEndProcedure").unwrap();
+        symlink(&outside, source_root.join("Linked")).unwrap();
+        let context = CodeIntelligenceContext::new(
+            WorkspaceContext {
+                cwd: root.clone(),
+                workspace_root: root.clone(),
+                cache_root: root.join(".build/unica"),
+                workspace_epoch: 1,
+            },
+            ResolvedSourceRoot {
+                source_set: Some("main".to_string()),
+                path: source_root,
+            },
+        );
+        let client = related_client(
+            IndexReadiness::Ready {
+                db_path: PathBuf::from("/private/index.db"),
+            },
+            json!({
+                "object_name": "Catalog.Items",
+                "sections": {"modules": {"status": "ok", "total": 0, "returned": 0, "items": []}}
+            }),
+        );
+
+        let result = RlmNavigationAdapter::with_client(&client).metadata_related(
+            "Catalog.Items",
+            &["modules".to_string()],
+            20,
+            &context,
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
+            &CancellationToken::new(),
+        );
+
+        let modules = result.modules.unwrap();
+        assert_eq!(
+            modules.status,
+            crate::domain::metadata::MetaRelatedStatus::Unavailable
+        );
+        assert_eq!(
+            modules.freshness,
+            crate::domain::metadata::MetaFreshness::Unknown
         );
         let _ = std::fs::remove_dir_all(root);
     }

@@ -136,6 +136,18 @@ fn assert_logical_diagnostic(result: &OperationResult, workspace: &Path, code: &
     );
 }
 
+fn assert_no_error_diagnostic(result: &OperationResult, code: &str) {
+    let Some(diagnostics) = result.diagnostics.as_ref().and_then(Value::as_array) else {
+        return;
+    };
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic["code"] != code || diagnostic["severity"] != "error"),
+        "unexpected {code} error diagnostic: {diagnostics:?}"
+    );
+}
+
 fn fixture_workspace(label: &str, fixture: &str, files: &[&str]) -> TempWorkspace {
     let workspace = TempWorkspace::new(label);
     std::fs::write(
@@ -240,17 +252,22 @@ fn meta_info_private_coordinator_hard_fails_malformed_xml_but_keeps_semantic_fai
 }
 
 #[test]
-fn meta_info_private_closed_read_marks_a_malformed_attribute_incomplete_and_failed() {
+fn meta_info_private_closed_read_preserves_missing_and_empty_child_names_as_incomplete() {
     let workspace = create_info_workspace("malformed-attribute");
     let descriptor = workspace.path().join("src/Catalogs/Inspectable.xml");
     let mut xml = std::fs::read_to_string(&descriptor).unwrap();
-    let start = xml.find("<Attribute uuid=").expect("compiled attribute");
-    let end = start
-        + xml[start..]
-            .find("</Attribute>")
-            .expect("compiled attribute end")
-        + "</Attribute>".len();
-    xml.replace_range(start..end, "<Attribute>Broken</Attribute>");
+    for replacement in [
+        "<Attribute><Properties><Synonym/></Properties></Attribute>",
+        "<Attribute><Properties><Name> </Name></Properties></Attribute>",
+    ] {
+        let start = xml.find("<Attribute uuid=").expect("compiled attribute");
+        let end = start
+            + xml[start..]
+                .find("</Attribute>")
+                .expect("compiled attribute end")
+            + "</Attribute>".len();
+        xml.replace_range(start..end, replacement);
+    }
     std::fs::write(&descriptor, xml).unwrap();
 
     let result = call_info(workspace.path(), []);
@@ -261,8 +278,14 @@ fn meta_info_private_closed_read_marks_a_malformed_attribute_incomplete_and_fail
         .as_ref()
         .expect("local metadata remains available");
     assert_eq!(data["name"], "Inspectable");
-    assert_eq!(data["collections"]["attributes"][0]["name"], "Broken");
+    assert_eq!(
+        data["collections"]["attributes"].as_array().unwrap().len(),
+        2
+    );
+    assert_eq!(data["collections"]["attributes"][0]["name"], "");
     assert_eq!(data["collections"]["attributes"][0]["incomplete"], true);
+    assert_eq!(data["collections"]["attributes"][1]["name"], "");
+    assert_eq!(data["collections"]["attributes"][1]["incomplete"], true);
     assert_eq!(data["validation"]["status"], "failed");
     assert_logical_diagnostic(&result, workspace.path(), "validation_failed");
 }
@@ -371,4 +394,123 @@ fn meta_info_private_closed_read_proof_rejects_reverse_registrar_inconsistency()
     );
     assert_eq!(result.data.as_ref().unwrap()["name"], "SubordinateRegister");
     assert_logical_diagnostic(&result, workspace.path(), "validation_failed");
+    assert_no_error_diagnostic(&result, "provider_unavailable");
+}
+
+#[test]
+fn meta_info_private_closed_read_accepts_complete_registrar_evidence() {
+    let files = [
+        "Configuration.xml",
+        "Documents/Регистратор.xml",
+        "InformationRegisters/SubordinateRegister.xml",
+        "Languages/Русский.xml",
+    ];
+    let workspace = fixture_workspace(
+        "registrar-complete",
+        "meta-validate-subordinate-register",
+        &files,
+    );
+
+    let result = call_info_path(
+        workspace.path(),
+        "InformationRegister.SubordinateRegister",
+        [],
+    );
+
+    assert!(result.ok, "{result:?}");
+    assert_eq!(
+        result.data.as_ref().unwrap()["validation"]["status"],
+        "passed"
+    );
+    assert_no_error_diagnostic(&result, "provider_unavailable");
+    assert_no_error_diagnostic(&result, "validation_failed");
+}
+
+#[test]
+fn meta_info_private_closed_read_reports_registrar_scan_unavailable() {
+    let files = [
+        "Configuration.xml",
+        "InformationRegisters/SubordinateRegister.xml",
+        "Languages/Русский.xml",
+    ];
+    let workspace = fixture_workspace(
+        "registrar-scan-unavailable",
+        "meta-validate-subordinate-register",
+        &files,
+    );
+
+    let result = call_info_path(
+        workspace.path(),
+        "InformationRegister.SubordinateRegister",
+        [],
+    );
+
+    assert!(!result.ok);
+    assert_eq!(result.data.as_ref().unwrap()["name"], "SubordinateRegister");
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+    assert_no_error_diagnostic(&result, "validation_failed");
+}
+
+#[test]
+fn meta_info_private_closed_read_reports_malformed_registrar_evidence_unavailable() {
+    let files = [
+        "Configuration.xml",
+        "Documents/Регистратор.xml",
+        "InformationRegisters/SubordinateRegister.xml",
+        "Languages/Русский.xml",
+    ];
+    let workspace = fixture_workspace(
+        "registrar-malformed",
+        "meta-validate-subordinate-register",
+        &files,
+    );
+    std::fs::write(
+        workspace.path().join("src/Documents/Регистратор.xml"),
+        "not XML",
+    )
+    .unwrap();
+
+    let result = call_info_path(
+        workspace.path(),
+        "InformationRegister.SubordinateRegister",
+        [],
+    );
+
+    assert!(!result.ok);
+    assert_eq!(result.data.as_ref().unwrap()["name"], "SubordinateRegister");
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+    assert_no_error_diagnostic(&result, "validation_failed");
+}
+
+#[cfg(unix)]
+#[test]
+fn meta_info_private_closed_read_reports_unreadable_registrar_evidence_unavailable() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let files = [
+        "Configuration.xml",
+        "Documents/Регистратор.xml",
+        "InformationRegisters/SubordinateRegister.xml",
+        "Languages/Русский.xml",
+    ];
+    let workspace = fixture_workspace(
+        "registrar-unreadable",
+        "meta-validate-subordinate-register",
+        &files,
+    );
+    let unreadable = workspace.path().join("src/Documents/000-Unreadable.xml");
+    std::fs::write(&unreadable, "not XML").unwrap();
+    std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let result = call_info_path(
+        workspace.path(),
+        "InformationRegister.SubordinateRegister",
+        [],
+    );
+    std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    assert!(!result.ok);
+    assert_eq!(result.data.as_ref().unwrap()["name"], "SubordinateRegister");
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+    assert_no_error_diagnostic(&result, "validation_failed");
 }

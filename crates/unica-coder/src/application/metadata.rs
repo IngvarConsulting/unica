@@ -1702,6 +1702,7 @@ mod tests {
                 bytes: b"<MetaDataObject/>".to_vec(),
             }],
             child_footprints: Vec::new(),
+            registrar_evidence: Default::default(),
         }
     }
 

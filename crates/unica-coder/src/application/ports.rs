@@ -206,6 +206,14 @@ pub(crate) struct MetadataValidationSubject {
     pub(crate) target: MetadataAddress,
     pub(crate) resources: Vec<MetadataResourceImage>,
     pub(crate) child_footprints: Vec<MetadataChildFootprintEvidence>,
+    pub(crate) registrar_evidence: MetadataEvidenceAvailability,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) enum MetadataEvidenceAvailability {
+    #[default]
+    Complete,
+    Unavailable(Vec<MetaDiagnostic>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

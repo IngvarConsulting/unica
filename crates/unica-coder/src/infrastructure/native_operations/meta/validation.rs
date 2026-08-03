@@ -2,8 +2,9 @@
 
 use crate::application::ports::{
     MetadataAuxiliaryXmlKind, MetadataChildDirectoryKind, MetadataChildProfile,
-    MetadataChildResourceKind, MetadataResourceRole, MetadataTemplateResourcePart,
-    MetadataTemplateType, MetadataValidationResult, MetadataValidationSubject,
+    MetadataChildResourceKind, MetadataEvidenceAvailability, MetadataResourceRole,
+    MetadataTemplateResourcePart, MetadataTemplateType, MetadataValidationResult,
+    MetadataValidationSubject,
 };
 use crate::application::AdapterOutcome;
 use crate::domain::format_profile::{
@@ -114,7 +115,11 @@ impl MetadataValidator {
         context: &WorkspaceContext,
     ) -> MetadataValidationResult {
         let mut result = self.validate(subject, context);
-        let completeness = complete_read_proof_diagnostics(subject);
+        let mut completeness = complete_read_proof_diagnostics(subject);
+        if let MetadataEvidenceAvailability::Unavailable(diagnostics) = &subject.registrar_evidence
+        {
+            completeness.extend(diagnostics.clone());
+        }
         if !completeness.is_empty() {
             result.status = MetaValidationStatus::Failed;
             result.diagnostics.extend(completeness);
@@ -525,7 +530,13 @@ fn complete_read_proof_diagnostics(subject: &MetadataValidationSubject) -> Vec<M
             .and_then(|node| meta_info_child_text(node, "WriteMode"))
             .as_deref()
             == Some("RecorderSubordinate"));
-    if reads_registrar && !object_name.is_empty() {
+    if reads_registrar
+        && !object_name.is_empty()
+        && matches!(
+            subject.registrar_evidence,
+            MetadataEvidenceAvailability::Complete
+        )
+    {
         let reference = format!("{object_type}.{object_name}");
         let has_registrar = subject.resources.iter().any(|resource| {
             matches!(
@@ -1929,6 +1940,7 @@ fn metadata_validation_subject_from_paths(
         target,
         resources,
         child_footprints: Vec::new(),
+        registrar_evidence: Default::default(),
     })
 }
 
@@ -4006,6 +4018,7 @@ mod tests {
             target: address(target),
             resources,
             child_footprints: Vec::new(),
+            registrar_evidence: Default::default(),
         }
     }
 
@@ -4240,6 +4253,7 @@ mod tests {
                     bytes,
                 )],
                 child_footprints: Vec::new(),
+                registrar_evidence: Default::default(),
             };
 
             let result = MetadataValidator.validate(&subject, &context());
@@ -4405,6 +4419,7 @@ mod tests {
                 profile,
                 directories,
             }],
+            registrar_evidence: Default::default(),
         }
     }
 
@@ -5658,6 +5673,7 @@ mod tests {
                 descriptor.into_bytes(),
             )],
             child_footprints: Vec::new(),
+            registrar_evidence: Default::default(),
         };
 
         let result = MetadataValidator.validate(&incomplete, &context());
@@ -5760,6 +5776,7 @@ mod tests {
             target: address("ScheduledJob.Nightly"),
             resources,
             child_footprints: Vec::new(),
+            registrar_evidence: Default::default(),
         };
 
         let result = MetadataValidator.validate(&inaccessible, &context());
@@ -5885,6 +5902,54 @@ mod tests {
                 && diagnostic.code == MetaDiagnosticCode::ValidationFailed
                 && diagnostic.metadata_path.as_ref() == Some(&invalid.target)
                 && diagnostic.field.as_deref() == Some("resources")
+        }));
+    }
+
+    #[test]
+    fn registrar_evidence_availability_is_strict_read_only() {
+        let descriptor = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/InformationRegisters/SubordinateRegister.xml"
+        ));
+        let registration = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Configuration.xml"
+        ));
+        let language = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Languages/Русский.xml"
+        ));
+        let mut unavailable = subject(
+            "InformationRegister.SubordinateRegister",
+            Some(descriptor),
+            registration,
+            &[("Language.Русский", language)],
+        );
+        unavailable.registrar_evidence =
+            MetadataEvidenceAvailability::Unavailable(vec![MetaDiagnostic::error(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "registrar evidence is unavailable",
+            )
+            .with_metadata_path(unavailable.target.clone())
+            .with_field("registrarEvidence")]);
+
+        let legacy = MetadataValidator.validate(&unavailable, &context());
+        assert_eq!(legacy.status, MetaValidationStatus::Passed);
+        assert!(legacy.diagnostics.iter().all(|diagnostic| {
+            diagnostic.severity != MetaDiagnosticSeverity::Error
+                || diagnostic.code != MetaDiagnosticCode::ProviderUnavailable
+        }));
+
+        let strict = MetadataValidator.validate_complete_read(&unavailable, &context());
+        assert_eq!(strict.status, MetaValidationStatus::Failed);
+        assert!(strict.diagnostics.iter().any(|diagnostic| {
+            diagnostic.severity == MetaDiagnosticSeverity::Error
+                && diagnostic.code == MetaDiagnosticCode::ProviderUnavailable
+                && diagnostic.field.as_deref() == Some("registrarEvidence")
+        }));
+        assert!(strict.diagnostics.iter().all(|diagnostic| {
+            diagnostic.severity != MetaDiagnosticSeverity::Error
+                || diagnostic.code != MetaDiagnosticCode::ValidationFailed
         }));
     }
 
@@ -6044,6 +6109,7 @@ mod tests {
                     ),
                 ],
                 child_footprints: Vec::new(),
+                registrar_evidence: Default::default(),
             };
 
             let result = MetadataValidator.validate(&invalid, &context());

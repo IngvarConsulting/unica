@@ -2,7 +2,8 @@
 
 use crate::application::metadata::MetaFailure;
 use crate::application::ports::{
-    MetaLocalInfo, MetadataResourceImage, MetadataResourceRole, MetadataValidationSubject,
+    MetaLocalInfo, MetadataEvidenceAvailability, MetadataResourceImage, MetadataResourceRole,
+    MetadataValidationSubject,
 };
 use crate::application::AdapterOutcome;
 use crate::domain::metadata::{
@@ -289,12 +290,9 @@ pub(crate) fn read_typed_meta_info(
         &resolved.descriptor_preimage,
         Some(&resolved.source_root),
     );
-    validation_resources.extend(typed_registrar_document_images(
-        resolved,
-        kind,
-        &local.name,
-        properties,
-    ));
+    let (registrar_resources, registrar_evidence) =
+        typed_registrar_document_images(resolved, kind, properties, target);
+    validation_resources.extend(registrar_resources);
     let child_resources = super::edit::plan_typed_child_resources(
         &resolved.descriptor_path,
         target,
@@ -308,6 +306,7 @@ pub(crate) fn read_typed_meta_info(
         target: target.clone(),
         resources: validation_resources,
         child_footprints: child_resources.validation_footprints,
+        registrar_evidence,
     };
     Ok((local, validation_subject))
 }
@@ -315,9 +314,9 @@ pub(crate) fn read_typed_meta_info(
 fn typed_registrar_document_images(
     resolved: &ResolvedMetadataObject,
     kind: MetadataKind,
-    name: &str,
     properties: Option<roxmltree::Node<'_, '_>>,
-) -> Vec<MetadataResourceImage> {
+    target: &MetadataAddress,
+) -> (Vec<MetadataResourceImage>, MetadataEvidenceAvailability) {
     let reads_registrars = matches!(
         kind,
         MetadataKind::AccumulationRegister
@@ -329,33 +328,96 @@ fn typed_registrar_document_images(
             .as_deref()
             == Some("RecorderSubordinate"));
     if !reads_registrars {
-        return Vec::new();
+        return (Vec::new(), MetadataEvidenceAvailability::Complete);
     }
-    let reference = format!("{}.{name}", kind.as_str());
     let documents_dir = resolved.source_root.join("Documents");
-    let Ok((paths, _)) = super::validation_context::meta_validate_registrar_document_scan(
-        &documents_dir,
-        &reference,
-    ) else {
-        return Vec::new();
-    };
-    paths
-        .into_iter()
-        .filter_map(|path| std::fs::read(path).ok())
-        .filter_map(|bytes| {
-            let identity =
-                super::validation_context::inspect_metadata_image_identity(&bytes).ok()?;
-            let target = MetadataAddress::parse(
-                PLATFORM_XML_8_3_27_FORMAT_2_20,
-                &format!("{}.{}", identity.object_type, identity.object_name),
+    let entries = match fs::read_dir(&documents_dir) {
+        Ok(entries) => entries,
+        Err(_) => {
+            return registrar_evidence_unavailable(
+                target,
+                "registrar evidence directory is unavailable",
             )
-            .ok()?;
-            Some(MetadataResourceImage {
-                role: MetadataResourceRole::Dependency { target },
-                bytes,
-            })
-        })
-        .collect()
+        }
+    };
+    let mut entries = match entries.collect::<Result<Vec<_>, _>>() {
+        Ok(entries) => entries,
+        Err(_) => {
+            return registrar_evidence_unavailable(
+                target,
+                "registrar evidence directory cannot be scanned completely",
+            )
+        }
+    };
+    entries.sort_by_key(|entry| entry.file_name());
+    let mut resources = Vec::new();
+    for entry in entries {
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("xml") {
+            continue;
+        }
+        match entry.file_type() {
+            Ok(file_type) if file_type.is_file() && !file_type.is_symlink() => {}
+            _ => {
+                return registrar_evidence_unavailable(
+                    target,
+                    "registrar evidence contains an unreadable candidate",
+                )
+            }
+        }
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                return registrar_evidence_unavailable(
+                    target,
+                    "registrar evidence candidate cannot be read",
+                )
+            }
+        };
+        let identity = match super::validation_context::inspect_metadata_image_identity(&bytes) {
+            Ok(identity) if identity.object_type == "Document" => identity,
+            _ => {
+                return registrar_evidence_unavailable(
+                    target,
+                    "registrar evidence candidate is malformed",
+                )
+            }
+        };
+        let dependency_target = match MetadataAddress::parse(
+            PLATFORM_XML_8_3_27_FORMAT_2_20,
+            &format!("{}.{}", identity.object_type, identity.object_name),
+        ) {
+            Ok(target) => target,
+            Err(_) => {
+                return registrar_evidence_unavailable(
+                    target,
+                    "registrar evidence candidate has no logical identity",
+                )
+            }
+        };
+        resources.push(MetadataResourceImage {
+            role: MetadataResourceRole::Dependency {
+                target: dependency_target,
+            },
+            bytes,
+        });
+    }
+    (resources, MetadataEvidenceAvailability::Complete)
+}
+
+fn registrar_evidence_unavailable(
+    target: &MetadataAddress,
+    message: &str,
+) -> (Vec<MetadataResourceImage>, MetadataEvidenceAvailability) {
+    (
+        Vec::new(),
+        MetadataEvidenceAvailability::Unavailable(vec![MetaDiagnostic::error(
+            MetaDiagnosticCode::ProviderUnavailable,
+            message,
+        )
+        .with_metadata_path(target.clone())
+        .with_field("registrarEvidence")]),
+    )
 }
 
 fn typed_registered_language_images(
@@ -479,16 +541,22 @@ fn typed_element(
 ) -> Option<MetaElementData> {
     let Some(properties) = meta_info_child(node, "Properties") else {
         let name = meta_info_inner_text(node).trim().to_string();
-        return (!name.is_empty()).then_some(MetaElementData {
+        let simple_reference = matches!(node.tag_name().name(), "Form" | "Template" | "Command");
+        if simple_reference && name.is_empty() {
+            return None;
+        }
+        return Some(MetaElementData {
             name,
-            incomplete: !matches!(node.tag_name().name(), "Form" | "Template" | "Command"),
+            incomplete: !simple_reference,
             synonym: None,
             comment: None,
             r#type: None,
             attributes: Vec::new(),
         });
     };
-    let name = meta_info_child_text(properties, "Name")?;
+    let raw_name = meta_info_child_text(properties, "Name").unwrap_or_default();
+    let incomplete = raw_name.trim().is_empty();
+    let name = if incomplete { String::new() } else { raw_name };
     let synonym = meta_info_child(properties, "Synonym")
         .map(meta_info_ml_text)
         .filter(|value| !value.is_empty());
@@ -507,7 +575,7 @@ fn typed_element(
     };
     Some(MetaElementData {
         name,
-        incomplete: false,
+        incomplete,
         synonym,
         comment,
         r#type,
