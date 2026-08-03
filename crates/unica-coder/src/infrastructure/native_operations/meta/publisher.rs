@@ -1,5 +1,3 @@
-#![allow(dead_code, unused_imports)]
-
 use crate::application::metadata::{
     MetaAddRequest, MetaEditRequest, MetaFailure, MetaRemoveRequest,
 };
@@ -7,7 +5,7 @@ use crate::application::ports::{
     MetaPublishReport, MetadataResourceImage, MetadataResourceRole, MetadataValidationSubject,
     PreparedMetadataMutation,
 };
-use crate::application::{AdapterOutcome, SupportGuardRequirement};
+use crate::application::SupportGuardRequirement;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::metadata::{
     MetaDiagnostic, MetaDiagnosticCode, MetaDiagnosticSeverity, MetaMutationData,
@@ -15,18 +13,15 @@ use crate::domain::metadata::{
     MetaValidationStatus,
 };
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::metadata_kinds::metadata_kind;
 use crate::infrastructure::metadata_kinds::metadata_layout;
 use roxmltree::Document;
-use serde_json::{Map, Value};
+#[cfg(test)]
+use serde_json::Map;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::super::common::{
-    absolutize, guard_active_format_dependencies, guard_resolved_platform_xml_target_dependencies,
-    read_utf8_sig, read_utf8_sig_snapshot, string_arg,
-};
+use super::super::common::guard_resolved_platform_xml_target_dependencies;
 use super::super::compile_transaction::{
     CompileTransaction, DirectoryMembershipSnapshot, RegistrationStatus,
 };

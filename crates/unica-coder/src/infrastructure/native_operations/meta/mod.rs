@@ -1,56 +1,19 @@
-#![allow(dead_code, unused_imports)]
-
 #[cfg(test)]
 use std::collections::HashSet;
 #[cfg(test)]
 use std::path::{Path, PathBuf};
 
 #[cfg(test)]
-type MetaEditAfterLineNumberLengthPolicyHook = Box<dyn FnOnce()>;
-
-#[cfg(test)]
 type MetaRemoveSubsystemChildInspectionHook = Box<dyn FnOnce(&Path)>;
 
 #[cfg(test)]
 thread_local! {
-    static META_EDIT_AFTER_LINE_NUMBER_LENGTH_POLICY_HOOK:
-        std::cell::RefCell<Option<MetaEditAfterLineNumberLengthPolicyHook>> =
-        const { std::cell::RefCell::new(None) };
     static META_REMOVE_FORCED_REPARSE_PATHS:
         std::cell::RefCell<HashSet<PathBuf>> =
         std::cell::RefCell::new(HashSet::new());
     static META_REMOVE_SUBSYSTEM_CHILD_INSPECTION_HOOK:
         std::cell::RefCell<Option<MetaRemoveSubsystemChildInspectionHook>> =
         const { std::cell::RefCell::new(None) };
-}
-
-#[cfg(test)]
-fn with_meta_edit_after_line_number_length_policy_hook<T>(
-    hook: impl FnOnce() + 'static,
-    action: impl FnOnce() -> T,
-) -> T {
-    struct Reset(Option<MetaEditAfterLineNumberLengthPolicyHook>);
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            META_EDIT_AFTER_LINE_NUMBER_LENGTH_POLICY_HOOK.with(|slot| {
-                slot.replace(self.0.take());
-            });
-        }
-    }
-
-    let previous = META_EDIT_AFTER_LINE_NUMBER_LENGTH_POLICY_HOOK
-        .with(|slot| slot.replace(Some(Box::new(hook))));
-    let _reset = Reset(previous);
-    action()
-}
-
-#[cfg(test)]
-fn run_meta_edit_after_line_number_length_policy_hook() {
-    if let Some(hook) =
-        META_EDIT_AFTER_LINE_NUMBER_LENGTH_POLICY_HOOK.with(|slot| slot.borrow_mut().take())
-    {
-        hook();
-    }
 }
 
 #[cfg(test)]
@@ -125,18 +88,18 @@ pub(crate) use edit::{
     prepare_typed_edit, resolve_meta_edit_object_path, resolve_typed_edit_object,
     resolve_typed_metadata_object,
 };
-pub(crate) use info::{analyze_meta_info_with_data, read_typed_meta_info, resolve_meta_info_path};
+pub(crate) use info::{analyze_meta_info_with_data, read_typed_meta_info};
 #[cfg(test)]
 pub(crate) use info::{with_registrar_processing_hook, RegistrarProcessingPhase};
 pub(crate) use publisher::{fresh_metadata_uuid, prepare_meta_add, prepare_meta_remove};
 pub(crate) use remove::{
     meta_remove_reference_xml_dependency_paths, meta_remove_subsystem_dependency_paths,
-    meta_remove_type_plural, remove_metadata_child_text, remove_metadata_child_text_lxml,
-    remove_metadata_child_text_with_flag, remove_metadata_object_with_data,
+    meta_remove_type_plural, remove_metadata_child_text_lxml, remove_metadata_child_text_with_flag,
+    remove_metadata_object_with_data,
 };
+pub(crate) use template_catalog::metadata_generated_types_8_3_27;
 #[cfg(test)]
-pub(crate) use template_catalog::minimal_metadata_xml_for_tests;
-pub(crate) use template_catalog::{emit_meta_internal_info, metadata_generated_types_8_3_27};
+pub(crate) use template_catalog::{emit_meta_internal_info, minimal_metadata_xml_for_tests};
 pub(crate) use validation::{validate_metadata_owner_shape_8_3_27, MetadataValidator};
 pub(crate) use xml_model::{
     meta_info_child, meta_info_child_text, meta_info_children, meta_info_inner_text,

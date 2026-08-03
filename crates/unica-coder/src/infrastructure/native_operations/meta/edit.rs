@@ -2,10 +2,8 @@ use crate::application::metadata::{MetaEditRequest, MetaFailure};
 use crate::application::ports::{
     MetadataChildDirectoryKind, MetadataChildFootprintEvidence, MetadataChildProfile,
     MetadataChildResourceKind, MetadataResourceImage, MetadataResourceRole,
-    MetadataTemplateResourcePart, MetadataTemplateType, MetadataValidationSubject,
-    PreparedMetadataMutation,
+    MetadataTemplateResourcePart, MetadataTemplateType, PreparedMetadataMutation,
 };
-use crate::application::AdapterOutcome;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::format_profile::ACTIVE_FORMAT_PROFILE;
 use crate::domain::metadata::{
@@ -19,52 +17,36 @@ use crate::domain::source_target::{
     MetadataAddress, SourceTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::platform_xml_owner::{
-    resolve_platform_xml_owners_with_provenance, PlatformXmlOwnerKind, PlatformXmlOwnerProvenance,
-};
 use crate::infrastructure::platform_xml_source_targets::{
     platform_xml_resource_evidence, resolve_platform_xml_target, ClosedPlatformXmlTarget,
     TargetKindPolicy,
 };
 use crate::infrastructure::support_guard::{
-    bind_resolved_support_guard_evidence, evaluate_resolved_support_guard,
-    ResolvedSupportGuardCheck,
+    evaluate_resolved_support_guard, ResolvedSupportGuardCheck,
 };
-use diffy::{apply, DiffOptions, Patch};
 use roxmltree::Document;
-use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use super::super::cf::cf_validate_enum_allowed;
-use super::super::common::{
-    absolutize, escape_xml, guard_active_format_owner, is_1c_identifier,
-    json_value_to_python_string, read_utf8_sig, required_path,
-};
+use super::super::common::{absolutize, escape_xml, is_1c_identifier};
 use super::super::compile_transaction::{
-    snapshot_directory_membership, CompileTransaction, DirectoryMembershipSelector,
-    DirectoryMembershipSnapshot,
+    snapshot_directory_membership, DirectoryMembershipSelector, DirectoryMembershipSnapshot,
 };
 use super::format_contract::{
-    meta_8_3_27_boolean_properties, validate_meta_8_3_27_boolean_property_value,
     validate_metadata_8_3_27_boolean_contract, validate_metadata_8_3_27_enum_contract,
 };
 use super::publisher::{fresh_metadata_uuid, PreparedMetaEdit};
 use super::template_catalog::{
     emit_meta_attribute, emit_meta_enum_value, emit_meta_register_field, emit_meta_tabular_section,
-    meta_attribute_context, meta_line_number_length_is_applicable, metadata_generated_types_8_3_27,
-    metadata_standard_attribute_names, split_meta_camel_case, MetadataAttributeTemplate,
-    MetadataEnumValueTemplate, MetadataTabularSectionTemplate,
+    meta_attribute_context, metadata_generated_types_8_3_27, metadata_standard_attribute_names,
+    split_meta_camel_case, MetadataAttributeTemplate, MetadataEnumValueTemplate,
+    MetadataTabularSectionTemplate,
 };
 use super::xml_model::{
     emit_meta_mltext, emit_meta_typed_fill_value, emit_meta_typed_value_type, meta_info_child,
     meta_info_child_text, meta_info_children, meta_info_inner_text,
 };
-
-#[cfg(test)]
-use super::run_meta_edit_after_line_number_length_policy_hook;
 
 #[derive(Debug, Default)]
 pub(super) struct MetaEditCounts {
@@ -84,26 +66,6 @@ enum MetaEditEol {
 struct MetaEditSourceFormat {
     has_bom: bool,
     eol: MetaEditEol,
-}
-
-/// Typed answer of `unica.meta.edit` (ADR-0023). The projected diff stays a
-/// string because a unified diff is a format, not a rendered report -- the same
-/// choice `unica.code.patch` makes.
-/// Returns a verified diff or records a non-fatal renderer diagnostic. A
-/// renderer fault must not turn a valid edit into a failure.
-pub(super) fn meta_edit_projected_diff(
-    warnings: &mut Vec<String>,
-    rendered: Result<String, String>,
-) -> Option<String> {
-    match rendered {
-        Ok(diff) => Some(diff),
-        Err(error) => {
-            warnings.push(format!(
-                "projected diff could not be rendered safely: {error}"
-            ));
-            None
-        }
-    }
 }
 
 fn meta_edit_source_eol(text: &str) -> MetaEditEol {

@@ -9,7 +9,7 @@ use super::super::subsystem::compile_subsystem;
 use super::remove::{
     metadata_files_recursive_bounded, metadata_files_recursive_with_limits,
     plan_meta_remove_subsystem_replacements, plan_meta_remove_subsystem_replacements_bounded,
-    remove_metadata_object, MetaRemoveTraversalLimits,
+    remove_metadata_object_with_data, MetaRemoveTraversalLimits,
 };
 use super::{
     force_meta_remove_reparse_path, with_before_meta_remove_subsystem_child_inspection_hook,
@@ -22,6 +22,13 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+fn remove_metadata_object(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> crate::application::AdapterOutcome {
+    remove_metadata_object_with_data(args, context).outcome
+}
 
 fn temp_context(name: &str) -> WorkspaceContext {
     let nanos = SystemTime::now()

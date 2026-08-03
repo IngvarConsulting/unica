@@ -62,14 +62,15 @@ def registered_tool_blocks() -> dict[str, str]:
 
 class MetaSurfaceContractTests(unittest.TestCase):
     def test_live_meta_runtime_has_no_file_or_string_dsl_grammar(self) -> None:
-        sources = [
-            META_RUNTIME / "edit.rs",
-            META_RUNTIME / "template_catalog.rs",
-            META_RUNTIME / "xml_model.rs",
-        ]
+        sources = sorted(
+            path
+            for path in META_RUNTIME.glob("*.rs")
+            if not path.name.endswith("_tests.rs")
+        )
         retired_grammar = {
-            "module-wide dead-code suppression": re.compile(
-                r"^#!\[allow\([^\]]*dead_code", re.MULTILINE
+            "module-wide dead-or-unused suppression": re.compile(
+                r"^#!\[allow\([^\]]*(?:dead_code|unused_imports|unused\b)",
+                re.MULTILINE,
             ),
             "file selector": re.compile(r"\b(?:DefinitionFile|JsonPath)\b"),
             "batch separator": re.compile(re.escape('.split(";;")')),
@@ -85,6 +86,17 @@ class MetaSurfaceContractTests(unittest.TestCase):
             "legacy JSON customization helpers": re.compile(
                 r"\b(?:bool_arg_from_json|meta_compile_string_list|"
                 r"normalize_meta_enum_value)\b"
+            ),
+            "orphan Meta compatibility wrapper": re.compile(
+                r"\b(?:MetaEditAfterLineNumberLengthPolicyHook|"
+                r"with_meta_edit_after_line_number_length_policy_hook|"
+                r"run_meta_edit_after_line_number_length_policy_hook|"
+                r"meta_edit_projected_diff|meta_validate_one|"
+                r"inspect_meta_validation_reads|PublicOwnerAware|"
+                r"MetaValidationOwnerContext|MetaValidationReadInspection|"
+                r"metadata_validation_subject_from_paths|metadata_validation_run|"
+                r"analyze_meta_info|remove_metadata_object|"
+                r"metadata_object_registered)\b"
             ),
         }
 

@@ -1,5 +1,3 @@
-#![allow(dead_code, unused_imports)]
-
 use crate::application::ports::{
     MetadataAuxiliaryXmlKind, MetadataChildDirectoryKind, MetadataChildProfile,
     MetadataChildResourceKind, MetadataEvidenceAvailability, MetadataResourceRole,
@@ -25,7 +23,7 @@ use std::path::{Path, PathBuf};
 
 use super::super::cf::validate_cf_owner_path;
 use super::super::common::{
-    absolutize, child_text, format_compatibility_warning, is_1c_identifier, read_utf8_sig,
+    absolutize, format_compatibility_warning, is_1c_identifier, read_utf8_sig,
 };
 use super::super::subsystem::validate_subsystem_owner_path;
 use super::edit::meta_edit_object_node;
@@ -34,10 +32,9 @@ use super::format_contract::{
 };
 use super::info::resolve_meta_info_path;
 use super::validation_context::{
-    inspect_meta_validation_reads, inspect_meta_validation_subject_reads,
     inspect_metadata_image_identity, inspect_metadata_language_image,
     inspect_metadata_registration_image, meta_validate_registrar_document_scan,
-    meta_validate_types_with_list_presentation, MetaValidationOwnerKind,
+    meta_validate_types_with_list_presentation,
 };
 use super::xml_model::{
     meta_info_child, meta_info_child_text, meta_info_children, meta_info_inner_text,
@@ -77,14 +74,10 @@ pub(crate) fn validate_metadata_owner_shape_8_3_27(
     validate_metadata_8_3_27_boolean_contract(&xml_text, operation)?;
     validate_metadata_8_3_27_enum_contract(&xml_text, operation)?;
 
-    let run = meta_validate_one_with_scope(
+    let run = validate_local_metadata_image(
         object_path.to_path_buf(),
-        &MetaValidationOptions {
-            detailed: true,
-            max_errors: 30,
-        },
+        &MetaValidationOptions { max_errors: 30 },
         workspace,
-        MetaValidationScope::PostWriteLocal,
     )?;
     if run.ok {
         Ok(())
@@ -98,36 +91,21 @@ pub(crate) fn validate_metadata_owner_shape_8_3_27(
 }
 
 pub(super) struct MetaValidationReporter {
-    pub(crate) errors: usize,
-    pub(crate) warnings: usize,
-    pub(crate) ok_count: usize,
+    pub(crate) errors: Vec<String>,
+    pub(crate) warnings: Vec<String>,
     pub(crate) stopped: bool,
     pub(crate) max_errors: usize,
-    pub(crate) detailed: bool,
-    pub(crate) lines: Vec<String>,
-    pub(crate) md_type: String,
-    pub(crate) obj_name: String,
-    pub(crate) suppress_artifact: bool,
 }
 
 pub(super) struct MetaValidationRun {
     pub(crate) ok: bool,
-    pub(crate) stdout: String,
-    pub(crate) artifacts: Vec<PathBuf>,
     pub(crate) errors: Vec<String>,
     pub(crate) warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct MetaValidationOptions {
-    pub(crate) detailed: bool,
     pub(crate) max_errors: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum MetaValidationScope {
-    PublicOwnerAware,
-    PostWriteLocal,
 }
 
 struct MetaValidationReferenceInputs<'a> {
@@ -138,29 +116,13 @@ struct MetaValidationReferenceInputs<'a> {
 
 pub(crate) struct MetadataValidator;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ChildGraphValidation {
-    Closed,
-    DescriptorOnly,
-}
-
 impl MetadataValidator {
     pub(crate) fn validate(
         &self,
         subject: &MetadataValidationSubject,
-        context: &WorkspaceContext,
+        _context: &WorkspaceContext,
     ) -> MetadataValidationResult {
-        self.evaluate(
-            subject,
-            context,
-            &MetaValidationOptions {
-                detailed: true,
-                max_errors: 30,
-            },
-            None,
-            ChildGraphValidation::Closed,
-        )
-        .0
+        self.evaluate(subject, &MetaValidationOptions { max_errors: 30 })
     }
 
     pub(crate) fn validate_complete_read(
@@ -184,13 +146,9 @@ impl MetadataValidator {
     fn evaluate(
         &self,
         subject: &MetadataValidationSubject,
-        _context: &WorkspaceContext,
         options: &MetaValidationOptions,
-        artifact: Option<PathBuf>,
-        child_graph_validation: ChildGraphValidation,
-    ) -> (MetadataValidationResult, Option<MetaValidationRun>) {
+    ) -> MetadataValidationResult {
         let mut diagnostics = Vec::new();
-        let mut legacy_run = None;
         let descriptor_indices = subject
             .resources
             .iter()
@@ -293,15 +251,13 @@ impl MetadataValidator {
             }
         }
 
-        if child_graph_validation == ChildGraphValidation::Closed {
-            validate_child_footprints(subject, &mut diagnostics);
-        }
+        validate_child_footprints(subject, &mut diagnostics);
 
         if diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == MetaDiagnosticCode::ProviderUnavailable)
         {
-            return (failed_validation(diagnostics), legacy_run);
+            return failed_validation(diagnostics);
         }
 
         let (target_type, target_name) = subject_target_identity(subject);
@@ -373,7 +329,7 @@ impl MetadataValidator {
                 .iter()
                 .any(|diagnostic| diagnostic.severity == MetaDiagnosticSeverity::Error)
             {
-                return (failed_validation(diagnostics), legacy_run);
+                return failed_validation(diagnostics);
             }
 
             let inputs = MetaValidationReferenceInputs {
@@ -381,7 +337,7 @@ impl MetadataValidator {
                 language_codes,
                 proof_subject: Some(subject),
             };
-            match meta_validate_source(&descriptor.bytes, options, &inputs, artifact) {
+            match meta_validate_source(&descriptor.bytes, options, &inputs) {
                 Ok(run) => {
                     diagnostics.extend(run.errors.iter().map(|error| {
                         let field = if error.contains("is not registered in the owner image") {
@@ -407,7 +363,6 @@ impl MetadataValidator {
                             warning.trim_start_matches("[WARN]  "),
                         )
                     }));
-                    legacy_run = Some(run);
                 }
                 Err(error) => {
                     diagnostics.push(provider_diagnostic(subject, descriptor_index, error))
@@ -466,7 +421,7 @@ impl MetadataValidator {
                 diagnostics,
             }
         };
-        (result, legacy_run)
+        result
     }
 }
 
@@ -1570,91 +1525,31 @@ fn validation_field_for_legacy_error(error: &str) -> &'static str {
 }
 
 impl MetaValidationReporter {
-    pub(super) fn new(max_errors: usize, detailed: bool) -> Self {
+    pub(super) fn new(max_errors: usize) -> Self {
         Self {
-            errors: 0,
-            warnings: 0,
-            ok_count: 0,
+            errors: Vec::new(),
+            warnings: Vec::new(),
             stopped: false,
             max_errors,
-            detailed,
-            lines: vec![String::new()],
-            md_type: "(unknown)".to_string(),
-            obj_name: "(unknown)".to_string(),
-            suppress_artifact: false,
         }
     }
 
-    pub(super) fn ok(&mut self, message: impl Into<String>) {
-        self.ok_count += 1;
-        if self.detailed {
-            self.lines.push(format!("[OK]    {}", message.into()));
-        }
-    }
+    pub(super) fn ok(&mut self, _message: impl Into<String>) {}
 
     pub(super) fn error(&mut self, message: impl Into<String>) {
-        self.errors += 1;
-        self.lines.push(format!("[ERROR] {}", message.into()));
-        if self.errors >= self.max_errors {
+        self.errors.push(format!("[ERROR] {}", message.into()));
+        if self.errors.len() >= self.max_errors {
             self.stopped = true;
         }
     }
 
     pub(super) fn warn(&mut self, message: impl Into<String>) {
-        self.warnings += 1;
-        self.lines.push(format!("[WARN]  {}", message.into()));
+        self.warnings.push(format!("[WARN]  {}", message.into()));
     }
 
-    pub(super) fn finalize(mut self) -> (bool, String, Vec<String>, Vec<String>) {
-        let checks = self.ok_count + self.errors + self.warnings;
-        let ok = self.errors == 0;
-        if ok && self.warnings == 0 && !self.detailed {
-            return (
-                true,
-                format!(
-                    "=== Validation OK: {}.{} ({checks} checks) ===",
-                    self.md_type, self.obj_name
-                ),
-                Vec::new(),
-                Vec::new(),
-            );
-        }
-        self.lines.insert(
-            0,
-            format!("=== Validation: {}.{} ===", self.md_type, self.obj_name),
-        );
-        self.lines.push(String::new());
-        self.lines.push(format!(
-            "=== Result: {} errors, {} warnings ({checks} checks) ===",
-            self.errors, self.warnings
-        ));
-        let errors = self
-            .lines
-            .iter()
-            .filter(|line| line.starts_with("[ERROR]"))
-            .cloned()
-            .collect::<Vec<_>>();
-        let warnings = self
-            .lines
-            .iter()
-            .filter(|line| line.starts_with("[WARN]"))
-            .cloned()
-            .collect::<Vec<_>>();
-        (ok, self.lines.join("\n"), errors, warnings)
+    pub(super) fn finalize(self) -> (bool, Vec<String>, Vec<String>) {
+        (self.errors.is_empty(), self.errors, self.warnings)
     }
-}
-
-pub(super) fn meta_validate_one(
-    raw_path: PathBuf,
-    options: &MetaValidationOptions,
-    context: &WorkspaceContext,
-) -> Result<MetaValidationRun, String> {
-    meta_validate_one_with_scope(
-        raw_path,
-        options,
-        context,
-        MetaValidationScope::PublicOwnerAware,
-    )
 }
 
 fn metadata_address(raw: impl AsRef<str>) -> Result<MetadataAddress, String> {
@@ -1777,201 +1672,45 @@ pub(super) fn add_descriptor_references(
     Ok(())
 }
 
-fn metadata_validation_subject_from_paths(
-    resolved_path: &Path,
-    inspection_paths: &[PathBuf],
-    owner_context: &super::validation_context::MetaValidationOwnerContext,
-) -> Result<MetadataValidationSubject, String> {
-    use crate::application::ports::MetadataResourceImage;
-
-    let target = metadata_address(format!(
-        "{}.{}",
-        owner_context.object_type, owner_context.object_name
-    ))?;
-    let descriptor = fs::read(resolved_path)
-        .map_err(|error| format!("failed to read {}: {error}", resolved_path.display()))?;
-    let mut resources = vec![MetadataResourceImage {
-        role: MetadataResourceRole::Descriptor,
-        bytes: descriptor.clone(),
-    }];
-    let owner_path = owner_context
-        .owner_path
-        .canonicalize()
-        .unwrap_or_else(|_| owner_context.owner_path.clone());
-    for path in inspection_paths {
-        if path == resolved_path {
-            continue;
-        }
-        let bytes = fs::read(path)
-            .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-        if path == &owner_path {
-            resources.push(MetadataResourceImage {
-                role: MetadataResourceRole::Registration,
-                bytes,
-            });
-            continue;
-        }
-        let dependency_target = match inspect_metadata_language_image(&bytes)? {
-            Some((name, _)) => metadata_address(format!("Language.{name}"))?,
-            None => {
-                let identity = inspect_metadata_image_identity(&bytes)?;
-                metadata_address(format!("{}.{}", identity.object_type, identity.object_name))?
-            }
-        };
-        resources.push(MetadataResourceImage {
-            role: MetadataResourceRole::Dependency {
-                target: dependency_target,
-            },
-            bytes,
-        });
-    }
-    let config_dir = match owner_context.owner_kind {
-        MetaValidationOwnerKind::Configuration | MetaValidationOwnerKind::Extension => {
-            owner_context.owner_path.parent()
-        }
-        MetaValidationOwnerKind::External => None,
-    };
-    add_descriptor_references(&mut resources, &descriptor, config_dir)?;
-    Ok(MetadataValidationSubject {
-        target,
-        resources,
-        child_footprints: Vec::new(),
-        registrar_evidence: Default::default(),
-    })
-}
-
-fn metadata_validation_run(
-    subject: &MetadataValidationSubject,
-    options: &MetaValidationOptions,
-    context: &WorkspaceContext,
-    artifact: PathBuf,
-) -> MetaValidationRun {
-    let (result, legacy_run) = MetadataValidator.evaluate(
-        subject,
-        context,
-        options,
-        Some(artifact),
-        ChildGraphValidation::DescriptorOnly,
-    );
-    let ok = result.status == MetaValidationStatus::Passed;
-    if let Some(run) = legacy_run {
-        debug_assert_eq!(run.ok, ok, "report and validation status diverged");
-        return run;
-    }
-    let mut errors = result
-        .diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.severity == MetaDiagnosticSeverity::Error)
-        .take(options.max_errors)
-        .map(|diagnostic| format!("[ERROR] {}", diagnostic.message))
-        .collect::<Vec<_>>();
-    let warnings = result
-        .diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.severity == MetaDiagnosticSeverity::Warning)
-        .map(|diagnostic| format!("[WARN]  {}", diagnostic.message))
-        .collect::<Vec<_>>();
-    if errors.is_empty() && !ok {
-        errors.push("[ERROR] metadata validation failed".to_string());
-    }
-    let stdout = if errors.is_empty() && warnings.is_empty() && !options.detailed {
-        format!("=== Validation OK: {} ===", subject.target)
-    } else {
-        let mut lines = vec![format!("=== Validation: {} ===", subject.target)];
-        lines.extend(errors.iter().cloned());
-        lines.extend(warnings.iter().cloned());
-        lines.push(String::new());
-        lines.push(format!(
-            "=== Result: {} errors, {} warnings ===",
-            errors.len(),
-            warnings.len()
-        ));
-        lines.join("\n")
-    };
-    MetaValidationRun {
-        ok,
-        stdout,
-        artifacts: Vec::new(),
-        errors,
-        warnings,
-    }
-}
-
-pub(super) fn meta_validate_one_with_scope(
+fn validate_local_metadata_image(
     raw_path: PathBuf,
     options: &MetaValidationOptions,
     context: &WorkspaceContext,
-    scope: MetaValidationScope,
 ) -> Result<MetaValidationRun, String> {
     let object_path = resolve_meta_info_path(absolutize(raw_path, &context.cwd))?;
     let resolved_path = object_path
         .canonicalize()
         .unwrap_or_else(|_| object_path.clone());
-    let owner_inspection = match scope {
-        MetaValidationScope::PublicOwnerAware => Some(inspect_meta_validation_subject_reads(
-            &resolved_path,
-            context,
-        )),
-        MetaValidationScope::PostWriteLocal => None,
-    };
-
-    if let Some(inspection) = owner_inspection {
-        let owner_context = inspection.context?;
-        let subject = metadata_validation_subject_from_paths(
-            &resolved_path,
-            &inspection.paths,
-            &owner_context,
-        )?;
-        return Ok(metadata_validation_run(
-            &subject,
-            options,
-            context,
-            resolved_path,
-        ));
-    }
-
     let text = read_utf8_sig(&resolved_path)?;
-    let reference_inputs = match scope {
-        MetaValidationScope::PublicOwnerAware => unreachable!("handled above"),
-        MetaValidationScope::PostWriteLocal => MetaValidationReferenceInputs {
-            config_dir: None,
-            language_codes: Vec::new(),
-            proof_subject: None,
-        },
+    let reference_inputs = MetaValidationReferenceInputs {
+        config_dir: None,
+        language_codes: Vec::new(),
+        proof_subject: None,
     };
-    meta_validate_source(
-        text.as_bytes(),
-        options,
-        &reference_inputs,
-        Some(resolved_path),
-    )
+    meta_validate_source(text.as_bytes(), options, &reference_inputs)
 }
 
 fn meta_validate_source(
     bytes: &[u8],
     options: &MetaValidationOptions,
     reference_inputs: &MetaValidationReferenceInputs,
-    artifact: Option<PathBuf>,
 ) -> Result<MetaValidationRun, String> {
     const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
     let source = std::str::from_utf8(bytes)
         .map_err(|error| format!("metadata image is not UTF-8: {error}"))?
         .trim_start_matches('\u{feff}');
-    let resolved_path = artifact.unwrap_or_default();
     let doc = match Document::parse(source) {
         Ok(doc) => doc,
         Err(err) => {
-            let mut report = MetaValidationReporter::new(options.max_errors, options.detailed);
-            report.md_type = "(parse failed)".to_string();
-            report.obj_name.clear();
+            let mut report = MetaValidationReporter::new(options.max_errors);
             report.error(format!("1. XML parse failed: {err}"));
-            return meta_validate_finish(report, resolved_path);
+            return meta_validate_finish(report);
         }
     };
 
     let root = doc.root_element();
-    let mut report = MetaValidationReporter::new(options.max_errors, options.detailed);
+    let mut report = MetaValidationReporter::new(options.max_errors);
     let mut check1_ok = true;
 
     if root.tag_name().name() != "MetaDataObject" {
@@ -1979,7 +1718,7 @@ fn meta_validate_source(
             "1. Root element is '{}', expected 'MetaDataObject'",
             root.tag_name().name()
         ));
-        return meta_validate_finish(report, resolved_path);
+        return meta_validate_finish(report);
     }
 
     let root_ns = root.tag_name().namespace().unwrap_or("");
@@ -2004,7 +1743,7 @@ fn meta_validate_source(
         .collect::<Vec<_>>();
     if child_elements.is_empty() {
         report.error("1. No metadata type element found inside MetaDataObject");
-        return meta_validate_finish(report, resolved_path);
+        return meta_validate_finish(report);
     }
     if child_elements.len() > 1 {
         let names = child_elements
@@ -2020,10 +1759,9 @@ fn meta_validate_source(
 
     let type_node = child_elements[0];
     let md_type = type_node.tag_name().name();
-    report.md_type = md_type.to_string();
     if !meta_validate_valid_types().contains(&md_type) {
         report.error(format!("1. Unrecognized metadata type: {md_type}"));
-        return meta_validate_finish(report, resolved_path);
+        return meta_validate_finish(report);
     }
 
     let type_uuid = type_node.attribute("uuid").unwrap_or("");
@@ -2041,7 +1779,6 @@ fn meta_validate_source(
         .map(meta_info_inner_text)
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "(unknown)".to_string());
-    report.obj_name = obj_name.clone();
 
     if let Some(subject) = reference_inputs.proof_subject {
         meta_validate_check_subject_owner_proof(&mut report, md_type, &obj_name, subject);
@@ -2053,12 +1790,12 @@ fn meta_validate_source(
         ));
     }
     if report.stopped {
-        return meta_validate_finish(report, resolved_path);
+        return meta_validate_finish(report);
     }
 
     meta_validate_check_internal_info(&mut report, md_type, type_node, &obj_name);
     if report.stopped {
-        return meta_validate_finish(report, resolved_path);
+        return meta_validate_finish(report);
     }
     meta_validate_check_properties(
         &mut report,
@@ -2069,37 +1806,37 @@ fn meta_validate_source(
         &reference_inputs.language_codes,
     );
     if report.stopped {
-        return meta_validate_finish(report, resolved_path);
+        return meta_validate_finish(report);
     }
     meta_validate_check_property_values(&mut report, props_node);
     if report.stopped {
-        return meta_validate_finish(report, resolved_path);
+        return meta_validate_finish(report);
     }
     meta_validate_check_standard_attributes(&mut report, md_type, props_node);
     if report.stopped {
-        return meta_validate_finish(report, resolved_path);
+        return meta_validate_finish(report);
     }
 
     let child_obj_node = meta_info_child(type_node, "ChildObjects");
     meta_validate_check_child_objects(&mut report, md_type, child_obj_node);
     if report.stopped {
-        return meta_validate_finish(report, resolved_path);
+        return meta_validate_finish(report);
     }
     meta_validate_check_child_elements(&mut report, child_obj_node);
     if report.stopped {
-        return meta_validate_finish(report, resolved_path);
+        return meta_validate_finish(report);
     }
     meta_validate_check_reserved_attr_names(&mut report, child_obj_node);
     if report.stopped {
-        return meta_validate_finish(report, resolved_path);
+        return meta_validate_finish(report);
     }
     meta_validate_check_uniqueness(&mut report, child_obj_node);
     if report.stopped {
-        return meta_validate_finish(report, resolved_path);
+        return meta_validate_finish(report);
     }
     meta_validate_check_tabular_sections(&mut report, child_obj_node);
     if report.stopped {
-        return meta_validate_finish(report, resolved_path);
+        return meta_validate_finish(report);
     }
     meta_validate_check_cross_properties(
         &mut report,
@@ -2111,15 +1848,15 @@ fn meta_validate_source(
         &obj_name,
     );
     if report.stopped {
-        return meta_validate_finish(report, resolved_path);
+        return meta_validate_finish(report);
     }
     meta_validate_check_services(&mut report, md_type, child_obj_node);
     if report.stopped {
-        return meta_validate_finish(report, resolved_path);
+        return meta_validate_finish(report);
     }
     meta_validate_check_forbidden_properties(&mut report, md_type, props_node);
     if report.stopped {
-        return meta_validate_finish(report, resolved_path);
+        return meta_validate_finish(report);
     }
     meta_validate_check_method_reference(
         &mut report,
@@ -2129,11 +1866,11 @@ fn meta_validate_source(
         reference_inputs.proof_subject,
     );
     if report.stopped {
-        return meta_validate_finish(report, resolved_path);
+        return meta_validate_finish(report);
     }
     meta_validate_check_document_journal_columns(&mut report, md_type, child_obj_node);
 
-    meta_validate_finish(report, resolved_path)
+    meta_validate_finish(report)
 }
 
 fn meta_validate_check_subject_owner_proof(
@@ -2161,7 +1898,6 @@ fn meta_validate_check_subject_owner_proof(
         report.error(format!(
             "{md_type}.{obj_name} is not registered in the owner image"
         ));
-        report.suppress_artifact = true;
         return;
     }
     if meta_validate_types_with_list_presentation().contains(&md_type)
@@ -2170,25 +1906,15 @@ fn meta_validate_check_subject_owner_proof(
             .all(|registration| registration.registered_languages.is_empty())
     {
         report.error("owner image has no registered language profile");
-        report.suppress_artifact = true;
     }
 }
 
 pub(super) fn meta_validate_finish(
     report: MetaValidationReporter,
-    artifact: PathBuf,
 ) -> Result<MetaValidationRun, String> {
-    let suppress_artifact = report.suppress_artifact;
-    let (ok, result_text, errors, warnings) = report.finalize();
-    let artifacts = if artifact.as_os_str().is_empty() || suppress_artifact {
-        Vec::new()
-    } else {
-        vec![artifact]
-    };
+    let (ok, errors, warnings) = report.finalize();
     Ok(MetaValidationRun {
         ok,
-        stdout: format!("{result_text}\n"),
-        artifacts,
         errors,
         warnings,
     })
@@ -3845,8 +3571,6 @@ mod tests {
     };
     use crate::domain::metadata::{MetaDiagnosticCode, MetaValidationStatus};
     use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
-    use std::fs;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
@@ -3855,21 +3579,6 @@ mod tests {
             cwd: PathBuf::from("/workspace"),
             workspace_root: PathBuf::from("/workspace"),
             cache_root: PathBuf::from("/workspace/.unica/cache"),
-            workspace_epoch: 1,
-        }
-    }
-
-    fn temp_context(name: &str) -> WorkspaceContext {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("unica-validator-{name}-{nanos}"));
-        fs::create_dir_all(&root).unwrap();
-        WorkspaceContext {
-            cwd: root.clone(),
-            workspace_root: root.clone(),
-            cache_root: root.join(".build/unica"),
             workspace_epoch: 1,
         }
     }
@@ -3959,35 +3668,6 @@ mod tests {
 <Properties><Name>Area</Name>{content}</Properties><ChildObjects/>
 </Subsystem></MetaDataObject>"#
         )
-    }
-
-    fn metadata_collection(kind: &str) -> &'static str {
-        match kind {
-            "CommonModule" => "CommonModules",
-            "ScheduledJob" => "ScheduledJobs",
-            "HTTPService" => "HTTPServices",
-            "DocumentJournal" => "DocumentJournals",
-            "InformationRegister" => "InformationRegisters",
-            "Document" => "Documents",
-            "Language" => "Languages",
-            "Subsystem" => "Subsystems",
-            other => panic!("missing test collection for {other}"),
-        }
-    }
-
-    fn metadata_path(root: &Path, target: &MetadataAddress) -> PathBuf {
-        let mut segments = target.segments();
-        let kind = segments.next().unwrap();
-        let name = segments.next().unwrap();
-        root.join(metadata_collection(kind))
-            .join(format!("{name}.xml"))
-    }
-
-    fn write_bytes(path: &Path, bytes: &[u8]) {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).unwrap();
-        }
-        fs::write(path, bytes).unwrap();
     }
 
     fn assert_internal_status(

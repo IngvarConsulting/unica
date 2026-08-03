@@ -7,9 +7,7 @@ use serde_json::{json, Map, Value};
 use std::fs;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use super::info::{
-    analyze_meta_info, analyze_meta_info_with_data, registrar_scan_checkpoint, typed_elements,
-};
+use super::info::{analyze_meta_info_with_data, registrar_scan_checkpoint, typed_elements};
 use super::xml_model::meta_info_child;
 
 fn workspace(name: &str) -> WorkspaceContext {
@@ -214,7 +212,8 @@ fn meta_info_states_catalog_properties_including_their_negatives() {
 fn meta_info_refuses_a_module_terminal_by_name() {
     let context = workspace("module");
 
-    let outcome = analyze_meta_info(&info_args("Catalog.Items.ObjectModule"), &context);
+    let outcome =
+        analyze_meta_info_with_data(&info_args("Catalog.Items.ObjectModule"), &context).outcome;
 
     assert!(!outcome.ok);
     assert!(
@@ -229,7 +228,7 @@ fn meta_info_refuses_a_module_terminal_by_name() {
 fn meta_info_reports_an_unknown_address_without_naming_a_path() {
     let context = workspace("unknown");
 
-    let outcome = analyze_meta_info(&info_args("Catalog.Missing"), &context);
+    let outcome = analyze_meta_info_with_data(&info_args("Catalog.Missing"), &context).outcome;
 
     assert!(!outcome.ok);
     assert!(
@@ -249,10 +248,11 @@ fn meta_info_reports_an_unknown_address_without_naming_a_path() {
 fn meta_info_requires_a_source_set() {
     let context = workspace("no-source-set");
 
-    let outcome = analyze_meta_info(
+    let outcome = analyze_meta_info_with_data(
         &Map::from_iter([("metadataPath".to_string(), json!("Catalog.Items"))]),
         &context,
-    );
+    )
+    .outcome;
 
     assert!(!outcome.ok);
     assert!(

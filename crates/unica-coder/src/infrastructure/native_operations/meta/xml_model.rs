@@ -1,6 +1,5 @@
 use super::super::common::{escape_xml, multilang_text};
 use super::super::role::role_info_element;
-use super::info::meta_info_object_type_ru;
 use crate::domain::metadata::{
     DateFractions, MetaFillValue, MetadataType, MetadataTypeVariant, NumberSign, StringLengthMode,
 };
@@ -53,23 +52,6 @@ pub(super) fn meta_info_ml_text(node: roxmltree::Node<'_, '_>) -> String {
     }
 }
 
-pub(super) fn meta_info_ml_child_text(
-    node: Option<roxmltree::Node<'_, '_>>,
-    local_name: &str,
-) -> Option<String> {
-    node.and_then(|node| meta_info_child(node, local_name))
-        .map(meta_info_ml_text)
-}
-
-pub(super) fn meta_info_attr_by_local<'a>(
-    node: roxmltree::Node<'a, '_>,
-    local_name: &str,
-) -> Option<&'a str> {
-    node.attributes()
-        .find(|attr| attr.name() == local_name)
-        .map(|attr| attr.value())
-}
-
 pub(super) fn meta_info_normalize_cfg_prefix(raw: &str) -> String {
     let Some((prefix, rest)) = raw.split_once(':') else {
         return raw.to_string();
@@ -82,21 +64,6 @@ pub(super) fn meta_info_normalize_cfg_prefix(raw: &str) -> String {
         format!("cfg:{rest}")
     } else {
         raw.to_string()
-    }
-}
-
-pub(super) fn meta_info_format_source_type(raw: &str) -> String {
-    let normalized = meta_info_normalize_cfg_prefix(raw);
-    let Some(rest) = normalized.strip_prefix("cfg:") else {
-        return normalized;
-    };
-    let Some((prefix, name)) = rest.split_once('.') else {
-        return rest.to_string();
-    };
-    if let Some(object_type) = meta_info_object_type_ru(prefix) {
-        format!("{object_type}.{name}")
-    } else {
-        rest.to_string()
     }
 }
 

@@ -1,5 +1,3 @@
-#![allow(dead_code, unused_imports)]
-
 use crate::application::metadata::{MetaFailure, MetaRemoveRequest};
 use crate::application::ports::{
     MetadataResourceImage, MetadataResourceRole, MetadataValidationSubject,
@@ -79,7 +77,6 @@ pub(crate) struct MetaRemoveExecution {
 
 pub(super) fn meta_remove_stdout_error(message: String) -> MetaRemoveError {
     MetaRemoveError {
-        stdout: format!("{message}\n"),
         stderr: String::new(),
         message,
     }
@@ -1055,13 +1052,6 @@ fn typed_remove_failure(
     diagnostic.into()
 }
 
-pub(super) fn remove_metadata_object(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-) -> AdapterOutcome {
-    remove_metadata_object_with_data(args, context).outcome
-}
-
 pub(crate) fn remove_metadata_object_with_data(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -1140,7 +1130,6 @@ pub(crate) fn remove_metadata_object_with_data(
                 ));
                 return Err(MetaRemoveError {
                     message: stdout.trim().to_string(),
-                    stdout,
                     stderr: String::new(),
                 });
             }
@@ -1200,7 +1189,6 @@ pub(crate) fn remove_metadata_object_with_data(
                 stdout.push_str("        Use -Force to remove anyway, or fix references first.\n");
                 return Err(MetaRemoveError {
                     message: stdout.trim().to_string(),
-                    stdout,
                     stderr: String::new(),
                 });
             }
@@ -1635,18 +1623,6 @@ pub(crate) fn remove_metadata_child_text_with_flag(
 pub(super) struct MetaRemoveReference {
     pub(crate) file: String,
     pub(crate) pattern: String,
-}
-
-pub(super) fn metadata_object_registered(
-    config_xml: &Path,
-    obj_type: &str,
-    obj_name: &str,
-) -> bool {
-    let Ok(text) = read_utf8_sig(config_xml) else {
-        return false;
-    };
-    text.contains(&format!("<{obj_type}>{obj_name}</{obj_type}>"))
-        || text.contains(&format!("<md:{obj_type}>{obj_name}</md:{obj_type}>"))
 }
 
 #[allow(clippy::too_many_arguments)]
