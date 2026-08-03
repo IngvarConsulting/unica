@@ -101,6 +101,14 @@ pub(crate) enum MetadataAuxiliaryXmlKind {
     BusinessProcessFlowchart,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MetadataChildResourceKind {
+    FormContent,
+    TemplateContent,
+    Module,
+    Auxiliary,
+}
+
 #[allow(dead_code)] // Concrete providers land after this orchestration seam.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum MetadataResourceRole {
@@ -120,6 +128,11 @@ pub(crate) enum MetadataResourceRole {
     Command {
         owner: MetadataAddress,
         name: String,
+    },
+    ChildResource {
+        child: MetadataAddress,
+        kind: MetadataChildResourceKind,
+        ordinal: usize,
     },
     Dependency {
         target: MetadataAddress,

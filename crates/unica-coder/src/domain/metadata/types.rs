@@ -97,6 +97,10 @@ pub(crate) enum MetadataTypeVariant {
     Date {
         fractions: DateFractions,
     },
+    BinaryData {
+        length: u32,
+        allowed_length: StringLengthMode,
+    },
     ValueStorage,
     Reference {
         metadata_path: MetadataAddress,
@@ -168,6 +172,13 @@ fn validate_variant(variant: &MetadataTypeVariant, index: usize) -> Result<(), M
             field(),
             "number digits must be 0..=38 and fraction must not exceed digits",
         )),
+        MetadataTypeVariant::BinaryData {
+            length,
+            allowed_length,
+        } if *allowed_length == StringLengthMode::Fixed && *length == 0 => Err(invalid_type(
+            field(),
+            "fixed binary data requires a positive length",
+        )),
         _ => Ok(()),
     }
 }
@@ -178,6 +189,7 @@ enum MetadataTypeIdentity {
     Number,
     Boolean,
     Date,
+    BinaryData,
     ValueStorage,
     Reference(MetadataAddress),
     DefinedType(MetadataAddress),
@@ -189,6 +201,7 @@ fn variant_identity(variant: &MetadataTypeVariant) -> MetadataTypeIdentity {
         MetadataTypeVariant::Number { .. } => MetadataTypeIdentity::Number,
         MetadataTypeVariant::Boolean => MetadataTypeIdentity::Boolean,
         MetadataTypeVariant::Date { .. } => MetadataTypeIdentity::Date,
+        MetadataTypeVariant::BinaryData { .. } => MetadataTypeIdentity::BinaryData,
         MetadataTypeVariant::ValueStorage => MetadataTypeIdentity::ValueStorage,
         MetadataTypeVariant::Reference { metadata_path } => {
             MetadataTypeIdentity::Reference(metadata_path.clone())

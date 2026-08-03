@@ -413,58 +413,85 @@ pub(super) fn emit_meta_typed_value_type(
             ));
         }
     }
-    for variant in &metadata_type.variants {
-        match variant {
-            MetadataTypeVariant::String {
-                length,
-                allowed_length,
-            } => {
-                lines.push(format!("{content_indent}<v8:StringQualifiers>"));
-                lines.push(format!("{content_indent}\t<v8:Length>{length}</v8:Length>"));
-                lines.push(format!(
-                    "{content_indent}\t<v8:AllowedLength>{}</v8:AllowedLength>",
-                    match allowed_length {
-                        StringLengthMode::Variable => "Variable",
-                        StringLengthMode::Fixed => "Fixed",
-                    }
-                ));
-                lines.push(format!("{content_indent}</v8:StringQualifiers>"));
+    for qualifier_rank in 0..4 {
+        for variant in &metadata_type.variants {
+            let variant_rank = match variant {
+                MetadataTypeVariant::Number { .. } => 0,
+                MetadataTypeVariant::String { .. } => 1,
+                MetadataTypeVariant::Date { .. } => 2,
+                MetadataTypeVariant::BinaryData { .. } => 3,
+                _ => continue,
+            };
+            if variant_rank != qualifier_rank {
+                continue;
             }
-            MetadataTypeVariant::Number {
-                digits,
-                fraction,
-                sign,
-            } => {
-                lines.push(format!("{content_indent}<v8:NumberQualifiers>"));
-                lines.push(format!("{content_indent}\t<v8:Digits>{digits}</v8:Digits>"));
-                lines.push(format!(
-                    "{content_indent}\t<v8:FractionDigits>{fraction}</v8:FractionDigits>"
-                ));
-                lines.push(format!(
-                    "{content_indent}\t<v8:AllowedSign>{}</v8:AllowedSign>",
-                    match sign {
-                        NumberSign::Any => "Any",
-                        NumberSign::NonNegative => "Nonnegative",
-                    }
-                ));
-                lines.push(format!("{content_indent}</v8:NumberQualifiers>"));
+            match variant {
+                MetadataTypeVariant::String {
+                    length,
+                    allowed_length,
+                } => {
+                    lines.push(format!("{content_indent}<v8:StringQualifiers>"));
+                    lines.push(format!("{content_indent}\t<v8:Length>{length}</v8:Length>"));
+                    lines.push(format!(
+                        "{content_indent}\t<v8:AllowedLength>{}</v8:AllowedLength>",
+                        match allowed_length {
+                            StringLengthMode::Variable => "Variable",
+                            StringLengthMode::Fixed => "Fixed",
+                        }
+                    ));
+                    lines.push(format!("{content_indent}</v8:StringQualifiers>"));
+                }
+                MetadataTypeVariant::Number {
+                    digits,
+                    fraction,
+                    sign,
+                } => {
+                    lines.push(format!("{content_indent}<v8:NumberQualifiers>"));
+                    lines.push(format!("{content_indent}\t<v8:Digits>{digits}</v8:Digits>"));
+                    lines.push(format!(
+                        "{content_indent}\t<v8:FractionDigits>{fraction}</v8:FractionDigits>"
+                    ));
+                    lines.push(format!(
+                        "{content_indent}\t<v8:AllowedSign>{}</v8:AllowedSign>",
+                        match sign {
+                            NumberSign::Any => "Any",
+                            NumberSign::NonNegative => "Nonnegative",
+                        }
+                    ));
+                    lines.push(format!("{content_indent}</v8:NumberQualifiers>"));
+                }
+                MetadataTypeVariant::Date { fractions } => {
+                    lines.push(format!("{content_indent}<v8:DateQualifiers>"));
+                    lines.push(format!(
+                        "{content_indent}\t<v8:DateFractions>{}</v8:DateFractions>",
+                        match fractions {
+                            DateFractions::Date => "Date",
+                            DateFractions::Time => "Time",
+                            DateFractions::DateTime => "DateTime",
+                        }
+                    ));
+                    lines.push(format!("{content_indent}</v8:DateQualifiers>"));
+                }
+                MetadataTypeVariant::BinaryData {
+                    length,
+                    allowed_length,
+                } => {
+                    lines.push(format!("{content_indent}<v8:BinaryDataQualifiers>"));
+                    lines.push(format!("{content_indent}\t<v8:Length>{length}</v8:Length>"));
+                    lines.push(format!(
+                        "{content_indent}\t<v8:AllowedLength>{}</v8:AllowedLength>",
+                        match allowed_length {
+                            StringLengthMode::Variable => "Variable",
+                            StringLengthMode::Fixed => "Fixed",
+                        }
+                    ));
+                    lines.push(format!("{content_indent}</v8:BinaryDataQualifiers>"));
+                }
+                MetadataTypeVariant::Boolean
+                | MetadataTypeVariant::ValueStorage
+                | MetadataTypeVariant::Reference { .. }
+                | MetadataTypeVariant::DefinedType { .. } => {}
             }
-            MetadataTypeVariant::Date { fractions } => {
-                lines.push(format!("{content_indent}<v8:DateQualifiers>"));
-                lines.push(format!(
-                    "{content_indent}\t<v8:DateFractions>{}</v8:DateFractions>",
-                    match fractions {
-                        DateFractions::Date => "Date",
-                        DateFractions::Time => "Time",
-                        DateFractions::DateTime => "DateTime",
-                    }
-                ));
-                lines.push(format!("{content_indent}</v8:DateQualifiers>"));
-            }
-            MetadataTypeVariant::Boolean
-            | MetadataTypeVariant::ValueStorage
-            | MetadataTypeVariant::Reference { .. }
-            | MetadataTypeVariant::DefinedType { .. } => {}
         }
     }
     lines.push(format!("{indent}</Type>"));
@@ -476,6 +503,7 @@ fn typed_wire_type(variant: &MetadataTypeVariant) -> (&'static str, String) {
         MetadataTypeVariant::Number { .. } => ("Type", "xs:decimal".to_string()),
         MetadataTypeVariant::Boolean => ("Type", "xs:boolean".to_string()),
         MetadataTypeVariant::Date { .. } => ("Type", "xs:dateTime".to_string()),
+        MetadataTypeVariant::BinaryData { .. } => ("Type", "xs:binary".to_string()),
         MetadataTypeVariant::ValueStorage => ("Type", "v8:ValueStorage".to_string()),
         MetadataTypeVariant::Reference { metadata_path } => {
             let mut segments = metadata_path.segments();

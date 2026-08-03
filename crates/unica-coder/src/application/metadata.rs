@@ -799,6 +799,28 @@ fn parse_type_variant(
                 },
             },
         ),
+        "binaryData" => (
+            &["kind", "length", "allowedLength"][..],
+            MetadataTypeVariant::BinaryData {
+                length: required_u32(object, "length", &variant_field)?,
+                allowed_length: match required_string_at(
+                    object,
+                    "allowedLength",
+                    &format!("{variant_field}.allowedLength"),
+                )?
+                .as_str()
+                {
+                    "variable" => StringLengthMode::Variable,
+                    "fixed" => StringLengthMode::Fixed,
+                    value => {
+                        return Err(invalid(
+                            format!("{variant_field}.allowedLength"),
+                            format!("unsupported allowedLength `{value}`"),
+                        ))
+                    }
+                },
+            },
+        ),
         "valueStorage" => (&["kind"][..], MetadataTypeVariant::ValueStorage),
         "reference" | "definedType" => {
             let raw = required_string_at(
@@ -1337,7 +1359,7 @@ fn metadata_type_schema() -> Value {
                     "properties": {
                         "kind": {
                             "type": "string",
-                            "enum": ["string", "number", "boolean", "date", "valueStorage", "reference", "definedType"],
+                            "enum": ["string", "number", "boolean", "date", "binaryData", "valueStorage", "reference", "definedType"],
                         },
                         "length": {"type": "integer", "minimum": 0, "maximum": 1024},
                         "allowedLength": {"type": "string", "enum": ["variable", "fixed"]},
@@ -2220,6 +2242,38 @@ mod tests {
             }),
         );
         assert_eq!(error.field.as_deref(), Some("operations"));
+    }
+
+    #[test]
+    fn parse_accepts_binary_data_type_qualifiers() {
+        let MetadataRequest::Edit(request) = parse_metadata_request(
+            MetadataOperation::Edit,
+            &object(edit(json!({
+                "op": "add",
+                "collection": "attributes",
+                "elements": [{
+                    "name": "Payload",
+                    "type": {"variants": [{
+                        "kind": "binaryData",
+                        "length": 512,
+                        "allowedLength": "fixed"
+                    }]}
+                }]
+            }))),
+        )
+        .unwrap() else {
+            panic!("expected edit request")
+        };
+        let MetaEditOperation::Add { elements, .. } = &request.operations[0] else {
+            panic!("expected add operation")
+        };
+        assert!(matches!(
+            elements[0].r#type.as_ref().unwrap().variants[0],
+            MetadataTypeVariant::BinaryData {
+                length: 512,
+                allowed_length: StringLengthMode::Fixed
+            }
+        ));
     }
 
     #[test]

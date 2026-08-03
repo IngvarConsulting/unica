@@ -1,8 +1,8 @@
 #![allow(dead_code, unused_imports)]
 
 use crate::application::ports::{
-    MetadataAuxiliaryXmlKind, MetadataResourceRole, MetadataValidationResult,
-    MetadataValidationSubject,
+    MetadataAuxiliaryXmlKind, MetadataChildResourceKind, MetadataResourceRole,
+    MetadataValidationResult, MetadataValidationSubject,
 };
 use crate::application::AdapterOutcome;
 use crate::domain::format_profile::{
@@ -150,6 +150,12 @@ impl MetadataValidator {
                 }
                 MetadataResourceRole::AuxiliaryXml { kind, .. } => {
                     if let Err(error) = validate_auxiliary_xml(*kind, &resource.bytes) {
+                        diagnostics.push(provider_diagnostic(subject, index, error));
+                        continue;
+                    }
+                }
+                MetadataResourceRole::ChildResource { kind, .. } => {
+                    if let Err(error) = validate_child_resource(*kind, &resource.bytes) {
                         diagnostics.push(provider_diagnostic(subject, index, error));
                         continue;
                     }
@@ -350,6 +356,7 @@ impl MetadataValidator {
                     | MetadataResourceRole::Form { .. }
                     | MetadataResourceRole::Template { .. }
                     | MetadataResourceRole::Command { .. }
+                    | MetadataResourceRole::ChildResource { .. }
                     | MetadataResourceRole::AuxiliaryXml { .. } => {}
                 }
             }
@@ -400,6 +407,35 @@ fn validate_auxiliary_xml(kind: MetadataAuxiliaryXmlKind, bytes: &[u8]) -> Resul
         return Err("auxiliary XML format version is unsupported".to_string());
     }
     Ok(())
+}
+
+fn validate_child_resource(kind: MetadataChildResourceKind, bytes: &[u8]) -> Result<(), String> {
+    match kind {
+        MetadataChildResourceKind::FormContent => {
+            let text = std::str::from_utf8(bytes)
+                .map_err(|error| format!("form content is not UTF-8: {error}"))?;
+            let document = Document::parse(text.trim_start_matches('\u{feff}'))
+                .map_err(|error| format!("form content is not valid XML: {error}"))?;
+            if document.root_element().tag_name().name() != "Form" {
+                return Err("form content root is not Form".to_string());
+            }
+            Ok(())
+        }
+        MetadataChildResourceKind::TemplateContent => {
+            if let Ok(text) = std::str::from_utf8(bytes) {
+                let text = text.trim_start_matches('\u{feff}').trim_start();
+                if text.starts_with('<') {
+                    Document::parse(text)
+                        .map_err(|error| format!("template content is not valid XML: {error}"))?;
+                }
+            }
+            Ok(())
+        }
+        MetadataChildResourceKind::Module => std::str::from_utf8(bytes)
+            .map(|_| ())
+            .map_err(|error| format!("child module is not UTF-8: {error}")),
+        MetadataChildResourceKind::Auxiliary => Ok(()),
+    }
 }
 
 fn failed_validation(diagnostics: Vec<MetaDiagnostic>) -> MetadataValidationResult {
@@ -3132,6 +3168,7 @@ mod tests {
                         &resource.bytes,
                     );
                 }
+                MetadataResourceRole::ChildResource { .. } => {}
             }
         }
         let outcome = validate_meta(&meta_validate_args(&descriptor_path), &context);

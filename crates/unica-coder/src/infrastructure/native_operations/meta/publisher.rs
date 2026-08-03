@@ -140,6 +140,16 @@ impl PreparedMetaEdit {
         bind_resolved_support_guard_evidence(&mut transaction, &resolved.descriptor_path, context)
             .map_err(|message| provider_failure(&target, message))?;
 
+        for (path, snapshot) in child_resources.directory_guards {
+            transaction
+                .guard_or_verify_directory_topology(path, snapshot)
+                .map_err(|message| provider_failure(&target, message))?;
+        }
+        for (path, bytes) in child_resources.exact_file_guards {
+            transaction
+                .guard_or_verify_exact_preimage(path, &bytes)
+                .map_err(|message| provider_failure(&target, message))?;
+        }
         for mutation in child_resources.file_mutations {
             match (mutation.pre_image, mutation.post_image) {
                 (None, Some(post_image)) => transaction

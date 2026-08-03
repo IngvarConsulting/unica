@@ -101,8 +101,9 @@ mod tests {
     use crate::application::ports::MetadataResourceRole;
     use crate::domain::metadata::{
         MetaCollection, MetaEditOperation, MetaElementInput, MetaElementUpdateInput,
-        MetaPropertyChanges, MetaPropertyInput, MetaPropertyValue, MetaRelation, MetaScope,
-        MetadataKind, MetadataReference, RelationEditMode,
+        MetaPropertyChanges, MetaPropertyInput, MetaPropertyValue, MetaPublicationAction,
+        MetaPublicationResource, MetaRelation, MetaScope, MetadataKind, MetadataReference,
+        RelationEditMode,
     };
     use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
     use crate::infrastructure::native_operations::cf::create_configuration_scaffold;
@@ -189,6 +190,75 @@ mod tests {
                 }],
                 dry_run: false,
             })
+        }
+
+        fn add_object(&self, kind: MetadataKind, name: &str) -> MetadataAddress {
+            let cancellation = CancellationToken::new();
+            MetadataOperations::prepare_mutation(
+                &MetadataRequest::Add(MetaAddRequest {
+                    source_set: "main".into(),
+                    kind,
+                    name: name.into(),
+                    dry_run: false,
+                }),
+                &self.context,
+                &cancellation,
+            )
+            .unwrap()
+            .publish(&cancellation)
+            .unwrap();
+            MetadataAddress::parse(
+                PLATFORM_XML_8_3_27_FORMAT_2_20,
+                &format!("{}.{}", kind.as_str(), name),
+            )
+            .unwrap()
+        }
+
+        fn owners_request(
+            &self,
+            mode: RelationEditMode,
+            targets: Vec<MetadataAddress>,
+        ) -> MetadataRequest {
+            MetadataRequest::Edit(MetaEditRequest {
+                source_set: "main".into(),
+                metadata_path: self.target.clone(),
+                operations: vec![MetaEditOperation::edit_relations(
+                    MetaRelation::Owners,
+                    mode,
+                    targets
+                        .into_iter()
+                        .map(|metadata_path| MetadataReference { metadata_path })
+                        .collect(),
+                )
+                .unwrap()],
+                dry_run: false,
+            })
+        }
+
+        fn typed_edit(&self, operations: Vec<MetaEditOperation>) -> MetadataRequest {
+            MetadataRequest::Edit(MetaEditRequest {
+                source_set: "main".into(),
+                metadata_path: self.target.clone(),
+                operations,
+                dry_run: false,
+            })
+        }
+
+        fn publish_form_add(&self, name: &str) {
+            let cancellation = CancellationToken::new();
+            MetadataOperations::prepare_mutation(
+                &self.typed_edit(vec![MetaEditOperation::add(
+                    MetaCollection::Forms,
+                    None,
+                    vec![MetaElementInput::named(name)],
+                )
+                .unwrap()]),
+                &self.context,
+                &cancellation,
+            )
+            .unwrap()
+            .publish(&cancellation)
+            .unwrap();
         }
     }
 
@@ -347,6 +417,459 @@ mod tests {
     }
 
     #[test]
+    fn typed_form_add_validation_covers_content_and_publish_writes_exact_footprint() {
+        let fixture = Fixture::new("form-resource-publish-add");
+        let cancellation = CancellationToken::new();
+        let request = MetadataRequest::Edit(MetaEditRequest {
+            source_set: "main".into(),
+            metadata_path: fixture.target.clone(),
+            operations: vec![MetaEditOperation::add(
+                MetaCollection::Forms,
+                None,
+                vec![MetaElementInput::named("ObjectForm")],
+            )
+            .unwrap()],
+            dry_run: false,
+        });
+        let prepared =
+            MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+                .unwrap();
+        let expected_content = concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+            "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" version=\"2.20\">\n",
+            "\t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>\n",
+            "</Form>"
+        )
+        .as_bytes();
+        assert!(prepared
+            .validation_subject()
+            .resources
+            .iter()
+            .any(|resource| resource.bytes == expected_content));
+
+        prepared.publish(&cancellation).unwrap();
+
+        let descriptor = fixture
+            .root
+            .join("src/Catalogs/Editable/Forms/ObjectForm.xml");
+        let content = fixture
+            .root
+            .join("src/Catalogs/Editable/Forms/ObjectForm/Ext/Form.xml");
+        assert!(descriptor.is_file());
+        assert_eq!(fs::read(content).unwrap(), expected_content);
+    }
+
+    #[test]
+    fn typed_form_rename_publish_preserves_every_payload_file_and_removes_old_tree() {
+        let fixture = Fixture::new("form-resource-publish-rename");
+        let cancellation = CancellationToken::new();
+        fixture.publish_form_add("Old");
+        let old_root = fixture.root.join("src/Catalogs/Editable/Forms/Old");
+        let old_descriptor = fixture.root.join("src/Catalogs/Editable/Forms/Old.xml");
+        let content = fs::read(old_root.join("Ext/Form.xml")).unwrap();
+        let module = b"procedure Kept()\nendprocedure".to_vec();
+        fs::write(old_root.join("Ext/Module.bsl"), &module).unwrap();
+        let request = fixture.typed_edit(vec![MetaEditOperation::update(
+            MetaCollection::Forms,
+            None,
+            vec![MetaElementUpdateInput {
+                name: "Old".into(),
+                new_name: Some("New".into()),
+                ..MetaElementUpdateInput::default()
+            }],
+        )
+        .unwrap()]);
+        let prepared =
+            MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+                .unwrap();
+        assert!(prepared
+            .validation_subject()
+            .resources
+            .iter()
+            .any(|resource| resource.bytes == content));
+        assert!(prepared
+            .validation_subject()
+            .resources
+            .iter()
+            .any(|resource| resource.bytes == module));
+
+        prepared.publish(&cancellation).unwrap();
+
+        let new_root = fixture.root.join("src/Catalogs/Editable/Forms/New");
+        assert!(!old_descriptor.exists());
+        assert!(!old_root.exists());
+        assert!(fixture
+            .root
+            .join("src/Catalogs/Editable/Forms/New.xml")
+            .is_file());
+        assert_eq!(fs::read(new_root.join("Ext/Form.xml")).unwrap(), content);
+        assert_eq!(fs::read(new_root.join("Ext/Module.bsl")).unwrap(), module);
+    }
+
+    #[test]
+    fn typed_form_remove_publish_deletes_descriptor_and_complete_payload_tree() {
+        let fixture = Fixture::new("form-resource-publish-remove");
+        let cancellation = CancellationToken::new();
+        fixture.publish_form_add("Gone");
+        let payload_root = fixture.root.join("src/Catalogs/Editable/Forms/Gone");
+        fs::write(
+            payload_root.join("Ext/Module.bsl"),
+            b"procedure Gone()\nendprocedure",
+        )
+        .unwrap();
+        let child_descriptor = fixture.root.join("src/Catalogs/Editable/Forms/Gone.xml");
+        let request = fixture.typed_edit(vec![MetaEditOperation::remove(
+            MetaCollection::Forms,
+            None,
+            vec!["Gone".into()],
+        )
+        .unwrap()]);
+        let prepared =
+            MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+                .unwrap();
+        assert_eq!(prepared.preview().publication_plan.len(), 2);
+
+        prepared.publish(&cancellation).unwrap();
+
+        assert!(!child_descriptor.exists());
+        assert!(!payload_root.exists());
+    }
+
+    #[test]
+    fn typed_form_remove_then_add_publish_replaces_the_complete_existing_tree() {
+        let fixture = Fixture::new("form-resource-publish-remove-add");
+        let cancellation = CancellationToken::new();
+        fixture.publish_form_add("A");
+        let payload_root = fixture.root.join("src/Catalogs/Editable/Forms/A");
+        let descriptor = fixture.root.join("src/Catalogs/Editable/Forms/A.xml");
+        let stale_module = payload_root.join("Ext/Module.bsl");
+        fs::write(&stale_module, b"procedure Stale()\nendprocedure").unwrap();
+        let request = fixture.typed_edit(vec![
+            MetaEditOperation::remove(MetaCollection::Forms, None, vec!["A".into()]).unwrap(),
+            MetaEditOperation::add(
+                MetaCollection::Forms,
+                None,
+                vec![MetaElementInput {
+                    name: "A".into(),
+                    comment: Some("replacement".into()),
+                    ..MetaElementInput::default()
+                }],
+            )
+            .unwrap(),
+        ]);
+        let prepared =
+            MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+                .unwrap();
+        let child_plan = prepared
+            .preview()
+            .publication_plan
+            .iter()
+            .find(|entry| entry.resource == MetaPublicationResource::Form)
+            .unwrap();
+        assert_eq!(child_plan.action, MetaPublicationAction::Update);
+
+        prepared.publish(&cancellation).unwrap();
+
+        let descriptor_bytes = fs::read(descriptor).unwrap();
+        assert!(String::from_utf8_lossy(&descriptor_bytes).contains("replacement"));
+        assert_eq!(
+            fs::read(payload_root.join("Ext/Form.xml")).unwrap(),
+            concat!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+                "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" version=\"2.20\">\n",
+                "\t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>\n",
+                "</Form>"
+            )
+            .as_bytes()
+        );
+        assert!(!stale_module.exists());
+    }
+
+    #[test]
+    fn typed_form_remove_add_remove_publish_deletes_only_the_initial_tree() {
+        let fixture = Fixture::new("form-resource-publish-remove-add-remove");
+        let cancellation = CancellationToken::new();
+        fixture.publish_form_add("A");
+        let payload_root = fixture.root.join("src/Catalogs/Editable/Forms/A");
+        let descriptor = fixture.root.join("src/Catalogs/Editable/Forms/A.xml");
+        fs::write(
+            payload_root.join("Ext/Module.bsl"),
+            b"procedure Initial()\nendprocedure",
+        )
+        .unwrap();
+        let request = fixture.typed_edit(vec![
+            MetaEditOperation::remove(MetaCollection::Forms, None, vec!["A".into()]).unwrap(),
+            MetaEditOperation::add(
+                MetaCollection::Forms,
+                None,
+                vec![MetaElementInput {
+                    name: "A".into(),
+                    comment: Some("transient".into()),
+                    ..MetaElementInput::default()
+                }],
+            )
+            .unwrap(),
+            MetaEditOperation::remove(MetaCollection::Forms, None, vec!["A".into()]).unwrap(),
+        ]);
+        let prepared =
+            MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+                .unwrap();
+        let child_plan = prepared
+            .preview()
+            .publication_plan
+            .iter()
+            .find(|entry| entry.resource == MetaPublicationResource::Form)
+            .unwrap();
+        assert_eq!(child_plan.action, MetaPublicationAction::Remove);
+
+        prepared.publish(&cancellation).unwrap();
+
+        assert!(!descriptor.exists());
+        assert!(!payload_root.exists());
+    }
+
+    #[test]
+    fn typed_form_exact_noop_update_has_no_plan_write_or_effect() {
+        let fixture = Fixture::new("form-resource-noop");
+        let cancellation = CancellationToken::new();
+        fixture.publish_form_add("Stable");
+        let owner_before = fs::read(&fixture.descriptor).unwrap();
+        let child = fixture.root.join("src/Catalogs/Editable/Forms/Stable.xml");
+        let child_before = fs::read(&child).unwrap();
+        let request = fixture.typed_edit(vec![MetaEditOperation::update(
+            MetaCollection::Forms,
+            None,
+            vec![MetaElementUpdateInput {
+                name: "Stable".into(),
+                comment: Some(String::new()),
+                ..MetaElementUpdateInput::default()
+            }],
+        )
+        .unwrap()]);
+        let prepared =
+            MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+                .unwrap();
+        assert!(!prepared.preview().changed);
+        assert!(prepared.preview().publication_plan.is_empty());
+
+        prepared.publish(&cancellation).unwrap();
+
+        assert_eq!(fs::read(&fixture.descriptor).unwrap(), owner_before);
+        assert_eq!(fs::read(child).unwrap(), child_before);
+    }
+
+    #[test]
+    fn typed_form_rename_rejects_payload_byte_and_topology_drift_without_partial_publish() {
+        for drift_kind in ["bytes", "topology"] {
+            let fixture = Fixture::new(&format!("form-resource-drift-{drift_kind}"));
+            let cancellation = CancellationToken::new();
+            fixture.publish_form_add("Old");
+            let old_root = fixture.root.join("src/Catalogs/Editable/Forms/Old");
+            let owner_before = fs::read(&fixture.descriptor).unwrap();
+            let request = fixture.typed_edit(vec![MetaEditOperation::update(
+                MetaCollection::Forms,
+                None,
+                vec![MetaElementUpdateInput {
+                    name: "Old".into(),
+                    new_name: Some("New".into()),
+                    ..MetaElementUpdateInput::default()
+                }],
+            )
+            .unwrap()]);
+            let prepared =
+                MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+                    .unwrap();
+            let external_path = if drift_kind == "bytes" {
+                let path = old_root.join("Ext/Form.xml");
+                fs::write(&path, b"<Form external=\"true\"/>").unwrap();
+                path
+            } else {
+                let path = old_root.join("Ext/External.bsl");
+                fs::write(&path, b"procedure External()\nendprocedure").unwrap();
+                path
+            };
+            let external = fs::read(&external_path).unwrap();
+
+            let failure = match prepared.publish(&cancellation) {
+                Ok(_) => panic!("{drift_kind} drift unexpectedly published"),
+                Err(failure) => failure,
+            };
+            assert_eq!(
+                failure.diagnostics[0].code,
+                MetaDiagnosticCode::ConcurrentModification
+            );
+            assert_eq!(fs::read(&external_path).unwrap(), external);
+            assert_eq!(fs::read(&fixture.descriptor).unwrap(), owner_before);
+            assert!(!fixture
+                .root
+                .join("src/Catalogs/Editable/Forms/New.xml")
+                .exists());
+            assert!(!fixture
+                .root
+                .join("src/Catalogs/Editable/Forms/New")
+                .exists());
+        }
+    }
+
+    #[test]
+    fn typed_form_rename_fault_rolls_back_to_exact_initial_tree_and_no_final_tree() {
+        let fixture = Fixture::new("form-resource-rename-rollback");
+        let cancellation = CancellationToken::new();
+        fixture.publish_form_add("Old");
+        let old_root = fixture.root.join("src/Catalogs/Editable/Forms/Old");
+        let old_descriptor = fixture.root.join("src/Catalogs/Editable/Forms/Old.xml");
+        fs::write(
+            old_root.join("Ext/Module.bsl"),
+            b"procedure Kept()\nendprocedure",
+        )
+        .unwrap();
+        let owner_before = fs::read(&fixture.descriptor).unwrap();
+        let descriptor_before = fs::read(&old_descriptor).unwrap();
+        let form_before = fs::read(old_root.join("Ext/Form.xml")).unwrap();
+        let module_before = fs::read(old_root.join("Ext/Module.bsl")).unwrap();
+        let request = fixture.typed_edit(vec![MetaEditOperation::update(
+            MetaCollection::Forms,
+            None,
+            vec![MetaElementUpdateInput {
+                name: "Old".into(),
+                new_name: Some("New".into()),
+                ..MetaElementUpdateInput::default()
+            }],
+        )
+        .unwrap()]);
+        let prepared =
+            MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+                .unwrap();
+
+        let failure = match with_commit_failpoint(CommitFailpoint::AfterObjectFiles, || {
+            prepared.publish(&cancellation)
+        }) {
+            Ok(_) => panic!("rename failpoint unexpectedly published"),
+            Err(failure) => failure,
+        };
+
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::ProviderUnavailable
+        );
+        assert_eq!(fs::read(&fixture.descriptor).unwrap(), owner_before);
+        assert_eq!(fs::read(old_descriptor).unwrap(), descriptor_before);
+        assert_eq!(
+            fs::read(old_root.join("Ext/Form.xml")).unwrap(),
+            form_before
+        );
+        assert_eq!(
+            fs::read(old_root.join("Ext/Module.bsl")).unwrap(),
+            module_before
+        );
+        assert!(!fixture
+            .root
+            .join("src/Catalogs/Editable/Forms/New.xml")
+            .exists());
+        assert!(!fixture
+            .root
+            .join("src/Catalogs/Editable/Forms/New")
+            .exists());
+    }
+
+    #[test]
+    fn typed_template_and_command_publish_complete_add_rename_remove_lifecycle() {
+        let fixture = Fixture::new("template-command-lifecycle");
+        let cancellation = CancellationToken::new();
+        let add = fixture.typed_edit(vec![
+            MetaEditOperation::add(
+                MetaCollection::Templates,
+                None,
+                vec![MetaElementInput::named("Print")],
+            )
+            .unwrap(),
+            MetaEditOperation::add(
+                MetaCollection::Commands,
+                None,
+                vec![MetaElementInput::named("Run")],
+            )
+            .unwrap(),
+        ]);
+        MetadataOperations::prepare_mutation(&add, &fixture.context, &cancellation)
+            .unwrap()
+            .publish(&cancellation)
+            .unwrap();
+        let object_root = fixture.root.join("src/Catalogs/Editable");
+        let template_content = object_root.join("Templates/Print/Ext/Template.xml");
+        let command_descriptor = object_root.join("Commands/Run.xml");
+        assert!(object_root.join("Templates/Print.xml").is_file());
+        assert!(template_content.is_file());
+        assert!(command_descriptor.is_file());
+        assert!(!object_root.join("Commands/Run").exists());
+        let command_module = object_root.join("Commands/Run/Ext/CommandModule.bsl");
+        fs::create_dir_all(command_module.parent().unwrap()).unwrap();
+        fs::write(&command_module, b"procedure Run()\nendprocedure").unwrap();
+        let template_bytes = fs::read(&template_content).unwrap();
+        let module_bytes = fs::read(&command_module).unwrap();
+
+        let rename = fixture.typed_edit(vec![
+            MetaEditOperation::update(
+                MetaCollection::Templates,
+                None,
+                vec![MetaElementUpdateInput {
+                    name: "Print".into(),
+                    new_name: Some("PrintNew".into()),
+                    ..MetaElementUpdateInput::default()
+                }],
+            )
+            .unwrap(),
+            MetaEditOperation::update(
+                MetaCollection::Commands,
+                None,
+                vec![MetaElementUpdateInput {
+                    name: "Run".into(),
+                    new_name: Some("RunNew".into()),
+                    ..MetaElementUpdateInput::default()
+                }],
+            )
+            .unwrap(),
+        ]);
+        let prepared =
+            MetadataOperations::prepare_mutation(&rename, &fixture.context, &cancellation).unwrap();
+        assert!(prepared
+            .validation_subject()
+            .resources
+            .iter()
+            .any(|resource| resource.bytes == template_bytes));
+        assert!(prepared
+            .validation_subject()
+            .resources
+            .iter()
+            .any(|resource| resource.bytes == module_bytes));
+        prepared.publish(&cancellation).unwrap();
+        assert!(!object_root.join("Templates/Print.xml").exists());
+        assert!(!object_root.join("Commands/Run.xml").exists());
+        assert_eq!(
+            fs::read(object_root.join("Templates/PrintNew/Ext/Template.xml")).unwrap(),
+            template_bytes
+        );
+        assert_eq!(
+            fs::read(object_root.join("Commands/RunNew/Ext/CommandModule.bsl")).unwrap(),
+            module_bytes
+        );
+
+        let remove = fixture.typed_edit(vec![
+            MetaEditOperation::remove(MetaCollection::Templates, None, vec!["PrintNew".into()])
+                .unwrap(),
+            MetaEditOperation::remove(MetaCollection::Commands, None, vec!["RunNew".into()])
+                .unwrap(),
+        ]);
+        MetadataOperations::prepare_mutation(&remove, &fixture.context, &cancellation)
+            .unwrap()
+            .publish(&cancellation)
+            .unwrap();
+        assert!(!object_root.join("Templates/PrintNew.xml").exists());
+        assert!(!object_root.join("Templates/PrintNew").exists());
+        assert!(!object_root.join("Commands/RunNew.xml").exists());
+        assert!(!object_root.join("Commands/RunNew").exists());
+    }
+
+    #[test]
     fn typed_relation_target_is_resolved_and_guarded_against_linked_drift() {
         let fixture = Fixture::new("relation-dependency-drift");
         let cancellation = CancellationToken::new();
@@ -399,6 +922,227 @@ mod tests {
             MetaDiagnosticCode::ConcurrentModification
         );
         assert_eq!(fs::read(&parent_path).unwrap(), external);
+    }
+
+    #[test]
+    fn typed_relation_dependencies_cover_unchanged_and_new_final_targets() {
+        let fixture = Fixture::new("relation-complete-final-graph");
+        let cancellation = CancellationToken::new();
+        let unchanged = fixture.add_object(MetadataKind::Catalog, "ParentA");
+        let added = fixture.add_object(MetadataKind::Catalog, "ParentB");
+        MetadataOperations::prepare_mutation(
+            &fixture.owners_request(RelationEditMode::Add, vec![unchanged.clone()]),
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap()
+        .publish(&cancellation)
+        .unwrap();
+
+        let prepared = MetadataOperations::prepare_mutation(
+            &fixture.owners_request(RelationEditMode::Add, vec![added.clone()]),
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap();
+        let dependencies = prepared
+            .validation_subject()
+            .resources
+            .iter()
+            .filter_map(|resource| match &resource.role {
+                MetadataResourceRole::Dependency { target } => Some(target.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(dependencies.contains(&unchanged.as_str()));
+        assert!(dependencies.contains(&added.as_str()));
+    }
+
+    #[test]
+    fn typed_relation_missing_unchanged_final_target_blocks_unrelated_edit_prepare() {
+        let fixture = Fixture::new("relation-unchanged-missing");
+        let cancellation = CancellationToken::new();
+        let unchanged = fixture.add_object(MetadataKind::Catalog, "Parent");
+        MetadataOperations::prepare_mutation(
+            &fixture.owners_request(RelationEditMode::Add, vec![unchanged]),
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap()
+        .publish(&cancellation)
+        .unwrap();
+        fs::remove_file(fixture.root.join("src/Catalogs/Parent.xml")).unwrap();
+
+        let failure = match MetadataOperations::prepare_mutation(
+            &fixture.edit("Comment", MetaPropertyValue::String("unrelated".into())),
+            &fixture.context,
+            &cancellation,
+        ) {
+            Ok(_) => panic!("missing unchanged relation target unexpectedly prepared"),
+            Err(failure) => failure,
+        };
+
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::TargetNotFound
+        );
+        assert_eq!(
+            failure.diagnostics[0].field.as_deref(),
+            Some("relations.owners[0]")
+        );
+    }
+
+    #[test]
+    fn typed_relation_unchanged_final_target_drift_aborts_unrelated_publish() {
+        let fixture = Fixture::new("relation-unchanged-drift");
+        let cancellation = CancellationToken::new();
+        let unchanged = fixture.add_object(MetadataKind::Catalog, "Parent");
+        MetadataOperations::prepare_mutation(
+            &fixture.owners_request(RelationEditMode::Add, vec![unchanged]),
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap()
+        .publish(&cancellation)
+        .unwrap();
+        let prepared = MetadataOperations::prepare_mutation(
+            &fixture.edit("Comment", MetaPropertyValue::String("unrelated".into())),
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap();
+        let parent_path = fixture.root.join("src/Catalogs/Parent.xml");
+        let mut external = fs::read(&parent_path).unwrap();
+        external.extend_from_slice(b"\n");
+        fs::write(&parent_path, &external).unwrap();
+
+        let failure = match prepared.publish(&cancellation) {
+            Ok(_) => panic!("unchanged relation target drift unexpectedly published"),
+            Err(failure) => failure,
+        };
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::ConcurrentModification
+        );
+        assert_eq!(fs::read(parent_path).unwrap(), external);
+    }
+
+    #[test]
+    fn typed_relation_remove_and_replace_guard_only_their_complete_final_graph() {
+        let cancellation = CancellationToken::new();
+
+        let remove_fixture = Fixture::new("relation-final-remove");
+        let removed = remove_fixture.add_object(MetadataKind::Catalog, "Removed");
+        let retained = remove_fixture.add_object(MetadataKind::Catalog, "Retained");
+        MetadataOperations::prepare_mutation(
+            &remove_fixture.owners_request(
+                RelationEditMode::Add,
+                vec![removed.clone(), retained.clone()],
+            ),
+            &remove_fixture.context,
+            &cancellation,
+        )
+        .unwrap()
+        .publish(&cancellation)
+        .unwrap();
+        let prepared = MetadataOperations::prepare_mutation(
+            &remove_fixture.owners_request(RelationEditMode::Remove, vec![removed.clone()]),
+            &remove_fixture.context,
+            &cancellation,
+        )
+        .unwrap();
+        let dependencies = prepared
+            .validation_subject()
+            .resources
+            .iter()
+            .filter_map(|resource| match &resource.role {
+                MetadataResourceRole::Dependency { target } => Some(target),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(!dependencies.contains(&&removed));
+        assert!(dependencies.contains(&&retained));
+
+        let replace_fixture = Fixture::new("relation-final-replace");
+        let replaced = replace_fixture.add_object(MetadataKind::Catalog, "Replaced");
+        let replacement = replace_fixture.add_object(MetadataKind::Catalog, "Replacement");
+        MetadataOperations::prepare_mutation(
+            &replace_fixture.owners_request(RelationEditMode::Add, vec![replaced.clone()]),
+            &replace_fixture.context,
+            &cancellation,
+        )
+        .unwrap()
+        .publish(&cancellation)
+        .unwrap();
+        let prepared = MetadataOperations::prepare_mutation(
+            &replace_fixture.owners_request(RelationEditMode::Replace, vec![replacement.clone()]),
+            &replace_fixture.context,
+            &cancellation,
+        )
+        .unwrap();
+        let dependencies = prepared
+            .validation_subject()
+            .resources
+            .iter()
+            .filter_map(|resource| match &resource.role {
+                MetadataResourceRole::Dependency { target } => Some(target),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(!dependencies.contains(&&replaced));
+        assert!(dependencies.contains(&&replacement));
+    }
+
+    #[test]
+    fn typed_relation_final_graph_deduplicates_remove_then_add_guards() {
+        let fixture = Fixture::new("relation-final-dedup");
+        let cancellation = CancellationToken::new();
+        let parent = fixture.add_object(MetadataKind::Catalog, "Parent");
+        MetadataOperations::prepare_mutation(
+            &fixture.owners_request(RelationEditMode::Add, vec![parent.clone()]),
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap()
+        .publish(&cancellation)
+        .unwrap();
+        let request = MetadataRequest::Edit(MetaEditRequest {
+            source_set: "main".into(),
+            metadata_path: fixture.target.clone(),
+            operations: vec![
+                MetaEditOperation::edit_relations(
+                    MetaRelation::Owners,
+                    RelationEditMode::Remove,
+                    vec![MetadataReference {
+                        metadata_path: parent.clone(),
+                    }],
+                )
+                .unwrap(),
+                MetaEditOperation::edit_relations(
+                    MetaRelation::Owners,
+                    RelationEditMode::Add,
+                    vec![MetadataReference {
+                        metadata_path: parent.clone(),
+                    }],
+                )
+                .unwrap(),
+            ],
+            dry_run: false,
+        });
+
+        let prepared =
+            MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+                .unwrap();
+        let count = prepared
+            .validation_subject()
+            .resources
+            .iter()
+            .filter(|resource| {
+                matches!(&resource.role, MetadataResourceRole::Dependency { target } if target == &parent)
+            })
+            .count();
+        assert_eq!(count, 1);
     }
 
     #[test]
