@@ -200,7 +200,9 @@ pub(crate) fn normalize_path_identity(path: &Path) -> Result<PathBuf, String> {
 
 pub(crate) fn source_generation(source_root: &Path) -> u64 {
     let mut hasher = DefaultHasher::new();
-    hash_source_path(&mut hasher, source_root, 0);
+    let normalized_root =
+        normalize_path_identity(source_root).unwrap_or_else(|_| source_root.to_path_buf());
+    hash_source_path(&mut hasher, &normalized_root, 0);
     hasher.finish()
 }
 
@@ -435,6 +437,23 @@ mod tests {
         )
         .unwrap();
         assert_ne!(source_generation(&source_root), baseline);
+        cleanup(&context);
+    }
+
+    #[test]
+    fn source_generation_uses_normalized_source_root_identity() {
+        let context = fixture(&[("main", "CONFIGURATION", "src")]);
+        let source_root = context.workspace_root.join("src");
+        let module = source_root.join("CommonModules/SmokeModule.bsl");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        fs::write(&module, "Процедура Тест() Экспорт\nКонецПроцедуры\n").unwrap();
+        let equivalent_root = source_root.join("CommonModules").join("..");
+
+        assert_eq!(
+            source_generation(&source_root),
+            source_generation(&equivalent_root),
+            "equivalent source-root spellings must identify one source generation"
+        );
         cleanup(&context);
     }
 
