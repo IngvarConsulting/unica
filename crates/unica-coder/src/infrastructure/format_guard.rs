@@ -35,7 +35,7 @@ use crate::infrastructure::native_operations::interface::{
 };
 use crate::infrastructure::native_operations::meta::{
     meta_remove_reference_xml_dependency_paths, meta_remove_subsystem_dependency_paths,
-    meta_remove_type_plural, resolve_meta_edit_object_path, resolve_meta_info_path,
+    meta_remove_type_plural, resolve_meta_edit_object_path,
 };
 use crate::infrastructure::native_operations::mxl::resolve_mxl_validate_path;
 use crate::infrastructure::native_operations::role::role_read_format_dependency_paths;
@@ -263,7 +263,7 @@ fn effective_format_paths_with_planned_outputs(
 ) -> Result<Vec<PathBuf>, FormatGuardError> {
     let mut paths = if matches!(
         descriptor.operation,
-        "cf-init" | "epf-init" | "erf-init" | "support-edit" | "meta-validate"
+        "cf-init" | "epf-init" | "erf-init" | "support-edit"
     ) {
         Vec::new()
     } else {
@@ -996,9 +996,6 @@ fn handler_resolved_format_paths(
             "meta-info" => resolve_metadata_object_descriptor(args, context)
                 .ok()
                 .map(|(_, path)| path),
-            "meta-validate" => {
-                raw.and_then(|path| resolve_meta_info_path(absolutize(path, &context.cwd)).ok())
-            }
             "form-add" => raw
                 .and_then(|path| resolve_form_add_object_path(absolutize(path, &context.cwd)).ok()),
             "form-info" | "form-validate" => {

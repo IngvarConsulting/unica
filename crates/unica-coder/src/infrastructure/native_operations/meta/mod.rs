@@ -128,7 +128,7 @@ pub(crate) use edit::{
 pub(crate) use info::{analyze_meta_info_with_data, read_typed_meta_info, resolve_meta_info_path};
 #[cfg(test)]
 pub(crate) use info::{with_registrar_processing_hook, RegistrarProcessingPhase};
-pub(crate) use publisher::{fresh_meta_compile_uuid, prepare_meta_add, prepare_meta_remove};
+pub(crate) use publisher::{fresh_metadata_uuid, prepare_meta_add, prepare_meta_remove};
 pub(crate) use remove::{
     meta_remove_reference_xml_dependency_paths, meta_remove_subsystem_dependency_paths,
     meta_remove_type_plural, remove_metadata_child_text, remove_metadata_child_text_lxml,

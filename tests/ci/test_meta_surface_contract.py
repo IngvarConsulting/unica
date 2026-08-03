@@ -13,6 +13,8 @@ TOOL_CONTRACTS = REPO_ROOT / "crates/unica-coder/src/application/tool_contracts.
 OPERATION_DESCRIPTORS = (
     REPO_ROOT / "crates/unica-coder/src/application/operation_descriptors.rs"
 )
+META_RUNTIME = REPO_ROOT / "crates/unica-coder/src/infrastructure/native_operations/meta"
+FORMAT_GUARD = REPO_ROOT / "crates/unica-coder/src/infrastructure/format_guard.rs"
 
 
 def rust_function(source: str, signature: str) -> str:
@@ -59,6 +61,52 @@ def registered_tool_blocks() -> dict[str, str]:
 
 
 class MetaSurfaceContractTests(unittest.TestCase):
+    def test_live_meta_runtime_has_no_file_or_string_dsl_grammar(self) -> None:
+        sources = [
+            META_RUNTIME / "edit.rs",
+            META_RUNTIME / "template_catalog.rs",
+            META_RUNTIME / "xml_model.rs",
+        ]
+        retired_grammar = {
+            "module-wide dead-code suppression": re.compile(
+                r"^#!\[allow\([^\]]*dead_code", re.MULTILINE
+            ),
+            "file selector": re.compile(r"\b(?:DefinitionFile|JsonPath)\b"),
+            "batch separator": re.compile(re.escape('.split(";;")')),
+            "attribute pipe flags": re.compile(re.escape("splitn(2, '|')")),
+            "string type grammar": re.compile(re.escape('strip_prefix("String(")')),
+            "number type grammar": re.compile(re.escape('strip_prefix("Number(")')),
+            "string operation value": re.compile(r"requires Value|Name: Type"),
+            "definition handlers": re.compile(r"\bmeta_edit_definition_[a-z0-9_]+"),
+            "legacy compile helper": re.compile(r"\bmeta_compile_[a-z0-9_]+"),
+            "legacy JSON template projection": re.compile(
+                r"fn get\(&self, key: &str\) -> Option<&Value>"
+            ),
+            "legacy JSON customization helpers": re.compile(
+                r"\b(?:bool_arg_from_json|meta_compile_string_list|"
+                r"normalize_meta_enum_value)\b"
+            ),
+        }
+
+        violations: list[str] = []
+        for path in sources:
+            source = path.read_text(encoding="utf-8")
+            for contract, pattern in retired_grammar.items():
+                if pattern.search(source):
+                    violations.append(f"{path.relative_to(REPO_ROOT)}: {contract}")
+        format_guard = FORMAT_GUARD.read_text(encoding="utf-8")
+        if '"meta-validate"' in format_guard:
+            violations.append(
+                f"{FORMAT_GUARD.relative_to(REPO_ROOT)}: retired meta-validate route"
+            )
+
+        self.assertEqual(
+            violations,
+            [],
+            "live Meta runtime still contains the retired file/string grammar:\n"
+            + "\n".join(violations),
+        )
+
     def test_tracked_tree_has_no_executable_legacy_meta_dsl_bridge(self) -> None:
         tracked = subprocess.run(
             ["git", "ls-files", "-z"],

@@ -1587,7 +1587,7 @@ fn compile_role_internal(
         if config_owner_exists {
             require_role_configuration_owner_validation(&config_xml_path, context)?;
         }
-        let uid = fresh_meta_compile_uuid();
+        let uid = fresh_metadata_uuid();
         let metadata_xml = role_metadata_xml(&role_name, &synonym, &comment, &format_version, &uid);
         validate_compiled_role_metadata_xml(&metadata_xml, &role_name, &format_version)?;
         validate_compiled_role_rights_xml(&rights_xml, &format_version)?;

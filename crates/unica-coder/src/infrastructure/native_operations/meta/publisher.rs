@@ -742,7 +742,7 @@ fn failure_message(failure: &MetaFailure) -> String {
         .unwrap_or_else(|| "metadata source revalidation failed".to_string())
 }
 
-pub(crate) fn fresh_meta_compile_uuid() -> String {
+pub(crate) fn fresh_metadata_uuid() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
