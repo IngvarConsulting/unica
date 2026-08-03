@@ -81,6 +81,26 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
         first_rlm.descendant_pid,
         Duration::from_secs(2)
     ));
+
+    // The SDK drops the response of a cancelled request (MCP spec, ADR-0013);
+    // cancellation itself is proven by the RLM process-tree death above.
+    let (responses, response_times) =
+        mcp.receive_ids_timed(&[3, 4], RESPONSE_DEADLINE, ping_started);
+    assert!(response_times[&4] < Duration::from_secs(2));
+    assert_meta_info_data(&responses[&3]);
+
+    // meta.info is best-effort: it may return local metadata while the related
+    // RLM section is unavailable, so it cannot prove that a persistent RLM
+    // process restarted after cancellation. A direct code.search call invokes
+    // that provider and therefore drives the recovery assertion below.
+    mcp.send(tool_call(
+        11,
+        "unica.code.search",
+        json!({
+            "cwd": fixture.workspace,
+            "query": "Procedure"
+        }),
+    ));
     let restarted_rlm = fixture.wait_for_rlm_starts(2, RESPONSE_DEADLINE);
     assert_ne!(restarted_rlm[0].pid, restarted_rlm[1].pid);
     assert_eq!(
@@ -90,13 +110,11 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
             .collect::<Vec<_>>(),
         vec![1, 2]
     );
-
-    // The SDK drops the response of a cancelled request (MCP spec, ADR-0013);
-    // cancellation itself is proven by the RLM process-tree death above.
-    let (responses, response_times) =
-        mcp.receive_ids_timed(&[3, 4], RESPONSE_DEADLINE, ping_started);
-    assert!(response_times[&4] < Duration::from_secs(2));
-    assert_meta_info_data(&responses[&3]);
+    let recovery_search = mcp.receive_ids(&[11], RESPONSE_DEADLINE);
+    assert_tool_ok(
+        &recovery_search[&11],
+        "provider-neutral code intelligence",
+    );
     let session_records = fixture.log_records();
     assert_eq!(
         session_records
