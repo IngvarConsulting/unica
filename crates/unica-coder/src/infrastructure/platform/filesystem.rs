@@ -170,6 +170,140 @@ pub(crate) fn file_identity(_file: &fs::File) -> io::Result<FileIdentity> {
     ))
 }
 
+#[cfg(unix)]
+fn open_unix_child(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+    flags: libc::c_int,
+) -> io::Result<fs::File> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Component;
+
+    let mut components = Path::new(name).components();
+    if !matches!(components.next(), Some(Component::Normal(component)) if component == name)
+        || components.next().is_some()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "child name must be exactly one normal relative component",
+        ));
+    }
+    let name = CString::new(name.as_bytes())?;
+    // SAFETY: parent owns a live descriptor, name is a NUL-terminated single component, and a
+    // successful openat result transfers one newly owned descriptor to this function.
+    let descriptor = unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), flags) };
+    if descriptor < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        // SAFETY: descriptor is a newly owned successful openat result.
+        Ok(unsafe { fs::File::from_raw_fd(descriptor) })
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn open_directory_nofollow(path: &Path) -> io::Result<fs::File> {
+    use std::ffi::CString;
+    use std::os::fd::FromRawFd;
+    use std::os::unix::ffi::OsStrExt;
+
+    let path = CString::new(path.as_os_str().as_bytes())?;
+    // This ambient entry point is used only for a filesystem namespace root. Callers which open
+    // an arbitrary absolute path walk its components with open_directory_child_nofollow.
+    let descriptor = unsafe {
+        libc::open(
+            path.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if descriptor < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        // SAFETY: descriptor is a newly owned successful open result.
+        Ok(unsafe { fs::File::from_raw_fd(descriptor) })
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn open_directory_child_nofollow(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    open_unix_child(
+        parent,
+        name,
+        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+    )
+}
+
+#[cfg(unix)]
+pub(crate) fn open_regular_child_nofollow(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    let file = open_unix_child(
+        parent,
+        name,
+        libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+    )?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "entry is not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OpenedChildKind {
+    Directory,
+    RegularFile,
+    #[allow(
+        dead_code,
+        reason = "Unix rejects links at open; Windows classifies reparse handles"
+    )]
+    ReparsePoint,
+    Unsupported,
+}
+
+#[cfg(unix)]
+pub(crate) fn opened_child_kind(file: &fs::File) -> io::Result<OpenedChildKind> {
+    let file_type = file.metadata()?.file_type();
+    if file_type.is_dir() {
+        Ok(OpenedChildKind::Directory)
+    } else if file_type.is_file() {
+        Ok(OpenedChildKind::RegularFile)
+    } else {
+        Ok(OpenedChildKind::Unsupported)
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn open_any_child_nofollow(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<(fs::File, OpenedChildKind)> {
+    let file = open_unix_child(
+        parent,
+        name,
+        libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+    )?;
+    let kind = opened_child_kind(&file)?;
+    Ok((file, kind))
+}
+
+#[cfg(unix)]
+pub(crate) fn read_directory_names(directory: &fs::File) -> io::Result<Vec<std::ffi::OsString>> {
+    let mut names = cap_primitives::fs::read_base_dir(directory)?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect::<io::Result<Vec<_>>>()?;
+    names.sort();
+    Ok(names)
+}
+
 #[cfg(any(test, windows))]
 fn windows_api_path_from_utf16(mut path: Vec<u16>, absolute: bool) -> Vec<u16> {
     const BACKSLASH: u16 = b'\\' as u16;

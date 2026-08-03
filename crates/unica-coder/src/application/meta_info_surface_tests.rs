@@ -1,9 +1,17 @@
 use super::{OperationResult, UnicaApplication};
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use uuid::Uuid;
 
 struct TempWorkspace(PathBuf);
+
+fn process_cwd_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 impl TempWorkspace {
     fn new(label: &str) -> Self {
@@ -28,6 +36,7 @@ impl Drop for TempWorkspace {
 }
 
 fn create_info_workspace(label: &str) -> TempWorkspace {
+    let _cwd_lock = process_cwd_lock();
     let workspace = TempWorkspace::new(label);
     let initialized = UnicaApplication::new()
         .call_tool(
@@ -109,6 +118,7 @@ fn call_info_path(
         ),
     ]);
     args.extend(extra);
+    let _cwd_lock = process_cwd_lock();
     let previous = std::env::current_dir().unwrap();
     std::env::set_current_dir(workspace).unwrap();
     let result = UnicaApplication::new().call_unregistered_meta_info_for_integration_tests(&args);
@@ -427,17 +437,59 @@ fn meta_info_private_closed_read_accepts_complete_registrar_evidence() {
 }
 
 #[test]
-fn meta_info_private_closed_read_reports_registrar_scan_unavailable() {
+fn meta_info_private_closed_read_treats_absent_and_empty_documents_as_complete_empty_graphs() {
     let files = [
         "Configuration.xml",
         "InformationRegisters/SubordinateRegister.xml",
         "Languages/Русский.xml",
     ];
-    let workspace = fixture_workspace(
-        "registrar-scan-unavailable",
+    let absent = fixture_workspace(
+        "registrar-documents-absent",
         "meta-validate-subordinate-register",
         &files,
     );
+    let absent_result =
+        call_info_path(absent.path(), "InformationRegister.SubordinateRegister", []);
+    let empty = fixture_workspace(
+        "registrar-documents-empty",
+        "meta-validate-subordinate-register",
+        &files,
+    );
+    std::fs::create_dir_all(empty.path().join("src/Documents")).unwrap();
+    let empty_result = call_info_path(empty.path(), "InformationRegister.SubordinateRegister", []);
+
+    for (result, workspace) in [
+        (&absent_result, absent.path()),
+        (&empty_result, empty.path()),
+    ] {
+        assert!(!result.ok);
+        assert_eq!(result.data.as_ref().unwrap()["name"], "SubordinateRegister");
+        assert_eq!(
+            result.data.as_ref().unwrap()["validation"]["status"],
+            "failed"
+        );
+        assert_logical_diagnostic(result, workspace, "validation_failed");
+        assert_no_error_diagnostic(result, "provider_unavailable");
+    }
+}
+
+#[test]
+fn meta_info_private_closed_read_registrar_scan_enforces_byte_cap() {
+    let files = [
+        "Configuration.xml",
+        "Documents/Регистратор.xml",
+        "InformationRegisters/SubordinateRegister.xml",
+        "Languages/Русский.xml",
+    ];
+    let workspace = fixture_workspace(
+        "registrar-byte-cap",
+        "meta-validate-subordinate-register",
+        &files,
+    );
+    std::fs::File::create(workspace.path().join("src/Documents/000-Oversized.xml"))
+        .unwrap()
+        .set_len(64 * 1024 * 1024 + 1)
+        .unwrap();
 
     let result = call_info_path(
         workspace.path(),
@@ -446,7 +498,6 @@ fn meta_info_private_closed_read_reports_registrar_scan_unavailable() {
     );
 
     assert!(!result.ok);
-    assert_eq!(result.data.as_ref().unwrap()["name"], "SubordinateRegister");
     assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
     assert_no_error_diagnostic(&result, "validation_failed");
 }

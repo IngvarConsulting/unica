@@ -585,7 +585,7 @@ fn has_dependency(subject: &MetadataValidationSubject, expected: &str) -> bool {
     })
 }
 
-fn document_registers(bytes: &[u8], expected: &str) -> bool {
+pub(super) fn document_registers(bytes: &[u8], expected: &str) -> bool {
     let Ok((_, document)) = parse_metadata_image(bytes) else {
         return false;
     };

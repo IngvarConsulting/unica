@@ -32,7 +32,12 @@ impl MetadataOperations {
             context,
             cancellation,
         )?;
-        let (local, validation_subject) = read_typed_meta_info(&resolved, &request.metadata_path)?;
+        let (local, validation_subject) = read_typed_meta_info(
+            &resolved,
+            &request.metadata_path,
+            ProviderDeadline::new(std::time::Instant::now() + std::time::Duration::from_secs(5)),
+            cancellation,
+        )?;
         Ok(MetadataRead {
             local,
             validation_subject,

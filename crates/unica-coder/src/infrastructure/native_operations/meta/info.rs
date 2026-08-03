@@ -6,6 +6,8 @@ use crate::application::ports::{
     MetadataValidationSubject,
 };
 use crate::application::AdapterOutcome;
+use crate::domain::cancellation::CancellationToken;
+use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::metadata::{
     MetaCollectionsData, MetaDiagnostic, MetaDiagnosticCode, MetaElementData, MetaPropertyData,
     MetaPropertyValue, MetaSupportStatus, MetadataKind, MetadataReference, METADATA_PROPERTY_SPECS,
@@ -16,7 +18,16 @@ use crate::domain::workspace::WorkspaceContext;
 use roxmltree::Document;
 use serde_json::{Map, Value};
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
+
+use crate::infrastructure::platform::secure_read::{
+    list_root_relative_regular_files, read_root_relative_regular_file_checked, SecureTreeLimits,
+};
+
+const REGISTRAR_SCAN_MAX_ENTRIES: usize = 20_000;
+const REGISTRAR_SCAN_MAX_FILES: usize = 20_000;
+const REGISTRAR_SCAN_MAX_BYTES: usize = 64 * 1024 * 1024;
 
 use super::super::common::{
     int_arg, object_support_state, read_utf8_sig, resolve_metadata_object_descriptor,
@@ -186,6 +197,8 @@ pub(crate) struct MetaInfoExecution {
 pub(crate) fn read_typed_meta_info(
     resolved: &ResolvedMetadataObject,
     target: &MetadataAddress,
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
 ) -> Result<(MetaLocalInfo, MetadataValidationSubject), MetaFailure> {
     let text = std::str::from_utf8(&resolved.descriptor_preimage).map_err(|_| {
         MetaFailure::from(
@@ -291,7 +304,7 @@ pub(crate) fn read_typed_meta_info(
         Some(&resolved.source_root),
     );
     let (registrar_resources, registrar_evidence) =
-        typed_registrar_document_images(resolved, kind, properties, target);
+        typed_registrar_document_images(resolved, kind, properties, target, deadline, cancellation);
     validation_resources.extend(registrar_resources);
     let child_resources = super::edit::plan_typed_child_resources(
         &resolved.descriptor_path,
@@ -316,6 +329,8 @@ fn typed_registrar_document_images(
     kind: MetadataKind,
     properties: Option<roxmltree::Node<'_, '_>>,
     target: &MetadataAddress,
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
 ) -> (Vec<MetadataResourceImage>, MetadataEvidenceAvailability) {
     let reads_registrars = matches!(
         kind,
@@ -330,47 +345,64 @@ fn typed_registrar_document_images(
     if !reads_registrars {
         return (Vec::new(), MetadataEvidenceAvailability::Complete);
     }
-    let documents_dir = resolved.source_root.join("Documents");
-    let entries = match fs::read_dir(&documents_dir) {
+    let checkpoint = || registrar_scan_checkpoint(deadline, cancellation);
+    let entries = match list_root_relative_regular_files(
+        &resolved.source_root,
+        Path::new("Documents"),
+        SecureTreeLimits {
+            maximum_depth: 0,
+            maximum_entries: REGISTRAR_SCAN_MAX_ENTRIES,
+            maximum_files: REGISTRAR_SCAN_MAX_FILES,
+        },
+        |_| false,
+        |path| path.extension().and_then(|extension| extension.to_str()) == Some("xml"),
+        checkpoint,
+    ) {
         Ok(entries) => entries,
         Err(_) => {
             return registrar_evidence_unavailable(
                 target,
-                "registrar evidence directory is unavailable",
+                "registrar evidence cannot be scanned completely",
             )
         }
     };
-    let mut entries = match entries.collect::<Result<Vec<_>, _>>() {
-        Ok(entries) => entries,
-        Err(_) => {
-            return registrar_evidence_unavailable(
-                target,
-                "registrar evidence directory cannot be scanned completely",
-            )
-        }
-    };
-    entries.sort_by_key(|entry| entry.file_name());
+    if entries.start_missing {
+        return (Vec::new(), MetadataEvidenceAvailability::Complete);
+    }
     let mut resources = Vec::new();
-    for entry in entries {
-        let path = entry.path();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("xml") {
-            continue;
-        }
-        match entry.file_type() {
-            Ok(file_type) if file_type.is_file() && !file_type.is_symlink() => {}
-            _ => {
+    let mut total_bytes = 0usize;
+    let register_reference = target.as_str().to_string();
+    for entry in entries.files {
+        let remaining = match REGISTRAR_SCAN_MAX_BYTES.checked_sub(total_bytes) {
+            Some(remaining) => remaining,
+            None => {
                 return registrar_evidence_unavailable(
                     target,
-                    "registrar evidence contains an unreadable candidate",
+                    "registrar evidence exceeds the byte limit",
                 )
             }
-        }
-        let bytes = match fs::read(path) {
-            Ok(bytes) => bytes,
+        };
+        let bytes = match read_root_relative_regular_file_checked(
+            &resolved.source_root,
+            &resolved.source_root.join(&entry.relative_path),
+            remaining,
+            || registrar_scan_checkpoint(deadline, cancellation),
+            |_| {},
+        ) {
+            Ok(read) => read.bytes,
             Err(_) => {
                 return registrar_evidence_unavailable(
                     target,
                     "registrar evidence candidate cannot be read",
+                )
+            }
+        };
+        total_bytes = match total_bytes.checked_add(bytes.len()) {
+            Some(total) if total <= REGISTRAR_SCAN_MAX_BYTES => total,
+            _ => {
+                return registrar_evidence_unavailable(
+                    target,
+                    "registrar evidence exceeds the byte limit",
                 )
             }
         };
@@ -395,14 +427,35 @@ fn typed_registrar_document_images(
                 )
             }
         };
-        resources.push(MetadataResourceImage {
-            role: MetadataResourceRole::Dependency {
-                target: dependency_target,
-            },
-            bytes,
-        });
+        if super::validation::document_registers(&bytes, &register_reference) {
+            resources.push(MetadataResourceImage {
+                role: MetadataResourceRole::Dependency {
+                    target: dependency_target,
+                },
+                bytes,
+            });
+        }
     }
     (resources, MetadataEvidenceAvailability::Complete)
+}
+
+pub(super) fn registrar_scan_checkpoint(
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+) -> io::Result<()> {
+    if cancellation.is_cancelled() {
+        Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "registrar evidence scan was cancelled",
+        ))
+    } else if deadline.remaining().is_zero() {
+        Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "registrar evidence scan deadline elapsed",
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 fn registrar_evidence_unavailable(

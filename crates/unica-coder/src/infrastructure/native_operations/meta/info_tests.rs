@@ -1,11 +1,15 @@
 #![allow(dead_code, unused_imports)]
 
+use crate::domain::cancellation::CancellationToken;
+use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::workspace::WorkspaceContext;
 use serde_json::{json, Map, Value};
 use std::fs;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use super::info::{analyze_meta_info, analyze_meta_info_with_data, typed_elements};
+use super::info::{
+    analyze_meta_info, analyze_meta_info_with_data, registrar_scan_checkpoint, typed_elements,
+};
 use super::xml_model::meta_info_child;
 
 fn workspace(name: &str) -> WorkspaceContext {
@@ -257,4 +261,30 @@ fn meta_info_requires_a_source_set() {
         outcome.errors
     );
     let _ = fs::remove_dir_all(&context.workspace_root);
+}
+
+#[test]
+fn registrar_scan_checkpoint_distinguishes_deadline_and_cancellation() {
+    let active = CancellationToken::new();
+    assert!(registrar_scan_checkpoint(
+        ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
+        &active,
+    )
+    .is_ok());
+
+    let timeout = registrar_scan_checkpoint(
+        ProviderDeadline::new(Instant::now() - Duration::from_millis(1)),
+        &active,
+    )
+    .unwrap_err();
+    assert_eq!(timeout.kind(), std::io::ErrorKind::TimedOut);
+
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let cancellation = registrar_scan_checkpoint(
+        ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
+        &cancelled,
+    )
+    .unwrap_err();
+    assert_eq!(cancellation.kind(), std::io::ErrorKind::Interrupted);
 }

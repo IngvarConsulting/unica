@@ -10,6 +10,9 @@ use crate::domain::metadata::{
 };
 use crate::domain::metadata::{MetaProfileResult, MetaProfileSection};
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::platform::secure_read::{
+    list_root_relative_regular_files, read_root_relative_regular_file_checked, SecureTreeLimits,
+};
 use crate::infrastructure::workspace_index::IndexReadiness;
 use crate::infrastructure::workspace_services::{
     WorkspaceRlmOperation, WorkspaceServiceManager, WorkspaceServiceRlmOutput,
@@ -17,8 +20,7 @@ use crate::infrastructure::workspace_services::{
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::fs;
-use std::io::Read;
+use std::io;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -27,7 +29,7 @@ const RELATED_READINESS_SETTLE_LIMIT: Duration = Duration::from_millis(500);
 const RELATED_READINESS_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const RELATED_SOURCE_MAX_FILES: usize = 20_000;
 const RELATED_SOURCE_MAX_BYTES: u64 = 64 * 1024 * 1024;
-const RELATED_SOURCE_READ_BUFFER: usize = 64 * 1024;
+const RELATED_SOURCE_MAX_DEPTH: usize = 256;
 
 /// Opaque identity of the exact relevant source paths and bytes observed by a
 /// typed related-info read. It is deliberately not serializable.
@@ -397,83 +399,51 @@ fn related_source_content_snapshot(
     settle_until: Instant,
     cancellation: &CancellationToken,
 ) -> Result<WorkspaceSourceSnapshot, ()> {
-    ensure_snapshot_budget(deadline, settle_until, cancellation)?;
-    let root_metadata = fs::symlink_metadata(source_root).map_err(|_| ())?;
-    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+    let checkpoint = || {
+        ensure_snapshot_budget(deadline, settle_until, cancellation)
+            .map_err(|()| io::Error::new(io::ErrorKind::Interrupted, "snapshot interrupted"))
+    };
+    let files = list_root_relative_regular_files(
+        source_root,
+        Path::new(""),
+        SecureTreeLimits {
+            maximum_depth: RELATED_SOURCE_MAX_DEPTH,
+            maximum_entries: usize::MAX,
+            maximum_files: RELATED_SOURCE_MAX_FILES,
+        },
+        |path| path.file_name().and_then(|name| name.to_str()) != Some(".build"),
+        is_related_source_file,
+        checkpoint,
+    )
+    .map_err(|_| ())?;
+    if files.start_missing {
         return Err(());
     }
-
-    let mut directories = vec![source_root.to_path_buf()];
-    let mut files = Vec::new();
-    while let Some(directory) = directories.pop() {
-        ensure_snapshot_budget(deadline, settle_until, cancellation)?;
-        let entries = fs::read_dir(&directory)
-            .map_err(|_| ())?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| ())?;
-        for entry in entries {
-            ensure_snapshot_budget(deadline, settle_until, cancellation)?;
-            let path = entry.path();
-            let file_type = entry.file_type().map_err(|_| ())?;
-            if file_type.is_symlink() {
-                return Err(());
-            }
-            if file_type.is_dir() {
-                if entry.file_name() != ".build" {
-                    directories.push(path);
-                }
-                continue;
-            }
-            if !is_related_source_file(&path) {
-                continue;
-            }
-            if !file_type.is_file() {
-                return Err(());
-            }
-            let relative = path.strip_prefix(source_root).map_err(|_| ())?;
-            let logical_path = relative
-                .components()
-                .map(|component| component.as_os_str().to_str().ok_or(()))
-                .collect::<Result<Vec<_>, _>>()?
-                .join("/");
-            files.push((logical_path, path));
-            if files.len() > RELATED_SOURCE_MAX_FILES {
-                return Err(());
-            }
-        }
-    }
-    files.sort_by(|left, right| left.0.cmp(&right.0));
 
     let mut total_bytes = 0_u64;
     let mut hasher = Sha256::new();
     hasher.update(b"unica-related-source-content-v1");
-    for (logical_path, path) in files {
+    for entry in files.files {
         ensure_snapshot_budget(deadline, settle_until, cancellation)?;
-        let metadata = fs::symlink_metadata(&path).map_err(|_| ())?;
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
-            return Err(());
-        }
-        total_bytes = total_bytes.checked_add(metadata.len()).ok_or(())?;
-        if total_bytes > RELATED_SOURCE_MAX_BYTES {
-            return Err(());
-        }
-        let mut file = fs::File::open(&path).map_err(|_| ())?;
-        let mut bytes = Vec::with_capacity(metadata.len().try_into().map_err(|_| ())?);
-        let mut buffer = [0_u8; RELATED_SOURCE_READ_BUFFER];
-        loop {
-            ensure_snapshot_budget(deadline, settle_until, cancellation)?;
-            let read = file.read(&mut buffer).map_err(|_| ())?;
-            if read == 0 {
-                break;
-            }
-            bytes.extend_from_slice(&buffer[..read]);
-            if bytes.len() as u64 > RELATED_SOURCE_MAX_BYTES {
-                return Err(());
-            }
-        }
-        if bytes.len() as u64 != metadata.len() {
-            return Err(());
-        }
+        let logical_path = entry.logical_path;
+        let remaining = RELATED_SOURCE_MAX_BYTES
+            .checked_sub(total_bytes)
+            .ok_or(())?;
+        let maximum_bytes = usize::try_from(remaining).map_err(|_| ())?;
+        let read = read_root_relative_regular_file_checked(
+            source_root,
+            &source_root.join(&entry.relative_path),
+            maximum_bytes,
+            || {
+                ensure_snapshot_budget(deadline, settle_until, cancellation).map_err(|()| {
+                    io::Error::new(io::ErrorKind::Interrupted, "snapshot interrupted")
+                })
+            },
+            |_| {},
+        )
+        .map_err(|_| ())?;
+        let bytes = read.bytes;
+        total_bytes = total_bytes.checked_add(bytes.len() as u64).ok_or(())?;
         hasher.update((logical_path.len() as u64).to_le_bytes());
         hasher.update(logical_path.as_bytes());
         hasher.update((bytes.len() as u64).to_le_bytes());
@@ -922,6 +892,16 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
+
+    fn secure_temp_root(label: &str) -> PathBuf {
+        std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!(
+                "{label}-{}-{}",
+                std::process::id(),
+                uuid::Uuid::new_v4()
+            ))
+    }
 
     #[test]
     fn a_definition_keeps_every_field_the_helper_reported() {
@@ -1393,11 +1373,7 @@ mod tests {
 
     #[test]
     fn adapter_routes_definition_through_rlm_client() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-rlm-navigation-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
+        let root = secure_temp_root("unica-rlm-navigation");
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(
             root.join("v8project.yaml"),
@@ -1704,11 +1680,7 @@ mod tests {
 
     #[test]
     fn metadata_related_never_marks_a_changed_real_source_snapshot_current() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-related-generation-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
+        let root = secure_temp_root("unica-related-generation");
         let source_root = root.join("src");
         std::fs::create_dir_all(source_root.join("CommonModules/Test/Ext")).unwrap();
         let source_file = source_root.join("CommonModules/Test/Ext/Module.bsl");
@@ -1753,11 +1725,7 @@ mod tests {
 
     #[test]
     fn metadata_related_does_not_claim_current_for_an_oversized_source_corpus() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-related-oversized-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
+        let root = secure_temp_root("unica-related-oversized");
         let source_root = root.join("src");
         std::fs::create_dir_all(&source_root).unwrap();
         std::fs::File::create(source_root.join("Oversized.bsl"))
@@ -1812,11 +1780,7 @@ mod tests {
     fn metadata_related_does_not_claim_current_through_a_symlinked_source_subtree() {
         use std::os::unix::fs::symlink;
 
-        let root = std::env::temp_dir().join(format!(
-            "unica-related-symlink-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
+        let root = secure_temp_root("unica-related-symlink");
         let source_root = root.join("src");
         let outside = root.join("outside");
         std::fs::create_dir_all(&source_root).unwrap();
