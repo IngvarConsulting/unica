@@ -170,21 +170,9 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
         logical_error["data"]["related"]["modules"]["status"],
         "unavailable"
     );
-    mcp.send(tool_call(
-        9,
-        "unica.meta.info",
-        json!({
-            "sourceSet": "main",
-            "metadataPath": "Catalog.Test",
-            "sections": ["modules"]
-        }),
-    ));
-    let after_logical_error = mcp.receive_ids(&[9], RESPONSE_DEADLINE);
-    assert_meta_info_data(&after_logical_error[&9]);
-    assert_eq!(
-        tool_operation(&after_logical_error[&9])["data"]["related"]["modules"]["status"],
-        "ready"
-    );
+    // meta.info is a best-effort observer and does not promise to recover an
+    // unavailable RLM provider. Drive recovery through the direct provider
+    // contract before asking meta.info to observe the recovered session.
     mcp.send(tool_call(
         7,
         "unica.code.search",
@@ -204,6 +192,21 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
             .map(|section| section["provider"].as_str().unwrap())
             .collect::<Vec<_>>(),
         vec!["rlm", "bsl-analyzer", "git-grep"]
+    );
+    mcp.send(tool_call(
+        9,
+        "unica.meta.info",
+        json!({
+            "sourceSet": "main",
+            "metadataPath": "Catalog.Test",
+            "sections": ["modules"]
+        }),
+    ));
+    let after_logical_error = mcp.receive_ids(&[9], RESPONSE_DEADLINE);
+    assert_meta_info_data(&after_logical_error[&9]);
+    assert_eq!(
+        tool_operation(&after_logical_error[&9])["data"]["related"]["modules"]["status"],
+        "ready"
     );
 
     let expected_root = canonical_display(&fixture.workspace.join("src/cf"));
