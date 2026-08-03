@@ -5,7 +5,8 @@ use serde_json::{json, Map, Value};
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::info::{analyze_meta_info, analyze_meta_info_with_data};
+use super::info::{analyze_meta_info, analyze_meta_info_with_data, typed_elements};
+use super::xml_model::meta_info_child;
 
 fn workspace(name: &str) -> WorkspaceContext {
     let nanos = SystemTime::now()
@@ -47,6 +48,22 @@ fn info_args(address: &str) -> Map<String, Value> {
         ("sourceSet".to_string(), json!("main")),
         ("metadataPath".to_string(), json!(address)),
     ])
+}
+
+#[test]
+fn typed_info_reads_simple_form_template_and_command_references() {
+    let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Catalog><ChildObjects><Form>ItemForm</Form><Template>Print</Template><Command>Refresh</Command></ChildObjects></Catalog></MetaDataObject>"#;
+    let document = roxmltree::Document::parse(xml).unwrap();
+    let object = document.root_element().first_element_child().unwrap();
+    let children = meta_info_child(object, "ChildObjects");
+
+    let forms = typed_elements(xml, children, "Form", false);
+    let templates = typed_elements(xml, children, "Template", false);
+    let commands = typed_elements(xml, children, "Command", false);
+
+    assert_eq!(forms[0].name, "ItemForm");
+    assert_eq!(templates[0].name, "Print");
+    assert_eq!(commands[0].name, "Refresh");
 }
 
 #[test]

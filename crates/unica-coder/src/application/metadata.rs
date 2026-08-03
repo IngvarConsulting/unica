@@ -1440,7 +1440,7 @@ mod tests {
     use crate::domain::events::{DomainEvent, DomainEventKind};
     use crate::domain::metadata::{
         MetaCollectionsData, MetaCompleteness, MetaDiagnosticCode, MetaEditOperation,
-        MetaFreshness, MetaMutationData, MetaRelatedItem, MetaRelatedSection, MetaRelatedSections,
+        MetaFreshness, MetaMutationData, MetaRelatedSection, MetaRelatedSections,
         MetaRelatedStatus, MetaSupportStatus, MetaValidationData, MetaValidationStatus,
         MetadataKind,
     };
@@ -1653,7 +1653,7 @@ mod tests {
         }
     }
 
-    fn unavailable_section() -> MetaRelatedSection<MetaRelatedItem> {
+    fn unavailable_section() -> MetaRelatedSection<Value> {
         MetaRelatedSection {
             status: MetaRelatedStatus::Unavailable,
             freshness: MetaFreshness::Unknown,
@@ -1671,10 +1671,10 @@ mod tests {
 
     fn unavailable_related() -> MetaRelatedSections {
         MetaRelatedSections {
-            modules: unavailable_section(),
-            roles: unavailable_section(),
-            subscriptions: unavailable_section(),
-            functional_options: unavailable_section(),
+            modules: Some(unavailable_section()),
+            roles: Some(unavailable_section()),
+            subscriptions: Some(unavailable_section()),
+            functional_options: Some(unavailable_section()),
             predefined_items: Some(unavailable_section()),
         }
     }

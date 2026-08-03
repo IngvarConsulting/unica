@@ -219,10 +219,32 @@ impl UnicaApplication {
         };
         call_tool(spec, args, self.ports.as_ref(), &CancellationToken::new())
     }
+
+    #[cfg(test)]
+    fn call_unregistered_meta_info_for_integration_tests(
+        &self,
+        args: &Map<String, Value>,
+    ) -> Result<OperationResult, String> {
+        let spec = ToolSpec {
+            name: "unica.meta.info",
+            description: "Inspect one metadata object through the typed internal coordinator.",
+            mutating: false,
+            cache_access: CacheAccess {
+                reads: &["bsl_index"],
+                writes: &[],
+            },
+            handler: ToolHandler::Metadata {
+                operation: metadata::MetadataOperation::Info,
+            },
+        };
+        call_tool(spec, args, self.ports.as_ref(), &CancellationToken::new())
+    }
 }
 
 #[cfg(test)]
 mod meta_add_surface_tests;
+#[cfg(test)]
+mod meta_info_surface_tests;
 #[cfg(test)]
 mod meta_remove_surface_tests;
 

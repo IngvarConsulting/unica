@@ -4,6 +4,7 @@ use super::{
 };
 use crate::domain::source_target::MetadataAddress;
 use serde::Serialize;
+use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -30,7 +31,7 @@ pub(crate) enum MetaCompleteness {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum MetaFreshness {
-    Fresh,
+    Current,
     Stale,
     Unknown,
 }
@@ -58,23 +59,39 @@ pub(crate) struct MetaRelatedSection<T> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct MetaRelatedItem {
-    pub(crate) name: String,
+pub(crate) struct MetaRelatedSections {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) metadata_path: Option<MetadataAddress>,
+    pub(crate) modules: Option<MetaRelatedSection<Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) role: Option<String>,
+    pub(crate) roles: Option<MetaRelatedSection<Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) subscriptions: Option<MetaRelatedSection<Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) functional_options: Option<MetaRelatedSection<Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) predefined_items: Option<MetaRelatedSection<Value>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// Transitional typed profile answer owned by the metadata domain. The legacy
+/// application compatibility bridge reuses it until the atomic surface switch.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct MetaRelatedSections {
-    pub(crate) modules: MetaRelatedSection<MetaRelatedItem>,
-    pub(crate) roles: MetaRelatedSection<MetaRelatedItem>,
-    pub(crate) subscriptions: MetaRelatedSection<MetaRelatedItem>,
-    pub(crate) functional_options: MetaRelatedSection<MetaRelatedItem>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) predefined_items: Option<MetaRelatedSection<MetaRelatedItem>>,
+pub struct MetaProfileResult {
+    pub object_name: String,
+    pub category: Option<String>,
+    pub sections: Vec<MetaProfileSection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetaProfileSection {
+    pub name: String,
+    pub status: String,
+    pub total: u64,
+    pub total_is_lower_bound: bool,
+    pub returned: u64,
+    pub items: Vec<Value>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

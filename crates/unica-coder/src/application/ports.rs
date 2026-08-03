@@ -13,7 +13,7 @@ use crate::domain::code_intelligence::{
 use crate::domain::events::DomainEvent;
 use crate::domain::metadata::{
     MetaCollectionsData, MetaDiagnostic, MetaDiagnosticCode, MetaInfoData, MetaMutationData,
-    MetaPropertyData, MetaRelatedItem, MetaRelatedSection, MetaRelatedSections, MetaRelatedStatus,
+    MetaPropertyData, MetaRelatedSection, MetaRelatedSections, MetaRelatedStatus,
     MetaSupportStatus, MetaValidationData, MetaValidationStatus, MetadataKind, MetadataReference,
 };
 use crate::domain::source_resources::{
@@ -268,7 +268,7 @@ fn unavailable_metadata_diagnostic(message: impl Into<String>) -> MetaDiagnostic
     MetaDiagnostic::error(MetaDiagnosticCode::CapabilityUnavailable, message)
 }
 
-fn unavailable_related_section() -> MetaRelatedSection<MetaRelatedItem> {
+fn unavailable_related_section() -> MetaRelatedSection<Value> {
     MetaRelatedSection {
         status: MetaRelatedStatus::Unavailable,
         freshness: crate::domain::metadata::MetaFreshness::Unknown,
@@ -409,10 +409,10 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         _cancellation: &CancellationToken,
     ) -> MetaRelatedData {
         MetaRelatedSections {
-            modules: unavailable_related_section(),
-            roles: unavailable_related_section(),
-            subscriptions: unavailable_related_section(),
-            functional_options: unavailable_related_section(),
+            modules: Some(unavailable_related_section()),
+            roles: Some(unavailable_related_section()),
+            subscriptions: Some(unavailable_related_section()),
+            functional_options: Some(unavailable_related_section()),
             predefined_items: Some(unavailable_related_section()),
         }
     }

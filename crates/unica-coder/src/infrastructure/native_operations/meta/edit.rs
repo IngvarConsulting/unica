@@ -3162,7 +3162,7 @@ pub(super) struct TypedRelationDependency {
     pub(super) target: MetadataAddress,
 }
 
-fn plan_typed_child_resources(
+pub(super) fn plan_typed_child_resources(
     descriptor_path: &Path,
     owner: &MetadataAddress,
     object_kind: &str,
@@ -5870,7 +5870,9 @@ fn parse_typed_fill_value(properties_text: &str) -> Result<Option<MetaFillValue>
     }
 }
 
-fn parse_typed_metadata_type(properties_text: &str) -> Result<MetadataType, MetaDiagnostic> {
+pub(super) fn parse_typed_metadata_type(
+    properties_text: &str,
+) -> Result<MetadataType, MetaDiagnostic> {
     const WRAPPER_START: &str = r#"<Root xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config">"#;
     let wrapped = format!("{WRAPPER_START}{properties_text}</Root>");
     let document = Document::parse(&wrapped).map_err(|_| {

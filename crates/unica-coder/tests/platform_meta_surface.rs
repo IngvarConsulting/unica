@@ -34,3 +34,27 @@ fn meta_remove_keeps_the_legacy_public_entry_until_the_atomic_switch() {
     );
     assert!(!names.contains(&"unica.meta.add"));
 }
+
+#[test]
+fn meta_info_keeps_the_legacy_public_entry_until_the_atomic_switch() {
+    let tools = unica_coder::application::tools();
+    let info = tools
+        .iter()
+        .find(|tool| tool.name == "unica.meta.info")
+        .expect("the current six-tool registry must retain meta.info");
+
+    assert!(matches!(
+        info.handler,
+        unica_coder::application::ToolHandler::NativeOperation {
+            operation: "meta-info",
+            event: None
+        }
+    ));
+    assert_eq!(
+        tools
+            .iter()
+            .filter(|tool| tool.name.starts_with("unica.meta."))
+            .count(),
+        6
+    );
+}

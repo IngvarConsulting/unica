@@ -1,7 +1,16 @@
 #![allow(dead_code, unused_imports)]
 
+use crate::application::metadata::MetaFailure;
+use crate::application::ports::{
+    MetaLocalInfo, MetadataResourceImage, MetadataResourceRole, MetadataValidationSubject,
+};
 use crate::application::AdapterOutcome;
+use crate::domain::metadata::{
+    MetaCollectionsData, MetaDiagnostic, MetaDiagnosticCode, MetaElementData, MetaPropertyData,
+    MetaPropertyValue, MetaSupportStatus, MetadataKind, MetadataReference, METADATA_PROPERTY_SPECS,
+};
 use crate::domain::source_target::ResolvedTarget;
+use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::domain::workspace::WorkspaceContext;
 use roxmltree::Document;
 use serde_json::{Map, Value};
@@ -12,6 +21,7 @@ use super::super::common::{
     int_arg, object_support_state, read_utf8_sig, resolve_metadata_object_descriptor,
     ObjectSupportData,
 };
+use super::edit::ResolvedMetadataObject;
 use super::xml_model::{
     meta_info_attr_by_local, meta_info_child, meta_info_child_text, meta_info_children,
     meta_info_format_source_type, meta_info_inner_text, meta_info_ml_child_text, meta_info_ml_text,
@@ -167,6 +177,297 @@ fn meta_info_owner_names(props: Option<roxmltree::Node<'_, '_>>) -> Vec<String> 
 pub(crate) struct MetaInfoExecution {
     pub(crate) outcome: AdapterOutcome,
     pub(crate) data: Option<MetaInfoData>,
+}
+
+/// Parse the descriptor image already acquired by the logical resolver. The
+/// same bytes are retained in the validation subject, so typed info never
+/// performs a second descriptor read between structure and validation.
+pub(crate) fn read_typed_meta_info(
+    resolved: &ResolvedMetadataObject,
+    target: &MetadataAddress,
+) -> Result<(MetaLocalInfo, MetadataValidationSubject), MetaFailure> {
+    let text = std::str::from_utf8(&resolved.descriptor_preimage).map_err(|_| {
+        MetaFailure::from(
+            MetaDiagnostic::error(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata descriptor image is not UTF-8",
+            )
+            .with_metadata_path(target.clone()),
+        )
+    })?;
+    let xml = text.trim_start_matches('\u{feff}');
+    let doc = Document::parse(xml).map_err(|_| {
+        MetaFailure::from(
+            MetaDiagnostic::error(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata descriptor image is not valid XML",
+            )
+            .with_metadata_path(target.clone()),
+        )
+    })?;
+    let root = doc.root_element();
+    if root.tag_name().name() != "MetaDataObject" {
+        return Err(MetaDiagnostic::error(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata descriptor root is not MetaDataObject",
+        )
+        .with_metadata_path(target.clone())
+        .into());
+    }
+    let object = root
+        .children()
+        .find(|node| {
+            node.is_element()
+                && node.tag_name().namespace() == Some("http://v8.1c.ru/8.3/MDClasses")
+        })
+        .ok_or_else(|| {
+            MetaFailure::from(
+                MetaDiagnostic::error(
+                    MetaDiagnosticCode::ProviderUnavailable,
+                    "metadata descriptor has no MDClasses object",
+                )
+                .with_metadata_path(target.clone()),
+            )
+        })?;
+    let kind = MetadataKind::parse(object.tag_name().name()).map_err(|diagnostic| {
+        MetaFailure::from(
+            MetaDiagnostic::error(MetaDiagnosticCode::ProviderUnavailable, diagnostic.message)
+                .with_metadata_path(target.clone()),
+        )
+    })?;
+    let properties = meta_info_child(object, "Properties");
+    let child_objects = meta_info_child(object, "ChildObjects");
+    let name = properties
+        .and_then(|node| meta_info_child_text(node, "Name"))
+        .unwrap_or_default();
+    if name.is_empty() {
+        return Err(MetaDiagnostic::error(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata descriptor has no object name",
+        )
+        .with_metadata_path(target.clone())
+        .into());
+    }
+    let synonym = properties
+        .and_then(|node| meta_info_child(node, "Synonym"))
+        .map(meta_info_ml_text)
+        .filter(|value| !value.is_empty());
+
+    let local = MetaLocalInfo {
+        metadata_path: target.clone(),
+        kind,
+        name,
+        synonym,
+        support: typed_support_status(&resolved.descriptor_path),
+        properties: typed_properties(properties, kind),
+        owners: typed_owners(properties),
+        collections: MetaCollectionsData {
+            attributes: typed_elements(xml, child_objects, "Attribute", false),
+            tabular_sections: typed_elements(xml, child_objects, "TabularSection", true),
+            dimensions: typed_elements(xml, child_objects, "Dimension", false),
+            resources: typed_elements(xml, child_objects, "Resource", false),
+            enum_values: typed_elements(xml, child_objects, "EnumValue", false),
+            columns: typed_elements(xml, child_objects, "Column", false),
+            forms: typed_elements(xml, child_objects, "Form", false),
+            templates: typed_elements(xml, child_objects, "Template", false),
+            commands: typed_elements(xml, child_objects, "Command", false),
+        },
+    };
+    let mut validation_resources = vec![
+        MetadataResourceImage {
+            role: MetadataResourceRole::Descriptor,
+            bytes: resolved.descriptor_preimage.clone(),
+        },
+        MetadataResourceImage {
+            role: MetadataResourceRole::Registration,
+            bytes: resolved.owner_preimage.clone(),
+        },
+    ];
+    validation_resources.extend(typed_registered_language_images(resolved));
+    super::validation::add_descriptor_references(
+        &mut validation_resources,
+        &resolved.descriptor_preimage,
+        Some(&resolved.source_root),
+    )
+    .map_err(|_| {
+        MetaFailure::from(
+            MetaDiagnostic::error(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata descriptor dependencies are unavailable",
+            )
+            .with_metadata_path(target.clone()),
+        )
+    })?;
+    let child_resources = super::edit::plan_typed_child_resources(
+        &resolved.descriptor_path,
+        target,
+        kind.as_str(),
+        &local.name,
+        &[],
+        xml,
+    )?;
+    validation_resources.extend(child_resources.validation_resources);
+    let validation_subject = MetadataValidationSubject {
+        target: target.clone(),
+        resources: validation_resources,
+        child_footprints: child_resources.validation_footprints,
+    };
+    Ok((local, validation_subject))
+}
+
+fn typed_registered_language_images(
+    resolved: &ResolvedMetadataObject,
+) -> Vec<MetadataResourceImage> {
+    let Ok(owner) = std::str::from_utf8(&resolved.owner_preimage) else {
+        return Vec::new();
+    };
+    let Ok(document) = Document::parse(owner.trim_start_matches('\u{feff}')) else {
+        return Vec::new();
+    };
+    document
+        .descendants()
+        .filter(|node| node.is_element() && node.tag_name().name() == "Language")
+        .filter_map(|node| node.text().map(str::trim).filter(|name| !name.is_empty()))
+        .filter_map(|name| {
+            let metadata_path = MetadataAddress::parse(
+                PLATFORM_XML_8_3_27_FORMAT_2_20,
+                &format!("Language.{name}"),
+            )
+            .ok()?;
+            let bytes = fs::read(
+                resolved
+                    .source_root
+                    .join("Languages")
+                    .join(format!("{name}.xml")),
+            )
+            .ok()?;
+            Some(MetadataResourceImage {
+                role: MetadataResourceRole::Dependency {
+                    target: metadata_path,
+                },
+                bytes,
+            })
+        })
+        .collect()
+}
+
+fn typed_support_status(path: &Path) -> MetaSupportStatus {
+    match object_support_state(path).state {
+        "locked" | "configurationReadOnly" => MetaSupportStatus::Locked,
+        "removedFromSupport" => MetaSupportStatus::Unsupported,
+        _ => MetaSupportStatus::Supported,
+    }
+}
+
+fn typed_properties(
+    properties: Option<roxmltree::Node<'_, '_>>,
+    kind: MetadataKind,
+) -> Vec<MetaPropertyData> {
+    let Some(properties) = properties else {
+        return Vec::new();
+    };
+    METADATA_PROPERTY_SPECS
+        .iter()
+        .filter(|spec| spec.allowed_kinds.contains(&kind))
+        .filter_map(|spec| {
+            let node = meta_info_child(properties, spec.public_name)?;
+            let value = match spec.value_kind {
+                crate::domain::metadata::MetaPropertyValueKind::String => {
+                    let value = if spec.public_name == "Synonym" {
+                        meta_info_ml_text(node)
+                    } else {
+                        node.text().unwrap_or_default().to_string()
+                    };
+                    MetaPropertyValue::String(value)
+                }
+                crate::domain::metadata::MetaPropertyValueKind::Boolean => match node.text()? {
+                    "true" => MetaPropertyValue::Boolean(true),
+                    "false" => MetaPropertyValue::Boolean(false),
+                    _ => return None,
+                },
+                crate::domain::metadata::MetaPropertyValueKind::UnsignedInteger => {
+                    MetaPropertyValue::UnsignedInteger(node.text()?.parse().ok()?)
+                }
+            };
+            Some(MetaPropertyData {
+                key: spec.key,
+                value,
+            })
+        })
+        .collect()
+}
+
+fn typed_owners(properties: Option<roxmltree::Node<'_, '_>>) -> Vec<MetadataReference> {
+    let Some(owners) = properties.and_then(|node| meta_info_child(node, "Owners")) else {
+        return Vec::new();
+    };
+    meta_info_children(owners, "Item")
+        .into_iter()
+        .filter_map(|node| {
+            let raw = meta_info_inner_text(node);
+            let raw = meta_info_normalize_cfg_prefix(raw.trim());
+            let raw = raw.strip_prefix("cfg:").unwrap_or(&raw);
+            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw)
+                .ok()
+                .map(|metadata_path| MetadataReference { metadata_path })
+        })
+        .collect()
+}
+
+pub(super) fn typed_elements(
+    xml: &str,
+    parent: Option<roxmltree::Node<'_, '_>>,
+    tag: &str,
+    nested_attributes: bool,
+) -> Vec<MetaElementData> {
+    let Some(parent) = parent else {
+        return Vec::new();
+    };
+    meta_info_children(parent, tag)
+        .into_iter()
+        .filter_map(|node| typed_element(xml, node, nested_attributes))
+        .collect()
+}
+
+fn typed_element(
+    xml: &str,
+    node: roxmltree::Node<'_, '_>,
+    nested_attributes: bool,
+) -> Option<MetaElementData> {
+    let Some(properties) = meta_info_child(node, "Properties") else {
+        let name = meta_info_inner_text(node).trim().to_string();
+        return (!name.is_empty()).then_some(MetaElementData {
+            name,
+            synonym: None,
+            comment: None,
+            r#type: None,
+            attributes: Vec::new(),
+        });
+    };
+    let name = meta_info_child_text(properties, "Name")?;
+    let synonym = meta_info_child(properties, "Synonym")
+        .map(meta_info_ml_text)
+        .filter(|value| !value.is_empty());
+    let comment = meta_info_child_text(properties, "Comment").filter(|value| !value.is_empty());
+    let r#type = meta_info_child(properties, "Type")
+        .and_then(|_| super::edit::parse_typed_metadata_type(&xml[properties.range()]).ok());
+    let attributes = if nested_attributes {
+        typed_elements(
+            xml,
+            meta_info_child(node, "ChildObjects"),
+            "Attribute",
+            false,
+        )
+    } else {
+        Vec::new()
+    };
+    Some(MetaElementData {
+        name,
+        synonym,
+        comment,
+        r#type,
+        attributes,
+    })
 }
 
 pub(super) fn analyze_meta_info(

@@ -202,7 +202,7 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
                 request.capability()
             ));
         };
-        let tool_name = request.tool_name();
+        let tool_name = request.operation_name();
         let mut outcome = ProviderReadOutcome {
             provider: ProviderId::BslAnalyzer,
             ok: true,

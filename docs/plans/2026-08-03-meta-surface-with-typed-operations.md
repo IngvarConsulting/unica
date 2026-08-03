@@ -884,14 +884,18 @@ per-section limit return `total`, `returned`, and `truncated`; limit never cuts
 local XML structure. Simulate RLM timeout/start failure and keep the local
 answer.
 
-Run:
+Before Task 10 an external Rust integration target cannot invoke the
+off-registry typed handler without publishing a test backdoor. Therefore the
+real cross-layer typed-info suite is private under `application`:
 
 ```sh
+cargo test -p unica-coder application::meta_info_surface_tests::meta_info_ -- --test-threads=1
 cargo test -p unica-coder --test platform_meta_surface meta_info_ -- --test-threads=1
 ```
 
-Expected RED: current info has local text/data only and profile is a separate
-code-intelligence tool.
+Expected RED: the private suite reaches the absent typed local-read provider;
+the external target remains a negative/current-registry guard and proves the
+six legacy Meta registrations have not switched prematurely.
 
 - [ ] **Step 2: Implement one local read and soft-failing enrichment adapter**
 
@@ -899,16 +903,19 @@ Resolve and read local bytes once. Reuse that image for parsing and validation.
 Treat data observed before a mutation-triggered index refresh as stale unless
 the bounded readiness check proves current. Never label stale data current.
 
-- [ ] **Step 3: Remove public-profile types from code-intelligence ownership**
+- [ ] **Step 3: Move profile ownership while preserving the Task 10 bridge**
 
-Delete `CodeIntelligenceOperation::ObjectProfile` and the public request/result
-routing only after `application::metadata` consumes the moved adapter. Keep
-workspace RLM helper code private and named by capability, not by removed MCP
-tool.
+Move `MetaProfileResult` and `MetaProfileSection` out of code-intelligence
+ownership after `application::metadata` consumes the moved adapter. Keep the
+current public `unica.meta.profile` registry and handler compatibility bridge
+intact through Task 9; its final removal occurs only in the atomic Task 10
+switch. Keep workspace RLM helper code private and named by capability, and
+remove public tool-name knowledge from lower layers.
 
 - [ ] **Step 4: Run info, RLM, and code-intelligence regressions**
 
 ```sh
+cargo test -p unica-coder application::meta_info_surface_tests::meta_info_ -- --test-threads=1
 cargo test -p unica-coder --test platform_meta_surface meta_info_ -- --test-threads=1
 cargo test -p unica-coder rlm_navigation -- --test-threads=1
 cargo test -p unica-coder code_intelligence -- --test-threads=1

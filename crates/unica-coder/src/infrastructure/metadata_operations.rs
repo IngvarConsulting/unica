@@ -4,42 +4,83 @@ use crate::application::ports::{
     MetadataValidationSubject, PreparedMetadataMutation,
 };
 use crate::domain::cancellation::CancellationToken;
+use crate::domain::code_intelligence::{CodeIntelligenceContext, ProviderDeadline};
 use crate::domain::metadata::{
-    MetaCompleteness, MetaDiagnostic, MetaDiagnosticCode, MetaFreshness, MetaRelatedItem,
-    MetaRelatedSection, MetaRelatedSections, MetaRelatedStatus,
+    MetaCompleteness, MetaDiagnostic, MetaDiagnosticCode, MetaFreshness, MetaRelatedSection,
+    MetaRelatedSections, MetaRelatedStatus,
 };
+use crate::domain::source_roots::ResolvedSourceRoot;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::meta::{
-    prepare_meta_add, prepare_meta_remove, prepare_typed_edit, resolve_typed_edit_object,
-    MetadataValidator,
+    prepare_meta_add, prepare_meta_remove, prepare_typed_edit, read_typed_meta_info,
+    resolve_typed_edit_object, resolve_typed_metadata_object, MetadataValidator,
 };
+use crate::infrastructure::rlm_navigation::RlmNavigationAdapter;
 
 pub(crate) struct MetadataOperations;
 
 impl MetadataOperations {
     pub(crate) fn read_local(
-        _request: &MetaInfoRequest,
-        _context: &WorkspaceContext,
-        _cancellation: &CancellationToken,
+        request: &MetaInfoRequest,
+        context: &WorkspaceContext,
+        cancellation: &CancellationToken,
     ) -> Result<MetadataRead, MetaFailure> {
-        Err(capability_unavailable(
-            "typed metadata read provider is not available yet",
-        ))
+        let resolved = resolve_typed_metadata_object(
+            &request.source_set,
+            &request.metadata_path,
+            "info",
+            context,
+            cancellation,
+        )?;
+        let (local, validation_subject) = read_typed_meta_info(&resolved, &request.metadata_path)?;
+        Ok(MetadataRead {
+            local,
+            validation_subject,
+        })
     }
 
     pub(crate) fn read_related(
-        _request: &MetaInfoRequest,
+        request: &MetaInfoRequest,
         _local: &MetaLocalInfo,
-        _context: &WorkspaceContext,
-        _cancellation: &CancellationToken,
+        context: &WorkspaceContext,
+        cancellation: &CancellationToken,
     ) -> MetaRelatedData {
-        MetaRelatedSections {
-            modules: unavailable_section(),
-            roles: unavailable_section(),
-            subscriptions: unavailable_section(),
-            functional_options: unavailable_section(),
-            predefined_items: Some(unavailable_section()),
-        }
+        let names = request
+            .sections
+            .iter()
+            .map(|section| match section {
+                crate::application::metadata::MetaInfoSection::Modules => "modules",
+                crate::application::metadata::MetaInfoSection::Roles => "roles",
+                crate::application::metadata::MetaInfoSection::Subscriptions => "subscriptions",
+                crate::application::metadata::MetaInfoSection::FunctionalOptions => {
+                    "functionalOptions"
+                }
+                crate::application::metadata::MetaInfoSection::PredefinedItems => "predefinedItems",
+            })
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let source = match crate::infrastructure::source_roots::resolve_named_source_set(
+            context,
+            &request.source_set,
+        ) {
+            Ok(source) => source,
+            Err(_) => return selected_unavailable_sections(request),
+        };
+        let provider_context = CodeIntelligenceContext::new(
+            context.clone(),
+            ResolvedSourceRoot {
+                source_set: Some(source.source_set.name),
+                path: source.path,
+            },
+        );
+        RlmNavigationAdapter::new().metadata_related(
+            request.metadata_path.as_str(),
+            &names,
+            request.limit,
+            &provider_context,
+            ProviderDeadline::new(std::time::Instant::now() + std::time::Duration::from_secs(5)),
+            cancellation,
+        )
     }
 
     pub(crate) fn validate(
@@ -78,7 +119,7 @@ impl MetadataOperations {
     }
 }
 
-fn unavailable_section() -> MetaRelatedSection<MetaRelatedItem> {
+fn unavailable_section() -> MetaRelatedSection<serde_json::Value> {
     MetaRelatedSection {
         status: MetaRelatedStatus::Unavailable,
         freshness: MetaFreshness::Unknown,
@@ -89,6 +130,31 @@ fn unavailable_section() -> MetaRelatedSection<MetaRelatedItem> {
         items: Vec::new(),
         diagnostics: capability_unavailable("typed related metadata provider is not available yet")
             .diagnostics,
+    }
+}
+
+fn selected_unavailable_sections(request: &MetaInfoRequest) -> MetaRelatedSections {
+    MetaRelatedSections {
+        modules: request
+            .sections
+            .contains(&crate::application::metadata::MetaInfoSection::Modules)
+            .then(unavailable_section),
+        roles: request
+            .sections
+            .contains(&crate::application::metadata::MetaInfoSection::Roles)
+            .then(unavailable_section),
+        subscriptions: request
+            .sections
+            .contains(&crate::application::metadata::MetaInfoSection::Subscriptions)
+            .then(unavailable_section),
+        functional_options: request
+            .sections
+            .contains(&crate::application::metadata::MetaInfoSection::FunctionalOptions)
+            .then(unavailable_section),
+        predefined_items: request
+            .sections
+            .contains(&crate::application::metadata::MetaInfoSection::PredefinedItems)
+            .then(unavailable_section),
     }
 }
 

@@ -1574,7 +1574,7 @@ fn push_dependency_from_path(
     Ok(())
 }
 
-fn add_descriptor_references(
+pub(super) fn add_descriptor_references(
     resources: &mut Vec<crate::application::ports::MetadataResourceImage>,
     descriptor: &[u8],
     config_dir: Option<&Path>,

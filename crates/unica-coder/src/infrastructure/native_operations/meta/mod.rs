@@ -196,9 +196,9 @@ mod xml_model;
 // surface required by native-operation callers outside this family.
 pub(crate) use edit::{
     edit_meta_with_data, prepare_typed_edit, preview_meta_edit, preview_meta_edit_with_data,
-    resolve_meta_edit_object_path, resolve_typed_edit_object,
+    resolve_meta_edit_object_path, resolve_typed_edit_object, resolve_typed_metadata_object,
 };
-pub(crate) use info::{analyze_meta_info_with_data, resolve_meta_info_path};
+pub(crate) use info::{analyze_meta_info_with_data, read_typed_meta_info, resolve_meta_info_path};
 pub(crate) use legacy_dsl::{
     meta_compile_format_dependency_paths, meta_compile_object_xml, preview_meta_compile,
     validate_metadata_owner_shape_8_3_27,

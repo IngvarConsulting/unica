@@ -2,14 +2,20 @@ use crate::application::AdapterOutcome;
 use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
 use crate::domain::code_intelligence::{
     CodeDefinition, CodeDefinitionResult, CodeIntelligenceContext, CodeIntelligenceReadData,
-    CodeIntelligenceReadRequest, MetaProfileResult, MetaProfileSection, ProviderDeadline,
+    CodeIntelligenceReadRequest, ProviderDeadline,
 };
+use crate::domain::metadata::{
+    MetaCompleteness, MetaDiagnostic, MetaDiagnosticCode, MetaFreshness, MetaRelatedSection,
+    MetaRelatedSections, MetaRelatedStatus,
+};
+use crate::domain::metadata::{MetaProfileResult, MetaProfileSection};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::workspace_index::IndexReadiness;
 use crate::infrastructure::workspace_services::{
     WorkspaceRlmOperation, WorkspaceServiceManager, WorkspaceServiceRlmOutput,
 };
 use serde_json::{Map, Value};
+use std::collections::HashSet;
 use std::path::Path;
 use std::time::Duration;
 
@@ -91,6 +97,72 @@ impl<'a> RlmNavigationAdapter<'a> {
         Self { client }
     }
 
+    pub(crate) fn metadata_related(
+        &self,
+        metadata_path: &str,
+        sections: &[String],
+        limit: usize,
+        context: &CodeIntelligenceContext,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> MetaRelatedSections {
+        let unavailable = |freshness| {
+            unavailable_related_sections(
+                sections,
+                freshness,
+                "related metadata index is unavailable",
+            )
+        };
+        if cancellation.is_cancelled() || deadline.remaining().is_zero() {
+            return unavailable(MetaFreshness::Unknown);
+        }
+        let readiness_timeout = deadline.remaining().min(RLM_NAVIGATION_TIMEOUT);
+        let readiness = match self.client.readiness(
+            &context.workspace,
+            &context.source_root.path,
+            readiness_timeout,
+            cancellation,
+        ) {
+            Ok(readiness) => readiness,
+            Err(_) => return unavailable(MetaFreshness::Unknown),
+        };
+        let freshness = match readiness {
+            IndexReadiness::Ready { .. } => MetaFreshness::Current,
+            IndexReadiness::Stale { .. } | IndexReadiness::Building => MetaFreshness::Stale,
+            IndexReadiness::Missing
+            | IndexReadiness::Failed(_)
+            | IndexReadiness::Unavailable(_) => return unavailable(MetaFreshness::Unknown),
+        };
+        let timeout = deadline.remaining().min(RLM_NAVIGATION_TIMEOUT);
+        if timeout.is_zero() {
+            return unavailable(MetaFreshness::Unknown);
+        }
+        let output = match self.client.call(
+            &context.workspace,
+            &context.source_root.path,
+            WorkspaceRlmOperation::ObjectProfile {
+                name: metadata_path.to_string(),
+                sections: Some(sections.to_vec()),
+                limit,
+            },
+            timeout,
+            cancellation,
+        ) {
+            Ok(output) => output,
+            Err(_) => return unavailable(MetaFreshness::Unknown),
+        };
+        let Ok(value) = serde_json::from_str::<Value>(output.result_text.trim()) else {
+            return unavailable(MetaFreshness::Unknown);
+        };
+        if value.get("error").and_then(Value::as_str).is_some() {
+            return unavailable(MetaFreshness::Unknown);
+        }
+        let Ok(profile) = profile_result(&value) else {
+            return unavailable(MetaFreshness::Unknown);
+        };
+        related_sections_from_profile(profile, sections, limit, freshness)
+    }
+
     pub(crate) fn invoke_resolved_cancellable(
         &self,
         request: &CodeIntelligenceReadRequest,
@@ -98,17 +170,17 @@ impl<'a> RlmNavigationAdapter<'a> {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<RlmNavigationOutcome, String> {
-        let tool_name = request.tool_name();
+        let operation_name = request.operation_name();
         let operation = operation_for_request(request)?;
         if cancellation.is_cancelled() {
             return Ok(RlmNavigationOutcome::plain(AdapterOutcome::cancelled(
-                format!("{tool_name} cancelled before provider work"),
+                format!("{operation_name} cancelled before provider work"),
             )));
         }
         let readiness_timeout = deadline.remaining().min(RLM_NAVIGATION_TIMEOUT);
         if readiness_timeout.is_zero() {
             return Err(format!(
-                "{tool_name} provider deadline exceeded before readiness check"
+                "{operation_name} provider deadline exceeded before readiness check"
             ));
         }
         let readiness = match self.client.readiness(
@@ -120,7 +192,8 @@ impl<'a> RlmNavigationAdapter<'a> {
             Ok(readiness) => readiness,
             Err(error) if error.starts_with(CANCELLED_PREFIX) => {
                 return Ok(RlmNavigationOutcome::plain(cancelled_client_outcome(
-                    tool_name, &error,
+                    operation_name,
+                    &error,
                 )));
             }
             Err(error) => return Err(error),
@@ -135,7 +208,7 @@ impl<'a> RlmNavigationAdapter<'a> {
         };
         let timeout = deadline.remaining().min(RLM_NAVIGATION_TIMEOUT);
         if timeout.is_zero() {
-            return Err(format!("{tool_name} provider deadline exceeded"));
+            return Err(format!("{operation_name} provider deadline exceeded"));
         }
         let output = match self.client.call(
             &context.workspace,
@@ -147,49 +220,53 @@ impl<'a> RlmNavigationAdapter<'a> {
             Ok(output) => output,
             Err(error) if error.starts_with(CANCELLED_PREFIX) => {
                 return Ok(RlmNavigationOutcome::plain(cancelled_client_outcome(
-                    tool_name, &error,
+                    operation_name,
+                    &error,
                 )));
             }
             Err(error) => return Err(error),
         };
-        let value: Value = serde_json::from_str(output.result_text.trim())
-            .map_err(|error| format!("{tool_name} received invalid RLM helper JSON: {error}"))?;
+        let value: Value = serde_json::from_str(output.result_text.trim()).map_err(|error| {
+            format!("{operation_name} received invalid index helper JSON: {error}")
+        })?;
         if let Some(error) = value
             .get("error")
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
         {
-            return Err(format!("{tool_name} RLM helper failed: {error}"));
+            return Err(format!("{operation_name} index helper failed: {error}"));
         }
         let mut outcome = AdapterOutcome::ok(format!(
-            "{tool_name} completed through the persistent RLM MCP API"
+            "{operation_name} completed through the persistent RLM MCP API"
         ));
         let data;
-        match tool_name {
+        match request {
             // ADR-0023: the index already answers with structure, so the tool
             // publishes it instead of rendering it into a line grammar.
-            "unica.code.definition" => {
+            CodeIntelligenceReadRequest::Definition { .. } => {
                 let (result, warnings) = definition_result(&value)?;
                 // The transport phrase stays: the issue-89 service test proves
                 // reuse of the persistent RLM process through this summary.
                 outcome.summary = format!(
-                    "{tool_name} found {} definition(s) for {} through the persistent RLM MCP API",
+                    "{operation_name} found {} definition(s) for {} through the persistent RLM MCP API",
                     result.definitions.len(),
                     result.name
                 );
                 outcome.warnings.extend(warnings);
                 data = Some(CodeIntelligenceReadData::Definition(result));
             }
-            "unica.meta.profile" => {
+            CodeIntelligenceReadRequest::ObjectProfile { .. } => {
                 let result = profile_result(&value)?;
                 outcome.summary = format!(
-                    "{tool_name} described {} across {} section(s) through the persistent RLM MCP API",
+                    "{operation_name} described {} across {} section(s) through the persistent RLM MCP API",
                     result.object_name,
                     result.sections.len()
                 );
                 data = Some(CodeIntelligenceReadData::ObjectProfile(result));
             }
-            _ => return Err(format!("unsupported RLM navigation tool: {tool_name}")),
+            CodeIntelligenceReadRequest::Outline { .. } => {
+                return Err("code outline is not an index navigation capability".to_string())
+            }
         }
         outcome.artifacts = vec![
             context.source_root.path.display().to_string(),
@@ -202,6 +279,155 @@ impl<'a> RlmNavigationAdapter<'a> {
             outcome.stderr = Some(output.stderr);
         }
         Ok(RlmNavigationOutcome { outcome, data })
+    }
+}
+
+fn unavailable_related_sections(
+    sections: &[String],
+    freshness: MetaFreshness,
+    message: &str,
+) -> MetaRelatedSections {
+    let section = || MetaRelatedSection {
+        status: MetaRelatedStatus::Unavailable,
+        freshness,
+        completeness: MetaCompleteness::Unknown,
+        total: 0,
+        returned: 0,
+        truncated: false,
+        items: Vec::new(),
+        diagnostics: vec![MetaDiagnostic::error(
+            MetaDiagnosticCode::ProviderUnavailable,
+            message,
+        )],
+    };
+    MetaRelatedSections {
+        modules: requested(sections, "modules").then(section),
+        roles: requested(sections, "roles").then(section),
+        subscriptions: requested(sections, "subscriptions").then(section),
+        functional_options: requested(sections, "functionalOptions").then(section),
+        predefined_items: requested(sections, "predefinedItems").then(section),
+    }
+}
+
+fn related_sections_from_profile(
+    profile: MetaProfileResult,
+    sections: &[String],
+    limit: usize,
+    freshness: MetaFreshness,
+) -> MetaRelatedSections {
+    let find = |name: &str| {
+        profile
+            .sections
+            .iter()
+            .find(|section| section.name == name)
+            .map(|section| typed_related_section(section, limit, freshness))
+            .unwrap_or_else(|| MetaRelatedSection {
+                status: MetaRelatedStatus::Unavailable,
+                freshness,
+                completeness: MetaCompleteness::Unknown,
+                total: 0,
+                returned: 0,
+                truncated: false,
+                items: Vec::new(),
+                diagnostics: vec![MetaDiagnostic::error(
+                    MetaDiagnosticCode::ProviderUnavailable,
+                    format!("related metadata section `{name}` is unavailable"),
+                )],
+            })
+    };
+    MetaRelatedSections {
+        modules: requested(sections, "modules").then(|| find("modules")),
+        roles: requested(sections, "roles").then(|| find("roles")),
+        subscriptions: requested(sections, "subscriptions").then(|| find("subscriptions")),
+        functional_options: requested(sections, "functionalOptions")
+            .then(|| find("functionalOptions")),
+        predefined_items: requested(sections, "predefinedItems").then(|| find("predefinedItems")),
+    }
+}
+
+fn requested(sections: &[String], name: &str) -> bool {
+    sections.iter().any(|section| section == name)
+}
+
+fn typed_related_section(
+    section: &MetaProfileSection,
+    limit: usize,
+    freshness: MetaFreshness,
+) -> MetaRelatedSection<Value> {
+    let mut seen = HashSet::new();
+    let mut unique = Vec::new();
+    for item in &section.items {
+        let sanitized = sanitize_related_item(item.clone());
+        let key = serde_json::to_string(&sanitized).unwrap_or_default();
+        if seen.insert(key) {
+            unique.push(sanitized);
+        }
+    }
+    let source_truncated =
+        section.total_is_lower_bound || section.returned < section.total || unique.len() > limit;
+    let total = if section.total_is_lower_bound {
+        usize::try_from(section.total).unwrap_or(usize::MAX)
+    } else if section.returned == section.total {
+        unique.len()
+    } else {
+        usize::try_from(section.total).unwrap_or(usize::MAX)
+    };
+    unique.truncate(limit);
+    let status = match section.status.as_str() {
+        "ok" | "empty" => MetaRelatedStatus::Ready,
+        "partial" => MetaRelatedStatus::Partial,
+        _ if !unique.is_empty() => MetaRelatedStatus::Partial,
+        _ => MetaRelatedStatus::Unavailable,
+    };
+    let diagnostics = if section.error.is_some() || status != MetaRelatedStatus::Ready {
+        vec![MetaDiagnostic::error(
+            MetaDiagnosticCode::ProviderUnavailable,
+            format!(
+                "related metadata section `{}` is not complete",
+                section.name
+            ),
+        )]
+    } else {
+        Vec::new()
+    };
+    MetaRelatedSection {
+        status,
+        freshness,
+        completeness: if status == MetaRelatedStatus::Unavailable {
+            MetaCompleteness::Unknown
+        } else if status == MetaRelatedStatus::Partial || source_truncated {
+            MetaCompleteness::Partial
+        } else {
+            MetaCompleteness::Complete
+        },
+        total,
+        returned: unique.len(),
+        truncated: source_truncated || total > unique.len(),
+        items: unique,
+        diagnostics,
+    }
+}
+
+fn sanitize_related_item(value: Value) -> Value {
+    match value {
+        Value::Object(mut object) => {
+            for key in [
+                "path",
+                "file",
+                "dbPath",
+                "db_path",
+                "sourceDir",
+                "source_dir",
+            ] {
+                object.remove(key);
+            }
+            for value in object.values_mut() {
+                *value = sanitize_related_item(std::mem::take(value));
+            }
+            Value::Object(object)
+        }
+        Value::Array(items) => Value::Array(items.into_iter().map(sanitize_related_item).collect()),
+        other => other,
     }
 }
 
@@ -250,7 +476,7 @@ fn operation_for_request(
         CodeIntelligenceReadRequest::Outline { .. } => {
             return Err(format!(
                 "{} is built from the current BSL source and has no RLM operation",
-                request.tool_name()
+                request.operation_name()
             ))
         }
     })
@@ -408,7 +634,7 @@ fn index_unavailable_outcome(
     request: &CodeIntelligenceReadRequest,
     readiness: IndexReadiness,
 ) -> AdapterOutcome {
-    let tool_name = request.tool_name();
+    let tool_name = request.operation_name();
     let warning = readiness_warning(readiness);
     if warning.starts_with(CANCELLED_PREFIX) {
         return AdapterOutcome::cancelled(
@@ -855,8 +1081,8 @@ mod tests {
         ] {
             let outcome = unready_index_outcome(&request, IndexReadiness::Missing);
 
-            assert!(outcome.ok, "{}", request.tool_name());
-            assert!(outcome.errors.is_empty(), "{}", request.tool_name());
+            assert!(outcome.ok, "{}", request.operation_name());
+            assert!(outcome.errors.is_empty(), "{}", request.operation_name());
             assert_eq!(
                 outcome.warnings,
                 vec!["rlm index unavailable: index is missing".to_string()]
@@ -1000,5 +1226,208 @@ mod tests {
             }]
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    struct RelatedClient {
+        readiness: Result<IndexReadiness, String>,
+        result: Result<WorkspaceServiceRlmOutput, String>,
+    }
+
+    impl RlmNavigationClient for RelatedClient {
+        fn readiness(
+            &self,
+            _context: &WorkspaceContext,
+            _source_root: &Path,
+            _timeout: Duration,
+            _cancellation: &CancellationToken,
+        ) -> Result<IndexReadiness, String> {
+            self.readiness.clone()
+        }
+
+        fn call(
+            &self,
+            _context: &WorkspaceContext,
+            _source_root: &Path,
+            _operation: WorkspaceRlmOperation,
+            _timeout: Duration,
+            _cancellation: &CancellationToken,
+        ) -> Result<WorkspaceServiceRlmOutput, String> {
+            self.result.clone()
+        }
+    }
+
+    fn related_client(readiness: IndexReadiness, value: serde_json::Value) -> RelatedClient {
+        RelatedClient {
+            readiness: Ok(readiness),
+            result: Ok(WorkspaceServiceRlmOutput {
+                result_text: value.to_string(),
+                stderr: String::new(),
+            }),
+        }
+    }
+
+    #[test]
+    fn metadata_related_maps_current_partial_limits_and_opt_in_sections() {
+        let client = related_client(
+            IndexReadiness::Ready {
+                db_path: PathBuf::from("/private/index.db"),
+            },
+            json!({
+                "object_name": "Catalog.Items",
+                "sections": {
+                    "modules": {
+                        "status": "ok",
+                        "total": 4,
+                        "returned": 4,
+                        "items": [
+                            {"name": "ObjectModule", "path": "/must/not/leak"},
+                            {"name": "ObjectModule"},
+                            {"name": "ManagerModule"},
+                            {"name": "Second"}
+                        ]
+                    },
+                    "roles": {
+                        "status": "partial",
+                        "total": 2,
+                        "returned": 1,
+                        "items": [{"name": "Reader"}],
+                        "_meta": {"error": "one role could not be classified"}
+                    },
+                    "predefined_items": {
+                        "status": "ok",
+                        "total": 1,
+                        "returned": 1,
+                        "items": [{"name": "Main"}]
+                    }
+                }
+            }),
+        );
+        let sections = vec![
+            "modules".to_string(),
+            "roles".to_string(),
+            "predefinedItems".to_string(),
+        ];
+
+        let related = RlmNavigationAdapter::with_client(&client).metadata_related(
+            "Catalog.Items",
+            &sections,
+            2,
+            &unready_index_context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
+            &CancellationToken::new(),
+        );
+
+        let modules = related.modules.unwrap();
+        assert_eq!(
+            modules.status,
+            crate::domain::metadata::MetaRelatedStatus::Ready
+        );
+        assert_eq!(
+            modules.freshness,
+            crate::domain::metadata::MetaFreshness::Current
+        );
+        assert_eq!(
+            (modules.total, modules.returned, modules.truncated),
+            (3, 2, true)
+        );
+        assert_eq!(modules.items[0], json!({"name": "ObjectModule"}));
+        assert_eq!(modules.items[1], json!({"name": "ManagerModule"}));
+        let roles = related.roles.unwrap();
+        assert_eq!(
+            roles.status,
+            crate::domain::metadata::MetaRelatedStatus::Partial
+        );
+        assert_eq!(roles.diagnostics.len(), 1);
+        assert!(related.subscriptions.is_none());
+        assert!(related.functional_options.is_none());
+        assert!(related.predefined_items.is_some());
+    }
+
+    #[test]
+    fn metadata_related_never_labels_stale_or_failed_readiness_current() {
+        let stale = related_client(
+            IndexReadiness::Stale {
+                status: "stale (content)".to_string(),
+            },
+            json!({
+                "object_name": "Catalog.Items",
+                "sections": {"modules": {"status": "ok", "total": 1, "returned": 1, "items": [{"name": "ObjectModule"}]}}
+            }),
+        );
+        let requested = vec!["modules".to_string()];
+        let stale_result = RlmNavigationAdapter::with_client(&stale).metadata_related(
+            "Catalog.Items",
+            &requested,
+            20,
+            &unready_index_context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
+            &CancellationToken::new(),
+        );
+        assert_eq!(
+            stale_result.modules.unwrap().freshness,
+            crate::domain::metadata::MetaFreshness::Stale
+        );
+
+        for client in [
+            RelatedClient {
+                readiness: Err("service start failed at /private/root".to_string()),
+                result: Err("must not call".to_string()),
+            },
+            RelatedClient {
+                readiness: Ok(IndexReadiness::Ready {
+                    db_path: PathBuf::from("/private/index.db"),
+                }),
+                result: Err("provider timed out at /private/root".to_string()),
+            },
+        ] {
+            let result = RlmNavigationAdapter::with_client(&client).metadata_related(
+                "Catalog.Items",
+                &requested,
+                20,
+                &unready_index_context(),
+                ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
+                &CancellationToken::new(),
+            );
+            let section = result.modules.unwrap();
+            assert_eq!(
+                section.status,
+                crate::domain::metadata::MetaRelatedStatus::Unavailable
+            );
+            assert_eq!(
+                section.freshness,
+                crate::domain::metadata::MetaFreshness::Unknown
+            );
+            let serialized = serde_json::to_string(&section.diagnostics).unwrap();
+            assert!(!serialized.contains("/private"), "{serialized}");
+            assert!(!serialized.contains("RLM"), "{serialized}");
+        }
+
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        let result = RlmNavigationAdapter::with_client(&stale).metadata_related(
+            "Catalog.Items",
+            &requested,
+            20,
+            &unready_index_context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
+            &cancelled,
+        );
+        assert_eq!(
+            result.modules.unwrap().status,
+            crate::domain::metadata::MetaRelatedStatus::Unavailable
+        );
+
+        let result = RlmNavigationAdapter::with_client(&stale).metadata_related(
+            "Catalog.Items",
+            &requested,
+            20,
+            &unready_index_context(),
+            ProviderDeadline::new(Instant::now()),
+            &CancellationToken::new(),
+        );
+        assert_eq!(
+            result.modules.unwrap().freshness,
+            crate::domain::metadata::MetaFreshness::Unknown
+        );
     }
 }
