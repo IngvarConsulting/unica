@@ -1,4 +1,4 @@
-﻿# Issue #186 Source Screening Implementation Plan
+# Issue #186 Source Screening Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -141,7 +141,7 @@ Run GitHub network commands outside the sandbox as required by AGENTS.md. If a r
 
 Expected: 19 JSON lines, each with either a 40-character commit SHA or an explicit acquisition error.
 
-- [ ] **Step 4: Materialize exact source trees for file-level inspection**
+- [x] **Step 4: Materialize exact source trees for file-level inspection**
 
 For each successful snapshot, clone without checkout and detach at the recorded SHA:
 
@@ -769,4 +769,3 @@ Expected: a sequence of focused research commits, no runtime or package-contract
 git add docs/plans/2026-08-03-issue-186-source-screening.md
 git commit -m "docs(research): complete issue 186 screening plan"
 ```
-
