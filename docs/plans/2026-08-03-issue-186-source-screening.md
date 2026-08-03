@@ -582,7 +582,7 @@ git commit -m "docs(research): screen issue 186 evaluation sources"
 - Produces: no GitHub issues and no implementation recommendation stronger than screening evidence supports.
 - Requires: `gpt-5.6-sol` or the strongest available reasoning successor for the entire task; `gpt-5.6-luna` is not sufficient for this gate.
 
-- [ ] **Step 1: Reopen and cross-check all 19 draft cards with a stronger reasoning model**
+- [x] **Step 1: Reopen and cross-check all 19 draft cards with a stronger reasoning model**
 
 For every card, the reviewing model must reopen at least:
 
@@ -599,7 +599,7 @@ gap or disposition. Correct unsupported claims inline. Set
 `gpt-5.6-sol`, only after those checks pass. A sampling review is not
 sufficient.
 
-- [ ] **Step 2: Build the summary registry from the reviewed cards**
+- [x] **Step 2: Build the summary registry from the reviewed cards**
 
 Use these columns:
 
@@ -610,7 +610,7 @@ Use these columns:
 
 Every row must agree with a `strong-model-reviewed` detailed card. Use full SHAs in detailed cards; the summary may use a linked 12-character prefix if the link resolves to the exact commit. A draft card must not receive a summary row.
 
-- [ ] **Step 3: Normalize decisions across cohorts**
+- [x] **Step 3: Normalize decisions across cohorts**
 
 Re-read every `Decision` and apply the same threshold:
 
@@ -620,7 +620,7 @@ Re-read every `Decision` and apply the same threshold:
 
 When two sources offer the same mechanism, select the stronger evidence candidate for deep dive and explicitly record the other as duplicate, complementary, or deferred. Do not let the order of research determine priority.
 
-- [ ] **Step 4: Record mandatory duplicate and boundary findings**
+- [x] **Step 4: Record mandatory duplicate and boundary findings**
 
 The review must explicitly state:
 
@@ -630,7 +630,7 @@ The review must explicitly state:
 - which claims remain unverified until a common bounded experiment;
 - which license conflicts block transfer even if behavioral observation is useful.
 
-- [ ] **Step 5: Produce a thematic shortlist, not 19 follow-up proposals**
+- [x] **Step 5: Produce a thematic shortlist, not 19 follow-up proposals**
 
 Group surviving questions under the later slices approved by the design:
 
@@ -644,7 +644,7 @@ benchmark and evaluation
 
 For each theme, list candidate sources, the exact unanswered question, required evidence, and a minimal deep-dive boundary. Do not select the final 3–5 product experiments; issue #186's final synthesis owns that choice.
 
-- [ ] **Step 6: Check review-gate and summary/detail consistency**
+- [x] **Step 6: Check review-gate and summary/detail consistency**
 
 Run:
 
@@ -661,7 +661,7 @@ if ($decisionCount -ne 19) { throw "expected 19 card decisions, found $decisionC
 
 Expected: 19 cards, 19 stronger-model reviews, and 19 final decisions.
 
-- [ ] **Step 7: Commit normalized decisions and shortlist**
+- [x] **Step 7: Commit normalized decisions and shortlist**
 
 ```powershell
 git add docs/provenance/reviews/2026-08-03-issue-186-source-screening.md docs/plans/2026-08-03-issue-186-source-screening.md
