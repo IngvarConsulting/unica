@@ -241,9 +241,10 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
 fn issue_89_fixture_cleanup_is_bounded_during_assertion_unwind() {
     let tracked = Arc::new(Mutex::new(Vec::<ToolRecord>::new()));
     let fixture_root = Arc::new(Mutex::new(None::<PathBuf>));
+    let cleanup_started = Arc::new(Mutex::new(None::<Instant>));
     let tracked_inside = Arc::clone(&tracked);
     let root_inside = Arc::clone(&fixture_root);
-    let started = Instant::now();
+    let cleanup_started_inside = Arc::clone(&cleanup_started);
     let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
         let fixture = Fixture::new();
         *root_inside.lock().unwrap() = Some(fixture.root.clone());
@@ -258,6 +259,7 @@ fn issue_89_fixture_cleanup_is_bounded_during_assertion_unwind() {
         ));
         let _ = mcp.receive_ids(&[10], RESPONSE_DEADLINE);
         fixture.wait_for_index_ready(RESPONSE_DEADLINE);
+        *cleanup_started_inside.lock().unwrap() = Some(Instant::now());
         mcp.send(tool_call(
             2,
             "unica.code.search",
@@ -269,7 +271,10 @@ fn issue_89_fixture_cleanup_is_bounded_during_assertion_unwind() {
     }));
 
     assert!(unwind.is_err());
-    assert!(started.elapsed() < Duration::from_secs(8));
+    assert!(
+        cleanup_started.lock().unwrap().unwrap().elapsed() < Duration::from_secs(8),
+        "fixture cleanup exceeded its bounded window"
+    );
     verify_records_dead(&tracked.lock().unwrap(), Duration::from_secs(3)).unwrap();
     let root = fixture_root.lock().unwrap().clone().unwrap();
     assert!(
@@ -551,25 +556,34 @@ impl Fixture {
     fn wait_for_index_ready(&self, timeout: Duration) {
         let status_path = self.cache.join("caches/bsl_index_status.json");
         let deadline = Instant::now() + timeout;
+        let mut last_status = "status file was not observed".to_string();
         while Instant::now() < deadline {
-            let ready = fs::read_to_string(&status_path)
-                .ok()
-                .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-                .is_some_and(|status| {
-                    status["status"] == "ready"
-                        && status["source_generation"].is_u64()
-                        && status["db_path"]
-                            .as_str()
-                            .is_some_and(|path| Path::new(path).is_file())
-                });
+            let ready = match fs::read_to_string(&status_path) {
+                Ok(text) => {
+                    last_status = text.clone();
+                    serde_json::from_str::<Value>(&text)
+                        .ok()
+                        .is_some_and(|status| {
+                            status["status"] == "ready"
+                                && status["source_generation"].is_u64()
+                                && status["db_path"]
+                                    .as_str()
+                                    .is_some_and(|path| Path::new(path).is_file())
+                        })
+                }
+                Err(error) => {
+                    last_status = format!("failed to read status: {error}");
+                    false
+                }
+            };
             if ready {
                 return;
             }
-            thread::yield_now();
+            thread::sleep(Duration::from_millis(10));
         }
         panic!(
-            "timed out waiting for generation-bound RLM index status at {}",
-            status_path.display()
+            "timed out waiting for generation-bound RLM index status at {}; last status: {last_status}",
+            status_path.display(),
         );
     }
 
