@@ -664,8 +664,11 @@ fn parse_final_owner_children(
 ) -> Result<Vec<ClosedOwnerChild>, String> {
     let (_, document) = parse_metadata_image(bytes)?;
     let artifact = exact_metadata_artifact(&document)?;
-    let Some(children) = meta_info_child(artifact, "ChildObjects") else {
-        return Ok(Vec::new());
+    let child_objects = exact_mdclasses_children(artifact, "ChildObjects", "owner descriptor")?;
+    let children = match child_objects.as_slice() {
+        [] => return Ok(Vec::new()),
+        [children] => *children,
+        _ => return Err("owner descriptor must contain at most one ChildObjects".into()),
     };
     children
         .children()
@@ -688,7 +691,18 @@ fn parse_owner_child_artifact(
         "Command" => (ClosedChildKind::Command, "Command"),
         _ => return Err("owner child entry is not a closed physical child kind".into()),
     };
-    let properties = meta_info_children(artifact, "Properties");
+    let properties =
+        exact_mdclasses_children(artifact, "Properties", &format!("{child_kind} descriptor"))?;
+    let child_objects = exact_mdclasses_children(
+        artifact,
+        "ChildObjects",
+        &format!("{child_kind} descriptor"),
+    )?;
+    if child_objects.len() > 1 {
+        return Err(format!(
+            "{child_kind} owner entry must contain at most one ChildObjects"
+        ));
+    }
     let name = match properties.as_slice() {
         [] => {
             if artifact.children().any(|node| node.is_element()) {
@@ -698,7 +712,19 @@ fn parse_owner_child_artifact(
             }
             meta_info_inner_text(artifact).trim().to_string()
         }
-        [properties] => exact_child_name(*properties, child_kind)?,
+        [properties] => {
+            let template_types = exact_mdclasses_children(
+                *properties,
+                "TemplateType",
+                &format!("{child_kind} descriptor"),
+            )?;
+            if template_types.len() > 1 {
+                return Err(format!(
+                    "{child_kind} owner entry must contain at most one TemplateType"
+                ));
+            }
+            exact_child_name(*properties, child_kind)?
+        }
         _ => {
             return Err(format!(
                 "{child_kind} owner entry must contain at most one Properties"
@@ -740,11 +766,14 @@ fn exact_metadata_artifact<'a, 'input>(
     }
     let artifacts = root
         .children()
-        .filter(|node| node.is_element() && node.tag_name().namespace() == Some(MD_CLASSES_NS))
+        .filter(roxmltree::Node::is_element)
         .collect::<Vec<_>>();
     let [artifact] = artifacts.as_slice() else {
-        return Err("metadata descriptor must contain exactly one artifact".into());
+        return Err("metadata descriptor must contain exactly one element artifact".into());
     };
+    if artifact.tag_name().namespace() != Some(MD_CLASSES_NS) {
+        return Err("metadata artifact is outside the MDClasses namespace".into());
+    }
     Ok(*artifact)
 }
 
@@ -762,7 +791,15 @@ fn parse_child_artifact(
         "Command" => "Command",
         _ => return Err("metadata artifact is not a closed physical child kind".into()),
     };
-    let properties = meta_info_children(artifact, "Properties");
+    let properties =
+        exact_mdclasses_children(artifact, "Properties", &format!("{kind} descriptor"))?;
+    let child_objects =
+        exact_mdclasses_children(artifact, "ChildObjects", &format!("{kind} descriptor"))?;
+    if child_objects.len() > 1 {
+        return Err(format!(
+            "{kind} descriptor must contain at most one ChildObjects"
+        ));
+    }
     let [properties] = properties.as_slice() else {
         return Err(format!(
             "{kind} descriptor must contain exactly one Properties"
@@ -773,7 +810,8 @@ fn parse_child_artifact(
         "Form" => MetadataChildProfile::Form,
         "Command" => MetadataChildProfile::Command,
         "Template" => {
-            let template_types = meta_info_children(*properties, "TemplateType");
+            let template_types =
+                exact_mdclasses_children(*properties, "TemplateType", "Template descriptor")?;
             let [template_type] = template_types.as_slice() else {
                 return Err("Template descriptor must contain exactly one TemplateType".into());
             };
@@ -795,7 +833,7 @@ fn parse_child_artifact(
 }
 
 fn exact_child_name(properties: roxmltree::Node<'_, '_>, kind: &str) -> Result<String, String> {
-    let names = meta_info_children(properties, "Name");
+    let names = exact_mdclasses_children(properties, "Name", &format!("{kind} descriptor"))?;
     let [name] = names.as_slice() else {
         return Err(format!("{kind} descriptor must contain exactly one Name"));
     };
@@ -804,6 +842,26 @@ fn exact_child_name(properties: roxmltree::Node<'_, '_>, kind: &str) -> Result<S
         return Err(format!("{kind} descriptor Name is empty"));
     }
     Ok(name)
+}
+
+fn exact_mdclasses_children<'a, 'input>(
+    node: roxmltree::Node<'a, 'input>,
+    local_name: &str,
+    role: &str,
+) -> Result<Vec<roxmltree::Node<'a, 'input>>, String> {
+    let named = node
+        .children()
+        .filter(|child| child.is_element() && child.tag_name().name() == local_name)
+        .collect::<Vec<_>>();
+    if named
+        .iter()
+        .any(|child| child.tag_name().namespace() != Some(MD_CLASSES_NS))
+    {
+        return Err(format!(
+            "{role} contains {local_name} outside the MDClasses namespace"
+        ));
+    }
+    Ok(named)
 }
 
 fn child_descriptor_role_matches(
@@ -4034,6 +4092,13 @@ mod tests {
         .into_bytes()
     }
 
+    fn typed_owner_descriptor_with_structure(structure: &str) -> Vec<u8> {
+        format!(
+            r#"<MetaDataObject xmlns="{MD_NS}" version="2.20"><Catalog uuid="66666666-6666-4666-8666-666666666666"><Properties><Name>Editable</Name></Properties>{structure}</Catalog></MetaDataObject>"#
+        )
+        .into_bytes()
+    }
+
     fn typed_child_descriptor(child: &str) -> Vec<u8> {
         format!(r#"<MetaDataObject xmlns="{MD_NS}" version="2.20">{child}</MetaDataObject>"#)
             .into_bytes()
@@ -4116,6 +4181,259 @@ mod tests {
         validate_child_footprints(subject, &mut diagnostics);
         messages.extend(diagnostics.into_iter().map(|diagnostic| diagnostic.message));
         messages
+    }
+
+    fn closed_validator_subject(
+        kind: &str,
+        template_type: Option<&str>,
+        owner_entry: &str,
+        descriptor_child: &str,
+    ) -> MetadataValidationSubject {
+        let (directories, resources) = match kind {
+            "Form" => (
+                vec![
+                    MetadataChildDirectoryKind::Root,
+                    MetadataChildDirectoryKind::Extension,
+                ],
+                vec![(MetadataChildResourceKind::FormContent, 0)],
+            ),
+            "Template" => (
+                vec![
+                    MetadataChildDirectoryKind::Root,
+                    MetadataChildDirectoryKind::Extension,
+                ],
+                vec![(
+                    MetadataChildResourceKind::TemplateContent {
+                        template_type: MetadataTemplateType::TextDocument,
+                        part: MetadataTemplateResourcePart::Primary,
+                    },
+                    0,
+                )],
+            ),
+            "Command" => (Vec::new(), Vec::new()),
+            _ => unreachable!(),
+        };
+        let mut subject = closed_child_subject(
+            kind,
+            "Main",
+            template_type,
+            descriptor_child,
+            directories,
+            resources,
+        );
+        subject.resources[0].bytes = typed_owner_descriptor(&[owner_entry.to_string()]);
+        for resource in &mut subject.resources {
+            if let MetadataResourceRole::ChildResource { kind, .. } = resource.role {
+                resource.bytes = match kind {
+                    MetadataChildResourceKind::FormContent => br#"<?xml version="1.0" encoding="UTF-8"?><Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"/>"#.to_vec(),
+                    MetadataChildResourceKind::TemplateContent { .. } => b"text".to_vec(),
+                    MetadataChildResourceKind::Module => unreachable!(),
+                };
+            }
+        }
+        subject.resources.push(image(
+            MetadataResourceRole::Registration,
+            owner(&[("Catalog", "Editable")]),
+        ));
+        subject
+    }
+
+    fn assert_exact_closed_diagnostic(subject: &MetadataValidationSubject, expected: &str) {
+        let result = MetadataValidator.validate(subject, &context());
+        assert_eq!(result.status, MetaValidationStatus::Failed, "{result:?}");
+        let diagnostic = result
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.message == expected)
+            .unwrap_or_else(|| panic!("missing `{expected}` in {:?}", result.diagnostics));
+        assert_eq!(diagnostic.code, MetaDiagnosticCode::ProviderUnavailable);
+        assert_eq!(diagnostic.metadata_path, Some(address("Catalog.Editable")));
+        assert_eq!(diagnostic.field.as_deref(), Some("resources"));
+        assert_eq!(diagnostic.operation_index, None);
+        assert!(!diagnostic.message.contains("/workspace"));
+    }
+
+    #[test]
+    fn closed_validator_rejects_foreign_childobjects_in_the_final_owner_graph() {
+        let child = typed_child_xml("Command", "Main", None);
+        let owner_entry =
+            format!(r#"<x:ChildObjects xmlns:x="urn:foreign">{child}</x:ChildObjects>"#);
+        let descriptor = typed_child_xml("Command", "Main", None);
+        let mut subject = closed_validator_subject(
+            "Command",
+            None,
+            &typed_child_xml("Command", "Main", None),
+            &descriptor,
+        );
+        subject.resources[0].bytes = typed_owner_descriptor_with_structure(&owner_entry);
+
+        assert_exact_closed_diagnostic(
+            &subject,
+            "owner descriptor contains ChildObjects outside the MDClasses namespace: Catalog.Editable",
+        );
+    }
+
+    #[test]
+    fn closed_validator_rejects_foreign_properties_in_each_child_descriptor_kind() {
+        for (kind, template_type, foreign_properties) in [
+            (
+                "Form",
+                None,
+                r#"<x:Properties xmlns:x="urn:foreign"><x:Name>Main</x:Name></x:Properties>"#,
+            ),
+            (
+                "Template",
+                Some("TextDocument"),
+                r#"<x:Properties xmlns:x="urn:foreign"><x:Name>Main</x:Name><x:TemplateType>TextDocument</x:TemplateType></x:Properties>"#,
+            ),
+            (
+                "Command",
+                None,
+                r#"<x:Properties xmlns:x="urn:foreign"><x:Name>Main</x:Name></x:Properties>"#,
+            ),
+        ] {
+            let owner_entry = typed_child_xml(kind, "Main", template_type);
+            let descriptor = format!(
+                r#"<{kind} uuid="77777777-7777-4777-8777-777777777777">{foreign_properties}<ChildObjects/></{kind}>"#
+            );
+            let subject = closed_validator_subject(kind, template_type, &owner_entry, &descriptor);
+
+            assert_exact_closed_diagnostic(
+                &subject,
+                &format!(
+                    "declared child descriptor is invalid: {kind} descriptor contains Properties outside the MDClasses namespace: Catalog.Editable"
+                ),
+            );
+        }
+    }
+
+    #[test]
+    fn closed_validator_rejects_foreign_name_under_exact_properties() {
+        let owner_entry = typed_child_xml("Form", "Main", None);
+        let descriptor = r#"<Form uuid="77777777-7777-4777-8777-777777777777"><Properties><x:Name xmlns:x="urn:foreign">Main</x:Name></Properties><ChildObjects/></Form>"#;
+        let subject = closed_validator_subject("Form", None, &owner_entry, descriptor);
+
+        assert_exact_closed_diagnostic(
+            &subject,
+            "declared child descriptor is invalid: Form descriptor contains Name outside the MDClasses namespace: Catalog.Editable",
+        );
+    }
+
+    #[test]
+    fn closed_validator_rejects_foreign_templatetype_under_exact_template_properties() {
+        let owner_entry = typed_child_xml("Template", "Main", Some("TextDocument"));
+        let descriptor = r#"<Template uuid="77777777-7777-4777-8777-777777777777"><Properties><Name>Main</Name><x:TemplateType xmlns:x="urn:foreign">TextDocument</x:TemplateType></Properties><ChildObjects/></Template>"#;
+        let subject =
+            closed_validator_subject("Template", Some("TextDocument"), &owner_entry, descriptor);
+
+        assert_exact_closed_diagnostic(
+            &subject,
+            "declared child descriptor is invalid: Template descriptor contains TemplateType outside the MDClasses namespace: Catalog.Editable",
+        );
+    }
+
+    #[test]
+    fn closed_validator_rejects_foreign_childobjects_in_a_child_descriptor() {
+        let owner_entry = typed_child_xml("Form", "Main", None);
+        let descriptor = r#"<Form uuid="77777777-7777-4777-8777-777777777777"><Properties><Name>Main</Name></Properties><x:ChildObjects xmlns:x="urn:foreign"/></Form>"#;
+        let subject = closed_validator_subject("Form", None, &owner_entry, descriptor);
+
+        assert_exact_closed_diagnostic(
+            &subject,
+            "declared child descriptor is invalid: Form descriptor contains ChildObjects outside the MDClasses namespace: Catalog.Editable",
+        );
+    }
+
+    #[test]
+    fn closed_validator_rejects_foreign_templatetype_in_an_inline_owner_entry() {
+        let owner_entry = r#"<Template uuid="77777777-7777-4777-8777-777777777777"><Properties><Name>Main</Name><x:TemplateType xmlns:x="urn:foreign">TextDocument</x:TemplateType></Properties><ChildObjects/></Template>"#;
+        let descriptor = typed_child_xml("Template", "Main", Some("TextDocument"));
+        let subject =
+            closed_validator_subject("Template", Some("TextDocument"), owner_entry, &descriptor);
+
+        assert_exact_closed_diagnostic(
+            &subject,
+            "Template descriptor contains TemplateType outside the MDClasses namespace: Catalog.Editable",
+        );
+    }
+
+    #[test]
+    fn closed_validator_rejects_an_additional_foreign_root_artifact() {
+        let owner_entry = typed_child_xml("Command", "Main", None);
+        let valid = typed_child_xml("Command", "Main", None);
+        let descriptor = format!(r#"{valid}<x:Ignored xmlns:x="urn:foreign"/>"#);
+        let subject = closed_validator_subject("Command", None, &owner_entry, &descriptor);
+
+        assert_exact_closed_diagnostic(
+            &subject,
+            "declared child descriptor is invalid: metadata descriptor must contain exactly one element artifact: Catalog.Editable",
+        );
+    }
+
+    #[test]
+    fn closed_validator_rejects_mdclasses_and_foreign_structural_duplicates() {
+        let cases = [
+            (
+                "ChildObjects",
+                "Command",
+                None,
+                format!(
+                    r#"<ChildObjects>{}</ChildObjects><x:ChildObjects xmlns:x="urn:foreign"/>"#,
+                    typed_child_xml("Command", "Main", None)
+                ),
+                typed_child_xml("Command", "Main", None),
+                "owner descriptor contains ChildObjects outside the MDClasses namespace: Catalog.Editable".to_string(),
+            ),
+            (
+                "Properties",
+                "Command",
+                None,
+                typed_child_xml("Command", "Main", None),
+                r#"<Command uuid="77777777-7777-4777-8777-777777777777"><Properties><Name>Main</Name></Properties><x:Properties xmlns:x="urn:foreign"><x:Name>Main</x:Name></x:Properties><ChildObjects/></Command>"#.to_string(),
+                "declared child descriptor is invalid: Command descriptor contains Properties outside the MDClasses namespace: Catalog.Editable".to_string(),
+            ),
+            (
+                "Name",
+                "Form",
+                None,
+                typed_child_xml("Form", "Main", None),
+                r#"<Form uuid="77777777-7777-4777-8777-777777777777"><Properties><Name>Main</Name><x:Name xmlns:x="urn:foreign">Main</x:Name></Properties><ChildObjects/></Form>"#.to_string(),
+                "declared child descriptor is invalid: Form descriptor contains Name outside the MDClasses namespace: Catalog.Editable".to_string(),
+            ),
+            (
+                "TemplateType",
+                "Template",
+                Some("TextDocument"),
+                typed_child_xml("Template", "Main", Some("TextDocument")),
+                r#"<Template uuid="77777777-7777-4777-8777-777777777777"><Properties><Name>Main</Name><TemplateType>TextDocument</TemplateType><x:TemplateType xmlns:x="urn:foreign">TextDocument</x:TemplateType></Properties><ChildObjects/></Template>"#.to_string(),
+                "declared child descriptor is invalid: Template descriptor contains TemplateType outside the MDClasses namespace: Catalog.Editable".to_string(),
+            ),
+        ];
+        for (label, kind, template_type, owner_entry, descriptor, expected) in cases {
+            let mut subject =
+                closed_validator_subject(kind, template_type, &owner_entry, &descriptor);
+            if label == "ChildObjects" {
+                subject.resources[0].bytes = typed_owner_descriptor_with_structure(&owner_entry);
+            }
+            assert_exact_closed_diagnostic(&subject, &expected);
+            assert!(!expected.contains('/'), "{label}");
+        }
+    }
+
+    #[test]
+    fn closed_child_graph_accepts_real_text_refs_and_typed_inline_owner_entries() {
+        for (label, owner_entry) in [
+            ("real-ref", "<Command>Main</Command>".to_string()),
+            ("typed-inline", typed_child_xml("Command", "Main", None)),
+        ] {
+            let descriptor = typed_child_xml("Command", "Main", None);
+            let subject = closed_validator_subject("Command", None, &owner_entry, &descriptor);
+
+            let mut diagnostics = Vec::new();
+            validate_child_footprints(&subject, &mut diagnostics);
+
+            assert!(diagnostics.is_empty(), "{label}: {diagnostics:?}");
+        }
     }
 
     #[test]
