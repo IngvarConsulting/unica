@@ -28,7 +28,7 @@ use super::super::common::{
 use super::super::compile_transaction::{
     CompileTransaction, DirectoryMembershipSnapshot, RegistrationStatus,
 };
-use super::edit::ResolvedMetadataObject;
+use super::edit::{ResolvedMetadataObject, TypedChildResourcePlan};
 use super::legacy_dsl::{
     compile_meta_value, meta_compile_definition_format_dependency_paths,
     meta_compile_event_subscription_dependencies, read_meta_compile_definition_guarded,
@@ -107,6 +107,7 @@ impl PreparedMetaEdit {
         context: &WorkspaceContext,
         post_image: Vec<u8>,
         diagnostics: Vec<MetaDiagnostic>,
+        child_resources: TypedChildResourcePlan,
     ) -> Result<Box<dyn PreparedMetadataMutation>, MetaFailure> {
         let target = request.metadata_path.clone();
         let changed = post_image != resolved.descriptor_preimage;
@@ -139,6 +140,20 @@ impl PreparedMetaEdit {
         bind_resolved_support_guard_evidence(&mut transaction, &resolved.descriptor_path, context)
             .map_err(|message| provider_failure(&target, message))?;
 
+        for mutation in child_resources.file_mutations {
+            match (mutation.pre_image, mutation.post_image) {
+                (None, Some(post_image)) => transaction
+                    .create_bytes(mutation.path, post_image)
+                    .map_err(|message| provider_failure(&target, message))?,
+                (Some(pre_image), Some(post_image)) => transaction
+                    .replace_bytes(mutation.path, pre_image, post_image)
+                    .map_err(|message| provider_failure(&target, message))?,
+                (Some(_), None) => transaction
+                    .remove_path(mutation.path)
+                    .map_err(|message| provider_failure(&target, message))?,
+                (None, None) => {}
+            }
+        }
         let mut validation_resources = vec![
             MetadataResourceImage {
                 role: MetadataResourceRole::Descriptor,
@@ -149,6 +164,25 @@ impl PreparedMetaEdit {
                 bytes: resolved.owner_preimage.clone(),
             },
         ];
+        for dependency in child_resources.relation_dependencies {
+            transaction
+                .guard_or_verify_exact_preimage(&dependency.path, &dependency.bytes)
+                .map_err(|message| provider_failure(&target, message))?;
+            guard_resolved_platform_xml_target_dependencies(
+                &mut transaction,
+                &dependency.handle,
+                context,
+            )
+            .map_err(|message| provider_failure(&target, message))?;
+            validation_resources.push(MetadataResourceImage {
+                role: MetadataResourceRole::Dependency {
+                    target: dependency.target,
+                },
+                bytes: dependency.bytes,
+            });
+        }
+
+        validation_resources.extend(child_resources.validation_resources);
         for (dependency_path, dependency_target, bytes) in
             registered_language_images(&resolved.source_root, &resolved.owner_preimage)
                 .map_err(|message| provider_failure(&target, message))?
@@ -170,7 +204,7 @@ impl PreparedMetaEdit {
         Ok(Box::new(Self {
             preview: MetaMutationData {
                 metadata_path: target.clone(),
-                changed,
+                changed: changed || !child_resources.publication_plan.is_empty(),
                 publication_plan: changed
                     .then(|| MetaPublicationPlanEntry {
                         action: MetaPublicationAction::Update,
@@ -178,6 +212,7 @@ impl PreparedMetaEdit {
                         metadata_path: Some(target),
                     })
                     .into_iter()
+                    .chain(child_resources.publication_plan)
                     .collect(),
                 validation: MetaValidationData {
                     status: MetaValidationStatus::Passed,

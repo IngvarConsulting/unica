@@ -101,7 +101,8 @@ mod tests {
     use crate::application::ports::MetadataResourceRole;
     use crate::domain::metadata::{
         MetaCollection, MetaEditOperation, MetaElementInput, MetaElementUpdateInput,
-        MetaPropertyChanges, MetaPropertyInput, MetaPropertyValue, MetaScope, MetadataKind,
+        MetaPropertyChanges, MetaPropertyInput, MetaPropertyValue, MetaRelation, MetaScope,
+        MetadataKind, MetadataReference, RelationEditMode,
     };
     use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
     use crate::infrastructure::native_operations::cf::create_configuration_scaffold;
@@ -301,6 +302,139 @@ mod tests {
         );
         assert_eq!(fs::read(&fixture.owner).unwrap(), owner_external);
         assert_eq!(fs::read(&fixture.descriptor).unwrap(), before);
+    }
+
+    #[test]
+    fn typed_form_resource_creation_rolls_back_with_the_owner_descriptor() {
+        let fixture = Fixture::new("form-resource-rollback");
+        let cancellation = CancellationToken::new();
+        let descriptor_before = fs::read(&fixture.descriptor).unwrap();
+        let request = MetadataRequest::Edit(MetaEditRequest {
+            source_set: "main".into(),
+            metadata_path: fixture.target.clone(),
+            operations: vec![MetaEditOperation::add(
+                MetaCollection::Forms,
+                None,
+                vec![MetaElementInput::named("ObjectForm")],
+            )
+            .unwrap()],
+            dry_run: false,
+        });
+        let prepared =
+            MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+                .unwrap();
+
+        let failure = match with_commit_failpoint(CommitFailpoint::AfterObjectFiles, || {
+            prepared.publish(&cancellation)
+        }) {
+            Ok(_) => panic!("form child failpoint unexpectedly published"),
+            Err(failure) => failure,
+        };
+
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::ProviderUnavailable
+        );
+        assert_eq!(fs::read(&fixture.descriptor).unwrap(), descriptor_before);
+        assert!(!fixture
+            .root
+            .join("src/Catalogs/Editable/Forms/ObjectForm.xml")
+            .exists());
+        assert!(!fixture
+            .root
+            .join("src/Catalogs/Editable/Forms/ObjectForm")
+            .exists());
+    }
+
+    #[test]
+    fn typed_relation_target_is_resolved_and_guarded_against_linked_drift() {
+        let fixture = Fixture::new("relation-dependency-drift");
+        let cancellation = CancellationToken::new();
+        MetadataOperations::prepare_mutation(
+            &MetadataRequest::Add(MetaAddRequest {
+                source_set: "main".into(),
+                kind: MetadataKind::Catalog,
+                name: "Parent".into(),
+                dry_run: false,
+            }),
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap()
+        .publish(&cancellation)
+        .unwrap();
+        let parent_address =
+            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Parent").unwrap();
+        let request = MetadataRequest::Edit(MetaEditRequest {
+            source_set: "main".into(),
+            metadata_path: fixture.target.clone(),
+            operations: vec![MetaEditOperation::edit_relations(
+                MetaRelation::Owners,
+                RelationEditMode::Add,
+                vec![MetadataReference {
+                    metadata_path: parent_address.clone(),
+                }],
+            )
+            .unwrap()],
+            dry_run: false,
+        });
+        let prepared =
+            MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+                .unwrap();
+        assert!(prepared.validation_subject().resources.iter().any(|resource| {
+            matches!(&resource.role, MetadataResourceRole::Dependency { target } if target == &parent_address)
+        }));
+        let parent_path = fixture.root.join("src/Catalogs/Parent.xml");
+        let mut external = fs::read(&parent_path).unwrap();
+        external.extend_from_slice(b"\n");
+        fs::write(&parent_path, &external).unwrap();
+
+        let failure = match prepared.publish(&cancellation) {
+            Ok(_) => panic!("linked target drift unexpectedly published"),
+            Err(failure) => failure,
+        };
+
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::ConcurrentModification
+        );
+        assert_eq!(fs::read(&parent_path).unwrap(), external);
+    }
+
+    #[test]
+    fn typed_relation_missing_target_fails_prepare_with_the_exact_target_field() {
+        let fixture = Fixture::new("relation-target-missing");
+        let cancellation = CancellationToken::new();
+        let missing =
+            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Missing").unwrap();
+        let request = MetadataRequest::Edit(MetaEditRequest {
+            source_set: "main".into(),
+            metadata_path: fixture.target.clone(),
+            operations: vec![MetaEditOperation::edit_relations(
+                MetaRelation::Owners,
+                RelationEditMode::Add,
+                vec![MetadataReference {
+                    metadata_path: missing,
+                }],
+            )
+            .unwrap()],
+            dry_run: false,
+        });
+
+        let failure =
+            match MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation) {
+                Ok(_) => panic!("missing relation target unexpectedly prepared"),
+                Err(failure) => failure,
+            };
+
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::TargetNotFound
+        );
+        assert_eq!(
+            failure.diagnostics[0].field.as_deref(),
+            Some("operations[0].targets[0]")
+        );
     }
 
     #[test]

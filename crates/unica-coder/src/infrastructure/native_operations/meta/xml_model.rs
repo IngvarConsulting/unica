@@ -401,12 +401,17 @@ pub(super) fn emit_meta_typed_value_type(
 ) {
     lines.push(format!("{indent}<Type>"));
     let content_indent = format!("{indent}\t");
-    for variant in &metadata_type.variants {
-        let (tag, wire_name) = typed_wire_type(variant);
-        lines.push(format!(
-            "{content_indent}<v8:{tag}>{}</v8:{tag}>",
-            escape_xml(&wire_name)
-        ));
+    for expected_tag in ["Type", "TypeSet"] {
+        for variant in &metadata_type.variants {
+            let (tag, wire_name) = typed_wire_type(variant);
+            if tag != expected_tag {
+                continue;
+            }
+            lines.push(format!(
+                "{content_indent}<v8:{tag}>{}</v8:{tag}>",
+                escape_xml(&wire_name)
+            ));
+        }
     }
     for variant in &metadata_type.variants {
         match variant {

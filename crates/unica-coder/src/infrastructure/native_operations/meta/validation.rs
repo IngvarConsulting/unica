@@ -9,8 +9,8 @@ use crate::domain::format_profile::{
     classify_root_version, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
 };
 use crate::domain::metadata::{
-    MetaDiagnostic, MetaDiagnosticCode, MetaDiagnosticSeverity, MetaValidationData,
-    MetaValidationStatus,
+    metadata_kind_collections, MetaCollection, MetaDiagnostic, MetaDiagnosticCode,
+    MetaDiagnosticSeverity, MetaValidationData, MetaValidationStatus, MetadataKind,
 };
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::domain::workspace::WorkspaceContext;
@@ -2704,62 +2704,42 @@ pub(super) fn meta_validate_dynamic_standard_attr(md_type: &str, name: &str) -> 
             ))
 }
 
-pub(super) fn meta_validate_child_rules(md_type: &str) -> Option<&'static [&'static str]> {
-    match md_type {
-        "Catalog"
-        | "Document"
-        | "ExchangePlan"
-        | "ChartOfCharacteristicTypes"
-        | "ChartOfCalculationTypes"
-        | "BusinessProcess"
-        | "Report"
-        | "DataProcessor"
-        | "ExternalReport"
-        | "ExternalDataProcessor" => {
-            Some(&["Attribute", "TabularSection", "Form", "Template", "Command"])
-        }
-        "ChartOfAccounts" => Some(&[
+pub(super) fn meta_validate_child_rules(md_type: &str) -> Option<Vec<&'static str>> {
+    if matches!(md_type, "ExternalReport" | "ExternalDataProcessor") {
+        return Some(vec![
             "Attribute",
             "TabularSection",
             "Form",
             "Template",
             "Command",
-            "AccountingFlag",
-            "ExtDimensionAccountingFlag",
-        ]),
-        "Task" => Some(&[
-            "Attribute",
-            "TabularSection",
-            "Form",
-            "Template",
-            "Command",
-            "AddressingAttribute",
-        ]),
-        "Enum" => Some(&["EnumValue", "Form", "Template", "Command"]),
-        "InformationRegister" | "AccumulationRegister" | "AccountingRegister" => Some(&[
-            "Dimension",
-            "Resource",
-            "Attribute",
-            "Form",
-            "Template",
-            "Command",
-        ]),
-        "CalculationRegister" => Some(&[
-            "Dimension",
-            "Resource",
-            "Attribute",
-            "Form",
-            "Template",
-            "Command",
-            "Recalculation",
-        ]),
-        "DocumentJournal" => Some(&["Column", "Form", "Template", "Command"]),
-        "HTTPService" => Some(&["URLTemplate"]),
-        "WebService" => Some(&["Operation"]),
-        "Constant" => Some(&["Form"]),
-        "DefinedType" | "CommonModule" | "ScheduledJob" | "EventSubscription" => Some(&[]),
-        _ => None,
+        ]);
     }
+    let kind = MetadataKind::parse(md_type).ok()?;
+    let mut rules = metadata_kind_collections(kind)
+        .iter()
+        .map(|collection| match collection {
+            MetaCollection::Attributes => "Attribute",
+            MetaCollection::TabularSections => "TabularSection",
+            MetaCollection::Dimensions => "Dimension",
+            MetaCollection::Resources => "Resource",
+            MetaCollection::EnumValues => "EnumValue",
+            MetaCollection::Columns => "Column",
+            MetaCollection::Forms => "Form",
+            MetaCollection::Templates => "Template",
+            MetaCollection::Commands => "Command",
+        })
+        .collect::<Vec<_>>();
+    match kind {
+        MetadataKind::ChartOfAccounts => {
+            rules.extend(["AccountingFlag", "ExtDimensionAccountingFlag"])
+        }
+        MetadataKind::Task => rules.push("AddressingAttribute"),
+        MetadataKind::CalculationRegister => rules.push("Recalculation"),
+        MetadataKind::HTTPService => rules.push("URLTemplate"),
+        MetadataKind::WebService => rules.push("Operation"),
+        _ => {}
+    }
+    Some(rules)
 }
 
 pub(super) fn meta_validate_property_values() -> &'static [(&'static str, &'static [&'static str])]

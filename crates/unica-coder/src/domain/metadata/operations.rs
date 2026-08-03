@@ -1,6 +1,7 @@
 use super::{
     MetaDiagnostic, MetaDiagnosticCode, MetaPropertyChanges, MetadataReference, MetadataType,
 };
+use crate::domain::source_target::MetadataAddress;
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -54,6 +55,43 @@ impl MetaCollection {
                     format!("unsupported metadata collection `{value}`"),
                 )
             })
+    }
+}
+
+/// Closed collection capability matrix for the 23 metadata kinds exposed by
+/// the typed metadata surface. Platform XML validation and mutation both use
+/// this registry so a child cannot be accepted by one boundary and rejected by
+/// the other.
+pub(crate) fn metadata_kind_collections(kind: super::MetadataKind) -> &'static [MetaCollection] {
+    use super::MetadataKind;
+    use MetaCollection::*;
+
+    match kind {
+        MetadataKind::Catalog
+        | MetadataKind::Document
+        | MetadataKind::ChartOfAccounts
+        | MetadataKind::ChartOfCharacteristicTypes
+        | MetadataKind::ChartOfCalculationTypes
+        | MetadataKind::BusinessProcess
+        | MetadataKind::Task
+        | MetadataKind::ExchangePlan
+        | MetadataKind::Report
+        | MetadataKind::DataProcessor => &[Attributes, TabularSections, Forms, Templates, Commands],
+        MetadataKind::Enum => &[EnumValues, Forms, Templates, Commands],
+        MetadataKind::Constant => &[Forms],
+        MetadataKind::InformationRegister
+        | MetadataKind::AccumulationRegister
+        | MetadataKind::AccountingRegister
+        | MetadataKind::CalculationRegister => &[
+            Attributes, Dimensions, Resources, Forms, Templates, Commands,
+        ],
+        MetadataKind::DocumentJournal => &[Columns, Forms, Templates, Commands],
+        MetadataKind::CommonModule
+        | MetadataKind::ScheduledJob
+        | MetadataKind::EventSubscription
+        | MetadataKind::HTTPService
+        | MetadataKind::WebService
+        | MetadataKind::DefinedType => &[],
     }
 }
 
@@ -521,8 +559,78 @@ pub(crate) enum MetaEditOperation {
     EditRelations {
         relation: MetaRelation,
         mode: RelationEditMode,
-        targets: Vec<MetadataReference>,
+        targets: Vec<MetaRelationTarget>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MetaRelationTarget {
+    Object(MetadataReference),
+    Field(MetadataFieldPath),
+}
+
+impl MetaRelationTarget {
+    pub(crate) fn wire_value(&self) -> &str {
+        match self {
+            Self::Object(reference) => reference.metadata_path.as_str(),
+            Self::Field(path) => &path.value,
+        }
+    }
+
+    pub(crate) fn dependency(&self) -> &MetadataAddress {
+        match self {
+            Self::Object(reference) => &reference.metadata_path,
+            Self::Field(path) => &path.owner,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MetadataFieldKind {
+    Attribute,
+    StandardAttribute,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MetadataFieldPath {
+    pub(crate) owner: MetadataAddress,
+    pub(crate) kind: MetadataFieldKind,
+    pub(crate) name: String,
+    value: String,
+}
+
+impl MetadataFieldPath {
+    pub(crate) fn parse(value: &str) -> Result<Self, MetaDiagnostic> {
+        let parts = value.split('.').collect::<Vec<_>>();
+        if parts.len() != 4 {
+            return Err(invalid_operation(
+                "fieldPath",
+                "field path must be Kind.Name.Attribute.Name or Kind.Name.StandardAttribute.Name",
+            ));
+        }
+        validate_name(parts[3], "fieldPath")?;
+        let owner = MetadataAddress::parse(
+            crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+            &format!("{}.{}", parts[0], parts[1]),
+        )
+        .map_err(|_| invalid_operation("fieldPath", "field path owner is invalid"))?;
+        let kind = match parts[2] {
+            "Attribute" => MetadataFieldKind::Attribute,
+            "StandardAttribute" => MetadataFieldKind::StandardAttribute,
+            _ => {
+                return Err(invalid_operation(
+                    "fieldPath",
+                    "field path kind must be Attribute or StandardAttribute",
+                ))
+            }
+        };
+        Ok(Self {
+            owner,
+            kind,
+            name: parts[3].to_string(),
+            value: value.to_string(),
+        })
+    }
 }
 
 impl MetaEditOperation {
@@ -610,6 +718,21 @@ impl MetaEditOperation {
         relation: MetaRelation,
         mode: RelationEditMode,
         targets: Vec<MetadataReference>,
+    ) -> Result<Self, MetaDiagnostic> {
+        Self::edit_relation_targets(
+            relation,
+            mode,
+            targets
+                .into_iter()
+                .map(MetaRelationTarget::Object)
+                .collect(),
+        )
+    }
+
+    pub(crate) fn edit_relation_targets(
+        relation: MetaRelation,
+        mode: RelationEditMode,
+        targets: Vec<MetaRelationTarget>,
     ) -> Result<Self, MetaDiagnostic> {
         if targets.is_empty() {
             return Err(invalid_operation(

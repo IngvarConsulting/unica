@@ -12,10 +12,13 @@ use crate::domain::format_profile::ACTIVE_FORMAT_PROFILE;
 use crate::domain::metadata::{
     DateFractions, MetaCollection, MetaDiagnostic, MetaDiagnosticCode, MetaEditOperation,
     MetaElementDefinition, MetaElementUpdate, MetaFillValue, MetaPosition, MetaPropertyKey,
-    MetaPropertyValue, MetaRelation, MetadataType, MetadataTypeVariant, NumberSign,
-    RelationEditMode, StringLengthMode,
+    MetaPropertyValue, MetaPublicationAction, MetaPublicationPlanEntry, MetaPublicationResource,
+    MetaRelation, MetadataType, MetadataTypeVariant, NumberSign, RelationEditMode,
+    StringLengthMode,
 };
-use crate::domain::source_target::{SourceTarget, TargetKind};
+use crate::domain::source_target::{
+    MetadataAddress, SourceTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
+};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform_xml_owner::{
     resolve_platform_xml_owners_with_provenance, PlatformXmlOwnerKind, PlatformXmlOwnerProvenance,
@@ -37,24 +40,27 @@ use std::path::{Path, PathBuf};
 
 use super::super::cf::cf_validate_enum_allowed;
 use super::super::common::{
-    absolutize, escape_xml, guard_active_format_owner, json_value_to_python_string, read_utf8_sig,
-    required_path,
+    absolutize, escape_xml, guard_active_format_owner, is_1c_identifier,
+    json_value_to_python_string, read_utf8_sig, required_path,
 };
 use super::super::compile_transaction::CompileTransaction;
+use super::format_contract::{
+    meta_8_3_27_boolean_properties, validate_meta_8_3_27_boolean_property_value,
+    validate_metadata_8_3_27_boolean_contract, validate_metadata_8_3_27_enum_contract,
+};
 use super::legacy_dsl::{
-    meta_8_3_27_boolean_properties, meta_edit_apply_definition, meta_edit_apply_inline_operation,
+    meta_edit_apply_definition, meta_edit_apply_inline_operation,
     meta_edit_definition_requests_line_number_length, meta_edit_inline_requests_line_number_length,
-    parse_meta_edit_dsl_input, read_meta_edit_definition,
-    validate_meta_8_3_27_boolean_property_value, validate_meta_8_3_27_property_value,
+    parse_meta_edit_dsl_input, read_meta_edit_definition, validate_meta_8_3_27_property_value,
     validate_meta_compile_attr_type, validate_meta_compile_name,
-    validate_meta_compile_tabular_section_types, validate_metadata_8_3_27_boolean_contract,
-    validate_metadata_8_3_27_enum_contract, MetaEditDslInput,
+    validate_meta_compile_tabular_section_types, MetaEditDslInput,
 };
 use super::publisher::{fresh_meta_compile_uuid, PreparedMetaEdit};
 use super::template_catalog::{
     emit_meta_attribute, emit_meta_column, emit_meta_enum_value, emit_meta_register_field,
-    emit_meta_tabular_section, meta_compile_attributes, meta_compile_enum_values,
-    meta_compile_parse_attr, meta_line_number_length_is_applicable, normalize_meta_enum_value,
+    emit_meta_tabular_section, meta_attribute_context, meta_compile_attributes,
+    meta_compile_enum_values, meta_compile_parse_attr, meta_line_number_length_is_applicable,
+    metadata_generated_types_8_3_27, metadata_standard_attribute_names, normalize_meta_enum_value,
     normalize_meta_object_ref, split_meta_camel_case, MetaCompileAttr, MetaCompileEnumValue,
     MetaCompileTabularSection,
 };
@@ -3124,6 +3130,542 @@ pub(crate) struct ResolvedMetadataObject {
     pub(super) owner_preimage: Vec<u8>,
 }
 
+#[derive(Debug)]
+pub(super) struct TypedChildFileMutation {
+    pub(super) path: PathBuf,
+    pub(super) pre_image: Option<Vec<u8>>,
+    pub(super) post_image: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct TypedChildResourcePlan {
+    pub(super) file_mutations: Vec<TypedChildFileMutation>,
+    pub(super) publication_plan: Vec<MetaPublicationPlanEntry>,
+    pub(super) validation_resources: Vec<MetadataResourceImage>,
+    pub(super) relation_dependencies: Vec<TypedRelationDependency>,
+}
+
+#[derive(Debug)]
+pub(super) struct TypedRelationDependency {
+    pub(super) handle: ClosedPlatformXmlTarget,
+    pub(super) path: PathBuf,
+    pub(super) bytes: Vec<u8>,
+    pub(super) target: MetadataAddress,
+}
+
+fn plan_typed_child_resources(
+    descriptor_path: &Path,
+    owner: &MetadataAddress,
+    object_kind: &str,
+    object_name: &str,
+    operations: &[MetaEditOperation],
+    post_image: &str,
+) -> Result<TypedChildResourcePlan, MetaFailure> {
+    let mut plan = TypedChildResourcePlan::default();
+    let object_dir = descriptor_path.with_extension("");
+    let mut request_created_names = std::collections::HashSet::new();
+    let mut request_renamed_destinations = std::collections::HashSet::new();
+    for operation in operations {
+        match operation {
+            MetaEditOperation::Add {
+                collection,
+                elements,
+                ..
+            } => {
+                for element in elements {
+                    request_created_names.insert((collection.as_str(), element.name.clone()));
+                }
+            }
+            MetaEditOperation::Update {
+                collection,
+                elements,
+                ..
+            } => {
+                for element in elements {
+                    if let Some(new_name) = &element.new_name {
+                        request_renamed_destinations
+                            .insert((collection.as_str(), new_name.clone()));
+                    }
+                    if request_created_names.contains(&(collection.as_str(), element.name.clone()))
+                    {
+                        if let Some(new_name) = &element.new_name {
+                            request_created_names.insert((collection.as_str(), new_name.clone()));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut planned_existing_names = std::collections::HashSet::new();
+    for (operation_index, operation) in operations.iter().enumerate() {
+        if let MetaEditOperation::Update {
+            collection,
+            elements,
+            ..
+        } = operation
+        {
+            let Some((directory, resource)) = typed_physical_collection(*collection) else {
+                continue;
+            };
+            for element in elements {
+                let old_name = &element.name;
+                if request_created_names.contains(&(collection.as_str(), old_name.clone()))
+                    || request_renamed_destinations
+                        .contains(&(collection.as_str(), old_name.clone()))
+                {
+                    continue;
+                }
+                if !planned_existing_names.insert((collection.as_str(), old_name.clone())) {
+                    continue;
+                }
+                let immediate_name = element.new_name.as_deref().unwrap_or(old_name);
+                let final_name = typed_new_child_final_name(
+                    *collection,
+                    immediate_name,
+                    &operations[operation_index + 1..],
+                );
+                let collection_dir = object_dir.join(directory);
+                let old_descriptor_path = collection_dir.join(format!("{old_name}.xml"));
+                let old_descriptor = read_typed_child_file(&old_descriptor_path, owner)?;
+                let Some(new_name) = final_name else {
+                    plan.file_mutations.push(TypedChildFileMutation {
+                        path: old_descriptor_path,
+                        pre_image: Some(old_descriptor),
+                        post_image: None,
+                    });
+                    let old_payload_dir = collection_dir.join(old_name);
+                    if old_payload_dir.exists() {
+                        plan.file_mutations.push(TypedChildFileMutation {
+                            path: old_payload_dir,
+                            pre_image: Some(Vec::new()),
+                            post_image: None,
+                        });
+                    }
+                    plan.publication_plan.push(MetaPublicationPlanEntry {
+                        action: MetaPublicationAction::Remove,
+                        resource,
+                        metadata_path: Some(typed_child_logical_address(
+                            owner,
+                            object_kind,
+                            object_name,
+                            *collection,
+                            old_name,
+                        )?),
+                    });
+                    continue;
+                };
+                let new_descriptor = typed_child_descriptor_image(
+                    post_image,
+                    collection_tag(*collection),
+                    &new_name,
+                )?;
+                if old_name == &new_name {
+                    plan.file_mutations.push(TypedChildFileMutation {
+                        path: old_descriptor_path,
+                        pre_image: Some(old_descriptor),
+                        post_image: Some(new_descriptor.clone()),
+                    });
+                } else {
+                    plan.file_mutations.push(TypedChildFileMutation {
+                        path: old_descriptor_path,
+                        pre_image: Some(old_descriptor),
+                        post_image: None,
+                    });
+                    let old_payload_dir = collection_dir.join(old_name);
+                    if old_payload_dir.exists() {
+                        let payload_files = read_typed_child_tree(&old_payload_dir)?;
+                        plan.file_mutations.push(TypedChildFileMutation {
+                            path: old_payload_dir,
+                            pre_image: Some(Vec::new()),
+                            post_image: None,
+                        });
+                        for (relative, bytes) in payload_files {
+                            plan.file_mutations.push(TypedChildFileMutation {
+                                path: collection_dir.join(&new_name).join(relative),
+                                pre_image: None,
+                                post_image: Some(bytes),
+                            });
+                        }
+                    }
+                    plan.file_mutations.push(TypedChildFileMutation {
+                        path: collection_dir.join(format!("{new_name}.xml")),
+                        pre_image: None,
+                        post_image: Some(new_descriptor.clone()),
+                    });
+                }
+                plan.validation_resources.push(MetadataResourceImage {
+                    role: typed_child_role(*collection, owner, &new_name),
+                    bytes: new_descriptor,
+                });
+                plan.publication_plan.push(MetaPublicationPlanEntry {
+                    action: MetaPublicationAction::Update,
+                    resource,
+                    metadata_path: Some(typed_child_logical_address(
+                        owner,
+                        object_kind,
+                        object_name,
+                        *collection,
+                        &new_name,
+                    )?),
+                });
+            }
+            continue;
+        }
+        if let MetaEditOperation::Remove {
+            collection, names, ..
+        } = operation
+        {
+            let Some((directory, resource)) = typed_physical_collection(*collection) else {
+                continue;
+            };
+            for name in names {
+                if request_created_names.contains(&(collection.as_str(), name.clone())) {
+                    continue;
+                }
+                if request_renamed_destinations.contains(&(collection.as_str(), name.clone())) {
+                    continue;
+                }
+                if !planned_existing_names.insert((collection.as_str(), name.clone())) {
+                    continue;
+                }
+                let collection_dir = object_dir.join(directory);
+                let descriptor = collection_dir.join(format!("{name}.xml"));
+                let pre_image = read_typed_child_file(&descriptor, owner)?;
+                plan.file_mutations.push(TypedChildFileMutation {
+                    path: descriptor,
+                    pre_image: Some(pre_image),
+                    post_image: None,
+                });
+                let payload_dir = collection_dir.join(name);
+                if payload_dir.exists() {
+                    plan.file_mutations.push(TypedChildFileMutation {
+                        path: payload_dir,
+                        pre_image: Some(Vec::new()),
+                        post_image: None,
+                    });
+                }
+                plan.publication_plan.push(MetaPublicationPlanEntry {
+                    action: MetaPublicationAction::Remove,
+                    resource,
+                    metadata_path: Some(typed_child_logical_address(
+                        owner,
+                        object_kind,
+                        object_name,
+                        *collection,
+                        name,
+                    )?),
+                });
+            }
+            continue;
+        }
+        let MetaEditOperation::Add {
+            collection,
+            elements,
+            ..
+        } = operation
+        else {
+            continue;
+        };
+        let (directory, resource) = match collection {
+            MetaCollection::Forms => ("Forms", MetaPublicationResource::Form),
+            MetaCollection::Templates => ("Templates", MetaPublicationResource::Template),
+            MetaCollection::Commands => ("Commands", MetaPublicationResource::Command),
+            _ => continue,
+        };
+        for element in elements {
+            let Some(final_name) = typed_new_child_final_name(
+                *collection,
+                &element.name,
+                &operations[operation_index + 1..],
+            ) else {
+                continue;
+            };
+            let child_xml =
+                typed_child_descriptor_image(post_image, collection_tag(*collection), &final_name)?;
+            let collection_dir = object_dir.join(directory);
+            plan.file_mutations.push(TypedChildFileMutation {
+                path: collection_dir.join(format!("{final_name}.xml")),
+                pre_image: None,
+                post_image: Some(child_xml.clone()),
+            });
+            match collection {
+                MetaCollection::Forms => {
+                    let content = minimal_typed_form_content(object_kind, object_name);
+                    plan.file_mutations.push(TypedChildFileMutation {
+                        path: collection_dir.join(&final_name).join("Ext/Form.xml"),
+                        pre_image: None,
+                        post_image: Some(content.into_bytes()),
+                    });
+                }
+                MetaCollection::Templates => {
+                    plan.file_mutations.push(TypedChildFileMutation {
+                        path: collection_dir.join(&final_name).join("Ext/Template.xml"),
+                        pre_image: None,
+                        post_image: Some(
+                            super::super::mxl::empty_spreadsheet_document_xml().into_bytes(),
+                        ),
+                    });
+                }
+                MetaCollection::Commands => {}
+                _ => unreachable!(),
+            }
+            let role = match collection {
+                MetaCollection::Forms => MetadataResourceRole::Form {
+                    owner: owner.clone(),
+                    name: final_name.clone(),
+                },
+                MetaCollection::Templates => MetadataResourceRole::Template {
+                    owner: owner.clone(),
+                    name: final_name.clone(),
+                },
+                MetaCollection::Commands => MetadataResourceRole::Command {
+                    owner: owner.clone(),
+                    name: final_name.clone(),
+                },
+                _ => unreachable!(),
+            };
+            plan.validation_resources.push(MetadataResourceImage {
+                role,
+                bytes: child_xml,
+            });
+            let child_kind = match collection {
+                MetaCollection::Forms => "Form",
+                MetaCollection::Templates => "Template",
+                MetaCollection::Commands => "Command",
+                _ => unreachable!(),
+            };
+            let child_path = MetadataAddress::parse(
+                PLATFORM_XML_8_3_27_FORMAT_2_20,
+                &format!(
+                    "{}.{}.{}.{}",
+                    object_kind, object_name, child_kind, final_name
+                ),
+            )
+            .map_err(|_| {
+                MetaFailure::from(
+                    typed_diagnostic(
+                        MetaDiagnosticCode::ProviderUnavailable,
+                        "typed child logical address cannot be represented",
+                        Some("collection"),
+                    )
+                    .with_metadata_path(owner.clone()),
+                )
+            })?;
+            plan.publication_plan.push(MetaPublicationPlanEntry {
+                action: MetaPublicationAction::Create,
+                resource,
+                metadata_path: Some(child_path),
+            });
+        }
+    }
+    Ok(plan)
+}
+
+fn typed_physical_collection(
+    collection: MetaCollection,
+) -> Option<(&'static str, MetaPublicationResource)> {
+    match collection {
+        MetaCollection::Forms => Some(("Forms", MetaPublicationResource::Form)),
+        MetaCollection::Templates => Some(("Templates", MetaPublicationResource::Template)),
+        MetaCollection::Commands => Some(("Commands", MetaPublicationResource::Command)),
+        _ => None,
+    }
+}
+
+fn typed_new_child_final_name(
+    collection: MetaCollection,
+    initial_name: &str,
+    later_operations: &[MetaEditOperation],
+) -> Option<String> {
+    let mut name = initial_name.to_string();
+    for operation in later_operations {
+        match operation {
+            MetaEditOperation::Update {
+                collection: candidate,
+                elements,
+                ..
+            } if *candidate == collection => {
+                if let Some(update) = elements.iter().find(|element| element.name == name) {
+                    if let Some(new_name) = &update.new_name {
+                        name = new_name.clone();
+                    }
+                }
+            }
+            MetaEditOperation::Remove {
+                collection: candidate,
+                names,
+                ..
+            } if *candidate == collection && names.contains(&name) => return None,
+            _ => {}
+        }
+    }
+    Some(name)
+}
+
+fn typed_child_role(
+    collection: MetaCollection,
+    owner: &MetadataAddress,
+    name: &str,
+) -> MetadataResourceRole {
+    match collection {
+        MetaCollection::Forms => MetadataResourceRole::Form {
+            owner: owner.clone(),
+            name: name.to_string(),
+        },
+        MetaCollection::Templates => MetadataResourceRole::Template {
+            owner: owner.clone(),
+            name: name.to_string(),
+        },
+        MetaCollection::Commands => MetadataResourceRole::Command {
+            owner: owner.clone(),
+            name: name.to_string(),
+        },
+        _ => unreachable!(),
+    }
+}
+
+fn typed_child_logical_address(
+    owner: &MetadataAddress,
+    object_kind: &str,
+    object_name: &str,
+    collection: MetaCollection,
+    name: &str,
+) -> Result<MetadataAddress, MetaFailure> {
+    let child_kind = match collection {
+        MetaCollection::Forms => "Form",
+        MetaCollection::Templates => "Template",
+        MetaCollection::Commands => "Command",
+        _ => unreachable!(),
+    };
+    MetadataAddress::parse(
+        PLATFORM_XML_8_3_27_FORMAT_2_20,
+        &format!("{object_kind}.{object_name}.{child_kind}.{name}"),
+    )
+    .map_err(|_| {
+        MetaFailure::from(
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "typed child logical address cannot be represented",
+                Some("collection"),
+            )
+            .with_metadata_path(owner.clone()),
+        )
+    })
+}
+
+fn read_typed_child_file(path: &Path, owner: &MetadataAddress) -> Result<Vec<u8>, MetaFailure> {
+    fs::read(path).map_err(|_| {
+        MetaFailure::from(
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "typed child descriptor pre-image is unavailable",
+                None,
+            )
+            .with_metadata_path(owner.clone()),
+        )
+    })
+}
+
+fn read_typed_child_tree(root: &Path) -> Result<Vec<(PathBuf, Vec<u8>)>, MetaFailure> {
+    fn visit(
+        root: &Path,
+        current: &Path,
+        files: &mut Vec<(PathBuf, Vec<u8>)>,
+    ) -> Result<(), MetaFailure> {
+        let entries = fs::read_dir(current).map_err(|_| {
+            MetaFailure::from(typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "typed child payload tree is unavailable",
+                None,
+            ))
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|_| {
+                MetaFailure::from(typed_diagnostic(
+                    MetaDiagnosticCode::ProviderUnavailable,
+                    "typed child payload tree is unavailable",
+                    None,
+                ))
+            })?;
+            let file_type = entry.file_type().map_err(|_| {
+                MetaFailure::from(typed_diagnostic(
+                    MetaDiagnosticCode::ProviderUnavailable,
+                    "typed child payload entry type is unavailable",
+                    None,
+                ))
+            })?;
+            if file_type.is_symlink() {
+                return Err(MetaFailure::from(typed_diagnostic(
+                    MetaDiagnosticCode::ProviderUnavailable,
+                    "typed child payload tree contains a symbolic link",
+                    None,
+                )));
+            }
+            if file_type.is_dir() {
+                visit(root, &entry.path(), files)?;
+            } else if file_type.is_file() {
+                let path = entry.path();
+                let bytes = fs::read(&path).map_err(|_| {
+                    MetaFailure::from(typed_diagnostic(
+                        MetaDiagnosticCode::ProviderUnavailable,
+                        "typed child payload file is unavailable",
+                        None,
+                    ))
+                })?;
+                files.push((path.strip_prefix(root).unwrap().to_path_buf(), bytes));
+            }
+        }
+        Ok(())
+    }
+    let mut files = Vec::new();
+    visit(root, root, &mut files)?;
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(files)
+}
+
+fn typed_child_descriptor_image(
+    owner_xml: &str,
+    tag: &str,
+    name: &str,
+) -> Result<Vec<u8>, MetaFailure> {
+    let document = Document::parse(owner_xml.trim_start_matches('\u{feff}')).map_err(|_| {
+        MetaFailure::from(typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "typed owner post-image is not valid XML",
+            None,
+        ))
+    })?;
+    let child = document
+        .descendants()
+        .filter(|node| node.is_element() && node.tag_name().name() == tag)
+        .find(|node| meta_edit_child_object_name(*node).as_deref() == Some(name))
+        .ok_or_else(|| {
+            MetaFailure::from(typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "typed child descriptor is missing from owner post-image",
+                Some("elements"),
+            ))
+        })?;
+    let child_xml = &owner_xml[child.range()];
+    Ok(format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject {} version=\"2.20\">\n{}\n</MetaDataObject>",
+        super::template_catalog::meta_xmlns_decl(),
+        child_xml
+    )
+    .into_bytes())
+}
+
+fn minimal_typed_form_content(_object_kind: &str, _object_name: &str) -> String {
+    concat!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+        "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" version=\"2.20\">\n",
+        "\t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>\n",
+        "</Form>"
+    )
+    .to_string()
+}
+
 pub(crate) fn resolve_typed_edit_object(
     request: &MetaEditRequest,
     context: &WorkspaceContext,
@@ -3292,8 +3834,228 @@ pub(crate) fn prepare_typed_edit(
         }
         failure
     })?;
+    let (object_kind, object_name) = meta_edit_object_identity(&xml).map_err(|_| {
+        MetaFailure::from(
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "typed metadata post-image identity is unavailable",
+                None,
+            )
+            .with_metadata_path(request.metadata_path.clone()),
+        )
+    })?;
+    let child_resources = plan_typed_child_resources(
+        &resolved.descriptor_path,
+        &request.metadata_path,
+        &object_kind,
+        &object_name,
+        &request.operations,
+        &xml,
+    )?;
+    let mut child_resources = child_resources;
+    child_resources.relation_dependencies =
+        resolve_typed_relation_dependencies(request, context, &xml)?;
     let post_image = meta_edit_preserve_source_format(&xml, source_format);
-    PreparedMetaEdit::prepare(request, resolved, context, post_image, diagnostics)
+    PreparedMetaEdit::prepare(
+        request,
+        resolved,
+        context,
+        post_image,
+        diagnostics,
+        child_resources,
+    )
+}
+
+fn resolve_typed_relation_dependencies(
+    request: &MetaEditRequest,
+    context: &WorkspaceContext,
+    owner_post_image: &str,
+) -> Result<Vec<TypedRelationDependency>, MetaFailure> {
+    let mut dependencies = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (operation_index, operation) in request.operations.iter().enumerate() {
+        let MetaEditOperation::EditRelations {
+            relation, targets, ..
+        } = operation
+        else {
+            continue;
+        };
+        for (target_index, target) in targets.iter().enumerate() {
+            validate_typed_relation_target(
+                &request.metadata_path,
+                owner_post_image,
+                *relation,
+                target,
+            )
+            .map_err(|mut diagnostic| {
+                diagnostic.operation_index = Some(operation_index);
+                diagnostic.field = Some(format!(
+                    "operations[{operation_index}].targets[{target_index}]"
+                ));
+                MetaFailure::from(diagnostic.with_metadata_path(request.metadata_path.clone()))
+            })?;
+            let dependency = target.dependency();
+            if dependency == &request.metadata_path || !seen.insert(dependency.clone()) {
+                continue;
+            }
+            let source_target = SourceTarget {
+                source_set: request.source_set.clone(),
+                metadata_path: Some(dependency.clone()),
+            };
+            let resolution =
+                resolve_platform_xml_target(context, &source_target, TargetKindPolicy::Any)
+                    .map_err(|_| {
+                        MetaFailure::from(
+                            typed_diagnostic(
+                                MetaDiagnosticCode::TargetNotFound,
+                                "relation target does not resolve in the selected source set",
+                                Some(&format!(
+                                    "operations[{operation_index}].targets[{target_index}]"
+                                )),
+                            )
+                            .with_operation_index(operation_index)
+                            .with_metadata_path(request.metadata_path.clone()),
+                        )
+                    })?;
+            if resolution.resolved.target_kind != TargetKind::MetadataObject {
+                return Err(MetaFailure::from(
+                    typed_diagnostic(
+                        MetaDiagnosticCode::InvalidArguments,
+                        "relation target must identify a metadata object",
+                        Some(&format!(
+                            "operations[{operation_index}].targets[{target_index}]"
+                        )),
+                    )
+                    .with_operation_index(operation_index)
+                    .with_metadata_path(request.metadata_path.clone()),
+                ));
+            }
+            let evidence =
+                platform_xml_resource_evidence(context, &resolution.handle).map_err(|_| {
+                    MetaFailure::from(
+                        typed_diagnostic(
+                            MetaDiagnosticCode::ProviderUnavailable,
+                            "relation target evidence is unavailable",
+                            Some(&format!(
+                                "operations[{operation_index}].targets[{target_index}]"
+                            )),
+                        )
+                        .with_operation_index(operation_index)
+                        .with_metadata_path(request.metadata_path.clone()),
+                    )
+                })?;
+            let bytes = fs::read(&evidence.target_path).map_err(|_| {
+                MetaFailure::from(
+                    typed_diagnostic(
+                        MetaDiagnosticCode::ProviderUnavailable,
+                        "relation target pre-image is unavailable",
+                        Some(&format!(
+                            "operations[{operation_index}].targets[{target_index}]"
+                        )),
+                    )
+                    .with_operation_index(operation_index)
+                    .with_metadata_path(request.metadata_path.clone()),
+                )
+            })?;
+            dependencies.push(TypedRelationDependency {
+                handle: resolution.handle,
+                path: evidence.target_path,
+                bytes,
+                target: dependency.clone(),
+            });
+        }
+    }
+    Ok(dependencies)
+}
+
+fn validate_typed_relation_target(
+    owner: &MetadataAddress,
+    owner_post_image: &str,
+    relation: MetaRelation,
+    target: &crate::domain::metadata::MetaRelationTarget,
+) -> Result<(), MetaDiagnostic> {
+    let target_kind = target.dependency().segments().next().unwrap_or_default();
+    match relation {
+        MetaRelation::Owners => {
+            if owner.segments().next() != Some("Catalog") || target_kind != "Catalog" {
+                return Err(typed_diagnostic(
+                    MetaDiagnosticCode::InvalidArguments,
+                    "owners requires Catalog owner and Catalog targets",
+                    Some("targets"),
+                ));
+            }
+        }
+        MetaRelation::RegisterRecords => {
+            if owner.segments().next() != Some("Document")
+                || !matches!(
+                    target_kind,
+                    "InformationRegister"
+                        | "AccumulationRegister"
+                        | "AccountingRegister"
+                        | "CalculationRegister"
+                )
+            {
+                return Err(typed_diagnostic(
+                    MetaDiagnosticCode::InvalidArguments,
+                    "registerRecords requires Document owner and register targets",
+                    Some("targets"),
+                ));
+            }
+        }
+        MetaRelation::BasedOn => {
+            if owner.segments().next() != Some(target_kind) {
+                return Err(typed_diagnostic(
+                    MetaDiagnosticCode::InvalidArguments,
+                    "basedOn target kind must match the edited object kind",
+                    Some("targets"),
+                ));
+            }
+        }
+        MetaRelation::InputByString => {
+            let crate::domain::metadata::MetaRelationTarget::Field(field) = target else {
+                return Err(typed_diagnostic(
+                    MetaDiagnosticCode::InvalidArguments,
+                    "inputByString requires typed field paths",
+                    Some("targets"),
+                ));
+            };
+            if &field.owner != owner {
+                return Err(typed_diagnostic(
+                    MetaDiagnosticCode::InvalidArguments,
+                    "inputByString field must belong to the edited object",
+                    Some("targets"),
+                ));
+            }
+            if field.kind == crate::domain::metadata::MetadataFieldKind::Attribute {
+                let document = Document::parse(owner_post_image).map_err(|_| {
+                    typed_diagnostic(
+                        MetaDiagnosticCode::ProviderUnavailable,
+                        "owner post-image is not valid XML",
+                        Some("targets"),
+                    )
+                })?;
+                let found = document
+                    .descendants()
+                    .filter(|node| node.is_element() && node.tag_name().name() == "Attribute")
+                    .any(|node| meta_edit_child_object_name(node).as_deref() == Some(&field.name));
+                if !found {
+                    return Err(typed_diagnostic(
+                        MetaDiagnosticCode::TargetNotFound,
+                        "inputByString attribute does not exist in the owner post-image",
+                        Some("targets"),
+                    ));
+                }
+            } else if !metadata_standard_attribute_names(target_kind).contains(&field.name.as_str())
+            {
+                return Err(typed_diagnostic(
+                    MetaDiagnosticCode::TargetNotFound,
+                    "inputByString standard attribute does not exist for the owner kind",
+                    Some("targets"),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Apply a closed sequence to one private working image. The caller observes
@@ -3307,7 +4069,13 @@ pub(crate) fn apply_typed_operations(
     let mut counts = MetaEditCounts::default();
     for (operation_index, operation) in operations.iter().enumerate() {
         if let Err(diagnostic) = apply_typed_operation(&mut working, operation, &mut counts) {
-            return Err(diagnostic.with_operation_index(operation_index).into());
+            let mut diagnostic = diagnostic.with_operation_index(operation_index);
+            if let Some(field) = diagnostic.field.as_mut() {
+                if !field.starts_with("operations[") {
+                    *field = format!("operations[{operation_index}].{field}");
+                }
+            }
+            return Err(diagnostic.into());
         }
         Document::parse(working.trim_start_matches('\u{feff}')).map_err(|_| {
             MetaFailure::from(
@@ -3376,12 +4144,7 @@ fn apply_typed_operation(
                     scope.as_ref().map(|scope| scope.tabular_section.as_str()),
                     element,
                 )
-                .map_err(|mut diagnostic| {
-                    diagnostic
-                        .field
-                        .get_or_insert_with(|| format!("elements[{index}]"));
-                    diagnostic
-                })?;
+                .map_err(|diagnostic| qualify_element_diagnostic(diagnostic, index))?;
                 counts.added += 1;
             }
         }
@@ -3398,12 +4161,7 @@ fn apply_typed_operation(
                     scope.as_ref().map(|scope| scope.tabular_section.as_str()),
                     element,
                 )
-                .map_err(|mut diagnostic| {
-                    diagnostic
-                        .field
-                        .get_or_insert_with(|| format!("elements[{index}]"));
-                    diagnostic
-                })?;
+                .map_err(|diagnostic| qualify_element_diagnostic(diagnostic, index))?;
                 counts.modified += 1;
             }
         }
@@ -3421,9 +4179,7 @@ fn apply_typed_operation(
                     name,
                 )
                 .map_err(|mut diagnostic| {
-                    diagnostic
-                        .field
-                        .get_or_insert_with(|| format!("names[{index}]"));
+                    diagnostic.field = Some(format!("names[{index}]"));
                     diagnostic
                 })?;
                 counts.removed += 1;
@@ -3439,6 +4195,15 @@ fn apply_typed_operation(
         }
     }
     Ok(())
+}
+
+fn qualify_element_diagnostic(mut diagnostic: MetaDiagnostic, index: usize) -> MetaDiagnostic {
+    diagnostic.field = Some(match diagnostic.field.take() {
+        Some(field) if field.starts_with("scope") || field.starts_with("collection") => field,
+        Some(field) => format!("elements[{index}].{field}"),
+        None => format!("elements[{index}]"),
+    });
+    diagnostic
 }
 
 fn typed_diagnostic(
@@ -3457,67 +4222,14 @@ fn ensure_typed_collection_allowed(
     object_kind: &str,
     collection: MetaCollection,
 ) -> Result<(), MetaDiagnostic> {
-    let allowed = match collection {
-        MetaCollection::Attributes => matches!(
-            object_kind,
-            "Catalog"
-                | "Document"
-                | "Report"
-                | "DataProcessor"
-                | "ExchangePlan"
-                | "ChartOfCharacteristicTypes"
-                | "ChartOfAccounts"
-                | "ChartOfCalculationTypes"
-                | "BusinessProcess"
-                | "Task"
-                | "InformationRegister"
-                | "AccumulationRegister"
-                | "AccountingRegister"
-                | "CalculationRegister"
-        ),
-        MetaCollection::TabularSections => matches!(
-            object_kind,
-            "Catalog"
-                | "Document"
-                | "Report"
-                | "DataProcessor"
-                | "ExchangePlan"
-                | "ChartOfCharacteristicTypes"
-                | "ChartOfAccounts"
-                | "ChartOfCalculationTypes"
-                | "BusinessProcess"
-                | "Task"
-        ),
-        MetaCollection::Dimensions | MetaCollection::Resources => matches!(
-            object_kind,
-            "InformationRegister"
-                | "AccumulationRegister"
-                | "AccountingRegister"
-                | "CalculationRegister"
-        ),
-        MetaCollection::EnumValues => object_kind == "Enum",
-        MetaCollection::Columns => object_kind == "DocumentJournal",
-        MetaCollection::Forms | MetaCollection::Templates | MetaCollection::Commands => matches!(
-            object_kind,
-            "Catalog"
-                | "Document"
-                | "Enum"
-                | "Constant"
-                | "InformationRegister"
-                | "AccumulationRegister"
-                | "AccountingRegister"
-                | "CalculationRegister"
-                | "ChartOfAccounts"
-                | "ChartOfCharacteristicTypes"
-                | "ChartOfCalculationTypes"
-                | "BusinessProcess"
-                | "Task"
-                | "ExchangePlan"
-                | "DocumentJournal"
-                | "Report"
-                | "DataProcessor"
-        ),
-    };
+    let kind = crate::domain::metadata::MetadataKind::parse(object_kind).map_err(|_| {
+        typed_diagnostic(
+            MetaDiagnosticCode::UnsupportedKind,
+            format!("metadata kind `{object_kind}` has no typed collection profile"),
+            Some("collection"),
+        )
+    })?;
+    let allowed = crate::domain::metadata::metadata_kind_collections(kind).contains(&collection);
     if allowed {
         Ok(())
     } else {
@@ -3644,17 +4356,17 @@ fn add_typed_element(
     scope: Option<&str>,
     element: &MetaElementDefinition,
 ) -> Result<(), MetaDiagnostic> {
-    validate_meta_compile_name("typed metadata element", &element.name).map_err(|_| {
-        typed_diagnostic(
+    if !is_1c_identifier(&element.name) {
+        return Err(typed_diagnostic(
             MetaDiagnosticCode::InvalidArguments,
             "metadata element name is invalid",
             Some("name"),
-        )
-    })?;
+        ));
+    }
     let tag = collection_tag(collection);
     ensure_typed_name_free(xml_text, tag, scope, &element.name)?;
     let position = typed_insert_position(element.position.as_ref());
-    let lines = render_typed_element(object_kind, object_name, collection, element);
+    let lines = render_typed_element(object_kind, object_name, collection, element)?;
     let result = match scope {
         Some(section) => meta_edit_insert_tabular_child_object_with_position(
             xml_text, section, tag, &position, &lines,
@@ -3708,7 +4420,8 @@ fn render_typed_element(
     object_name: &str,
     collection: MetaCollection,
     element: &MetaElementDefinition,
-) -> Vec<String> {
+) -> Result<Vec<String>, MetaDiagnostic> {
+    validate_typed_element_value_profile(element)?;
     let mut lines = Vec::new();
     let mut next_uuid = fresh_meta_compile_uuid;
     let attr = || MetaCompileAttr {
@@ -3734,16 +4447,12 @@ fn render_typed_element(
             &mut lines,
             "\t\t\t",
             &attr(),
-            if object_kind == "Catalog" {
-                "catalog"
-            } else {
-                "object"
-            },
+            meta_attribute_context(object_kind),
             &mut next_uuid,
         ),
         MetaCollection::TabularSections => {
-            let columns = element
-                .attributes
+            let ordered_attributes = order_typed_nested_attributes(&element.attributes)?;
+            let columns = ordered_attributes
                 .iter()
                 .map(|attribute| MetaCompileAttr {
                     name: attribute.name.clone(),
@@ -3770,6 +4479,9 @@ fn render_typed_element(
                 object_name,
                 &mut next_uuid,
             );
+            let mut rendered = lines.join("\n");
+            apply_typed_nested_attribute_fields(&mut rendered, &ordered_attributes)?;
+            return Ok(rendered.lines().map(ToOwned::to_owned).collect());
         }
         MetaCollection::Dimensions | MetaCollection::Resources => emit_meta_register_field(
             &mut lines,
@@ -3804,8 +4516,283 @@ fn render_typed_element(
         ),
     }
     let mut rendered = lines.join("\n");
+    if collection == MetaCollection::Forms {
+        rendered = rendered
+            .replace("<FormType>Ordinary</FormType>", "<FormType>Managed</FormType>")
+            .replace(
+                "<UsePurposes/>",
+                concat!(
+                    "<UsePurposes>\n",
+                    "\t\t\t\t\t<v8:Value xsi:type=\"app:ApplicationUsePurpose\">PlatformApplication</v8:Value>\n",
+                    "\t\t\t\t\t<v8:Value xsi:type=\"app:ApplicationUsePurpose\">MobilePlatformApplication</v8:Value>\n",
+                    "\t\t\t\t</UsePurposes>"
+                ),
+            );
+    }
     apply_typed_element_fields(&mut rendered, element);
-    rendered.lines().map(ToOwned::to_owned).collect()
+    Ok(rendered.lines().map(ToOwned::to_owned).collect())
+}
+
+fn order_typed_nested_attributes(
+    attributes: &[MetaElementDefinition],
+) -> Result<Vec<MetaElementDefinition>, MetaDiagnostic> {
+    let mut ordered = Vec::<MetaElementDefinition>::with_capacity(attributes.len());
+    for (index, attribute) in attributes.iter().cloned().enumerate() {
+        let position = attribute.position.clone();
+        ordered.push(attribute);
+        let Some(position) = position else {
+            continue;
+        };
+        let anchor = position
+            .before
+            .as_ref()
+            .or(position.after.as_ref())
+            .unwrap();
+        let Some(anchor_index) = ordered
+            .iter()
+            .position(|candidate| &candidate.name == anchor)
+        else {
+            return Err(typed_diagnostic(
+                MetaDiagnosticCode::TargetNotFound,
+                "nested attribute position target was not found",
+                Some(&format!("attributes[{index}].position")),
+            ));
+        };
+        let current = ordered.pop().unwrap();
+        let insertion = if position.before.is_some() {
+            anchor_index
+        } else {
+            anchor_index + 1
+        };
+        ordered.insert(insertion, current);
+    }
+    Ok(ordered)
+}
+
+fn apply_typed_nested_attribute_fields(
+    xml: &mut String,
+    attributes: &[MetaElementDefinition],
+) -> Result<(), MetaDiagnostic> {
+    const WRAPPER: &str = "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">";
+    for attribute in attributes {
+        validate_typed_element_value_profile(attribute)?;
+        let wrapped = format!("{WRAPPER}{xml}</MetaDataObject>");
+        let document = Document::parse(&wrapped).map_err(|_| {
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "rendered tabular section is not valid XML",
+                None,
+            )
+        })?;
+        let range = document
+            .descendants()
+            .filter(|node| node.is_element() && node.tag_name().name() == "Attribute")
+            .find(|node| meta_edit_child_object_name(*node).as_deref() == Some(&attribute.name))
+            .map(|node| {
+                let range = node.range();
+                range.start - WRAPPER.len()..range.end - WRAPPER.len()
+            })
+            .ok_or_else(|| {
+                typed_diagnostic(
+                    MetaDiagnosticCode::ProviderUnavailable,
+                    "rendered nested attribute is unavailable",
+                    Some("attributes"),
+                )
+            })?;
+        drop(document);
+        let mut attribute_xml = xml[range.clone()].to_string();
+        apply_typed_element_fields(&mut attribute_xml, attribute);
+        xml.replace_range(range, &attribute_xml);
+    }
+    Ok(())
+}
+
+fn validate_typed_element_value_profile(
+    element: &MetaElementDefinition,
+) -> Result<(), MetaDiagnostic> {
+    let Some(metadata_type) = element.r#type.as_ref() else {
+        return if element.fill_value.is_some() {
+            Err(typed_diagnostic(
+                MetaDiagnosticCode::InvalidArguments,
+                "fillValue requires an explicit metadata type",
+                Some("fillValue"),
+            ))
+        } else {
+            Ok(())
+        };
+    };
+    for (index, variant) in metadata_type.variants.iter().enumerate() {
+        match variant {
+            MetadataTypeVariant::Reference { metadata_path } => {
+                let kind = metadata_path.segments().next().unwrap_or_default();
+                let supports_ref = metadata_generated_types_8_3_27(kind)
+                    .is_some_and(|types| types.iter().any(|(_, category)| *category == "Ref"));
+                if !supports_ref {
+                    return Err(typed_diagnostic(
+                        MetaDiagnosticCode::InvalidArguments,
+                        format!("metadata kind `{kind}` does not define a reference type"),
+                        Some(&format!("type.variants[{index}].metadataPath")),
+                    ));
+                }
+            }
+            MetadataTypeVariant::DefinedType { metadata_path }
+                if metadata_path.segments().next() != Some("DefinedType") =>
+            {
+                return Err(typed_diagnostic(
+                    MetaDiagnosticCode::InvalidArguments,
+                    "defined-type variant must target DefinedType",
+                    Some(&format!("type.variants[{index}].metadataPath")),
+                ));
+            }
+            _ => {}
+        }
+    }
+    let Some(fill_value) = element.fill_value.as_ref() else {
+        return Ok(());
+    };
+    let compatible = match fill_value {
+        MetaFillValue::String(value) => metadata_type.variants.iter().any(|variant| {
+            matches!(
+                variant,
+                MetadataTypeVariant::String { length, .. }
+                    if *length == 0 || value.chars().count() <= *length as usize
+            )
+        }),
+        MetaFillValue::Number(value) => metadata_type.variants.iter().any(|variant| {
+            let MetadataTypeVariant::Number {
+                digits,
+                fraction,
+                sign,
+            } = variant
+            else {
+                return false;
+            };
+            typed_decimal_shape(value).is_some_and(|(negative, integer_digits, fraction_digits)| {
+                (*sign == NumberSign::Any || !negative)
+                    && integer_digits + fraction_digits <= *digits as usize
+                    && fraction_digits <= *fraction as usize
+            })
+        }),
+        MetaFillValue::Boolean(_) => metadata_type
+            .variants
+            .iter()
+            .any(|variant| matches!(variant, MetadataTypeVariant::Boolean)),
+        MetaFillValue::DateTime(value) => {
+            typed_xs_datetime_is_valid(value)
+                && metadata_type
+                    .variants
+                    .iter()
+                    .any(|variant| matches!(variant, MetadataTypeVariant::Date { .. }))
+        }
+        MetaFillValue::Reference(reference) => metadata_type.variants.iter().any(|variant| {
+            matches!(
+                variant,
+                MetadataTypeVariant::Reference { metadata_path }
+                    if metadata_path == &reference.metadata_path
+            )
+        }),
+    };
+    if compatible {
+        Ok(())
+    } else {
+        Err(typed_diagnostic(
+            MetaDiagnosticCode::InvalidArguments,
+            "fillValue is not lexically valid and compatible with the metadata type",
+            Some("fillValue"),
+        ))
+    }
+}
+
+fn typed_decimal_shape(value: &str) -> Option<(bool, usize, usize)> {
+    let (negative, unsigned) = match value.as_bytes().first() {
+        Some(b'-') => (true, &value[1..]),
+        Some(b'+') => (false, &value[1..]),
+        _ => (false, value),
+    };
+    let (integer, fraction) = unsigned
+        .split_once('.')
+        .map_or((unsigned, ""), |parts| parts);
+    if integer.is_empty()
+        || !integer.bytes().all(|byte| byte.is_ascii_digit())
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+        || (unsigned.contains('.') && fraction.is_empty())
+    {
+        return None;
+    }
+    Some((
+        negative,
+        integer.trim_start_matches('0').len().max(1),
+        fraction.len(),
+    ))
+}
+
+fn typed_xs_datetime_is_valid(value: &str) -> bool {
+    let core = if let Some(core) = value.strip_suffix('Z') {
+        core
+    } else if value.len() >= 6 {
+        let split = value.len() - 6;
+        let timezone = &value[split..];
+        if matches!(timezone.as_bytes().first(), Some(b'+') | Some(b'-'))
+            && timezone.as_bytes().get(3) == Some(&b':')
+            && timezone[1..3].bytes().all(|byte| byte.is_ascii_digit())
+            && timezone[4..].bytes().all(|byte| byte.is_ascii_digit())
+            && timezone[1..3].parse::<u8>().is_ok_and(|hour| hour <= 14)
+            && timezone[4..].parse::<u8>().is_ok_and(|minute| minute <= 59)
+        {
+            &value[..split]
+        } else {
+            value
+        }
+    } else {
+        value
+    };
+    let Some((date, time)) = core.split_once('T') else {
+        return false;
+    };
+    let mut date_parts = date.split('-');
+    let (Some(year), Some(month), Some(day), None) = (
+        date_parts.next(),
+        date_parts.next(),
+        date_parts.next(),
+        date_parts.next(),
+    ) else {
+        return false;
+    };
+    let (Ok(year), Ok(month), Ok(day)) =
+        (year.parse::<i32>(), month.parse::<u8>(), day.parse::<u8>())
+    else {
+        return false;
+    };
+    let max_day = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if year % 400 == 0 || (year % 4 == 0 && year % 100 != 0) => 29,
+        2 => 28,
+        _ => return false,
+    };
+    if day == 0 || day > max_day {
+        return false;
+    }
+    let mut time_parts = time.split(':');
+    let (Some(hour), Some(minute), Some(second), None) = (
+        time_parts.next(),
+        time_parts.next(),
+        time_parts.next(),
+        time_parts.next(),
+    ) else {
+        return false;
+    };
+    let (second, fraction) = second
+        .split_once('.')
+        .map_or((second, None), |(second, fraction)| {
+            (second, Some(fraction))
+        });
+    hour.parse::<u8>().is_ok_and(|hour| hour <= 23)
+        && minute.parse::<u8>().is_ok_and(|minute| minute <= 59)
+        && second.parse::<u8>().is_ok_and(|second| second <= 59)
+        && fraction.is_none_or(|fraction| {
+            !fraction.is_empty() && fraction.bytes().all(|byte| byte.is_ascii_digit())
+        })
 }
 
 fn apply_typed_element_fields(xml: &mut String, element: &MetaElementDefinition) {
@@ -3937,6 +4924,44 @@ fn update_typed_element(
         )
     })?;
     let mut properties_text = node_xml[properties_range.clone()].to_string();
+    if let Some(metadata_type) = &update.r#type {
+        let fill_value = match &update.fill_value {
+            Some(fill_value) => Some(fill_value.clone()),
+            None => parse_typed_fill_value(&properties_text)?,
+        };
+        let candidate = MetaElementDefinition {
+            name: update
+                .new_name
+                .clone()
+                .unwrap_or_else(|| update.name.clone()),
+            synonym: None,
+            comment: None,
+            r#type: Some(metadata_type.clone()),
+            required: None,
+            fill_value,
+            attributes: Vec::new(),
+            position: None,
+        };
+        validate_typed_element_value_profile(&candidate).map_err(|mut diagnostic| {
+            if update.fill_value.is_none() && diagnostic.field.as_deref() == Some("fillValue") {
+                diagnostic.field = Some("type".to_string());
+            }
+            diagnostic
+        })?;
+    } else if let Some(fill_value) = &update.fill_value {
+        let metadata_type = parse_typed_metadata_type(&properties_text)?;
+        let candidate = MetaElementDefinition {
+            name: update.name.clone(),
+            synonym: None,
+            comment: None,
+            r#type: Some(metadata_type),
+            required: None,
+            fill_value: Some(fill_value.clone()),
+            attributes: Vec::new(),
+            position: None,
+        };
+        validate_typed_element_value_profile(&candidate)?;
+    }
     let indent = meta_edit_property_child_indent(&properties_text);
     if let Some(new_name) = &update.new_name {
         let replacement = format!("{indent}<Name>{}</Name>", escape_xml(new_name));
@@ -4068,6 +5093,179 @@ fn update_typed_element(
     Ok(())
 }
 
+fn parse_typed_fill_value(properties_text: &str) -> Result<Option<MetaFillValue>, MetaDiagnostic> {
+    const WRAPPER_START: &str = r#"<Root xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config">"#;
+    let wrapped = format!("{WRAPPER_START}{properties_text}</Root>");
+    let document = Document::parse(&wrapped).map_err(|_| {
+        typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata element properties are not valid XML",
+            Some("fillValue"),
+        )
+    })?;
+    let Some(fill) = document
+        .descendants()
+        .find(|node| node.is_element() && node.tag_name().name() == "FillValue")
+    else {
+        return Ok(None);
+    };
+    if fill
+        .attributes()
+        .any(|attribute| attribute.name() == "nil" && attribute.value() == "true")
+    {
+        return Ok(None);
+    }
+    let value = fill.text().unwrap_or_default().to_string();
+    let value_type = fill
+        .attributes()
+        .find(|attribute| attribute.name() == "type")
+        .map(|attribute| attribute.value())
+        .unwrap_or_default();
+    match value_type {
+        "xs:string" => Ok(Some(MetaFillValue::String(value))),
+        "xs:decimal" => Ok(Some(MetaFillValue::Number(value))),
+        "xs:boolean" => match value.as_str() {
+            "true" => Ok(Some(MetaFillValue::Boolean(true))),
+            "false" => Ok(Some(MetaFillValue::Boolean(false))),
+            _ => Err(typed_diagnostic(
+                MetaDiagnosticCode::ValidationFailed,
+                "existing boolean fill value is not canonical",
+                Some("fillValue"),
+            )),
+        },
+        "xs:dateTime" => Ok(Some(MetaFillValue::DateTime(value))),
+        "xr:DesignTimeRef" => Ok(Some(MetaFillValue::Reference(
+            crate::domain::metadata::MetadataReference {
+                metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &value)
+                    .map_err(|_| {
+                        typed_diagnostic(
+                            MetaDiagnosticCode::ValidationFailed,
+                            "existing reference fill value is not a metadata address",
+                            Some("fillValue"),
+                        )
+                    })?,
+            },
+        ))),
+        "" if value.is_empty() => Ok(None),
+        _ => Err(typed_diagnostic(
+            MetaDiagnosticCode::ValidationFailed,
+            "existing fill value type is unsupported by typed metadata edit",
+            Some("fillValue"),
+        )),
+    }
+}
+
+fn parse_typed_metadata_type(properties_text: &str) -> Result<MetadataType, MetaDiagnostic> {
+    const WRAPPER_START: &str = r#"<Root xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config">"#;
+    let wrapped = format!("{WRAPPER_START}{properties_text}</Root>");
+    let document = Document::parse(&wrapped).map_err(|_| {
+        typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata element properties are not valid XML",
+            Some("type"),
+        )
+    })?;
+    let text = |name: &str| {
+        document
+            .descendants()
+            .find(|node| node.is_element() && node.tag_name().name() == name)
+            .and_then(|node| node.text())
+            .unwrap_or_default()
+    };
+    let mut variants = Vec::new();
+    for node in document.descendants().filter(|node| {
+        node.is_element()
+            && node.tag_name().namespace() == Some("http://v8.1c.ru/8.1/data/core")
+            && matches!(node.tag_name().name(), "Type" | "TypeSet")
+    }) {
+        let value = node.text().unwrap_or_default();
+        let variant = if node.tag_name().name() == "TypeSet" {
+            let raw = value.strip_prefix("cfg:").unwrap_or(value);
+            MetadataTypeVariant::DefinedType {
+                metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw)
+                    .map_err(|_| {
+                        typed_diagnostic(
+                            MetaDiagnosticCode::ValidationFailed,
+                            "existing defined type is not a metadata address",
+                            Some("type"),
+                        )
+                    })?,
+            }
+        } else {
+            match value {
+                "xs:string" => MetadataTypeVariant::String {
+                    length: text("Length").parse().unwrap_or(0),
+                    allowed_length: if text("AllowedLength") == "Fixed" {
+                        StringLengthMode::Fixed
+                    } else {
+                        StringLengthMode::Variable
+                    },
+                },
+                "xs:decimal" => MetadataTypeVariant::Number {
+                    digits: text("Digits").parse().unwrap_or(0),
+                    fraction: text("FractionDigits").parse().unwrap_or(0),
+                    sign: if text("AllowedSign") == "Nonnegative" {
+                        NumberSign::NonNegative
+                    } else {
+                        NumberSign::Any
+                    },
+                },
+                "xs:boolean" => MetadataTypeVariant::Boolean,
+                "xs:dateTime" => MetadataTypeVariant::Date {
+                    fractions: match text("DateFractions") {
+                        "Date" => DateFractions::Date,
+                        "Time" => DateFractions::Time,
+                        _ => DateFractions::DateTime,
+                    },
+                },
+                "v8:ValueStorage" => MetadataTypeVariant::ValueStorage,
+                raw if raw.starts_with("cfg:") => {
+                    let raw = raw.trim_start_matches("cfg:");
+                    let Some((generated, name)) = raw.split_once('.') else {
+                        return Err(typed_diagnostic(
+                            MetaDiagnosticCode::ValidationFailed,
+                            "existing reference type is malformed",
+                            Some("type"),
+                        ));
+                    };
+                    let kind = generated.strip_suffix("Ref").ok_or_else(|| {
+                        typed_diagnostic(
+                            MetaDiagnosticCode::ValidationFailed,
+                            "existing generated type is not a reference",
+                            Some("type"),
+                        )
+                    })?;
+                    MetadataTypeVariant::Reference {
+                        metadata_path: MetadataAddress::parse(
+                            PLATFORM_XML_8_3_27_FORMAT_2_20,
+                            &format!("{kind}.{name}"),
+                        )
+                        .map_err(|_| {
+                            typed_diagnostic(
+                                MetaDiagnosticCode::ValidationFailed,
+                                "existing reference type is not a metadata address",
+                                Some("type"),
+                            )
+                        })?,
+                    }
+                }
+                _ => {
+                    return Err(typed_diagnostic(
+                        MetaDiagnosticCode::ValidationFailed,
+                        "existing metadata type is unsupported by typed edit",
+                        Some("type"),
+                    ))
+                }
+            }
+        };
+        variants.push(variant);
+    }
+    MetadataType::new(variants).map_err(|mut diagnostic| {
+        diagnostic.field = Some("type".to_string());
+        diagnostic
+    })
+}
+
 fn remove_typed_element(
     xml_text: &mut String,
     collection: MetaCollection,
@@ -4085,7 +5283,7 @@ fn apply_typed_relations(
     object_kind: &str,
     relation: MetaRelation,
     mode: RelationEditMode,
-    targets: &[crate::domain::metadata::MetadataReference],
+    targets: &[crate::domain::metadata::MetaRelationTarget],
 ) -> Result<(), MetaDiagnostic> {
     if relation == MetaRelation::RegisterRecords && object_kind != "Document" {
         return Err(typed_diagnostic(
@@ -4144,43 +5342,64 @@ fn apply_typed_relations(
         .collect::<Vec<_>>();
     let range = properties.range();
     drop(doc);
+    for (index, target) in targets.iter().enumerate() {
+        let valid_shape = matches!(
+            (relation, target),
+            (
+                MetaRelation::InputByString,
+                crate::domain::metadata::MetaRelationTarget::Field(_)
+            ) | (
+                MetaRelation::Owners | MetaRelation::RegisterRecords | MetaRelation::BasedOn,
+                crate::domain::metadata::MetaRelationTarget::Object(_)
+            )
+        );
+        if !valid_shape {
+            return Err(typed_diagnostic(
+                MetaDiagnosticCode::InvalidArguments,
+                "relation target has the wrong typed shape",
+                Some(&format!("targets[{index}]")),
+            ));
+        }
+    }
     let requested = targets
         .iter()
-        .map(|target| target.metadata_path.as_str().to_string())
+        .map(|target| target.wire_value().to_string())
         .collect::<Vec<_>>();
     match mode {
         RelationEditMode::Add => {
-            for target in requested {
+            for (target_index, target) in requested.into_iter().enumerate() {
                 if values.contains(&target) {
                     return Err(typed_diagnostic(
                         MetaDiagnosticCode::AlreadyExists,
                         "metadata relation target already exists",
-                        Some("targets"),
+                        Some(&format!("targets[{target_index}]")),
                     ));
                 }
                 values.push(target);
             }
         }
         RelationEditMode::Remove => {
-            for target in requested {
+            for (target_index, target) in requested.into_iter().enumerate() {
                 let Some(index) = values.iter().position(|value| value == &target) else {
                     return Err(typed_diagnostic(
                         MetaDiagnosticCode::TargetNotFound,
                         "metadata relation target was not found",
-                        Some("targets"),
+                        Some(&format!("targets[{target_index}]")),
                     ));
                 };
                 values.remove(index);
             }
         }
         RelationEditMode::Replace => {
-            let unique = requested.iter().collect::<std::collections::HashSet<_>>();
-            if unique.len() != requested.len() {
-                return Err(typed_diagnostic(
-                    MetaDiagnosticCode::InvalidArguments,
-                    "metadata relation targets contain duplicates",
-                    Some("targets"),
-                ));
+            let mut unique = std::collections::HashSet::new();
+            for (target_index, target) in requested.iter().enumerate() {
+                if !unique.insert(target) {
+                    return Err(typed_diagnostic(
+                        MetaDiagnosticCode::InvalidArguments,
+                        "metadata relation targets contain duplicates",
+                        Some(&format!("targets[{target_index}]")),
+                    ));
+                }
             }
             values = requested;
         }
@@ -4192,7 +5411,16 @@ fn apply_typed_relations(
     } else {
         let items = values
             .iter()
-            .map(|value| format!("{indent}\t<{item_tag}>{}</{item_tag}>", escape_xml(value)))
+            .map(|value| {
+                if relation == MetaRelation::InputByString {
+                    format!("{indent}\t<{item_tag}>{}</{item_tag}>", escape_xml(value))
+                } else {
+                    format!(
+                        "{indent}\t<{item_tag} xsi:type=\"xr:MDObjectRef\">{}</{item_tag}>",
+                        escape_xml(value)
+                    )
+                }
+            })
             .collect::<Vec<_>>()
             .join("\n");
         format!("{indent}<{tag}>\n{items}\n{indent}</{tag}>")
@@ -4223,7 +5451,7 @@ mod tests {
     fn object_xml(kind: &str, name: &str, properties: &str) -> String {
         format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
 	<{kind} uuid="11111111-1111-4111-8111-111111111111">
 		<Properties><Name>{name}</Name><Synonym/><Comment/>{properties}</Properties>
 		<ChildObjects/>
@@ -4276,10 +5504,15 @@ mod tests {
                 vec![metadata_reference("Document.Quote")],
             )
             .unwrap(),
-            MetaEditOperation::edit_relations(
+            MetaEditOperation::edit_relation_targets(
                 MetaRelation::InputByString,
                 RelationEditMode::Replace,
-                vec![metadata_reference("Document.Order")],
+                vec![crate::domain::metadata::MetaRelationTarget::Field(
+                    crate::domain::metadata::MetadataFieldPath::parse(
+                        "Document.Order.StandardAttribute.Number",
+                    )
+                    .unwrap(),
+                )],
             )
             .unwrap(),
         ];
@@ -4289,9 +5522,11 @@ mod tests {
         assert!(xml.contains("<v8:content>Customer order</v8:content>"));
         assert!(xml.contains("<NumberLength>12</NumberLength>"));
         assert!(xml.contains("<CheckUnique>false</CheckUnique>"));
-        assert!(xml.contains("<xr:Item>InformationRegister.OrderFacts</xr:Item>"));
-        assert!(xml.contains("<xr:Item>Document.Quote</xr:Item>"));
-        assert!(xml.contains("<xr:Field>Document.Order</xr:Field>"));
+        assert!(xml.contains(
+            "<xr:Item xsi:type=\"xr:MDObjectRef\">InformationRegister.OrderFacts</xr:Item>"
+        ));
+        assert!(xml.contains("<xr:Item xsi:type=\"xr:MDObjectRef\">Document.Quote</xr:Item>"));
+        assert!(xml.contains("<xr:Field>Document.Order.StandardAttribute.Number</xr:Field>"));
     }
 
     #[test]
@@ -4551,7 +5786,6 @@ mod tests {
                 "InformationRegister.OrderFacts",
             ),
             (MetaRelation::BasedOn, "Document.Quote"),
-            (MetaRelation::InputByString, "Document.Order"),
         ] {
             let operations = [
                 MetaEditOperation::edit_relations(
@@ -4569,6 +5803,27 @@ mod tests {
             ];
             apply_typed_operations(&mut document, &operations).unwrap();
         }
+        let field = crate::domain::metadata::MetadataFieldPath::parse(
+            "Document.Order.StandardAttribute.Number",
+        )
+        .unwrap();
+        let input_operations = [
+            MetaEditOperation::edit_relation_targets(
+                MetaRelation::InputByString,
+                RelationEditMode::Replace,
+                vec![crate::domain::metadata::MetaRelationTarget::Field(
+                    field.clone(),
+                )],
+            )
+            .unwrap(),
+            MetaEditOperation::edit_relation_targets(
+                MetaRelation::InputByString,
+                RelationEditMode::Remove,
+                vec![crate::domain::metadata::MetaRelationTarget::Field(field)],
+            )
+            .unwrap(),
+        ];
+        apply_typed_operations(&mut document, &input_operations).unwrap();
         assert!(document.contains("<RegisterRecords/>"));
         assert!(document.contains("<BasedOn/>"));
         assert!(document.contains("<InputByString/>"));
@@ -4693,6 +5948,930 @@ mod tests {
 
         assert_eq!(diagnostic.code, MetaDiagnosticCode::UnsupportedKind);
         assert_eq!(diagnostic.field.as_deref(), Some("values.NumberLength"));
+    }
+
+    #[test]
+    fn typed_kind_collection_matrix_is_exact_and_reports_the_full_operation_field() {
+        use crate::domain::metadata::MetadataKind;
+
+        let all = [
+            MetaCollection::Attributes,
+            MetaCollection::TabularSections,
+            MetaCollection::Dimensions,
+            MetaCollection::Resources,
+            MetaCollection::EnumValues,
+            MetaCollection::Columns,
+            MetaCollection::Forms,
+            MetaCollection::Templates,
+            MetaCollection::Commands,
+        ];
+        let cases: &[(MetadataKind, &[MetaCollection])] = &[
+            (
+                MetadataKind::Catalog,
+                &[all[0], all[1], all[6], all[7], all[8]],
+            ),
+            (
+                MetadataKind::Document,
+                &[all[0], all[1], all[6], all[7], all[8]],
+            ),
+            (MetadataKind::Enum, &[all[4], all[6], all[7], all[8]]),
+            (MetadataKind::Constant, &[all[6]]),
+            (
+                MetadataKind::InformationRegister,
+                &[all[0], all[2], all[3], all[6], all[7], all[8]],
+            ),
+            (
+                MetadataKind::AccumulationRegister,
+                &[all[0], all[2], all[3], all[6], all[7], all[8]],
+            ),
+            (
+                MetadataKind::AccountingRegister,
+                &[all[0], all[2], all[3], all[6], all[7], all[8]],
+            ),
+            (
+                MetadataKind::CalculationRegister,
+                &[all[0], all[2], all[3], all[6], all[7], all[8]],
+            ),
+            (
+                MetadataKind::ChartOfAccounts,
+                &[all[0], all[1], all[6], all[7], all[8]],
+            ),
+            (
+                MetadataKind::ChartOfCharacteristicTypes,
+                &[all[0], all[1], all[6], all[7], all[8]],
+            ),
+            (
+                MetadataKind::ChartOfCalculationTypes,
+                &[all[0], all[1], all[6], all[7], all[8]],
+            ),
+            (
+                MetadataKind::BusinessProcess,
+                &[all[0], all[1], all[6], all[7], all[8]],
+            ),
+            (
+                MetadataKind::Task,
+                &[all[0], all[1], all[6], all[7], all[8]],
+            ),
+            (
+                MetadataKind::ExchangePlan,
+                &[all[0], all[1], all[6], all[7], all[8]],
+            ),
+            (
+                MetadataKind::DocumentJournal,
+                &[all[5], all[6], all[7], all[8]],
+            ),
+            (
+                MetadataKind::Report,
+                &[all[0], all[1], all[6], all[7], all[8]],
+            ),
+            (
+                MetadataKind::DataProcessor,
+                &[all[0], all[1], all[6], all[7], all[8]],
+            ),
+            (MetadataKind::CommonModule, &[]),
+            (MetadataKind::ScheduledJob, &[]),
+            (MetadataKind::EventSubscription, &[]),
+            (MetadataKind::HTTPService, &[]),
+            (MetadataKind::WebService, &[]),
+            (MetadataKind::DefinedType, &[]),
+        ];
+
+        assert_eq!(cases.len(), MetadataKind::ALL.len());
+        for (kind, allowed) in cases {
+            for collection in all {
+                let mut xml = object_xml(kind.as_str(), "Sample", "");
+                let operation = MetaEditOperation::add(
+                    collection,
+                    None,
+                    vec![MetaElementInput::named("Child")],
+                )
+                .unwrap();
+                let result = apply_typed_operations(&mut xml, &[operation]);
+                if allowed.contains(&collection) {
+                    assert!(result.is_ok(), "{kind:?}.{collection:?}: {result:?}");
+                } else {
+                    let failure = result.unwrap_err();
+                    assert_eq!(failure.diagnostics[0].operation_index, Some(0));
+                    assert_eq!(
+                        failure.diagnostics[0].code,
+                        MetaDiagnosticCode::UnsupportedKind,
+                        "{kind:?}.{collection:?}"
+                    );
+                    assert_eq!(
+                        failure.diagnostics[0].field.as_deref(),
+                        Some("operations[0].collection"),
+                        "{kind:?}.{collection:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn typed_inline_tabular_attributes_keep_fields_and_apply_nested_positions() {
+        let mut xml = object_xml("Document", "Order", "<RegisterRecords/>");
+        let operation = MetaEditOperation::add(
+            MetaCollection::TabularSections,
+            None,
+            vec![MetaElementInput {
+                name: "Lines".into(),
+                attributes: Some(vec![
+                    MetaElementInput::named("Second"),
+                    MetaElementInput {
+                        name: "First".into(),
+                        comment: Some("typed nested field".into()),
+                        r#type: Some(
+                            MetadataType::new(vec![MetadataTypeVariant::Number {
+                                digits: 12,
+                                fraction: 2,
+                                sign: NumberSign::NonNegative,
+                            }])
+                            .unwrap(),
+                        ),
+                        required: Some(true),
+                        fill_value: Some(MetaFillValue::Number("3.50".into())),
+                        position: Some(MetaPosition::new(Some("Second".into()), None).unwrap()),
+                        ..MetaElementInput::default()
+                    },
+                ]),
+                ..MetaElementInput::default()
+            }],
+        )
+        .unwrap();
+
+        apply_typed_operations(&mut xml, &[operation]).unwrap();
+
+        let first = xml.find("<Name>First</Name>").unwrap();
+        let second = xml.find("<Name>Second</Name>").unwrap();
+        assert!(first < second, "nested position.before was ignored\n{xml}");
+        let first_xml = &xml[xml[..first].rfind("<Attribute ").unwrap()
+            ..xml[first..].find("</Attribute>").unwrap() + first + "</Attribute>".len()];
+        assert!(first_xml.contains("<Comment>typed nested field</Comment>"));
+        assert!(first_xml.contains("<v8:Type>xs:decimal</v8:Type>"));
+        assert!(first_xml.contains("<v8:AllowedSign>Nonnegative</v8:AllowedSign>"));
+        assert!(first_xml.contains("<FillValue xsi:type=\"xs:decimal\">3.50</FillValue>"));
+        assert!(first_xml.contains("<FillChecking>ShowError</FillChecking>"));
+    }
+
+    #[test]
+    fn typed_top_level_attributes_use_the_kind_aware_platform_profile() {
+        for (kind, forbidden) in [
+            (
+                "Report",
+                &[
+                    "<FillFromFillingValue>",
+                    "<FillValue ",
+                    "<Indexing>",
+                    "<FullTextSearch>",
+                    "<DataHistory>",
+                ][..],
+            ),
+            (
+                "AccumulationRegister",
+                &["<FillFromFillingValue>", "<FillValue ", "<DataHistory>"][..],
+            ),
+        ] {
+            let mut xml = object_xml(kind, "Sample", "");
+            let operation = MetaEditOperation::add(
+                MetaCollection::Attributes,
+                None,
+                vec![MetaElementInput::named("Profiled")],
+            )
+            .unwrap();
+            apply_typed_operations(&mut xml, &[operation]).unwrap();
+            for tag in forbidden {
+                assert!(!xml.contains(tag), "{kind} emitted forbidden {tag}\n{xml}");
+            }
+        }
+    }
+
+    #[test]
+    fn typed_composite_type_uses_platform_node_order() {
+        let mut xml = object_xml("Document", "Order", "<RegisterRecords/>");
+        let operation = MetaEditOperation::add(
+            MetaCollection::Attributes,
+            None,
+            vec![MetaElementInput {
+                name: "Composite".into(),
+                r#type: Some(
+                    MetadataType::new(vec![
+                        MetadataTypeVariant::DefinedType {
+                            metadata_path: metadata_reference("DefinedType.ExternalCode")
+                                .metadata_path,
+                        },
+                        MetadataTypeVariant::Number {
+                            digits: 12,
+                            fraction: 2,
+                            sign: NumberSign::Any,
+                        },
+                        MetadataTypeVariant::String {
+                            length: 20,
+                            allowed_length: StringLengthMode::Variable,
+                        },
+                    ])
+                    .unwrap(),
+                ),
+                ..MetaElementInput::default()
+            }],
+        )
+        .unwrap();
+
+        apply_typed_operations(&mut xml, &[operation]).unwrap();
+
+        let decimal = xml.find("<v8:Type>xs:decimal</v8:Type>").unwrap();
+        let string = xml.find("<v8:Type>xs:string</v8:Type>").unwrap();
+        let type_set = xml
+            .find("<v8:TypeSet>cfg:DefinedType.ExternalCode</v8:TypeSet>")
+            .unwrap();
+        let number_qualifiers = xml.find("<v8:NumberQualifiers>").unwrap();
+        let string_qualifiers = xml.find("<v8:StringQualifiers>").unwrap();
+        assert!(decimal < string && string < type_set);
+        assert!(type_set < number_qualifiers && number_qualifiers < string_qualifiers);
+    }
+
+    #[test]
+    fn typed_type_and_fill_validation_rejects_invalid_profile_values_with_full_fields() {
+        let cases = [
+            (
+                MetadataType::new(vec![MetadataTypeVariant::Reference {
+                    metadata_path: metadata_reference("Report.Sales").metadata_path,
+                }])
+                .unwrap(),
+                None,
+                "operations[0].elements[0].type.variants[0].metadataPath",
+            ),
+            (
+                MetadataType::new(vec![MetadataTypeVariant::DefinedType {
+                    metadata_path: metadata_reference("Catalog.Items").metadata_path,
+                }])
+                .unwrap(),
+                None,
+                "operations[0].elements[0].type.variants[0].metadataPath",
+            ),
+            (
+                MetadataType::new(vec![MetadataTypeVariant::Number {
+                    digits: 10,
+                    fraction: 2,
+                    sign: NumberSign::Any,
+                }])
+                .unwrap(),
+                Some(MetaFillValue::Number("1e3".into())),
+                "operations[0].elements[0].fillValue",
+            ),
+            (
+                MetadataType::new(vec![MetadataTypeVariant::Date {
+                    fractions: DateFractions::DateTime,
+                }])
+                .unwrap(),
+                Some(MetaFillValue::DateTime("2026-02-30T25:61:00".into())),
+                "operations[0].elements[0].fillValue",
+            ),
+            (
+                MetadataType::new(vec![MetadataTypeVariant::String {
+                    length: 10,
+                    allowed_length: StringLengthMode::Variable,
+                }])
+                .unwrap(),
+                Some(MetaFillValue::Boolean(true)),
+                "operations[0].elements[0].fillValue",
+            ),
+        ];
+
+        for (metadata_type, fill_value, expected_field) in cases {
+            let mut xml = object_xml("Document", "Order", "<RegisterRecords/>");
+            let operation = MetaEditOperation::add(
+                MetaCollection::Attributes,
+                None,
+                vec![MetaElementInput {
+                    name: "Invalid".into(),
+                    r#type: Some(metadata_type),
+                    fill_value,
+                    ..MetaElementInput::default()
+                }],
+            )
+            .unwrap();
+            let failure = apply_typed_operations(&mut xml, &[operation]).unwrap_err();
+            assert_eq!(
+                failure.diagnostics[0].code,
+                MetaDiagnosticCode::InvalidArguments
+            );
+            assert_eq!(
+                failure.diagnostics[0].field.as_deref(),
+                Some(expected_field)
+            );
+        }
+    }
+
+    #[test]
+    fn typed_update_validates_new_type_against_the_existing_fill_value() {
+        let mut xml = object_xml("Document", "Order", "<RegisterRecords/>");
+        let add = MetaEditOperation::add(
+            MetaCollection::Attributes,
+            None,
+            vec![MetaElementInput {
+                name: "CodeText".into(),
+                r#type: Some(
+                    MetadataType::new(vec![MetadataTypeVariant::String {
+                        length: 10,
+                        allowed_length: StringLengthMode::Variable,
+                    }])
+                    .unwrap(),
+                ),
+                fill_value: Some(MetaFillValue::String("ABC".into())),
+                ..MetaElementInput::default()
+            }],
+        )
+        .unwrap();
+        let update = MetaEditOperation::update(
+            MetaCollection::Attributes,
+            None,
+            vec![MetaElementUpdateInput {
+                name: "CodeText".into(),
+                r#type: Some(
+                    MetadataType::new(vec![MetadataTypeVariant::Number {
+                        digits: 10,
+                        fraction: 0,
+                        sign: NumberSign::NonNegative,
+                    }])
+                    .unwrap(),
+                ),
+                ..MetaElementUpdateInput::default()
+            }],
+        )
+        .unwrap();
+
+        let failure = apply_typed_operations(&mut xml, &[add, update]).unwrap_err();
+
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::InvalidArguments
+        );
+        assert_eq!(
+            failure.diagnostics[0].field.as_deref(),
+            Some("operations[1].elements[0].type")
+        );
+    }
+
+    #[test]
+    fn typed_update_validates_new_fill_value_against_the_existing_type() {
+        let mut xml = object_xml("Document", "Order", "<RegisterRecords/>");
+        let add = MetaEditOperation::add(
+            MetaCollection::Attributes,
+            None,
+            vec![MetaElementInput {
+                name: "CodeText".into(),
+                r#type: Some(
+                    MetadataType::new(vec![MetadataTypeVariant::String {
+                        length: 10,
+                        allowed_length: StringLengthMode::Variable,
+                    }])
+                    .unwrap(),
+                ),
+                ..MetaElementInput::default()
+            }],
+        )
+        .unwrap();
+        let update = MetaEditOperation::update(
+            MetaCollection::Attributes,
+            None,
+            vec![MetaElementUpdateInput {
+                name: "CodeText".into(),
+                fill_value: Some(MetaFillValue::Boolean(true)),
+                ..MetaElementUpdateInput::default()
+            }],
+        )
+        .unwrap();
+
+        let failure = apply_typed_operations(&mut xml, &[add, update]).unwrap_err();
+
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::InvalidArguments
+        );
+        assert_eq!(
+            failure.diagnostics[0].field.as_deref(),
+            Some("operations[1].elements[0].fillValue")
+        );
+    }
+
+    #[test]
+    fn typed_form_add_plans_owner_descriptor_and_both_physical_form_images() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-meta-edit-form-plan-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let descriptor_path = root.join("Documents/Order.xml");
+        std::fs::create_dir_all(descriptor_path.parent().unwrap()).unwrap();
+        let mut post_image = object_xml("Document", "Order", "<RegisterRecords/>");
+        let operation = MetaEditOperation::add(
+            MetaCollection::Forms,
+            None,
+            vec![MetaElementInput {
+                name: "ObjectForm".into(),
+                ..MetaElementInput::default()
+            }],
+        )
+        .unwrap();
+        apply_typed_operations(&mut post_image, std::slice::from_ref(&operation)).unwrap();
+
+        let resources = plan_typed_child_resources(
+            &descriptor_path,
+            &metadata_reference("Document.Order").metadata_path,
+            "Document",
+            "Order",
+            &[operation],
+            &post_image,
+        )
+        .unwrap();
+        let create_paths = resources
+            .file_mutations
+            .iter()
+            .filter_map(|mutation| mutation.post_image.as_ref().map(|_| &mutation.path))
+            .collect::<Vec<_>>();
+
+        assert_eq!(create_paths.len(), 2);
+        assert!(create_paths.contains(&&root.join("Documents/Order/Forms/ObjectForm.xml")));
+        assert!(create_paths.contains(&&root.join("Documents/Order/Forms/ObjectForm/Ext/Form.xml")));
+        assert_eq!(resources.publication_plan.len(), 1);
+        assert_eq!(resources.validation_resources.len(), 1);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn typed_form_rename_moves_the_descriptor_and_payload_as_one_guarded_resource() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-meta-edit-form-rename-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let descriptor_path = root.join("Documents/Order.xml");
+        let old_descriptor = root.join("Documents/Order/Forms/Old.xml");
+        let old_payload = root.join("Documents/Order/Forms/Old/Ext/Form.xml");
+        std::fs::create_dir_all(old_payload.parent().unwrap()).unwrap();
+        let mut pre_image = object_xml("Document", "Order", "<RegisterRecords/>");
+        let add = MetaEditOperation::add(
+            MetaCollection::Forms,
+            None,
+            vec![MetaElementInput {
+                name: "Old".into(),
+                ..MetaElementInput::default()
+            }],
+        )
+        .unwrap();
+        apply_typed_operations(&mut pre_image, &[add]).unwrap();
+        let child = typed_child_descriptor_image(&pre_image, "Form", "Old").unwrap();
+        std::fs::write(&old_descriptor, child).unwrap();
+        std::fs::write(&old_payload, b"<Form version=\"2.20\"/>").unwrap();
+        let rename = MetaEditOperation::update(
+            MetaCollection::Forms,
+            None,
+            vec![MetaElementUpdateInput {
+                name: "Old".into(),
+                new_name: Some("New".into()),
+                ..MetaElementUpdateInput::default()
+            }],
+        )
+        .unwrap();
+        let mut post_image = pre_image;
+        apply_typed_operations(&mut post_image, std::slice::from_ref(&rename)).unwrap();
+
+        let resources = plan_typed_child_resources(
+            &descriptor_path,
+            &metadata_reference("Document.Order").metadata_path,
+            "Document",
+            "Order",
+            &[rename],
+            &post_image,
+        )
+        .unwrap();
+
+        assert!(resources
+            .file_mutations
+            .iter()
+            .any(|mutation| { mutation.path == old_descriptor && mutation.post_image.is_none() }));
+        assert!(resources.file_mutations.iter().any(|mutation| {
+            mutation.path == old_payload.parent().unwrap().parent().unwrap()
+                && mutation.post_image.is_none()
+        }));
+        assert!(resources.file_mutations.iter().any(|mutation| {
+            mutation.path == root.join("Documents/Order/Forms/New.xml")
+                && mutation.post_image.is_some()
+        }));
+        assert!(resources.file_mutations.iter().any(|mutation| {
+            mutation.path == root.join("Documents/Order/Forms/New/Ext/Form.xml")
+                && mutation.post_image.as_deref() == Some(b"<Form version=\"2.20\"/>".as_slice())
+        }));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn typed_two_template_preview_entries_have_distinct_exact_logical_addresses() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-meta-edit-template-plan-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let descriptor_path = root.join("Reports/Sales.xml");
+        std::fs::create_dir_all(descriptor_path.parent().unwrap()).unwrap();
+        let operation = MetaEditOperation::add(
+            MetaCollection::Templates,
+            None,
+            vec![
+                MetaElementInput {
+                    name: "A".into(),
+                    ..MetaElementInput::default()
+                },
+                MetaElementInput {
+                    name: "B".into(),
+                    ..MetaElementInput::default()
+                },
+            ],
+        )
+        .unwrap();
+        let mut post_image = object_xml("Report", "Sales", "");
+        apply_typed_operations(&mut post_image, std::slice::from_ref(&operation)).unwrap();
+
+        let resources = plan_typed_child_resources(
+            &descriptor_path,
+            &metadata_reference("Report.Sales").metadata_path,
+            "Report",
+            "Sales",
+            &[operation],
+            &post_image,
+        )
+        .unwrap();
+        let addresses = resources
+            .publication_plan
+            .iter()
+            .map(|entry| entry.metadata_path.as_ref().unwrap().as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            addresses,
+            ["Report.Sales.Template.A", "Report.Sales.Template.B"]
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn typed_command_add_plans_only_its_required_descriptor() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-meta-edit-command-plan-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let descriptor_path = root.join("Documents/Order.xml");
+        std::fs::create_dir_all(descriptor_path.parent().unwrap()).unwrap();
+        let operation = MetaEditOperation::add(
+            MetaCollection::Commands,
+            None,
+            vec![MetaElementInput {
+                name: "Open".into(),
+                ..MetaElementInput::default()
+            }],
+        )
+        .unwrap();
+        let mut post_image = object_xml("Document", "Order", "<RegisterRecords/>");
+        apply_typed_operations(&mut post_image, std::slice::from_ref(&operation)).unwrap();
+
+        let resources = plan_typed_child_resources(
+            &descriptor_path,
+            &metadata_reference("Document.Order").metadata_path,
+            "Document",
+            "Order",
+            &[operation],
+            &post_image,
+        )
+        .unwrap();
+
+        assert_eq!(resources.file_mutations.len(), 1);
+        assert_eq!(
+            resources.file_mutations[0].path,
+            root.join("Documents/Order/Commands/Open.xml")
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn typed_form_remove_plans_descriptor_and_whole_payload_tree_removal() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-meta-edit-form-remove-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let descriptor_path = root.join("Documents/Order.xml");
+        let child_descriptor = root.join("Documents/Order/Forms/Old.xml");
+        let payload_dir = root.join("Documents/Order/Forms/Old");
+        std::fs::create_dir_all(payload_dir.join("Ext")).unwrap();
+        let mut pre_image = object_xml("Document", "Order", "<RegisterRecords/>");
+        let add = MetaEditOperation::add(
+            MetaCollection::Forms,
+            None,
+            vec![MetaElementInput {
+                name: "Old".into(),
+                ..MetaElementInput::default()
+            }],
+        )
+        .unwrap();
+        apply_typed_operations(&mut pre_image, &[add]).unwrap();
+        std::fs::write(
+            &child_descriptor,
+            typed_child_descriptor_image(&pre_image, "Form", "Old").unwrap(),
+        )
+        .unwrap();
+        std::fs::write(payload_dir.join("Ext/Form.xml"), b"<Form/>").unwrap();
+        let remove =
+            MetaEditOperation::remove(MetaCollection::Forms, None, vec!["Old".into()]).unwrap();
+        let mut post_image = pre_image;
+        apply_typed_operations(&mut post_image, std::slice::from_ref(&remove)).unwrap();
+
+        let resources = plan_typed_child_resources(
+            &descriptor_path,
+            &metadata_reference("Document.Order").metadata_path,
+            "Document",
+            "Order",
+            &[remove],
+            &post_image,
+        )
+        .unwrap();
+
+        assert!(resources
+            .file_mutations
+            .iter()
+            .any(|item| item.path == child_descriptor && item.post_image.is_none()));
+        assert!(resources
+            .file_mutations
+            .iter()
+            .any(|item| item.path == payload_dir && item.post_image.is_none()));
+        assert_eq!(
+            resources.publication_plan[0].action,
+            MetaPublicationAction::Remove
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn typed_relation_wire_uses_md_object_refs_and_field_paths() {
+        let mut xml = object_xml("Document", "Order", "<RegisterRecords/><InputByString/>");
+        let operations = [
+            MetaEditOperation::edit_relations(
+                MetaRelation::RegisterRecords,
+                RelationEditMode::Add,
+                vec![metadata_reference("InformationRegister.OrderFacts")],
+            )
+            .unwrap(),
+            MetaEditOperation::edit_relation_targets(
+                MetaRelation::InputByString,
+                RelationEditMode::Add,
+                vec![crate::domain::metadata::MetaRelationTarget::Field(
+                    crate::domain::metadata::MetadataFieldPath::parse(
+                        "Document.Order.StandardAttribute.Number",
+                    )
+                    .unwrap(),
+                )],
+            )
+            .unwrap(),
+        ];
+
+        apply_typed_operations(&mut xml, &operations).unwrap();
+
+        assert!(xml.contains(
+            "<xr:Item xsi:type=\"xr:MDObjectRef\">InformationRegister.OrderFacts</xr:Item>"
+        ));
+        assert!(xml.contains("<xr:Field>Document.Order.StandardAttribute.Number</xr:Field>"));
+    }
+
+    #[test]
+    fn typed_form_add_then_rename_collapses_to_one_new_multi_image_resource() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-meta-edit-form-add-rename-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let descriptor_path = root.join("Documents/Order.xml");
+        std::fs::create_dir_all(descriptor_path.parent().unwrap()).unwrap();
+        let add = MetaEditOperation::add(
+            MetaCollection::Forms,
+            None,
+            vec![MetaElementInput {
+                name: "Old".into(),
+                ..MetaElementInput::default()
+            }],
+        )
+        .unwrap();
+        let rename = MetaEditOperation::update(
+            MetaCollection::Forms,
+            None,
+            vec![MetaElementUpdateInput {
+                name: "Old".into(),
+                new_name: Some("New".into()),
+                ..MetaElementUpdateInput::default()
+            }],
+        )
+        .unwrap();
+        let operations = [add, rename];
+        let mut post_image = object_xml("Document", "Order", "<RegisterRecords/>");
+        apply_typed_operations(&mut post_image, &operations).unwrap();
+
+        let resources = plan_typed_child_resources(
+            &descriptor_path,
+            &metadata_reference("Document.Order").metadata_path,
+            "Document",
+            "Order",
+            &operations,
+            &post_image,
+        )
+        .unwrap();
+
+        assert!(resources
+            .file_mutations
+            .iter()
+            .all(|item| !item.path.to_string_lossy().contains("/Old")));
+        assert_eq!(resources.publication_plan.len(), 1);
+        assert_eq!(
+            resources.publication_plan[0].action,
+            MetaPublicationAction::Create
+        );
+        assert_eq!(
+            resources.publication_plan[0]
+                .metadata_path
+                .as_ref()
+                .unwrap()
+                .as_str(),
+            "Document.Order.Form.New"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn typed_form_add_then_remove_collapses_to_a_resource_noop() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-meta-edit-form-add-remove-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let descriptor_path = root.join("Documents/Order.xml");
+        std::fs::create_dir_all(descriptor_path.parent().unwrap()).unwrap();
+        let operations = [
+            MetaEditOperation::add(
+                MetaCollection::Forms,
+                None,
+                vec![MetaElementInput {
+                    name: "Gone".into(),
+                    ..MetaElementInput::default()
+                }],
+            )
+            .unwrap(),
+            MetaEditOperation::remove(MetaCollection::Forms, None, vec!["Gone".into()]).unwrap(),
+        ];
+        let mut post_image = object_xml("Document", "Order", "<RegisterRecords/>");
+        apply_typed_operations(&mut post_image, &operations).unwrap();
+
+        let resources = plan_typed_child_resources(
+            &descriptor_path,
+            &metadata_reference("Document.Order").metadata_path,
+            "Document",
+            "Order",
+            &operations,
+            &post_image,
+        )
+        .unwrap();
+
+        assert!(resources.file_mutations.is_empty());
+        assert!(resources.publication_plan.is_empty());
+        assert!(resources.validation_resources.is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn typed_form_rename_then_remove_removes_only_the_original_resource_tree() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-meta-edit-form-rename-remove-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let descriptor_path = root.join("Documents/Order.xml");
+        let child_descriptor = root.join("Documents/Order/Forms/Old.xml");
+        let payload_dir = root.join("Documents/Order/Forms/Old");
+        std::fs::create_dir_all(payload_dir.join("Ext")).unwrap();
+        let mut pre_image = object_xml("Document", "Order", "<RegisterRecords/>");
+        let add = MetaEditOperation::add(
+            MetaCollection::Forms,
+            None,
+            vec![MetaElementInput {
+                name: "Old".into(),
+                ..MetaElementInput::default()
+            }],
+        )
+        .unwrap();
+        apply_typed_operations(&mut pre_image, &[add]).unwrap();
+        std::fs::write(
+            &child_descriptor,
+            typed_child_descriptor_image(&pre_image, "Form", "Old").unwrap(),
+        )
+        .unwrap();
+        std::fs::write(payload_dir.join("Ext/Form.xml"), b"<Form/>").unwrap();
+        let operations = [
+            MetaEditOperation::update(
+                MetaCollection::Forms,
+                None,
+                vec![MetaElementUpdateInput {
+                    name: "Old".into(),
+                    new_name: Some("New".into()),
+                    ..MetaElementUpdateInput::default()
+                }],
+            )
+            .unwrap(),
+            MetaEditOperation::remove(MetaCollection::Forms, None, vec!["New".into()]).unwrap(),
+        ];
+        let mut post_image = pre_image;
+        apply_typed_operations(&mut post_image, &operations).unwrap();
+
+        let resources = plan_typed_child_resources(
+            &descriptor_path,
+            &metadata_reference("Document.Order").metadata_path,
+            "Document",
+            "Order",
+            &operations,
+            &post_image,
+        )
+        .unwrap();
+
+        assert_eq!(resources.publication_plan.len(), 1);
+        assert_eq!(
+            resources.publication_plan[0].action,
+            MetaPublicationAction::Remove
+        );
+        assert!(resources
+            .file_mutations
+            .iter()
+            .all(|item| !item.path.to_string_lossy().contains("/New")));
+        assert!(resources
+            .file_mutations
+            .iter()
+            .any(|item| item.path == child_descriptor));
+        assert!(resources
+            .file_mutations
+            .iter()
+            .any(|item| item.path == payload_dir));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn typed_form_update_then_remove_plans_the_original_resource_once() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-meta-edit-form-update-remove-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let descriptor_path = root.join("Documents/Order.xml");
+        let child_descriptor = root.join("Documents/Order/Forms/Old.xml");
+        let payload_dir = root.join("Documents/Order/Forms/Old");
+        std::fs::create_dir_all(payload_dir.join("Ext")).unwrap();
+        let mut pre_image = object_xml("Document", "Order", "<RegisterRecords/>");
+        let add = MetaEditOperation::add(
+            MetaCollection::Forms,
+            None,
+            vec![MetaElementInput {
+                name: "Old".into(),
+                ..MetaElementInput::default()
+            }],
+        )
+        .unwrap();
+        apply_typed_operations(&mut pre_image, &[add]).unwrap();
+        std::fs::write(
+            &child_descriptor,
+            typed_child_descriptor_image(&pre_image, "Form", "Old").unwrap(),
+        )
+        .unwrap();
+        std::fs::write(payload_dir.join("Ext/Form.xml"), b"<Form/>").unwrap();
+        let operations = [
+            MetaEditOperation::update(
+                MetaCollection::Forms,
+                None,
+                vec![MetaElementUpdateInput {
+                    name: "Old".into(),
+                    comment: Some("changed".into()),
+                    ..MetaElementUpdateInput::default()
+                }],
+            )
+            .unwrap(),
+            MetaEditOperation::remove(MetaCollection::Forms, None, vec!["Old".into()]).unwrap(),
+        ];
+        let mut post_image = pre_image;
+        apply_typed_operations(&mut post_image, &operations).unwrap();
+
+        let resources = plan_typed_child_resources(
+            &descriptor_path,
+            &metadata_reference("Document.Order").metadata_path,
+            "Document",
+            "Order",
+            &operations,
+            &post_image,
+        )
+        .unwrap();
+
+        assert_eq!(resources.publication_plan.len(), 1);
+        assert_eq!(resources.file_mutations.len(), 2);
+        assert_eq!(
+            resources.publication_plan[0].action,
+            MetaPublicationAction::Remove
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 }
 

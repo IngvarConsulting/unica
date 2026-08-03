@@ -182,6 +182,7 @@ fn run_before_meta_remove_subsystem_child_inspection_hook(path: &Path) {
 }
 
 mod edit;
+mod format_contract;
 mod info;
 mod legacy_dsl;
 mod publisher;

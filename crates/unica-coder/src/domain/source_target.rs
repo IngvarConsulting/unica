@@ -199,7 +199,7 @@ impl AddressProfile {
         canonical.push(parts[1]);
         if parts.len() >= 4 {
             let child_kind = canonical_kind(parts[2])?;
-            if !matches!(child_kind, "Form" | "Command") {
+            if !matches!(child_kind, "Form" | "Template" | "Command") {
                 return Err(SourceTargetError::invalid(format!(
                     "unsupported nested metadata kind `{}`",
                     parts[2]
@@ -489,6 +489,7 @@ const ADDRESS_KINDS: &[AddressKind] = &[
         &["IntegrationServices", "СервисыИнтеграции"],
     ),
     kind("Form", &["Форма"], &["Forms", "Формы"]),
+    kind("Template", &["Макет"], &["Templates", "Макеты"]),
     kind("Command", &["Команда"], &["Commands", "Команды"]),
     kind(
         "ExternalDataProcessor",

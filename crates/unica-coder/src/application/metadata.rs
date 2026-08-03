@@ -8,8 +8,9 @@ use crate::domain::metadata::{
     DateFractions, MetaCollection, MetaDiagnostic, MetaDiagnosticCode, MetaEditOperation,
     MetaEditOperationTag, MetaElementInput, MetaElementUpdateInput, MetaFillValue, MetaPosition,
     MetaPropertyChanges, MetaPropertyInput, MetaPropertyValue, MetaPropertyValueKind, MetaRelation,
-    MetaScope, MetaValidationStatus, MetadataKind, MetadataReference, MetadataType,
-    MetadataTypeVariant, NumberSign, RelationEditMode, StringLengthMode, METADATA_PROPERTY_SPECS,
+    MetaRelationTarget, MetaScope, MetaValidationStatus, MetadataFieldPath, MetadataKind,
+    MetadataReference, MetadataType, MetadataTypeVariant, NumberSign, RelationEditMode,
+    StringLengthMode, METADATA_PROPERTY_SPECS,
 };
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::domain::workspace::WorkspaceContext;
@@ -495,9 +496,16 @@ fn parse_edit_operation(
             let targets = required_array(object, "targets")?
                 .iter()
                 .enumerate()
-                .map(|(index, target)| parse_reference(target, &format!("targets[{index}]")))
+                .map(|(index, target)| {
+                    let field = format!("targets[{index}]");
+                    if relation == MetaRelation::InputByString {
+                        parse_field_reference(target, &field).map(MetaRelationTarget::Field)
+                    } else {
+                        parse_reference(target, &field).map(MetaRelationTarget::Object)
+                    }
+                })
                 .collect::<Result<Vec<_>, _>>()?;
-            MetaEditOperation::edit_relations(relation, mode, targets)
+            MetaEditOperation::edit_relation_targets(relation, mode, targets)
         }
     }
 }
@@ -878,6 +886,19 @@ fn parse_reference(value: &Value, field: &str) -> Result<MetadataReference, Meta
     })
 }
 
+fn parse_field_reference(value: &Value, field: &str) -> Result<MetadataFieldPath, MetaDiagnostic> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| invalid(field, "inputByString target must be an object"))?;
+    reject_unknown_fields(object, &["fieldPath"], &format!("{field}."))?;
+    let path_field = format!("{field}.fieldPath");
+    let raw = required_string_at(object, "fieldPath", &path_field)?;
+    MetadataFieldPath::parse(&raw).map_err(|mut diagnostic| {
+        diagnostic.field = Some(path_field);
+        diagnostic
+    })
+}
+
 fn metadata_kind_for_address(address: &MetadataAddress) -> Result<MetadataKind, MetaDiagnostic> {
     let kind = address
         .segments()
@@ -1231,7 +1252,7 @@ fn operation_schema() -> Value {
             "targets": {
                 "type": "array",
                 "minItems": 1,
-                "items": reference_schema(),
+                "items": relation_target_schema(),
             },
         },
         "required": ["op"],
@@ -1275,6 +1296,19 @@ fn reference_schema() -> Value {
         "additionalProperties": false,
         "properties": {"metadataPath": {"type": "string", "minLength": 1}},
         "required": ["metadataPath"],
+    })
+}
+
+fn relation_target_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "minProperties": 1,
+        "maxProperties": 1,
+        "properties": {
+            "metadataPath": {"type": "string", "minLength": 1},
+            "fieldPath": {"type": "string", "minLength": 1},
+        },
     })
 }
 
@@ -2079,6 +2113,11 @@ mod tests {
 
         for relation in MetaRelation::ALL {
             let relation_name = relation.as_str();
+            let target = if *relation == MetaRelation::InputByString {
+                json!({"fieldPath": "Catalog.Items.StandardAttribute.Code"})
+            } else {
+                json!({"metadataPath": "Catalog.Items"})
+            };
             for mode in RelationEditMode::ALL {
                 let mode_name = mode.as_str();
                 let MetadataRequest::Edit(request) = parse_metadata_request(
@@ -2087,7 +2126,7 @@ mod tests {
                         "op": "editRelations",
                         "relation": relation_name,
                         "mode": mode_name,
-                        "targets": [{"metadataPath": "Catalog.Items"}]
+                        "targets": [target]
                     }))),
                 )
                 .unwrap() else {

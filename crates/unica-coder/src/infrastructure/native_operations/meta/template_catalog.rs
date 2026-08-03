@@ -3055,14 +3055,7 @@ where
                 return Ok(());
             }
             lines.push(format!("{indent}<ChildObjects>"));
-            let attr_context = match obj_type {
-                "Document" => "document",
-                "Report" | "DataProcessor" => "processor",
-                "ChartOfAccounts" | "ChartOfCharacteristicTypes" | "ChartOfCalculationTypes" => {
-                    "chart"
-                }
-                _ => "object",
-            };
+            let attr_context = meta_attribute_context(obj_type);
             for attr in &attrs {
                 emit_meta_attribute(lines, &format!("{indent}\t"), attr, attr_context, next_uuid);
             }
@@ -3802,8 +3795,20 @@ pub(super) fn emit_meta_standard_attributes(
     indent: &str,
     object_type: &str,
 ) {
-    let attrs = match object_type {
-        "Catalog" => vec![
+    let attrs = metadata_standard_attribute_names(object_type);
+    if attrs.is_empty() {
+        return;
+    }
+    lines.push(format!("{indent}<StandardAttributes>"));
+    for attr in attrs {
+        emit_meta_standard_attribute(lines, &format!("{indent}\t"), object_type, attr);
+    }
+    lines.push(format!("{indent}</StandardAttributes>"));
+}
+
+pub(super) fn metadata_standard_attribute_names(object_type: &str) -> &'static [&'static str] {
+    match object_type {
+        "Catalog" => &[
             "PredefinedDataName",
             "Predefined",
             "Ref",
@@ -3814,11 +3819,11 @@ pub(super) fn emit_meta_standard_attributes(
             "Description",
             "Code",
         ],
-        "Document" => vec!["Posted", "Ref", "DeletionMark", "Date", "Number"],
-        "Enum" => vec!["Order", "Ref"],
-        "InformationRegister" => vec!["Active", "LineNumber", "Recorder", "Period"],
-        "AccumulationRegister" => vec!["RecordType", "Active", "LineNumber", "Recorder", "Period"],
-        "AccountingRegister" => vec![
+        "Document" => &["Posted", "Ref", "DeletionMark", "Date", "Number"],
+        "Enum" => &["Order", "Ref"],
+        "InformationRegister" => &["Active", "LineNumber", "Recorder", "Period"],
+        "AccumulationRegister" => &["RecordType", "Active", "LineNumber", "Recorder", "Period"],
+        "AccountingRegister" => &[
             "Account",
             "RecordType",
             "Active",
@@ -3826,7 +3831,7 @@ pub(super) fn emit_meta_standard_attributes(
             "Recorder",
             "Period",
         ],
-        "CalculationRegister" => vec![
+        "CalculationRegister" => &[
             "RegistrationPeriod",
             "ReversingEntry",
             "Active",
@@ -3839,7 +3844,7 @@ pub(super) fn emit_meta_standard_attributes(
             "LineNumber",
             "Recorder",
         ],
-        "ChartOfAccounts" => vec![
+        "ChartOfAccounts" => &[
             "PredefinedDataName",
             "Order",
             "OffBalance",
@@ -3851,7 +3856,7 @@ pub(super) fn emit_meta_standard_attributes(
             "DeletionMark",
             "Ref",
         ],
-        "ChartOfCharacteristicTypes" => vec![
+        "ChartOfCharacteristicTypes" => &[
             "PredefinedDataName",
             "ValueType",
             "Description",
@@ -3862,7 +3867,7 @@ pub(super) fn emit_meta_standard_attributes(
             "DeletionMark",
             "Ref",
         ],
-        "ChartOfCalculationTypes" => vec![
+        "ChartOfCalculationTypes" => &[
             "PredefinedDataName",
             "Predefined",
             "Ref",
@@ -3871,7 +3876,7 @@ pub(super) fn emit_meta_standard_attributes(
             "Description",
             "Code",
         ],
-        "BusinessProcess" => vec![
+        "BusinessProcess" => &[
             "Started",
             "HeadTask",
             "Completed",
@@ -3880,7 +3885,7 @@ pub(super) fn emit_meta_standard_attributes(
             "Date",
             "Number",
         ],
-        "Task" => vec![
+        "Task" => &[
             "Executed",
             "Description",
             "RoutePoint",
@@ -3890,7 +3895,7 @@ pub(super) fn emit_meta_standard_attributes(
             "Date",
             "Number",
         ],
-        "ExchangePlan" => vec![
+        "ExchangePlan" => &[
             "ExchangeDate",
             "ThisNode",
             "ReceivedNo",
@@ -3900,18 +3905,10 @@ pub(super) fn emit_meta_standard_attributes(
             "Description",
             "Code",
         ],
-        "DocumentJournal" => vec!["Type", "Ref", "Date", "Posted", "DeletionMark", "Number"],
-        "TabularSection" => vec!["LineNumber"],
-        _ => Vec::new(),
-    };
-    if attrs.is_empty() {
-        return;
+        "DocumentJournal" => &["Type", "Ref", "Date", "Posted", "DeletionMark", "Number"],
+        "TabularSection" => &["LineNumber"],
+        _ => &[],
     }
-    lines.push(format!("{indent}<StandardAttributes>"));
-    for attr in attrs {
-        emit_meta_standard_attribute(lines, &format!("{indent}\t"), object_type, attr);
-    }
-    lines.push(format!("{indent}</StandardAttributes>"));
 }
 
 pub(super) fn meta_standard_attribute_type_reduction_mode(
@@ -4262,6 +4259,18 @@ pub(super) fn emit_meta_attribute<F>(
     }
     lines.push(format!("{indent}\t</Properties>"));
     lines.push(format!("{indent}</Attribute>"));
+}
+
+pub(super) fn meta_attribute_context(object_type: &str) -> &'static str {
+    match object_type {
+        "Catalog" => "catalog",
+        "Document" => "document",
+        "Report" | "DataProcessor" | "ExternalReport" | "ExternalDataProcessor" => "processor",
+        "ChartOfAccounts" | "ChartOfCharacteristicTypes" | "ChartOfCalculationTypes" => "chart",
+        "InformationRegister" => "register-info",
+        "AccumulationRegister" | "AccountingRegister" | "CalculationRegister" => "register-other",
+        _ => "object",
+    }
 }
 
 pub(super) fn emit_meta_tabular_section<F>(
