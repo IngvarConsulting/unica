@@ -514,7 +514,7 @@ git commit -m "docs(research): screen issue 186 specialized sources"
 - Produces: three draft source cards for benchmark and trusted-access candidates.
 - Produces: explicit separation between executable oracle evidence and subjective model judging.
 
-- [ ] **Step 1: Inspect the three pinned trees**
+- [x] **Step 1: Inspect the three pinned trees**
 
 Inspect exactly:
 
@@ -530,7 +530,7 @@ For `prism` and `1CLLMBenchTasks`, inspect task definitions, prompt construction
 oracle quality, safety classification, and disposition remain provisional until
 the stronger-model cross-source review in Task 6.
 
-- [ ] **Step 2: Check leakage and oracle quality**
+- [x] **Step 2: Check leakage and oracle quality**
 
 For each benchmark source, answer with pinned file evidence:
 
@@ -542,13 +542,13 @@ For each benchmark source, answer with pinned file evidence:
 
 For missing licenses in `1CLLMBenchTasks` and `1c-trusted-gateway`, state the exact pinned-tree result and GitHub metadata; do not infer permission from public visibility.
 
-- [ ] **Step 3: Map to current Unica evaluation and safety evidence**
+- [x] **Step 3: Map to current Unica evaluation and safety evidence**
 
 Compare benchmark mechanisms with `scripts/ci/release-assessment.py`, `tests/ci/test_release_assessment.py`, and existing parity fixtures. Compare gateway mechanisms with `REQ-SAFETY-SECRET-REDACTION`, preview-by-default, support locks, and no-partial-write requirements.
 
 Write each gap narrowly: screening may recommend a later experiment, but it must not claim that a benchmark improves Unica without an executable comparative result.
 
-- [ ] **Step 4: Write three draft cards and verify completeness**
+- [x] **Step 4: Write three draft cards and verify completeness**
 
 Run after writing:
 
@@ -560,7 +560,7 @@ $evaluationSources | ForEach-Object { if (($reviewText.Split("### `$_`").Count -
 
 Expected: no exception.
 
-- [ ] **Step 5: Commit the evaluation and safety cohort**
+- [x] **Step 5: Commit the evaluation and safety cohort**
 
 ```powershell
 git add docs/provenance/reviews/2026-08-03-issue-186-source-screening.md docs/plans/2026-08-03-issue-186-source-screening.md

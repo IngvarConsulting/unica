@@ -249,7 +249,38 @@ Populated after all 19 cards pass the stronger-model review gate.
 
 ## Evaluation and safe access
 
-Reserved for benchmark and trusted-access cards.
+### `genlab-1c/prism`
+
+- **Snapshot:** `main`, `6adda50c572a28ca2f915b64bc89c667abf93ea3`, `2026-08-03`.
+- **License:** `LICENSE` is MIT; GitHub metadata reports MIT and is consistent.
+- **Evidence:** [prompt contract](https://github.com/genlab-1c/prism/blob/6adda50c572a28ca2f915b64bc89c667abf93ea3/generation/prompts.yaml), [OneC executor](https://github.com/genlab-1c/prism/blob/6adda50c572a28ca2f915b64bc89c667abf93ea3/harness/execute/onec/runner.py), [scoring axes](https://github.com/genlab-1c/prism/blob/6adda50c572a28ca2f915b64bc89c667abf93ea3/harness/score/platform.py), [model adapters](https://github.com/genlab-1c/prism/blob/6adda50c572a28ca2f915b64bc89c667abf93ea3/harness/generate/adapters/registry.py), [CI](https://github.com/genlab-1c/prism/blob/6adda50c572a28ca2f915b64bc89c667abf93ea3/.github/workflows/ci.yml), and [README methodology](https://github.com/genlab-1c/prism/blob/6adda50c572a28ca2f915b64bc89c667abf93ea3/README.md).
+- **Mechanism:** PRISM builds prompts from category system text plus task prompts, runs candidate BSL through BSL-LS/OneScript or headless 1C, and scores syntax, meaning, optimization, and platform dimensions. Canonical solutions and hidden tests are described as task-quality gates; model adapters are replaceable. The pinned prompt contract does not itself include canonical answers, but task/context loaders and generated artifacts require an explicit leakage audit before treating independence as proven. Coverage is strongest for BSL and platform behavior; XML, forms, MXL, DCS, roles, integrations, and complete artifact round trips are not established by the cited files.
+- **Unica mapping:** compare its executable oracle and result classification with `scripts/ci/release-assessment.py`, `tests/ci/test_release_assessment.py`, and `tests/fixtures/unica_mcp_script_parity/`; candidate integration must remain behind `crates/unica-coder/src/application/operation_descriptors.rs` and preserve `REQ-OBS-STABLE-ENVELOPE` in `spec/architecture/quality-requirements.md`.
+- **Limits:** Docker/1C and hidden fixtures constrain portability; expert L2 judging is expressly planned rather than executable; answer leakage, full-artifact coverage, and model-independent repeatability remain screening questions.
+- **Provisional decision:** `deep-dive` — executable comparison is promising, but a common Unica fixture harness must prove leakage resistance and artifact coverage.
+- **Review:** `draft`.
+
+### `comol/1CLLMBenchTasks`
+
+- **Snapshot:** `main`, `39732c7709651bf6628360393cf8fe0e30d96c8c`, `2026-08-03`.
+- **License:** no `LICENSE` file is present in the pinned tree and GitHub metadata reports no SPDX license; public visibility and README claims do not grant transfer permission.
+- **Evidence:** [README task/evaluation rules](https://github.com/comol/1CLLMBenchTasks/blob/39732c7709651bf6628360393cf8fe0e30d96c8c/README.md), [query task](https://github.com/comol/1CLLMBenchTasks/blob/39732c7709651bf6628360393cf8fe0e30d96c8c/Tasks/01.md), [form task](https://github.com/comol/1CLLMBenchTasks/blob/39732c7709651bf6628360393cf8fe0e30d96c8c/Tasks/09.md), and [artifact/report task](https://github.com/comol/1CLLMBenchTasks/blob/39732c7709651bf6628360393cf8fe0e30d96c8c/Tasks/17.md).
+- **Mechanism:** seventeen Markdown cases specify prompts, expected answers or criteria, and requested deliverables spanning queries, BSL, managed forms, external print forms, reports, and 1C:ЗУП. The README instructs evaluators to send only the постановка and manually compare to the правильный ответ; no pinned executor, deterministic oracle, model adapter, scoring implementation, or CI is present. Expected answers therefore can leak if the full task file is supplied, and correctness is subjective for alternate solutions.
+- **Unica mapping:** this is a task corpus only; compare its case schema with `scripts/ci/release-assessment.py`, `tests/ci/test_release_assessment.py`, and `tests/fixtures/unica_mcp_script_parity/`. It provides breadth hypotheses for XML/forms/MXL/DCS/roles/integrations, not executable evidence or a new `unica.*` tool.
+- **Limits:** missing license is a transfer blocker; no executable oracle, platform run, model-independent scoring, or artifact fixture proves the README’s coverage claims.
+- **Provisional decision:** `defer` — retain as inspiration-only cases until licensing and an independent executable harness exist.
+- **Review:** `draft`.
+
+### `alonehobo/1c-trusted-gateway`
+
+- **Snapshot:** `main`, `a5cc656e3f3763800706ec752fd33fb2e18318e4`, `2026-08-03`.
+- **License:** no `LICENSE` file is present in the pinned tree and GitHub metadata reports no SPDX license; observation is permitted for screening, transfer is not cleared.
+- **Evidence:** [privacy masking](https://github.com/alonehobo/1c-trusted-gateway/blob/a5cc656e3f3763800706ec752fd33fb2e18318e4/privacy.go), [type policy](https://github.com/alonehobo/1c-trusted-gateway/blob/a5cc656e3f3763800706ec752fd33fb2e18318e4/type_policy.go), [masking tests](https://github.com/alonehobo/1c-trusted-gateway/blob/a5cc656e3f3763800706ec752fd33fb2e18318e4/privacy_test.go), [policy tests](https://github.com/alonehobo/1c-trusted-gateway/blob/a5cc656e3f3763800706ec752fd33fb2e18318e4/type_policy_test.go), [MCP proxy](https://github.com/alonehobo/1c-trusted-gateway/blob/a5cc656e3f3763800706ec752fd33fb2e18318e4/mcp_server.go), and [approval UI actions](https://github.com/alonehobo/1c-trusted-gateway/blob/a5cc656e3f3763800706ec752fd33fb2e18318e4/ui_actions.js).
+- **Mechanism:** the Go gateway proxies MCP over localhost, applies type/field policies and recursive masking, normalizes presentation calls, supports whitelist suggestions with explicit UI confirmation, and records application logs. Tests cover masking and policy behavior; the pinned tree has no demonstrated fail-open/fail-closed matrix, tamper-evident audit log, or complete approval/proxy integration test.
+- **Unica mapping:** compare masking and preview/approval semantics with `REQ-SAFETY-SECRET-REDACTION`, `REQ-SAFETY-PREVIEW-BY-DEFAULT`, `REQ-SAFETY-NO-PARTIAL-WRITE` in `spec/architecture/quality-requirements.md`, plus `tests/ci/test_release_assessment.py` and the parity fixtures. Any adaptation belongs behind existing `unica.*` operations, not as a second MCP server.
+- **Limits:** missing license blocks transfer; README security claims exceed the cited unit-test scope; fail-open behavior, auditability, whitelist bypasses, and partial-write safety need adversarial tests.
+- **Provisional decision:** `deep-dive` — safety semantics merit a bounded red-team experiment focused on failure modes and approval enforcement.
+- **Review:** `draft`.
 
 ## Existing Unica donors and bundled engines
 
