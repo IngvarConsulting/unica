@@ -122,6 +122,7 @@ pub struct IndexOutput {
 pub struct IndexBackgroundJob {
     pub action: String,
     pub source_root: PathBuf,
+    pub source_generation: u64,
     pub primary: IndexCommand,
     pub info: IndexCommand,
     pub recovery_build: Option<IndexCommand>,
@@ -470,6 +471,7 @@ impl<'a> WorkspaceIndexService<'a> {
                 return IndexStartReport::default();
             }
         };
+        let source_generation = source_generation(&source_root);
         let status_path = status_path(context);
         let _ = write_status_path(
             &status_path,
@@ -479,6 +481,7 @@ impl<'a> WorkspaceIndexService<'a> {
         let job = IndexBackgroundJob {
             action: action.to_string(),
             source_root,
+            source_generation,
             primary,
             info,
             recovery_build,
@@ -849,7 +852,9 @@ where
         IndexReadiness::Ready { db_path } => {
             write_background_status(
                 &job,
-                BslIndexStatus::ready(&job.source_root, &db_path).with_last_run(primary_metrics),
+                BslIndexStatus::ready(&job.source_root, &db_path)
+                    .with_source_generation(job.source_generation)
+                    .with_last_run(primary_metrics),
             );
         }
         readiness if readiness.is_stale_content() && job.recovery_build.is_some() => {
@@ -940,6 +945,7 @@ where
                     write_background_status(
                         &job,
                         BslIndexStatus::ready(&job.source_root, &db_path)
+                            .with_source_generation(job.source_generation)
                             .with_last_run(recovery_metrics),
                     );
                 }
@@ -2697,6 +2703,7 @@ source-set:
         run_background_job(IndexBackgroundJob {
             action: "build".to_string(),
             source_root: context.workspace_root.join("src"),
+            source_generation: 42,
             primary: print_lines_command(
                 &context.workspace_root,
                 true,
@@ -2739,9 +2746,80 @@ source-set:
         assert_eq!(metrics["modules"], 24);
         assert_eq!(metrics["methods"], 617);
         assert_eq!(metrics["db_size"], "1.3 MB");
+        assert_eq!(value["source_generation"], 42);
         let current = read_lock_path(&lock).expect("completed job should leave a marker");
         assert_eq!(current.state, "released");
         assert!(current.child_pid.is_some());
+        cleanup(&context);
+    }
+
+    #[test]
+    fn background_job_records_the_generation_captured_before_a_source_change() {
+        let context = test_context("captured-generation");
+        let source_root = context.workspace_root.join("src");
+        let module = source_root.join("CommonModules/SmokeModule.bsl");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        fs::write(&module, "Процедура Smoke()\nКонецПроцедуры\n").unwrap();
+        let captured = source_generation(&source_root);
+        let mut job = test_background_job(&context, "build");
+        job.source_generation = captured;
+        let db_path = context.cache_root.join("rlm-tools-bsl/a/bsl_index.db");
+        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        fs::write(&db_path, "").unwrap();
+
+        run_background_job_with(job, |command, _lease| {
+            if command.args.get(1).is_some_and(|arg| arg == "build") {
+                fs::write(&module, "Процедура Smoke(НовыйПараметр)\nКонецПроцедуры\n").unwrap();
+                Ok(IndexOutput::success("Index built"))
+            } else {
+                Ok(IndexOutput::success(format!(
+                    "Index: {}\n  Status:   fresh\n",
+                    db_path.display()
+                )))
+            }
+        });
+
+        let status = read_bsl_index_status(&context).unwrap();
+        assert_eq!(status.source_generation, Some(captured));
+        assert_ne!(
+            status.source_generation,
+            Some(source_generation(&source_root))
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn successful_update_makes_the_unchanged_generation_ready_again() {
+        let context = test_context("updated-generation-ready");
+        let source_root = context.workspace_root.join("src");
+        fs::create_dir_all(source_root.join("CommonModules")).unwrap();
+        let db_path = context.cache_root.join("rlm-tools-bsl/a/bsl_index.db");
+        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        fs::write(&db_path, "").unwrap();
+        let mut job = test_background_job(&context, "update");
+        job.source_generation = source_generation(&source_root);
+        run_background_job_with(job, |command, _lease| {
+            if command.args.get(1).is_some_and(|arg| arg == "info") {
+                Ok(IndexOutput::success(format!(
+                    "Index: {}\n  Status:   fresh\n",
+                    db_path.display()
+                )))
+            } else {
+                Ok(IndexOutput::success("Index updated"))
+            }
+        });
+        let runner = RecordingIndexRunner {
+            outputs: RefCell::new(vec![IndexOutput::success(format!(
+                "Index: {}\n  Status:   fresh\n",
+                db_path.display()
+            ))]),
+            ..Default::default()
+        };
+
+        let readiness =
+            WorkspaceIndexService::with_runner(&runner).ready_index(&context, &Map::new());
+
+        assert_eq!(readiness, IndexReadiness::Ready { db_path });
         cleanup(&context);
     }
 
@@ -2863,6 +2941,7 @@ source-set:
         run_background_job(IndexBackgroundJob {
             action: "build".to_string(),
             source_root: context.workspace_root.join("src"),
+            source_generation: source_generation(&context.workspace_root.join("src")),
             primary: print_lines_command(
                 &context.workspace_root,
                 true,
@@ -2889,6 +2968,7 @@ source-set:
             .as_deref()
             .is_some_and(|message| message.starts_with("cancelled:")));
         assert!(current_status.last_run.is_some());
+        assert_eq!(current_status.source_generation, None);
         let current_lock = read_lock_path(&lock).expect("cancelled job should leave a marker");
         assert_eq!(current_lock.state, "released");
         cleanup(&context);
@@ -3163,6 +3243,7 @@ source-set:
         IndexBackgroundJob {
             action: action.to_string(),
             source_root: context.workspace_root.join("src"),
+            source_generation: source_generation(&context.workspace_root.join("src")),
             primary: inert_index_command(context, action),
             info: inert_index_command(context, "info"),
             recovery_build: None,
