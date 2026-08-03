@@ -199,6 +199,8 @@ pub(crate) use edit::{
     resolve_meta_edit_object_path, resolve_typed_edit_object, resolve_typed_metadata_object,
 };
 pub(crate) use info::{analyze_meta_info_with_data, read_typed_meta_info, resolve_meta_info_path};
+#[cfg(test)]
+pub(crate) use info::{with_registrar_processing_hook, RegistrarProcessingPhase};
 pub(crate) use legacy_dsl::{
     meta_compile_format_dependency_paths, meta_compile_object_xml, preview_meta_compile,
     validate_metadata_owner_shape_8_3_27,

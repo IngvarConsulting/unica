@@ -37,6 +37,59 @@ const RELATED_SOURCE_MAX_DEPTH: usize = 256;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct WorkspaceSourceSnapshot([u8; 32]);
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RelatedSnapshotHashPhase {
+    BeforeEntry {
+        logical_path: String,
+        ordinal: usize,
+        total: usize,
+    },
+    AfterEntry {
+        logical_path: String,
+        ordinal: usize,
+        total: usize,
+    },
+    AfterFinalize,
+}
+
+#[cfg(test)]
+type RelatedSnapshotHashHook = Box<dyn FnMut(&RelatedSnapshotHashPhase)>;
+
+#[cfg(test)]
+thread_local! {
+    static RELATED_SNAPSHOT_HASH_HOOK:
+        std::cell::RefCell<Option<RelatedSnapshotHashHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn with_related_snapshot_hash_hook<T>(
+    hook: impl FnMut(&RelatedSnapshotHashPhase) + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<RelatedSnapshotHashHook>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            RELATED_SNAPSHOT_HASH_HOOK.with(|slot| slot.replace(self.0.take()));
+        }
+    }
+
+    let previous = RELATED_SNAPSHOT_HASH_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
+    let _reset = Reset(previous);
+    action()
+}
+
+fn emit_related_snapshot_hash_phase(phase: RelatedSnapshotHashPhase) {
+    #[cfg(test)]
+    RELATED_SNAPSHOT_HASH_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().as_mut() {
+            hook(&phase);
+        }
+    });
+    #[cfg(not(test))]
+    let _ = phase;
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RelatedReadinessState {
     Ready,
@@ -423,17 +476,68 @@ fn related_source_content_snapshot(
     }
 
     let mut hasher = Sha256::new();
-    hasher.update(b"unica-related-source-content-v1");
-    for entry in files.files {
-        ensure_snapshot_budget(deadline, settle_until, cancellation)?;
+    update_snapshot_hash(
+        &mut hasher,
+        b"unica-related-source-content-v1",
+        deadline,
+        settle_until,
+        cancellation,
+    )?;
+    let total = files.files.len();
+    for (ordinal, entry) in files.files.into_iter().enumerate() {
         let logical_path = entry.logical_path;
         let bytes = entry.bytes;
-        hasher.update((logical_path.len() as u64).to_le_bytes());
-        hasher.update(logical_path.as_bytes());
-        hasher.update((bytes.len() as u64).to_le_bytes());
-        hasher.update(&bytes);
+        emit_related_snapshot_hash_phase(RelatedSnapshotHashPhase::BeforeEntry {
+            logical_path: logical_path.clone(),
+            ordinal,
+            total,
+        });
+        update_snapshot_hash(
+            &mut hasher,
+            (logical_path.len() as u64).to_le_bytes(),
+            deadline,
+            settle_until,
+            cancellation,
+        )?;
+        update_snapshot_hash(
+            &mut hasher,
+            logical_path.as_bytes(),
+            deadline,
+            settle_until,
+            cancellation,
+        )?;
+        update_snapshot_hash(
+            &mut hasher,
+            (bytes.len() as u64).to_le_bytes(),
+            deadline,
+            settle_until,
+            cancellation,
+        )?;
+        update_snapshot_hash(&mut hasher, &bytes, deadline, settle_until, cancellation)?;
+        emit_related_snapshot_hash_phase(RelatedSnapshotHashPhase::AfterEntry {
+            logical_path,
+            ordinal,
+            total,
+        });
+        ensure_snapshot_budget(deadline, settle_until, cancellation)?;
     }
-    Ok(WorkspaceSourceSnapshot(hasher.finalize().into()))
+    ensure_snapshot_budget(deadline, settle_until, cancellation)?;
+    let digest = hasher.finalize().into();
+    emit_related_snapshot_hash_phase(RelatedSnapshotHashPhase::AfterFinalize);
+    ensure_snapshot_budget(deadline, settle_until, cancellation)?;
+    Ok(WorkspaceSourceSnapshot(digest))
+}
+
+fn update_snapshot_hash(
+    hasher: &mut Sha256,
+    bytes: impl AsRef<[u8]>,
+    deadline: ProviderDeadline,
+    settle_until: Instant,
+    cancellation: &CancellationToken,
+) -> Result<(), ()> {
+    ensure_snapshot_budget(deadline, settle_until, cancellation)?;
+    hasher.update(bytes.as_ref());
+    ensure_snapshot_budget(deadline, settle_until, cancellation)
 }
 
 fn ensure_snapshot_budget(
@@ -1705,6 +1809,141 @@ mod tests {
             crate::domain::metadata::MetaFreshness::Stale
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn source_snapshot_rejects_cancellation_after_the_last_large_hash_update() {
+        let root = secure_temp_root("unica-related-post-hash-cancel");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("Large.bsl"), vec![b'x'; 4 * 1024 * 1024]).unwrap();
+        let cancellation = CancellationToken::new();
+        let cancellation_for_hook = cancellation.clone();
+
+        let result = super::with_related_snapshot_hash_hook(
+            move |phase| {
+                if matches!(
+                    phase,
+                    super::RelatedSnapshotHashPhase::AfterEntry {
+                        ordinal: 0,
+                        total: 1,
+                        ..
+                    }
+                ) {
+                    cancellation_for_hook.cancel();
+                }
+            },
+            || {
+                super::related_source_content_snapshot(
+                    &root,
+                    ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
+                    Instant::now() + Duration::from_secs(1),
+                    &cancellation,
+                )
+            },
+        );
+
+        assert!(
+            result.is_err(),
+            "the last hashed bytes need a post-update checkpoint"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_snapshot_rejects_cancellation_after_hash_finalize() {
+        let root = secure_temp_root("unica-related-post-finalize-cancel");
+        std::fs::create_dir_all(&root).unwrap();
+        let cancellation = CancellationToken::new();
+        let cancellation_for_hook = cancellation.clone();
+
+        let result = super::with_related_snapshot_hash_hook(
+            move |phase| {
+                if phase == &super::RelatedSnapshotHashPhase::AfterFinalize {
+                    cancellation_for_hook.cancel();
+                }
+            },
+            || {
+                super::related_source_content_snapshot(
+                    &root,
+                    ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
+                    Instant::now() + Duration::from_secs(1),
+                    &cancellation,
+                )
+            },
+        );
+
+        assert!(
+            result.is_err(),
+            "a finalized digest needs one last budget checkpoint"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn metadata_related_maps_post_capture_hash_cancellation_to_unavailable_unknown() {
+        let root = secure_temp_root("unica-related-post-hash-soft-failure");
+        let source_root = root.join("src");
+        std::fs::create_dir_all(&source_root).unwrap();
+        std::fs::write(source_root.join("Large.bsl"), vec![b'x'; 4 * 1024 * 1024]).unwrap();
+        let context = CodeIntelligenceContext::new(
+            WorkspaceContext {
+                cwd: root.clone(),
+                workspace_root: root.clone(),
+                cache_root: root.join(".build/unica"),
+                workspace_epoch: 1,
+            },
+            ResolvedSourceRoot {
+                source_set: Some("main".to_string()),
+                path: source_root,
+            },
+        );
+        let cancellation = CancellationToken::new();
+        let cancellation_for_hook = cancellation.clone();
+        let client = related_client(
+            IndexReadiness::Ready {
+                db_path: PathBuf::from("/private/index.db"),
+            },
+            json!({
+                "object_name": "Catalog.Items",
+                "sections": {"modules": {"status": "ok", "total": 1, "returned": 1, "items": [{"name": "ObjectModule"}]}}
+            }),
+        );
+
+        let related = super::with_related_snapshot_hash_hook(
+            move |phase| {
+                if matches!(
+                    phase,
+                    super::RelatedSnapshotHashPhase::AfterEntry {
+                        ordinal: 0,
+                        total: 1,
+                        ..
+                    }
+                ) {
+                    cancellation_for_hook.cancel();
+                }
+            },
+            || {
+                RlmNavigationAdapter::with_client(&client).metadata_related(
+                    "Catalog.Items",
+                    &["modules".to_string()],
+                    20,
+                    &context,
+                    ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
+                    &cancellation,
+                )
+            },
+        );
+
+        let modules = related.modules.unwrap();
+        assert_eq!(
+            modules.status,
+            crate::domain::metadata::MetaRelatedStatus::Unavailable
+        );
+        assert_eq!(
+            modules.freshness,
+            crate::domain::metadata::MetaFreshness::Unknown
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

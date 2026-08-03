@@ -296,6 +296,16 @@ pub(crate) fn open_any_child_nofollow(
 }
 
 #[cfg(unix)]
+pub(crate) fn open_child_for_secure_tree_use(
+    _parent: &fs::File,
+    _name: &std::ffi::OsStr,
+    classification_anchor: fs::File,
+    _kind: OpenedChildKind,
+) -> io::Result<fs::File> {
+    Ok(classification_anchor)
+}
+
+#[cfg(unix)]
 pub(crate) fn read_directory_names_bounded(
     directory: &fs::File,
     maximum_entries: usize,
@@ -1507,6 +1517,32 @@ pub(crate) fn open_any_child_nofollow(
     )?;
     let kind = opened_child_kind(&file)?;
     Ok((file, kind))
+}
+
+#[cfg(windows)]
+pub(crate) fn open_child_for_secure_tree_use(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+    classification_anchor: fs::File,
+    kind: OpenedChildKind,
+) -> io::Result<fs::File> {
+    let anchor_identity = file_identity(&classification_anchor)?;
+    let typed = match kind {
+        OpenedChildKind::Directory => open_directory_child_nofollow(parent, name)?,
+        OpenedChildKind::RegularFile => open_regular_child_nofollow(parent, name)?,
+        OpenedChildKind::ReparsePoint | OpenedChildKind::Unsupported => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "secure tree cannot use an untyped child handle",
+            ))
+        }
+    };
+    if file_identity(&typed)? != anchor_identity || opened_child_kind(&typed)? != kind {
+        return Err(io::Error::other(
+            "typed child identity differs from its classification anchor",
+        ));
+    }
+    Ok(typed)
 }
 
 #[cfg(windows)]
@@ -3453,6 +3489,56 @@ mod tests {
         assert_eq!(cancelled.unwrap_err().kind(), io::ErrorKind::Interrupted);
         assert_eq!(checkpoints.get(), 5);
 
+        drop(directory);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn secure_tree_typed_reopen_provides_directory_listing_and_file_bytes() {
+        use super::{
+            open_any_child_nofollow, open_child_for_secure_tree_use, open_directory_nofollow,
+            read_directory_names_bounded, OpenedChildKind,
+        };
+        use std::io::Read;
+
+        let root = unique_temp_root("secure-tree-typed-reopen");
+        fs::create_dir_all(root.join("nested")).unwrap();
+        fs::write(root.join("nested/inside.xml"), b"inside").unwrap();
+        fs::write(root.join("payload.xml"), b"payload").unwrap();
+        let directory = open_directory_nofollow(&root).unwrap();
+
+        let (nested_anchor, nested_kind) =
+            open_any_child_nofollow(&directory, std::ffi::OsStr::new("nested")).unwrap();
+        assert_eq!(nested_kind, OpenedChildKind::Directory);
+        let nested = open_child_for_secure_tree_use(
+            &directory,
+            std::ffi::OsStr::new("nested"),
+            nested_anchor,
+            nested_kind,
+        )
+        .unwrap();
+        assert_eq!(
+            read_directory_names_bounded(&nested, 2, || Ok(())).unwrap(),
+            [std::ffi::OsString::from("inside.xml")]
+        );
+
+        let (file_anchor, file_kind) =
+            open_any_child_nofollow(&directory, std::ffi::OsStr::new("payload.xml")).unwrap();
+        assert_eq!(file_kind, OpenedChildKind::RegularFile);
+        let mut file = open_child_for_secure_tree_use(
+            &directory,
+            std::ffi::OsStr::new("payload.xml"),
+            file_anchor,
+            file_kind,
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"payload");
+
+        drop(file);
+        drop(nested);
         drop(directory);
         fs::remove_dir_all(root).unwrap();
     }

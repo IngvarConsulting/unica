@@ -1,4 +1,6 @@
 use super::{OperationResult, UnicaApplication};
+use crate::composition::testing::{with_registrar_processing_hook, RegistrarProcessingPhase};
+use crate::domain::cancellation::CancellationToken;
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -122,6 +124,29 @@ fn call_info_path(
     let previous = std::env::current_dir().unwrap();
     std::env::set_current_dir(workspace).unwrap();
     let result = UnicaApplication::new().call_unregistered_meta_info_for_integration_tests(&args);
+    std::env::set_current_dir(previous).unwrap();
+    result.expect("private typed meta.info call")
+}
+
+fn call_info_path_cancellable(
+    workspace: &Path,
+    metadata_path: &str,
+    extra: impl IntoIterator<Item = (String, Value)>,
+    cancellation: CancellationToken,
+) -> OperationResult {
+    let mut args = Map::from_iter([
+        ("sourceSet".to_string(), Value::String("main".to_string())),
+        (
+            "metadataPath".to_string(),
+            Value::String(metadata_path.to_string()),
+        ),
+    ]);
+    args.extend(extra);
+    let _cwd_lock = process_cwd_lock();
+    let previous = std::env::current_dir().unwrap();
+    std::env::set_current_dir(workspace).unwrap();
+    let result = UnicaApplication::new()
+        .call_unregistered_meta_info_cancellable_for_integration_tests(&args, cancellation);
     std::env::set_current_dir(previous).unwrap();
     result.expect("private typed meta.info call")
 }
@@ -525,6 +550,188 @@ fn meta_info_private_closed_read_reports_malformed_registrar_evidence_unavailabl
         workspace.path(),
         "InformationRegister.SubordinateRegister",
         [],
+    );
+
+    assert!(!result.ok);
+    assert_eq!(result.data.as_ref().unwrap()["name"], "SubordinateRegister");
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+    assert_no_error_diagnostic(&result, "validation_failed");
+}
+
+#[test]
+fn meta_info_post_capture_cancellation_after_first_identity_parse_is_provider_unavailable() {
+    let files = [
+        "Configuration.xml",
+        "Documents/Регистратор.xml",
+        "InformationRegisters/SubordinateRegister.xml",
+        "Languages/Русский.xml",
+    ];
+    let workspace = fixture_workspace(
+        "registrar-first-identity-cancel",
+        "meta-validate-subordinate-register",
+        &files,
+    );
+    let cancellation = CancellationToken::new();
+    let cancellation_for_hook = cancellation.clone();
+
+    let result = with_registrar_processing_hook(
+        move |phase| {
+            if matches!(
+                phase,
+                RegistrarProcessingPhase::AfterIdentityParse { ordinal: 0, .. }
+            ) {
+                cancellation_for_hook.cancel();
+            }
+        },
+        || {
+            call_info_path_cancellable(
+                workspace.path(),
+                "InformationRegister.SubordinateRegister",
+                [],
+                cancellation,
+            )
+        },
+    );
+
+    assert!(!result.ok);
+    assert_eq!(result.data.as_ref().unwrap()["name"], "SubordinateRegister");
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+    assert_no_error_diagnostic(&result, "validation_failed");
+}
+
+#[test]
+fn meta_info_post_capture_cancellation_after_large_identity_parse_is_provider_unavailable() {
+    let files = [
+        "Configuration.xml",
+        "Documents/Регистратор.xml",
+        "InformationRegisters/SubordinateRegister.xml",
+        "Languages/Русский.xml",
+    ];
+    let workspace = fixture_workspace(
+        "registrar-large-identity-cancel",
+        "meta-validate-subordinate-register",
+        &files,
+    );
+    let original =
+        std::fs::read_to_string(workspace.path().join("src/Documents/Регистратор.xml")).unwrap();
+    let inflated = original.replace(
+        "</MetaDataObject>",
+        &format!("<!--{}--></MetaDataObject>", "x".repeat(4 * 1024 * 1024)),
+    );
+    std::fs::write(
+        workspace.path().join("src/Documents/000-Large.xml"),
+        inflated,
+    )
+    .unwrap();
+    let cancellation = CancellationToken::new();
+    let cancellation_for_hook = cancellation.clone();
+
+    let result = with_registrar_processing_hook(
+        move |phase| {
+            if matches!(
+                phase,
+                RegistrarProcessingPhase::AfterIdentityParse { logical_path, .. }
+                    if logical_path.ends_with("000-Large.xml")
+            ) {
+                cancellation_for_hook.cancel();
+            }
+        },
+        || {
+            call_info_path_cancellable(
+                workspace.path(),
+                "InformationRegister.SubordinateRegister",
+                [],
+                cancellation,
+            )
+        },
+    );
+
+    assert!(!result.ok);
+    assert_eq!(result.data.as_ref().unwrap()["name"], "SubordinateRegister");
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+    assert_no_error_diagnostic(&result, "validation_failed");
+}
+
+#[test]
+fn meta_info_post_capture_cancellation_after_last_registrar_parse_is_provider_unavailable() {
+    let files = [
+        "Configuration.xml",
+        "Documents/Регистратор.xml",
+        "InformationRegisters/SubordinateRegister.xml",
+        "Languages/Русский.xml",
+    ];
+    let workspace = fixture_workspace(
+        "registrar-last-parse-cancel",
+        "meta-validate-subordinate-register",
+        &files,
+    );
+    std::fs::copy(
+        workspace.path().join("src/Documents/Регистратор.xml"),
+        workspace.path().join("src/Documents/Z-Second.xml"),
+    )
+    .unwrap();
+    let cancellation = CancellationToken::new();
+    let cancellation_for_hook = cancellation.clone();
+
+    let result = with_registrar_processing_hook(
+        move |phase| {
+            if matches!(
+                phase,
+                RegistrarProcessingPhase::AfterRegistrarParse {
+                    ordinal,
+                    total,
+                    ..
+                } if ordinal + 1 == *total
+            ) {
+                cancellation_for_hook.cancel();
+            }
+        },
+        || {
+            call_info_path_cancellable(
+                workspace.path(),
+                "InformationRegister.SubordinateRegister",
+                [],
+                cancellation,
+            )
+        },
+    );
+
+    assert!(!result.ok);
+    assert_eq!(result.data.as_ref().unwrap()["name"], "SubordinateRegister");
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+    assert_no_error_diagnostic(&result, "validation_failed");
+}
+
+#[test]
+fn meta_info_post_capture_cancellation_before_complete_return_is_provider_unavailable() {
+    let files = [
+        "Configuration.xml",
+        "Documents/Регистратор.xml",
+        "InformationRegisters/SubordinateRegister.xml",
+        "Languages/Русский.xml",
+    ];
+    let workspace = fixture_workspace(
+        "registrar-final-return-cancel",
+        "meta-validate-subordinate-register",
+        &files,
+    );
+    let cancellation = CancellationToken::new();
+    let cancellation_for_hook = cancellation.clone();
+
+    let result = with_registrar_processing_hook(
+        move |phase| {
+            if phase == &RegistrarProcessingPhase::BeforeCompleteReturn {
+                cancellation_for_hook.cancel();
+            }
+        },
+        || {
+            call_info_path_cancellable(
+                workspace.path(),
+                "InformationRegister.SubordinateRegister",
+                [],
+                cancellation,
+            )
+        },
     );
 
     assert!(!result.ok);

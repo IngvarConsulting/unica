@@ -29,6 +29,59 @@ const REGISTRAR_SCAN_MAX_ENTRIES: usize = 20_000;
 const REGISTRAR_SCAN_MAX_FILES: usize = 20_000;
 const REGISTRAR_SCAN_MAX_BYTES: usize = 64 * 1024 * 1024;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RegistrarProcessingPhase {
+    AfterIdentityParse {
+        logical_path: String,
+        ordinal: usize,
+        total: usize,
+    },
+    AfterRegistrarParse {
+        logical_path: String,
+        ordinal: usize,
+        total: usize,
+    },
+    BeforeCompleteReturn,
+}
+
+#[cfg(test)]
+type RegistrarProcessingHook = Box<dyn FnMut(&RegistrarProcessingPhase)>;
+
+#[cfg(test)]
+thread_local! {
+    static REGISTRAR_PROCESSING_HOOK:
+        std::cell::RefCell<Option<RegistrarProcessingHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn with_registrar_processing_hook<T>(
+    hook: impl FnMut(&RegistrarProcessingPhase) + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<RegistrarProcessingHook>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            REGISTRAR_PROCESSING_HOOK.with(|slot| slot.replace(self.0.take()));
+        }
+    }
+
+    let previous = REGISTRAR_PROCESSING_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
+    let _reset = Reset(previous);
+    action()
+}
+
+fn emit_registrar_processing_phase(phase: RegistrarProcessingPhase) {
+    #[cfg(test)]
+    REGISTRAR_PROCESSING_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().as_mut() {
+            hook(&phase);
+        }
+    });
+    #[cfg(not(test))]
+    let _ = phase;
+}
+
 use super::super::common::{
     int_arg, object_support_state, read_utf8_sig, resolve_metadata_object_descriptor,
     ObjectSupportData,
@@ -357,7 +410,7 @@ fn typed_registrar_document_images(
         },
         |_| false,
         |path| path.extension().and_then(|extension| extension.to_str()) == Some("xml"),
-        checkpoint,
+        &checkpoint,
     ) {
         Ok(entries) => entries,
         Err(_) => {
@@ -368,13 +421,40 @@ fn typed_registrar_document_images(
         }
     };
     if entries.start_missing {
+        emit_registrar_processing_phase(RegistrarProcessingPhase::BeforeCompleteReturn);
+        if checkpoint().is_err() {
+            return registrar_evidence_unavailable(
+                target,
+                "registrar evidence processing was interrupted",
+            );
+        }
         return (Vec::new(), MetadataEvidenceAvailability::Complete);
     }
     let mut resources = Vec::new();
     let register_reference = target.as_str().to_string();
-    for entry in entries.files {
+    let total = entries.files.len();
+    for (ordinal, entry) in entries.files.into_iter().enumerate() {
+        if checkpoint().is_err() {
+            return registrar_evidence_unavailable(
+                target,
+                "registrar evidence processing was interrupted",
+            );
+        }
+        let logical_path = entry.logical_path;
         let bytes = entry.bytes;
-        let identity = match super::validation_context::inspect_metadata_image_identity(&bytes) {
+        let identity_result = super::validation_context::inspect_metadata_image_identity(&bytes);
+        emit_registrar_processing_phase(RegistrarProcessingPhase::AfterIdentityParse {
+            logical_path: logical_path.clone(),
+            ordinal,
+            total,
+        });
+        if checkpoint().is_err() {
+            return registrar_evidence_unavailable(
+                target,
+                "registrar evidence processing was interrupted",
+            );
+        }
+        let identity = match identity_result {
             Ok(identity) if identity.object_type == "Document" => identity,
             _ => {
                 return registrar_evidence_unavailable(
@@ -395,7 +475,25 @@ fn typed_registrar_document_images(
                 )
             }
         };
-        if super::validation::document_registers(&bytes, &register_reference) {
+        if checkpoint().is_err() {
+            return registrar_evidence_unavailable(
+                target,
+                "registrar evidence processing was interrupted",
+            );
+        }
+        let registers_target = super::validation::document_registers(&bytes, &register_reference);
+        emit_registrar_processing_phase(RegistrarProcessingPhase::AfterRegistrarParse {
+            logical_path,
+            ordinal,
+            total,
+        });
+        if checkpoint().is_err() {
+            return registrar_evidence_unavailable(
+                target,
+                "registrar evidence processing was interrupted",
+            );
+        }
+        if registers_target {
             resources.push(MetadataResourceImage {
                 role: MetadataResourceRole::Dependency {
                     target: dependency_target,
@@ -403,6 +501,13 @@ fn typed_registrar_document_images(
                 bytes,
             });
         }
+    }
+    emit_registrar_processing_phase(RegistrarProcessingPhase::BeforeCompleteReturn);
+    if checkpoint().is_err() {
+        return registrar_evidence_unavailable(
+            target,
+            "registrar evidence processing was interrupted",
+        );
     }
     (resources, MetadataEvidenceAvailability::Complete)
 }

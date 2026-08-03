@@ -225,6 +225,18 @@ impl UnicaApplication {
         &self,
         args: &Map<String, Value>,
     ) -> Result<OperationResult, String> {
+        self.call_unregistered_meta_info_cancellable_for_integration_tests(
+            args,
+            CancellationToken::new(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn call_unregistered_meta_info_cancellable_for_integration_tests(
+        &self,
+        args: &Map<String, Value>,
+        cancellation: CancellationToken,
+    ) -> Result<OperationResult, String> {
         let spec = ToolSpec {
             name: "unica.meta.info",
             description: "Inspect one metadata object through the typed internal coordinator.",
@@ -237,7 +249,7 @@ impl UnicaApplication {
                 operation: metadata::MetadataOperation::Info,
             },
         };
-        call_tool(spec, args, self.ports.as_ref(), &CancellationToken::new())
+        call_tool(spec, args, self.ports.as_ref(), &cancellation)
     }
 }
 

@@ -1,6 +1,6 @@
 use crate::infrastructure::platform::filesystem::{
-    file_identity, open_any_child_nofollow, open_directory_child_nofollow,
-    read_directory_names_bounded, FileIdentity, OpenedChildKind,
+    file_identity, open_any_child_nofollow, open_child_for_secure_tree_use,
+    open_directory_child_nofollow, read_directory_names_bounded, FileIdentity, OpenedChildKind,
 };
 use std::ffi::OsString;
 use std::fs::File;
@@ -84,7 +84,7 @@ impl RetainedDirectoryPath {
 
 #[derive(Debug)]
 struct RetainedTree {
-    directory: File,
+    identity: FileIdentity,
     initial_names: Vec<OsString>,
     children: Vec<RetainedChild>,
 }
@@ -107,6 +107,99 @@ struct CaptureState {
     entry_count: usize,
     total_bytes: usize,
     files: Vec<SecureFileSnapshotEntry>,
+}
+
+struct TraversalDirectory {
+    file: File,
+}
+
+impl TraversalDirectory {
+    fn new(file: File) -> io::Result<Self> {
+        record_traversal_directory_open()?;
+        Ok(Self { file })
+    }
+
+    fn file(&self) -> &File {
+        &self.file
+    }
+}
+
+impl Drop for TraversalDirectory {
+    fn drop(&mut self) {
+        record_traversal_directory_close();
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static SECURE_TREE_DIRECTORY_HANDLE_LIMIT: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+    static SECURE_TREE_DIRECTORY_HANDLE_COUNT: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn record_traversal_directory_open() -> io::Result<()> {
+    SECURE_TREE_DIRECTORY_HANDLE_COUNT.with(|count| {
+        let next = count.get().checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "secure-tree directory handle count overflowed",
+            )
+        })?;
+        let exceeded = SECURE_TREE_DIRECTORY_HANDLE_LIMIT
+            .with(|limit| limit.get().is_some_and(|limit| next > limit));
+        if exceeded {
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "secure tree exceeded the traversal directory handle limit",
+            ));
+        }
+        count.set(next);
+        Ok(())
+    })
+}
+
+#[cfg(not(test))]
+fn record_traversal_directory_open() -> io::Result<()> {
+    Ok(())
+}
+
+#[cfg(test)]
+fn record_traversal_directory_close() {
+    SECURE_TREE_DIRECTORY_HANDLE_COUNT.with(|count| {
+        count.set(
+            count
+                .get()
+                .checked_sub(1)
+                .expect("tracked secure-tree handle count cannot underflow"),
+        );
+    });
+}
+
+#[cfg(not(test))]
+fn record_traversal_directory_close() {}
+
+#[cfg(test)]
+fn with_secure_tree_directory_handle_limit<T>(limit: usize, action: impl FnOnce() -> T) -> T {
+    struct Reset {
+        limit: Option<usize>,
+        count: usize,
+    }
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            SECURE_TREE_DIRECTORY_HANDLE_LIMIT.with(|limit| limit.set(self.limit));
+            SECURE_TREE_DIRECTORY_HANDLE_COUNT.with(|count| count.set(self.count));
+        }
+    }
+
+    let previous_limit = SECURE_TREE_DIRECTORY_HANDLE_LIMIT.with(|slot| slot.replace(Some(limit)));
+    let previous_count = SECURE_TREE_DIRECTORY_HANDLE_COUNT.with(|slot| slot.replace(0));
+    let _reset = Reset {
+        limit: previous_limit,
+        count: previous_count,
+    };
+    action()
 }
 
 #[cfg(test)]
@@ -221,7 +314,7 @@ pub(crate) fn capture_root_relative_regular_files(
     }
     emit_tree_phase(SecureTreePhase::StartOpened(logical_start.clone()));
 
-    let start_handle = retained_path.current().try_clone()?;
+    let start_handle = TraversalDirectory::new(retained_path.current().try_clone()?)?;
     let mut state = CaptureState {
         entry_count,
         total_bytes: 0,
@@ -237,7 +330,8 @@ pub(crate) fn capture_root_relative_regular_files(
         &mut checkpoint,
         &mut state,
     )?;
-    prove_tree(&tree, &state.files, &mut checkpoint)?;
+    let proof_root = TraversalDirectory::new(retained_path.current().try_clone()?)?;
+    prove_tree(&proof_root, &tree, &state.files, &mut checkpoint)?;
     prove_directory_path(&retained_path, &mut checkpoint)?;
     state
         .files
@@ -296,7 +390,7 @@ fn prove_missing_start(
 
 #[allow(clippy::too_many_arguments)]
 fn capture_directory(
-    directory: File,
+    directory: TraversalDirectory,
     logical_directory: &Path,
     depth: usize,
     limits: SecureTreeCaptureLimits,
@@ -306,6 +400,7 @@ fn capture_directory(
     state: &mut CaptureState,
 ) -> io::Result<RetainedTree> {
     checkpoint()?;
+    let directory_identity = file_identity(directory.file())?;
     let remaining_entries = limits
         .maximum_entries
         .checked_sub(state.entry_count)
@@ -316,7 +411,7 @@ fn capture_directory(
             )
         })?;
     let initial_names =
-        read_directory_names_bounded(&directory, remaining_entries, &mut *checkpoint)?;
+        read_directory_names_bounded(directory.file(), remaining_entries, &mut *checkpoint)?;
     state.entry_count = state
         .entry_count
         .checked_add(initial_names.len())
@@ -334,8 +429,8 @@ fn capture_directory(
         checkpoint()?;
         let logical_path = logical_directory.join(name);
         emit_tree_phase(SecureTreePhase::BeforeOpenEntry(logical_path.clone()));
-        let (mut child, kind) = open_any_child_nofollow(&directory, name)?;
-        let identity = file_identity(&child)?;
+        let (classification_anchor, kind) = open_any_child_nofollow(directory.file(), name)?;
+        let identity = file_identity(&classification_anchor)?;
         let retained_kind = match kind {
             OpenedChildKind::Directory => {
                 let should_descend = descend(&logical_path);
@@ -346,8 +441,14 @@ fn capture_directory(
                     ));
                 }
                 let subtree = if should_descend {
+                    let typed = open_child_for_secure_tree_use(
+                        directory.file(),
+                        name,
+                        classification_anchor,
+                        kind,
+                    )?;
                     Some(Box::new(capture_directory(
-                        child,
+                        TraversalDirectory::new(typed)?,
                         &logical_path,
                         depth + 1,
                         limits,
@@ -357,6 +458,7 @@ fn capture_directory(
                         state,
                     )?))
                 } else {
+                    drop(classification_anchor);
                     None
                 };
                 RetainedChildKind::Directory(subtree)
@@ -379,7 +481,13 @@ fn capture_directory(
                             )
                         })?;
                     emit_tree_phase(SecureTreePhase::BeforeReadEntry(logical_path.clone()));
-                    let bytes = read_open_regular_file(&mut child, remaining_bytes, checkpoint)?;
+                    let mut typed = open_child_for_secure_tree_use(
+                        directory.file(),
+                        name,
+                        classification_anchor,
+                        kind,
+                    )?;
+                    let bytes = read_open_regular_file(&mut typed, remaining_bytes, checkpoint)?;
                     state.total_bytes =
                         state.total_bytes.checked_add(bytes.len()).ok_or_else(|| {
                             io::Error::new(
@@ -395,6 +503,7 @@ fn capture_directory(
                     });
                     Some(index)
                 } else {
+                    drop(classification_anchor);
                     None
                 };
                 RetainedChildKind::RegularFile(captured_index)
@@ -412,12 +521,13 @@ fn capture_directory(
                         "selected secure-tree entry is not a regular file",
                     ));
                 }
+                drop(classification_anchor);
                 RetainedChildKind::Unsupported
             }
         };
         checkpoint()?;
         emit_tree_phase(SecureTreePhase::BeforeRebindEntry(logical_path.clone()));
-        prove_child_binding(&directory, name, identity, kind)?;
+        prove_child_binding(directory.file(), name, identity, kind)?;
         emit_tree_phase(SecureTreePhase::AfterRebindEntry(logical_path.clone()));
         children.push(RetainedChild {
             name: name.clone(),
@@ -426,20 +536,26 @@ fn capture_directory(
         });
     }
     Ok(RetainedTree {
-        directory,
+        identity: directory_identity,
         initial_names,
         children,
     })
 }
 
 fn prove_tree(
+    directory: &TraversalDirectory,
     tree: &RetainedTree,
     captured: &[SecureFileSnapshotEntry],
     checkpoint: &mut impl FnMut() -> io::Result<()>,
 ) -> io::Result<()> {
     checkpoint()?;
+    if file_identity(directory.file())? != tree.identity {
+        return Err(io::Error::other(
+            "directory identity changed before secure-tree final proof",
+        ));
+    }
     let final_names =
-        read_directory_names_bounded(&tree.directory, tree.initial_names.len(), &mut *checkpoint)?;
+        read_directory_names_bounded(directory.file(), tree.initial_names.len(), &mut *checkpoint)?;
     if final_names != tree.initial_names {
         return Err(io::Error::other(
             "directory membership changed while capturing secure tree",
@@ -447,17 +563,26 @@ fn prove_tree(
     }
     for child in &tree.children {
         checkpoint()?;
-        let (mut rebound, kind) = open_any_child_nofollow(&tree.directory, &child.name)?;
-        if file_identity(&rebound)? != child.identity || !retained_kind_matches(&child.kind, kind) {
+        let (classification_anchor, kind) = open_any_child_nofollow(directory.file(), &child.name)?;
+        if file_identity(&classification_anchor)? != child.identity
+            || !retained_kind_matches(&child.kind, kind)
+        {
             return Err(io::Error::other(
                 "entry identity changed before secure-tree final proof",
             ));
         }
         match &child.kind {
             RetainedChildKind::Directory(Some(subtree)) => {
-                prove_tree(subtree, captured, checkpoint)?;
+                let typed = open_child_for_secure_tree_use(
+                    directory.file(),
+                    &child.name,
+                    classification_anchor,
+                    kind,
+                )?;
+                let typed = TraversalDirectory::new(typed)?;
+                prove_tree(&typed, subtree, captured, checkpoint)?;
                 prove_child_binding(
-                    &tree.directory,
+                    directory.file(),
                     &child.name,
                     child.identity,
                     OpenedChildKind::Directory,
@@ -470,9 +595,15 @@ fn prove_tree(
                         "captured file proof index is invalid",
                     )
                 })?;
-                verify_open_regular_file(&mut rebound, &expected.bytes, checkpoint)?;
+                let mut typed = open_child_for_secure_tree_use(
+                    directory.file(),
+                    &child.name,
+                    classification_anchor,
+                    kind,
+                )?;
+                verify_open_regular_file(&mut typed, &expected.bytes, checkpoint)?;
                 prove_child_binding(
-                    &tree.directory,
+                    directory.file(),
                     &child.name,
                     child.identity,
                     OpenedChildKind::RegularFile,
@@ -480,7 +611,7 @@ fn prove_tree(
             }
             RetainedChildKind::Directory(None)
             | RetainedChildKind::RegularFile(None)
-            | RetainedChildKind::Unsupported => {}
+            | RetainedChildKind::Unsupported => drop(classification_anchor),
         }
     }
     Ok(())
@@ -1377,6 +1508,35 @@ mod tests {
     }
 
     #[test]
+    fn captured_wide_tree_uses_only_depth_bounded_directory_handles() {
+        let fixture = Fixture::new();
+        for index in 0..1_024 {
+            fs::create_dir(fixture.root.join(format!("wide-{index:04}"))).unwrap();
+        }
+        let limits = SecureTreeCaptureLimits {
+            maximum_depth: 1,
+            maximum_entries: 2_048,
+            maximum_files: 0,
+            maximum_bytes: 0,
+        };
+
+        let captured = with_secure_tree_directory_handle_limit(8, || {
+            capture_root_relative_regular_files(
+                &fixture.root,
+                Path::new(""),
+                limits,
+                |_| true,
+                |_| false,
+                || Ok(()),
+            )
+        })
+        .expect("wide sibling trees must not retain one handle per directory");
+
+        assert!(captured.files.is_empty());
+        assert!(!captured.start_missing);
+    }
+
+    #[test]
     fn windows_identity_rebound_uses_safe_capability_metadata() {
         let source = include_str!("secure_read.rs");
         let windows = source
@@ -1393,6 +1553,15 @@ mod tests {
         assert!(windows.contains("CapabilityMetadataExt::ino"));
         assert!(windows.contains("volume_serial_number"));
         assert!(windows.contains("file_index"));
+    }
+
+    #[test]
+    fn windows_secure_tree_reopens_typed_handles_before_directory_or_file_use() {
+        let secure_read = include_str!("secure_read.rs");
+        let filesystem = include_str!("filesystem.rs");
+
+        assert!(secure_read.contains("open_child_for_secure_tree_use"));
+        assert!(filesystem.contains("typed child identity differs from its classification anchor"));
     }
 }
 
@@ -1434,6 +1603,29 @@ mod windows_tests {
         )
         .unwrap();
         assert_eq!(read.bytes, b"trusted");
+    }
+
+    #[test]
+    fn captured_tree_enumerates_and_reads_through_typed_windows_handles() {
+        let fixture = Fixture::new();
+        let captured = capture_root_relative_regular_files(
+            &fixture.root,
+            Path::new(""),
+            SecureTreeCaptureLimits {
+                maximum_depth: 4,
+                maximum_entries: 16,
+                maximum_files: 4,
+                maximum_bytes: 1_024,
+            },
+            |_| true,
+            |path| path.extension().and_then(|value| value.to_str()) == Some("xml"),
+            || Ok(()),
+        )
+        .unwrap();
+
+        assert_eq!(captured.files.len(), 1);
+        assert_eq!(captured.files[0].logical_path, "parent/resource.xml");
+        assert_eq!(captured.files[0].bytes, b"trusted");
     }
 
     #[test]
