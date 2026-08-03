@@ -1,7 +1,8 @@
+use super::{OperationResult, UnicaApplication};
+use crate::domain::cancellation::CancellationToken;
 use serde_json::{Map, Value};
-use std::path::{Path, PathBuf};
 use std::collections::BTreeMap;
-use unica_coder::application::UnicaApplication;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 const METADATA_KINDS: &[&str] = &[
@@ -134,18 +135,12 @@ fn add_args(workspace: &Path, kind: &str, name: &str, dry_run: bool) -> Map<Stri
     ])
 }
 
-fn call_add(
-    workspace: &Path,
-    kind: &str,
-    name: &str,
-    dry_run: bool,
-) -> unica_coder::application::OperationResult {
+fn call_add(workspace: &Path, kind: &str, name: &str, dry_run: bool) -> OperationResult {
     let previous = std::env::current_dir().unwrap();
     std::env::set_current_dir(workspace).unwrap();
-    let result = UnicaApplication::new()
-        .call_unregistered_meta_add_for_integration_tests(&add_args(
-            workspace, kind, name, dry_run,
-        ));
+    let result = UnicaApplication::new().call_unregistered_meta_add_for_integration_tests(
+        &add_args(workspace, kind, name, dry_run),
+    );
     std::env::set_current_dir(previous).unwrap();
     result.expect("internal meta.add call")
 }
@@ -176,7 +171,9 @@ fn meta_add_preview_all_23_kinds_returns_logical_valid_plan_without_writes() {
         );
         assert_eq!(data["changed"], true, "{kind}");
         assert_eq!(data["validation"]["status"], "passed", "{kind}");
-        let plan = data["publicationPlan"].as_array().expect("publication plan");
+        let plan = data["publicationPlan"]
+            .as_array()
+            .expect("publication plan");
         assert!(
             plan.iter().any(|entry| entry["resource"] == "descriptor"),
             "{kind}: {plan:?}"
@@ -225,7 +222,10 @@ fn meta_add_preview_rejects_read_capable_source_without_create_capability() {
 
     let result = call_add(workspace.path(), "Catalog", "Denied", true);
     assert!(!result.ok);
-    assert_eq!(result.diagnostics.unwrap()[0]["code"], "capability_unavailable");
+    assert_eq!(
+        result.diagnostics.unwrap()[0]["code"],
+        "capability_unavailable"
+    );
     assert!(!workspace.path().join("erf/Catalogs/Denied.xml").exists());
 }
 
@@ -233,7 +233,11 @@ fn meta_add_preview_rejects_read_capable_source_without_create_capability() {
 fn meta_add_preview_rejects_unsupported_source_format() {
     let workspace = TempWorkspace::new("unsupported-format");
     std::fs::create_dir_all(workspace.path().join("edt")).unwrap();
-    std::fs::write(workspace.path().join("edt/.project"), "<projectDescription/>").unwrap();
+    std::fs::write(
+        workspace.path().join("edt/.project"),
+        "<projectDescription/>",
+    )
+    .unwrap();
     std::fs::write(
         workspace.path().join("v8project.yaml"),
         concat!(
@@ -248,7 +252,10 @@ fn meta_add_preview_rejects_unsupported_source_format() {
 
     let result = call_add(workspace.path(), "Catalog", "Denied", true);
     assert!(!result.ok);
-    assert_eq!(result.diagnostics.unwrap()[0]["code"], "capability_unavailable");
+    assert_eq!(
+        result.diagnostics.unwrap()[0]["code"],
+        "capability_unavailable"
+    );
 }
 
 #[test]
@@ -264,7 +271,10 @@ fn meta_add_preview_rejects_platform_xml_outside_supported_format_profile() {
     let result = call_add(workspace.path(), "Catalog", "Denied", true);
 
     assert!(!result.ok);
-    assert_eq!(result.diagnostics.unwrap()[0]["code"], "capability_unavailable");
+    assert_eq!(
+        result.diagnostics.unwrap()[0]["code"],
+        "capability_unavailable"
+    );
     assert_eq!(tree_snapshot(&workspace.path().join("src")), before);
 }
 
@@ -283,7 +293,10 @@ fn meta_add_preview_rejects_dangling_common_module_method_dependency() {
     let result = call_add(workspace.path(), "ScheduledJob", "Denied", true);
 
     assert!(!result.ok);
-    assert_eq!(result.diagnostics.unwrap()[0]["code"], "capability_unavailable");
+    assert_eq!(
+        result.diagnostics.unwrap()[0]["code"],
+        "capability_unavailable"
+    );
     assert_eq!(tree_snapshot(&workspace.path().join("src")), before);
 }
 
@@ -334,7 +347,9 @@ fn meta_add_apply_all_23_kinds_is_atomic_and_duplicate_is_byte_stable() {
             .join(kind_directory(kind))
             .join(format!("{name}.xml"));
         let bytes = std::fs::read(&descriptor).expect("created descriptor");
-        let xml = std::str::from_utf8(&bytes).unwrap().trim_start_matches('\u{feff}');
+        let xml = std::str::from_utf8(&bytes)
+            .unwrap()
+            .trim_start_matches('\u{feff}');
         let document = roxmltree::Document::parse(xml).expect("created descriptor XML");
         assert_eq!(
             document
@@ -346,8 +361,15 @@ fn meta_add_apply_all_23_kinds_is_atomic_and_duplicate_is_byte_stable() {
                 .name(),
             *kind
         );
-        let owner = std::fs::read_to_string(workspace.path().join("src/Configuration.xml"))
-            .unwrap();
+        if *kind == "EventSubscription" {
+            assert!(
+                xml.contains("<v8:Type>cfg:CatalogObject.AppliedCatalog</v8:Type>"),
+                "event source must use the object wire type: {xml}"
+            );
+            assert!(!xml.contains("cfg:CatalogRef.AppliedCatalog"));
+        }
+        let owner =
+            std::fs::read_to_string(workspace.path().join("src/Configuration.xml")).unwrap();
         assert!(
             owner.contains(&format!("<{kind}>{name}</{kind}>")),
             "{kind}"
@@ -392,6 +414,14 @@ fn meta_add_apply_rejects_partial_descriptor_module_and_registration_without_wri
     std::fs::remove_file(source.join("Catalogs/PartialRegistration.xml")).unwrap();
     std::fs::remove_dir_all(source.join("Catalogs/PartialRegistration")).unwrap();
     assert_partial_is_stable(&workspace, "Catalog", "PartialRegistration");
+
+    std::fs::create_dir_all(source.join("Catalogs/UnexpectedResource/Ext")).unwrap();
+    std::fs::write(
+        source.join("Catalogs/UnexpectedResource/Ext/Help.xml"),
+        b"unexpected",
+    )
+    .unwrap();
+    assert_partial_is_stable(&workspace, "Catalog", "UnexpectedResource");
 }
 
 #[test]
@@ -400,7 +430,7 @@ fn meta_add_apply_honors_prepublication_cancellation_without_writes() {
     let before = tree_snapshot(&workspace.path().join("src"));
     let previous = std::env::current_dir().unwrap();
     std::env::set_current_dir(workspace.path()).unwrap();
-    let cancellation = unica_coder::domain::cancellation::CancellationToken::new();
+    let cancellation = CancellationToken::new();
     cancellation.cancel();
     let result = UnicaApplication::new()
         .call_unregistered_meta_add_cancellable_for_integration_tests(
@@ -416,9 +446,7 @@ fn meta_add_apply_honors_prepublication_cancellation_without_writes() {
 #[test]
 fn meta_add_apply_rejects_support_locked_configuration_without_writes() {
     let workspace = create_configuration_workspace("support-locked");
-    let support = workspace
-        .path()
-        .join("src/Ext/ParentConfigurations.bin");
+    let support = workspace.path().join("src/Ext/ParentConfigurations.bin");
     std::fs::write(
         &support,
         concat!(
@@ -458,7 +486,10 @@ fn tree_snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
             if metadata.is_dir() {
                 visit(root, &path, output);
             } else if metadata.is_file() {
-                output.insert(path.strip_prefix(root).unwrap().to_path_buf(), std::fs::read(path).unwrap());
+                output.insert(
+                    path.strip_prefix(root).unwrap().to_path_buf(),
+                    std::fs::read(path).unwrap(),
+                );
             }
         }
     }

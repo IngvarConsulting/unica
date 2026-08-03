@@ -1,7 +1,8 @@
 #![allow(dead_code, unused_imports)]
 
 use crate::application::ports::{
-    MetadataResourceRole, MetadataValidationResult, MetadataValidationSubject,
+    MetadataAuxiliaryXmlKind, MetadataResourceRole, MetadataValidationResult,
+    MetadataValidationSubject,
 };
 use crate::application::AdapterOutcome;
 use crate::domain::format_profile::{
@@ -144,6 +145,12 @@ impl MetadataValidator {
                             index,
                             format!("module image is not UTF-8: {error}"),
                         ));
+                        continue;
+                    }
+                }
+                MetadataResourceRole::AuxiliaryXml { kind, .. } => {
+                    if let Err(error) = validate_auxiliary_xml(*kind, &resource.bytes) {
+                        diagnostics.push(provider_diagnostic(subject, index, error));
                         continue;
                     }
                 }
@@ -342,7 +349,8 @@ impl MetadataValidator {
                     | MetadataResourceRole::Module { .. }
                     | MetadataResourceRole::Form { .. }
                     | MetadataResourceRole::Template { .. }
-                    | MetadataResourceRole::Command { .. } => {}
+                    | MetadataResourceRole::Command { .. }
+                    | MetadataResourceRole::AuxiliaryXml { .. } => {}
                 }
             }
         }
@@ -363,6 +371,35 @@ impl MetadataValidator {
         };
         (result, legacy_run)
     }
+}
+
+fn validate_auxiliary_xml(kind: MetadataAuxiliaryXmlKind, bytes: &[u8]) -> Result<(), String> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|error| format!("auxiliary XML image is not UTF-8: {error}"))?
+        .trim_start_matches('\u{feff}');
+    let document = Document::parse(text)
+        .map_err(|error| format!("auxiliary XML image is malformed: {error}"))?;
+    let root = document.root_element();
+    let (expected_name, expected_namespace) = match kind {
+        MetadataAuxiliaryXmlKind::ExchangePlanContent => {
+            ("ExchangePlanContent", "http://v8.1c.ru/8.3/xcf/extrnprops")
+        }
+        MetadataAuxiliaryXmlKind::BusinessProcessFlowchart => {
+            ("GraphicalSchema", "http://v8.1c.ru/8.3/xcf/scheme")
+        }
+    };
+    if root.tag_name().name() != expected_name
+        || root.tag_name().namespace() != Some(expected_namespace)
+    {
+        return Err(format!(
+            "auxiliary XML root does not match declared {:?} resource",
+            kind
+        ));
+    }
+    if root.attribute("version") != Some(ACTIVE_FORMAT_PROFILE.export_format) {
+        return Err("auxiliary XML format version is unsupported".to_string());
+    }
+    Ok(())
 }
 
 fn failed_validation(diagnostics: Vec<MetaDiagnostic>) -> MetadataValidationResult {
@@ -2286,7 +2323,7 @@ pub(super) fn meta_validate_check_method_reference(
             )
         });
         let Some(module) = module else {
-            report.warn(format!(
+            report.error(format!(
                 "13. {md_type}.{property}: BSL file not found, cannot verify procedure"
             ));
             return;
@@ -2294,7 +2331,7 @@ pub(super) fn meta_validate_check_method_reference(
         let content = std::str::from_utf8(&module.bytes)
             .expect("module encodings are validated before semantic reporting");
         if !meta_validate_bsl_has_export(content, proc_name) {
-            report.warn(format!(
+            report.error(format!(
                 "13. {md_type}.{property}: procedure '{proc_name}' not found as exported in CommonModule '{module_name}'"
             ));
             return;
@@ -2381,7 +2418,7 @@ pub(super) fn meta_validate_check_document_journal_columns(
 }
 
 pub(super) fn meta_validate_bsl_has_export(content: &str, proc_name: &str) -> bool {
-    content.lines().any(|line| {
+    content.trim_start_matches('\u{feff}').lines().any(|line| {
         let trimmed = line.trim_start();
         let starts = ["Procedure", "Function", "Процедура", "Функция"]
             .iter()
@@ -2902,7 +2939,8 @@ pub(super) fn meta_validate_forbidden_properties(md_type: &str) -> Option<&'stat
 mod tests {
     use super::*;
     use crate::application::ports::{
-        MetadataResourceImage, MetadataResourceRole, MetadataValidationSubject,
+        MetadataAuxiliaryXmlKind, MetadataResourceImage, MetadataResourceRole,
+        MetadataValidationSubject,
     };
     use crate::domain::metadata::{MetaDiagnosticCode, MetaValidationStatus};
     use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
@@ -3093,6 +3131,24 @@ mod tests {
                             .join(object_name)
                             .join(collection)
                             .join(format!("{name}.xml")),
+                        &resource.bytes,
+                    );
+                }
+                MetadataResourceRole::AuxiliaryXml { owner, kind } => {
+                    let mut segments = owner.segments();
+                    let object_kind = segments.next().unwrap();
+                    let object_name = segments.next().unwrap();
+                    let file_name = match kind {
+                        MetadataAuxiliaryXmlKind::ExchangePlanContent => "Content.xml",
+                        MetadataAuxiliaryXmlKind::BusinessProcessFlowchart => "Flowchart.xml",
+                    };
+                    write_bytes(
+                        &context
+                            .cwd
+                            .join(metadata_collection(object_kind))
+                            .join(object_name)
+                            .join("Ext")
+                            .join(file_name),
                         &resource.bytes,
                     );
                 }
@@ -3459,9 +3515,9 @@ mod tests {
         };
 
         let result = MetadataValidator.validate(&inaccessible, &context());
-        assert_eq!(result.status, MetaValidationStatus::Passed);
+        assert_eq!(result.status, MetaValidationStatus::Failed);
         assert!(result.diagnostics.iter().any(|diagnostic| {
-            diagnostic.severity == MetaDiagnosticSeverity::Warning
+            diagnostic.severity == MetaDiagnosticSeverity::Error
                 && diagnostic.message.contains("not found as exported")
         }));
 
@@ -3471,7 +3527,9 @@ mod tests {
             MetadataResourceRole::Module {
                 owner: address("CommonModule.Target"),
             },
-            b"Procedure Run() Export\nEndProcedure".to_vec(),
+            "\u{feff}Procedure Run() Export\nEndProcedure"
+                .as_bytes()
+                .to_vec(),
         ));
         let result = MetadataValidator.validate(&accessible, &context());
         assert_eq!(result.status, MetaValidationStatus::Passed);
@@ -3595,6 +3653,10 @@ mod tests {
             MetadataResourceRole::Command {
                 owner: address("CommonModule.Service"),
                 name: "Execute".to_string(),
+            },
+            MetadataResourceRole::AuxiliaryXml {
+                owner: address("ExchangePlan.Sync"),
+                kind: MetadataAuxiliaryXmlKind::ExchangePlanContent,
             },
         ];
         for role in corrupt_roles {

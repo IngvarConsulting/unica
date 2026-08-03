@@ -912,7 +912,11 @@ impl CompileTransaction {
         let operation = (|| -> Result<CommitReport, String> {
             self.recheck_exact_read_guards("before publication")?;
             self.recheck_absence_guards("before publication")?;
-            self.recheck_directory_membership_guards(false, &[], "before publication")?;
+            self.recheck_directory_membership_guards(
+                false,
+                &state.created_dirs,
+                "before publication",
+            )?;
 
             for removal in &self.removals {
                 recheck_removal(removal)?;
@@ -1113,20 +1117,22 @@ impl CompileTransaction {
             failpoint_post_write_validation()?;
             self.recheck_exact_read_guards("before successful completion")?;
             self.recheck_absence_guards("before successful completion")?;
-            let recovery_directories = state
-                .published_registrations
-                .iter()
-                .map(|published| published.recovery_directory.clone())
-                .chain(
-                    state
-                        .published_removals
-                        .iter()
-                        .map(|published| published.recovery_directory.clone()),
-                )
-                .collect::<Vec<_>>();
+            let mut transient_directories = state.created_dirs.clone();
+            transient_directories.extend(
+                state
+                    .published_registrations
+                    .iter()
+                    .map(|published| published.recovery_directory.clone())
+                    .chain(
+                        state
+                            .published_removals
+                            .iter()
+                            .map(|published| published.recovery_directory.clone()),
+                    ),
+            );
             self.recheck_directory_membership_guards(
                 true,
-                &recovery_directories,
+                &transient_directories,
                 "before successful completion",
             )?;
 
@@ -1216,8 +1222,12 @@ impl CompileTransaction {
         phase: &str,
     ) -> Result<(), String> {
         for guard in self.directory_membership_guards.values() {
-            let expected_entries = if include_planned_deltas {
-                self.directory_membership_after_planned_deltas(guard, transient_additions)?
+            let expected_entries = if include_planned_deltas || !transient_additions.is_empty() {
+                self.directory_membership_after_planned_deltas(
+                    guard,
+                    include_planned_deltas,
+                    transient_additions,
+                )?
             } else {
                 guard.expected_entries.clone()
             };
@@ -1234,6 +1244,7 @@ impl CompileTransaction {
     fn directory_membership_after_planned_deltas(
         &self,
         guard: &DirectoryMembershipGuard,
+        include_planned_deltas: bool,
         transient_additions: &[PathBuf],
     ) -> Result<Vec<DirectoryTopologyEntry>, String> {
         let mut expected = guard
@@ -1241,25 +1252,27 @@ impl CompileTransaction {
             .iter()
             .map(|entry| (entry.name.clone(), entry.kind))
             .collect::<BTreeMap<_, _>>();
-        for create in &self.creates {
-            apply_direct_membership_delta(
-                &guard.directory,
-                guard.selector,
-                &create.path,
-                true,
-                Some(DirectoryTopologyEntryKind::File),
-                &mut expected,
-            )?;
-        }
-        for removal in &self.removals {
-            apply_direct_membership_delta(
-                &guard.directory,
-                guard.selector,
-                &removal.path,
-                false,
-                None,
-                &mut expected,
-            )?;
+        if include_planned_deltas {
+            for create in &self.creates {
+                apply_direct_membership_delta(
+                    &guard.directory,
+                    guard.selector,
+                    &create.path,
+                    true,
+                    Some(DirectoryTopologyEntryKind::File),
+                    &mut expected,
+                )?;
+            }
+            for removal in &self.removals {
+                apply_direct_membership_delta(
+                    &guard.directory,
+                    guard.selector,
+                    &removal.path,
+                    false,
+                    None,
+                    &mut expected,
+                )?;
+            }
         }
         for path in transient_additions {
             apply_direct_membership_delta(
@@ -3569,6 +3582,67 @@ mod tests {
             .expect("absent guarded root must allow its planned descriptor");
 
         assert_eq!(fs::read(&created).unwrap(), b"<Created/>\n");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn directory_membership_guard_accepts_own_nested_create_in_an_absent_root() {
+        let root = temp_root("membership-absent-nested-root");
+        let external_root = root.join("external");
+        let expected = snapshot_directory_membership_entries(
+            &external_root,
+            DirectoryMembershipSelector::AllDirectEntries,
+        )
+        .unwrap();
+        let created = external_root.join("Ext/Module.bsl");
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .guard_or_verify_directory_topology(&external_root, expected)
+            .unwrap();
+        transaction
+            .create_bytes(&created, b"Procedure Run()\nEndProcedure\n".to_vec())
+            .unwrap();
+
+        transaction
+            .commit()
+            .expect("guarded root must accept its planned transient parent directories");
+
+        assert_eq!(
+            fs::read(&created).unwrap(),
+            b"Procedure Run()\nEndProcedure\n"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn nested_directory_membership_guard_rolls_back_on_a_post_write_entry() {
+        let root = temp_root("membership-nested-concurrent-create");
+        let resource_root = root.join("Resource");
+        let ext = resource_root.join("Ext");
+        let planned = ext.join("Module.bsl");
+        let concurrent = ext.join("Help.xml");
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .guard_or_verify_directory_topology(&resource_root, Vec::new())
+            .unwrap();
+        transaction
+            .guard_or_verify_directory_topology(&ext, Vec::new())
+            .unwrap();
+        transaction
+            .create_bytes(&planned, b"Procedure Run()\nEndProcedure\n".to_vec())
+            .unwrap();
+        let concurrent_for_validation = concurrent.clone();
+
+        let error = transaction
+            .commit_with_post_validation(move || {
+                fs::write(&concurrent_for_validation, b"<Help/>\n")
+                    .map_err(|error| error.to_string())
+            })
+            .expect_err("unplanned nested entry must abort publication");
+
+        assert!(error.contains("directory membership guard"), "{error}");
+        assert!(!planned.exists());
+        assert_eq!(fs::read(&concurrent).unwrap(), b"<Help/>\n");
         fs::remove_dir_all(root).unwrap();
     }
 

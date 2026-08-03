@@ -114,6 +114,19 @@ pub struct OperationResult {
     pub job: Option<Value>,
 }
 
+/// Public application entry point.
+///
+/// The coordinated typed Meta switch is intentionally still off-registry, so
+/// downstream production code cannot bypass `tools()` to invoke `meta.add`.
+///
+/// ```compile_fail
+/// use unica_coder::application::UnicaApplication;
+/// use serde_json::Map;
+///
+/// let app = UnicaApplication::new();
+/// let args = Map::new();
+/// let _ = app.call_unregistered_meta_add_for_integration_tests(&args);
+/// ```
 pub struct UnicaApplication {
     ports: Arc<dyn ApplicationPorts + Send + Sync>,
 }
@@ -155,12 +168,8 @@ impl UnicaApplication {
         call_tool(spec, args, self.ports.as_ref(), &cancellation)
     }
 
-    /// Exercises the not-yet-registered typed Meta add route from its dedicated
-    /// integration target. The public MCP registry intentionally does not call
-    /// this seam; Task 10 removes the need for it when the coordinated surface
-    /// switch publishes all four typed Meta operations together.
-    #[doc(hidden)]
-    pub fn call_unregistered_meta_add_for_integration_tests(
+    #[cfg(test)]
+    fn call_unregistered_meta_add_for_integration_tests(
         &self,
         args: &Map<String, Value>,
     ) -> Result<OperationResult, String> {
@@ -170,8 +179,8 @@ impl UnicaApplication {
         )
     }
 
-    #[doc(hidden)]
-    pub fn call_unregistered_meta_add_cancellable_for_integration_tests(
+    #[cfg(test)]
+    fn call_unregistered_meta_add_cancellable_for_integration_tests(
         &self,
         args: &Map<String, Value>,
         cancellation: CancellationToken,
@@ -191,6 +200,9 @@ impl UnicaApplication {
         call_tool(spec, args, self.ports.as_ref(), &cancellation)
     }
 }
+
+#[cfg(test)]
+mod meta_add_surface_tests;
 
 pub fn tools() -> Vec<ToolSpec> {
     let mut specs = configuration_tools();

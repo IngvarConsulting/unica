@@ -8,6 +8,7 @@ use crate::infrastructure::native_operations::common::{
     absolutize, path_arg, required_string, resolve_code_patch_guard_path, support_guard_violation,
     SupportGuardViolation,
 };
+use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
 use crate::infrastructure::native_operations::xdto::resolve_xdto_guard_path;
 use crate::infrastructure::native_operations::{meta, template};
 use crate::infrastructure::source_roots::normalize_path_identity;
@@ -63,6 +64,88 @@ pub(crate) fn evaluate_resolved_support_guard(
         )),
         SupportGuardMode::Deny => ResolvedSupportGuardCheck::Block(violation),
     }
+}
+
+/// Binds the exact support-state and project-policy inputs used by
+/// `evaluate_resolved_support_guard`. Missing files are evidence too: a
+/// concurrently appearing vendor-support file or nearer project policy must
+/// invalidate a prepared mutation instead of silently changing authorization.
+pub(crate) fn bind_resolved_support_guard_evidence(
+    transaction: &mut CompileTransaction,
+    target_path: &Path,
+    context: &WorkspaceContext,
+) -> Result<(), String> {
+    if let Some(config_dir) =
+        crate::infrastructure::native_operations::common::find_support_config_dir(target_path)
+    {
+        let support = config_dir.join("Ext/ParentConfigurations.bin");
+        bind_optional_file(transaction, &support)?;
+    }
+
+    let config_dir =
+        crate::infrastructure::native_operations::common::find_support_config_dir(target_path);
+    let starts = [
+        Some(context.cwd.as_path()),
+        config_dir.as_deref(),
+        Some(context.workspace_root.as_path()),
+    ];
+    for start in starts.into_iter().flatten() {
+        for candidate in v8_project_candidates(start) {
+            if candidate.is_file() {
+                let bytes = std::fs::read(&candidate)
+                    .map_err(|error| format!("failed to read support policy evidence: {error}"))?;
+                transaction.guard_or_verify_exact_preimage(candidate, bytes)?;
+                return Ok(());
+            }
+            match std::fs::symlink_metadata(&candidate) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    transaction.guard_path_absent(candidate)?;
+                }
+                Ok(_) => return Err("support policy evidence is not a regular file".to_string()),
+                Err(error) => {
+                    return Err(format!(
+                        "failed to inspect support policy evidence: {error}"
+                    ))
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn bind_optional_file(transaction: &mut CompileTransaction, path: &Path) -> Result<(), String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+            let bytes = std::fs::read(path)
+                .map_err(|error| format!("failed to read support evidence: {error}"))?;
+            transaction.guard_or_verify_exact_preimage(path, bytes)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            transaction.guard_path_absent(path)
+        }
+        Ok(_) => Err("support evidence is not a regular file".to_string()),
+        Err(error) => Err(format!("failed to inspect support evidence: {error}")),
+    }
+}
+
+fn v8_project_candidates(start: &Path) -> Vec<PathBuf> {
+    let mut current = if start.is_dir() {
+        start.to_path_buf()
+    } else {
+        start.parent().unwrap_or(start).to_path_buf()
+    };
+    let mut candidates = Vec::new();
+    for _ in 0..20 {
+        candidates.push(current.join(".v8-project.json"));
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        if parent == current {
+            break;
+        }
+        current = parent.to_path_buf();
+    }
+    candidates
 }
 
 fn support_guard_target(
@@ -195,25 +278,9 @@ fn support_guard_mode(config_dir: &Path, context: &WorkspaceContext) -> SupportG
 }
 
 fn find_v8_project_file(start: &Path) -> Option<PathBuf> {
-    let mut current = if start.is_dir() {
-        start.to_path_buf()
-    } else {
-        start.parent()?.to_path_buf()
-    };
-    for _ in 0..20 {
-        let candidate = current.join(".v8-project.json");
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-        let Some(parent) = current.parent() else {
-            break;
-        };
-        if parent == current {
-            break;
-        }
-        current = parent.to_path_buf();
-    }
-    None
+    v8_project_candidates(start)
+        .into_iter()
+        .find(|candidate| candidate.is_file())
 }
 
 fn support_guard_mode_value(value: &str) -> SupportGuardMode {

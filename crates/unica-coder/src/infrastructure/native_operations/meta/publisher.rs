@@ -14,8 +14,10 @@ use crate::domain::metadata::{
 };
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::metadata_kinds::metadata_kind;
+use crate::infrastructure::metadata_kinds::metadata_layout;
 use roxmltree::Document;
 use serde_json::{Map, Value};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -34,11 +36,48 @@ use super::template_catalog::{
     PlatformMetadataTemplateCatalog,
 };
 use crate::infrastructure::platform_xml_source_targets::{
-    resolve_metadata_add_source, revalidate_metadata_add_source, ResolvedSourceSet,
+    bind_metadata_add_source_evidence, resolve_metadata_add_source, revalidate_metadata_add_source,
+    ResolvedSourceSet,
 };
 use crate::infrastructure::support_guard::{
-    evaluate_resolved_support_guard, ResolvedSupportGuardCheck,
+    bind_resolved_support_guard_evidence, evaluate_resolved_support_guard,
+    ResolvedSupportGuardCheck,
 };
+
+#[cfg(test)]
+thread_local! {
+    static META_ADD_AFTER_AUTHORIZATION_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn with_meta_add_after_authorization_hook<T>(
+    hook: impl FnOnce() + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            META_ADD_AFTER_AUTHORIZATION_HOOK.with(|slot| {
+                slot.borrow_mut().take();
+            });
+        }
+    }
+    META_ADD_AFTER_AUTHORIZATION_HOOK.with(|slot| {
+        assert!(slot.borrow_mut().replace(Box::new(hook)).is_none());
+    });
+    let _reset = Reset;
+    action()
+}
+
+#[cfg(test)]
+fn run_meta_add_after_authorization_hook() {
+    META_ADD_AFTER_AUTHORIZATION_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
 
 pub(crate) struct PreparedMetaAdd {
     preview: MetaMutationData,
@@ -61,6 +100,15 @@ pub(crate) fn prepare_meta_add(
         .into());
     }
     let source = resolve_metadata_add_source(context, &request.source_set)?;
+    let mut transaction = CompileTransaction::new();
+    bind_resolved_support_guard_evidence(&mut transaction, &source.owner_path, context).map_err(
+        |_| {
+            MetaFailure::from(MetaDiagnostic::error(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata support-policy evidence could not be bound",
+            ))
+        },
+    )?;
     let mut preparation_diagnostics = Vec::new();
     match evaluate_resolved_support_guard(
         &source.owner_path,
@@ -86,8 +134,34 @@ pub(crate) fn prepare_meta_add(
     }
     let post_image =
         PlatformMetadataTemplateCatalog.minimal_object(&source, request.kind, &request.name)?;
+    #[cfg(test)]
+    run_meta_add_after_authorization_hook();
     let target = post_image.metadata_path.clone();
-    let mut transaction = CompileTransaction::new();
+    let resource_root = source
+        .source_root
+        .join(metadata_layout(request.kind).directory)
+        .join(&request.name);
+    if fs::symlink_metadata(&resource_root).is_ok() {
+        return Err(already_exists(&target));
+    }
+    let mut guarded_resource_directories = BTreeSet::from([resource_root.clone()]);
+    for file in &post_image.files {
+        let path = source.source_root.join(&file.relative_path);
+        let mut parent = path.parent();
+        while let Some(directory) = parent.filter(|directory| directory.starts_with(&resource_root))
+        {
+            guarded_resource_directories.insert(directory.to_path_buf());
+            if directory == resource_root {
+                break;
+            }
+            parent = directory.parent();
+        }
+    }
+    for directory in guarded_resource_directories {
+        transaction
+            .guard_or_verify_directory_topology(directory, Vec::new())
+            .map_err(|_| already_exists(&target))?;
+    }
 
     for file in &post_image.files {
         let path = source.source_root.join(&file.relative_path);
@@ -116,6 +190,7 @@ pub(crate) fn prepare_meta_add(
     if registration != RegistrationStatus::Added {
         return Err(already_exists(&target));
     }
+    bind_metadata_add_source_evidence(&mut transaction, context, &source)?;
     let registration_image = transaction
         .planned_registration_image(&source.owner_path)
         .ok_or_else(|| {
@@ -141,13 +216,26 @@ pub(crate) fn prepare_meta_add(
                 MetaPublicationResource::Module,
                 target.clone(),
             ),
-            MetadataTemplateFileRole::Auxiliary => {
-                (None, MetaPublicationResource::Dependency, target.clone())
-            }
+            MetadataTemplateFileRole::AuxiliaryXml(kind) => (
+                Some(MetadataResourceRole::AuxiliaryXml {
+                    owner: target.clone(),
+                    kind,
+                }),
+                MetaPublicationResource::Dependency,
+                target.clone(),
+            ),
             MetadataTemplateFileRole::Dependency(dependency) => {
                 let publication_target = dependency.clone();
                 (
                     Some(MetadataResourceRole::Dependency { target: dependency }),
+                    MetaPublicationResource::Dependency,
+                    publication_target,
+                )
+            }
+            MetadataTemplateFileRole::DependencyModule(dependency) => {
+                let publication_target = dependency.clone();
+                (
+                    Some(MetadataResourceRole::Module { owner: dependency }),
                     MetaPublicationResource::Dependency,
                     publication_target,
                 )
@@ -315,6 +403,8 @@ fn publication_failure(
     } else if internal.contains("changed")
         || internal.contains("preimage")
         || internal.contains("already exists")
+        || internal.contains("guard was violated")
+        || internal.contains("membership guard")
     {
         MetaDiagnosticCode::ConcurrentModification
     } else {
@@ -615,6 +705,41 @@ mod typed_add_publication_tests {
             }
         }
 
+        fn seed_common_module(&self, name: &str, module: &[u8]) {
+            let (xml, _) = super::super::legacy_dsl::meta_compile_object_xml(
+                &Map::new(),
+                "CommonModule",
+                name,
+                "2.20",
+            )
+            .unwrap();
+            let descriptor = self
+                .root
+                .join("src/CommonModules")
+                .join(format!("{name}.xml"));
+            fs::create_dir_all(descriptor.parent().unwrap()).unwrap();
+            fs::write(descriptor, xml).unwrap();
+            let module_path = self
+                .root
+                .join("src/CommonModules")
+                .join(name)
+                .join("Ext/Module.bsl");
+            fs::create_dir_all(module_path.parent().unwrap()).unwrap();
+            fs::write(module_path, module).unwrap();
+            let mut transaction = CompileTransaction::new();
+            assert_eq!(
+                transaction
+                    .register_canonical_child(
+                        self.root.join("src/Configuration.xml"),
+                        "CommonModule",
+                        name,
+                    )
+                    .unwrap(),
+                RegistrationStatus::Added
+            );
+            transaction.commit().unwrap();
+        }
+
         fn source_snapshot(&self) -> BTreeMap<PathBuf, Vec<u8>> {
             fn visit(root: &Path, current: &Path, output: &mut BTreeMap<PathBuf, Vec<u8>>) {
                 let mut entries = fs::read_dir(current)
@@ -700,5 +825,247 @@ mod typed_add_publication_tests {
             MetaDiagnosticCode::ProviderUnavailable
         );
         assert_eq!(fixture.source_snapshot(), before);
+    }
+
+    #[test]
+    fn meta_add_rejects_format_owner_drift_between_authorization_and_planning() {
+        let fixture = Fixture::new("format-authorization-drift");
+        let cancellation = CancellationToken::new();
+        let owner = fixture.root.join("src/Configuration.xml");
+        let owner_for_hook = owner.clone();
+
+        let result = with_meta_add_after_authorization_hook(
+            move || {
+                let current = fs::read_to_string(&owner_for_hook).unwrap();
+                let unsupported = current.replacen("version=\"2.20\"", "version=\"2.19\"", 1);
+                assert_ne!(unsupported, current);
+                fs::write(&owner_for_hook, unsupported).unwrap();
+            },
+            || {
+                prepare_meta_add(
+                    &fixture.request("FormatDrift"),
+                    &fixture.context,
+                    &cancellation,
+                )
+            },
+        );
+
+        let failure = match result {
+            Ok(_) => panic!("stale format authorization unexpectedly prepared a mutation"),
+            Err(failure) => failure,
+        };
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::ConcurrentModification
+        );
+        assert!(!fixture.root.join("src/Catalogs/FormatDrift.xml").exists());
+    }
+
+    #[test]
+    fn meta_add_rejects_prerequisite_bsl_drift_after_prepare() {
+        let fixture = Fixture::new("prerequisite-drift");
+        fixture.seed_common_module("Proof", b"Procedure Run() Export\nEndProcedure\n");
+        let cancellation = CancellationToken::new();
+        let prepared = prepare_meta_add(
+            &MetaAddRequest {
+                source_set: "main".to_string(),
+                kind: MetadataKind::ScheduledJob,
+                name: "Nightly".to_string(),
+                dry_run: true,
+            },
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap();
+        let prerequisite = fixture.root.join("src/CommonModules/Proof/Ext/Module.bsl");
+        fs::write(
+            &prerequisite,
+            b"Procedure Run() Export\n// concurrent edit\nEndProcedure\n",
+        )
+        .unwrap();
+
+        let failure = match prepared.publish(&cancellation) {
+            Ok(_) => panic!("prerequisite drift unexpectedly published metadata"),
+            Err(failure) => failure,
+        };
+
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::ConcurrentModification
+        );
+        assert!(!fixture.root.join("src/ScheduledJobs/Nightly.xml").exists());
+        assert!(
+            fs::read_to_string(prerequisite)
+                .unwrap()
+                .contains("concurrent edit"),
+            "concurrent prerequisite edit must be preserved"
+        );
+    }
+
+    #[test]
+    fn meta_add_rejects_support_lock_that_appears_after_prepare() {
+        let fixture = Fixture::new("support-drift");
+        let cancellation = CancellationToken::new();
+        let prepared = prepare_meta_add(
+            &fixture.request("SupportDrift"),
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap();
+        let owner_before = fs::read(fixture.root.join("src/Configuration.xml")).unwrap();
+        let support = fixture.root.join("src/Ext/ParentConfigurations.bin");
+        fs::write(
+            &support,
+            concat!(
+                "\u{feff}{6,1,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,",
+                "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",",
+                "\"VendorConf\",0,0,0}"
+            ),
+        )
+        .unwrap();
+
+        let failure = match prepared.publish(&cancellation) {
+            Ok(_) => panic!("support drift unexpectedly published metadata"),
+            Err(failure) => failure,
+        };
+
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::ConcurrentModification
+        );
+        assert_eq!(
+            fs::read(fixture.root.join("src/Configuration.xml")).unwrap(),
+            owner_before
+        );
+        assert!(!fixture.root.join("src/Catalogs/SupportDrift.xml").exists());
+        assert!(
+            support.is_file(),
+            "concurrent support evidence must be preserved"
+        );
+    }
+
+    #[test]
+    fn meta_add_rejects_support_policy_change_after_prepare() {
+        let fixture = Fixture::new("support-policy-drift");
+        let cancellation = CancellationToken::new();
+        fs::write(
+            fixture.root.join("src/Ext/ParentConfigurations.bin"),
+            concat!(
+                "\u{feff}{6,1,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,",
+                "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",",
+                "\"VendorConf\",0,0,0}"
+            ),
+        )
+        .unwrap();
+        let policy = fixture.root.join(".v8-project.json");
+        fs::write(&policy, r#"{"editingAllowedCheck":"off"}"#).unwrap();
+        let prepared = prepare_meta_add(
+            &fixture.request("PolicyDrift"),
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap();
+        fs::write(&policy, r#"{"editingAllowedCheck":"deny"}"#).unwrap();
+
+        let failure = match prepared.publish(&cancellation) {
+            Ok(_) => panic!("support-policy drift unexpectedly published metadata"),
+            Err(failure) => failure,
+        };
+
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::ConcurrentModification
+        );
+        assert!(!fixture.root.join("src/Catalogs/PolicyDrift.xml").exists());
+    }
+
+    #[test]
+    fn meta_add_rejects_unplanned_resource_that_appears_after_prepare() {
+        let fixture = Fixture::new("resource-drift");
+        let cancellation = CancellationToken::new();
+        let prepared = prepare_meta_add(
+            &fixture.request("ResourceDrift"),
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap();
+        let owner_before = fs::read(fixture.root.join("src/Configuration.xml")).unwrap();
+        let unexpected = fixture.root.join("src/Catalogs/ResourceDrift/Ext/Help.xml");
+        fs::create_dir_all(unexpected.parent().unwrap()).unwrap();
+        fs::write(&unexpected, b"concurrent").unwrap();
+
+        let failure = match prepared.publish(&cancellation) {
+            Ok(_) => panic!("unplanned resource unexpectedly survived publication"),
+            Err(failure) => failure,
+        };
+
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::ConcurrentModification
+        );
+        assert_eq!(fs::read(&unexpected).unwrap(), b"concurrent");
+        assert_eq!(
+            fs::read(fixture.root.join("src/Configuration.xml")).unwrap(),
+            owner_before
+        );
+        assert!(!fixture.root.join("src/Catalogs/ResourceDrift.xml").exists());
+    }
+
+    #[test]
+    fn meta_add_validation_subject_contains_auxiliary_xml_and_guarded_bsl_images() {
+        let fixture = Fixture::new("complete-post-image");
+        let cancellation = CancellationToken::new();
+        let exchange = prepare_meta_add(
+            &MetaAddRequest {
+                source_set: "main".to_string(),
+                kind: MetadataKind::ExchangePlan,
+                name: "Sync".to_string(),
+                dry_run: true,
+            },
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap();
+        assert_eq!(exchange.validation_subject().resources.len(), 5);
+        assert!(
+            exchange
+                .validation_subject()
+                .resources
+                .iter()
+                .any(|resource| {
+                    matches!(
+                resource.role,
+                MetadataResourceRole::AuxiliaryXml {
+                    kind: crate::application::ports::MetadataAuxiliaryXmlKind::ExchangePlanContent,
+                    ..
+                }
+            )
+                })
+        );
+
+        fixture.seed_common_module("Proof", b"Procedure Run() Export\nEndProcedure\n");
+        let scheduled = prepare_meta_add(
+            &MetaAddRequest {
+                source_set: "main".to_string(),
+                kind: MetadataKind::ScheduledJob,
+                name: "Nightly".to_string(),
+                dry_run: true,
+            },
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap();
+        assert_eq!(scheduled.validation_subject().resources.len(), 5);
+        assert!(scheduled
+            .validation_subject()
+            .resources
+            .iter()
+            .any(|resource| {
+                matches!(
+                    &resource.role,
+                    MetadataResourceRole::Module { owner }
+                        if owner.as_str() == "CommonModule.Proof"
+                )
+            }));
     }
 }

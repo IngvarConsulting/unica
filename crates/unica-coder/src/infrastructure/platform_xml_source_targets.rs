@@ -22,6 +22,7 @@ use crate::infrastructure::metadata_kinds::{
     metadata_kind, metadata_kind_by_directory, supports_direct_module_role,
     supports_nested_form_or_command, MetadataLayout, METADATA_KINDS,
 };
+use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
 use crate::infrastructure::path_policy::WorkspacePathPolicy;
 use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
 use crate::infrastructure::source_roots::{
@@ -1967,6 +1968,31 @@ pub(crate) fn revalidate_metadata_add_source(
                 ),
             ))
         })
+}
+
+pub(crate) fn bind_metadata_add_source_evidence(
+    transaction: &mut CompileTransaction,
+    context: &WorkspaceContext,
+    source: &ResolvedSourceSet,
+) -> Result<(), MetaFailure> {
+    transaction
+        .guard_or_verify_exact_preimage(&source.owner_path, &source.owner_preimage)
+        .map_err(|message| metadata_concurrent_failure(message))?;
+    crate::infrastructure::native_operations::common::guard_resolved_platform_xml_target_dependencies(
+        transaction,
+        &source.handle,
+        context,
+    )
+    .map(|_| ())
+    .map_err(metadata_concurrent_failure)
+}
+
+fn metadata_concurrent_failure(_internal: String) -> MetaFailure {
+    MetaDiagnostic::error(
+        MetaDiagnosticCode::ConcurrentModification,
+        "sourceSet evidence changed after metadata creation was authorized",
+    )
+    .into()
 }
 
 fn metadata_source_failure(source_set: &str, error: SourceTargetError) -> MetaFailure {

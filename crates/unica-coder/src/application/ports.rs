@@ -95,6 +95,13 @@ impl HandlerOutcome {
 }
 
 #[allow(dead_code)] // Concrete providers land after this orchestration seam.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MetadataAuxiliaryXmlKind {
+    ExchangePlanContent,
+    BusinessProcessFlowchart,
+}
+
+#[allow(dead_code)] // Concrete providers land after this orchestration seam.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum MetadataResourceRole {
     Descriptor,
@@ -116,6 +123,10 @@ pub(crate) enum MetadataResourceRole {
     },
     Dependency {
         target: MetadataAddress,
+    },
+    AuxiliaryXml {
+        owner: MetadataAddress,
+        kind: MetadataAuxiliaryXmlKind,
     },
 }
 

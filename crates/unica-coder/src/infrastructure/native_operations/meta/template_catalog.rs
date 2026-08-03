@@ -12,6 +12,7 @@ use super::xml_model::{
     emit_meta_type_contents, emit_meta_value_type,
 };
 use crate::application::metadata::MetaFailure;
+use crate::application::ports::MetadataAuxiliaryXmlKind;
 use crate::domain::metadata::{MetaDiagnostic, MetaDiagnosticCode, MetadataKind};
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::infrastructure::metadata_kinds::metadata_layout;
@@ -46,8 +47,9 @@ pub(crate) struct MetadataTemplateFile {
 pub(crate) enum MetadataTemplateFileRole {
     Descriptor,
     Module,
-    Auxiliary,
+    AuxiliaryXml(MetadataAuxiliaryXmlKind),
     Dependency(MetadataAddress),
+    DependencyModule(MetadataAddress),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,7 +134,7 @@ impl MinimalTemplateContext {
                     required_common_module_method(source, kind, 2)?;
                 let catalog = required_registered_name(source, "Catalog", kind)?;
                 context.event_handler = Some(format!("CommonModule.{module}.{method}"));
-                context.event_source = Some(format!("CatalogRef.{catalog}"));
+                context.event_source = Some(format!("CatalogObject.{catalog}"));
                 context.dependencies.push(read_dependency(
                     source,
                     "CommonModule",
@@ -174,11 +176,16 @@ fn required_common_module_method(
         else {
             continue;
         };
+        let module_target = MetadataAddress::parse(
+            PLATFORM_XML_8_3_27_FORMAT_2_20,
+            &format!("CommonModule.{module}"),
+        )
+        .expect("registered common module has a canonical logical address");
         return Ok((
             module,
             method,
             MetadataTemplateFile {
-                role: MetadataTemplateFileRole::Auxiliary,
+                role: MetadataTemplateFileRole::DependencyModule(module_target),
                 mode: MetadataTemplateFileMode::Guard,
                 relative_path,
                 bytes: bytes.clone(),
@@ -405,9 +412,11 @@ impl MetadataTemplateCatalog for PlatformMetadataTemplateCatalog {
                 preimage: None,
             });
         }
-        for (file_name, content) in minimal_auxiliary_files(kind, &source.format_version) {
+        for (file_name, auxiliary_kind, content) in
+            minimal_auxiliary_files(kind, &source.format_version)
+        {
             files.push(MetadataTemplateFile {
-                role: MetadataTemplateFileRole::Auxiliary,
+                role: MetadataTemplateFileRole::AuxiliaryXml(auxiliary_kind),
                 mode: MetadataTemplateFileMode::Create,
                 relative_path: ext.join(file_name),
                 bytes: with_utf8_bom(content.as_bytes()),
@@ -467,16 +476,18 @@ pub(crate) fn minimal_module_files(kind: MetadataKind) -> &'static [&'static str
 pub(crate) fn minimal_auxiliary_files(
     kind: MetadataKind,
     format_version: &str,
-) -> Vec<(&'static str, String)> {
+) -> Vec<(&'static str, MetadataAuxiliaryXmlKind, String)> {
     match kind {
         MetadataKind::ExchangePlan => vec![(
             "Content.xml",
+            MetadataAuxiliaryXmlKind::ExchangePlanContent,
             format!(
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<ExchangePlanContent xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"{format_version}\"/>\r\n"
             ),
         )],
         MetadataKind::BusinessProcess => vec![(
             "Flowchart.xml",
+            MetadataAuxiliaryXmlKind::BusinessProcessFlowchart,
             format!(
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n\
 <GraphicalSchema xmlns=\"http://v8.1c.ru/8.3/xcf/scheme\" xmlns:sch=\"http://v8.1c.ru/8.2/data/graphscheme\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\" xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"{format_version}\">\r\n\
