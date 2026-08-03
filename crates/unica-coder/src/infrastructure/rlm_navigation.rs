@@ -362,27 +362,34 @@ fn related_readiness_proof(
     deadline: ProviderDeadline,
     cancellation: &CancellationToken,
 ) -> Option<RelatedReadinessProof> {
-    let settle_until = Instant::now() + deadline.remaining().min(RELATED_READINESS_SETTLE_LIMIT);
+    // The short settlement window applies only after the index reports
+    // `Building`. A ready index and its content proof use the caller's provider
+    // deadline; starting this clock before the first probe makes a slow but
+    // already-ready index look unavailable.
+    let mut settle_until: Option<Instant> = None;
     let mut ready_snapshot = None;
     loop {
         if cancellation.is_cancelled() || deadline.remaining().is_zero() {
             return None;
         }
-        let settle_remaining = settle_until.saturating_duration_since(Instant::now());
-        if settle_remaining.is_zero() {
-            return Some(RelatedReadinessProof {
-                state: RelatedReadinessState::Stale,
-                source: None,
-            });
-        }
+        let readiness_budget = match settle_until {
+            Some(settle_until) => {
+                let settle_remaining = settle_until.saturating_duration_since(Instant::now());
+                if settle_remaining.is_zero() {
+                    return Some(RelatedReadinessProof {
+                        state: RelatedReadinessState::Stale,
+                        source: None,
+                    });
+                }
+                deadline.remaining().min(settle_remaining)
+            }
+            None => deadline.remaining(),
+        };
         let readiness = client
             .readiness(
                 &context.workspace,
                 &context.source_root.path,
-                deadline
-                    .remaining()
-                    .min(RLM_NAVIGATION_TIMEOUT)
-                    .min(settle_remaining),
+                readiness_budget.min(RLM_NAVIGATION_TIMEOUT),
                 cancellation,
             )
             .ok()?;
@@ -411,6 +418,9 @@ fn related_readiness_proof(
             }
             IndexReadiness::Building => {
                 ready_snapshot = None;
+                let settle_until = *settle_until.get_or_insert_with(|| {
+                    Instant::now() + deadline.remaining().min(RELATED_READINESS_SETTLE_LIMIT)
+                });
                 if Instant::now() >= settle_until {
                     return Some(RelatedReadinessProof {
                         state: RelatedReadinessState::Stale,
@@ -426,14 +436,16 @@ fn related_readiness_proof(
         if remaining.is_zero() {
             return None;
         }
-        let settle_remaining = settle_until.saturating_duration_since(Instant::now());
-        if settle_remaining.is_zero() {
+        let wait_budget = settle_until
+            .map(|settle_until| settle_until.saturating_duration_since(Instant::now()))
+            .unwrap_or(remaining);
+        if wait_budget.is_zero() {
             continue;
         }
         std::thread::sleep(
             remaining
                 .min(RELATED_READINESS_POLL_INTERVAL)
-                .min(settle_remaining),
+                .min(wait_budget),
         );
     }
 }
@@ -441,7 +453,7 @@ fn related_readiness_proof(
 fn related_source_content_snapshot(
     source_root: &Path,
     deadline: ProviderDeadline,
-    settle_until: Instant,
+    settle_until: Option<Instant>,
     cancellation: &CancellationToken,
 ) -> Result<WorkspaceSourceSnapshot, ()> {
     let checkpoint = || {
@@ -523,7 +535,7 @@ fn update_snapshot_hash(
     hasher: &mut Sha256,
     bytes: impl AsRef<[u8]>,
     deadline: ProviderDeadline,
-    settle_until: Instant,
+    settle_until: Option<Instant>,
     cancellation: &CancellationToken,
 ) -> Result<(), ()> {
     ensure_snapshot_budget(deadline, settle_until, cancellation)?;
@@ -533,14 +545,16 @@ fn update_snapshot_hash(
 
 fn ensure_snapshot_budget(
     deadline: ProviderDeadline,
-    settle_until: Instant,
+    settle_until: Option<Instant>,
     cancellation: &CancellationToken,
 ) -> Result<(), ()> {
     if cancellation.is_cancelled()
         || deadline.remaining().is_zero()
-        || settle_until
-            .saturating_duration_since(Instant::now())
-            .is_zero()
+        || settle_until.is_some_and(|settle_until| {
+            settle_until
+                .saturating_duration_since(Instant::now())
+                .is_zero()
+        })
     {
         Err(())
     } else {
@@ -1783,7 +1797,7 @@ mod tests {
                 super::related_source_content_snapshot(
                     &root,
                     ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
-                    Instant::now() + Duration::from_secs(1),
+                    Some(Instant::now() + Duration::from_secs(1)),
                     &cancellation,
                 )
             },
@@ -1813,7 +1827,7 @@ mod tests {
                 super::related_source_content_snapshot(
                     &root,
                     ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
-                    Instant::now() + Duration::from_secs(1),
+                    Some(Instant::now() + Duration::from_secs(1)),
                     &cancellation,
                 )
             },
@@ -2012,6 +2026,72 @@ mod tests {
             crate::domain::metadata::MetaFreshness::Current
         );
         assert!(*client.readiness_calls.lock().unwrap() >= 3);
+    }
+
+    struct SlowReadyClient {
+        readiness_calls: Mutex<usize>,
+    }
+
+    impl RlmNavigationClient for SlowReadyClient {
+        fn readiness(
+            &self,
+            _context: &WorkspaceContext,
+            _source_root: &Path,
+            _timeout: Duration,
+            _cancellation: &CancellationToken,
+        ) -> Result<IndexReadiness, String> {
+            std::thread::sleep(Duration::from_millis(275));
+            *self.readiness_calls.lock().unwrap() += 1;
+            Ok(IndexReadiness::Ready {
+                db_path: PathBuf::from("/private/index.db"),
+            })
+        }
+
+        fn call(
+            &self,
+            _context: &WorkspaceContext,
+            _source_root: &Path,
+            _operation: WorkspaceRlmOperation,
+            _timeout: Duration,
+            _cancellation: &CancellationToken,
+        ) -> Result<WorkspaceServiceRlmOutput, String> {
+            Ok(WorkspaceServiceRlmOutput {
+                result_text: json!({
+                    "object_name": "Catalog.Items",
+                    "sections": {"modules": {"status": "ok", "total": 0, "returned": 0, "items": []}}
+                })
+                .to_string(),
+                stderr: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn metadata_related_does_not_apply_build_settlement_window_to_an_already_ready_index() {
+        let client = SlowReadyClient {
+            readiness_calls: Mutex::new(0),
+        };
+
+        let result = RlmNavigationAdapter::with_client(&client).metadata_related(
+            "Catalog.Items",
+            &["modules".to_string()],
+            20,
+            &unready_index_context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(3)),
+            &CancellationToken::new(),
+        );
+
+        let modules = result.modules.unwrap();
+        assert_eq!(
+            modules.status,
+            crate::domain::metadata::MetaRelatedStatus::Ready,
+            "a ready index must use the provider deadline, not the Building settlement window"
+        );
+        assert_eq!(
+            modules.freshness,
+            crate::domain::metadata::MetaFreshness::Current
+        );
+        assert_eq!(*client.readiness_calls.lock().unwrap(), 4);
     }
 
     struct AlwaysBuildingClient;
