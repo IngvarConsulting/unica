@@ -2335,6 +2335,95 @@ mod tests {
     }
 
     #[test]
+    fn xdto_versionless_logical_target_reaches_1_0_format_policy() {
+        assert_logical_xdto_owner_and_target_format_policy(
+            "versionless-logical-target",
+            "",
+            "formatMigrationAvailable",
+            "1.0",
+        );
+    }
+
+    #[test]
+    fn xdto_identical_entity_spelled_versions_reach_invalid_format_policy() {
+        assert_logical_xdto_owner_and_target_format_policy(
+            "entity-spelled-logical-target",
+            r#" version="2.&#50;0""#,
+            "formatVersionInvalid",
+            "2.&#50;0",
+        );
+    }
+
+    fn assert_logical_xdto_owner_and_target_format_policy(
+        label: &str,
+        version_attribute: &str,
+        expected_code: &str,
+        expected_actual_format: &str,
+    ) {
+        let root = test_root(label);
+        let source_root = root.join("src");
+        let descriptor = source_root.join("XDTOPackages/Sample.xml");
+        let resource = source_root.join("XDTOPackages/Sample/Ext/Package.bin");
+        std::fs::create_dir_all(resource.parent().unwrap()).unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source_root.join("Configuration.xml"),
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"{version_attribute}><Configuration><ChildObjects><XDTOPackage>Sample</XDTOPackage></ChildObjects></Configuration></MetaDataObject>"#
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            descriptor,
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"{version_attribute}><XDTOPackage><Properties><Name>Sample</Name></Properties></XDTOPackage></MetaDataObject>"#
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            resource,
+            r#"<package xmlns="http://v8.1c.ru/8.1/xdto" targetNamespace="urn:test"></package>"#,
+        )
+        .unwrap();
+        let args = Map::from_iter([
+            ("sourceSet".into(), Value::String("main".to_string())),
+            (
+                "metadataPath".into(),
+                Value::String("XDTOPackage.Sample".to_string()),
+            ),
+        ]);
+
+        let read = evaluate_format_guard(spec("unica.xdto.info"), &args, &context(&root))
+            .expect("logical read target must reach format policy");
+        let FormatGuardCheck::Warn {
+            diagnostic: read_diagnostic,
+            ..
+        } = read
+        else {
+            panic!("logical read target must warn");
+        };
+        assert_eq!(read_diagnostic["code"], expected_code);
+        assert_eq!(read_diagnostic["actualFormat"], expected_actual_format);
+
+        let mutation = evaluate_format_guard(spec("unica.xdto.edit"), &args, &context(&root))
+            .expect("logical mutation target must reach format policy");
+        let FormatGuardCheck::Block {
+            diagnostic: mutation_diagnostic,
+            ..
+        } = mutation
+        else {
+            panic!("logical mutation target must block");
+        };
+        assert_eq!(mutation_diagnostic["code"], expected_code);
+        assert_eq!(mutation_diagnostic["actualFormat"], expected_actual_format);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn xdto_guard_empty_handler_resolution_is_a_contract_error() {
         let root = test_root("xdto-empty-handler-resolution");
         std::fs::create_dir_all(root.join("src")).unwrap();

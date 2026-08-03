@@ -1681,8 +1681,8 @@ fn descriptor_version_and_name_from_bytes(
     expected_kind: &str,
 ) -> Result<(Option<String>, String), ()> {
     let text = std::str::from_utf8(raw).map_err(|_| ())?;
-    let document =
-        roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).map_err(|_| ())?;
+    let source = text.trim_start_matches('\u{feff}');
+    let document = roxmltree::Document::parse(source).map_err(|_| ())?;
     let root = document.root_element();
     if root.tag_name().namespace() != Some(MD_CLASSES_NS)
         || root.tag_name().name() != "MetaDataObject"
@@ -1718,7 +1718,7 @@ fn descriptor_version_and_name_from_bytes(
         .filter(|name| !name.is_empty())
         .ok_or(())?;
     Ok((
-        root.attribute("version").map(str::to_string),
+        crate::infrastructure::platform_xml_owner::root_version_literal(source, root),
         name.to_string(),
     ))
 }
@@ -2289,7 +2289,7 @@ fn resolve_platform_xml_object(
         return Err(metadata_owner_evidence_error(target));
     }
     if let ObjectOwnerVersionEvidence::Exact(owner_version) = owner_version {
-        if version.as_deref() != Some(owner_version.as_str()) {
+        if version != owner_version {
             return Err(SourceTargetError::source_format_unsupported(format!(
                 "metadataPath `{address}` format does not match its proven metadata owner in sourceSet `{}`",
                 target.source_set
@@ -2323,9 +2323,10 @@ enum ObjectOwnerVersionEvidence {
     /// External processors and reports are their own source-set owner, so
     /// there is no distinct descriptor version to compare with the target.
     SelfOwned,
-    /// Configuration and extension objects must use the exact format declared
-    /// by the canonical source-set owner (or by their canonical parent).
-    Exact(String),
+    /// Configuration and extension objects must use the exact raw format
+    /// literal declared by the canonical owner. `None` is evidence for a
+    /// recognized versionless owner (legacy format 1.0), not a missing owner.
+    Exact(Option<String>),
 }
 
 fn object_registration_evidence(
@@ -2360,15 +2361,7 @@ fn object_registration_evidence(
             selected.source_set.kind,
         )
         .map_err(|_| metadata_owner_evidence_error(&logical_target))?;
-    let source_owner_version = source_owner_evidence
-        .version()
-        .map(str::to_owned)
-        .ok_or_else(|| {
-            SourceTargetError::source_format_unsupported(format!(
-                "sourceSet `{}` owner does not declare a Platform XML export format",
-                selected.source_set.name
-            ))
-        })?;
+    let source_owner_version = source_owner_evidence.version().map(str::to_owned);
 
     let parts = address.segments().collect::<Vec<_>>();
     let [owner_kind, owner_name, child_kind @ ("Form" | "Command"), child_name] = parts.as_slice()
@@ -2401,7 +2394,7 @@ fn object_registration_evidence(
     if actual_name != *owner_name {
         return Err(metadata_owner_evidence_error(&logical_target));
     }
-    if owner_version.as_deref() != Some(source_owner_version.as_str()) {
+    if owner_version != source_owner_version {
         return Err(SourceTargetError::source_format_unsupported(format!(
             "metadata owner `{}.{}` format does not match sourceSet `{}` owner",
             owner_kind, owner_name, selected.source_set.name
@@ -5427,6 +5420,173 @@ mod tests {
         assert_eq!(
             resolution.handle.target_path,
             normalize_path_identity(&root.join("Catalogs/Items.xml")).unwrap()
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_object_target_accepts_consistent_versionless_evidence_for_format_guard() {
+        let context = fixture(
+            "object-target-consistent-versionless",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        fs::create_dir_all(root.join("Catalogs")).unwrap();
+        fs::write(
+            root.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Configuration><ChildObjects><Catalog>Items</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Catalog><Properties><Name>Items</Name></Properties></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+
+        let resolution =
+            resolve_platform_xml_object_target(&context, &target("main", "Catalog.Items")).unwrap();
+
+        assert_eq!(
+            resolution.handle.target_path,
+            normalize_path_identity(&root.join("Catalogs/Items.xml")).unwrap()
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_object_target_rejects_xml_decoded_version_equality() {
+        let context = fixture(
+            "object-target-raw-version-mismatch",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        fs::create_dir_all(root.join("Catalogs")).unwrap();
+        fs::write(
+            root.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><ChildObjects><Catalog>Items</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.&#50;0"><Catalog><Properties><Name>Items</Name></Properties></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+
+        let error = resolve_platform_xml_object_target(&context, &target("main", "Catalog.Items"))
+            .unwrap_err();
+
+        assert_eq!(error.code, SourceTargetErrorCode::SourceRootNotAddressable);
+        assert_eq!(
+            error.reason(),
+            SourceTargetErrorReason::SourceFormatUnsupported
+        );
+        assert_eq!(
+            error.message,
+            "metadataPath `Catalog.Items` format does not match its proven metadata owner in sourceSet `main`"
+        );
+        assert!(!error.message.contains(root.to_string_lossy().as_ref()));
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_object_target_accepts_identical_entity_spelled_raw_versions_for_format_guard() {
+        let context = fixture(
+            "object-target-identical-entity-version",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        fs::create_dir_all(root.join("Catalogs")).unwrap();
+        fs::write(
+            root.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.&#50;0"><Configuration><ChildObjects><Catalog>Items</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.&#50;0"><Catalog><Properties><Name>Items</Name></Properties></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+
+        let resolution =
+            resolve_platform_xml_object_target(&context, &target("main", "Catalog.Items")).unwrap();
+
+        assert_eq!(
+            resolution.handle.target_path,
+            normalize_path_identity(&root.join("Catalogs/Items.xml")).unwrap()
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_nested_object_target_accepts_consistent_versionless_evidence() {
+        let context = fixture(
+            "nested-object-target-consistent-versionless",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        fs::create_dir_all(root.join("Catalogs/Items/Forms")).unwrap();
+        fs::write(
+            root.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Configuration><ChildObjects><Catalog>Items</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Catalog><Properties><Name>Items</Name></Properties><ChildObjects><Form>List</Form></ChildObjects></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("Catalogs/Items/Forms/List.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Form><Properties><Name>List</Name></Properties></Form></MetaDataObject>"#,
+        )
+        .unwrap();
+
+        let resolution = resolve_platform_xml_object_target(
+            &context,
+            &target("main", "Catalog.Items.Form.List"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolution.handle.target_path,
+            normalize_path_identity(&root.join("Catalogs/Items/Forms/List.xml")).unwrap()
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_nested_object_target_accepts_identical_entity_spelled_raw_versions() {
+        let context = fixture(
+            "nested-object-target-identical-entity-version",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        fs::create_dir_all(root.join("Catalogs/Items/Forms")).unwrap();
+        fs::write(
+            root.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.&#50;0"><Configuration><ChildObjects><Catalog>Items</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.&#50;0"><Catalog><Properties><Name>Items</Name></Properties><ChildObjects><Form>List</Form></ChildObjects></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("Catalogs/Items/Forms/List.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.&#50;0"><Form><Properties><Name>List</Name></Properties></Form></MetaDataObject>"#,
+        )
+        .unwrap();
+
+        let resolution = resolve_platform_xml_object_target(
+            &context,
+            &target("main", "Catalog.Items.Form.List"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolution.handle.target_path,
+            normalize_path_identity(&root.join("Catalogs/Items/Forms/List.xml")).unwrap()
         );
         cleanup(&context);
     }
