@@ -181,6 +181,72 @@ Populated after all 19 cards pass the stronger-model review gate.
 
 ## Specialized implementations
 
+### `feenlace/mcp-1c`
+
+- **Snapshot:** `main`, `926af4af57eb4c6c2a95a1b13ac269b0f7debe78`, `2026-08-03`.
+- **License:** `LICENSE` is MIT; GitHub metadata reports MIT and is consistent.
+- **Evidence:** [README](https://github.com/feenlace/mcp-1c/blob/926af4af57eb4c6c2a95a1b13ac269b0f7debe78/README.md), [HTTP service module](https://github.com/feenlace/mcp-1c/blob/926af4af57eb4c6c2a95a1b13ac269b0f7debe78/extension/src/HTTPServices/MCPService/Ext/Module.bsl), [release tests](https://github.com/feenlace/mcp-1c/blob/926af4af57eb4c6c2a95a1b13ac269b0f7debe78/cmd/mcp-1c/release_workflow_test.go), [event-log documentation](https://github.com/feenlace/mcp-1c/blob/926af4af57eb4c6c2a95a1b13ac269b0f7debe78/docs/bsl/eventlog.bsl), and [query validation documentation](https://github.com/feenlace/mcp-1c/blob/926af4af57eb4c6c2a95a1b13ac269b0f7debe78/docs/bsl/validate-query.bsl).
+- **Mechanism:** the pinned tree contains an HTTP live-base extension, documented event-log/query operations, and release/install checks. The tree also advertises offline search/cache and paid boundaries, but no bounded test was found proving BM25 ranking, cache invalidation, or entitlement enforcement; read-only behavior is not established by the cited tests.
+- **Unica mapping:** live transport is an internal provider behind `unica.integration`/`unica.runtime.execute`, never a second MCP server (`INV-MCP-NO-ENGINE-SERVERS`); mutation must retain preview-first and support guards (`REQ-SAFETY-PREVIEW-BY-DEFAULT`), atomic publication (`REQ-SAFETY-NO-PARTIAL-WRITE`), stable envelopes (`REQ-OBS-STABLE-ENVELOPE`), and redaction (`REQ-SAFETY-SECRET-REDACTION`). Event-log observations map to `unica.code.search` and `unica.log-analysis` skills; workspace credentials remain provider-scoped.
+- **Limits:** live infobase behavior, read-only enforcement, offline BM25/cache invalidation, installation completeness, and open/paid enforcement remain unverified by pinned tests; no real infobase was contacted.
+- **Provisional decision:** `deep-dive` — compare a read-only/preview adapter and cache semantics in a bounded fixture.
+- **Review:** `draft`.
+
+### `DitriXNew/EDT-MCP`
+
+- **Snapshot:** `master`, `d2f29efc520ce373e637e61ec708073de0540bba`, `2026-08-03`.
+- **License:** `LICENSE` is AGPL-3.0; GitHub metadata reports AGPL-3.0 and is consistent, so transfer is legally constrained.
+- **Evidence:** [MCP server](https://github.com/DitriXNew/EDT-MCP/blob/d2f29efc520ce373e637e61ec708073de0540bba/mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/McpServer.java), [active-call cancellation](https://github.com/DitriXNew/EDT-MCP/blob/d2f29efc520ce373e637e61ec708073de0540bba/mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/ActiveToolCall.java), [history log](https://github.com/DitriXNew/EDT-MCP/blob/d2f29efc520ce373e637e61ec708073de0540bba/mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/history/McpCallHistoryFileLog.java), [CI workflow](https://github.com/DitriXNew/EDT-MCP/blob/d2f29efc520ce373e637e61ec708073de0540bba/.github/workflows/e2e-tests.yml), and [README](https://github.com/DitriXNew/EDT-MCP/blob/d2f29efc520ce373e637e61ec708073de0540bba/README.md).
+- **Mechanism:** Eclipse/EDT services expose a live workspace with tool-call lifecycle and cancellation state, call history, and headless E2E workflows. Diagnostics, completion, query validation, refactoring, progressive disclosure, and CI are represented in the project, but individual coverage was not proven for every advertised tool.
+- **Unica mapping:** adapt workspace/diagnostic/completion semantics behind `unica.code.diagnostics`, `unica.code.search`, and `unica.runtime.execute`; preserve the single `unica.*` boundary (`INV-MCP-NO-ENGINE-SERVERS`), stable envelope (`REQ-OBS-STABLE-ENVELOPE`), preview/no-partial-write rules for refactors, and workspace-scoped provider state. Do not adopt its external server identity.
+- **Limits:** AGPL-3.0, EDT runtime dependency, and incomplete per-feature test evidence; cancellation and CI are observable, while query/refactoring/progressive-disclosure guarantees need fixture confirmation.
+- **Provisional decision:** `defer` — useful lifecycle ideas, but legal/runtime cost and duplicate diagnostics make a focused experiment premature.
+- **Review:** `draft`.
+
+### `Desko77/1c-formsserver`
+
+- **Snapshot:** `master`, `cd3f56e3508aaf34f33cdaf2c9bf1c0db9ff585a`, `2026-08-03`.
+- **License:** `LICENSE` is MIT; GitHub metadata reports MIT and is consistent.
+- **Evidence:** [schema models](https://github.com/Desko77/1c-formsserver/blob/cd3f56e3508aaf34f33cdaf2c9bf1c0db9ff585a/src/mcp_forms/schema/model.py), [schema validator](https://github.com/Desko77/1c-formsserver/blob/cd3f56e3508aaf34f33cdaf2c9bf1c0db9ff585a/src/mcp_forms/schema/validator.py), [generator](https://github.com/Desko77/1c-formsserver/blob/cd3f56e3508aaf34f33cdaf2c9bf1c0db9ff585a/src/mcp_forms/forms/generator.py), [converter tests](https://github.com/Desko77/1c-formsserver/blob/cd3f56e3508aaf34f33cdaf2c9bf1c0db9ff585a/tests/test_converter.py), and [validator tests](https://github.com/Desko77/1c-formsserver/blob/cd3f56e3508aaf34f33cdaf2c9bf1c0db9ff585a/tests/test_validator.py).
+- **Mechanism:** Pydantic schema/parser, form generation/conversion, and validation are implemented with fixtures covering managed/logform conversion and validator failures. The tests do not establish complete round-trip fidelity for every supported form model.
+- **Unica mapping:** compare schema/generation with `unica.form.compile`, `unica.form.edit`, `unica.form.validate`, and `crates/unica-coder/src/infrastructure/native_operations/form.rs`; retain format/support guards, preview by default, and transaction publication (`REQ-SAFETY-PREVIEW-BY-DEFAULT`, `REQ-SAFETY-NO-PARTIAL-WRITE`). Results must use the stable envelope and remain under the single `unica.*` boundary.
+- **Limits:** actual round-trip coverage is partial; EDT client/search dependencies are outside the form fixtures, and no platform runtime validation is shown.
+- **Provisional decision:** `deep-dive` — a common managed/logform fixture can test fidelity and validation parity without copying code.
+- **Review:** `draft`.
+
+### `alexiosus/mxl-merge-tool`
+
+- **Snapshot:** `main`, `83839e91685f743be203458194e1c11bc1ddd1fa`, `2026-08-03`.
+- **License:** `LICENSE` is MIT; GitHub metadata reports MIT and is consistent.
+- **Evidence:** [semantic merge implementation](https://github.com/alexiosus/mxl-merge-tool/blob/83839e91685f743be203458194e1c11bc1ddd1fa/mxl_tool.py), [merge tests](https://github.com/alexiosus/mxl-merge-tool/blob/83839e91685f743be203458194e1c11bc1ddd1fa/tests/test_mxl_tool.py), [preview](https://github.com/alexiosus/mxl-merge-tool/blob/83839e91685f743be203458194e1c11bc1ddd1fa/mxl_preview.py), and [three-way fixtures](https://github.com/alexiosus/mxl-merge-tool/tree/83839e91685f743be203458194e1c11bc1ddd1fa/tests/merge).
+- **Mechanism:** Python tooling and fixtures exercise semantic diff/three-way merge and conflict-oriented output; tests cover merge behavior and previews. A repository-integrated Git merge driver, exhaustive conflict representation, validation, and report guarantees are not all proven by the pinned tests.
+- **Unica mapping:** compare with `unica.mxl.decompile`, `unica.mxl.compile`, `unica.mxl.validate`, `crates/unica-coder/src/infrastructure/native_operations/mxl.rs`, and atomic publication in `compile_transaction.rs`/`single_file_publisher.rs`. Any merge application remains preview-first and support-guarded, with stable envelopes and no partial writes.
+- **Limits:** no evidence of platform-level semantic equivalence or full merge-driver integration; reports/conflict UX need a shared fixture comparison.
+- **Provisional decision:** `deep-dive` — test semantic merge conflict encoding against Unica’s JSON DSL and atomic writer.
+- **Review:** `draft`.
+
+### `rzateev/onec-help-mcp`
+
+- **Snapshot:** `main`, `f66860b45ecad40e071ac4abe3f7ef432b30ac24`, `2026-08-03`.
+- **License:** `LICENSE` is MIT and GitHub metadata reports MIT; README’s license badge says “Non-Commercial”, contradicting the pinned MIT license file and metadata.
+- **Evidence:** [HBK reader](https://github.com/rzateev/onec-help-mcp/blob/f66860b45ecad40e071ac4abe3f7ef432b30ac24/src/parsers/hbk_reader.py), [search](https://github.com/rzateev/onec-help-mcp/blob/f66860b45ecad40e071ac4abe3f7ef432b30ac24/src/core/search.py), [indexing tools](https://github.com/rzateev/onec-help-mcp/blob/f66860b45ecad40e071ac4abe3f7ef432b30ac24/src/tools/indexing_tools.py), [README badge](https://github.com/rzateev/onec-help-mcp/blob/f66860b45ecad40e071ac4abe3f7ef432b30ac24/README.md), and [LICENSE](https://github.com/rzateev/onec-help-mcp/blob/f66860b45ecad40e071ac4abe3f7ef432b30ac24/LICENSE).
+- **Mechanism:** HBK/RES parsing, indexing, and hybrid BM25/dense search are implemented; tests cover settings/version behavior, but no pinned test proves extraction against representative HBK binaries or search quality.
+- **Unica mapping:** extraction/search could inform `unica.help.add`, `unica.standards.search`, `unica.standards.explain`, and `unica.help.*` provider internals; preserve one public boundary, stable envelopes, and secret redaction. Help publication must use support/format guards and atomic writers.
+- **Limits:** source-help extraction legality and binary corpus coverage are unverified; README/license contradiction blocks transfer pending clarification.
+- **Provisional decision:** `defer` — observe search design, but legal contradiction and missing HBK fixture tests preclude immediate deep dive.
+- **Review:** `draft`.
+
+### `mussolene/1c_hbk_bsl`
+
+- **Snapshot:** `main`, `cee853014d57e34950c86ba24957af5ecc3e6d49`, `2026-08-03`.
+- **License:** `LICENSE` is MIT; GitHub metadata reports MIT and is consistent. The tree also contains an LGPL-3.0 documentation license, requiring provenance review for copied corpus text.
+- **Evidence:** [diagnostic engine](https://github.com/mussolene/1c_hbk_bsl/blob/cee853014d57e34950c86ba24957af5ecc3e6d49/src/onec_hbk_bsl/analysis/diagnostic/engine.py), [README](https://github.com/mussolene/1c_hbk_bsl/blob/cee853014d57e34950c86ba24957af5ecc3e6d49/README.md), [CI](https://github.com/mussolene/1c_hbk_bsl/blob/cee853014d57e34950c86ba24957af5ecc3e6d49/.github/workflows/ci.yml), [tests](https://github.com/mussolene/1c_hbk_bsl/tree/cee853014d57e34950c86ba24957af5ecc3e6d49/tests), [package metadata](https://github.com/mussolene/1c_hbk_bsl/blob/cee853014d57e34950c86ba24957af5ecc3e6d49/pyproject.toml), and [RU/EN docs workflow](https://github.com/mussolene/1c_hbk_bsl/blob/cee853014d57e34950c86ba24957af5ecc3e6d49/.github/workflows/docs.yml).
+- **Mechanism:** the project documents diagnostics, formatter, CLI/LSP/MCP surfaces, SARIF-oriented tooling, indexing/benchmark scripts, tests, and bilingual documentation; the pinned tests prove selected diagnostics/baseline behavior, not all advertised modes or protocol compatibility.
+- **Unica mapping:** compare diagnostics with `unica.code.diagnostics`, formatter/indexing with `unica.code.search` provider state, and logs with `unica.log-analysis`; keep stable envelopes, cancellation/deadlines, workspace scoping, and secret redaction. Do not expose its CLI/LSP/MCP servers as additional public endpoints.
+- **Limits:** SARIF, all indexing modes, LSP/MCP interoperability, and complete RU/EN parity remain unverified; LGPL documentation content needs separate licensing treatment.
+- **Provisional decision:** `deep-dive` — bounded diagnostics/SARIF comparison against Unica’s existing analyzer and envelope.
+- **Review:** `draft`.
+
 Reserved for the specialized implementation cohort cards.
 
 ## Evaluation and safe access

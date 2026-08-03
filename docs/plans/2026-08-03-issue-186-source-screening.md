@@ -424,7 +424,7 @@ git commit -m "docs(research): screen issue 186 code intelligence sources"
 - Produces: six draft specialized-source cards; Task 6 owns final decisions and summary rows.
 - Produces: a separation between live-data/EDT/safety mechanisms and artifact/help mechanisms.
 
-- [ ] **Step 1: Inspect all six pinned trees**
+- [x] **Step 1: Inspect all six pinned trees**
 
 Inspect exactly:
 
@@ -452,7 +452,7 @@ to final findings in this task.
 
 Use `git ls-tree`, `git show HEAD:<path>`, and bounded local commands declared by the pinned project. Do not install globally or connect to a real 1C infobase during screening.
 
-- [ ] **Step 2: Map specialized semantics to Unica guarantees**
+- [x] **Step 2: Map specialized semantics to Unica guarantees**
 
 Compare source evidence against exact Unica paths and rules for:
 
@@ -474,11 +474,11 @@ rg -n 'INV-MCP-NO-ENGINE-SERVERS|REQ-SAFETY-PREVIEW-BY-DEFAULT|REQ-SAFETY-NO-PAR
 rg -n 'unica\.(form|mxl|help|code|integration|log)' crates/unica-coder/src/application plugins/unica/skills tests/ci
 ```
 
-- [ ] **Step 3: Write six draft cards and provisional theme notes**
+- [x] **Step 3: Write six draft cards and provisional theme notes**
 
 For live-data and EDT sources, explicitly distinguish useful internal semantics from incompatible public server/tool names. For forms and MXL, state whether round-trip or merge guarantees are proven by fixtures/tests or merely claimed. For help sources, record extraction legality and license conflicts separately from search quality.
 
-- [ ] **Step 4: Verify cohort completeness**
+- [x] **Step 4: Verify cohort completeness**
 
 Run:
 
@@ -490,7 +490,7 @@ $specializedSources | ForEach-Object { if (($reviewText.Split("### `$_`").Count 
 
 Expected: no exception.
 
-- [ ] **Step 5: Commit the specialized cohort**
+- [x] **Step 5: Commit the specialized cohort**
 
 ```powershell
 git add docs/provenance/reviews/2026-08-03-issue-186-source-screening.md docs/plans/2026-08-03-issue-186-source-screening.md
