@@ -24,7 +24,9 @@ use std::path::{Path, PathBuf};
 use super::super::common::{
     absolutize, guard_active_format_dependencies, read_utf8_sig, read_utf8_sig_snapshot, string_arg,
 };
-use super::super::compile_transaction::{CompileTransaction, RegistrationStatus};
+use super::super::compile_transaction::{
+    CompileTransaction, DirectoryMembershipSnapshot, RegistrationStatus,
+};
 use super::legacy_dsl::{
     compile_meta_value, meta_compile_definition_format_dependency_paths,
     meta_compile_event_subscription_dependencies, read_meta_compile_definition_guarded,
@@ -141,9 +143,6 @@ pub(crate) fn prepare_meta_add(
         .source_root
         .join(metadata_layout(request.kind).directory)
         .join(&request.name);
-    if fs::symlink_metadata(&resource_root).is_ok() {
-        return Err(already_exists(&target));
-    }
     let mut guarded_resource_directories = BTreeSet::from([resource_root.clone()]);
     for file in &post_image.files {
         let path = source.source_root.join(&file.relative_path);
@@ -159,7 +158,7 @@ pub(crate) fn prepare_meta_add(
     }
     for directory in guarded_resource_directories {
         transaction
-            .guard_or_verify_directory_topology(directory, Vec::new())
+            .guard_or_verify_directory_topology(directory, DirectoryMembershipSnapshot::Absent)
             .map_err(|_| already_exists(&target))?;
     }
 
@@ -1009,6 +1008,40 @@ mod typed_add_publication_tests {
             owner_before
         );
         assert!(!fixture.root.join("src/Catalogs/ResourceDrift.xml").exists());
+    }
+
+    #[test]
+    fn meta_add_rejects_empty_resource_root_that_appears_after_prepare() {
+        let fixture = Fixture::new("empty-resource-root-drift");
+        let cancellation = CancellationToken::new();
+        let prepared = prepare_meta_add(
+            &fixture.request("EmptyRootDrift"),
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap();
+        let owner_before = fs::read(fixture.root.join("src/Configuration.xml")).unwrap();
+        let external_root = fixture.root.join("src/Catalogs/EmptyRootDrift");
+        fs::create_dir_all(&external_root).unwrap();
+
+        let failure = match prepared.publish(&cancellation) {
+            Ok(_) => panic!("external empty resource root was adopted by publication"),
+            Err(failure) => failure,
+        };
+
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::ConcurrentModification
+        );
+        assert_eq!(
+            fs::read(fixture.root.join("src/Configuration.xml")).unwrap(),
+            owner_before
+        );
+        assert!(!fixture
+            .root
+            .join("src/Catalogs/EmptyRootDrift.xml")
+            .exists());
+        assert_eq!(fs::read_dir(external_root).unwrap().count(), 0);
     }
 
     #[test]

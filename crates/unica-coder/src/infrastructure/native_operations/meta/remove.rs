@@ -16,7 +16,8 @@ use super::super::common::{
     relative_display, required_string, utf8_bom_bytes, MutationData,
 };
 use super::super::compile_transaction::{
-    CompileTransaction, DirectoryTopologyEntry, DirectoryTopologyEntryKind,
+    CompileTransaction, DirectoryMembershipSnapshot, DirectoryTopologyEntry,
+    DirectoryTopologyEntryKind,
 };
 use super::super::form::form_is_xml_ncname;
 use super::super::role::role_info_element;
@@ -886,7 +887,7 @@ pub(crate) fn remove_metadata_object_with_data(
                 transaction
                     .guard_or_verify_directory_topology(
                         directory_read.path.clone(),
-                        directory_read.direct_entries.clone(),
+                        DirectoryMembershipSnapshot::Present(directory_read.direct_entries.clone()),
                     )
                     .map_err(meta_remove_stdout_error)?;
             }

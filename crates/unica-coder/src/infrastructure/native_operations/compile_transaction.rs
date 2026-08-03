@@ -150,10 +150,18 @@ pub(crate) struct DirectoryTopologyEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DirectoryMembershipSnapshot {
+    /// The path did not exist when the source evidence was captured.
+    Absent,
+    /// The path was a real directory with this exact filtered direct topology.
+    Present(Vec<DirectoryTopologyEntry>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct DirectoryMembershipGuard {
     directory: PathBuf,
     selector: DirectoryMembershipSelector,
-    expected_entries: Vec<DirectoryTopologyEntry>,
+    expected: DirectoryMembershipSnapshot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -302,39 +310,33 @@ impl CompileTransaction {
         Ok(())
     }
 
-    /// Bind the exact relevant direct-child listing of a directory to this
-    /// transaction. Membership guards conservatively take the global
-    /// publication-tree lock exclusively at commit, so another cooperating
-    /// Unica writer cannot add or remove a matching entry between checks.
+    /// Bind the exact existence state and relevant direct-child listing of a
+    /// directory to this transaction. Membership guards conservatively take
+    /// the global publication-tree lock exclusively at commit, so another
+    /// cooperating Unica writer cannot create/delete the directory or add or
+    /// remove a matching entry between checks.
     pub(crate) fn guard_or_verify_directory_membership(
         &mut self,
         directory: impl Into<PathBuf>,
         selector: DirectoryMembershipSelector,
-        expected_names: Vec<OsString>,
+        expected: DirectoryMembershipSnapshot,
     ) -> Result<(), String> {
-        let expected_entries = expected_names
-            .into_iter()
-            .map(|name| DirectoryTopologyEntry {
-                name,
-                kind: DirectoryTopologyEntryKind::File,
-            })
-            .collect();
-        self.guard_or_verify_directory_entries(directory.into(), selector, expected_entries)
+        self.guard_or_verify_directory_entries(directory.into(), selector, expected)
     }
 
-    /// Bind the exact direct-child names and filesystem kinds observed by a
-    /// recursive scanner. File-to-directory replacement must be detected even
-    /// when the entry name itself is unchanged, because the replacement can
-    /// introduce an unscanned subtree.
+    /// Bind the exact directory-existence state plus direct-child names and
+    /// filesystem kinds observed by a recursive scanner. File-to-directory
+    /// replacement must be detected even when the entry name itself is
+    /// unchanged, because the replacement can introduce an unscanned subtree.
     pub(crate) fn guard_or_verify_directory_topology(
         &mut self,
         directory: impl Into<PathBuf>,
-        expected_entries: Vec<DirectoryTopologyEntry>,
+        expected: DirectoryMembershipSnapshot,
     ) -> Result<(), String> {
         self.guard_or_verify_directory_entries(
             directory.into(),
             DirectoryMembershipSelector::AllDirectEntries,
-            expected_entries,
+            expected,
         )
     }
 
@@ -342,18 +344,18 @@ impl CompileTransaction {
         &mut self,
         requested_directory: PathBuf,
         selector: DirectoryMembershipSelector,
-        expected_entries: Vec<DirectoryTopologyEntry>,
+        expected: DirectoryMembershipSnapshot,
     ) -> Result<(), String> {
-        let expected_entries = normalize_expected_directory_entries(selector, expected_entries)?;
+        let expected = normalize_directory_membership_snapshot(selector, expected)?;
         validate_directory_membership_guard(
             &requested_directory,
             selector,
-            &expected_entries,
+            &expected,
             "while planning",
         )?;
         let directory = normalize_transaction_path_identity(&requested_directory)?;
         if let Some(existing) = self.directory_membership_guards.get(&directory) {
-            if existing.selector == selector && existing.expected_entries == expected_entries {
+            if existing.selector == selector && existing.expected == expected {
                 return Ok(());
             }
             return Err(format!(
@@ -374,7 +376,7 @@ impl CompileTransaction {
             DirectoryMembershipGuard {
                 directory,
                 selector,
-                expected_entries,
+                expected,
             },
         );
         Ok(())
@@ -1222,19 +1224,19 @@ impl CompileTransaction {
         phase: &str,
     ) -> Result<(), String> {
         for guard in self.directory_membership_guards.values() {
-            let expected_entries = if include_planned_deltas || !transient_additions.is_empty() {
+            let expected = if include_planned_deltas || !transient_additions.is_empty() {
                 self.directory_membership_after_planned_deltas(
                     guard,
                     include_planned_deltas,
                     transient_additions,
                 )?
             } else {
-                guard.expected_entries.clone()
+                guard.expected.clone()
             };
             validate_directory_membership_guard(
                 &guard.directory,
                 guard.selector,
-                &expected_entries,
+                &expected,
                 phase,
             )?;
         }
@@ -1246,12 +1248,17 @@ impl CompileTransaction {
         guard: &DirectoryMembershipGuard,
         include_planned_deltas: bool,
         transient_additions: &[PathBuf],
-    ) -> Result<Vec<DirectoryTopologyEntry>, String> {
-        let mut expected = guard
-            .expected_entries
-            .iter()
-            .map(|entry| (entry.name.clone(), entry.kind))
-            .collect::<BTreeMap<_, _>>();
+    ) -> Result<DirectoryMembershipSnapshot, String> {
+        let (mut exists, mut expected) = match &guard.expected {
+            DirectoryMembershipSnapshot::Absent => (false, BTreeMap::new()),
+            DirectoryMembershipSnapshot::Present(entries) => (
+                true,
+                entries
+                    .iter()
+                    .map(|entry| (entry.name.clone(), entry.kind))
+                    .collect::<BTreeMap<_, _>>(),
+            ),
+        };
         if include_planned_deltas {
             for create in &self.creates {
                 apply_direct_membership_delta(
@@ -1275,6 +1282,10 @@ impl CompileTransaction {
             }
         }
         for path in transient_additions {
+            if normalize_transaction_path_identity(path)? == guard.directory {
+                exists = true;
+                continue;
+            }
             apply_direct_membership_delta(
                 &guard.directory,
                 guard.selector,
@@ -1284,10 +1295,20 @@ impl CompileTransaction {
                 &mut expected,
             )?;
         }
-        Ok(expected
+        let entries = expected
             .into_iter()
             .map(|(name, kind)| DirectoryTopologyEntry { name, kind })
-            .collect())
+            .collect::<Vec<_>>();
+        if exists {
+            Ok(DirectoryMembershipSnapshot::Present(entries))
+        } else if entries.is_empty() {
+            Ok(DirectoryMembershipSnapshot::Absent)
+        } else {
+            Err(format!(
+                "directory membership guard plan adds entries below an absent directory: {}",
+                guard.directory.display()
+            ))
+        }
     }
 
     fn post_validate(&self) -> Result<(), String> {
@@ -1322,20 +1343,19 @@ impl CompileTransaction {
 pub(crate) fn snapshot_directory_membership(
     directory: &Path,
     selector: DirectoryMembershipSelector,
-) -> Result<Vec<OsString>, String> {
-    Ok(snapshot_directory_membership_entries(directory, selector)?
-        .into_iter()
-        .map(|entry| entry.name)
-        .collect())
+) -> Result<DirectoryMembershipSnapshot, String> {
+    snapshot_directory_membership_entries(directory, selector)
 }
 
 fn snapshot_directory_membership_entries(
     directory: &Path,
     selector: DirectoryMembershipSelector,
-) -> Result<Vec<DirectoryTopologyEntry>, String> {
+) -> Result<DirectoryMembershipSnapshot, String> {
     let metadata = match fs::symlink_metadata(directory) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return Ok(DirectoryMembershipSnapshot::Absent)
+        }
         Err(error) => {
             return Err(format!(
                 "failed to inspect directory membership guard {}: {error}",
@@ -1410,7 +1430,7 @@ fn snapshot_directory_membership_entries(
         };
         names.push(DirectoryTopologyEntry { name, kind });
     }
-    Ok(names)
+    Ok(DirectoryMembershipSnapshot::Present(names))
 }
 
 fn snapshot_direct_entry_names(directory: &Path) -> Result<Vec<OsString>, String> {
@@ -1507,6 +1527,18 @@ fn normalize_expected_directory_entries(
         .collect())
 }
 
+fn normalize_directory_membership_snapshot(
+    selector: DirectoryMembershipSelector,
+    snapshot: DirectoryMembershipSnapshot,
+) -> Result<DirectoryMembershipSnapshot, String> {
+    match snapshot {
+        DirectoryMembershipSnapshot::Absent => Ok(DirectoryMembershipSnapshot::Absent),
+        DirectoryMembershipSnapshot::Present(entries) => Ok(DirectoryMembershipSnapshot::Present(
+            normalize_expected_directory_entries(selector, entries)?,
+        )),
+    }
+}
+
 fn directory_membership_name_matches(selector: DirectoryMembershipSelector, name: &OsStr) -> bool {
     match selector {
         DirectoryMembershipSelector::XmlFiles => {
@@ -1523,29 +1555,33 @@ fn directory_membership_name_matches(selector: DirectoryMembershipSelector, name
 fn validate_directory_membership_guard(
     directory: &Path,
     selector: DirectoryMembershipSelector,
-    expected_entries: &[DirectoryTopologyEntry],
+    expected: &DirectoryMembershipSnapshot,
     phase: &str,
 ) -> Result<(), String> {
-    let actual_entries = snapshot_directory_membership_entries(directory, selector)?;
-    if actual_entries != expected_entries {
-        let render = |entries: &[DirectoryTopologyEntry]| {
-            entries
-                .iter()
-                .map(|entry| {
-                    let suffix = match entry.kind {
-                        DirectoryTopologyEntryKind::File => "",
-                        DirectoryTopologyEntryKind::Directory => "/",
-                    };
-                    format!("{}{suffix}", entry.name.to_string_lossy())
-                })
-                .collect::<Vec<_>>()
-                .join(", ")
+    let actual = snapshot_directory_membership_entries(directory, selector)?;
+    if &actual != expected {
+        let render = |snapshot: &DirectoryMembershipSnapshot| match snapshot {
+            DirectoryMembershipSnapshot::Absent => "absent".to_string(),
+            DirectoryMembershipSnapshot::Present(entries) => {
+                let entries = entries
+                    .iter()
+                    .map(|entry| {
+                        let suffix = match entry.kind {
+                            DirectoryTopologyEntryKind::File => "",
+                            DirectoryTopologyEntryKind::Directory => "/",
+                        };
+                        format!("{}{suffix}", entry.name.to_string_lossy())
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("present [{entries}]")
+            }
         };
         return Err(format!(
-            "compile transaction directory membership guard changed after planning {phase}: {} (expected [{}], actual [{}])",
+            "compile transaction directory membership guard changed after planning {phase}: {} (expected {}, actual {})",
             directory.display(),
-            render(expected_entries),
-            render(&actual_entries)
+            render(expected),
+            render(&actual)
         ));
     }
     Ok(())
@@ -3552,7 +3588,10 @@ mod tests {
         assert_eq!(report.created, vec![created.clone()]);
         assert_eq!(
             snapshot_directory_membership(&root, DirectoryMembershipSelector::XmlFiles).unwrap(),
-            vec![OsString::from("Created.xml")]
+            DirectoryMembershipSnapshot::Present(vec![DirectoryTopologyEntry {
+                name: OsString::from("Created.xml"),
+                kind: DirectoryTopologyEntryKind::File,
+            }])
         );
         fs::remove_dir_all(root).unwrap();
     }
@@ -3582,6 +3621,48 @@ mod tests {
             .expect("absent guarded root must allow its planned descriptor");
 
         assert_eq!(fs::read(&created).unwrap(), b"<Created/>\n");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn directory_membership_snapshot_distinguishes_absent_from_present_empty() {
+        let root = temp_root("membership-existence-snapshot");
+        let guarded = root.join("guarded");
+
+        let absent = snapshot_directory_membership_entries(
+            &guarded,
+            DirectoryMembershipSelector::AllDirectEntries,
+        )
+        .unwrap();
+        fs::create_dir(&guarded).unwrap();
+        let present_empty = snapshot_directory_membership_entries(
+            &guarded,
+            DirectoryMembershipSelector::AllDirectEntries,
+        )
+        .unwrap();
+
+        assert_ne!(absent, present_empty);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn directory_membership_guard_rejects_external_empty_root_after_absent_snapshot() {
+        let root = temp_root("membership-external-empty-root");
+        let guarded = root.join("guarded");
+        let expected = snapshot_directory_membership_entries(
+            &guarded,
+            DirectoryMembershipSelector::AllDirectEntries,
+        )
+        .unwrap();
+        fs::create_dir(&guarded).unwrap();
+        let mut transaction = CompileTransaction::new();
+
+        let error = transaction
+            .guard_or_verify_directory_topology(&guarded, expected)
+            .expect_err("an externally-created empty root must not satisfy an absent snapshot");
+
+        assert!(error.contains("directory membership"), "{error}");
+        assert_eq!(fs::read_dir(&guarded).unwrap().count(), 0);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -3623,10 +3704,10 @@ mod tests {
         let concurrent = ext.join("Help.xml");
         let mut transaction = CompileTransaction::new();
         transaction
-            .guard_or_verify_directory_topology(&resource_root, Vec::new())
+            .guard_or_verify_directory_topology(&resource_root, DirectoryMembershipSnapshot::Absent)
             .unwrap();
         transaction
-            .guard_or_verify_directory_topology(&ext, Vec::new())
+            .guard_or_verify_directory_topology(&ext, DirectoryMembershipSnapshot::Absent)
             .unwrap();
         transaction
             .create_bytes(&planned, b"Procedure Run()\nEndProcedure\n".to_vec())

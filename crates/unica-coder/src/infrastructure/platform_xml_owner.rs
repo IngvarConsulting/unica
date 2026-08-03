@@ -5,6 +5,7 @@ use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::metadata_kinds::METADATA_KIND_TAGS;
 use crate::infrastructure::native_operations::compile_transaction::{
     snapshot_directory_membership, CompileTransaction, DirectoryMembershipSelector,
+    DirectoryMembershipSnapshot,
 };
 use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
 use crate::infrastructure::project_sources::{
@@ -16,7 +17,6 @@ use crate::infrastructure::source_roots::{
 };
 use roxmltree::Document;
 use std::collections::{BTreeMap, HashSet};
-use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -65,7 +65,7 @@ enum PlatformXmlOwnerCandidateInput {
 pub(crate) struct PlatformXmlOwnerProvenance {
     source_map: ProjectSourceMapProvenance,
     candidates: BTreeMap<PathBuf, PlatformXmlOwnerCandidateInput>,
-    directory_memberships: BTreeMap<PathBuf, Vec<OsString>>,
+    directory_memberships: BTreeMap<PathBuf, DirectoryMembershipSnapshot>,
 }
 
 impl PlatformXmlOwnerProvenance {
@@ -85,11 +85,11 @@ impl PlatformXmlOwnerProvenance {
                 }
             }
         }
-        for (directory, expected_names) in &self.directory_memberships {
+        for (directory, expected) in &self.directory_memberships {
             transaction.guard_or_verify_directory_membership(
                 directory,
                 DirectoryMembershipSelector::XmlFiles,
-                expected_names.clone(),
+                expected.clone(),
             )?;
         }
         Ok(())
@@ -127,13 +127,13 @@ impl PlatformXmlOwnerProvenance {
     fn record_directory_membership(
         &mut self,
         directory: PathBuf,
-        expected_names: Vec<OsString>,
+        expected: DirectoryMembershipSnapshot,
     ) -> Result<(), PlatformXmlOwnerError> {
         match self.directory_memberships.get(&directory) {
-            Some(existing) if existing == &expected_names => Ok(()),
+            Some(existing) if existing == &expected => Ok(()),
             Some(_) => Err(changed_during_resolution(&directory)),
             None => {
-                self.directory_memberships.insert(directory, expected_names);
+                self.directory_memberships.insert(directory, expected);
                 Ok(())
             }
         }
