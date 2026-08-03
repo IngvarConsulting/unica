@@ -1,4 +1,4 @@
-# Issue #186 Source Screening Implementation Plan
+﻿# Issue #186 Source Screening Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -70,7 +70,7 @@ No new test, schema, helper script, provenance manifest, ADR, or architecture-re
 - Produces: `.build/issue-186/snapshots.jsonl` containing acquisition metadata for research use only.
 - Produces: explicit `draft` and `strong-model-reviewed` review states.
 
-- [ ] **Step 1: Verify the branch and clean tracked state**
+- [x] **Step 1: Verify the branch and clean tracked state**
 
 Run:
 
@@ -81,7 +81,7 @@ git status --short
 
 Expected: branch is `codex/issue-186-screening`; only deliberate plan-tracking changes may be present.
 
-- [ ] **Step 2: Create the ignored evidence workspace**
+- [x] **Step 2: Create the ignored evidence workspace**
 
 Run:
 
@@ -92,7 +92,7 @@ git check-ignore '.build/issue-186/sources'
 
 Expected: `git check-ignore` prints `.build/issue-186/sources`; stop if it is not ignored.
 
-- [ ] **Step 3: Resolve immutable snapshots for all sources**
+- [x] **Step 3: Resolve immutable snapshots for all sources**
 
 Use this exact inventory:
 
@@ -159,7 +159,7 @@ foreach ($snapshotObject in $snapshotObjects | Where-Object { $_.commit }) {
 
 Expected: every printed HEAD equals the corresponding recorded SHA. Do not add any clone to Git.
 
-- [ ] **Step 5: Create the review skeleton**
+- [x] **Step 5: Create the review skeleton**
 
 Create `docs/provenance/reviews/2026-08-03-issue-186-source-screening.md` with these sections in order:
 
@@ -212,7 +212,7 @@ Use this exact card shape for all 19 sources:
 - **Decision:** absent while `draft`; after review, `deep-dive`, `defer`, or `reject` — final reason.
 ```
 
-- [ ] **Step 6: Verify skeleton and inventory invariants**
+- [x] **Step 6: Verify skeleton and inventory invariants**
 
 Run:
 
@@ -224,7 +224,7 @@ git status --short
 
 Expected: snapshot count is 19; all top-level sections exist; `.build/issue-186/` is absent from `git status`.
 
-- [ ] **Step 7: Commit the methodology and skeleton**
+- [x] **Step 7: Commit the methodology and skeleton**
 
 ```powershell
 git add docs/provenance/reviews/2026-08-03-issue-186-source-screening.md docs/plans/2026-08-03-issue-186-source-screening.md
@@ -769,3 +769,4 @@ Expected: a sequence of focused research commits, no runtime or package-contract
 git add docs/plans/2026-08-03-issue-186-source-screening.md
 git commit -m "docs(research): complete issue 186 screening plan"
 ```
+
