@@ -157,7 +157,27 @@ Populated after all 19 cards pass the stronger-model review gate.
 
 ## Code intelligence and alternative indexers
 
-Reserved for the code-intelligence cohort cards.
+### `Regsorm/code-index-mcp`
+
+- **Snapshot:** default branch, full SHA `9614acd9048f73fbc4379d5fd240dc457c8d957a`, `2026-08-03`.
+- **License:** `LICENSE` (MIT text in pinned tree); GitHub metadata must be rechecked before transfer.
+- **Evidence:** `crates/code-index-core/src/indexer/mod.rs` proves hash-based incremental reindex with new/changed/skipped/deleted counts, rayon parsing and sequential SQLite writes; `src/daemon_core/*` owns persistent daemon state and workers; `src/federation/*` dispatches repositories; `src/mcp/tools.rs` enforces read/grep/call-graph caps and emits truncation/unavailable states. `crates/bsl-extension/tests/tools_integration.rs` is pinned test evidence; no crash-repair test was found.
+- **Mechanism:** SQLite structural/FTS index, AST/content hashes, incremental deletion/update, daemon writer with concurrent reads, optional federation, bounded query envelopes; enrichment is optional and not assumed.
+- **Unica mapping:** Adaptable as an internal `CodeIntelligenceProvider` behind `unica.code.*`; exact mappings are `crates/unica-coder/src/domain/code_intelligence.rs`, `crates/unica-coder/src/application/code_intelligence.rs`, `crates/unica-coder/src/infrastructure/code_intelligence.rs`, and `crates/unica-coder/src/infrastructure/workspace_index.rs`. It overlaps bundled `bsl-analyzer`, `rlm-tools-bsl`, and `rlm-bsl-index`, adding explicit state/truncation and federation questions; no second MCP server is adoptable.
+- **Limits:** ambiguity/lower-bound semantics, cancellation during indexing, and partial/stale/corrupt recovery remain unproven; federation and semantic quality require a common harness. Existing bundled baselines are `bsl-analyzer` v0.2.62-build.1, `rlm-tools-bsl` v1.29.1-build.2, and `rlm-bsl-index` v1.29.1-build.2 from `plugins/unica/third-party/tools.lock.json`.
+- **Provisional decision:** `deep-dive` — primary code proves a mature incremental/index-server mechanism with concrete completeness and state-envelope questions.
+- **Review:** `draft`.
+
+### `Arman-Kudaibergenov/bsl-atlas`
+
+- **Snapshot:** default branch, full SHA `b605768692ea2e51c3dfb199b788f6f4d2fb6325`, `2026-08-03`.
+- **License:** `LICENSE` and `COPYRIGHT` are present; transfer scope and GitHub metadata require legal review.
+- **Evidence:** `src/storage/sqlite_store.py` defines SQLite/WAL tables for files, symbols, edges, metadata and FTS5; `src/indexer/file_tracker.py` hashes files and tracks indexed/failed/skipped status and retries; `src/indexer/vector_indexer.py` uses persistent Chroma collections; `src/search/code_grep.py` and `src/search/hybrid.py` implement structural/semantic search. Tests `tests/test_sqlite_store.py`, `tests/test_wave0_edges_incremental.py`, `tests/test_vector_pipeline.py`, and `tests/test_integration.py` cover graph resolution, incremental updates and fake embeddings; no corruption/cancellation test was found.
+- **Mechanism:** dual SQLite structural plus optional Chroma vector index, BSL/metadata/help parsers, hash-based add/edit/delete tracking, call/data edges and reverse-call queries; collection names do not prove federated multi-root querying.
+- **Unica mapping:** Could sit behind `CodeIntelligenceProvider` with orchestration in `crates/unica-coder/src/application/code_intelligence.rs` and workspace identity in `crates/unica-coder/src/infrastructure/workspace_index.rs` and `crates/unica-coder/src/infrastructure/code_intelligence.rs`. It duplicates bundled `rlm-bsl-index` structural search and adds graph/vector comparison, but cannot add a public server/tool.
+- **Limits:** Chroma/embedding services are external; exact ambiguity/truncation, federation, cancellation, and corrupt/partial outcomes are unproven. No comparative performance claim is made.
+- **Provisional decision:** `defer` — useful mechanisms are evidenced, but legal, service, and completeness questions require a bounded harness.
+- **Review:** `draft`.
 
 ## Specialized implementations
 
@@ -184,7 +204,11 @@ does not select final product experiments.
 
 ## Deferred deep-dive protocol
 
-Deferred experiments must use a common harness and measure completeness,
-truncation reporting, incremental updates, cache invalidation, multi-root
-topology, cold/warm latency, cancellation, concurrency, and partial or corrupt
-index outcomes.
+- exact-symbol and ambiguous-symbol completeness: hypothesis—providers report identical exact hits and expose ambiguity rather than silently selecting a definition.
+- reported truncation and lower bounds: hypothesis—capped responses report truncation plus totals/lower bounds sufficient to distinguish complete from partial results.
+- incremental add/change/delete behavior: hypothesis—single-file add, edit, and delete update structural and auxiliary indexes without stale hits.
+- cache identity and invalidation after rename: hypothesis—workspace identity changes and renames invalidate old entries while preserving unaffected cache data.
+- multi-root and extension topology: hypothesis—multiple roots and 1C extension layouts remain isolated and queryable with explicit provenance.
+- cold/warm latency and index size: hypothesis—measure cold build, warm query, and on-disk index size on the same fixture; no screening numbers are claimed here.
+- cancellation and concurrent readers: hypothesis—cancellation bounds work and concurrent reads remain consistent while one writer updates.
+- partial, stale, unavailable, and corrupted-index outcomes: hypothesis—each state yields explicit diagnostics and safe fallback/rebuild behavior rather than fabricated completeness.

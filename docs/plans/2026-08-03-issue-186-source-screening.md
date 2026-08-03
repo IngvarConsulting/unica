@@ -343,7 +343,7 @@ git commit -m "docs(research): screen issue 186 workflow sources"
 - Produces: draft cards for `Regsorm/code-index-mcp` and `Arman-Kudaibergenov/bsl-atlas`.
 - Produces: a bounded-experiment hypothesis list for the later code-intelligence slice, without running the experiment here.
 
-- [ ] **Step 1: Inspect both pinned implementations and tests**
+- [x] **Step 1: Inspect both pinned implementations and tests**
 
 For each source, locate and read evidence for index schema, writer ownership, update/invalidation, query semantics, multi-root behavior, result completeness, cancellation, concurrency, and corruption handling:
 
@@ -357,7 +357,7 @@ Do not treat an advertised semantic/vector mode as implemented unless the pinned
 `gpt-5.6-luna` may perform this pinned-evidence extraction when available, but
 its Unica-gap statement and disposition remain provisional until Task 6.
 
-- [ ] **Step 2: Map each mechanism to the provider-neutral Unica boundary**
+- [x] **Step 2: Map each mechanism to the provider-neutral Unica boundary**
 
 Read the exact Unica sources listed in this task and answer in each card:
 
@@ -368,7 +368,7 @@ Read the exact Unica sources listed in this task and answer in each card:
 
 Record the currently pinned versions and SHAs of `bsl-analyzer`, `rlm-tools-bsl`, and `rlm-bsl-index` from `plugins/unica/third-party/tools.lock.json`; label them existing baselines, not new candidates.
 
-- [ ] **Step 3: Write both draft cards and experiment hypotheses**
+- [x] **Step 3: Write both draft cards and experiment hypotheses**
 
 Under `## Deferred deep-dive protocol`, add only hypotheses that can later be measured on a common harness, including:
 
@@ -385,7 +385,7 @@ partial, stale, unavailable, and corrupted-index outcomes
 
 Do not record performance numbers in this PR unless they arise from a tiny screening probe clearly marked non-comparative.
 
-- [ ] **Step 4: Verify both cards and existing-engine classification**
+- [x] **Step 4: Verify both cards and existing-engine classification**
 
 Run:
 
@@ -397,7 +397,7 @@ $reviewText = Get-Content -Raw -Encoding UTF8 'docs\provenance\reviews\2026-08-0
 
 Expected: no exception.
 
-- [ ] **Step 5: Commit the code-intelligence cohort**
+- [x] **Step 5: Commit the code-intelligence cohort**
 
 ```powershell
 git add docs/provenance/reviews/2026-08-03-issue-186-source-screening.md docs/plans/2026-08-03-issue-186-source-screening.md
