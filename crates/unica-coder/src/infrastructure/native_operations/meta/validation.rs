@@ -2,7 +2,8 @@
 
 use crate::application::ports::{
     MetadataAuxiliaryXmlKind, MetadataChildResourceKind, MetadataResourceRole,
-    MetadataValidationResult, MetadataValidationSubject,
+    MetadataTemplateResourcePart, MetadataTemplateType, MetadataValidationResult,
+    MetadataValidationSubject,
 };
 use crate::application::AdapterOutcome;
 use crate::domain::format_profile::{
@@ -14,7 +15,9 @@ use crate::domain::metadata::{
 };
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::platform_xml_owner::root_version_literal;
+use crate::infrastructure::platform_xml_owner::{
+    root_version_literal, PlatformXmlRootExpectation, DCS_ROOT, MXL_ROOT,
+};
 use roxmltree::Document;
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashSet};
@@ -154,9 +157,9 @@ impl MetadataValidator {
                         continue;
                     }
                 }
-                MetadataResourceRole::ChildResource { kind, .. } => {
+                MetadataResourceRole::ChildResource { child, kind, .. } => {
                     if let Err(error) = validate_child_resource(*kind, &resource.bytes) {
-                        diagnostics.push(provider_diagnostic(subject, index, error));
+                        diagnostics.push(child_resource_diagnostic(child, index, error));
                         continue;
                     }
                 }
@@ -206,6 +209,8 @@ impl MetadataValidator {
                 }
             }
         }
+
+        validate_template_resource_sets(subject, &mut diagnostics);
 
         if diagnostics
             .iter()
@@ -414,28 +419,257 @@ fn validate_child_resource(kind: MetadataChildResourceKind, bytes: &[u8]) -> Res
         MetadataChildResourceKind::FormContent => {
             let text = std::str::from_utf8(bytes)
                 .map_err(|error| format!("form content is not UTF-8: {error}"))?;
-            let document = Document::parse(text.trim_start_matches('\u{feff}'))
+            let source = text.trim_start_matches('\u{feff}');
+            require_utf8_xml_declaration(source, "form content")?;
+            let document = Document::parse(source)
                 .map_err(|error| format!("form content is not valid XML: {error}"))?;
-            if document.root_element().tag_name().name() != "Form" {
-                return Err("form content root is not Form".to_string());
+            let root = document.root_element();
+            super::super::form::require_form_root(root)?;
+            if root_version_literal(source, root).as_deref()
+                != Some(ACTIVE_FORMAT_PROFILE.export_format)
+            {
+                return Err(format!(
+                    "form content must use export format {}",
+                    ACTIVE_FORMAT_PROFILE.export_format
+                ));
             }
             Ok(())
         }
-        MetadataChildResourceKind::TemplateContent => {
-            if let Ok(text) = std::str::from_utf8(bytes) {
-                let text = text.trim_start_matches('\u{feff}').trim_start();
-                if text.starts_with('<') {
-                    Document::parse(text)
-                        .map_err(|error| format!("template content is not valid XML: {error}"))?;
-                }
-            }
-            Ok(())
-        }
+        MetadataChildResourceKind::TemplateContent {
+            template_type,
+            part,
+        } => validate_template_resource(template_type, part, bytes),
         MetadataChildResourceKind::Module => std::str::from_utf8(bytes)
             .map(|_| ())
             .map_err(|error| format!("child module is not UTF-8: {error}")),
-        MetadataChildResourceKind::Auxiliary => Ok(()),
     }
+}
+
+fn validate_template_resource_sets(
+    subject: &MetadataValidationSubject,
+    diagnostics: &mut Vec<MetaDiagnostic>,
+) {
+    let mut sets = Vec::<(
+        MetadataAddress,
+        MetadataTemplateType,
+        Vec<MetadataTemplateResourcePart>,
+    )>::new();
+    for resource in &subject.resources {
+        let MetadataResourceRole::ChildResource {
+            child,
+            kind:
+                MetadataChildResourceKind::TemplateContent {
+                    template_type,
+                    part,
+                },
+            ..
+        } = &resource.role
+        else {
+            continue;
+        };
+        if let Some((_, declared_type, parts)) =
+            sets.iter_mut().find(|(candidate, _, _)| candidate == child)
+        {
+            if declared_type != template_type {
+                diagnostics.push(template_resource_set_diagnostic(
+                    child,
+                    "template payload mixes multiple TemplateType profiles",
+                ));
+                continue;
+            }
+            parts.push(*part);
+        } else {
+            sets.push((child.clone(), *template_type, vec![*part]));
+        }
+    }
+
+    for (child, template_type, parts) in sets {
+        let expected = match template_type {
+            MetadataTemplateType::HtmlDocument => vec![
+                MetadataTemplateResourcePart::Primary,
+                MetadataTemplateResourcePart::HtmlPage,
+            ],
+            MetadataTemplateType::TextDocument
+            | MetadataTemplateType::SpreadsheetDocument
+            | MetadataTemplateType::BinaryData
+            | MetadataTemplateType::DataCompositionSchema => {
+                vec![MetadataTemplateResourcePart::Primary]
+            }
+        };
+        if expected
+            .iter()
+            .any(|expected_part| parts.iter().filter(|part| *part == expected_part).count() != 1)
+            || parts.len() != expected.len()
+        {
+            diagnostics.push(template_resource_set_diagnostic(
+                &child,
+                "template child payload does not contain its exact required resource set",
+            ));
+        }
+    }
+}
+
+fn template_resource_set_diagnostic(child: &MetadataAddress, message: &str) -> MetaDiagnostic {
+    MetaDiagnostic::error(
+        MetaDiagnosticCode::ProviderUnavailable,
+        format!("{message}: {child}"),
+    )
+    .with_metadata_path(child.clone())
+    .with_field("resources")
+}
+
+fn validate_template_resource(
+    template_type: MetadataTemplateType,
+    part: MetadataTemplateResourcePart,
+    bytes: &[u8],
+) -> Result<(), String> {
+    match (template_type, part) {
+        (MetadataTemplateType::SpreadsheetDocument, MetadataTemplateResourcePart::Primary) => {
+            validate_versionless_xml(bytes, MXL_ROOT, "spreadsheet template")
+        }
+        (MetadataTemplateType::DataCompositionSchema, MetadataTemplateResourcePart::Primary) => {
+            validate_versionless_xml(bytes, DCS_ROOT, "data composition schema template")
+        }
+        (MetadataTemplateType::TextDocument, MetadataTemplateResourcePart::Primary) => {
+            std::str::from_utf8(bytes)
+                .map(|_| ())
+                .map_err(|error| format!("text template is not UTF-8: {error}"))
+        }
+        (MetadataTemplateType::BinaryData, MetadataTemplateResourcePart::Primary) => Ok(()),
+        (MetadataTemplateType::HtmlDocument, MetadataTemplateResourcePart::Primary) => {
+            validate_exact_version_xml(
+                bytes,
+                PlatformXmlRootExpectation::new("http://v8.1c.ru/8.3/xcf/extrnprops", "Help"),
+                "HTML template descriptor",
+            )?;
+            let (_, document) = parse_typed_payload_xml(bytes, "HTML template descriptor")?;
+            let root = document.root_element();
+            let pages = root
+                .children()
+                .filter(|node| {
+                    node.is_element()
+                        && node.tag_name().namespace() == Some("http://v8.1c.ru/8.3/xcf/extrnprops")
+                        && node.tag_name().name() == "Page"
+                })
+                .filter_map(|node| node.text())
+                .map(str::trim)
+                .collect::<Vec<_>>();
+            if pages.as_slice() != ["ru"] {
+                return Err(
+                    "HTML template descriptor must declare exactly the ru language page"
+                        .to_string(),
+                );
+            }
+            Ok(())
+        }
+        (MetadataTemplateType::HtmlDocument, MetadataTemplateResourcePart::HtmlPage) => {
+            let text = std::str::from_utf8(bytes)
+                .map_err(|error| format!("HTML template page is not UTF-8: {error}"))?;
+            let source = text.trim_start_matches('\u{feff}');
+            require_utf8_xml_declaration(source, "HTML template page")?;
+            let document = Document::parse(source)
+                .map_err(|error| format!("HTML template page is malformed: {error}"))?;
+            let root = document.root_element();
+            if root.tag_name().namespace().is_some() || root.tag_name().name() != "html" {
+                return Err("HTML template page root must be html without a namespace".to_string());
+            }
+            Ok(())
+        }
+        _ => Err("template resource part does not match its TemplateType".to_string()),
+    }
+}
+
+fn validate_versionless_xml(
+    bytes: &[u8],
+    expected: PlatformXmlRootExpectation,
+    role: &str,
+) -> Result<(), String> {
+    let (source, document) = parse_typed_payload_xml(bytes, role)?;
+    let root = document.root_element();
+    require_exact_payload_root(root, expected, role)?;
+    if root_version_literal(source, root).is_some() {
+        return Err(format!(
+            "{role} must use its versionless platform XML format"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_exact_version_xml(
+    bytes: &[u8],
+    expected: PlatformXmlRootExpectation,
+    role: &str,
+) -> Result<(), String> {
+    let (source, document) = parse_typed_payload_xml(bytes, role)?;
+    let root = document.root_element();
+    require_exact_payload_root(root, expected, role)?;
+    if root_version_literal(source, root).as_deref() != Some(ACTIVE_FORMAT_PROFILE.export_format) {
+        return Err(format!(
+            "{role} must use export format {}",
+            ACTIVE_FORMAT_PROFILE.export_format
+        ));
+    }
+    Ok(())
+}
+
+fn parse_typed_payload_xml<'a>(
+    bytes: &'a [u8],
+    role: &str,
+) -> Result<(&'a str, Document<'a>), String> {
+    let text =
+        std::str::from_utf8(bytes).map_err(|error| format!("{role} is not UTF-8: {error}"))?;
+    let source = text.trim_start_matches('\u{feff}');
+    require_utf8_xml_declaration(source, role)?;
+    let document =
+        Document::parse(source).map_err(|error| format!("{role} is malformed: {error}"))?;
+    Ok((source, document))
+}
+
+fn require_utf8_xml_declaration(source: &str, role: &str) -> Result<(), String> {
+    let Some(declaration) = source
+        .strip_prefix("<?xml")
+        .and_then(|rest| rest.split_once("?>").map(|(declaration, _)| declaration))
+    else {
+        return Ok(());
+    };
+    let Some((_, raw_value)) = declaration.split_once("encoding") else {
+        return Ok(());
+    };
+    let raw_value = raw_value.trim_start();
+    let Some(raw_value) = raw_value.strip_prefix('=') else {
+        return Err(format!("{role} has a malformed XML encoding declaration"));
+    };
+    let raw_value = raw_value.trim_start();
+    let Some(quote) = raw_value
+        .chars()
+        .next()
+        .filter(|value| matches!(value, '\'' | '"'))
+    else {
+        return Err(format!("{role} has a malformed XML encoding declaration"));
+    };
+    let raw_value = &raw_value[quote.len_utf8()..];
+    let Some((encoding, _)) = raw_value.split_once(quote) else {
+        return Err(format!("{role} has a malformed XML encoding declaration"));
+    };
+    if !encoding.eq_ignore_ascii_case("UTF-8") {
+        return Err(format!("{role} must declare UTF-8 encoding"));
+    }
+    Ok(())
+}
+
+fn require_exact_payload_root(
+    root: roxmltree::Node<'_, '_>,
+    expected: PlatformXmlRootExpectation,
+    role: &str,
+) -> Result<(), String> {
+    if root.tag_name().namespace() != Some(expected.namespace)
+        || root.tag_name().name() != expected.local_name
+    {
+        return Err(format!(
+            "{role} root does not match its declared TemplateType"
+        ));
+    }
+    Ok(())
 }
 
 fn failed_validation(diagnostics: Vec<MetaDiagnostic>) -> MetadataValidationResult {
@@ -453,6 +687,22 @@ fn provider_diagnostic(
     MetaDiagnostic::error(MetaDiagnosticCode::ProviderUnavailable, message)
         .with_metadata_path(subject.target.clone())
         .with_field(format!("resources[{resource_index}].bytes"))
+}
+
+fn child_resource_diagnostic(
+    child: &MetadataAddress,
+    resource_index: usize,
+    message: impl Into<String>,
+) -> MetaDiagnostic {
+    MetaDiagnostic::error(
+        MetaDiagnosticCode::ProviderUnavailable,
+        format!(
+            "typed child resource {child} is invalid: {}",
+            message.into()
+        ),
+    )
+    .with_metadata_path(child.clone())
+    .with_field(format!("resources[{resource_index}].bytes"))
 }
 
 fn validation_diagnostic(
@@ -3227,6 +3477,228 @@ mod tests {
         assert_eq!(reported_errors, actual_errors, "{stdout}");
         assert_eq!(reported_warnings, actual_warnings, "{stdout}");
         assert_eq!(reported_checks, actual_checks, "{stdout}");
+    }
+
+    #[test]
+    fn retained_form_content_rejects_wrong_namespace_and_export_version() {
+        for (label, bytes) in [
+            (
+                "namespace",
+                br#"<Form xmlns="urn:not-logform" version="2.20"/>"#.as_slice(),
+            ),
+            (
+                "version",
+                br#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.21"/>"#.as_slice(),
+            ),
+            ("malformed", br#"<Form"#.as_slice()),
+            (
+                "root",
+                br#"<NotForm xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"/>"#.as_slice(),
+            ),
+            (
+                "encoding",
+                br#"<?xml version="1.0" encoding="windows-1251"?><Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"/>"#
+                    .as_slice(),
+            ),
+        ] {
+            let subject = MetadataValidationSubject {
+                target: address("Catalog.Editable"),
+                resources: vec![image(
+                    MetadataResourceRole::ChildResource {
+                        child: address("Catalog.Editable.Form.Main"),
+                        kind: MetadataChildResourceKind::FormContent,
+                        ordinal: 0,
+                    },
+                    bytes,
+                )],
+            };
+
+            let result = MetadataValidator.validate(&subject, &context());
+
+            assert_eq!(result.status, MetaValidationStatus::Failed, "{label}");
+            assert_eq!(
+                result.diagnostics[0].field.as_deref(),
+                Some("resources[0].bytes"),
+                "{label}"
+            );
+        }
+    }
+
+    fn template_subject(
+        child: &str,
+        resources: Vec<(MetadataTemplateType, MetadataTemplateResourcePart, Vec<u8>)>,
+    ) -> MetadataValidationSubject {
+        MetadataValidationSubject {
+            target: address("Catalog.Editable"),
+            resources: resources
+                .into_iter()
+                .enumerate()
+                .map(|(ordinal, (template_type, part, bytes))| {
+                    image(
+                        MetadataResourceRole::ChildResource {
+                            child: address(child),
+                            kind: MetadataChildResourceKind::TemplateContent {
+                                template_type,
+                                part,
+                            },
+                            ordinal,
+                        },
+                        bytes,
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn template_payload_profiles_accept_representative_xml_text_and_binary_images() {
+        let cases = [
+            template_subject(
+                "Catalog.Editable.Template.Spreadsheet",
+                vec![(
+                    MetadataTemplateType::SpreadsheetDocument,
+                    MetadataTemplateResourcePart::Primary,
+                    super::super::super::mxl::empty_spreadsheet_document_xml().into_bytes(),
+                )],
+            ),
+            template_subject(
+                "Catalog.Editable.Template.Schema",
+                vec![(
+                    MetadataTemplateType::DataCompositionSchema,
+                    MetadataTemplateResourcePart::Primary,
+                    br#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"/>"#
+                        .to_vec(),
+                )],
+            ),
+            template_subject(
+                "Catalog.Editable.Template.Text",
+                vec![(
+                    MetadataTemplateType::TextDocument,
+                    MetadataTemplateResourcePart::Primary,
+                    "Текстовый макет".as_bytes().to_vec(),
+                )],
+            ),
+            template_subject(
+                "Catalog.Editable.Template.Binary",
+                vec![(
+                    MetadataTemplateType::BinaryData,
+                    MetadataTemplateResourcePart::Primary,
+                    vec![0xff, 0x00, 0x80],
+                )],
+            ),
+            template_subject(
+                "Catalog.Editable.Template.Html",
+                vec![
+                    (
+                        MetadataTemplateType::HtmlDocument,
+                        MetadataTemplateResourcePart::Primary,
+                        br#"<Help xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"><Page>ru</Page></Help>"#.to_vec(),
+                    ),
+                    (
+                        MetadataTemplateType::HtmlDocument,
+                        MetadataTemplateResourcePart::HtmlPage,
+                        br#"<html><head><meta charset="utf-8"/></head><body/></html>"#.to_vec(),
+                    ),
+                ],
+            ),
+        ];
+
+        for subject in cases {
+            let result = MetadataValidator.validate(&subject, &context());
+            assert_eq!(result.status, MetaValidationStatus::Passed, "{result:?}");
+        }
+    }
+
+    #[test]
+    fn non_binary_template_profiles_reject_binary_or_wrong_xml_images() {
+        let cases = [
+            template_subject(
+                "Catalog.Editable.Template.Schema",
+                vec![(
+                    MetadataTemplateType::DataCompositionSchema,
+                    MetadataTemplateResourcePart::Primary,
+                    vec![0xff, 0x00, 0x80],
+                )],
+            ),
+            template_subject(
+                "Catalog.Editable.Template.Text",
+                vec![(
+                    MetadataTemplateType::TextDocument,
+                    MetadataTemplateResourcePart::Primary,
+                    vec![0xff, 0x00, 0x80],
+                )],
+            ),
+            template_subject(
+                "Catalog.Editable.Template.Spreadsheet",
+                vec![(
+                    MetadataTemplateType::SpreadsheetDocument,
+                    MetadataTemplateResourcePart::Primary,
+                    br#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"/>"#
+                        .to_vec(),
+                )],
+            ),
+            template_subject(
+                "Catalog.Editable.Template.VersionedSchema",
+                vec![(
+                    MetadataTemplateType::DataCompositionSchema,
+                    MetadataTemplateResourcePart::Primary,
+                    br#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" version="2.20"/>"#
+                        .to_vec(),
+                )],
+            ),
+        ];
+
+        for subject in cases {
+            let result = MetadataValidator.validate(&subject, &context());
+            assert_eq!(result.status, MetaValidationStatus::Failed, "{result:?}");
+        }
+    }
+
+    #[test]
+    fn html_template_requires_both_its_descriptor_and_language_page() {
+        for (label, resources) in [
+            (
+                "missing page",
+                vec![(
+                    MetadataTemplateType::HtmlDocument,
+                    MetadataTemplateResourcePart::Primary,
+                    br#"<Help xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"><Page>ru</Page></Help>"#
+                        .to_vec(),
+                )],
+            ),
+            (
+                "missing descriptor",
+                vec![(
+                    MetadataTemplateType::HtmlDocument,
+                    MetadataTemplateResourcePart::HtmlPage,
+                    br#"<html><body/></html>"#.to_vec(),
+                )],
+            ),
+            (
+                "descriptor names a different page",
+                vec![
+                    (
+                        MetadataTemplateType::HtmlDocument,
+                        MetadataTemplateResourcePart::Primary,
+                        br#"<Help xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"><Page>de</Page></Help>"#.to_vec(),
+                    ),
+                    (
+                        MetadataTemplateType::HtmlDocument,
+                        MetadataTemplateResourcePart::HtmlPage,
+                        br#"<html><body/></html>"#.to_vec(),
+                    ),
+                ],
+            ),
+        ] {
+            let subject = template_subject("Catalog.Editable.Template.Html", resources);
+
+            let result = MetadataValidator.validate(&subject, &context());
+
+            assert_eq!(result.status, MetaValidationStatus::Failed, "{label}");
+            assert!(result.diagnostics[0]
+                .message
+                .contains("Catalog.Editable.Template.Html"));
+        }
     }
 
     #[test]

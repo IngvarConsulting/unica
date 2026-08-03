@@ -98,12 +98,14 @@ fn capability_unavailable(message: &str) -> MetaFailure {
 mod tests {
     use super::*;
     use crate::application::metadata::{MetaAddRequest, MetaEditRequest};
-    use crate::application::ports::MetadataResourceRole;
+    use crate::application::ports::{
+        MetadataChildResourceKind, MetadataResourceRole, MetadataTemplateType,
+    };
     use crate::domain::metadata::{
         MetaCollection, MetaEditOperation, MetaElementInput, MetaElementUpdateInput,
         MetaPropertyChanges, MetaPropertyInput, MetaPropertyValue, MetaPublicationAction,
-        MetaPublicationResource, MetaRelation, MetaScope, MetadataKind, MetadataReference,
-        RelationEditMode,
+        MetaPublicationResource, MetaRelation, MetaScope, MetaValidationStatus, MetadataKind,
+        MetadataReference, RelationEditMode,
     };
     use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
     use crate::infrastructure::native_operations::cf::create_configuration_scaffold;
@@ -533,6 +535,75 @@ mod tests {
 
         assert!(!child_descriptor.exists());
         assert!(!payload_root.exists());
+        assert!(!fixture.root.join("src/Catalogs/Editable/Forms").exists());
+    }
+
+    #[test]
+    fn typed_form_remove_preserves_collection_directory_when_another_child_remains() {
+        let fixture = Fixture::new("form-resource-publish-remove-with-sibling");
+        let cancellation = CancellationToken::new();
+        fixture.publish_form_add("Removed");
+        fixture.publish_form_add("Remaining");
+        let forms = fixture.root.join("src/Catalogs/Editable/Forms");
+        let request = fixture.typed_edit(vec![MetaEditOperation::remove(
+            MetaCollection::Forms,
+            None,
+            vec!["Removed".into()],
+        )
+        .unwrap()]);
+
+        MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+            .unwrap()
+            .publish(&cancellation)
+            .unwrap();
+
+        assert!(forms.is_dir());
+        assert!(!forms.join("Removed.xml").exists());
+        assert!(!forms.join("Removed").exists());
+        assert!(forms.join("Remaining.xml").is_file());
+        assert!(forms.join("Remaining/Ext/Form.xml").is_file());
+    }
+
+    #[test]
+    fn typed_last_form_remove_rollback_restores_the_exact_collection_tree() {
+        let fixture = Fixture::new("form-resource-last-remove-rollback");
+        let cancellation = CancellationToken::new();
+        fixture.publish_form_add("Only");
+        let forms = fixture.root.join("src/Catalogs/Editable/Forms");
+        let descriptor = forms.join("Only.xml");
+        let content = forms.join("Only/Ext/Form.xml");
+        let module = forms.join("Only/Ext/Module.bsl");
+        fs::write(&module, b"procedure Kept()\nendprocedure").unwrap();
+        let owner_before = fs::read(&fixture.descriptor).unwrap();
+        let descriptor_before = fs::read(&descriptor).unwrap();
+        let content_before = fs::read(&content).unwrap();
+        let module_before = fs::read(&module).unwrap();
+        let request = fixture.typed_edit(vec![MetaEditOperation::remove(
+            MetaCollection::Forms,
+            None,
+            vec!["Only".into()],
+        )
+        .unwrap()]);
+        let prepared =
+            MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+                .unwrap();
+
+        let failure = match with_commit_failpoint(CommitFailpoint::AfterObjectFiles, || {
+            prepared.publish(&cancellation)
+        }) {
+            Ok(_) => panic!("last-form removal failpoint unexpectedly published"),
+            Err(failure) => failure,
+        };
+
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::ProviderUnavailable
+        );
+        assert!(forms.is_dir());
+        assert_eq!(fs::read(&fixture.descriptor).unwrap(), owner_before);
+        assert_eq!(fs::read(descriptor).unwrap(), descriptor_before);
+        assert_eq!(fs::read(content).unwrap(), content_before);
+        assert_eq!(fs::read(module).unwrap(), module_before);
     }
 
     #[test]
@@ -626,6 +697,7 @@ mod tests {
 
         assert!(!descriptor.exists());
         assert!(!payload_root.exists());
+        assert!(!fixture.root.join("src/Catalogs/Editable/Forms").exists());
     }
 
     #[test]
@@ -867,6 +939,436 @@ mod tests {
         assert!(!object_root.join("Templates/PrintNew").exists());
         assert!(!object_root.join("Commands/RunNew.xml").exists());
         assert!(!object_root.join("Commands/RunNew").exists());
+        assert!(!object_root.join("Templates").exists());
+        assert!(!object_root.join("Commands").exists());
+    }
+
+    #[test]
+    fn retained_template_payload_must_match_its_descriptor_template_type() {
+        let fixture = Fixture::new("template-payload-type-mismatch");
+        let cancellation = CancellationToken::new();
+        let add = fixture.typed_edit(vec![MetaEditOperation::add(
+            MetaCollection::Templates,
+            None,
+            vec![MetaElementInput::named("Main")],
+        )
+        .unwrap()]);
+        MetadataOperations::prepare_mutation(&add, &fixture.context, &cancellation)
+            .unwrap()
+            .publish(&cancellation)
+            .unwrap();
+        let child_descriptor = fixture
+            .root
+            .join("src/Catalogs/Editable/Templates/Main.xml");
+        for descriptor in [&fixture.descriptor, &child_descriptor] {
+            let bytes = fs::read(descriptor).unwrap();
+            let text = String::from_utf8(bytes).unwrap().replace(
+                "<TemplateType>SpreadsheetDocument</TemplateType>",
+                "<TemplateType>DataCompositionSchema</TemplateType>",
+            );
+            fs::write(descriptor, text).unwrap();
+        }
+        let request = fixture.typed_edit(vec![MetaEditOperation::update(
+            MetaCollection::Templates,
+            None,
+            vec![MetaElementUpdateInput {
+                name: "Main".into(),
+                comment: Some("retained".into()),
+                ..MetaElementUpdateInput::default()
+            }],
+        )
+        .unwrap()]);
+        let prepared =
+            MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+                .unwrap();
+
+        let validation = MetadataOperations::validate(
+            prepared.validation_subject(),
+            &fixture.context,
+            &cancellation,
+        );
+
+        assert_eq!(validation.status, MetaValidationStatus::Failed);
+        assert!(validation.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .field
+                .as_deref()
+                .is_some_and(|field| field.starts_with("resources[") && field.ends_with("].bytes"))
+        }));
+    }
+
+    #[test]
+    fn retained_template_footprint_mismatch_is_logical_and_provider_neutral() {
+        let fixture = Fixture::new("template-footprint-type-mismatch");
+        let cancellation = CancellationToken::new();
+        let add = fixture.typed_edit(vec![MetaEditOperation::add(
+            MetaCollection::Templates,
+            None,
+            vec![MetaElementInput::named("Main")],
+        )
+        .unwrap()]);
+        MetadataOperations::prepare_mutation(&add, &fixture.context, &cancellation)
+            .unwrap()
+            .publish(&cancellation)
+            .unwrap();
+        let child_descriptor = fixture
+            .root
+            .join("src/Catalogs/Editable/Templates/Main.xml");
+        for descriptor in [&fixture.descriptor, &child_descriptor] {
+            let text = String::from_utf8(fs::read(descriptor).unwrap())
+                .unwrap()
+                .replace(
+                    "<TemplateType>SpreadsheetDocument</TemplateType>",
+                    "<TemplateType>TextDocument</TemplateType>",
+                );
+            fs::write(descriptor, text).unwrap();
+        }
+        let request = fixture.typed_edit(vec![MetaEditOperation::update(
+            MetaCollection::Templates,
+            None,
+            vec![MetaElementUpdateInput {
+                name: "Main".into(),
+                comment: Some("retained".into()),
+                ..MetaElementUpdateInput::default()
+            }],
+        )
+        .unwrap()]);
+
+        let failure =
+            match MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation) {
+                Ok(_) => panic!("Template.xml accepted for TextDocument"),
+                Err(failure) => failure,
+            };
+
+        let diagnostic = &failure.diagnostics[0];
+        assert!(diagnostic
+            .message
+            .contains("Catalog.Editable.Template.Main"));
+        assert!(!diagnostic
+            .message
+            .contains(&fixture.root.to_string_lossy().into_owned()));
+        assert_eq!(diagnostic.field.as_deref(), Some("resources.child.payload"));
+    }
+
+    #[test]
+    fn retained_form_payload_rejects_wrong_namespace_and_version_without_path_leakage() {
+        for (label, payload) in [
+            (
+                "namespace",
+                br#"<Form xmlns="urn:not-logform" version="2.20"/>"#.as_slice(),
+            ),
+            (
+                "version",
+                br#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.21"/>"#.as_slice(),
+            ),
+        ] {
+            let fixture = Fixture::new(&format!("retained-form-invalid-{label}"));
+            let cancellation = CancellationToken::new();
+            fixture.publish_form_add("Main");
+            fs::write(
+                fixture
+                    .root
+                    .join("src/Catalogs/Editable/Forms/Main/Ext/Form.xml"),
+                payload,
+            )
+            .unwrap();
+            let request = fixture.typed_edit(vec![MetaEditOperation::update(
+                MetaCollection::Forms,
+                None,
+                vec![MetaElementUpdateInput {
+                    name: "Main".into(),
+                    comment: Some("retained".into()),
+                    ..MetaElementUpdateInput::default()
+                }],
+            )
+            .unwrap()]);
+            let prepared =
+                MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+                    .unwrap();
+
+            let validation = MetadataOperations::validate(
+                prepared.validation_subject(),
+                &fixture.context,
+                &cancellation,
+            );
+
+            assert_eq!(validation.status, MetaValidationStatus::Failed, "{label}");
+            let diagnostic = validation
+                .diagnostics
+                .iter()
+                .find(|diagnostic| {
+                    diagnostic
+                        .metadata_path
+                        .as_ref()
+                        .is_some_and(|path| path.as_str() == "Catalog.Editable.Form.Main")
+                })
+                .unwrap();
+            assert!(!diagnostic
+                .message
+                .contains(&fixture.root.to_string_lossy().into_owned()));
+            assert!(
+                diagnostic.field.as_deref().is_some_and(
+                    |field| field.starts_with("resources[") && field.ends_with("].bytes")
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn retained_optional_child_module_is_validated_by_its_declared_role() {
+        let fixture = Fixture::new("retained-form-invalid-module");
+        let cancellation = CancellationToken::new();
+        fixture.publish_form_add("Main");
+        fs::write(
+            fixture
+                .root
+                .join("src/Catalogs/Editable/Forms/Main/Ext/Module.bsl"),
+            [0xff, 0x00, 0x80],
+        )
+        .unwrap();
+        let request = fixture.typed_edit(vec![MetaEditOperation::update(
+            MetaCollection::Forms,
+            None,
+            vec![MetaElementUpdateInput {
+                name: "Main".into(),
+                comment: Some("retained".into()),
+                ..MetaElementUpdateInput::default()
+            }],
+        )
+        .unwrap()]);
+        let prepared =
+            MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+                .unwrap();
+
+        let validation = MetadataOperations::validate(
+            prepared.validation_subject(),
+            &fixture.context,
+            &cancellation,
+        );
+
+        assert_eq!(validation.status, MetaValidationStatus::Failed);
+        assert!(validation.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .metadata_path
+                .as_ref()
+                .is_some_and(|path| path.as_str() == "Catalog.Editable.Form.Main")
+                && diagnostic.message.contains("not UTF-8")
+        }));
+    }
+
+    #[test]
+    fn retained_template_profiles_preserve_and_validate_xml_text_and_binary_payloads() {
+        let cases = [
+            (
+                "spreadsheet",
+                "SpreadsheetDocument",
+                "Template.xml",
+                crate::infrastructure::native_operations::mxl::empty_spreadsheet_document_xml()
+                    .into_bytes(),
+                MetadataTemplateType::SpreadsheetDocument,
+            ),
+            (
+                "schema",
+                "DataCompositionSchema",
+                "Template.xml",
+                br#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"/>"#
+                    .to_vec(),
+                MetadataTemplateType::DataCompositionSchema,
+            ),
+            (
+                "text",
+                "TextDocument",
+                "Template.txt",
+                "Сохранённый текст".as_bytes().to_vec(),
+                MetadataTemplateType::TextDocument,
+            ),
+            (
+                "binary",
+                "BinaryData",
+                "Template.bin",
+                vec![0xff, 0x00, 0x80, 0x01],
+                MetadataTemplateType::BinaryData,
+            ),
+        ];
+        for (label, template_type, file_name, payload, expected_type) in cases {
+            let fixture = Fixture::new(&format!("retained-template-profile-{label}"));
+            let cancellation = CancellationToken::new();
+            let add = fixture.typed_edit(vec![MetaEditOperation::add(
+                MetaCollection::Templates,
+                None,
+                vec![MetaElementInput::named("Main")],
+            )
+            .unwrap()]);
+            MetadataOperations::prepare_mutation(&add, &fixture.context, &cancellation)
+                .unwrap()
+                .publish(&cancellation)
+                .unwrap();
+            let child_descriptor = fixture
+                .root
+                .join("src/Catalogs/Editable/Templates/Main.xml");
+            if template_type != "SpreadsheetDocument" {
+                for descriptor in [&fixture.descriptor, &child_descriptor] {
+                    let text = String::from_utf8(fs::read(descriptor).unwrap())
+                        .unwrap()
+                        .replace(
+                            "<TemplateType>SpreadsheetDocument</TemplateType>",
+                            &format!("<TemplateType>{template_type}</TemplateType>"),
+                        );
+                    fs::write(descriptor, text).unwrap();
+                }
+            }
+            let ext = fixture
+                .root
+                .join("src/Catalogs/Editable/Templates/Main/Ext");
+            let original = ext.join("Template.xml");
+            let payload_path = ext.join(file_name);
+            if payload_path != original {
+                fs::remove_file(&original).unwrap();
+            }
+            fs::write(&payload_path, &payload).unwrap();
+            let request = fixture.typed_edit(vec![MetaEditOperation::update(
+                MetaCollection::Templates,
+                None,
+                vec![MetaElementUpdateInput {
+                    name: "Main".into(),
+                    comment: Some("retained".into()),
+                    ..MetaElementUpdateInput::default()
+                }],
+            )
+            .unwrap()]);
+            let prepared =
+                MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+                    .unwrap();
+            assert!(prepared
+                .validation_subject()
+                .resources
+                .iter()
+                .any(|resource| {
+                    matches!(
+                        resource.role,
+                        MetadataResourceRole::ChildResource {
+                            kind: MetadataChildResourceKind::TemplateContent { template_type, .. },
+                            ..
+                        } if template_type == expected_type
+                    ) && resource.bytes == payload
+                }));
+            let validation = MetadataOperations::validate(
+                prepared.validation_subject(),
+                &fixture.context,
+                &cancellation,
+            );
+            assert_eq!(validation.status, MetaValidationStatus::Passed, "{label}");
+
+            prepared.publish(&cancellation).unwrap();
+
+            assert_eq!(fs::read(payload_path).unwrap(), payload, "{label}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn child_topology_failures_report_logical_identity_without_provider_paths() {
+        use std::os::unix::fs::symlink;
+        use std::process::Command;
+
+        for node_kind in ["symlink", "unexpected-node"] {
+            let fixture = Fixture::new(&format!("child-topology-sanitized-{node_kind}"));
+            let cancellation = CancellationToken::new();
+            fixture.publish_form_add("Main");
+            let ext = fixture.root.join("src/Catalogs/Editable/Forms/Main/Ext");
+            if node_kind == "symlink" {
+                let external = fixture.root.join("provider-secret.txt");
+                fs::write(&external, b"secret").unwrap();
+                symlink(&external, ext.join("LinkedResource")).unwrap();
+            } else {
+                let fifo = ext.join("ProviderPipe");
+                let status = Command::new("mkfifo").arg(&fifo).status().unwrap();
+                assert!(status.success());
+            }
+            let request = fixture.typed_edit(vec![MetaEditOperation::update(
+                MetaCollection::Forms,
+                None,
+                vec![MetaElementUpdateInput {
+                    name: "Main".into(),
+                    comment: Some("touch".into()),
+                    ..MetaElementUpdateInput::default()
+                }],
+            )
+            .unwrap()]);
+
+            let failure = match MetadataOperations::prepare_mutation(
+                &request,
+                &fixture.context,
+                &cancellation,
+            ) {
+                Ok(_) => panic!("{node_kind} topology unexpectedly prepared"),
+                Err(failure) => failure,
+            };
+
+            let diagnostic = &failure.diagnostics[0];
+            assert!(
+                diagnostic.message.contains("Catalog.Editable.Form.Main"),
+                "{node_kind}: {diagnostic:?}"
+            );
+            assert!(
+                !diagnostic
+                    .message
+                    .contains(&fixture.root.to_string_lossy().into_owned()),
+                "{node_kind}: {diagnostic:?}"
+            );
+            assert_eq!(
+                diagnostic.metadata_path.as_ref(),
+                Some(
+                    &MetadataAddress::parse(
+                        PLATFORM_XML_8_3_27_FORMAT_2_20,
+                        "Catalog.Editable.Form.Main"
+                    )
+                    .unwrap()
+                ),
+                "{node_kind}"
+            );
+            assert_eq!(
+                diagnostic.field.as_deref(),
+                Some("resources.child.topology"),
+                "{node_kind}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn child_collection_snapshot_failure_is_provider_neutral() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = Fixture::new("child-collection-snapshot-sanitized");
+        let cancellation = CancellationToken::new();
+        let external = fixture.root.join("provider-private-forms");
+        fs::create_dir_all(&external).unwrap();
+        let collection = fixture.root.join("src/Catalogs/Editable/Forms");
+        symlink(&external, &collection).unwrap();
+        let request = fixture.typed_edit(vec![MetaEditOperation::add(
+            MetaCollection::Forms,
+            None,
+            vec![MetaElementInput::named("Main")],
+        )
+        .unwrap()]);
+
+        let failure =
+            match MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation) {
+                Ok(_) => panic!("symlinked child collection unexpectedly prepared"),
+                Err(failure) => failure,
+            };
+
+        let diagnostic = &failure.diagnostics[0];
+        assert!(diagnostic.message.contains("Catalog.Editable.forms"));
+        assert!(!diagnostic
+            .message
+            .contains(&fixture.root.to_string_lossy().into_owned()));
+        assert_eq!(diagnostic.metadata_path.as_ref(), Some(&fixture.target));
+        assert_eq!(
+            diagnostic.field.as_deref(),
+            Some("resources.child.collection")
+        );
     }
 
     #[test]

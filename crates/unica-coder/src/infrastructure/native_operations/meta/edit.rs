@@ -4,7 +4,8 @@ use crate::application::metadata::{MetaEditRequest, MetaFailure};
 use crate::application::operation_descriptors::OBJECT_PATH;
 use crate::application::ports::{
     MetadataChildResourceKind, MetadataResourceImage, MetadataResourceRole,
-    MetadataValidationSubject, PreparedMetadataMutation,
+    MetadataTemplateResourcePart, MetadataTemplateType, MetadataValidationSubject,
+    PreparedMetadataMutation,
 };
 use crate::application::AdapterOutcome;
 use crate::domain::cancellation::CancellationToken;
@@ -3255,6 +3256,8 @@ fn plan_typed_child_resources(
     let mut final_files = BTreeMap::<PathBuf, Vec<u8>>::new();
     let mut initial_directories = BTreeSet::<PathBuf>::new();
     let mut final_directories = BTreeSet::<PathBuf>::new();
+    let mut collection_snapshots = Vec::new();
+    let mut child_topology_roots = Vec::<(PathBuf, MetadataAddress)>::new();
     let mut plan = TypedChildResourcePlan::default();
 
     for collection_name in touched_collections {
@@ -3269,20 +3272,11 @@ fn plan_typed_child_resources(
             &collection_dir,
             DirectoryMembershipSelector::AllDirectEntries,
         )
-        .map_err(|message| {
-            MetaFailure::from(
-                typed_diagnostic(
-                    MetaDiagnosticCode::ProviderUnavailable,
-                    message,
-                    Some("collection"),
-                )
-                .with_metadata_path(owner.clone()),
-            )
-        })?;
+        .map_err(|_| typed_child_collection_topology_failure(owner, collection))?;
         if matches!(snapshot, DirectoryMembershipSnapshot::Present(_)) {
             initial_directories.insert(collection_dir.clone());
         }
-        final_directories.insert(collection_dir);
+        collection_snapshots.push((collection, collection_dir, snapshot));
     }
 
     for state in &states {
@@ -3292,13 +3286,24 @@ fn plan_typed_child_resources(
         let mut initial_payload = Vec::new();
         let mut initial_payload_directories = Vec::new();
         if let Origin::Existing(initial_name) = &state.origin {
+            let initial_child = typed_child_logical_address(
+                owner,
+                object_kind,
+                object_name,
+                state.collection,
+                initial_name,
+            )?;
             let descriptor = collection_dir.join(format!("{initial_name}.xml"));
             let bytes = read_typed_child_file(&descriptor, owner)?;
             initial_descriptor = Some(bytes.clone());
             initial_files.insert(descriptor, bytes);
             let payload_root = collection_dir.join(initial_name);
+            child_topology_roots.push((payload_root.clone(), initial_child.clone()));
             if payload_root.exists() {
-                let (files, directories) = read_typed_child_tree(&payload_root)?;
+                let (files, directories) =
+                    read_typed_child_tree(&payload_root).map_err(|error| {
+                        typed_child_topology_failure(&initial_child, error.public_message())
+                    })?;
                 for (relative, bytes) in files {
                     initial_files.insert(payload_root.join(&relative), bytes.clone());
                     initial_payload.push((relative, bytes));
@@ -3332,6 +3337,10 @@ fn plan_typed_child_resources(
                 state.collection,
                 final_name,
             )?;
+            child_topology_roots.push((collection_dir.join(final_name), child_address.clone()));
+            let template_type = (state.collection == MetaCollection::Templates)
+                .then(|| typed_template_type_from_descriptor(&bytes, &child_address))
+                .transpose()?;
             match &state.origin {
                 Origin::Existing(_) => {
                     let payload_root = collection_dir.join(final_name);
@@ -3346,7 +3355,8 @@ fn plan_typed_child_resources(
                                 &child_address,
                                 relative,
                                 ordinal,
-                            ),
+                                template_type,
+                            )?,
                             bytes: bytes.clone(),
                         });
                     }
@@ -3367,7 +3377,8 @@ fn plan_typed_child_resources(
                                     &child_address,
                                     relative,
                                     0,
-                                ),
+                                    None,
+                                )?,
                                 bytes: content,
                             });
                         }
@@ -3384,7 +3395,8 @@ fn plan_typed_child_resources(
                                     &child_address,
                                     relative,
                                     0,
-                                ),
+                                    Some(MetadataTemplateType::SpreadsheetDocument),
+                                )?,
                                 bytes: content,
                             });
                         }
@@ -3463,6 +3475,33 @@ fn plan_typed_child_resources(
         }
     }
 
+    for (collection, collection_dir, snapshot) in collection_snapshots {
+        let touched_initial_entries = states
+            .iter()
+            .filter(|state| state.collection == collection)
+            .filter_map(|state| match &state.origin {
+                Origin::Existing(name) => Some(name),
+                Origin::Added => None,
+            })
+            .flat_map(|name| [name.clone(), format!("{name}.xml")])
+            .collect::<BTreeSet<_>>();
+        let has_unrelated_initial_entry = match snapshot {
+            DirectoryMembershipSnapshot::Absent => false,
+            DirectoryMembershipSnapshot::Present(entries) => entries.iter().any(|entry| {
+                !touched_initial_entries.contains(&entry.name.to_string_lossy().into_owned())
+            }),
+        };
+        let has_final_child_footprint = final_files
+            .keys()
+            .any(|path| path.starts_with(&collection_dir))
+            || final_directories
+                .iter()
+                .any(|path| path.starts_with(&collection_dir));
+        if has_unrelated_initial_entry || has_final_child_footprint {
+            final_directories.insert(collection_dir);
+        }
+    }
+
     let removed_directories = initial_directories
         .difference(&final_directories)
         .filter(|candidate| {
@@ -3529,15 +3568,18 @@ fn plan_typed_child_resources(
             &directory,
             DirectoryMembershipSelector::AllDirectEntries,
         )
-        .map_err(|message| {
-            MetaFailure::from(
-                typed_diagnostic(
-                    MetaDiagnosticCode::ProviderUnavailable,
-                    message,
-                    Some("collection"),
-                )
-                .with_metadata_path(owner.clone()),
-            )
+        .map_err(|_| {
+            child_topology_roots
+                .iter()
+                .filter(|(root, _)| directory.starts_with(root))
+                .max_by_key(|(root, _)| root.components().count())
+                .map(|(_, child)| {
+                    typed_child_topology_failure(
+                        child,
+                        "typed child resource topology is unavailable",
+                    )
+                })
+                .unwrap_or_else(|| typed_child_collection_guard_failure(owner))
         })?;
         plan.directory_guards.push((directory, snapshot));
     }
@@ -3582,32 +3624,155 @@ fn typed_child_payload_role(
     child: &MetadataAddress,
     relative_path: &Path,
     ordinal: usize,
-) -> MetadataResourceRole {
-    let kind = if relative_path
-        .extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("bsl"))
-    {
-        MetadataChildResourceKind::Module
-    } else if collection == MetaCollection::Forms
-        && relative_path
-            .file_name()
-            .is_some_and(|name| name == "Form.xml")
-    {
-        MetadataChildResourceKind::FormContent
-    } else if collection == MetaCollection::Templates
-        && relative_path
-            .file_name()
-            .is_some_and(|name| name.to_string_lossy().starts_with("Template"))
-    {
-        MetadataChildResourceKind::TemplateContent
-    } else {
-        MetadataChildResourceKind::Auxiliary
+    template_type: Option<MetadataTemplateType>,
+) -> Result<MetadataResourceRole, MetaFailure> {
+    let kind = match collection {
+        MetaCollection::Forms if relative_path == Path::new("Ext/Form.xml") => {
+            MetadataChildResourceKind::FormContent
+        }
+        MetaCollection::Forms if relative_path == Path::new("Ext/Module.bsl") => {
+            MetadataChildResourceKind::Module
+        }
+        MetaCollection::Commands if relative_path == Path::new("Ext/CommandModule.bsl") => {
+            MetadataChildResourceKind::Module
+        }
+        MetaCollection::Templates => {
+            let template_type = template_type.ok_or_else(|| {
+                typed_child_resource_failure(
+                    child,
+                    "template payload has no closed TemplateType evidence",
+                )
+            })?;
+            let part = match (template_type, relative_path) {
+                (
+                    MetadataTemplateType::SpreadsheetDocument
+                    | MetadataTemplateType::DataCompositionSchema,
+                    path,
+                ) if path == Path::new("Ext/Template.xml") => MetadataTemplateResourcePart::Primary,
+                (MetadataTemplateType::TextDocument, path)
+                    if path == Path::new("Ext/Template.txt") =>
+                {
+                    MetadataTemplateResourcePart::Primary
+                }
+                (MetadataTemplateType::BinaryData, path)
+                    if path == Path::new("Ext/Template.bin") =>
+                {
+                    MetadataTemplateResourcePart::Primary
+                }
+                (MetadataTemplateType::HtmlDocument, path)
+                    if path == Path::new("Ext/Template.xml") =>
+                {
+                    MetadataTemplateResourcePart::Primary
+                }
+                (MetadataTemplateType::HtmlDocument, path)
+                    if path == Path::new("Ext/Template/ru.html") =>
+                {
+                    MetadataTemplateResourcePart::HtmlPage
+                }
+                _ => {
+                    return Err(typed_child_resource_failure(
+                        child,
+                        "template payload footprint does not match its TemplateType",
+                    ))
+                }
+            };
+            MetadataChildResourceKind::TemplateContent {
+                template_type,
+                part,
+            }
+        }
+        _ => {
+            return Err(typed_child_resource_failure(
+                child,
+                "child payload contains an unsupported resource role",
+            ))
+        }
     };
-    MetadataResourceRole::ChildResource {
+    Ok(MetadataResourceRole::ChildResource {
         child: child.clone(),
         kind,
         ordinal,
+    })
+}
+
+fn typed_template_type_from_descriptor(
+    descriptor: &[u8],
+    child: &MetadataAddress,
+) -> Result<MetadataTemplateType, MetaFailure> {
+    let text = std::str::from_utf8(descriptor)
+        .map_err(|_| typed_child_resource_failure(child, "template descriptor is not UTF-8"))?;
+    let document = Document::parse(text.trim_start_matches('\u{feff}'))
+        .map_err(|_| typed_child_resource_failure(child, "template descriptor is malformed XML"))?;
+    let values = document
+        .descendants()
+        .filter(|node| node.is_element() && node.tag_name().name() == "TemplateType")
+        .filter_map(|node| node.text())
+        .map(str::trim)
+        .collect::<Vec<_>>();
+    let [value] = values.as_slice() else {
+        return Err(typed_child_resource_failure(
+            child,
+            "template descriptor must contain exactly one TemplateType",
+        ));
+    };
+    match *value {
+        "HTMLDocument" => Ok(MetadataTemplateType::HtmlDocument),
+        "TextDocument" => Ok(MetadataTemplateType::TextDocument),
+        "SpreadsheetDocument" => Ok(MetadataTemplateType::SpreadsheetDocument),
+        "BinaryData" => Ok(MetadataTemplateType::BinaryData),
+        "DataCompositionSchema" => Ok(MetadataTemplateType::DataCompositionSchema),
+        _ => Err(typed_child_resource_failure(
+            child,
+            "template descriptor uses an unsupported TemplateType",
+        )),
     }
+}
+
+fn typed_child_resource_failure(child: &MetadataAddress, message: &str) -> MetaFailure {
+    typed_diagnostic(
+        MetaDiagnosticCode::ProviderUnavailable,
+        format!("{message}: {child}"),
+        Some("resources.child.payload"),
+    )
+    .with_metadata_path(child.clone())
+    .into()
+}
+
+fn typed_child_topology_failure(child: &MetadataAddress, message: &str) -> MetaFailure {
+    typed_diagnostic(
+        MetaDiagnosticCode::ProviderUnavailable,
+        format!("{message}: {child}"),
+        Some("resources.child.topology"),
+    )
+    .with_metadata_path(child.clone())
+    .into()
+}
+
+fn typed_child_collection_topology_failure(
+    owner: &MetadataAddress,
+    collection: MetaCollection,
+) -> MetaFailure {
+    typed_diagnostic(
+        MetaDiagnosticCode::ProviderUnavailable,
+        format!(
+            "typed child collection topology is unavailable: {}.{}",
+            owner,
+            collection.as_str()
+        ),
+        Some("resources.child.collection"),
+    )
+    .with_metadata_path(owner.clone())
+    .into()
+}
+
+fn typed_child_collection_guard_failure(owner: &MetadataAddress) -> MetaFailure {
+    typed_diagnostic(
+        MetaDiagnosticCode::ProviderUnavailable,
+        format!("typed child collection topology is unavailable: {owner}"),
+        Some("resources.child.collection"),
+    )
+    .with_metadata_path(owner.clone())
+    .into()
 }
 
 fn typed_child_logical_address(
@@ -3652,57 +3817,52 @@ fn read_typed_child_file(path: &Path, owner: &MetadataAddress) -> Result<Vec<u8>
     })
 }
 
+#[derive(Debug, Clone, Copy)]
+enum TypedChildTreeError {
+    Unavailable,
+    SymbolicLink,
+    UnsupportedNode,
+}
+
+impl TypedChildTreeError {
+    fn public_message(self) -> &'static str {
+        match self {
+            Self::Unavailable => "typed child resource topology is unavailable",
+            Self::SymbolicLink => "typed child resource topology contains a symbolic link",
+            Self::UnsupportedNode => {
+                "typed child resource topology contains an unsupported filesystem node"
+            }
+        }
+    }
+}
+
 fn read_typed_child_tree(
     root: &Path,
-) -> Result<(Vec<(PathBuf, Vec<u8>)>, Vec<PathBuf>), MetaFailure> {
+) -> Result<(Vec<(PathBuf, Vec<u8>)>, Vec<PathBuf>), TypedChildTreeError> {
     fn visit(
         root: &Path,
         current: &Path,
         files: &mut Vec<(PathBuf, Vec<u8>)>,
         directories: &mut Vec<PathBuf>,
-    ) -> Result<(), MetaFailure> {
-        let entries = fs::read_dir(current).map_err(|_| {
-            MetaFailure::from(typed_diagnostic(
-                MetaDiagnosticCode::ProviderUnavailable,
-                "typed child payload tree is unavailable",
-                None,
-            ))
-        })?;
+    ) -> Result<(), TypedChildTreeError> {
+        let entries = fs::read_dir(current).map_err(|_| TypedChildTreeError::Unavailable)?;
         for entry in entries {
-            let entry = entry.map_err(|_| {
-                MetaFailure::from(typed_diagnostic(
-                    MetaDiagnosticCode::ProviderUnavailable,
-                    "typed child payload tree is unavailable",
-                    None,
-                ))
-            })?;
-            let file_type = entry.file_type().map_err(|_| {
-                MetaFailure::from(typed_diagnostic(
-                    MetaDiagnosticCode::ProviderUnavailable,
-                    "typed child payload entry type is unavailable",
-                    None,
-                ))
-            })?;
+            let entry = entry.map_err(|_| TypedChildTreeError::Unavailable)?;
+            let file_type = entry
+                .file_type()
+                .map_err(|_| TypedChildTreeError::Unavailable)?;
             if file_type.is_symlink() {
-                return Err(MetaFailure::from(typed_diagnostic(
-                    MetaDiagnosticCode::ProviderUnavailable,
-                    "typed child payload tree contains a symbolic link",
-                    None,
-                )));
+                return Err(TypedChildTreeError::SymbolicLink);
             }
             if file_type.is_dir() {
                 directories.push(entry.path().strip_prefix(root).unwrap().to_path_buf());
                 visit(root, &entry.path(), files, directories)?;
             } else if file_type.is_file() {
                 let path = entry.path();
-                let bytes = fs::read(&path).map_err(|_| {
-                    MetaFailure::from(typed_diagnostic(
-                        MetaDiagnosticCode::ProviderUnavailable,
-                        "typed child payload file is unavailable",
-                        None,
-                    ))
-                })?;
+                let bytes = fs::read(&path).map_err(|_| TypedChildTreeError::Unavailable)?;
                 files.push((path.strip_prefix(root).unwrap().to_path_buf(), bytes));
+            } else {
+                return Err(TypedChildTreeError::UnsupportedNode);
             }
         }
         Ok(())
@@ -7048,7 +7208,7 @@ mod tests {
     }
 
     #[test]
-    fn typed_form_remove_plans_descriptor_and_whole_payload_tree_removal() {
+    fn typed_last_form_remove_plans_one_whole_collection_tree_removal() {
         let root = std::env::temp_dir().join(format!(
             "unica-meta-edit-form-remove-{}",
             uuid::Uuid::new_v4()
@@ -7089,14 +7249,12 @@ mod tests {
         )
         .unwrap();
 
-        assert!(resources
-            .file_mutations
-            .iter()
-            .any(|item| item.path == child_descriptor && item.post_image.is_none()));
-        assert!(resources
-            .file_mutations
-            .iter()
-            .any(|item| item.path == payload_dir && item.post_image.is_none()));
+        assert_eq!(resources.file_mutations.len(), 1);
+        assert_eq!(
+            resources.file_mutations[0].path,
+            root.join("Documents/Order/Forms")
+        );
+        assert!(resources.file_mutations[0].post_image.is_none());
         assert_eq!(
             resources.publication_plan[0].action,
             MetaPublicationAction::Remove
@@ -7297,14 +7455,11 @@ mod tests {
             .file_mutations
             .iter()
             .all(|item| !item.path.to_string_lossy().contains("/New")));
-        assert!(resources
-            .file_mutations
-            .iter()
-            .any(|item| item.path == child_descriptor));
-        assert!(resources
-            .file_mutations
-            .iter()
-            .any(|item| item.path == payload_dir));
+        assert_eq!(resources.file_mutations.len(), 1);
+        assert_eq!(
+            resources.file_mutations[0].path,
+            root.join("Documents/Order/Forms")
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -7362,7 +7517,11 @@ mod tests {
         .unwrap();
 
         assert_eq!(resources.publication_plan.len(), 1);
-        assert_eq!(resources.file_mutations.len(), 2);
+        assert_eq!(resources.file_mutations.len(), 1);
+        assert_eq!(
+            resources.file_mutations[0].path,
+            root.join("Documents/Order/Forms")
+        );
         assert_eq!(
             resources.publication_plan[0].action,
             MetaPublicationAction::Remove
@@ -7490,11 +7649,11 @@ mod tests {
             resources.publication_plan[0].action,
             MetaPublicationAction::Remove
         );
-        assert_eq!(resources.file_mutations.len(), 2);
-        assert!(resources
-            .file_mutations
-            .iter()
-            .all(|mutation| { mutation.path == child_descriptor || mutation.path == payload_dir }));
+        assert_eq!(resources.file_mutations.len(), 1);
+        assert_eq!(
+            resources.file_mutations[0].path,
+            root.join("Documents/Order/Forms")
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -104,9 +104,26 @@ pub(crate) enum MetadataAuxiliaryXmlKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MetadataChildResourceKind {
     FormContent,
-    TemplateContent,
+    TemplateContent {
+        template_type: MetadataTemplateType,
+        part: MetadataTemplateResourcePart,
+    },
     Module,
-    Auxiliary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MetadataTemplateType {
+    HtmlDocument,
+    TextDocument,
+    SpreadsheetDocument,
+    BinaryData,
+    DataCompositionSchema,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MetadataTemplateResourcePart {
+    Primary,
+    HtmlPage,
 }
 
 #[allow(dead_code)] // Concrete providers land after this orchestration seam.
