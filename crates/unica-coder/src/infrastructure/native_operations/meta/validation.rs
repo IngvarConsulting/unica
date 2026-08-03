@@ -664,6 +664,7 @@ fn parse_final_owner_children(
 ) -> Result<Vec<ClosedOwnerChild>, String> {
     let (_, document) = parse_metadata_image(bytes)?;
     let artifact = exact_metadata_artifact(&document)?;
+    validate_exact_owner_identity(artifact, owner)?;
     let child_objects = exact_mdclasses_children(artifact, "ChildObjects", "owner descriptor")?;
     let children = match child_objects.as_slice() {
         [] => return Ok(Vec::new()),
@@ -676,6 +677,31 @@ fn parse_final_owner_children(
         .filter(|child| matches!(child.tag_name().name(), "Form" | "Template" | "Command"))
         .map(|child| parse_owner_child_artifact(child, owner))
         .collect()
+}
+
+fn validate_exact_owner_identity(
+    artifact: roxmltree::Node<'_, '_>,
+    owner: &MetadataAddress,
+) -> Result<(), String> {
+    let properties = exact_mdclasses_children(artifact, "Properties", "owner descriptor")?;
+    let [properties] = properties.as_slice() else {
+        return Err("owner descriptor must contain exactly one Properties".into());
+    };
+    let names = exact_mdclasses_children(*properties, "Name", "owner descriptor")?;
+    let [name] = names.as_slice() else {
+        return Err("owner descriptor must contain exactly one Name".into());
+    };
+    let name = meta_info_inner_text(*name).trim().to_string();
+    if name.is_empty() {
+        return Err("owner descriptor Name is empty".into());
+    }
+    let actual = format!("{}.{name}", artifact.tag_name().name());
+    if actual != owner.as_str() {
+        return Err(format!(
+            "owner descriptor identity {actual} does not match closed target {owner}"
+        ));
+    }
+    Ok(())
 }
 
 fn parse_owner_child_artifact(
@@ -4247,10 +4273,81 @@ mod tests {
             .find(|diagnostic| diagnostic.message == expected)
             .unwrap_or_else(|| panic!("missing `{expected}` in {:?}", result.diagnostics));
         assert_eq!(diagnostic.code, MetaDiagnosticCode::ProviderUnavailable);
-        assert_eq!(diagnostic.metadata_path, Some(address("Catalog.Editable")));
+        assert_eq!(diagnostic.metadata_path, Some(subject.target.clone()));
         assert_eq!(diagnostic.field.as_deref(), Some("resources"));
         assert_eq!(diagnostic.operation_index, None);
         assert!(!diagnostic.message.contains("/workspace"));
+    }
+
+    fn closed_owner_subject(descriptor: &str) -> MetadataValidationSubject {
+        subject(
+            "CommonModule.Service",
+            Some(descriptor),
+            &owner(&[("CommonModule", "Service")]),
+            &[],
+        )
+    }
+
+    #[test]
+    fn closed_validator_rejects_foreign_properties_in_the_owner_descriptor() {
+        let descriptor = format!(
+            r#"<MetaDataObject xmlns="{MD_NS}" version="2.20"><CommonModule uuid="11111111-1111-4111-8111-111111111111"><x:Properties xmlns:x="urn:foreign"><x:Name>Service</x:Name></x:Properties><ChildObjects/></CommonModule></MetaDataObject>"#
+        );
+        let subject = closed_owner_subject(&descriptor);
+
+        assert_exact_closed_diagnostic(
+            &subject,
+            "owner descriptor contains Properties outside the MDClasses namespace: CommonModule.Service",
+        );
+    }
+
+    #[test]
+    fn closed_validator_rejects_foreign_name_in_exact_owner_properties() {
+        let descriptor = format!(
+            r#"<MetaDataObject xmlns="{MD_NS}" version="2.20"><CommonModule uuid="11111111-1111-4111-8111-111111111111"><Properties><x:Name xmlns:x="urn:foreign">Service</x:Name></Properties><ChildObjects/></CommonModule></MetaDataObject>"#
+        );
+        let subject = closed_owner_subject(&descriptor);
+
+        assert_exact_closed_diagnostic(
+            &subject,
+            "owner descriptor contains Name outside the MDClasses namespace: CommonModule.Service",
+        );
+    }
+
+    #[test]
+    fn closed_validator_rejects_mdclasses_and_foreign_owner_properties_duplicates() {
+        let descriptor = format!(
+            r#"<MetaDataObject xmlns="{MD_NS}" version="2.20"><CommonModule uuid="11111111-1111-4111-8111-111111111111"><Properties><Name>Service</Name></Properties><x:Properties xmlns:x="urn:foreign"><x:Name>Service</x:Name></x:Properties><ChildObjects/></CommonModule></MetaDataObject>"#
+        );
+        let subject = closed_owner_subject(&descriptor);
+
+        assert_exact_closed_diagnostic(
+            &subject,
+            "owner descriptor contains Properties outside the MDClasses namespace: CommonModule.Service",
+        );
+    }
+
+    #[test]
+    fn closed_validator_rejects_mdclasses_and_foreign_owner_name_duplicates() {
+        let descriptor = format!(
+            r#"<MetaDataObject xmlns="{MD_NS}" version="2.20"><CommonModule uuid="11111111-1111-4111-8111-111111111111"><Properties><Name>Service</Name><x:Name xmlns:x="urn:foreign">Service</x:Name></Properties><ChildObjects/></CommonModule></MetaDataObject>"#
+        );
+        let subject = closed_owner_subject(&descriptor);
+
+        assert_exact_closed_diagnostic(
+            &subject,
+            "owner descriptor contains Name outside the MDClasses namespace: CommonModule.Service",
+        );
+    }
+
+    #[test]
+    fn closed_validator_accepts_a_canonical_mdclasses_owner_identity() {
+        let descriptor = common_module("Service");
+        let subject = closed_owner_subject(&descriptor);
+
+        let result = MetadataValidator.validate(&subject, &context());
+
+        assert_eq!(result.status, MetaValidationStatus::Passed, "{result:?}");
     }
 
     #[test]
