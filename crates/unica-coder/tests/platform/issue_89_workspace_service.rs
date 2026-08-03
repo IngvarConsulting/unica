@@ -48,6 +48,17 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
     );
 
     mcp.send(tool_call(
+        11,
+        "unica.code.search",
+        json!({
+            "cwd": fixture.workspace,
+            "query": "Procedure"
+        }),
+    ));
+    let _ = mcp.receive_ids(&[11], RESPONSE_DEADLINE);
+    fixture.wait_for_index_ready(RESPONSE_DEADLINE);
+
+    mcp.send(tool_call(
         2,
         "unica.code.search",
         json!({
@@ -240,6 +251,13 @@ fn issue_89_fixture_cleanup_is_bounded_during_assertion_unwind() {
         mcp.send(initialize_request());
         let _ = mcp.receive_ids(&[1], RESPONSE_DEADLINE);
         mcp.send(json!({"jsonrpc":"2.0","method":"notifications/initialized","params":{}}));
+        mcp.send(tool_call(
+            10,
+            "unica.code.search",
+            json!({"cwd":fixture.workspace,"query":"Procedure"}),
+        ));
+        let _ = mcp.receive_ids(&[10], RESPONSE_DEADLINE);
+        fixture.wait_for_index_ready(RESPONSE_DEADLINE);
         mcp.send(tool_call(
             2,
             "unica.code.search",
@@ -528,6 +546,31 @@ impl Fixture {
             thread::yield_now();
         }
         panic!("timed out waiting for fake-tool log prefix {prefix}");
+    }
+
+    fn wait_for_index_ready(&self, timeout: Duration) {
+        let status_path = self.cache.join("caches/bsl_index_status.json");
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            let ready = fs::read_to_string(&status_path)
+                .ok()
+                .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+                .is_some_and(|status| {
+                    status["status"] == "ready"
+                        && status["source_generation"].is_u64()
+                        && status["db_path"]
+                            .as_str()
+                            .is_some_and(|path| Path::new(path).is_file())
+                });
+            if ready {
+                return;
+            }
+            thread::yield_now();
+        }
+        panic!(
+            "timed out waiting for generation-bound RLM index status at {}",
+            status_path.display()
+        );
     }
 
     fn wait_for_rlm_starts(&self, expected: usize, timeout: Duration) -> Vec<ToolRecord> {
@@ -1058,13 +1101,12 @@ fn rlm_mcp() {
 }
 
 fn rlm_index() {
+    let db = std::path::Path::new(&env::var("RLM_INDEX_DIR").unwrap())
+        .join("fake/bsl_index.db");
+    std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+    std::fs::write(&db, "fake index").unwrap();
     println!("Status: fresh");
-    println!(
-        "Index: {}",
-        std::path::Path::new(&env::var("RLM_INDEX_DIR").unwrap())
-            .join("fake/bsl_index.db")
-            .display()
-    );
+    println!("Index: {}", db.display());
     io::stdout().flush().unwrap();
 }
 "#;
