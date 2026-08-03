@@ -300,14 +300,6 @@ mod tests {
                 (TopLevelJsonInput::OptionalDefinitionFile, false, false),
             ),
             (
-                "meta-compile",
-                (TopLevelJsonInput::RequiredJsonPath, false, false),
-            ),
-            (
-                "meta-edit",
-                (TopLevelJsonInput::OptionalDefinitionFile, false, false),
-            ),
-            (
                 "mxl-compile",
                 (TopLevelJsonInput::RequiredJsonPath, false, false),
             ),
@@ -352,7 +344,7 @@ mod tests {
         }
 
         assert_eq!(actual_file_backed, expected_file_backed);
-        assert_eq!(actual_file_backed.len(), 12);
+        assert_eq!(actual_file_backed.len(), 10);
         assert_eq!(
             actual_file_backed
                 .values()
@@ -362,7 +354,7 @@ mod tests {
                         + usize::from(*from_object_platform_xml)
                 })
                 .sum::<usize>(),
-            14
+            12
         );
         assert_eq!(native_mutation_file_input_contract("unknown-mutator"), None);
         assert_eq!(

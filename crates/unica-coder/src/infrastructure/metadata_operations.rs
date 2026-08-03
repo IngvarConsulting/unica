@@ -3260,9 +3260,9 @@ mod tests {
         ]);
 
         let result = with_commit_failpoint(CommitFailpoint::PostWriteValidation, || {
-            application.call_unregistered_meta_remove_for_integration_tests(&args)
+            application.call_tool("unica.meta.remove", &args)
         })
-        .expect("private typed meta.remove call");
+        .expect("public typed meta.remove call");
 
         assert!(!result.ok);
         assert!(result.cache.events.is_empty());

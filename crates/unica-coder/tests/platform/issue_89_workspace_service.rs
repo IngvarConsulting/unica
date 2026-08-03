@@ -60,11 +60,11 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
 
     mcp.send(tool_call(
         3,
-        "unica.meta.profile",
+        "unica.meta.info",
         json!({
-            "cwd": fixture.workspace,
-            "name": "Catalog.Test",
-            "sections": []
+            "sourceSet": "main",
+            "metadataPath": "Catalog.Test",
+            "sections": ["modules"]
         }),
     ));
     let first_rlm = fixture.wait_for_rlm_starts(1, RESPONSE_DEADLINE)[0].clone();
@@ -96,10 +96,7 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
     let (responses, response_times) =
         mcp.receive_ids_timed(&[3, 4], RESPONSE_DEADLINE, ping_started);
     assert!(response_times[&4] < Duration::from_secs(2));
-    assert_tool_ok(
-        &responses[&3],
-        "persistent RLM MCP API",
-    );
+    assert_meta_info_data(&responses[&3]);
     let session_records = fixture.log_records();
     assert_eq!(
         session_records
@@ -128,45 +125,47 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
     ));
     mcp.send(tool_call(
         6,
-        "unica.meta.profile",
+        "unica.meta.info",
         json!({
-            "cwd": fixture.workspace,
-            "name": "Catalog.Test",
-            "sections": []
+            "sourceSet": "main",
+            "metadataPath": "Catalog.Test",
+            "sections": ["modules"]
         }),
     ));
     let final_responses = mcp.receive_ids(&[5, 6], RESPONSE_DEADLINE);
     assert_tool_ok(&final_responses[&5], "typed bsl-analyzer MCP adapter");
-    assert_tool_ok(
-        &final_responses[&6],
-        "persistent RLM MCP API",
-    );
+    assert_meta_info_data(&final_responses[&6]);
     mcp.send(tool_call(
         8,
-        "unica.meta.profile",
+        "unica.meta.info",
         json!({
-            "cwd": fixture.workspace,
-            "name": "Catalog.LogicalError",
-            "sections": []
+            "sourceSet": "main",
+            "metadataPath": "Catalog.LogicalError",
+            "sections": ["modules"]
         }),
     ));
     let logical_error = mcp.receive_ids(&[8], RESPONSE_DEADLINE);
-    assert!(logical_error[&8]["error"]["message"]
-        .as_str()
-        .is_some_and(|message| message.contains("invalid logical request")));
+    let logical_error = tool_operation(&logical_error[&8]);
+    assert_eq!(logical_error["data"]["metadataPath"], "Catalog.LogicalError");
+    assert!(logical_error.get("stdout").is_none(), "{logical_error:#}");
+    assert_eq!(
+        logical_error["data"]["related"]["modules"]["status"],
+        "unavailable"
+    );
     mcp.send(tool_call(
         9,
-        "unica.meta.profile",
+        "unica.meta.info",
         json!({
-            "cwd": fixture.workspace,
-            "name": "Catalog.Test",
-            "sections": []
+            "sourceSet": "main",
+            "metadataPath": "Catalog.Test",
+            "sections": ["modules"]
         }),
     ));
     let after_logical_error = mcp.receive_ids(&[9], RESPONSE_DEADLINE);
-    assert_tool_ok(
-        &after_logical_error[&9],
-        "persistent RLM MCP API",
+    assert_meta_info_data(&after_logical_error[&9]);
+    assert_eq!(
+        tool_operation(&after_logical_error[&9])["data"]["related"]["modules"]["status"],
+        "ready"
     );
     mcp.send(tool_call(
         7,
@@ -322,6 +321,13 @@ fn assert_tool_ok(response: &Value, summary: &str) {
             .is_some_and(|value| value.contains(summary)),
         "{operation:#}"
     );
+}
+
+fn assert_meta_info_data(response: &Value) {
+    let operation = tool_operation(response);
+    assert_eq!(operation["data"]["metadataPath"], "Catalog.Test", "{operation:#}");
+    assert!(operation["data"]["related"]["modules"].is_object(), "{operation:#}");
+    assert!(operation.get("stdout").is_none(), "{operation:#}");
 }
 
 fn tool_operation(response: &Value) -> Value {
@@ -490,13 +496,28 @@ impl Fixture {
         let rlm_state = root.join("rlm-state");
         fs::create_dir_all(workspace.join("src/cf/Configuration")).unwrap();
         fs::create_dir_all(workspace.join("src/cf/CommonModules/Test/Ext")).unwrap();
+        fs::create_dir_all(workspace.join("src/cf/Catalogs")).unwrap();
         fs::create_dir_all(workspace.join("exts/TESTS/Configuration")).unwrap();
         fs::create_dir_all(plugin_root.join("skills")).unwrap();
         fs::create_dir_all(plugin_root.join("third-party")).unwrap();
         fs::create_dir_all(&cache).unwrap();
         fs::create_dir_all(&rlm_state).unwrap();
         fs::write(workspace.join("v8project.yaml"), "format: DESIGNER\nsource-set:\n  main:\n    type: CONFIGURATION\n    path: src/cf\n  TESTS:\n    type: CONFIGURATION\n    path: exts/TESTS\n").unwrap();
-        fs::write(workspace.join("src/cf/Configuration.xml"), "<?xml version=\"1.0\" encoding=\"UTF-8\"?><MetaDataObject><Configuration/></MetaDataObject>").unwrap();
+        fs::write(
+            workspace.join("src/cf/Configuration.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><InternalInfo/><Properties><Name>Issue89</Name><DefaultLanguage/></Properties><ChildObjects><Catalog>Test</Catalog><Catalog>LogicalError</Catalog><CommonModule>Test</CommonModule></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            workspace.join("src/cf/Catalogs/Test.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"><InternalInfo/><Properties><Name>Test</Name><Synonym/><Comment/></Properties><ChildObjects/></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            workspace.join("src/cf/Catalogs/LogicalError.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="cccccccc-cccc-4ccc-8ccc-cccccccccccc"><InternalInfo/><Properties><Name>LogicalError</Name><Synonym/><Comment/></Properties><ChildObjects/></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
         fs::write(
             workspace.join("src/cf/CommonModules/Test/Ext/Module.bsl"),
             "Procedure Test() Export\nEndProcedure\n",
@@ -1037,7 +1058,7 @@ fn rlm_mcp() {
                 continue;
             }
             let helper = if line.contains("get_object_profile") {
-                "{\"object_name\":\"Test\",\"category\":\"Catalog\",\"sections\":{}}"
+                "{\"object_name\":\"Test\",\"category\":\"Catalog\",\"sections\":{\"modules\":{\"status\":\"ok\",\"items\":[],\"total\":0,\"returned\":0}}}"
             } else {
                 "[]"
             };

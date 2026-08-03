@@ -9,8 +9,8 @@ use crate::infrastructure::native_operations::common::{
     SupportGuardViolation,
 };
 use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
+use crate::infrastructure::native_operations::template;
 use crate::infrastructure::native_operations::xdto::resolve_xdto_guard_path;
-use crate::infrastructure::native_operations::{meta, template};
 use crate::infrastructure::source_roots::normalize_path_identity;
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
@@ -168,13 +168,28 @@ fn support_guard_target(
         SupportGuardPolicy::PathArgs { names, requirement } => {
             support_guard_path_arg(args, context, names, requirement)
         }
-        SupportGuardPolicy::MetaRemove { requirement } => {
-            support_guard_meta_remove_target(args, context).map(|path| (path, requirement))
-        }
         SupportGuardPolicy::ObjectName { requirement } => {
             support_guard_object_name_target(args, context).map(|path| (path, requirement))
         }
+        #[cfg(test)]
+        SupportGuardPolicy::MetaRemove { requirement } => {
+            support_guard_meta_remove_target(args, context).map(|path| (path, requirement))
+        }
     }
+}
+
+#[cfg(test)]
+fn support_guard_meta_remove_target(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Option<PathBuf> {
+    let config_dir = path_arg(args, &["ConfigDir", "configDir"])
+        .map(|path| absolutize(path, &context.cwd))
+        .unwrap_or_else(|| context.cwd.join("src"));
+    let object = required_string(args, &["Object", "object"], "Object").ok()?;
+    let (kind, name) = object.split_once('.')?;
+    let plural = crate::infrastructure::native_operations::meta::meta_remove_type_plural(kind)?;
+    Some(config_dir.join(plural).join(format!("{name}.xml")))
 }
 
 fn support_guard_path_arg(
@@ -184,21 +199,6 @@ fn support_guard_path_arg(
     requirement: SupportGuardRequirement,
 ) -> Option<(PathBuf, SupportGuardRequirement)> {
     path_arg(args, names).map(|path| (absolutize(path, &context.cwd), requirement))
-}
-
-fn support_guard_meta_remove_target(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-) -> Option<PathBuf> {
-    let config_dir = path_arg(args, &["configDir", "ConfigDir"])?;
-    let object = required_string(args, &["object", "Object"], "Object").ok()?;
-    let (object_type, object_name) = object.split_once('.')?;
-    let type_dir = meta::meta_remove_type_plural(object_type)?;
-    Some(
-        absolutize(config_dir, &context.cwd)
-            .join(type_dir)
-            .join(format!("{object_name}.xml")),
-    )
 }
 
 fn support_guard_object_name_target(

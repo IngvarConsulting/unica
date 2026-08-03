@@ -104,8 +104,9 @@
 апстрим-проекта и в репозитории не расшифровывается. Индекс — файл SQLite под
 кешем рабочего пространства, в каталоге `rlm-tools-bsl/`, рядом с
 `bsl_index_status.json` и `bsl_index.lock`. Публичных инструментов `unica.rlm.*`
-не существует: индекс скрыт за `unica.code.*` и `unica.meta.profile`
-(INV-PRODUCT-NO-ENGINE-ROUTING), а его частную SQLite-схему Unica не читает
+не существует: индекс скрыт за `unica.code.*`, а связанные секции метаданных
+доступны только как обогащение `unica.meta.info`
+(INV-PRODUCT-NO-ENGINE-ROUTING, INV-MCP-META-SURFACE); его частную SQLite-схему Unica не читает
 (INV-CACHE-ORCHESTRATOR-OWNED). См. также [глоссарий](glossary.md).
 
 1. `unica.code.search`, `unica.code.graph`, `unica.code.diagnostics` в режиме

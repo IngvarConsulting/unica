@@ -88,7 +88,6 @@ pub enum CodeIntelligenceOperation {
     Search,
     Definition,
     Outline,
-    ObjectProfile,
 }
 
 #[derive(Debug, Serialize)]
@@ -115,18 +114,6 @@ pub struct OperationResult {
 }
 
 /// Public application entry point.
-///
-/// The coordinated typed Meta switch is intentionally still off-registry, so
-/// downstream production code cannot bypass `tools()` to invoke `meta.add`.
-///
-/// ```compile_fail
-/// use unica_coder::application::UnicaApplication;
-/// use serde_json::Map;
-///
-/// let app = UnicaApplication::new();
-/// let args = Map::new();
-/// let _ = app.call_unregistered_meta_add_for_integration_tests(&args);
-/// ```
 pub struct UnicaApplication {
     ports: Arc<dyn ApplicationPorts + Send + Sync>,
 }
@@ -167,90 +154,79 @@ impl UnicaApplication {
             })?;
         call_tool(spec, args, self.ports.as_ref(), &cancellation)
     }
+}
 
-    #[cfg(test)]
-    fn call_unregistered_meta_add_for_integration_tests(
-        &self,
-        args: &Map<String, Value>,
-    ) -> Result<OperationResult, String> {
-        self.call_unregistered_meta_add_cancellable_for_integration_tests(
-            args,
-            CancellationToken::new(),
-        )
-    }
+#[cfg(test)]
+fn compile_legacy_metadata_fixture(args: &Map<String, Value>) -> Result<AdapterOutcome, String> {
+    let cwd = args
+        .get("cwd")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .ok_or_else(|| "legacy metadata fixture compiler requires cwd".to_string())?;
+    let context = WorkspaceContext {
+        cwd: cwd.clone(),
+        workspace_root: cwd.clone(),
+        cache_root: cwd.join(".unica/cache"),
+        workspace_epoch: 0,
+    };
+    crate::infrastructure::native_operations::NativeOperationAdapter::invoke(
+        "meta-compile",
+        "legacy metadata fixture compiler",
+        args,
+        &context,
+        false,
+        true,
+    )
+}
 
-    #[cfg(test)]
-    fn call_unregistered_meta_add_cancellable_for_integration_tests(
-        &self,
-        args: &Map<String, Value>,
-        cancellation: CancellationToken,
-    ) -> Result<OperationResult, String> {
-        let spec = ToolSpec {
-            name: "unica.meta.add",
-            description: "Create one minimal metadata object from a typed internal template.",
-            mutating: true,
-            cache_access: CacheAccess {
-                reads: &[],
-                writes: &["workspace_graph", "metadata_graph"],
-            },
-            handler: ToolHandler::Metadata {
-                operation: metadata::MetadataOperation::Add,
-            },
-        };
-        call_tool(spec, args, self.ports.as_ref(), &cancellation)
-    }
+#[cfg(test)]
+pub(crate) fn legacy_metadata_tool_spec_for_tests(name: &str) -> Option<ToolSpec> {
+    let (name, operation, mutating, event) = match name {
+        "unica.meta.compile" => (
+            "unica.meta.compile",
+            "meta-compile",
+            true,
+            Some(DomainEventKind::MetadataChanged),
+        ),
+        "unica.meta.edit" => (
+            "unica.meta.edit",
+            "meta-edit",
+            true,
+            Some(DomainEventKind::MetadataChanged),
+        ),
+        "unica.meta.info" => ("unica.meta.info", "meta-info", false, None),
+        "unica.meta.remove" => (
+            "unica.meta.remove",
+            "meta-remove",
+            true,
+            Some(DomainEventKind::MetadataChanged),
+        ),
+        "unica.meta.validate" => ("unica.meta.validate", "meta-validate", false, None),
+        _ => return None,
+    };
+    Some(ToolSpec {
+        name,
+        description: "Test-only route to a retained legacy metadata implementation.",
+        mutating,
+        cache_access: cache_access_for(operation, event),
+        handler: ToolHandler::NativeOperation { operation, event },
+    })
+}
 
-    #[cfg(test)]
-    pub(crate) fn call_unregistered_meta_remove_for_integration_tests(
-        &self,
-        args: &Map<String, Value>,
-    ) -> Result<OperationResult, String> {
-        let spec = ToolSpec {
-            name: "unica.meta.remove",
-            description: "Remove one metadata object through the typed internal coordinator.",
-            mutating: true,
-            cache_access: CacheAccess {
-                reads: &[],
-                writes: &["workspace_graph", "metadata_graph"],
-            },
-            handler: ToolHandler::Metadata {
-                operation: metadata::MetadataOperation::Remove,
-            },
-        };
-        call_tool(spec, args, self.ports.as_ref(), &CancellationToken::new())
-    }
-
-    #[cfg(test)]
-    fn call_unregistered_meta_info_for_integration_tests(
-        &self,
-        args: &Map<String, Value>,
-    ) -> Result<OperationResult, String> {
-        self.call_unregistered_meta_info_cancellable_for_integration_tests(
-            args,
-            CancellationToken::new(),
-        )
-    }
-
-    #[cfg(test)]
-    pub(crate) fn call_unregistered_meta_info_cancellable_for_integration_tests(
-        &self,
-        args: &Map<String, Value>,
-        cancellation: CancellationToken,
-    ) -> Result<OperationResult, String> {
-        let spec = ToolSpec {
-            name: "unica.meta.info",
-            description: "Inspect one metadata object through the typed internal coordinator.",
-            mutating: false,
-            cache_access: CacheAccess {
-                reads: &["bsl_index"],
-                writes: &[],
-            },
-            handler: ToolHandler::Metadata {
-                operation: metadata::MetadataOperation::Info,
-            },
-        };
-        call_tool(spec, args, self.ports.as_ref(), &cancellation)
-    }
+#[cfg(test)]
+pub(crate) fn call_legacy_metadata_tool_for_tests(
+    name: &str,
+    args: &Map<String, Value>,
+) -> Result<OperationResult, String> {
+    let spec = legacy_metadata_tool_spec_for_tests(name)
+        .ok_or_else(|| format!("unknown legacy metadata test tool: {name}"))?;
+    let application = UnicaApplication::new();
+    call_tool(
+        spec,
+        args,
+        application.ports.as_ref(),
+        &CancellationToken::new(),
+    )
 }
 
 #[cfg(test)]
@@ -1067,35 +1043,6 @@ fn code_intelligence_read_request(
                 .and_then(Value::as_bool)
                 .unwrap_or(true),
         }),
-        CodeIntelligenceOperation::ObjectProfile => {
-            Ok(CodeIntelligenceReadRequest::ObjectProfile {
-                name: required_code_intelligence_string(args, "name")?.to_string(),
-                sections: Some(
-                    args.get("sections")
-                        .and_then(Value::as_array)
-                        .map(|items| {
-                            items
-                                .iter()
-                                .filter_map(Value::as_str)
-                                .map(str::to_string)
-                                .collect()
-                        })
-                        .unwrap_or_else(|| {
-                            [
-                                "structure",
-                                "modules",
-                                "roles",
-                                "subscriptions",
-                                "functionalOptions",
-                            ]
-                            .into_iter()
-                            .map(str::to_string)
-                            .collect()
-                        }),
-                ),
-                limit: code_intelligence_limit(args, 20),
-            })
-        }
         CodeIntelligenceOperation::Search => {
             Err("search cannot be built as a code intelligence read request".to_string())
         }
@@ -1733,65 +1680,51 @@ fn configuration_tools() -> Vec<ToolSpec> {
             },
         },
         ToolSpec {
-            name: "unica.meta.compile",
-            description: "Compile metadata object XML from JSON DSL.",
-            mutating: true,
-            cache_access: cache_access_for("meta-compile", Some(DomainEventKind::MetadataChanged)),
-            handler: ToolHandler::NativeOperation {
-                operation: "meta-compile",
-                event: Some(DomainEventKind::MetadataChanged),
-            },
-        },
-        ToolSpec {
-            name: "unica.meta.edit",
-            description: "Edit metadata object XML.",
-            mutating: true,
-            cache_access: cache_access_for("meta-edit", Some(DomainEventKind::MetadataChanged)),
-            handler: ToolHandler::NativeOperation {
-                operation: "meta-edit",
-                event: Some(DomainEventKind::MetadataChanged),
-            },
-        },
-        ToolSpec {
             name: "unica.meta.info",
-            description: "Inspect metadata object XML.",
-            mutating: false,
-            cache_access: cache_access_for("meta-info", None),
-            handler: ToolHandler::NativeOperation {
-                operation: "meta-info",
-                event: None,
-            },
-        },
-        ToolSpec {
-            name: "unica.meta.profile",
-            description: "Read compact metadata object profile from the internal RLM index.",
+            description: "Inspect one metadata object with validation and related sections.",
             mutating: false,
             cache_access: CacheAccess {
                 reads: &["bsl_index"],
                 writes: &[],
             },
-            handler: ToolHandler::CodeIntelligence {
-                operation: CodeIntelligenceOperation::ObjectProfile,
+            handler: ToolHandler::Metadata {
+                operation: metadata::MetadataOperation::Info,
+            },
+        },
+        ToolSpec {
+            name: "unica.meta.add",
+            description: "Create one minimal metadata object from a typed internal template.",
+            mutating: true,
+            cache_access: CacheAccess {
+                reads: &[],
+                writes: &["workspace_graph", "metadata_graph"],
+            },
+            handler: ToolHandler::Metadata {
+                operation: metadata::MetadataOperation::Add,
+            },
+        },
+        ToolSpec {
+            name: "unica.meta.edit",
+            description: "Apply ordered typed metadata edit operations atomically.",
+            mutating: true,
+            cache_access: CacheAccess {
+                reads: &[],
+                writes: &["workspace_graph", "metadata_graph"],
+            },
+            handler: ToolHandler::Metadata {
+                operation: metadata::MetadataOperation::Edit,
             },
         },
         ToolSpec {
             name: "unica.meta.remove",
-            description: "Remove metadata object XML and registration.",
+            description: "Remove one metadata object through a logical guarded target.",
             mutating: true,
-            cache_access: cache_access_for("meta-remove", Some(DomainEventKind::MetadataChanged)),
-            handler: ToolHandler::NativeOperation {
-                operation: "meta-remove",
-                event: Some(DomainEventKind::MetadataChanged),
+            cache_access: CacheAccess {
+                reads: &[],
+                writes: &["workspace_graph", "metadata_graph"],
             },
-        },
-        ToolSpec {
-            name: "unica.meta.validate",
-            description: "Validate metadata object XML.",
-            mutating: false,
-            cache_access: cache_access_for("meta-validate", None),
-            handler: ToolHandler::NativeOperation {
-                operation: "meta-validate",
-                event: None,
+            handler: ToolHandler::Metadata {
+                operation: metadata::MetadataOperation::Remove,
             },
         },
         ToolSpec {
@@ -2143,6 +2076,24 @@ mod tests {
         canonical
     }
 
+    fn call_public_tool_from_workspace(
+        workspace: &std::path::Path,
+        name: &str,
+        args: &Map<String, Value>,
+    ) -> Result<OperationResult, String> {
+        static PROCESS_CWD_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
+            std::sync::OnceLock::new();
+        let _guard = PROCESS_CWD_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = std::env::current_dir().map_err(|error| error.to_string())?;
+        std::env::set_current_dir(workspace).map_err(|error| error.to_string())?;
+        let result = UnicaApplication::new().call_tool(name, args);
+        std::env::set_current_dir(previous).map_err(|error| error.to_string())?;
+        result
+    }
+
     fn path_text(path: &std::path::Path) -> String {
         path.display().to_string().replace('\\', "/")
     }
@@ -2175,9 +2126,37 @@ mod tests {
         assert!(names.contains(&"unica.code.outline"));
         assert!(!names.contains(&"unica.code.grep"));
         assert!(names.contains(&"unica.code.graph"));
-        assert!(names.contains(&"unica.meta.profile"));
+        for name in [
+            "unica.meta.info",
+            "unica.meta.add",
+            "unica.meta.edit",
+            "unica.meta.remove",
+        ] {
+            assert!(names.contains(&name), "missing {name}");
+        }
+        for name in [
+            "unica.meta.compile",
+            "unica.meta.profile",
+            "unica.meta.validate",
+        ] {
+            assert!(!names.contains(&name), "retired {name} is still public");
+        }
         assert!(names.contains(&"unica.standards.explain"));
         assert!(!names.contains(&"unica-coder"));
+    }
+
+    #[test]
+    fn retired_meta_routes_fail_as_unknown_tools() {
+        for retired in [
+            "unica.meta.compile",
+            "unica.meta.profile",
+            "unica.meta.validate",
+        ] {
+            let error = UnicaApplication::new()
+                .call_tool(retired, &Map::new())
+                .expect_err("retired Meta route must not dispatch");
+            assert_eq!(error, format!("unknown unica tool: {retired}"));
+        }
     }
 
     #[test]
@@ -2189,10 +2168,6 @@ mod tests {
                 CodeIntelligenceOperation::Definition,
             ),
             ("unica.code.outline", CodeIntelligenceOperation::Outline),
-            (
-                "unica.meta.profile",
-                CodeIntelligenceOperation::ObjectProfile,
-            ),
         ];
 
         for (name, operation) in expected {
@@ -3874,8 +3849,6 @@ mod tests {
         const PARITY_COVERED_TOOLS: &[&str] = &[
             "unica.cf.validate",
             "unica.cfe.validate",
-            "unica.meta.compile",
-            "unica.meta.validate",
             "unica.form.compile",
             "unica.form.validate",
             "unica.interface.validate",
@@ -3899,6 +3872,7 @@ mod tests {
             "unica.subsystem.info",
             "unica.mxl.info",
             "unica.cfe.diff",
+            "unica.meta.add",
             "unica.meta.edit",
             "unica.template.add",
             "unica.template.remove",
@@ -3936,10 +3910,6 @@ mod tests {
             {
                 continue;
             }
-            if tool.name == "unica.meta.profile" {
-                continue;
-            }
-
             match tool.handler {
                 ToolHandler::NativeOperation { operation, .. } => {
                     assert!(
@@ -3951,6 +3921,17 @@ mod tests {
                         operation
                     );
                 }
+                ToolHandler::Metadata { .. } => assert!(
+                    matches!(
+                        tool.name,
+                        "unica.meta.info"
+                            | "unica.meta.add"
+                            | "unica.meta.edit"
+                            | "unica.meta.remove"
+                    ),
+                    "{} unexpectedly routes through the typed Metadata handler",
+                    tool.name
+                ),
                 _ => panic!("{} routes through unexpected handler", tool.name),
             }
         }
@@ -5717,6 +5698,7 @@ mod tests {
             support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
         )
         .unwrap();
+        write_support_test_language(&src);
         std::fs::write(
             catalogs.join("Items.xml"),
             support_test_catalog_xml("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
@@ -5732,34 +5714,23 @@ mod tests {
         )
         .unwrap();
         let mut args = Map::new();
-        args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
         args.insert("sourceSet".to_string(), Value::String("main".to_string()));
         args.insert(
             "metadataPath".to_string(),
             Value::String("Catalog.Items".to_string()),
         );
 
-        let result = UnicaApplication::new()
-            .call_tool("unica.meta.info", &args)
-            .unwrap();
+        let result = call_public_tool_from_workspace(&workspace, "unica.meta.info", &args).unwrap();
 
-        assert!(result.ok);
+        assert!(
+            !result.ok,
+            "the legacy support fixture is intentionally incomplete"
+        );
+        assert_eq!(result.summary, "metadata validation failed");
         // The locked rule is a per-object fact: the configuration is on
         // support, but this object must not be edited directly.
         let data = result.data.as_ref().expect("meta.info answers with data");
-        assert_eq!(
-            data["support"]["state"],
-            serde_json::json!("locked"),
-            "{data:?}"
-        );
-        assert_eq!(
-            data["support"]["directEditSafe"],
-            serde_json::json!(false),
-            "{data:?}"
-        );
+        assert_eq!(data["support"], serde_json::json!("locked"), "{data:?}");
         assert!(result.stdout.is_none(), "{result:?}");
 
         let _ = std::fs::remove_dir_all(root);
@@ -5920,10 +5891,6 @@ mod tests {
                                 );
                             }
                         }
-                        SupportGuardPolicy::MetaRemove { requirement } => {
-                            assert_eq!(operation, "meta-remove");
-                            assert_eq!(requirement, SupportGuardRequirement::Removed);
-                        }
                         SupportGuardPolicy::ObjectName { requirement } => {
                             assert!(
                                 matches!(
@@ -5933,6 +5900,10 @@ mod tests {
                                 "{operation} unexpectedly uses object-name guard resolution"
                             );
                             assert_eq!(requirement, SupportGuardRequirement::Editable);
+                        }
+                        #[cfg(test)]
+                        SupportGuardPolicy::MetaRemove { .. } => {
+                            panic!("retired Meta remove guard leaked into public tools")
                         }
                     }
                     guarded.push(operation);
@@ -5956,9 +5927,6 @@ mod tests {
                 "form-remove",
                 "help-add",
                 "interface-edit",
-                "meta-compile",
-                "meta-edit",
-                "meta-remove",
                 "mxl-compile",
                 "role-compile",
                 "subsystem-compile",
@@ -6027,21 +5995,6 @@ mod tests {
             (
                 "cfe-patch-method",
                 &["ExtensionPath", "extensionPath"][..],
-                "DeclaredArgs",
-            ),
-            (
-                "meta-compile",
-                &["OutputDir", "outputDir"][..],
-                "DeclaredArgs",
-            ),
-            (
-                "meta-edit",
-                &["ObjectPath", "objectPath", "Path", "path"][..],
-                "HandlerResolved",
-            ),
-            (
-                "meta-remove",
-                &["ConfigDir", "configDir"][..],
                 "DeclaredArgs",
             ),
             ("help-add", &["SrcDir", "srcDir"][..], "DefaultSrcObject"),
@@ -6535,8 +6488,7 @@ mod tests {
                 ),
             ]);
 
-            let result = UnicaApplication::new()
-                .call_tool("unica.meta.edit", &args)
+            let result = call_legacy_metadata_tool_for_tests("unica.meta.edit", &args)
                 .expect("ownership ambiguity must use the structured format guard result");
 
             assert!(!result.ok, "dryRun={dry_run}: {result:?}");
@@ -6609,8 +6561,7 @@ mod tests {
                 ),
             ]);
 
-            let result = UnicaApplication::new()
-                .call_tool("unica.meta.edit", &args)
+            let result = call_legacy_metadata_tool_for_tests("unica.meta.edit", &args)
                 .expect("invalid standalone owner must use the structured format guard result");
 
             assert!(!result.ok, "{label}: {result:?}");
@@ -7566,15 +7517,6 @@ mod tests {
                 &[("ConfigPath", "configPath")][..],
             ),
             (
-                "unica.meta.edit",
-                json!({
-                    "objectPath": "src/Catalogs/Items.xml",
-                    "Operation": "modify-property",
-                    "dryRun": false
-                }),
-                &[("ObjectPath", "objectPath")][..],
-            ),
-            (
                 "unica.form.edit",
                 json!({
                     "formPath": "src/Catalogs/Items/Forms/Item/Ext/Form.xml",
@@ -8210,22 +8152,17 @@ mod tests {
         assert!(result.ok, "{:?}", result.errors);
         assert!(result.summary.contains("редактируется"));
         let mut info_args = Map::new();
-        info_args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
         info_args.insert("sourceSet".to_string(), Value::String("main".to_string()));
         info_args.insert(
             "metadataPath".to_string(),
             Value::String("Catalog.Items".to_string()),
         );
-        let info = UnicaApplication::new()
-            .call_tool("unica.meta.info", &info_args)
-            .unwrap();
+        let info =
+            call_public_tool_from_workspace(&workspace, "unica.meta.info", &info_args).unwrap();
         let info_data = info.data.as_ref().expect("meta.info answers with data");
         assert_eq!(
-            info_data["support"]["state"],
-            serde_json::json!("editableWithSupport"),
+            info_data["support"],
+            serde_json::json!("supported"),
             "{info_data:?}"
         );
 
@@ -8350,9 +8287,8 @@ mod tests {
             Value::String("Name=Changed".to_string()),
         );
 
-        let edit_result = UnicaApplication::new()
-            .call_tool("unica.meta.edit", &edit_args)
-            .unwrap();
+        let edit_result =
+            call_legacy_metadata_tool_for_tests("unica.meta.edit", &edit_args).unwrap();
 
         assert!(edit_result.ok, "{:?}", edit_result.errors);
         assert_ne!(std::fs::read_to_string(&object_path).unwrap(), before);
@@ -8397,9 +8333,7 @@ mod tests {
         );
         args.insert("OutputDir".to_string(), Value::String("src".to_string()));
 
-        let result = UnicaApplication::new()
-            .call_tool("unica.meta.compile", &args)
-            .unwrap();
+        let result = call_legacy_metadata_tool_for_tests("unica.meta.compile", &args).unwrap();
 
         assert!(result.ok, "{:?}", result.errors);
         assert!(result.summary.contains("dry run"), "{}", result.summary);
@@ -8785,9 +8719,8 @@ mod tests {
                 Value::String(json_path.display().to_string()),
             );
             compile_args.insert("OutputDir".to_string(), Value::String("src".to_string()));
-            let compile_result = UnicaApplication::new()
-                .call_tool("unica.meta.compile", &compile_args)
-                .unwrap();
+            let compile_result =
+                call_legacy_metadata_tool_for_tests("unica.meta.compile", &compile_args).unwrap();
             assert!(compile_result.ok, "{:?}", compile_result.stderr);
         }
         let mut args = Map::new();
@@ -8800,9 +8733,7 @@ mod tests {
             Value::String("src/Catalogs/Items.xml|src/Catalogs/Other.xml".to_string()),
         );
 
-        let result = UnicaApplication::new()
-            .call_tool("unica.meta.validate", &args)
-            .unwrap();
+        let result = call_legacy_metadata_tool_for_tests("unica.meta.validate", &args).unwrap();
 
         assert!(result.ok);
         assert!(result
@@ -8875,9 +8806,7 @@ mod tests {
             Value::String("HierarchyType=HierarchyItemsOnly".to_string()),
         );
 
-        let edit = UnicaApplication::new()
-            .call_tool("unica.meta.edit", &args)
-            .unwrap();
+        let edit = call_legacy_metadata_tool_for_tests("unica.meta.edit", &args).unwrap();
 
         assert!(edit.ok, "{:?}", edit.errors);
         let catalog_xml = std::fs::read_to_string(catalog_path).unwrap();
@@ -8949,9 +8878,7 @@ mod tests {
             Value::String("Status: fillValue=Enum.SampleStatus.EnumValue.Default".to_string()),
         );
 
-        let edit = UnicaApplication::new()
-            .call_tool("unica.meta.edit", &args)
-            .unwrap();
+        let edit = call_legacy_metadata_tool_for_tests("unica.meta.edit", &args).unwrap();
 
         assert!(edit.ok, "{:?}", edit.errors);
         let catalog_after = std::fs::read_to_string(catalog_path).unwrap();
@@ -9908,23 +9835,22 @@ mod tests {
             r#"{"type":"Catalog","name":"Items","synonym":"Items"}"#,
         )
         .unwrap();
-        let catalog_result = UnicaApplication::new()
-            .call_tool(
-                "unica.meta.compile",
-                &Map::from_iter([
-                    (
-                        "cwd".to_string(),
-                        Value::String(workspace.display().to_string()),
-                    ),
-                    ("dryRun".to_string(), Value::Bool(false)),
-                    (
-                        "JsonPath".to_string(),
-                        Value::String(catalog_definition.display().to_string()),
-                    ),
-                    ("OutputDir".to_string(), Value::String("src".to_string())),
-                ]),
-            )
-            .expect("catalog fixture must route through the public application boundary");
+        let catalog_result = call_legacy_metadata_tool_for_tests(
+            "unica.meta.compile",
+            &Map::from_iter([
+                (
+                    "cwd".to_string(),
+                    Value::String(workspace.display().to_string()),
+                ),
+                ("dryRun".to_string(), Value::Bool(false)),
+                (
+                    "JsonPath".to_string(),
+                    Value::String(catalog_definition.display().to_string()),
+                ),
+                ("OutputDir".to_string(), Value::String("src".to_string())),
+            ]),
+        )
+        .expect("catalog fixture must route through the public application boundary");
         assert!(catalog_result.ok, "{:?}", catalog_result.errors);
         std::fs::create_dir_all(&ext).unwrap();
         std::fs::create_dir_all(&forms).unwrap();
@@ -10586,10 +10512,8 @@ mod tests {
             ("unica.cf.info", "ConfigPath", "OutFile", "outFile"),
             ("unica.cf.validate", "ConfigPath", "OutFile", "outFile"),
             ("unica.cfe.validate", "ExtensionPath", "OutFile", "outFile"),
-            // `unica.meta.info` selects logically and has no source path
-            // argument to pair a sink with; its own contract test covers the
-            // rejected sink.
-            ("unica.meta.validate", "ObjectPath", "OutFile", "outFile"),
+            // Retired metadata readers are covered by the exact unknown-tool
+            // contract; typed meta.info has no output sink in its schema.
             ("unica.interface.validate", "CIPath", "OutFile", "outFile"),
             (
                 "unica.subsystem.info",
@@ -10654,7 +10578,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_and_dcs_format_warnings_leave_source_trees_unchanged() {
+    fn dcs_format_warnings_leave_source_trees_unchanged() {
         let dcs_fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
             "../../tests/fixtures/unica_mcp_script_parity/bsp/dcs/DataProcessors__ВыгрузкаЗагрузкаEnterpriseData__СхемаКомпоновкиДанных/Template.xml",
         );
@@ -10692,19 +10616,10 @@ mod tests {
             .unwrap();
             std::fs::copy(&dcs_fixture, &template).unwrap();
 
-            let logical_object = vec![
-                ("sourceSet".to_string(), Value::String("main".to_string())),
-                (
-                    "metadataPath".to_string(),
-                    Value::String("Catalog.Items".to_string()),
-                ),
-            ];
             let path_selector = |name: &str, path: &std::path::Path| {
                 vec![(name.to_string(), Value::String(path.display().to_string()))]
             };
             for (tool, selector) in [
-                ("unica.meta.info", logical_object),
-                ("unica.meta.validate", path_selector("ObjectPath", &object)),
                 ("unica.dcs.info", path_selector("TemplatePath", &template)),
                 (
                     "unica.dcs.validate",
@@ -10839,9 +10754,7 @@ mod tests {
             Value::String(json_path.display().to_string()),
         );
         args.insert("OutputDir".to_string(), Value::String("src".to_string()));
-        UnicaApplication::new()
-            .call_tool("unica.meta.compile", &args)
-            .unwrap()
+        call_legacy_metadata_tool_for_tests("unica.meta.compile", &args).unwrap()
     }
 
     fn call_meta_validate(workspace: &std::path::Path, object_path: &str) -> OperationResult {
@@ -10854,9 +10767,7 @@ mod tests {
             "ObjectPath".to_string(),
             Value::String(object_path.to_string()),
         );
-        UnicaApplication::new()
-            .call_tool("unica.meta.validate", &args)
-            .unwrap()
+        call_legacy_metadata_tool_for_tests("unica.meta.validate", &args).unwrap()
     }
 
     fn leading_utf8_bom_count(bytes: &[u8]) -> usize {
@@ -10941,9 +10852,7 @@ mod tests {
             Value::String("Name=Changed".to_string()),
         );
 
-        let result = UnicaApplication::new()
-            .call_tool("unica.meta.edit", &args)
-            .unwrap();
+        let result = call_legacy_metadata_tool_for_tests("unica.meta.edit", &args).unwrap();
 
         assert!(!result.ok);
         assert!(result.summary.contains("support guard"));
@@ -11013,9 +10922,7 @@ mod tests {
             Value::String("Name=Changed".to_string()),
         );
 
-        let result = UnicaApplication::new()
-            .call_tool("unica.meta.edit", &args)
-            .unwrap();
+        let result = call_legacy_metadata_tool_for_tests("unica.meta.edit", &args).unwrap();
 
         assert!(result.ok);
         assert!(result.warnings.join("\n").contains("support guard"));
@@ -11075,9 +10982,7 @@ mod tests {
         let mut results = Vec::new();
         for dry_run in [false, true] {
             args.insert("dryRun".to_string(), Value::Bool(dry_run));
-            let result = UnicaApplication::new()
-                .call_tool("unica.meta.remove", &args)
-                .unwrap();
+            let result = call_legacy_metadata_tool_for_tests("unica.meta.remove", &args).unwrap();
 
             assert!(!result.ok, "dryRun={dry_run}: {result:?}");
             assert_eq!(
@@ -11240,6 +11145,7 @@ mod tests {
             support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
         )
         .unwrap();
+        write_support_test_language(&src);
         std::fs::write(
             catalogs.join("Items.xml"),
             support_test_catalog_xml("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
@@ -11481,8 +11387,7 @@ mod tests {
             Value::String("../outside".to_string()),
         );
 
-        let error = UnicaApplication::new()
-            .call_tool("unica.meta.compile", &args)
+        let error = call_legacy_metadata_tool_for_tests("unica.meta.compile", &args)
             .expect_err("preview must enforce the same output path policy as apply");
 
         assert!(error.contains("outside workspace root"), "{error}");
@@ -11555,8 +11460,7 @@ mod tests {
         );
         args.insert("OutputDir".to_string(), Value::String("src".to_string()));
 
-        let error = UnicaApplication::new()
-            .call_tool("unica.meta.compile", &args)
+        let error = call_legacy_metadata_tool_for_tests("unica.meta.compile", &args)
             .expect_err("preview must enforce the same source-format guard as apply");
 
         assert!(error.contains("sourceFormat=edt"), "{error}");
@@ -11631,9 +11535,7 @@ mod tests {
         );
         args.insert("OutputDir".to_string(), Value::String("src".to_string()));
 
-        let result = UnicaApplication::new()
-            .call_tool("unica.meta.compile", &args)
-            .unwrap();
+        let result = call_legacy_metadata_tool_for_tests("unica.meta.compile", &args).unwrap();
 
         assert!(!result.ok, "{result:?}");
         assert!(result.summary.contains("dry run"), "{}", result.summary);
@@ -11686,9 +11588,7 @@ mod tests {
         );
         args.insert("OutputDir".to_string(), Value::String("src".to_string()));
 
-        let result = UnicaApplication::new()
-            .call_tool("unica.meta.compile", &args)
-            .unwrap();
+        let result = call_legacy_metadata_tool_for_tests("unica.meta.compile", &args).unwrap();
 
         assert!(!result.ok, "{result:?}");
         assert_eq!(
@@ -11735,11 +11635,7 @@ mod tests {
                 Value::String("Name=Changed".to_string()),
             );
 
-            results.push(
-                UnicaApplication::new()
-                    .call_tool("unica.meta.edit", &args)
-                    .unwrap(),
-            );
+            results.push(call_legacy_metadata_tool_for_tests("unica.meta.edit", &args).unwrap());
         }
 
         let applied = &results[0];

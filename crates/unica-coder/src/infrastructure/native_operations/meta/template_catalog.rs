@@ -2544,7 +2544,15 @@ pub(super) fn emit_meta_common_module_properties(
         .get("context")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let mut server = bool_arg_from_json(defn, "server");
+    // A newly added common module must have at least one execution context;
+    // otherwise the typed object is structurally valid but cannot be borrowed
+    // into an extension or used by code tooling. Legacy DSL definitions keep
+    // their explicit context semantics, while the typed minimal template uses
+    // the server as its conservative executable default.
+    let mut server = match defn {
+        MetaTemplateDefinition::Minimal(_) => true,
+        MetaTemplateDefinition::Legacy(_) => bool_arg_from_json(defn, "server"),
+    };
     let mut server_call = bool_arg_from_json(defn, "serverCall");
     let mut client_managed = bool_arg_from_json(defn, "clientManagedApplication");
     match context {

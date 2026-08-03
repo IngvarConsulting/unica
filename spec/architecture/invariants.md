@@ -174,6 +174,17 @@ Unica. Каждая запись формулирует одно нормати�
 
 ## MCP — публичная MCP-поверхность
 
+### INV-MCP-META-SURFACE — Метаданные доступны четырьмя предметными операциями
+
+- **Rule:** Публичная группа метаданных содержит только `unica.meta.info`,
+  `unica.meta.add`, `unica.meta.edit` и `unica.meta.remove`; они используют
+  логические аргументы в нижнем верблюжьем регистре, возвращают типизированные данные без
+  `stdout`, а снятые маршруты и физические или файловые DSL-селекторы не
+  регистрируются и не принимаются.
+- **Decision:** ADR-0025
+- **Check:** `ci-test` — `tests/ci/test_meta_surface_contract.py`
+- **Scope:** source, packaged, runtime
+
 ### INV-MCP-XDTO-LOGICAL-TARGET — XDTO-пакет выбирается логическим адресом
 
 - **Rule:** `unica.xdto.info` и `unica.xdto.edit` принимают XDTO-пакет только

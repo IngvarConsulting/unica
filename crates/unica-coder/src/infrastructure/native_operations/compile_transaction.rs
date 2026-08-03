@@ -3264,8 +3264,7 @@ mod tests {
             Value::String(json_path.display().to_string()),
         );
         args.insert("OutputDir".to_string(), Value::String("src".to_string()));
-        UnicaApplication::new()
-            .call_tool("unica.meta.compile", &args)
+        crate::application::call_legacy_metadata_tool_for_tests("unica.meta.compile", &args)
             .unwrap()
     }
 

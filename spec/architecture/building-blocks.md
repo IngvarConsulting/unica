@@ -60,7 +60,7 @@
 | `unica.project.*` | состояние рабочего пространства и карта наборов исходников | `infrastructure/application_ports.rs` поверх `infrastructure/project_sources.rs` и `GitTrackingAdapter` |
 | `unica.cf.*` | контейнер конфигурации: создание, чтение, правка, валидация | `infrastructure/native_operations/cf.rs` |
 | `unica.cfe.*` | расширения конфигурации: создание, заимствование, перехват, сравнение | `native_operations/cfe.rs` |
-| `unica.meta.*` | объекты метаданных и их структура | `native_operations/meta.rs`; отдельно `unica.meta.profile` — поставщик RLM через `infrastructure/rlm_navigation.rs` |
+| `unica.meta.*` | создание, чтение, типизированная правка и удаление объектов метаданных | координатор `application/metadata.rs` поверх `infrastructure/metadata_operations.rs`; индексное обогащение `meta.info` остаётся приватной возможностью `infrastructure/rlm_navigation.rs` (ADR-0025, INV-MCP-META-SURFACE) |
 | `unica.form.*` | управляемые формы | `native_operations/form.rs` |
 | `unica.dcs.*` | схемы компоновки данных | `native_operations/dcs.rs` |
 | `unica.mxl.*` | табличные документы | `native_operations/mxl.rs` |

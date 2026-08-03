@@ -1,4 +1,4 @@
-use super::{OperationResult, UnicaApplication};
+use super::{compile_legacy_metadata_fixture, OperationResult, UnicaApplication};
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -65,23 +65,19 @@ fn create_remove_workspace(label: &str) -> TempWorkspace {
         .unwrap(),
     )
     .unwrap();
-    let compiled = UnicaApplication::new()
-        .call_tool(
-            "unica.meta.compile",
-            &Map::from_iter([
-                (
-                    "cwd".to_string(),
-                    Value::String(workspace.path().display().to_string()),
-                ),
-                (
-                    "JsonPath".to_string(),
-                    Value::String(definition.display().to_string()),
-                ),
-                ("OutputDir".to_string(), Value::String("src".to_string())),
-                ("dryRun".to_string(), Value::Bool(false)),
-            ]),
-        )
-        .unwrap();
+    let compiled = compile_legacy_metadata_fixture(&Map::from_iter([
+        (
+            "cwd".to_string(),
+            Value::String(workspace.path().display().to_string()),
+        ),
+        (
+            "JsonPath".to_string(),
+            Value::String(definition.display().to_string()),
+        ),
+        ("OutputDir".to_string(), Value::String("src".to_string())),
+        ("dryRun".to_string(), Value::Bool(false)),
+    ]))
+    .unwrap();
     assert!(compiled.ok, "{:?}", compiled.errors);
     workspace
 }
@@ -100,8 +96,7 @@ fn remove_args(dry_run: bool) -> Map<String, Value> {
 fn call_remove(workspace: &Path, dry_run: bool) -> OperationResult {
     let previous = std::env::current_dir().unwrap();
     std::env::set_current_dir(workspace).unwrap();
-    let result = UnicaApplication::new()
-        .call_unregistered_meta_remove_for_integration_tests(&remove_args(dry_run));
+    let result = UnicaApplication::new().call_tool("unica.meta.remove", &remove_args(dry_run));
     std::env::set_current_dir(previous).unwrap();
     result.expect("private typed meta.remove call")
 }

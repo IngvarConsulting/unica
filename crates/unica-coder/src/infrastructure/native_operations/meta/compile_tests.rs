@@ -553,9 +553,9 @@ mod owner_contract_tests {
             ("OutputDir".to_string(), json!("src")),
         ]);
 
-        let outcome = UnicaApplication::new()
-            .call_tool("unica.meta.compile", &args)
-            .unwrap();
+        let outcome =
+            crate::application::call_legacy_metadata_tool_for_tests("unica.meta.compile", &args)
+                .unwrap();
 
         assert!(!outcome.ok, "{outcome:?}");
         let diagnostics = outcome.errors.join("\n").replace('\\', "/");
@@ -650,9 +650,9 @@ mod owner_contract_tests {
             ("OutputDir".to_string(), json!("src")),
         ]);
 
-        let outcome = UnicaApplication::new()
-            .call_tool("unica.meta.compile", &args)
-            .unwrap();
+        let outcome =
+            crate::application::call_legacy_metadata_tool_for_tests("unica.meta.compile", &args)
+                .unwrap();
 
         assert!(!outcome.ok, "{outcome:?}");
         let diagnostic = &outcome.diagnostics.as_ref().unwrap()["formatCompatibility"];
@@ -712,9 +712,9 @@ mod owner_contract_tests {
 
         assert!(!descriptor_path.exists());
         assert!(!object_module_path.exists());
-        let outcome = UnicaApplication::new()
-            .call_tool("unica.meta.compile", &args)
-            .unwrap();
+        let outcome =
+            crate::application::call_legacy_metadata_tool_for_tests("unica.meta.compile", &args)
+                .unwrap();
 
         assert!(!outcome.ok, "{outcome:?}");
         let diagnostic = &outcome.diagnostics.as_ref().unwrap()["formatCompatibility"];
@@ -864,9 +864,9 @@ mod owner_contract_tests {
             ("dryRun".to_string(), json!(false)),
         ]);
 
-        let outcome = UnicaApplication::new()
-            .call_tool("unica.meta.remove", &args)
-            .unwrap();
+        let outcome =
+            crate::application::call_legacy_metadata_tool_for_tests("unica.meta.remove", &args)
+                .unwrap();
 
         assert!(!outcome.ok, "{outcome:?}");
         let diagnostic = &outcome

@@ -1,60 +1,40 @@
 #[test]
-fn internal_meta_add_remains_absent_from_the_production_registry() {
-    let names = unica_coder::application::tools()
-        .into_iter()
-        .map(|tool| tool.name)
-        .collect::<Vec<_>>();
-
-    assert!(!names.contains(&"unica.meta.add"));
-}
-
-#[test]
-fn meta_edit_keeps_the_current_public_registry_entry_until_the_atomic_switch() {
-    let names = unica_coder::application::tools()
-        .into_iter()
-        .map(|tool| tool.name)
-        .collect::<Vec<_>>();
-
-    assert!(names.contains(&"unica.meta.edit"));
-    assert!(!names.contains(&"unica.meta.add"));
-}
-
-#[test]
-fn meta_remove_keeps_the_legacy_public_entry_until_the_atomic_switch() {
+fn public_meta_surface_is_the_exact_four_typed_operations() {
     let tools = unica_coder::application::tools();
-    let names = tools.iter().map(|tool| tool.name).collect::<Vec<_>>();
-
-    assert!(names.contains(&"unica.meta.remove"));
-    assert_eq!(
-        names
-            .iter()
-            .filter(|name| name.starts_with("unica.meta."))
-            .count(),
-        6
-    );
-    assert!(!names.contains(&"unica.meta.add"));
-}
-
-#[test]
-fn meta_info_keeps_the_legacy_public_entry_until_the_atomic_switch() {
-    let tools = unica_coder::application::tools();
-    let info = tools
+    let meta = tools
         .iter()
-        .find(|tool| tool.name == "unica.meta.info")
-        .expect("the current six-tool registry must retain meta.info");
+        .filter(|tool| tool.name.starts_with("unica.meta."))
+        .collect::<Vec<_>>();
 
-    assert!(matches!(
-        info.handler,
-        unica_coder::application::ToolHandler::NativeOperation {
-            operation: "meta-info",
-            event: None
-        }
-    ));
     assert_eq!(
-        tools
-            .iter()
-            .filter(|tool| tool.name.starts_with("unica.meta."))
-            .count(),
-        6
+        meta.iter().map(|tool| tool.name).collect::<Vec<_>>(),
+        vec![
+            "unica.meta.info",
+            "unica.meta.add",
+            "unica.meta.edit",
+            "unica.meta.remove",
+        ]
     );
+    assert!(!meta[0].mutating);
+    assert!(meta[1..].iter().all(|tool| tool.mutating));
+    assert!(meta.iter().all(|tool| matches!(
+        tool.handler,
+        unica_coder::application::ToolHandler::Metadata { .. }
+    )));
+}
+
+#[test]
+fn retired_meta_routes_are_not_registered() {
+    let names = unica_coder::application::tools()
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect::<Vec<_>>();
+
+    for retired in [
+        "unica.meta.compile",
+        "unica.meta.profile",
+        "unica.meta.validate",
+    ] {
+        assert!(!names.contains(&retired), "retired {retired} is public");
+    }
 }

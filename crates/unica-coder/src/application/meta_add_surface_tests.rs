@@ -1,4 +1,4 @@
-use super::{OperationResult, UnicaApplication};
+use super::{compile_legacy_metadata_fixture, OperationResult, UnicaApplication};
 use crate::domain::cancellation::CancellationToken;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -106,9 +106,8 @@ fn create_configuration_workspace(label: &str) -> TempWorkspace {
         ("OutputDir".to_string(), Value::String("src".to_string())),
         ("dryRun".to_string(), Value::Bool(false)),
     ]);
-    let compiled = UnicaApplication::new()
-        .call_tool("unica.meta.compile", &compile_args)
-        .expect("prerequisite metadata compile");
+    let compiled =
+        compile_legacy_metadata_fixture(&compile_args).expect("prerequisite metadata compile");
     assert!(compiled.ok, "{:?}", compiled.errors);
     std::fs::write(
         workspace
@@ -138,9 +137,8 @@ fn add_args(workspace: &Path, kind: &str, name: &str, dry_run: bool) -> Map<Stri
 fn call_add(workspace: &Path, kind: &str, name: &str, dry_run: bool) -> OperationResult {
     let previous = std::env::current_dir().unwrap();
     std::env::set_current_dir(workspace).unwrap();
-    let result = UnicaApplication::new().call_unregistered_meta_add_for_integration_tests(
-        &add_args(workspace, kind, name, dry_run),
-    );
+    let result = UnicaApplication::new()
+        .call_tool("unica.meta.add", &add_args(workspace, kind, name, dry_run));
     std::env::set_current_dir(previous).unwrap();
     result.expect("internal meta.add call")
 }
@@ -368,6 +366,12 @@ fn meta_add_apply_all_23_kinds_is_atomic_and_duplicate_is_byte_stable() {
             );
             assert!(!xml.contains("cfg:CatalogRef.AppliedCatalog"));
         }
+        if *kind == "CommonModule" {
+            assert!(
+                xml.contains("<Server>true</Server>"),
+                "minimal typed common module must be executable: {xml}"
+            );
+        }
         let owner =
             std::fs::read_to_string(workspace.path().join("src/Configuration.xml")).unwrap();
         assert!(
@@ -433,7 +437,8 @@ fn meta_add_apply_honors_prepublication_cancellation_without_writes() {
     let cancellation = CancellationToken::new();
     cancellation.cancel();
     let result = UnicaApplication::new()
-        .call_unregistered_meta_add_cancellable_for_integration_tests(
+        .call_tool_cancellable(
+            "unica.meta.add",
             &add_args(workspace.path(), "Catalog", "Cancelled", false),
             cancellation,
         )

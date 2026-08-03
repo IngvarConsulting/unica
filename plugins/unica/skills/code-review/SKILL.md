@@ -7,7 +7,7 @@ description: "Код-ревью BSL и изменений 1С. Использу�
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.code.definition`, `unica.code.outline`, `unica.code.graph`, `unica.code.diagnostics`, `unica.meta.profile`, `unica.standards.explain`, `unica.standards.search`, `unica.project.map`, and `unica.runtime.execute`.
+- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.code.definition`, `unica.code.outline`, `unica.code.graph`, `unica.code.diagnostics`, `unica.meta.info`, `unica.standards.explain`, `unica.standards.search`, `unica.project.map`, and `unica.runtime.execute`.
 - Use `unica.*.info` tools before reviewing code that depends on metadata shape, form structure, rights, DCS, MXL, or interfaces.
 - Do not call internal analyzer, standards, runtime, or package adapters directly. They are hidden behind MCP `unica`.
 
@@ -19,7 +19,7 @@ Lead with findings. Order them by severity and ground each finding in a file/lin
 
 1. Identify the review scope: changed files, target source-set, affected metadata objects, public entry points.
 2. Resolve changed exported methods and entry points with `unica.code.definition`; inspect large modules with `unica.code.outline`.
-3. Use `unica.meta.profile` for affected metadata objects to connect the review scope with modules, roles, subscriptions, functional options, and predefined items.
+3. Use `unica.meta.info` for affected metadata objects to connect the review scope with modules, roles, subscriptions, functional options, and predefined items.
 4. Use `unica.code.graph` for callers, callees, neighbors, and impact analysis when a changed method/node can be resolved. Use `unica.code.search` for handlers, literals, query fragments, and non-method tokens.
 5. Inspect metadata with `unica.*.info` when code depends on object structure.
 6. Run `unica.code.diagnostics` when the review includes BSL code. Use `mode=file` for touched modules and `mode=workspace` only when the review scope is broad. Use `unica.standards.explain` for diagnostic codes or standards-sensitive claims.

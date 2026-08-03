@@ -1,4 +1,3 @@
-use crate::domain::metadata::MetaProfileResult;
 use crate::domain::{
     cancellation::CancellationToken, source_roots::ResolvedSourceRoot, workspace::WorkspaceContext,
 };
@@ -52,11 +51,6 @@ pub enum CodeIntelligenceReadRequest {
         path: String,
         include_methods: bool,
     },
-    ObjectProfile {
-        name: String,
-        sections: Option<Vec<String>>,
-        limit: usize,
-    },
 }
 
 impl CodeIntelligenceReadRequest {
@@ -64,7 +58,6 @@ impl CodeIntelligenceReadRequest {
         match self {
             Self::Definition { .. } => ProviderCapability::Definition,
             Self::Outline { .. } => ProviderCapability::Outline,
-            Self::ObjectProfile { .. } => ProviderCapability::ObjectProfile,
         }
     }
 
@@ -72,7 +65,6 @@ impl CodeIntelligenceReadRequest {
         match self {
             Self::Definition { .. } => "code definition",
             Self::Outline { .. } => "code outline",
-            Self::ObjectProfile { .. } => "metadata object profile",
         }
     }
 }
@@ -226,7 +218,6 @@ pub struct CodeOutlineParameter {
 pub enum CodeIntelligenceReadData {
     Outline(CodeOutlineResult),
     Definition(CodeDefinitionResult),
-    ObjectProfile(MetaProfileResult),
 }
 
 /// Typed answer of `unica.code.definition` (ADR-0023). The index already

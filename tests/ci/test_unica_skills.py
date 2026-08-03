@@ -60,11 +60,11 @@ IN_SCOPE_TOOLS = {
     "cfe-validate": "unica.cfe.validate",
     "epf-init": "unica.epf.init",
     "erf-init": "unica.erf.init",
-    "meta-compile": "unica.meta.compile",
+    "meta-compile": "unica.meta.add",
     "meta-edit": "unica.meta.edit",
     "meta-info": "unica.meta.info",
     "meta-remove": "unica.meta.remove",
-    "meta-validate": "unica.meta.validate",
+    "meta-validate": "unica.meta.info",
     "form-add": "unica.form.add",
     "form-compile": "unica.form.compile",
     "form-edit": "unica.form.edit",
@@ -101,7 +101,6 @@ SCENARIO_SKILLS = {
         "unica.project.map",
         "unica.subsystem.info",
         "unica.meta.info",
-        "unica.meta.profile",
         "unica.standards.search",
         "unica.standards.explain",
         "unica.runtime.execute",
@@ -110,7 +109,7 @@ SCENARIO_SKILLS = {
         "unica.code.search",
         "unica.code.definition",
         "unica.code.outline",
-        "unica.meta.profile",
+        "unica.meta.info",
         "unica.project.map",
     ],
     "code-diagnostics": [
@@ -125,7 +124,7 @@ SCENARIO_SKILLS = {
         "unica.code.definition",
         "unica.code.outline",
         "unica.code.diagnostics",
-        "unica.meta.profile",
+        "unica.meta.info",
         "unica.standards.explain",
         "unica.standards.search",
         "unica.project.map",
@@ -136,7 +135,6 @@ SCENARIO_SKILLS = {
         "unica.code.outline",
         "unica.dcs.info",
         "unica.meta.info",
-        "unica.meta.profile",
         "unica.standards.search",
         "unica.standards.explain",
         "unica.runtime.execute",
@@ -163,7 +161,7 @@ SCENARIO_SKILLS = {
     "integration-implement": [
         "unica.project.map",
         "unica.meta.info",
-        "unica.meta.compile",
+        "unica.meta.add",
         "unica.meta.edit",
         "unica.code.search",
         "unica.standards.search",
@@ -208,7 +206,6 @@ SCENARIO_SKILLS = {
         "unica.code.search",
         "unica.code.outline",
         "unica.meta.info",
-        "unica.meta.profile",
         "unica.dcs.info",
         "unica.code.diagnostics",
         "unica.standards.search",
@@ -328,11 +325,11 @@ TASK_EXAMPLE_ARGUMENT_KEYS = {
     "cfe-validate": ["ExtensionPath"],
     "epf-init": ["Name", "OutputDir", "FormName"],
     "erf-init": ["Name", "OutputDir", "FormName"],
-    "meta-compile": ["JsonPath", "OutputDir"],
-    "meta-edit": ["ObjectPath", "Operation", "Value"],
+    "meta-compile": ["sourceSet", "kind", "name"],
+    "meta-edit": ["sourceSet", "metadataPath", "operations"],
     "meta-info": ["sourceSet", "metadataPath"],
-    "meta-remove": ["ConfigDir", "Object"],
-    "meta-validate": ["ObjectPath"],
+    "meta-remove": ["sourceSet", "metadataPath", "dryRun"],
+    "meta-validate": ["sourceSet", "metadataPath"],
     "form-add": ["ObjectPath", "FormName", "Purpose"],
     "form-compile": ["JsonPath", "OutputPath"],
     "form-edit": ["FormPath", "JsonPath"],
@@ -371,10 +368,10 @@ SCENARIO_PRESERVING_MIN_MCP_CALLS = {
     "cfe-init": 6,
     "cfe-patch-method": 4,
     "cfe-validate": 2,
-    "meta-edit": 11,
+    "meta-edit": 2,
     "meta-info": 14,
-    "meta-remove": 5,
-    "meta-validate": 2,
+    "meta-remove": 1,
+    "meta-validate": 1,
     "form-add": 6,
     "form-compile": 4,
     "form-validate": 2,
@@ -403,7 +400,6 @@ ALLOWED_ADDITIONAL_MCP_TOOL_NAMES = {
     "erf-init": {"unica.runtime.execute"},
     "form-compile": {"unica.form.info", "unica.form.validate"},
     "interface-edit": {"unica.interface.validate"},
-    "meta-edit": {"unica.meta.info", "unica.meta.validate"},
     "role-compile": {"unica.role.info", "unica.role.validate"},
     "dcs-compile": {"unica.dcs.info", "unica.dcs.validate"},
     "dcs-edit": {"unica.dcs.info", "unica.dcs.validate"},
@@ -460,17 +456,10 @@ SCENARIO_PRESERVING_TOKENS = {
         '"IsFunction": false',
     ],
     "meta-edit": [
-        '"Value": "Комментарий: Строка(200) ;; Сумма: Число(15,2) | index"',
-        '"Value": "Значение: Строка + Число(15,2) + Дата + CatalogRef.Контрагенты"',
-        '"Operation": "add-ts"',
-        '"Value": "Товары: Ном: CatalogRef.Ном | req, Кол: Число(15,3), Цена: Число(15,2)"',
-        '"Operation": "remove-attribute"',
-        '"Operation": "modify-attribute"',
-        '"Operation": "modify-property"',
-        '"Operation": "set-owners"',
-        '"Value": "Catalog.Контрагенты ;; Catalog.Организации"',
-        '"name": "unica.meta.validate"',
-        '"name": "unica.meta.info"',
+        '"op": "setProperties"',
+        '"op": "add"',
+        '"collection": "attributes"',
+        '"allowedLength": "variable"',
     ],
     # `Name` and `Mode` were report selectors. The typed answer carries the
     # whole object, so the scenarios are preserved by the addresses they read,
@@ -483,10 +472,9 @@ SCENARIO_PRESERVING_TOKENS = {
         '"metadataPath": "DefinedType.GLN"',
     ],
     "meta-remove": [
-        '"Object": "Catalog.Устаревший"',
+        '"metadataPath": "Catalog.Устаревший"',
+        '`force: true`, `confirm: true`, `dryRun: false`',
         '"dryRun": true',
-        '"Force": true',
-        '"Object": "CommonModule.МойМодуль"',
     ],
     "form-add": [
         '"ObjectPath": "Documents/АвансовыйОтчет.xml"',
@@ -570,7 +558,10 @@ SCENARIO_PRESERVING_TOKENS = {
 # must not keep advertising them: the server would answer such a call with
 # "does not accept argument", so a leftover example is a broken instruction.
 SCENARIO_RETIRED_TOKENS = {
-    "meta-remove": ['"KeepFiles"', '"keepFiles"'],
+    "meta-compile": ['"JsonPath"', '"OutputDir"'],
+    "meta-edit": ['"ObjectPath"', '"Operation"', '"Value"', '"DefinitionFile"'],
+    "meta-remove": ['"ConfigDir"', '"Object"', '"Force"', '"KeepFiles"', '"keepFiles"'],
+    "meta-validate": ['"ObjectPath"', '"Detailed"', '"MaxErrors"'],
     "cf-info": ['"Mode"', '"Section"', '"Limit"', '"Offset"'],
     "role-info": ['"ShowDenied"', '"Limit"', '"Offset"'],
     "subsystem-info": ['"Mode"', '"Name"', '"Limit"', '"Offset"'],
@@ -779,10 +770,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                     skill_text,
                 )
 
-        meta_edit_docs = [
-            self.skill_root() / "meta-edit" / "SKILL.md",
-            self.skill_root() / "meta-edit" / "child-operations.md",
-        ]
+        meta_edit_docs = [self.skill_root() / "meta-edit" / "child-operations.md"]
         for doc_path in meta_edit_docs:
             doc = doc_path.read_text(encoding="utf-8")
             with self.subTest(path=doc_path.relative_to(self.repo_root())):
@@ -1310,18 +1298,38 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertNotIn(".ps1", meta_info)
         self.assertNotIn(".py", meta_info)
 
-    def test_meta_compile_tracks_upstream_choice_history_through_unica_boundary(self) -> None:
+    def test_meta_compile_routes_creation_without_erasing_upstream_facts(self) -> None:
         meta_compile = (self.skill_root() / "meta-compile" / "SKILL.md").read_text(
             encoding="utf-8"
         )
+        format_facts = (
+            self.reference_root() / "specs" / "1c-config-objects-spec.md"
+        ).read_text(encoding="utf-8")
 
         self.assertIn("MCP `unica`", meta_compile)
-        self.assertIn("unica.meta.compile", meta_compile)
-        self.assertIn("choiceHistoryOnInput", meta_compile)
+        self.assertIn("unica.meta.add", meta_compile)
+        self.assertNotIn("unica.meta.compile", meta_compile)
+        self.assertNotIn('"JsonPath"', meta_compile)
+        self.assertIn("ChoiceHistoryOnInput", format_facts)
         self.assertNotIn("CLAUDE_SKILL_DIR", meta_compile)
         self.assertNotIn("powershell.exe", meta_compile)
         self.assertNotIn(".ps1", meta_compile)
         self.assertNotIn(".py", meta_compile)
+
+    def test_top_level_skills_never_route_to_retired_meta_tools(self) -> None:
+        retired = {
+            "unica.meta.compile",
+            "unica.meta.profile",
+            "unica.meta.validate",
+        }
+        offenders = {
+            path.relative_to(self.repo_root()).as_posix(): sorted(
+                name for name in retired if name in path.read_text(encoding="utf-8")
+            )
+            for path in sorted(self.skill_root().glob("*/SKILL.md"))
+            if any(name in path.read_text(encoding="utf-8") for name in retired)
+        }
+        self.assertEqual(offenders, {})
 
     def test_support_state_reporting_is_documented_for_info_skills(self) -> None:
         for skill in (

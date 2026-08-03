@@ -24,6 +24,12 @@ SOURCE_TOOL_NAMES = {
     "unica.source.resources",
     "unica.source.read",
 }
+META_TOOL_NAMES = {
+    "unica.meta.info",
+    "unica.meta.add",
+    "unica.meta.edit",
+    "unica.meta.remove",
+}
 
 
 def _valid_unica_tool_name(value: object) -> bool:
@@ -135,7 +141,7 @@ EXPECTED_SOURCE_INPUT_SCHEMAS = json.loads(
         "type": "boolean"
       },
       "limit": {
-        "description": "Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, meta.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, meta.profile 20, code.graph nodes, code.diagnostics findings, standards results).",
+        "description": "Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results).",
         "maximum": 50,
         "minimum": 1,
         "type": "integer"
@@ -174,7 +180,7 @@ EXPECTED_SOURCE_INPUT_SCHEMAS = json.loads(
         "type": "boolean"
       },
       "limit": {
-        "description": "Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, meta.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, meta.profile 20, code.graph nodes, code.diagnostics findings, standards results).",
+        "description": "Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results).",
         "maximum": 65536,
         "minimum": 1,
         "type": "integer"
@@ -225,7 +231,7 @@ EXPECTED_SOURCE_INPUT_SCHEMAS = json.loads(
         "type": "boolean"
       },
       "limit": {
-        "description": "Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, meta.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, meta.profile 20, code.graph nodes, code.diagnostics findings, standards results).",
+        "description": "Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results).",
         "maximum": 50,
         "minimum": 1,
         "type": "integer"
@@ -333,7 +339,7 @@ EXPECTED_SOURCE_INPUT_SCHEMAS = json.loads(
         "type": "boolean"
       },
       "limit": {
-        "description": "Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, meta.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, meta.profile 20, code.graph nodes, code.diagnostics findings, standards results).",
+        "description": "Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results).",
         "maximum": 50,
         "minimum": 1,
         "type": "integer"
@@ -403,7 +409,7 @@ EXPECTED_XDTO_INPUT_SCHEMAS = json.loads(
         "type": "integer",
         "minimum": 1,
         "maximum": 50,
-        "description": "Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, meta.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, meta.profile 20, code.graph nodes, code.diagnostics findings, standards results)."
+        "description": "Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results)."
       },
       "metadataPath": {
         "type": "string",
@@ -475,7 +481,7 @@ EXPECTED_XDTO_INPUT_SCHEMAS = json.loads(
         "type": "string",
         "minLength": 1,
         "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$",
-        "description": "Name of the object being created (`cf.init`, `cfe.init`, `epf.init`, `erf.init`), or the drill-down target for `meta.info`, `subsystem.info` and `dcs.info`; on `cf.info` it is an alias of `section`"
+        "description": "Name of the object being created (`cf.init`, `cfe.init`, `epf.init`, `erf.init`), or the drill-down target for `subsystem.info` and `dcs.info`; on `cf.info` it is an alias of `section`"
       },
       "operation": {
         "type": "string",
@@ -486,7 +492,7 @@ EXPECTED_XDTO_INPUT_SCHEMAS = json.loads(
           "remove-type",
           "remove-property"
         ],
-        "description": "Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; the metadata edit verbs for unica.meta.edit; `add-value-type`, `add-object-type`, `add-property`, `remove-type` or `remove-property` for `unica.xdto.edit` — read the enum published in the tool's own schema."
+        "description": "Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; `add-value-type`, `add-object-type`, `add-property`, `remove-type` or `remove-property` for `unica.xdto.edit` — read the enum published in the tool's own schema."
       },
       "property": {
         "type": "object",
@@ -1278,6 +1284,14 @@ def _stable_tool_contract(tools: list[object], expected_names: set[str]) -> None
         by_name[name] = tool
         name_counts[name] = name_counts.get(name, 0) + 1
     actual_names = set(by_name)
+    actual_meta_names = {
+        name for name in actual_names if name.startswith("unica.meta.")
+    }
+    if actual_meta_names != META_TOOL_NAMES:
+        raise SystemExit(
+            "Unica MCP Meta surface differs from INV-MCP-META-SURFACE "
+            f"(expected: {sorted(META_TOOL_NAMES)}; actual: {sorted(actual_meta_names)})"
+        )
     missing = sorted(expected_names - actual_names)
     unexpected = sorted(actual_names - expected_names)
     duplicates = sorted(name for name, count in name_counts.items() if count > 1)

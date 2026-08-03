@@ -338,15 +338,6 @@ impl<'a> RlmNavigationAdapter<'a> {
                 outcome.warnings.extend(warnings);
                 data = Some(CodeIntelligenceReadData::Definition(result));
             }
-            CodeIntelligenceReadRequest::ObjectProfile { .. } => {
-                let result = profile_result(&value)?;
-                outcome.summary = format!(
-                    "{operation_name} described {} across {} section(s) through the persistent RLM MCP API",
-                    result.object_name,
-                    result.sections.len()
-                );
-                data = Some(CodeIntelligenceReadData::ObjectProfile(result));
-            }
             CodeIntelligenceReadRequest::Outline { .. } => {
                 return Err("code outline is not an index navigation capability".to_string())
             }
@@ -730,9 +721,9 @@ impl RlmNavigationOutcome {
     }
 }
 
-/// ADR-0020: the index serves definition and object profile. The outline is
-/// built from the current BSL file, so it has no RLM operation at all and asking
-/// for one is a routing defect rather than a runtime condition.
+/// ADR-0020: the index serves definition. The outline is built from the current
+/// BSL file, so it has no RLM operation at all and asking for one is a routing
+/// defect rather than a runtime condition.
 fn operation_for_request(
     request: &CodeIntelligenceReadRequest,
 ) -> Result<WorkspaceRlmOperation, String> {
@@ -744,15 +735,6 @@ fn operation_for_request(
         } => WorkspaceRlmOperation::Definition {
             name: name.clone(),
             module_hint: module_hint.clone(),
-            limit: *limit,
-        },
-        CodeIntelligenceReadRequest::ObjectProfile {
-            name,
-            sections,
-            limit,
-        } => WorkspaceRlmOperation::ObjectProfile {
-            name: name.clone(),
-            sections: sections.clone(),
             limit: *limit,
         },
         CodeIntelligenceReadRequest::Outline { .. } => {
@@ -1148,33 +1130,6 @@ mod tests {
         assert!(!result.sections[0].total_is_lower_bound);
     }
 
-    #[test]
-    fn object_profile_operation_keeps_predefined_items_request() {
-        let request = CodeIntelligenceReadRequest::ObjectProfile {
-            name: "Document.Заказ".to_string(),
-            sections: Some(vec![
-                "structure".to_string(),
-                "functionalOptions".to_string(),
-                "predefinedItems".to_string(),
-            ]),
-            limit: 11,
-        };
-        let operation = operation_for_request(&request).unwrap();
-
-        assert_eq!(
-            operation,
-            WorkspaceRlmOperation::ObjectProfile {
-                name: "Document.Заказ".to_string(),
-                sections: Some(vec![
-                    "structure".to_string(),
-                    "functionalOptions".to_string(),
-                    "predefinedItems".to_string()
-                ]),
-                limit: 11
-            }
-        );
-    }
-
     struct RecordingClient {
         operations: Mutex<Vec<WorkspaceRlmOperation>>,
     }
@@ -1360,28 +1315,20 @@ mod tests {
     }
 
     #[test]
-    fn definition_and_profile_keep_the_warning_only_contract_for_an_unready_index() {
-        for request in [
-            CodeIntelligenceReadRequest::Definition {
-                name: "Найти".to_string(),
-                module_hint: String::new(),
-                limit: 50,
-            },
-            CodeIntelligenceReadRequest::ObjectProfile {
-                name: "Справочники.Номенклатура".to_string(),
-                sections: None,
-                limit: 20,
-            },
-        ] {
-            let outcome = unready_index_outcome(&request, IndexReadiness::Missing);
+    fn definition_keeps_the_warning_only_contract_for_an_unready_index() {
+        let request = CodeIntelligenceReadRequest::Definition {
+            name: "Найти".to_string(),
+            module_hint: String::new(),
+            limit: 50,
+        };
+        let outcome = unready_index_outcome(&request, IndexReadiness::Missing);
 
-            assert!(outcome.ok, "{}", request.operation_name());
-            assert!(outcome.errors.is_empty(), "{}", request.operation_name());
-            assert_eq!(
-                outcome.warnings,
-                vec!["rlm index unavailable: index is missing".to_string()]
-            );
-        }
+        assert!(outcome.ok, "{}", request.operation_name());
+        assert!(outcome.errors.is_empty(), "{}", request.operation_name());
+        assert_eq!(
+            outcome.warnings,
+            vec!["rlm index unavailable: index is missing".to_string()]
+        );
     }
 
     #[test]

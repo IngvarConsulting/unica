@@ -51,10 +51,6 @@ const MXL_INFO_ARGS: &[&str] = &[
 /// `cfe.diff` answers with typed data: `Mode` chose between two views of one
 /// extension, and both are now reported together.
 const CFE_DIFF_ARGS: &[&str] = &["ExtensionPath", "extensionPath", "ConfigPath", "configPath"];
-/// `meta.info` publishes only what it reads. The shared `NATIVE_XML_DSL_ARGS`
-/// list would also accept arguments no `meta.info` code path consults, and an
-/// accepted argument that changes nothing is a promise the tool cannot keep.
-const META_INFO_ARGS: &[&str] = &["sourceSet", "metadataPath"];
 const XDTO_INFO_ARGS: &[&str] = &["sourceSet", "metadataPath", "typeName", "limit", "cursor"];
 const XDTO_EDIT_ARGS: &[&str] = &[
     "sourceSet",
@@ -98,48 +94,6 @@ const SOURCE_READ_ARGS: &[&str] = &["snapshotId", "resourceId", "offset", "limit
 pub(crate) const DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS: u64 = 30;
 pub(crate) const DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS: u64 = 3600;
 
-const META_EDIT_OPERATIONS: &[&str] = &[
-    "modify-property",
-    "add-attribute",
-    "add-ts",
-    "add-dimension",
-    "add-resource",
-    "add-enumValue",
-    "add-column",
-    "add-form",
-    "add-template",
-    "add-command",
-    "add-owner",
-    "add-registerRecord",
-    "add-basedOn",
-    "add-inputByString",
-    "remove-attribute",
-    "remove-ts",
-    "remove-dimension",
-    "remove-resource",
-    "remove-enumValue",
-    "remove-column",
-    "remove-form",
-    "remove-template",
-    "remove-command",
-    "remove-owner",
-    "remove-registerRecord",
-    "remove-basedOn",
-    "remove-inputByString",
-    "add-ts-attribute",
-    "modify-attribute",
-    "modify-dimension",
-    "modify-resource",
-    "modify-enumValue",
-    "modify-column",
-    "modify-ts",
-    "modify-ts-attribute",
-    "remove-ts-attribute",
-    "set-owners",
-    "set-registerRecords",
-    "set-basedOn",
-    "set-inputByString",
-];
 const CFE_PATCH_METHOD_CONTEXTS: &[&str] = &["НаСервере", "НаКлиенте", "НаСервереБезКонтекста"];
 const CFE_PATCH_METHOD_INTERCEPTOR_TYPES: &[&str] = &["Before", "After"];
 const CFE_PATCH_METHOD_IDENTIFIER_PATTERN: &str = r"^[A-Za-z_А-Яа-яЁё][A-Za-z0-9_А-Яа-яЁё]*$";
@@ -613,16 +567,6 @@ const CODE_DIAGNOSTICS_ARGS: &[&str] = &[
 const CODE_DIAGNOSTIC_MODES: &[&str] = &["analyze", "status", "catalog", "file", "workspace"];
 const CODE_DIAGNOSTIC_SEVERITIES: &[&str] = &["error", "warning", "info", "hint"];
 const CODE_DIAGNOSTIC_DETAIL: &[&str] = &["concise", "detailed"];
-const META_PROFILE_ARGS: &[&str] = &["limit", "name", "sections", "sourceDir"];
-const META_PROFILE_SECTIONS: &[&str] = &[
-    "structure",
-    "modules",
-    "roles",
-    "subscriptions",
-    "functionalOptions",
-    "predefinedItems",
-];
-
 const STANDARDS_ARGS: &[&str] = &[
     "body_limit",
     "bodyLimit",
@@ -845,7 +789,6 @@ pub fn validate_tool_arguments(
     validate_source_navigation_arguments(tool, args)?;
     validate_source_resource_arguments(tool, args)?;
     validate_code_patch_arguments(tool, args)?;
-    validate_meta_edit_arguments(tool, args)?;
     validate_form_add_arguments(tool, args)?;
     validate_form_edit_arguments(tool, args, dry_run)?;
     validate_template_add_arguments(tool, args)?;
@@ -1263,16 +1206,6 @@ fn validate_removed_target_arguments(
                 .to_string(),
         );
     }
-    if tool.name == "unica.meta.info"
-        && ["ObjectPath", "objectPath", "Path", "path"]
-            .iter()
-            .any(|field| args.contains_key(*field))
-    {
-        return Err(
-            "legacy_target_removed: unica.meta.info no longer accepts `ObjectPath` or `Path`; use `sourceSet + metadataPath`"
-                .to_string(),
-        );
-    }
     Ok(())
 }
 
@@ -1512,42 +1445,6 @@ fn validate_template_add_arguments(
     validate_unique_alias_group(tool.name, args, &["SetMainSKD", "setMainSKD"])
 }
 
-fn validate_meta_edit_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Result<(), String> {
-    if tool.name != "unica.meta.edit" {
-        return Ok(());
-    }
-
-    validate_unique_alias_group(tool.name, args, &["Operation", "operation"])?;
-    validate_unique_alias_group(tool.name, args, &["DefinitionFile", "definitionFile"])?;
-
-    if contains_any(args, &["Operation", "operation"])
-        && contains_any(args, &["DefinitionFile", "definitionFile"])
-    {
-        return Err(format!(
-            "{} accepts either Operation or DefinitionFile, not both",
-            tool.name
-        ));
-    }
-
-    for name in ["Operation", "operation"] {
-        let Some(value) = args.get(name) else {
-            continue;
-        };
-        let Some(operation) = value.as_str() else {
-            return Err(format!("{} argument `{name}` must be string", tool.name));
-        };
-        if !META_EDIT_OPERATIONS.contains(&operation) {
-            return Err(format!(
-                "{} unsupported Operation `{operation}`; supported: {}",
-                tool.name,
-                META_EDIT_OPERATIONS.join(", ")
-            ));
-        }
-    }
-
-    Ok(())
-}
-
 fn validate_support_arguments(
     tool: ToolSpec,
     args: &Map<String, Value>,
@@ -1704,36 +1601,7 @@ fn validate_code_arguments(
                 ));
             }
         }
-        "unica.meta.profile" => {
-            validate_array_enum_argument(tool.name, args, "sections", META_PROFILE_SECTIONS)?;
-        }
         _ => {}
-    }
-    Ok(())
-}
-
-fn validate_array_enum_argument(
-    tool_name: &str,
-    args: &Map<String, Value>,
-    key: &str,
-    allowed: &[&str],
-) -> Result<(), String> {
-    let Some(value) = args.get(key) else {
-        return Ok(());
-    };
-    let Some(items) = value.as_array() else {
-        return Err(format!("{tool_name} argument `{key}` must be array"));
-    };
-    for item in items {
-        let Some(item) = item.as_str() else {
-            return Err(format!("{tool_name} argument `{key}` must contain strings"));
-        };
-        if !allowed.contains(&item) {
-            return Err(format!(
-                "{tool_name} argument `{key}` values must be one of: {}",
-                allowed.join(", ")
-            ));
-        }
     }
     Ok(())
 }
@@ -2155,7 +2023,6 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
                 "subsystem-info" => names.extend(SUBSYSTEM_INFO_ARGS),
                 "mxl-info" => names.extend(MXL_INFO_ARGS),
                 "cfe-diff" => names.extend(CFE_DIFF_ARGS),
-                "meta-info" => names.extend(META_INFO_ARGS),
                 "dcs-info" => names.extend(DCS_INFO_ARGS),
                 "form-info" => names.extend(FORM_INFO_ARGS),
                 _ => names.extend(native_args_for(operation)),
@@ -2217,9 +2084,7 @@ fn required_args(tool: &ToolSpec) -> Vec<&'static str> {
         ToolHandler::RuntimeJob { action } => runtime_job_required_args(action),
         ToolHandler::CodeIntelligence { operation } => match operation {
             CodeIntelligenceOperation::Search => vec!["query"],
-            CodeIntelligenceOperation::Definition | CodeIntelligenceOperation::ObjectProfile => {
-                vec!["name"]
-            }
+            CodeIntelligenceOperation::Definition => vec!["name"],
             CodeIntelligenceOperation::Outline => vec!["path"],
         },
         ToolHandler::SourceNavigation { operation } => match operation {
@@ -2246,7 +2111,6 @@ fn code_args_for(tool_name: &str) -> &'static [&'static str] {
         "unica.code.outline" => CODE_OUTLINE_ARGS,
         "unica.code.graph" => CODE_GRAPH_ARGS,
         "unica.code.diagnostics" => CODE_DIAGNOSTICS_ARGS,
-        "unica.meta.profile" => META_PROFILE_ARGS,
         _ => CODE_ARGS,
     }
 }
@@ -2256,7 +2120,6 @@ fn code_intelligence_args(operation: CodeIntelligenceOperation) -> &'static [&'s
         CodeIntelligenceOperation::Search => CODE_SEARCH_ARGS,
         CodeIntelligenceOperation::Definition => CODE_DEFINITION_ARGS,
         CodeIntelligenceOperation::Outline => CODE_OUTLINE_ARGS,
-        CodeIntelligenceOperation::ObjectProfile => META_PROFILE_ARGS,
     }
 }
 
@@ -2526,7 +2389,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "configDir",
-        "Root of the configuration dump (the directory holding `Configuration.xml`) for `unica.meta.remove`, relative to `cwd`; that tool takes `configDir`, not `configPath`",
+        "Root of a configuration dump (the directory holding `Configuration.xml`), relative to `cwd`",
     ),
     (
         "configLogIntegrity",
@@ -2663,7 +2526,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "force",
-        "Boolean --force: on unica.runtime.execute it overwrites an existing project config for config-init and re-downloads the payload for tools-download, and no other runtime operation accepts it; the native XML tools expose their own Force, for example unica.meta.remove, where it removes an object despite discovered references.",
+        "Boolean --force: on unica.runtime.execute it overwrites an existing project config for config-init and re-downloads the payload for tools-download; native XML tools may expose their own operation-specific Force argument.",
     ),
     (
         "formName",
@@ -2735,7 +2598,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "jsonPath",
-        "Path to the JSON DSL file, relative to `cwd`, for `unica.form.compile`, `unica.form.edit`, `unica.meta.compile`, `unica.mxl.compile` and `unica.role.compile`",
+        "Path to the JSON DSL file, relative to `cwd`, for `unica.form.compile`, `unica.form.edit`, `unica.mxl.compile` and `unica.role.compile`",
     ),
     ("kind", "Declared string argument that no tool handler reads"),
     (
@@ -2748,7 +2611,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "limit",
-        "Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, meta.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, meta.profile 20, code.graph nodes, code.diagnostics findings, standards results).",
+        "Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results).",
     ),
     (
         "maxErrors",
@@ -2820,7 +2683,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "name",
-        "Name of the object being created (`cf.init`, `cfe.init`, `epf.init`, `erf.init`), or the drill-down target for `meta.info`, `subsystem.info` and `dcs.info`; on `cf.info` it is an alias of `section`",
+        "Name of the object being created (`cf.init`, `cfe.init`, `epf.init`, `erf.init`), or the drill-down target for `subsystem.info` and `dcs.info`; on `cf.info` it is an alias of `section`",
     ),
     (
         "namePrefix",
@@ -2845,7 +2708,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "objectPath",
-        "Path to an object's metadata XML — a directory resolves to `<name>/<name>.xml` — for `unica.meta.edit`/`validate` and `unica.form.add`, relative to `cwd`; `meta.validate` accepts several joined by `|`. `unica.meta.info` takes `sourceSet` + `metadataPath` instead",
+        "Path to an object's metadata XML — a directory resolves to `<name>/<name>.xml` — for `unica.form.add`, relative to `cwd`",
     ),
     (
         "objects",
@@ -2857,7 +2720,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "operation",
-        "Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; the metadata edit verbs for unica.meta.edit; `add-value-type`, `add-object-type`, `add-property`, `remove-type` or `remove-property` for `unica.xdto.edit` — read the enum published in the tool's own schema.",
+        "Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; `add-value-type`, `add-object-type`, `add-property`, `remove-type` or `remove-property` for `unica.xdto.edit` — read the enum published in the tool's own schema.",
     ),
     (
         "output",
@@ -2865,7 +2728,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "outputDir",
-        "Destination root directory relative to `cwd`: the new dump for `cf.init`/`cfe.init`/`epf.init`/`erf.init`, or the existing dump root holding `Configuration.xml` for `meta.compile`/`role.compile`/`subsystem.compile`",
+        "Destination root directory relative to `cwd`: the new dump for `cf.init`/`cfe.init`/`epf.init`/`erf.init`, or the existing dump root holding `Configuration.xml` for `role.compile`/`subsystem.compile`",
     ),
     (
         "outputPath",
@@ -2948,10 +2811,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
         "`unica.cf.info` only: drill-down section of `Configuration.xml`, currently just `\"home-page\"`; `name` is accepted as an alias for it",
     ),
     (
-        "sections",
-        "Array of profile sections unica.meta.profile returns, from structure, modules, roles, subscriptions, functionalOptions, predefinedItems; omit it for all sections except predefinedItems, which must be listed explicitly",
-    ),
-    (
         "selector",
         "Object naming the unica.code.patch insertion point: exactly one of {\"method\": \"Name\"} for a whole procedure or function, or {\"anchor\": \"text\"} for a fragment that occurs once inside one method",
     ),
@@ -2989,7 +2848,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "sourceDir",
-        "Workspace-relative source root to work in: on the path-based unica.code.* tools and unica.meta.profile it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead.",
+        "Workspace-relative source root to work in: on path-based unica.code.* tools it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead.",
     ),
     (
         "sourceSet",
@@ -3085,7 +2944,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "type",
-        "Declared string argument that no handler reads; an object's `type` is a key inside the meta-compile JSON definition, not a call argument",
+        "Declared string argument that no handler reads",
     ),
     (
         "types",
@@ -3301,9 +3160,6 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
             _ => property_schema(name),
         };
     }
-    if tool.name == "unica.meta.edit" && matches!(name, "Operation" | "operation") {
-        return json!({ "type": "string", "enum": META_EDIT_OPERATIONS });
-    }
     if tool.name == "unica.cfe.patch_method" {
         return match name {
             "Context" | "context" => {
@@ -3378,12 +3234,6 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
             "detail" => return json!({ "type": "string", "enum": CODE_DIAGNOSTIC_DETAIL }),
             _ => {}
         },
-        "unica.meta.profile" if name == "sections" => {
-            return json!({
-                "type": "array",
-                "items": {"type": "string", "enum": META_PROFILE_SECTIONS}
-            });
-        }
         _ => {}
     }
     property_schema(name)
@@ -3658,7 +3508,7 @@ mod tests {
     }
 
     #[test]
-    fn meta_new_contract_schema_snapshots_are_closed_and_off_registry() {
+    fn meta_contract_schema_snapshots_are_closed_and_registered() {
         let cases = [
             (
                 MetadataOperation::Info,
@@ -3830,12 +3680,10 @@ mod tests {
         assert_eq!(
             published,
             vec![
-                "unica.meta.compile",
-                "unica.meta.edit",
                 "unica.meta.info",
-                "unica.meta.profile",
+                "unica.meta.add",
+                "unica.meta.edit",
                 "unica.meta.remove",
-                "unica.meta.validate"
             ]
         );
     }
@@ -4080,7 +3928,6 @@ mod tests {
         let required_path = |name: &str| match name {
             "unica.cf.info" | "unica.cf.validate" => ("ConfigPath", "src"),
             "unica.cfe.validate" => ("ExtensionPath", "src"),
-            "unica.meta.validate" => ("ObjectPath", "src/Object.xml"),
             "unica.interface.validate" => ("CIPath", "src/CommandInterface.xml"),
             "unica.subsystem.info" | "unica.subsystem.validate" => {
                 ("SubsystemPath", "src/Subsystems/Main.xml")
@@ -4094,7 +3941,6 @@ mod tests {
             "unica.cf.info",
             "unica.cf.validate",
             "unica.cfe.validate",
-            "unica.meta.validate",
             "unica.interface.validate",
             "unica.subsystem.info",
             "unica.subsystem.validate",
@@ -4706,14 +4552,14 @@ mod tests {
         let mut args = Map::new();
         args.insert("sourceSet".to_string(), json!("main"));
         args.insert("metadataPath".to_string(), json!("Catalog.Items"));
+        args.insert("limit".to_string(), json!(10));
+        args.insert("sections".to_string(), json!(["modules", "roles"]));
         validate_tool_arguments(tool, &args, false).unwrap();
 
-        // The typed answer carries the whole object, so the selectors that used
-        // to trim the report select nothing. An accepted argument that changes
-        // nothing is a false promise, and `Detailed` belongs to `*.validate`.
+        // Physical paths and report-formatting controls belong to the retired
+        // surface; the typed tool publishes only logical selectors.
         for rejected in [
-            "Mode", "Name", "limit", "offset", "Detailed", "detailed", "OutFile", "outFile",
-            "SrcDir",
+            "Mode", "Name", "offset", "Detailed", "detailed", "OutFile", "outFile", "SrcDir",
         ] {
             let mut with_rejected = args.clone();
             with_rejected.insert(rejected.to_string(), json!("value"));
@@ -4726,7 +4572,7 @@ mod tests {
     }
 
     #[test]
-    fn meta_info_legacy_target_fields_fail_with_a_stable_migration_error() {
+    fn meta_info_rejects_legacy_target_fields_as_unknown_arguments() {
         let tool = tools()
             .into_iter()
             .find(|tool| tool.name == "unica.meta.info")
@@ -4736,10 +4582,11 @@ mod tests {
             let args = Map::from_iter([(legacy.to_string(), json!("src/Catalogs/Items.xml"))]);
             let error = validate_tool_arguments(tool, &args, false).unwrap_err();
             assert!(
-                error.starts_with("legacy_target_removed:"),
+                error.contains(&format!("does not accept argument `{legacy}`")),
                 "{legacy}: {error}"
             );
-            assert!(error.contains("sourceSet + metadataPath"), "{error}");
+            assert!(error.contains("sourceSet"), "{error}");
+            assert!(error.contains("metadataPath"), "{error}");
         }
     }
 
@@ -4875,8 +4722,8 @@ mod tests {
             let error = validate_tool_arguments(
                 remove,
                 json!({
-                    "ConfigDir": "src",
-                    "Object": "Catalog.Legacy",
+                    "sourceSet": "main",
+                    "metadataPath": "Catalog.Legacy",
                     spelling: true,
                 })
                 .as_object()
@@ -4898,15 +4745,6 @@ mod tests {
                     json!({"configPath": "src"}),
                     json!({"Path": "src"}),
                     json!({"path": "src"}),
-                ],
-            ),
-            (
-                "unica.meta.edit",
-                json!({"ObjectPath": "Catalogs/Items.xml"}),
-                vec![
-                    json!({"objectPath": "Catalogs/Items.xml"}),
-                    json!({"Path": "Catalogs/Items.xml"}),
-                    json!({"path": "Catalogs/Items.xml"}),
                 ],
             ),
             (
@@ -5213,41 +5051,40 @@ mod tests {
     }
 
     #[test]
-    fn meta_edit_contract_accepts_definition_file_and_extended_operations() {
+    fn meta_edit_contract_accepts_only_typed_ordered_operations() {
         let tool = tools()
             .into_iter()
             .find(|tool| tool.name == "unica.meta.edit")
             .unwrap();
         let schema = input_schema_for_tool(&tool);
-        assert!(schema["properties"]["Operation"]["enum"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("add-dimension")));
-        assert!(schema["properties"]["Operation"]["enum"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("set-owners")));
-
-        let mut args = Map::new();
-        args.insert(
-            "ObjectPath".to_string(),
-            json!("src/Catalogs/Items/Items.xml"),
+        assert!(schema["properties"].get("Operation").is_none());
+        assert!(schema["properties"].get("DefinitionFile").is_none());
+        assert_eq!(
+            schema["properties"]["operations"]["items"]["properties"]["op"]["enum"],
+            json!(["setProperties", "add", "update", "remove", "editRelations"])
         );
-        args.insert("DefinitionFile".to_string(), json!("edit.json"));
+
+        let mut args = Map::from_iter([
+            ("sourceSet".to_string(), json!("main")),
+            ("metadataPath".to_string(), json!("Catalog.Items")),
+            (
+                "operations".to_string(),
+                json!([{"op": "setProperties", "values": {"Comment": "typed"}}]),
+            ),
+        ]);
         validate_tool_arguments(tool, &args, false).unwrap();
 
-        args.insert("Operation".to_string(), json!("add-attribute"));
+        args.insert("DefinitionFile".to_string(), json!("edit.json"));
         let error = validate_tool_arguments(tool, &args, false).unwrap_err();
-        assert!(error.contains("either Operation or DefinitionFile"));
+        assert!(error.contains("does not accept argument `DefinitionFile`"));
 
-        let mut args = Map::new();
-        args.insert(
-            "ObjectPath".to_string(),
-            json!("src/Catalogs/Items/Items.xml"),
-        );
-        args.insert("Operation".to_string(), json!("add-unknown"));
+        args.remove("DefinitionFile");
+        args.insert("operations".to_string(), json!([{"op": "add-unknown"}]));
         let error = validate_tool_arguments(tool, &args, false).unwrap_err();
-        assert!(error.contains("unsupported Operation"));
+        assert!(
+            error.contains("unsupported metadata edit operation"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -5958,30 +5795,18 @@ mod tests {
     }
 
     #[test]
-    fn meta_profile_contract_exposes_typed_arguments_without_raw_args() {
-        let profile = tools()
+    fn retired_meta_tools_are_absent_from_the_contract_registry() {
+        let names = tools()
             .into_iter()
-            .find(|tool| tool.name == "unica.meta.profile")
-            .expect("unica.meta.profile must be registered");
-
-        let schema = input_schema_for_tool(&profile);
-        assert_eq!(schema["additionalProperties"], false);
-        assert!(schema["properties"].get("name").is_some());
-        assert_eq!(schema["properties"]["sections"]["type"], "array");
-        assert_eq!(schema["properties"]["limit"]["type"], "integer");
-        assert!(schema["properties"].get("args").is_none());
-        assert!(schema["properties"].get("rlm_execute").is_none());
-        assert_eq!(schema["required"], json!(["name"]));
-
-        let mut args = Map::new();
-        args.insert("args".to_string(), json!(["get_object_profile"]));
-        let error = validate_tool_arguments(profile, &args, false).unwrap_err();
-        assert!(error.contains("does not accept argument `args`"));
-
-        let args = Map::new();
-        let error = validate_tool_arguments(profile, &args, false).unwrap_err();
-        assert!(error.contains("requires `name`"));
-        validate_tool_arguments(profile, &args, true).unwrap();
+            .map(|tool| tool.name)
+            .collect::<Vec<_>>();
+        for retired in [
+            "unica.meta.compile",
+            "unica.meta.profile",
+            "unica.meta.validate",
+        ] {
+            assert!(!names.contains(&retired), "retired {retired} is public");
+        }
     }
 
     #[test]

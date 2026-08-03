@@ -1274,9 +1274,11 @@ fn edit_meta_register_record_dry_run_does_not_write_file() {
     let original = sample_document_xml("<RegisterRecords/>");
     write_file(&object_path, &original);
 
-    let result = UnicaApplication::new()
-        .call_tool("unica.meta.edit", &register_record_args(&object_path))
-        .unwrap();
+    let result = crate::application::call_legacy_metadata_tool_for_tests(
+        "unica.meta.edit",
+        &register_record_args(&object_path),
+    )
+    .unwrap();
 
     assert!(result.ok);
     assert!(result.summary.contains("dry run"));
@@ -2850,9 +2852,8 @@ fn edit_meta_fill_value_dry_run_does_not_write_file() {
     );
     args.insert("dryRun".to_string(), json!(true));
 
-    let result = UnicaApplication::new()
-        .call_tool("unica.meta.edit", &args)
-        .unwrap();
+    let result =
+        crate::application::call_legacy_metadata_tool_for_tests("unica.meta.edit", &args).unwrap();
 
     assert!(result.ok, "{:?}", result.errors);
     assert!(result.summary.contains("dry run"));
@@ -3672,11 +3673,14 @@ fn edit_meta_dry_run_rejects_unsupported_operation() {
     let mut args = meta_edit_args(&object_path, "definitely-unsupported", "Value");
     args.insert("dryRun".to_string(), json!(true));
 
-    let error = UnicaApplication::new()
-        .call_tool("unica.meta.edit", &args)
-        .unwrap_err();
+    let result =
+        crate::application::call_legacy_metadata_tool_for_tests("unica.meta.edit", &args).unwrap();
 
-    assert!(error.contains("unsupported Operation"));
+    assert!(!result.ok, "{result:?}");
+    assert!(result
+        .errors
+        .join("\n")
+        .contains("Unsupported meta-edit Operation"));
 
     let _ = fs::remove_dir_all(&context.cwd);
 }
@@ -3699,9 +3703,8 @@ fn edit_meta_dry_run_accepts_definition_file_mode() {
     );
     args.insert("dryRun".to_string(), json!(true));
 
-    let result = UnicaApplication::new()
-        .call_tool("unica.meta.edit", &args)
-        .unwrap();
+    let result =
+        crate::application::call_legacy_metadata_tool_for_tests("unica.meta.edit", &args).unwrap();
 
     assert!(result.ok);
 

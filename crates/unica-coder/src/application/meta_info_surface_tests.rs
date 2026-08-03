@@ -1,4 +1,4 @@
-use super::{OperationResult, UnicaApplication};
+use super::{compile_legacy_metadata_fixture, OperationResult, UnicaApplication};
 use crate::composition::testing::{with_registrar_processing_hook, RegistrarProcessingPhase};
 use crate::domain::cancellation::CancellationToken;
 use serde_json::{Map, Value};
@@ -79,23 +79,19 @@ fn create_info_workspace(label: &str) -> TempWorkspace {
         .unwrap(),
     )
     .unwrap();
-    let compiled = UnicaApplication::new()
-        .call_tool(
-            "unica.meta.compile",
-            &Map::from_iter([
-                (
-                    "cwd".to_string(),
-                    Value::String(workspace.path().display().to_string()),
-                ),
-                (
-                    "JsonPath".to_string(),
-                    Value::String(definition.display().to_string()),
-                ),
-                ("OutputDir".to_string(), Value::String("src".to_string())),
-                ("dryRun".to_string(), Value::Bool(false)),
-            ]),
-        )
-        .unwrap();
+    let compiled = compile_legacy_metadata_fixture(&Map::from_iter([
+        (
+            "cwd".to_string(),
+            Value::String(workspace.path().display().to_string()),
+        ),
+        (
+            "JsonPath".to_string(),
+            Value::String(definition.display().to_string()),
+        ),
+        ("OutputDir".to_string(), Value::String("src".to_string())),
+        ("dryRun".to_string(), Value::Bool(false)),
+    ]))
+    .unwrap();
     assert!(compiled.ok, "{:?}", compiled.errors);
     workspace
 }
@@ -123,7 +119,7 @@ fn call_info_path(
     let _cwd_lock = process_cwd_lock();
     let previous = std::env::current_dir().unwrap();
     std::env::set_current_dir(workspace).unwrap();
-    let result = UnicaApplication::new().call_unregistered_meta_info_for_integration_tests(&args);
+    let result = UnicaApplication::new().call_tool("unica.meta.info", &args);
     std::env::set_current_dir(previous).unwrap();
     result.expect("private typed meta.info call")
 }
@@ -145,8 +141,8 @@ fn call_info_path_cancellable(
     let _cwd_lock = process_cwd_lock();
     let previous = std::env::current_dir().unwrap();
     std::env::set_current_dir(workspace).unwrap();
-    let result = UnicaApplication::new()
-        .call_unregistered_meta_info_cancellable_for_integration_tests(&args, cancellation);
+    let result =
+        UnicaApplication::new().call_tool_cancellable("unica.meta.info", &args, cancellation);
     std::env::set_current_dir(previous).unwrap();
     result.expect("private typed meta.info call")
 }

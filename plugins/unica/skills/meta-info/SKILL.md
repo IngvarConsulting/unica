@@ -12,7 +12,7 @@ allowed-tools:
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tool `unica.meta.info`; `unica` owns XML/JSON DSL work and refreshes related workspace caches after mutations.
+- Preferred path: use MCP `unica` tool `unica.meta.info`; `unica` owns typed metadata reads and validation.
 - Do not call internal MCP/CLI adapters directly. They are hidden behind `unica` and synchronized by the orchestrator.
 - Execution path: call MCP `unica` tool `unica.meta.info`; skill-local operation scripts are not part of the workflow.
 - For mutating operations, pass `dryRun: false` only when the user explicitly requested the change; otherwise keep the default dry run.
@@ -27,6 +27,8 @@ allowed-tools:
 |----------|----------|
 | `sourceSet` | Имя набора исходников из карты проекта; список даёт `unica.project.map` |
 | `metadataPath` | Логический адрес объекта: `Catalog.Номенклатура`, `Справочник.Номенклатура`, `Catalog.Номенклатура.Form.ФормаЭлемента` |
+| `sections` | Связанные индексные секции: `modules`, `roles`, `subscriptions`, `functionalOptions`, `predefinedItems`; без аргумента запрашиваются первые четыре |
+| `limit` | Максимум элементов каждой связанной секции; по умолчанию `20` |
 
 Адрес принимает русские и английские псевдонимы вида, а отвечает канонической
 английской формой в `data.metadataPath` — её можно передать дальше любому
@@ -43,7 +45,6 @@ allowed-tools:
   "params": {
     "name": "unica.meta.info",
     "arguments": {
-      "cwd": "<workspace>",
       "sourceSet": "main",
       "metadataPath": "Catalog.Номенклатура"
     }
@@ -53,12 +54,15 @@ allowed-tools:
 
 ## Ответ
 
-Инструмент отвечает типизированным `data` и всегда отдаёт объект целиком: вид,
-имя, синоним, поддержку, свойства **именами платформы** (`NumberType`,
+Инструмент отвечает типизированным `data`: локальную структуру объекта и
+`validation` он отдаёт целиком — вид, имя, синоним, поддержку, свойства
+**именами платформы** (`NumberType`,
 `Hierarchical`, `LevelCount`…), владельцев, реквизиты, измерения, ресурсы,
 табличные части с колонками, значения перечисления, формы, макеты и команды.
-Режимы, drill-down и постраничный вывод больше не нужны — берите нужную секцию
-из `data`.
+Запрошенные индексные секции ограничены `limit` и отдельно сообщают статус,
+свежесть, `total` и `truncated`; `predefinedItems` включается только явно.
+Физические режимы и drill-down больше не нужны — берите нужную секцию из
+`data`.
 
 «Представление типа», «Представление объекта» и представления списка ссылочных
 объектов лежат в `properties` под платформенными именами `ObjectPresentation`,
@@ -83,7 +87,6 @@ allowed-tools:
   "params": {
     "name": "unica.meta.info",
     "arguments": {
-      "cwd": "<workspace>",
       "sourceSet": "main",
       "metadataPath": "Catalog.Валюты"
     }
@@ -100,7 +103,6 @@ allowed-tools:
   "params": {
     "name": "unica.meta.info",
     "arguments": {
-      "cwd": "<workspace>",
       "sourceSet": "main",
       "metadataPath": "Document.АвансовыйОтчет"
     }
@@ -117,7 +119,6 @@ allowed-tools:
   "params": {
     "name": "unica.meta.info",
     "arguments": {
-      "cwd": "<workspace>",
       "sourceSet": "main",
       "metadataPath": "InformationRegister.КурсыВалют"
     }
@@ -134,7 +135,6 @@ allowed-tools:
   "params": {
     "name": "unica.meta.info",
     "arguments": {
-      "cwd": "<workspace>",
       "sourceSet": "main",
       "metadataPath": "Document.АвансовыйОтчет"
     }
@@ -151,7 +151,6 @@ allowed-tools:
   "params": {
     "name": "unica.meta.info",
     "arguments": {
-      "cwd": "<workspace>",
       "sourceSet": "main",
       "metadataPath": "Catalog.Валюты"
     }
@@ -168,7 +167,6 @@ allowed-tools:
   "params": {
     "name": "unica.meta.info",
     "arguments": {
-      "cwd": "<workspace>",
       "sourceSet": "main",
       "metadataPath": "CommonModule.ОбщегоНазначения"
     }
@@ -185,7 +183,6 @@ allowed-tools:
   "params": {
     "name": "unica.meta.info",
     "arguments": {
-      "cwd": "<workspace>",
       "sourceSet": "main",
       "metadataPath": "HTTPService.ExternalAPI"
     }
@@ -202,7 +199,6 @@ allowed-tools:
   "params": {
     "name": "unica.meta.info",
     "arguments": {
-      "cwd": "<workspace>",
       "sourceSet": "main",
       "metadataPath": "HTTPService.ExternalAPI"
     }
@@ -219,7 +215,6 @@ allowed-tools:
   "params": {
     "name": "unica.meta.info",
     "arguments": {
-      "cwd": "<workspace>",
       "sourceSet": "main",
       "metadataPath": "WebService.EnterpriseDataUpload_1_0_1_1"
     }
@@ -236,7 +231,6 @@ allowed-tools:
   "params": {
     "name": "unica.meta.info",
     "arguments": {
-      "cwd": "<workspace>",
       "sourceSet": "main",
       "metadataPath": "WebService.EnterpriseDataUpload_1_0_1_1"
     }
@@ -253,7 +247,6 @@ allowed-tools:
   "params": {
     "name": "unica.meta.info",
     "arguments": {
-      "cwd": "<workspace>",
       "sourceSet": "main",
       "metadataPath": "EventSubscription.ПолныйРегистрацияУдаления"
     }
@@ -270,7 +263,6 @@ allowed-tools:
   "params": {
     "name": "unica.meta.info",
     "arguments": {
-      "cwd": "<workspace>",
       "sourceSet": "main",
       "metadataPath": "ScheduledJob.АвтоматическоеЗакрытиеМесяца"
     }
@@ -287,7 +279,6 @@ allowed-tools:
   "params": {
     "name": "unica.meta.info",
     "arguments": {
-      "cwd": "<workspace>",
       "sourceSet": "main",
       "metadataPath": "DefinedType.GLN"
     }

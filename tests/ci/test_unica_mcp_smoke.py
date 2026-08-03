@@ -143,17 +143,31 @@ class UnicaMcpSmokeTests(unittest.TestCase):
             process.stderr.close()
 
     @contextmanager
-    def mcp_session(self, *, cache_dir: Path | None = None):
+    def mcp_session(
+        self,
+        *,
+        cache_dir: Path | None = None,
+        workdir: Path | None = None,
+    ):
         env = os.environ.copy()
         if cache_dir is not None:
             env["UNICA_CACHE_DIR"] = str(cache_dir)
         process = subprocess.Popen(
-            ["cargo", "run", "--quiet", "--bin", "unica", "--"],
+            [
+                "cargo",
+                "run",
+                "--quiet",
+                "--manifest-path",
+                str(self.repo_root() / "Cargo.toml"),
+                "--bin",
+                "unica",
+                "--",
+            ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            cwd=self.repo_root(),
+            cwd=workdir or self.repo_root(),
             env=env,
         )
         assert process.stdin is not None
@@ -503,7 +517,7 @@ class UnicaMcpSmokeTests(unittest.TestCase):
                 ).encode()
             )
             before = snapshot_workspace_files(root)
-            with self.mcp_session(cache_dir=temp / "cache") as request:
+            with self.mcp_session(cache_dir=temp / "cache", workdir=root) as request:
                 next_id = 2
 
                 def call(name: str, arguments: dict) -> dict:
@@ -555,34 +569,34 @@ class UnicaMcpSmokeTests(unittest.TestCase):
                     call(
                         "unica.meta.info",
                         {
-                            "cwd": str(root),
                             "sourceSet": "main",
                             "metadataPath": address,
                         },
                     )["result"]["content"][0]["text"]
                 )
-                self.assertTrue(info["ok"], info)
+                # This hand-written descriptor is intentionally incomplete.
+                # The typed reader still returns its local structure while
+                # making the semantic validation failure explicit.
+                self.assertFalse(info["ok"], info)
                 self.assertEqual(info["data"]["metadataPath"], address)
-                self.assertEqual(info["data"]["sourceSet"], "main")
                 # The owners used to be a printed line; ADR-0023 makes them data.
-                self.assertEqual(info["data"]["owners"], ["Catalog.Kinds"])
+                self.assertEqual(
+                    info["data"]["owners"],
+                    [{"metadataPath": "Catalog.Kinds"}],
+                )
                 self.assertNotIn("stdout", info)
 
                 legacy = call(
                     "unica.meta.info",
-                    {"cwd": str(root), "ObjectPath": "src/Catalogs/Goods.xml"},
+                    {"ObjectPath": "src/Catalogs/Goods.xml"},
                 )
-                self.assertEqual(
-                    legacy["error"],
-                    {
-                        "code": -32000,
-                        "message": (
-                            "legacy_target_removed: unica.meta.info no longer "
-                            "accepts `ObjectPath` or `Path`; use "
-                            "`sourceSet + metadataPath`"
-                        ),
-                    },
+                self.assertEqual(legacy["error"]["code"], -32000)
+                self.assertIn(
+                    "does not accept argument `ObjectPath`",
+                    legacy["error"]["message"],
                 )
+                self.assertIn("sourceSet", legacy["error"]["message"])
+                self.assertIn("metadataPath", legacy["error"]["message"])
 
                 missing = call(
                     "unica.source.resources",
@@ -603,6 +617,111 @@ class UnicaMcpSmokeTests(unittest.TestCase):
                 self.assertNotIn("source_unavailable", missing["error"]["message"])
 
             self.assertEqual(snapshot_workspace_files(root), before)
+
+    def test_four_typed_meta_tools_run_through_jsonrpc_on_a_real_fixture(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp = Path(tmp)
+            root = temp / "workspace"
+            root.mkdir()
+
+            with self.mcp_session(cache_dir=temp / "cache", workdir=root) as request:
+                next_id = 2
+
+                def raw_call(name: str, arguments: dict) -> dict:
+                    nonlocal next_id
+                    response = request(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": next_id,
+                            "method": "tools/call",
+                            "params": {"name": name, "arguments": arguments},
+                        }
+                    )
+                    next_id += 1
+                    return response
+
+                def call(name: str, arguments: dict) -> dict:
+                    response = raw_call(name, arguments)
+                    self.assertNotIn("error", response, response)
+                    payload = json.loads(response["result"]["content"][0]["text"])
+                    self.assertTrue(payload["ok"], payload)
+                    self.assertIn("data", payload)
+                    self.assertNotIn("stdout", payload)
+                    return payload
+
+                initialized = call(
+                    "unica.cf.init",
+                    {
+                        "cwd": str(root),
+                        "Name": "TypedMetaSmoke",
+                        "OutputDir": "src",
+                        "dryRun": False,
+                    },
+                )
+                self.assertTrue(initialized["changes"])
+                (root / "v8project.yaml").write_text(
+                    "format: DESIGNER\n"
+                    "source-set:\n"
+                    "  - name: main\n"
+                    "    type: CONFIGURATION\n"
+                    "    path: src\n",
+                    encoding="utf-8",
+                )
+
+                added = call(
+                    "unica.meta.add",
+                    {
+                        "sourceSet": "main",
+                        "kind": "Catalog",
+                        "name": "Smoke",
+                        "dryRun": False,
+                    },
+                )
+                self.assertEqual(added["data"]["metadataPath"], "Catalog.Smoke")
+                self.assertTrue(added["data"]["changed"])
+                self.assertTrue(added["cache"]["events"])
+
+                info = call(
+                    "unica.meta.info",
+                    {"sourceSet": "main", "metadataPath": "Catalog.Smoke"},
+                )
+                self.assertEqual(info["data"]["metadataPath"], "Catalog.Smoke")
+                self.assertEqual(info["data"]["validation"]["status"], "passed")
+
+                edited = call(
+                    "unica.meta.edit",
+                    {
+                        "sourceSet": "main",
+                        "metadataPath": "Catalog.Smoke",
+                        "operations": [
+                            {"op": "setProperties", "values": {"Comment": "JSON-RPC"}}
+                        ],
+                        "dryRun": False,
+                    },
+                )
+                self.assertTrue(edited["data"]["changed"])
+                self.assertTrue(edited["cache"]["events"])
+
+                removed = call(
+                    "unica.meta.remove",
+                    {
+                        "sourceSet": "main",
+                        "metadataPath": "Catalog.Smoke",
+                        "dryRun": False,
+                    },
+                )
+                self.assertTrue(removed["data"]["changed"])
+                self.assertTrue(removed["cache"]["events"])
+
+                for retired in [
+                    "unica.meta.compile",
+                    "unica.meta.profile",
+                    "unica.meta.validate",
+                ]:
+                    response = raw_call(retired, {})
+                    self.assertEqual(response["error"]["code"], -32000, response)
+                    self.assertIn("unknown unica tool", response["error"]["message"])
+                    self.assertIn(retired, response["error"]["message"])
 
     def test_notifications_do_not_count_as_responses(self) -> None:
         responses = self.call_mcp(

@@ -1265,7 +1265,9 @@ mod tests {
     }
 
     fn spec(name: &str) -> crate::application::ToolSpec {
-        tools().into_iter().find(|tool| tool.name == name).unwrap()
+        crate::application::legacy_metadata_tool_spec_for_tests(name)
+            .or_else(|| tools().into_iter().find(|tool| tool.name == name))
+            .unwrap()
     }
 
     fn assert_platform_reexport_warning(warning: &str) {

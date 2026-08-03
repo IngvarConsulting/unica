@@ -1,5 +1,3 @@
-#![allow(dead_code)] // The handler remains off-registry until the coordinated public switch.
-
 use super::ports::{ApplicationPorts, HandlerOutcome};
 use super::AdapterOutcome;
 use crate::domain::cancellation::CancellationToken;
@@ -380,9 +378,16 @@ fn reject_unknown_top_level(
         .as_object()
         .expect("metadata schemas always publish an object property registry");
     if let Some(unknown) = args.keys().find(|name| !allowed.contains_key(*name)) {
+        let accepted = allowed
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(", ");
         return Err(invalid(
             unknown,
-            format!("metadata operation does not accept argument `{unknown}`"),
+            format!(
+                "metadata operation does not accept argument `{unknown}`; accepted arguments: {accepted}"
+            ),
         ));
     }
     Ok(())
@@ -1166,12 +1171,19 @@ fn invalid(field: impl Into<String>, message: impl Into<String>) -> MetaDiagnost
 }
 
 pub(crate) fn metadata_input_schema(operation: MetadataOperation) -> Value {
-    let string = || json!({"type": "string", "minLength": 1});
+    let string =
+        |description: &str| json!({"type": "string", "minLength": 1, "description": description});
     let mut properties = Map::new();
-    properties.insert("sourceSet".into(), string());
+    properties.insert(
+        "sourceSet".into(),
+        string("Exact Configuration source-set name from v8project.yaml."),
+    );
     let required = match operation {
         MetadataOperation::Info => {
-            properties.insert("metadataPath".into(), string());
+            properties.insert(
+                "metadataPath".into(),
+                string("Logical metadata path of the object to inspect."),
+            );
             properties.insert(
                 "sections".into(),
                 json!({
@@ -1182,11 +1194,17 @@ pub(crate) fn metadata_input_schema(operation: MetadataOperation) -> Value {
                         "enum": INFO_SECTIONS.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
                     },
                     "default": DEFAULT_INFO_SECTIONS.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+                    "description": "Related metadata sections to include in the typed answer.",
                 }),
             );
             properties.insert(
                 "limit".into(),
-                json!({"type": "integer", "minimum": 1, "default": 20}),
+                json!({
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 20,
+                    "description": "Maximum related items returned for each requested section."
+                }),
             );
             vec!["sourceSet", "metadataPath"]
         }
@@ -1199,32 +1217,75 @@ pub(crate) fn metadata_input_schema(operation: MetadataOperation) -> Value {
                         .iter()
                         .map(|kind| kind.as_str())
                         .collect::<Vec<_>>(),
+                    "description": "Supported metadata object kind for the minimal template.",
                 }),
             );
-            properties.insert("name".into(), string());
-            properties.insert("dryRun".into(), json!({"type": "boolean", "default": true}));
+            properties.insert(
+                "name".into(),
+                string("Metadata object name using a valid 1C identifier."),
+            );
+            properties.insert(
+                "dryRun".into(),
+                json!({
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Preview the mutation without writing workspace files."
+                }),
+            );
             vec!["sourceSet", "kind", "name"]
         }
         MetadataOperation::Edit => {
-            properties.insert("metadataPath".into(), string());
+            properties.insert(
+                "metadataPath".into(),
+                string("Logical metadata path of the object to edit."),
+            );
             properties.insert(
                 "operations".into(),
                 json!({
                     "type": "array",
                     "minItems": 1,
                     "items": operation_schema(),
+                    "description": "Ordered typed edit operations applied as one atomic change.",
                 }),
             );
-            properties.insert("dryRun".into(), json!({"type": "boolean", "default": true}));
+            properties.insert(
+                "dryRun".into(),
+                json!({
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Preview the mutation without writing workspace files."
+                }),
+            );
             vec!["sourceSet", "metadataPath", "operations"]
         }
         MetadataOperation::Remove => {
-            properties.insert("metadataPath".into(), string());
-            properties.insert("dryRun".into(), json!({"type": "boolean", "default": true}));
-            properties.insert("force".into(), json!({"type": "boolean", "default": false}));
+            properties.insert(
+                "metadataPath".into(),
+                string("Logical metadata path of the object to remove."),
+            );
+            properties.insert(
+                "dryRun".into(),
+                json!({
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Preview the mutation without writing workspace files."
+                }),
+            );
+            properties.insert(
+                "force".into(),
+                json!({
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Allow removal despite discovered references when confirmed."
+                }),
+            );
             properties.insert(
                 "confirm".into(),
-                json!({"type": "boolean", "default": false}),
+                json!({
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Explicitly confirm a forced metadata object removal."
+                }),
             );
             vec!["sourceSet", "metadataPath"]
         }
@@ -1309,15 +1370,6 @@ fn scope_schema() -> Value {
         "additionalProperties": false,
         "properties": {"tabularSection": {"type": "string", "minLength": 1}},
         "required": ["tabularSection"],
-    })
-}
-
-fn reference_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {"metadataPath": {"type": "string", "minLength": 1}},
-        "required": ["metadataPath"],
     })
 }
 
