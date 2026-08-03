@@ -6162,6 +6162,19 @@ fn apply_typed_relations(
     Ok(())
 }
 
+fn normalize_meta_edit_scalar_property_value(object_type: &str, key: &str, value: &str) -> String {
+    let normalized = normalize_meta_edit_property_value(key, value);
+    if meta_8_3_27_boolean_properties(object_type).contains(&key) {
+        if normalized.eq_ignore_ascii_case("true") {
+            return "true".to_string();
+        }
+        if normalized.eq_ignore_ascii_case("false") {
+            return "false".to_string();
+        }
+    }
+    normalized
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -8116,17 +8129,4 @@ mod tests {
         assert!(resources.publication_plan.is_empty());
         let _ = std::fs::remove_dir_all(root);
     }
-}
-
-fn normalize_meta_edit_scalar_property_value(object_type: &str, key: &str, value: &str) -> String {
-    let normalized = normalize_meta_edit_property_value(key, value);
-    if meta_8_3_27_boolean_properties(object_type).contains(&key) {
-        if normalized.eq_ignore_ascii_case("true") {
-            return "true".to_string();
-        }
-        if normalized.eq_ignore_ascii_case("false") {
-            return "false".to_string();
-        }
-    }
-    normalized
 }

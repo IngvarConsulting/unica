@@ -2012,7 +2012,7 @@ pub(crate) fn bind_metadata_add_source_evidence(
 ) -> Result<(), MetaFailure> {
     transaction
         .guard_or_verify_exact_preimage(&source.owner_path, &source.owner_preimage)
-        .map_err(|message| metadata_concurrent_failure(message))?;
+        .map_err(metadata_concurrent_failure)?;
     crate::infrastructure::native_operations::common::guard_resolved_platform_xml_target_dependencies(
         transaction,
         &source.handle,

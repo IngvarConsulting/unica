@@ -210,6 +210,9 @@ mod tests {
     use crate::infrastructure::native_operations::compile_transaction::{
         with_before_rollback_mutation_hook, with_commit_failpoint, CommitFailpoint,
     };
+    use crate::infrastructure::platform::filesystem::{
+        create_dir_symlink_for_test, remove_dir_symlink_for_test,
+    };
     use serde_json::{json, Map};
     use std::fs;
     use std::path::PathBuf;
@@ -3281,17 +3284,13 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         fs::rename(fixture.root.join("src"), &outside).unwrap();
-        let Some(link_result) =
-            crate::infrastructure::platform::filesystem::create_dir_symlink_for_test(
-                &outside,
-                fixture.root.join("src"),
-            )
-        else {
-            fs::rename(&outside, fixture.root.join("src")).unwrap();
+        let source_link = fixture.root.join("src");
+        let Some(link_result) = create_dir_symlink_for_test(&outside, &source_link) else {
+            fs::rename(&outside, &source_link).unwrap();
             return;
         };
         if link_result.is_err() {
-            fs::rename(&outside, fixture.root.join("src")).unwrap();
+            fs::rename(&outside, &source_link).unwrap();
             return;
         }
         let cancellation = CancellationToken::new();
@@ -3312,7 +3311,7 @@ mod tests {
         assert!(!failure.diagnostics[0]
             .message
             .contains(outside.to_string_lossy().as_ref()));
-        fs::remove_file(fixture.root.join("src")).unwrap();
-        fs::rename(&outside, fixture.root.join("src")).unwrap();
+        remove_dir_symlink_for_test(&source_link).unwrap();
+        fs::rename(&outside, &source_link).unwrap();
     }
 }

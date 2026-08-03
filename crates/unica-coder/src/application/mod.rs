@@ -33,7 +33,9 @@ pub struct ToolSpec {
     pub handler: ToolHandler,
 }
 
-#[allow(private_interfaces)] // Metadata is intentionally off-registry until the public switch.
+// ToolHandler remains inspectable for surface-contract tests, while the typed
+// metadata operation enum is an application-internal dispatch detail.
+#[allow(private_interfaces)]
 #[derive(Debug, Clone, Copy)]
 pub enum ToolHandler {
     Metadata {

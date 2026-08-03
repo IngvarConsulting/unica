@@ -16,6 +16,12 @@ use super::compile_transaction::{
     DirectoryTopologyEntry, DirectoryTopologyEntryKind,
 };
 
+type SupportVendorPayloadPreimage = (PathBuf, Vec<u8>);
+type SupportVendorPayloadSnapshot = (
+    DirectoryMembershipSnapshot,
+    Vec<SupportVendorPayloadPreimage>,
+);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SupportCapability {
     On,
@@ -532,7 +538,7 @@ fn parent_configurations_bytes(text: &str) -> Vec<u8> {
 
 fn support_vendor_payload_preimages(
     config_dir: &Path,
-) -> Result<(DirectoryMembershipSnapshot, Vec<(PathBuf, Vec<u8>)>), String> {
+) -> Result<SupportVendorPayloadSnapshot, String> {
     let directory = config_dir.join("Ext").join("ParentConfigurations");
     let metadata = match fs::symlink_metadata(&directory) {
         Ok(metadata) => metadata,
