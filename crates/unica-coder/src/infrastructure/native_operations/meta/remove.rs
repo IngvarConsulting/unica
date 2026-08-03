@@ -4,6 +4,7 @@ use crate::application::metadata::{MetaFailure, MetaRemoveRequest};
 use crate::application::ports::{
     MetadataResourceImage, MetadataResourceRole, MetadataValidationSubject,
 };
+use crate::application::source_navigation::SourceLocateRequest;
 use crate::application::{AdapterOutcome, SupportGuardRequirement};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::metadata::{
@@ -14,14 +15,14 @@ use crate::domain::metadata::{
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::metadata_kinds::{metadata_kind, metadata_layout};
-use crate::infrastructure::platform_xml_source_targets::platform_xml_module_identity;
+use crate::infrastructure::platform_xml_source_targets::locate_platform_xml_source_path;
 use crate::infrastructure::support_guard::{
     bind_resolved_support_guard_evidence, evaluate_resolved_support_guard,
     ResolvedSupportGuardCheck,
 };
 use roxmltree::Document;
 use serde_json::{Map, Value};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -636,26 +637,35 @@ pub(crate) fn plan_typed_remove(
         has_payload,
     )
     .map_err(|_| typed_remove_provider_failure(target))?;
-    if !reference_scan.references.is_empty() && !request.force {
-        return Err(typed_remove_failure(
-            MetaDiagnosticCode::ReferenceConflict,
-            target,
-            format!(
-                "metadata object has {} discovered reference(s); use the confirmed force gate to remove it",
-                reference_scan.references.len()
-            ),
-            Some("force"),
-        ));
+    let logical_referrers =
+        typed_remove_logical_referrers(request, &reference_scan.references, context, cancellation)?;
+    if !logical_referrers.is_empty() && !request.force {
+        return Err(MetaFailure {
+            diagnostics: logical_referrers
+                .iter()
+                .map(|referrer| {
+                    MetaDiagnostic::error(
+                        MetaDiagnosticCode::ReferenceConflict,
+                        format!(
+                            "`{}` refers to `{target}`; use the confirmed force gate to remove it",
+                            referrer.as_str()
+                        ),
+                    )
+                    .with_metadata_path(referrer.clone())
+                    .with_field("force")
+                })
+                .collect(),
+        });
     }
-    if !reference_scan.references.is_empty() {
+    for referrer in &logical_referrers {
         diagnostics.push(MetaDiagnostic {
             code: MetaDiagnosticCode::ReferenceConflict,
             severity: MetaDiagnosticSeverity::Warning,
             message: format!(
-                "confirmed removal leaves {} discovered reference(s) outside subsystem cleanup",
-                reference_scan.references.len()
+                "confirmed removal leaves the logical reference from `{}` to `{target}`",
+                referrer.as_str()
             ),
-            metadata_path: Some(target.clone()),
+            metadata_path: Some(referrer.clone()),
             operation_index: None,
             field: Some("force".to_string()),
         });
@@ -928,6 +938,37 @@ pub(crate) fn plan_typed_remove(
         expected_post_images,
         expected_absent,
     })
+}
+
+fn typed_remove_logical_referrers(
+    request: &MetaRemoveRequest,
+    references: &[MetaRemoveReference],
+    context: &WorkspaceContext,
+    cancellation: &CancellationToken,
+) -> Result<Vec<MetadataAddress>, MetaFailure> {
+    let mut logical = BTreeMap::new();
+    for reference in references {
+        if cancellation.is_cancelled() {
+            return Err(typed_remove_provider_failure(&request.metadata_path));
+        }
+        let located = locate_platform_xml_source_path(
+            context,
+            &SourceLocateRequest {
+                source_set: request.source_set.clone(),
+                path: reference.file.clone(),
+            },
+            cancellation,
+        )
+        .map_err(|_| typed_remove_provider_failure(&request.metadata_path))?;
+        let referrer = located
+            .metadata_path
+            .or(located.owner_metadata_path)
+            .ok_or_else(|| typed_remove_provider_failure(&request.metadata_path))?;
+        logical
+            .entry(referrer.as_str().to_string())
+            .or_insert(referrer);
+    }
+    Ok(logical.into_values().collect())
 }
 
 fn typed_remove_payload_publication_plan(

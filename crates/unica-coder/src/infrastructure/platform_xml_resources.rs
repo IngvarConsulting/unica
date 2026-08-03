@@ -903,7 +903,7 @@ mod tests {
             .unwrap();
             fs::write(
                 source.join("Configuration.xml"),
-                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Main</Name></Properties><ChildObjects><CommonModule>Shared</CommonModule></ChildObjects></Configuration></MetaDataObject>"#,
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Main</Name></Properties><ChildObjects><CommonModule>Shared</CommonModule><Catalog>Items</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
             )
             .unwrap();
             fs::write(

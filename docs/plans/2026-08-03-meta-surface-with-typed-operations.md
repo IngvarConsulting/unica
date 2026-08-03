@@ -765,7 +765,8 @@ git commit -m "feat(meta): apply ordered typed edit operations atomically"
 - Modify: `crates/unica-coder/src/infrastructure/format_guard.rs`
 - Modify: `crates/unica-coder/src/application/operation_descriptors.rs`
 - Test: `crates/unica-coder/src/infrastructure/native_operations/meta/remove.rs`
-- Test: `crates/unica-coder/tests/platform/meta_surface.rs`
+- Create: `crates/unica-coder/src/application/meta_remove_surface_tests.rs`
+- Test: `crates/unica-coder/tests/platform_meta_surface.rs`
 
 **Interfaces:**
 
@@ -794,11 +795,19 @@ force=true, confirm=true, dryRun=false   -> forced apply
 Run:
 
 ```sh
+cargo test -p unica-coder application::meta_remove_surface_tests::meta_remove_ -- --test-threads=1
+```
+
+Expected RED: the private coordinator route cannot prepare typed remove. Before
+Task 10, the external integration target cannot invoke an off-registry handler
+without publishing a test backdoor; it proves only that the production registry
+has not switched prematurely:
+
+```sh
 cargo test -p unica-coder --test platform_meta_surface meta_remove_ -- --test-threads=1
 ```
 
-Expected RED: remove still accepts `ConfigDir + Object` and owns a separate
-orchestration path.
+The external typed JSON-RPC gate moves atomically with registration in Task 10.
 
 - [ ] **Step 2: Reuse the logical resolver, validator, and publisher**
 
@@ -809,12 +818,16 @@ affected dependency resources, not the deleted descriptor.
 - [ ] **Step 3: Run remove and transaction regressions**
 
 ```sh
+cargo test -p unica-coder application::meta_remove_surface_tests::meta_remove_ -- --test-threads=1
 cargo test -p unica-coder --test platform_meta_surface meta_remove_ -- --test-threads=1
 cargo test -p unica-coder native_operations::meta::remove -- --test-threads=1
 cargo test -p unica-coder compile_transaction -- --test-threads=1
 ```
 
-Expected GREEN: typed logical remove has the same or stronger safety guarantees.
+Expected GREEN: the private cross-layer suite exercises parse/coordinator,
+validator, publisher, events/cache and filesystem state; the external target
+keeps the six-tool legacy registry unchanged; typed logical remove has the same
+or stronger safety guarantees.
 
 - [ ] **Step 4: Commit logical removal**
 

@@ -44,6 +44,8 @@ const MAX_NAVIGATION_DESCRIPTOR_BYTES: u64 = 8 * 1024 * 1024;
 thread_local! {
     static NAVIGATION_PROVIDER_ENTRY_HOOK: RefCell<Option<Box<dyn FnOnce()>>> =
         RefCell::new(None);
+    static OBJECT_DESCRIPTOR_CONTENT_READ_HOOK: RefCell<Option<Box<dyn FnOnce()>>> =
+        RefCell::new(None);
 }
 
 #[cfg(test)]
@@ -57,6 +59,26 @@ fn set_navigation_provider_entry_hook_for_test(hook: impl FnOnce() + 'static) {
 #[cfg(test)]
 fn run_navigation_provider_entry_hook_for_test() {
     NAVIGATION_PROVIDER_ENTRY_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(test)]
+fn set_object_descriptor_content_read_hook_for_test(hook: impl FnOnce() + 'static) {
+    OBJECT_DESCRIPTOR_CONTENT_READ_HOOK.with(|slot| {
+        let previous = slot.replace(Some(Box::new(hook)));
+        assert!(
+            previous.is_none(),
+            "object descriptor content-read hook leaked"
+        );
+    });
+}
+
+#[cfg(test)]
+fn run_object_descriptor_content_read_hook_for_test() {
+    OBJECT_DESCRIPTOR_CONTENT_READ_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
             hook();
         }
@@ -1647,13 +1669,23 @@ fn read_navigation_descriptor(path: &Path) -> Result<Vec<u8>, ()> {
 }
 
 fn descriptor_name_from_bytes(raw: &[u8], expected_kind: &str) -> Result<String, ()> {
+    let (version, name) = descriptor_version_and_name_from_bytes(raw, expected_kind)?;
+    if version.as_deref() != Some("2.20") {
+        return Err(());
+    }
+    Ok(name)
+}
+
+fn descriptor_version_and_name_from_bytes(
+    raw: &[u8],
+    expected_kind: &str,
+) -> Result<(Option<String>, String), ()> {
     let text = std::str::from_utf8(raw).map_err(|_| ())?;
     let document =
         roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).map_err(|_| ())?;
     let root = document.root_element();
     if root.tag_name().namespace() != Some(MD_CLASSES_NS)
         || root.tag_name().name() != "MetaDataObject"
-        || root.attribute("version") != Some("2.20")
     {
         return Err(());
     }
@@ -1685,7 +1717,10 @@ fn descriptor_name_from_bytes(raw: &[u8], expected_kind: &str) -> Result<String,
         .map(str::trim)
         .filter(|name| !name.is_empty())
         .ok_or(())?;
-    Ok(name.to_string())
+    Ok((
+        root.attribute("version").map(str::to_string),
+        name.to_string(),
+    ))
 }
 
 fn add_address(
@@ -2225,24 +2260,6 @@ fn resolve_platform_xml_object(
     if !target_identity.starts_with(&selected.path) {
         return Err(target_containment_error(&target.source_set));
     }
-    let existing_export_format = fs::read_to_string(&target_path).ok().and_then(|text| {
-        roxmltree::Document::parse(text.trim_start_matches('\u{feff}'))
-            .ok()
-            .and_then(|document| {
-                document
-                    .root_element()
-                    .attribute("version")
-                    .map(str::to_string)
-            })
-    });
-    if existing_export_format.as_deref()
-        != Some(crate::domain::format_profile::ACTIVE_FORMAT_PROFILE.export_format)
-        && existing_export_format.is_some()
-    {
-        return Err(SourceTargetError::source_format_unsupported(format!(
-            "metadataPath `{address}` is outside the supported Platform XML export format"
-        )));
-    }
     validate_platform_xml_module_descriptors(
         context,
         &selected.path,
@@ -2250,18 +2267,33 @@ fn resolve_platform_xml_object(
     )
     .map_err(|error| public_evidence_error(target, error))?;
 
-    match exact_object_outcome(&selected.path, address, &CancellationToken::new()) {
-        Ok(ExactCandidate::Proven) => {}
-        Ok(ExactCandidate::Absent) => {
-            return Err(SourceTargetError::new(
-                SourceTargetErrorCode::MetadataAddressNotFound,
-                format!(
-                    "metadataPath `{address}` was not found in sourceSet `{}`",
-                    target.source_set
-                ),
-            ));
-        }
-        Ok(ExactCandidate::Unproven) | Err(_) => return Err(metadata_owner_evidence_error(target)),
+    if !object_registration_is_proven(context, &selected, address)? {
+        return Err(SourceTargetError::new(
+            SourceTargetErrorCode::MetadataAddressNotFound,
+            format!(
+                "metadataPath `{address}` was not found in sourceSet `{}`",
+                target.source_set
+            ),
+        ));
+    }
+    #[cfg(test)]
+    run_object_descriptor_content_read_hook_for_test();
+    let descriptor = read_navigation_descriptor(&target_path)
+        .map_err(|_| metadata_owner_evidence_error(target))?;
+    let parts = address.segments().collect::<Vec<_>>();
+    let expected =
+        object_descriptor_evidence(&parts).ok_or_else(|| metadata_owner_evidence_error(target))?;
+    let (version, name) = descriptor_version_and_name_from_bytes(&descriptor, &expected.kind)
+        .map_err(|_| metadata_owner_evidence_error(target))?;
+    if name != expected.name {
+        return Err(metadata_owner_evidence_error(target));
+    }
+    if version.as_deref()
+        != Some(crate::domain::format_profile::ACTIVE_FORMAT_PROFILE.export_format)
+    {
+        return Err(SourceTargetError::source_format_unsupported(format!(
+            "metadataPath `{address}` is outside the supported Platform XML export format"
+        )));
     }
 
     let workspace_root = normalize_path_identity(&context.workspace_root)
@@ -2284,6 +2316,99 @@ fn resolve_platform_xml_object(
             module_owner: None,
         },
     })
+}
+
+fn object_registration_is_proven(
+    context: &WorkspaceContext,
+    selected: &ResolvedNamedSourceSet,
+    address: &MetadataAddress,
+) -> Result<bool, SourceTargetError> {
+    if matches!(
+        selected.source_set.kind,
+        SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+    ) {
+        return Ok(true);
+    }
+    let parts = address.segments().collect::<Vec<_>>();
+    let (owner_relative, owner_kind, owner_name, registration_kind, registration_name) =
+        match parts.as_slice() {
+            [kind, name] => (
+                PathBuf::from("Configuration.xml"),
+                "Configuration".to_string(),
+                None,
+                *kind,
+                *name,
+            ),
+            [owner_kind, owner_name, child_kind @ ("Form" | "Command"), child_name] => {
+                let owner =
+                    object_descriptor_evidence(&[*owner_kind, *owner_name]).ok_or_else(|| {
+                        metadata_owner_evidence_error(&SourceTarget {
+                            source_set: selected.source_set.name.clone(),
+                            metadata_path: Some(address.clone()),
+                        })
+                    })?;
+                (
+                    owner.path,
+                    owner.kind,
+                    Some(owner.name),
+                    *child_kind,
+                    *child_name,
+                )
+            }
+            _ => return Ok(false),
+        };
+    let logical_target = SourceTarget {
+        source_set: selected.source_set.name.clone(),
+        metadata_path: Some(address.clone()),
+    };
+    validate_platform_xml_module_descriptors(
+        context,
+        &selected.path,
+        std::slice::from_ref(&owner_relative),
+    )
+    .map_err(|error| public_evidence_error(&logical_target, error))?;
+    let owner_path = selected.path.join(owner_relative);
+    let owner = read_navigation_descriptor(&owner_path)
+        .map_err(|_| metadata_owner_evidence_error(&logical_target))?;
+    if let Some(expected_name) = owner_name.as_deref() {
+        let (_, actual_name) = descriptor_version_and_name_from_bytes(&owner, &owner_kind)
+            .map_err(|_| metadata_owner_evidence_error(&logical_target))?;
+        if actual_name != expected_name {
+            return Err(metadata_owner_evidence_error(&logical_target));
+        }
+    }
+    let owner = std::str::from_utf8(&owner)
+        .map_err(|_| metadata_owner_evidence_error(&logical_target))?
+        .trim_start_matches('\u{feff}');
+    let document = roxmltree::Document::parse(owner)
+        .map_err(|_| metadata_owner_evidence_error(&logical_target))?;
+    let root = document.root_element();
+    if root.tag_name().namespace() != Some(MD_CLASSES_NS)
+        || root.tag_name().name() != "MetaDataObject"
+    {
+        return Err(metadata_owner_evidence_error(&logical_target));
+    }
+    let owner_node = root
+        .children()
+        .find(|node| {
+            node.is_element()
+                && node.tag_name().namespace() == Some(MD_CLASSES_NS)
+                && node.tag_name().name() == owner_kind
+        })
+        .ok_or_else(|| metadata_owner_evidence_error(&logical_target))?;
+    Ok(owner_node.children().any(|child_objects| {
+        child_objects.is_element()
+            && child_objects.tag_name().namespace() == Some(MD_CLASSES_NS)
+            && child_objects.tag_name().name() == "ChildObjects"
+            && child_objects.children().any(|node| {
+                node.is_element()
+                    && node.tag_name().namespace() == Some(MD_CLASSES_NS)
+                    && node.tag_name().name() == registration_kind
+                    && node
+                        .text()
+                        .is_some_and(|text| text.trim() == registration_name)
+            })
+    }))
 }
 
 fn resolve_platform_xml_root(
@@ -3181,6 +3306,7 @@ mod tests {
         children_platform_xml_source_navigation as children_platform_xml_source_navigation_cancellable,
         resolve_platform_xml_source_navigation as resolve_platform_xml_source_navigation_cancellable,
         revalidate_platform_xml_target, set_navigation_provider_entry_hook_for_test,
+        set_object_descriptor_content_read_hook_for_test,
     };
     use crate::application::source_navigation::{
         NavigationCompleteness, SourceChildrenRequest, SourceLocation, SourceMatchKind,
@@ -5052,6 +5178,90 @@ mod tests {
     }
 
     #[test]
+    fn platform_xml_object_target_does_not_classify_an_unregistered_wrong_format_partial() {
+        let context = fixture(
+            "object-target-unregistered-wrong-format",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let descriptor = context.workspace_root.join("src/Catalogs/Items.xml");
+        fs::create_dir_all(descriptor.parent().unwrap()).unwrap();
+        fs::write(
+            &descriptor,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.19"><Catalog><Properties><Name>Items</Name></Properties></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        let content_read = std::rc::Rc::new(std::cell::Cell::new(false));
+        let observer = std::rc::Rc::clone(&content_read);
+        set_object_descriptor_content_read_hook_for_test(move || observer.set(true));
+
+        let error = resolve_platform_xml_object_target(&context, &target("main", "Catalog.Items"))
+            .unwrap_err();
+
+        assert_eq!(error.code, SourceTargetErrorCode::MetadataAddressNotFound);
+        assert_eq!(error.reason(), SourceTargetErrorReason::General);
+        assert!(
+            !content_read.get(),
+            "unregistered descriptor content was read before owner registration proof"
+        );
+        super::OBJECT_DESCRIPTOR_CONTENT_READ_HOOK.with(|slot| {
+            slot.borrow_mut().take();
+        });
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_object_target_proves_a_regular_file_before_any_descriptor_content_read() {
+        let context = fixture(
+            "object-target-non-file-call-order",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let descriptor = context.workspace_root.join("src/Catalogs/Items.xml");
+        fs::create_dir_all(&descriptor).unwrap();
+        let content_read = std::rc::Rc::new(std::cell::Cell::new(false));
+        let observer = std::rc::Rc::clone(&content_read);
+        set_object_descriptor_content_read_hook_for_test(move || observer.set(true));
+
+        let error = resolve_platform_xml_object_target(&context, &target("main", "Catalog.Items"))
+            .unwrap_err();
+
+        assert_eq!(error.code, SourceTargetErrorCode::MetadataAddressNotFound);
+        assert!(
+            !content_read.get(),
+            "descriptor content was read before regular-file evidence"
+        );
+        super::OBJECT_DESCRIPTOR_CONTENT_READ_HOOK.with(|slot| {
+            slot.borrow_mut().take();
+        });
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_object_target_rejects_a_registration_lookalike_outside_the_exact_owner() {
+        let context = fixture(
+            "object-target-registration-lookalike",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        fs::create_dir_all(root.join("Catalogs")).unwrap();
+        fs::write(
+            root.join("Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Items</Name></Properties></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Bogus><ChildObjects><Catalog>Items</Catalog></ChildObjects></Bogus></MetaDataObject>"#,
+        )
+        .unwrap();
+
+        let error = resolve_platform_xml_object_target(&context, &target("main", "Catalog.Items"))
+            .unwrap_err();
+
+        assert_eq!(error.code, SourceTargetErrorCode::MetadataAddressNotFound);
+        cleanup(&context);
+    }
+
+    #[test]
     fn platform_xml_object_target_refuses_a_linked_descriptor() {
         let context = fixture(
             "object-target-symlink",
@@ -5132,6 +5342,36 @@ mod tests {
             ),
         )
         .unwrap();
+        register_fixture_item(&root.join("Configuration.xml"), "Configuration", kind, name);
+    }
+
+    fn register_fixture_item(owner: &Path, owner_kind: &str, kind: &str, name: &str) {
+        let registration = format!("<{kind}>{name}</{kind}>");
+        let mut image = fs::read_to_string(owner).unwrap_or_else(|_| {
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{owner_kind}><ChildObjects></ChildObjects></{owner_kind}></MetaDataObject>"#
+            )
+        });
+        if !image.contains(&registration) {
+            if let Some(insertion) = image.rfind("</ChildObjects>") {
+                image.insert_str(insertion, &registration);
+            } else if let Some(self_closing) = image.find("<ChildObjects/>") {
+                image.replace_range(
+                    self_closing..self_closing + "<ChildObjects/>".len(),
+                    &format!("<ChildObjects>{registration}</ChildObjects>"),
+                );
+            } else {
+                let closing = format!("</{owner_kind}>");
+                let insertion = image
+                    .rfind(&closing)
+                    .expect("fixture owner has its declared closing element");
+                image.insert_str(
+                    insertion,
+                    &format!("<ChildObjects>{registration}</ChildObjects>"),
+                );
+            }
+            fs::write(owner, image).unwrap();
+        }
     }
 
     fn write_nested_module_fixture(
@@ -5162,7 +5402,36 @@ mod tests {
         fs::create_dir_all(module.parent().unwrap()).unwrap();
         fs::create_dir_all(descriptor.parent().unwrap()).unwrap();
         fs::write(module, "Procedure Run()\nEndProcedure\n").unwrap();
-        fs::write(descriptor, descriptor_xml).unwrap();
+        fs::write(&descriptor, descriptor_xml).unwrap();
+        let descriptor_relative = descriptor
+            .strip_prefix(root)
+            .expect("fixture descriptor is below its source root")
+            .components()
+            .filter_map(|component| component.as_os_str().to_str())
+            .collect::<Vec<_>>();
+        if let [owner_directory, owner_name, child_collection, child_file] =
+            descriptor_relative.as_slice()
+        {
+            let child_kind = match *child_collection {
+                "Forms" => Some("Form"),
+                "Commands" => Some("Command"),
+                _ => None,
+            };
+            if let Some(child_kind) = child_kind {
+                let owner = root.join(owner_directory).join(format!("{owner_name}.xml"));
+                if owner.is_file() {
+                    let owner_kind = super::metadata_kind_by_directory(owner_directory)
+                        .expect("fixture owner directory is registered")
+                        .tag;
+                    register_fixture_item(
+                        &owner,
+                        owner_kind,
+                        child_kind,
+                        child_file.trim_end_matches(".xml"),
+                    );
+                }
+            }
+        }
     }
 
     fn write_external_descriptor(root: &Path, kind: &str, file_stem: &str, name: &str) {

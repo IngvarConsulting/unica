@@ -199,10 +199,32 @@ impl UnicaApplication {
         };
         call_tool(spec, args, self.ports.as_ref(), &cancellation)
     }
+
+    #[cfg(test)]
+    fn call_unregistered_meta_remove_for_integration_tests(
+        &self,
+        args: &Map<String, Value>,
+    ) -> Result<OperationResult, String> {
+        let spec = ToolSpec {
+            name: "unica.meta.remove",
+            description: "Remove one metadata object through the typed internal coordinator.",
+            mutating: true,
+            cache_access: CacheAccess {
+                reads: &[],
+                writes: &["workspace_graph", "metadata_graph"],
+            },
+            handler: ToolHandler::Metadata {
+                operation: metadata::MetadataOperation::Remove,
+            },
+        };
+        call_tool(spec, args, self.ports.as_ref(), &CancellationToken::new())
+    }
 }
 
 #[cfg(test)]
 mod meta_add_surface_tests;
+#[cfg(test)]
+mod meta_remove_surface_tests;
 
 pub fn tools() -> Vec<ToolSpec> {
     let mut specs = configuration_tools();
@@ -10317,7 +10339,7 @@ mod tests {
         std::fs::write(
             src.join("Configuration.xml"),
             format!(
-                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="{source_format_version}"><Configuration uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"><Properties><Name>Main</Name></Properties></Configuration></MetaDataObject>"#
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="{source_format_version}"><Configuration uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"><Properties><Name>Main</Name></Properties><ChildObjects><XDTOPackage>Sample</XDTOPackage></ChildObjects></Configuration></MetaDataObject>"#
             ),
         )
         .unwrap();

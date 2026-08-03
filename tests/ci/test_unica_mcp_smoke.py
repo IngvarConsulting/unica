@@ -485,6 +485,13 @@ class UnicaMcpSmokeTests(unittest.TestCase):
             temp = Path(tmp)
             root = temp / "workspace"
             self.source_fixture(root)
+            configuration = root / "src/Configuration.xml"
+            configuration.write_bytes(
+                configuration.read_bytes().replace(
+                    b"</ChildObjects>",
+                    b"<Catalog>Goods</Catalog></ChildObjects>",
+                )
+            )
             (root / "src/Catalogs").mkdir(parents=True)
             (root / "src/Catalogs/Goods.xml").write_bytes(
                 (

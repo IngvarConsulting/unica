@@ -2631,6 +2631,107 @@ mod tests {
     }
 
     #[test]
+    fn meta_remove_reference_diagnostics_expose_deterministic_logical_referrers_only() {
+        let fixture = Fixture::new("remove-logical-reference-identities");
+        let cancellation = CancellationToken::new();
+        let referenced = fixture.add_object(MetadataKind::Catalog, "Referenced");
+        MetadataOperations::prepare_mutation(
+            &fixture.owners_request(RelationEditMode::Add, vec![referenced.clone()]),
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap()
+        .publish(&cancellation)
+        .unwrap();
+        let second = fixture.add_object(MetadataKind::Catalog, "Second");
+        let second_descriptor = fixture.root.join("src/Catalogs/Second.xml");
+        let second_image = String::from_utf8(fs::read(&second_descriptor).unwrap())
+            .unwrap()
+            .replacen(
+                "</Properties>",
+                "<BasedOn>Catalog.Referenced</BasedOn></Properties>",
+                1,
+            );
+        fs::write(&second_descriptor, second_image).unwrap();
+        let second_module = fixture
+            .root
+            .join("src/Catalogs/Second/Ext/ObjectModule.bsl");
+        fs::create_dir_all(second_module.parent().unwrap()).unwrap();
+        fs::write(
+            &second_module,
+            "Procedure UseReference()\n    Value = Catalogs.Referenced;\nEndProcedure\n",
+        )
+        .unwrap();
+
+        let blocked = match MetadataOperations::prepare_mutation(
+            &fixture.remove_request(referenced.clone(), true, false, false),
+            &fixture.context,
+            &cancellation,
+        ) {
+            Ok(_) => panic!("referenced object unexpectedly prepared without force"),
+            Err(failure) => failure,
+        };
+        let blocked_referrers = blocked
+            .diagnostics
+            .iter()
+            .map(|diagnostic| {
+                assert_eq!(diagnostic.code, MetaDiagnosticCode::ReferenceConflict);
+                diagnostic
+                    .metadata_path
+                    .as_ref()
+                    .expect("reference diagnostic has a logical referrer")
+                    .as_str()
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            blocked_referrers,
+            vec![
+                "Catalog.Editable",
+                "Catalog.Second",
+                "Catalog.Second.ObjectModule"
+            ]
+        );
+
+        let forced = MetadataOperations::prepare_mutation(
+            &fixture.remove_request(referenced, true, true, true),
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap();
+        let forced_referrers = forced
+            .preview()
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == MetaDiagnosticCode::ReferenceConflict)
+            .map(|diagnostic| {
+                diagnostic
+                    .metadata_path
+                    .as_ref()
+                    .expect("forced reference warning has a logical referrer")
+                    .as_str()
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(forced_referrers, blocked_referrers);
+        let diagnostics =
+            serde_json::to_string(&(blocked.diagnostics, forced.preview().diagnostics.clone()))
+                .unwrap();
+        for forbidden in [
+            fixture.root.to_string_lossy().as_ref(),
+            "Catalogs/",
+            ".xml",
+            ".bsl",
+        ] {
+            assert!(
+                !diagnostics.contains(forbidden),
+                "{forbidden}: {diagnostics}"
+            );
+        }
+        assert_eq!(second.as_str(), "Catalog.Second");
+    }
+
+    #[test]
     fn meta_remove_preview_and_apply_clean_subsystems_and_validate_the_surviving_post_state() {
         let fixture = Fixture::new("remove-subsystem-cleanup");
         let cancellation = CancellationToken::new();
@@ -2749,7 +2850,8 @@ mod tests {
         };
         assert_eq!(
             failure.diagnostics[0].code,
-            MetaDiagnosticCode::CapabilityUnavailable
+            MetaDiagnosticCode::CapabilityUnavailable,
+            "{failure:?}"
         );
 
         let locked = Fixture::new("remove-support-lock");
