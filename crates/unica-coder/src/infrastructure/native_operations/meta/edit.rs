@@ -3,6 +3,7 @@
 use crate::application::metadata::{MetaEditRequest, MetaFailure};
 use crate::application::operation_descriptors::OBJECT_PATH;
 use crate::application::ports::{
+    MetadataChildDirectoryKind, MetadataChildFootprintEvidence, MetadataChildProfile,
     MetadataChildResourceKind, MetadataResourceImage, MetadataResourceRole,
     MetadataTemplateResourcePart, MetadataTemplateType, MetadataValidationSubject,
     PreparedMetadataMutation,
@@ -3149,6 +3150,7 @@ pub(super) struct TypedChildResourcePlan {
     pub(super) directory_guards: Vec<(PathBuf, DirectoryMembershipSnapshot)>,
     pub(super) publication_plan: Vec<MetaPublicationPlanEntry>,
     pub(super) validation_resources: Vec<MetadataResourceImage>,
+    pub(super) validation_footprints: Vec<MetadataChildFootprintEvidence>,
     pub(super) relation_dependencies: Vec<TypedRelationDependency>,
 }
 
@@ -3341,69 +3343,56 @@ fn plan_typed_child_resources(
             let template_type = (state.collection == MetaCollection::Templates)
                 .then(|| typed_template_type_from_descriptor(&bytes, &child_address))
                 .transpose()?;
+            let mut final_payload = Vec::<(PathBuf, Vec<u8>)>::new();
+            let mut final_payload_directories = Vec::<PathBuf>::new();
             match &state.origin {
                 Origin::Existing(_) => {
-                    let payload_root = collection_dir.join(final_name);
-                    for relative in &initial_payload_directories {
-                        final_directories.insert(payload_root.join(relative));
-                    }
-                    for (ordinal, (relative, bytes)) in initial_payload.iter().enumerate() {
-                        final_files.insert(payload_root.join(relative), bytes.clone());
-                        plan.validation_resources.push(MetadataResourceImage {
-                            role: typed_child_payload_role(
-                                state.collection,
-                                &child_address,
-                                relative,
-                                ordinal,
-                                template_type,
-                            )?,
-                            bytes: bytes.clone(),
-                        });
-                    }
+                    final_payload.clone_from(&initial_payload);
+                    final_payload_directories.clone_from(&initial_payload_directories);
                 }
-                Origin::Added => {
-                    let payload_root = collection_dir.join(final_name);
-                    match state.collection {
-                        MetaCollection::Forms => {
-                            final_directories.insert(payload_root.clone());
-                            final_directories.insert(payload_root.join("Ext"));
-                            let relative = Path::new("Ext/Form.xml");
-                            let content =
-                                minimal_typed_form_content(object_kind, object_name).into_bytes();
-                            final_files.insert(payload_root.join(relative), content.clone());
-                            plan.validation_resources.push(MetadataResourceImage {
-                                role: typed_child_payload_role(
-                                    state.collection,
-                                    &child_address,
-                                    relative,
-                                    0,
-                                    None,
-                                )?,
-                                bytes: content,
-                            });
-                        }
-                        MetaCollection::Templates => {
-                            final_directories.insert(payload_root.clone());
-                            final_directories.insert(payload_root.join("Ext"));
-                            let relative = Path::new("Ext/Template.xml");
-                            let content =
-                                super::super::mxl::empty_spreadsheet_document_xml().into_bytes();
-                            final_files.insert(payload_root.join(relative), content.clone());
-                            plan.validation_resources.push(MetadataResourceImage {
-                                role: typed_child_payload_role(
-                                    state.collection,
-                                    &child_address,
-                                    relative,
-                                    0,
-                                    Some(MetadataTemplateType::SpreadsheetDocument),
-                                )?,
-                                bytes: content,
-                            });
-                        }
-                        MetaCollection::Commands => {}
-                        _ => unreachable!(),
+                Origin::Added => match state.collection {
+                    MetaCollection::Forms => {
+                        final_payload_directories.push(PathBuf::new());
+                        final_payload_directories.push(PathBuf::from("Ext"));
+                        let content =
+                            minimal_typed_form_content(object_kind, object_name).into_bytes();
+                        final_payload.push((PathBuf::from("Ext/Form.xml"), content));
                     }
-                }
+                    MetaCollection::Templates => {
+                        final_payload_directories.push(PathBuf::new());
+                        final_payload_directories.push(PathBuf::from("Ext"));
+                        let content =
+                            super::super::mxl::empty_spreadsheet_document_xml().into_bytes();
+                        final_payload.push((PathBuf::from("Ext/Template.xml"), content));
+                    }
+                    MetaCollection::Commands => {}
+                    _ => unreachable!(),
+                },
+            }
+            let footprint = validate_typed_child_footprint(
+                state.collection,
+                template_type,
+                &child_address,
+                &final_payload,
+                &final_payload_directories,
+            )?;
+            plan.validation_footprints.push(footprint);
+            let payload_root = collection_dir.join(final_name);
+            for relative in &final_payload_directories {
+                final_directories.insert(payload_root.join(relative));
+            }
+            for (ordinal, (relative, bytes)) in final_payload.iter().enumerate() {
+                final_files.insert(payload_root.join(relative), bytes.clone());
+                plan.validation_resources.push(MetadataResourceImage {
+                    role: typed_child_payload_role(
+                        state.collection,
+                        &child_address,
+                        relative,
+                        ordinal,
+                        template_type,
+                    )?,
+                    bytes: bytes.clone(),
+                });
             }
             Some(bytes)
         } else {
@@ -3476,6 +3465,7 @@ fn plan_typed_child_resources(
     }
 
     for (collection, collection_dir, snapshot) in collection_snapshots {
+        let collection_existed = matches!(snapshot, DirectoryMembershipSnapshot::Present(_));
         let touched_initial_entries = states
             .iter()
             .filter(|state| state.collection == collection)
@@ -3497,7 +3487,15 @@ fn plan_typed_child_resources(
             || final_directories
                 .iter()
                 .any(|path| path.starts_with(&collection_dir));
-        if has_unrelated_initial_entry || has_final_child_footprint {
+        let removed_existing_child = states.iter().any(|state| {
+            state.collection == collection
+                && matches!(state.origin, Origin::Existing(_))
+                && state.current_name.is_none()
+        });
+        if has_unrelated_initial_entry
+            || has_final_child_footprint
+            || (collection_existed && !removed_existing_child)
+        {
             final_directories.insert(collection_dir);
         }
     }
@@ -3595,6 +3593,134 @@ fn typed_physical_collection(
         MetaCollection::Commands => Some(("Commands", MetaPublicationResource::Command)),
         _ => None,
     }
+}
+
+#[derive(Debug)]
+struct TypedChildFootprintProfile {
+    logical_profile: MetadataChildProfile,
+    required_files: BTreeSet<PathBuf>,
+    optional_files: BTreeSet<PathBuf>,
+    required_directories: BTreeSet<PathBuf>,
+}
+
+fn typed_child_footprint_profile(
+    collection: MetaCollection,
+    template_type: Option<MetadataTemplateType>,
+    child: &MetadataAddress,
+) -> Result<TypedChildFootprintProfile, MetaFailure> {
+    let paths = |values: &[&str]| values.iter().map(PathBuf::from).collect::<BTreeSet<_>>();
+    match collection {
+        MetaCollection::Forms => Ok(TypedChildFootprintProfile {
+            logical_profile: MetadataChildProfile::Form,
+            required_files: paths(&["Ext/Form.xml"]),
+            optional_files: paths(&["Ext/Module.bsl"]),
+            required_directories: paths(&["", "Ext"]),
+        }),
+        MetaCollection::Commands => Ok(TypedChildFootprintProfile {
+            logical_profile: MetadataChildProfile::Command,
+            required_files: BTreeSet::new(),
+            optional_files: paths(&["Ext/CommandModule.bsl"]),
+            required_directories: BTreeSet::new(),
+        }),
+        MetaCollection::Templates => {
+            let template_type = template_type.ok_or_else(|| {
+                typed_child_resource_failure(
+                    child,
+                    "template payload has no closed TemplateType evidence",
+                )
+            })?;
+            let (required_files, required_directories) = match template_type {
+                MetadataTemplateType::HtmlDocument => (
+                    paths(&["Ext/Template.xml", "Ext/Template/ru.html"]),
+                    paths(&["", "Ext", "Ext/Template"]),
+                ),
+                MetadataTemplateType::TextDocument => {
+                    (paths(&["Ext/Template.txt"]), paths(&["", "Ext"]))
+                }
+                MetadataTemplateType::SpreadsheetDocument
+                | MetadataTemplateType::DataCompositionSchema => {
+                    (paths(&["Ext/Template.xml"]), paths(&["", "Ext"]))
+                }
+                MetadataTemplateType::BinaryData => {
+                    (paths(&["Ext/Template.bin"]), paths(&["", "Ext"]))
+                }
+            };
+            Ok(TypedChildFootprintProfile {
+                logical_profile: MetadataChildProfile::Template(template_type),
+                required_files,
+                optional_files: BTreeSet::new(),
+                required_directories,
+            })
+        }
+        _ => unreachable!(),
+    }
+}
+
+fn validate_typed_child_footprint(
+    collection: MetaCollection,
+    template_type: Option<MetadataTemplateType>,
+    child: &MetadataAddress,
+    files: &[(PathBuf, Vec<u8>)],
+    directories: &[PathBuf],
+) -> Result<MetadataChildFootprintEvidence, MetaFailure> {
+    let profile = typed_child_footprint_profile(collection, template_type, child)?;
+    let observed_files = files
+        .iter()
+        .map(|(relative, _)| relative.clone())
+        .collect::<BTreeSet<_>>();
+    let allowed_files = profile
+        .required_files
+        .union(&profile.optional_files)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if !profile.required_files.is_subset(&observed_files)
+        || !observed_files.is_subset(&allowed_files)
+        || observed_files.len() != files.len()
+    {
+        return Err(typed_child_resource_failure(
+            child,
+            "child payload does not contain its exact required resource set",
+        ));
+    }
+
+    let observed_directories = directories.iter().cloned().collect::<BTreeSet<_>>();
+    let expected_directories = if collection == MetaCollection::Commands
+        && observed_files.contains(Path::new("Ext/CommandModule.bsl"))
+    {
+        [PathBuf::new(), PathBuf::from("Ext")]
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+    } else {
+        profile.required_directories.clone()
+    };
+    if observed_directories != expected_directories
+        || observed_directories.len() != directories.len()
+    {
+        return Err(typed_child_topology_failure(
+            child,
+            "child payload does not contain its exact required directory topology",
+        ));
+    }
+
+    let directories = observed_directories
+        .iter()
+        .map(|relative| {
+            if relative.as_os_str().is_empty() {
+                MetadataChildDirectoryKind::Root
+            } else if relative == Path::new("Ext") {
+                MetadataChildDirectoryKind::Extension
+            } else if relative == Path::new("Ext/Template") {
+                MetadataChildDirectoryKind::HtmlPages
+            } else {
+                unreachable!("closed directory footprint was checked above")
+            }
+        })
+        .collect();
+    Ok(MetadataChildFootprintEvidence {
+        child: child.clone(),
+        profile: profile.logical_profile,
+        directories,
+    })
 }
 
 fn typed_child_role(
@@ -3715,17 +3841,12 @@ fn typed_template_type_from_descriptor(
             "template descriptor must contain exactly one TemplateType",
         ));
     };
-    match *value {
-        "HTMLDocument" => Ok(MetadataTemplateType::HtmlDocument),
-        "TextDocument" => Ok(MetadataTemplateType::TextDocument),
-        "SpreadsheetDocument" => Ok(MetadataTemplateType::SpreadsheetDocument),
-        "BinaryData" => Ok(MetadataTemplateType::BinaryData),
-        "DataCompositionSchema" => Ok(MetadataTemplateType::DataCompositionSchema),
-        _ => Err(typed_child_resource_failure(
+    MetadataTemplateType::from_descriptor_value(value).ok_or_else(|| {
+        typed_child_resource_failure(
             child,
             "template descriptor uses an unsupported TemplateType",
-        )),
-    }
+        )
+    })
 }
 
 fn typed_child_resource_failure(child: &MetadataAddress, message: &str) -> MetaFailure {
@@ -4079,12 +4200,14 @@ pub(crate) fn prepare_typed_edit(
     if xml.starts_with('\u{feff}') {
         xml = xml.trim_start_matches('\u{feff}').to_string();
     }
+    let normalized_preimage = xml.clone();
     apply_typed_operations(&mut xml, &request.operations).map_err(|mut failure| {
         for diagnostic in &mut failure.diagnostics {
             diagnostic.metadata_path = Some(request.metadata_path.clone());
         }
         failure
     })?;
+    restore_initial_empty_top_child_objects(&normalized_preimage, &mut xml);
     let (object_kind, object_name) = meta_edit_object_identity(&xml).map_err(|_| {
         MetaFailure::from(
             typed_diagnostic(
@@ -4115,6 +4238,41 @@ pub(crate) fn prepare_typed_edit(
         diagnostics,
         child_resources,
     )
+}
+
+fn restore_initial_empty_top_child_objects(pre_image: &str, post_image: &mut String) {
+    let Ok(pre_document) = Document::parse(pre_image) else {
+        return;
+    };
+    let Ok(pre_object) = meta_edit_object_node(&pre_document) else {
+        return;
+    };
+    let Some(pre_children) = meta_info_child(pre_object, "ChildObjects") else {
+        return;
+    };
+    let pre_range = pre_children.range();
+    let pre_source = &pre_image[pre_range.clone()];
+    if !pre_source.trim_end().ends_with("/>")
+        || pre_children.children().any(|child| child.is_element())
+    {
+        return;
+    }
+
+    let Ok(post_document) = Document::parse(post_image.as_str()) else {
+        return;
+    };
+    let Ok(post_object) = meta_edit_object_node(&post_document) else {
+        return;
+    };
+    let Some(post_children) = meta_info_child(post_object, "ChildObjects") else {
+        return;
+    };
+    if post_children.children().any(|child| child.is_element()) {
+        return;
+    }
+    let post_range = post_children.range();
+    drop(post_document);
+    post_image.replace_range(post_range, pre_source);
 }
 
 fn resolve_typed_relation_dependencies(
@@ -7355,6 +7513,155 @@ mod tests {
     }
 
     #[test]
+    fn typed_child_footprint_profile_matrix_rejects_every_missing_or_extra_member() {
+        let child = metadata_reference("Catalog.Editable.Template.Main").metadata_path;
+        let cases = vec![
+            (
+                "form",
+                MetaCollection::Forms,
+                None,
+                vec!["Ext/Form.xml"],
+                vec!["", "Ext"],
+                "Ext/Template.xml",
+            ),
+            (
+                "command-module",
+                MetaCollection::Commands,
+                None,
+                vec!["Ext/CommandModule.bsl"],
+                vec!["", "Ext"],
+                "Ext/Form.xml",
+            ),
+            (
+                "spreadsheet",
+                MetaCollection::Templates,
+                Some(MetadataTemplateType::SpreadsheetDocument),
+                vec!["Ext/Template.xml"],
+                vec!["", "Ext"],
+                "Ext/Template.txt",
+            ),
+            (
+                "schema",
+                MetaCollection::Templates,
+                Some(MetadataTemplateType::DataCompositionSchema),
+                vec!["Ext/Template.xml"],
+                vec!["", "Ext"],
+                "Ext/Template.bin",
+            ),
+            (
+                "text",
+                MetaCollection::Templates,
+                Some(MetadataTemplateType::TextDocument),
+                vec!["Ext/Template.txt"],
+                vec!["", "Ext"],
+                "Ext/Template.xml",
+            ),
+            (
+                "binary",
+                MetaCollection::Templates,
+                Some(MetadataTemplateType::BinaryData),
+                vec!["Ext/Template.bin"],
+                vec!["", "Ext"],
+                "Ext/Template.xml",
+            ),
+            (
+                "html",
+                MetaCollection::Templates,
+                Some(MetadataTemplateType::HtmlDocument),
+                vec!["Ext/Template.xml", "Ext/Template/ru.html"],
+                vec!["", "Ext", "Ext/Template"],
+                "Ext/Template/de.html",
+            ),
+        ];
+
+        for (label, collection, template_type, file_names, directory_names, wrong_part) in cases {
+            let files = file_names
+                .iter()
+                .map(|path| (PathBuf::from(path), Vec::new()))
+                .collect::<Vec<_>>();
+            let directories = directory_names
+                .iter()
+                .map(PathBuf::from)
+                .collect::<Vec<_>>();
+            validate_typed_child_footprint(collection, template_type, &child, &files, &directories)
+                .unwrap_or_else(|failure| panic!("valid {label} footprint failed: {failure:?}"));
+
+            let mut missing_file = files.clone();
+            missing_file.pop();
+            assert!(
+                validate_typed_child_footprint(
+                    collection,
+                    template_type,
+                    &child,
+                    &missing_file,
+                    &directories,
+                )
+                .is_err(),
+                "{label} accepted a missing file"
+            );
+
+            let mut extra_file = files.clone();
+            extra_file.push((PathBuf::from("Ext/Unexpected.bin"), Vec::new()));
+            assert!(
+                validate_typed_child_footprint(
+                    collection,
+                    template_type,
+                    &child,
+                    &extra_file,
+                    &directories,
+                )
+                .is_err(),
+                "{label} accepted an extra file"
+            );
+
+            let mut wrong_file_role = files.clone();
+            *wrong_file_role.last_mut().unwrap() = (PathBuf::from(wrong_part), Vec::new());
+            assert!(
+                validate_typed_child_footprint(
+                    collection,
+                    template_type,
+                    &child,
+                    &wrong_file_role,
+                    &directories,
+                )
+                .is_err(),
+                "{label} accepted a wrong file role or part"
+            );
+
+            let mut missing_directory = directories.clone();
+            missing_directory.pop();
+            assert!(
+                validate_typed_child_footprint(
+                    collection,
+                    template_type,
+                    &child,
+                    &files,
+                    &missing_directory,
+                )
+                .is_err(),
+                "{label} accepted a missing directory"
+            );
+
+            let mut extra_directory = directories.clone();
+            extra_directory.push(PathBuf::from("Ext/Unexpected"));
+            assert!(
+                validate_typed_child_footprint(
+                    collection,
+                    template_type,
+                    &child,
+                    &files,
+                    &extra_directory,
+                )
+                .is_err(),
+                "{label} accepted an extra directory"
+            );
+        }
+
+        validate_typed_child_footprint(MetaCollection::Commands, None, &child, &[], &[])
+            .expect("descriptor-only Command is a valid closed footprint");
+    }
+
+    #[test]
     fn typed_form_add_then_remove_collapses_to_a_resource_noop() {
         let root = std::env::temp_dir().join(format!(
             "unica-meta-edit-form-add-remove-{}",
@@ -7676,6 +7983,13 @@ mod tests {
         apply_typed_operations(&mut pre_image, &[initial_add]).unwrap();
         let child_bytes = typed_child_descriptor_image(&pre_image, "Form", "A").unwrap();
         std::fs::write(&child_descriptor, &child_bytes).unwrap();
+        let form_content = root.join("Documents/Order/Forms/A/Ext/Form.xml");
+        std::fs::create_dir_all(form_content.parent().unwrap()).unwrap();
+        std::fs::write(
+            &form_content,
+            minimal_typed_form_content("Document", "Order").as_bytes(),
+        )
+        .unwrap();
         let operation = MetaEditOperation::update(
             MetaCollection::Forms,
             None,

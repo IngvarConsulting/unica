@@ -99,7 +99,8 @@ mod tests {
     use super::*;
     use crate::application::metadata::{MetaAddRequest, MetaEditRequest};
     use crate::application::ports::{
-        MetadataChildResourceKind, MetadataResourceRole, MetadataTemplateType,
+        MetadataChildDirectoryKind, MetadataChildProfile, MetadataChildResourceKind,
+        MetadataResourceRole, MetadataTemplateType,
     };
     use crate::domain::metadata::{
         MetaCollection, MetaEditOperation, MetaElementInput, MetaElementUpdateInput,
@@ -317,6 +318,53 @@ mod tests {
         assert!(prepared.preview().publication_plan.is_empty());
         prepared.publish(&cancellation).unwrap();
         assert_eq!(fs::read(&fixture.descriptor).unwrap(), before);
+    }
+
+    #[test]
+    fn transient_typed_child_add_remove_preserves_preexisting_empty_collection_directory() {
+        for (label, collection, directory) in [
+            ("forms", MetaCollection::Forms, "Forms"),
+            ("templates", MetaCollection::Templates, "Templates"),
+            ("commands", MetaCollection::Commands, "Commands"),
+        ] {
+            let fixture = Fixture::new(&format!("empty-{label}-add-remove-noop"));
+            let cancellation = CancellationToken::new();
+            let collection_dir = fixture
+                .root
+                .join(format!("src/Catalogs/Editable/{directory}"));
+            fs::create_dir_all(&collection_dir).unwrap();
+            let owner_before = fs::read(&fixture.descriptor).unwrap();
+            let request = fixture.typed_edit(vec![
+                MetaEditOperation::add(
+                    collection,
+                    None,
+                    vec![MetaElementInput::named("Transient")],
+                )
+                .unwrap(),
+                MetaEditOperation::remove(collection, None, vec!["Transient".into()]).unwrap(),
+            ]);
+
+            let prepared =
+                MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+                    .unwrap();
+
+            assert!(!prepared.preview().changed, "{label}");
+            assert!(prepared.preview().publication_plan.is_empty(), "{label}");
+            assert!(
+                prepared.validation_subject().child_footprints.is_empty(),
+                "{label}"
+            );
+            let report = prepared.publish(&cancellation).unwrap();
+            assert!(!report.data.changed, "{label}");
+            assert!(report.data.publication_plan.is_empty(), "{label}");
+            assert_eq!(
+                fs::read(&fixture.descriptor).unwrap(),
+                owner_before,
+                "{label}"
+            );
+            assert!(collection_dir.is_dir(), "{label}");
+            assert_eq!(fs::read_dir(&collection_dir).unwrap().count(), 0, "{label}");
+        }
     }
 
     #[test]
@@ -862,10 +910,28 @@ mod tests {
             )
             .unwrap(),
         ]);
-        MetadataOperations::prepare_mutation(&add, &fixture.context, &cancellation)
-            .unwrap()
-            .publish(&cancellation)
-            .unwrap();
+        let prepared =
+            MetadataOperations::prepare_mutation(&add, &fixture.context, &cancellation).unwrap();
+        assert!(prepared
+            .validation_subject()
+            .child_footprints
+            .iter()
+            .any(|footprint| {
+                footprint.profile == MetadataChildProfile::Command
+                    && footprint.directories.is_empty()
+            }));
+        let validation = MetadataOperations::validate(
+            prepared.validation_subject(),
+            &fixture.context,
+            &cancellation,
+        );
+        assert_eq!(
+            validation.status,
+            MetaValidationStatus::Passed,
+            "{:?}",
+            validation.diagnostics
+        );
+        prepared.publish(&cancellation).unwrap();
         let object_root = fixture.root.join("src/Catalogs/Editable");
         let template_content = object_root.join("Templates/Print/Ext/Template.xml");
         let command_descriptor = object_root.join("Commands/Run.xml");
@@ -1048,6 +1114,107 @@ mod tests {
             .message
             .contains(&fixture.root.to_string_lossy().into_owned()));
         assert_eq!(diagnostic.field.as_deref(), Some("resources.child.payload"));
+    }
+
+    #[test]
+    fn retained_mandatory_child_payload_cannot_be_wholly_absent() {
+        for (label, collection, template_type) in [
+            ("form", MetaCollection::Forms, None),
+            (
+                "spreadsheet",
+                MetaCollection::Templates,
+                Some("SpreadsheetDocument"),
+            ),
+            (
+                "schema",
+                MetaCollection::Templates,
+                Some("DataCompositionSchema"),
+            ),
+            ("text", MetaCollection::Templates, Some("TextDocument")),
+            ("binary", MetaCollection::Templates, Some("BinaryData")),
+            ("html", MetaCollection::Templates, Some("HTMLDocument")),
+        ] {
+            let fixture = Fixture::new(&format!("missing-whole-child-payload-{label}"));
+            let cancellation = CancellationToken::new();
+            let add = fixture.typed_edit(vec![MetaEditOperation::add(
+                collection,
+                None,
+                vec![MetaElementInput::named("Main")],
+            )
+            .unwrap()]);
+            MetadataOperations::prepare_mutation(&add, &fixture.context, &cancellation)
+                .unwrap()
+                .publish(&cancellation)
+                .unwrap();
+            let collection_dir = match collection {
+                MetaCollection::Forms => "Forms",
+                MetaCollection::Templates => "Templates",
+                _ => unreachable!(),
+            };
+            let child_descriptor = fixture
+                .root
+                .join(format!("src/Catalogs/Editable/{collection_dir}/Main.xml"));
+            if let Some(template_type) = template_type {
+                for descriptor in [&fixture.descriptor, &child_descriptor] {
+                    let text = String::from_utf8(fs::read(descriptor).unwrap())
+                        .unwrap()
+                        .replace(
+                            "<TemplateType>SpreadsheetDocument</TemplateType>",
+                            &format!("<TemplateType>{template_type}</TemplateType>"),
+                        );
+                    fs::write(descriptor, text).unwrap();
+                }
+            }
+            fs::remove_dir_all(
+                fixture
+                    .root
+                    .join(format!("src/Catalogs/Editable/{collection_dir}/Main")),
+            )
+            .unwrap();
+            let request = fixture.typed_edit(vec![MetaEditOperation::update(
+                collection,
+                None,
+                vec![MetaElementUpdateInput {
+                    name: "Main".into(),
+                    comment: Some("retained".into()),
+                    ..MetaElementUpdateInput::default()
+                }],
+            )
+            .unwrap()]);
+
+            let failure = match MetadataOperations::prepare_mutation(
+                &request,
+                &fixture.context,
+                &cancellation,
+            ) {
+                Ok(_) => panic!("{label} accepted without its mandatory payload"),
+                Err(failure) => failure,
+            };
+
+            let diagnostic = &failure.diagnostics[0];
+            assert!(
+                diagnostic.message.contains(&format!(
+                    "Catalog.Editable.{}.Main",
+                    if collection == MetaCollection::Forms {
+                        "Form"
+                    } else {
+                        "Template"
+                    }
+                )),
+                "{label}: {diagnostic:?}"
+            );
+            assert_eq!(
+                diagnostic.field.as_deref(),
+                Some("resources.child.payload"),
+                "{label}"
+            );
+            assert!(
+                !diagnostic
+                    .message
+                    .contains(&fixture.root.to_string_lossy().into_owned()),
+                "{label}: {diagnostic:?}"
+            );
+        }
     }
 
     #[test]
@@ -1265,6 +1432,122 @@ mod tests {
         }
     }
 
+    #[test]
+    fn retained_optional_form_module_and_html_companion_tree_have_closed_valid_footprints() {
+        let cancellation = CancellationToken::new();
+
+        let form = Fixture::new("valid-optional-form-module-footprint");
+        form.publish_form_add("Main");
+        let module = form
+            .root
+            .join("src/Catalogs/Editable/Forms/Main/Ext/Module.bsl");
+        fs::write(
+            &module,
+            "Процедура ПриОткрытии()\nКонецПроцедуры".as_bytes(),
+        )
+        .unwrap();
+        let form_request = form.typed_edit(vec![MetaEditOperation::update(
+            MetaCollection::Forms,
+            None,
+            vec![MetaElementUpdateInput {
+                name: "Main".into(),
+                comment: Some("retained".into()),
+                ..MetaElementUpdateInput::default()
+            }],
+        )
+        .unwrap()]);
+        let prepared =
+            MetadataOperations::prepare_mutation(&form_request, &form.context, &cancellation)
+                .unwrap();
+        assert_eq!(
+            prepared.validation_subject().child_footprints[0].profile,
+            MetadataChildProfile::Form
+        );
+        assert_eq!(
+            prepared.validation_subject().child_footprints[0].directories,
+            vec![
+                MetadataChildDirectoryKind::Root,
+                MetadataChildDirectoryKind::Extension,
+            ]
+        );
+        let validation = MetadataOperations::validate(
+            prepared.validation_subject(),
+            &form.context,
+            &cancellation,
+        );
+        assert_eq!(validation.status, MetaValidationStatus::Passed);
+
+        let html = Fixture::new("valid-html-companion-footprint");
+        let add = html.typed_edit(vec![MetaEditOperation::add(
+            MetaCollection::Templates,
+            None,
+            vec![MetaElementInput::named("Main")],
+        )
+        .unwrap()]);
+        MetadataOperations::prepare_mutation(&add, &html.context, &cancellation)
+            .unwrap()
+            .publish(&cancellation)
+            .unwrap();
+        let child_descriptor = html.root.join("src/Catalogs/Editable/Templates/Main.xml");
+        for descriptor in [&html.descriptor, &child_descriptor] {
+            let text = String::from_utf8(fs::read(descriptor).unwrap())
+                .unwrap()
+                .replace(
+                    "<TemplateType>SpreadsheetDocument</TemplateType>",
+                    "<TemplateType>HTMLDocument</TemplateType>",
+                );
+            fs::write(descriptor, text).unwrap();
+        }
+        let ext = html.root.join("src/Catalogs/Editable/Templates/Main/Ext");
+        fs::write(
+            ext.join("Template.xml"),
+            br#"<Help xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"><Page>ru</Page></Help>"#,
+        )
+        .unwrap();
+        fs::create_dir_all(ext.join("Template")).unwrap();
+        fs::write(
+            ext.join("Template/ru.html"),
+            br#"<html><head><meta charset="utf-8"/></head><body/></html>"#,
+        )
+        .unwrap();
+        let html_request = html.typed_edit(vec![MetaEditOperation::update(
+            MetaCollection::Templates,
+            None,
+            vec![MetaElementUpdateInput {
+                name: "Main".into(),
+                comment: Some("retained".into()),
+                ..MetaElementUpdateInput::default()
+            }],
+        )
+        .unwrap()]);
+        let prepared =
+            MetadataOperations::prepare_mutation(&html_request, &html.context, &cancellation)
+                .unwrap();
+        assert_eq!(
+            prepared.validation_subject().child_footprints[0].profile,
+            MetadataChildProfile::Template(MetadataTemplateType::HtmlDocument)
+        );
+        assert_eq!(
+            prepared.validation_subject().child_footprints[0].directories,
+            vec![
+                MetadataChildDirectoryKind::Root,
+                MetadataChildDirectoryKind::Extension,
+                MetadataChildDirectoryKind::HtmlPages,
+            ]
+        );
+        let validation = MetadataOperations::validate(
+            prepared.validation_subject(),
+            &html.context,
+            &cancellation,
+        );
+        assert_eq!(
+            validation.status,
+            MetaValidationStatus::Passed,
+            "{:?}",
+            validation.diagnostics
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn child_topology_failures_report_logical_identity_without_provider_paths() {
@@ -1331,6 +1614,64 @@ mod tests {
                 diagnostic.field.as_deref(),
                 Some("resources.child.topology"),
                 "{node_kind}"
+            );
+        }
+    }
+
+    #[test]
+    fn retained_child_payload_rejects_unexpected_empty_directory_subtrees() {
+        for (label, collection, relative) in [
+            ("form", MetaCollection::Forms, "Forms/Main/Ext/Unexpected"),
+            (
+                "template",
+                MetaCollection::Templates,
+                "Templates/Main/Ext/Unexpected",
+            ),
+        ] {
+            let fixture = Fixture::new(&format!("unexpected-empty-{label}-subtree"));
+            let cancellation = CancellationToken::new();
+            let add = fixture.typed_edit(vec![MetaEditOperation::add(
+                collection,
+                None,
+                vec![MetaElementInput::named("Main")],
+            )
+            .unwrap()]);
+            MetadataOperations::prepare_mutation(&add, &fixture.context, &cancellation)
+                .unwrap()
+                .publish(&cancellation)
+                .unwrap();
+            fs::create_dir_all(fixture.root.join("src/Catalogs/Editable").join(relative)).unwrap();
+            let request = fixture.typed_edit(vec![MetaEditOperation::update(
+                collection,
+                None,
+                vec![MetaElementUpdateInput {
+                    name: "Main".into(),
+                    comment: Some("retained".into()),
+                    ..MetaElementUpdateInput::default()
+                }],
+            )
+            .unwrap()]);
+
+            let failure = match MetadataOperations::prepare_mutation(
+                &request,
+                &fixture.context,
+                &cancellation,
+            ) {
+                Ok(_) => panic!("{label} accepted an unexpected empty subtree"),
+                Err(failure) => failure,
+            };
+
+            let diagnostic = &failure.diagnostics[0];
+            assert_eq!(
+                diagnostic.field.as_deref(),
+                Some("resources.child.topology"),
+                "{label}"
+            );
+            assert!(
+                !diagnostic
+                    .message
+                    .contains(&fixture.root.to_string_lossy().into_owned()),
+                "{label}: {diagnostic:?}"
             );
         }
     }

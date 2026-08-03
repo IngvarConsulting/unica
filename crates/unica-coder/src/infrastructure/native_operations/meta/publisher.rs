@@ -111,6 +111,15 @@ impl PreparedMetaEdit {
     ) -> Result<Box<dyn PreparedMetadataMutation>, MetaFailure> {
         let target = request.metadata_path.clone();
         let changed = post_image != resolved.descriptor_preimage;
+        if !changed
+            && child_resources.publication_plan.is_empty()
+            && !child_resources.file_mutations.is_empty()
+        {
+            return Err(provider_failure(
+                &target,
+                "unchanged metadata preview cannot contain filesystem mutations".to_string(),
+            ));
+        }
         let mut transaction = CompileTransaction::new();
         if changed {
             transaction
@@ -210,6 +219,7 @@ impl PreparedMetaEdit {
         let validation_subject = MetadataValidationSubject {
             target: target.clone(),
             resources: validation_resources,
+            child_footprints: child_resources.validation_footprints,
         };
         Ok(Box::new(Self {
             preview: MetaMutationData {
@@ -495,6 +505,7 @@ pub(crate) fn prepare_meta_add(
         validation_subject: MetadataValidationSubject {
             target,
             resources: validation_resources,
+            child_footprints: Vec::new(),
         },
         transaction,
         context: context.clone(),

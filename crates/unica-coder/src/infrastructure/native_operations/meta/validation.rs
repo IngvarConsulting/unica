@@ -1,9 +1,9 @@
 #![allow(dead_code, unused_imports)]
 
 use crate::application::ports::{
-    MetadataAuxiliaryXmlKind, MetadataChildResourceKind, MetadataResourceRole,
-    MetadataTemplateResourcePart, MetadataTemplateType, MetadataValidationResult,
-    MetadataValidationSubject,
+    MetadataAuxiliaryXmlKind, MetadataChildDirectoryKind, MetadataChildProfile,
+    MetadataChildResourceKind, MetadataResourceRole, MetadataTemplateResourcePart,
+    MetadataTemplateType, MetadataValidationResult, MetadataValidationSubject,
 };
 use crate::application::AdapterOutcome;
 use crate::domain::format_profile::{
@@ -210,7 +210,7 @@ impl MetadataValidator {
             }
         }
 
-        validate_template_resource_sets(subject, &mut diagnostics);
+        validate_child_footprints(subject, &mut diagnostics);
 
         if diagnostics
             .iter()
@@ -443,6 +443,192 @@ fn validate_child_resource(kind: MetadataChildResourceKind, bytes: &[u8]) -> Res
             .map(|_| ())
             .map_err(|error| format!("child module is not UTF-8: {error}")),
     }
+}
+
+fn validate_child_footprints(
+    subject: &MetadataValidationSubject,
+    diagnostics: &mut Vec<MetaDiagnostic>,
+) {
+    if subject.child_footprints.is_empty() {
+        validate_template_resource_sets(subject, diagnostics);
+        return;
+    }
+
+    let mut seen = HashSet::new();
+    for footprint in &subject.child_footprints {
+        if !seen.insert(footprint.child.clone()) {
+            diagnostics.push(template_resource_set_diagnostic(
+                &footprint.child,
+                "validation subject contains duplicate child footprint evidence",
+            ));
+            continue;
+        }
+        let descriptors = subject
+            .resources
+            .iter()
+            .filter(|resource| {
+                child_descriptor_logical_identity(&resource.role)
+                    .as_deref()
+                    .is_some_and(|identity| identity == footprint.child.as_str())
+            })
+            .collect::<Vec<_>>();
+        let descriptor_matches_profile = descriptors.len() == 1
+            && match (&footprint.profile, &descriptors[0].role) {
+                (MetadataChildProfile::Form, MetadataResourceRole::Form { .. })
+                | (MetadataChildProfile::Command, MetadataResourceRole::Command { .. }) => true,
+                (
+                    MetadataChildProfile::Template(expected_type),
+                    MetadataResourceRole::Template { .. },
+                ) => child_template_type_from_descriptor(&descriptors[0].bytes)
+                    .is_some_and(|actual_type| actual_type == *expected_type),
+                _ => false,
+            };
+        if !descriptor_matches_profile {
+            diagnostics.push(template_resource_set_diagnostic(
+                &footprint.child,
+                "child footprint is not backed by exactly one matching descriptor profile",
+            ));
+        }
+        let resources = subject
+            .resources
+            .iter()
+            .filter_map(|resource| match &resource.role {
+                MetadataResourceRole::ChildResource { child, kind, .. }
+                    if child == &footprint.child =>
+                {
+                    Some(*kind)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let module_count = resources
+            .iter()
+            .filter(|kind| matches!(kind, MetadataChildResourceKind::Module))
+            .count();
+        let expected_directories = match footprint.profile {
+            MetadataChildProfile::Command if module_count == 0 => Vec::new(),
+            MetadataChildProfile::Form | MetadataChildProfile::Command => vec![
+                MetadataChildDirectoryKind::Root,
+                MetadataChildDirectoryKind::Extension,
+            ],
+            MetadataChildProfile::Template(MetadataTemplateType::HtmlDocument) => vec![
+                MetadataChildDirectoryKind::Root,
+                MetadataChildDirectoryKind::Extension,
+                MetadataChildDirectoryKind::HtmlPages,
+            ],
+            MetadataChildProfile::Template(_) => vec![
+                MetadataChildDirectoryKind::Root,
+                MetadataChildDirectoryKind::Extension,
+            ],
+        };
+        if footprint.directories != expected_directories {
+            diagnostics.push(template_resource_set_diagnostic(
+                &footprint.child,
+                "child footprint does not contain its exact required directory topology",
+            ));
+        }
+
+        let exact_resources = match footprint.profile {
+            MetadataChildProfile::Form => {
+                resources
+                    .iter()
+                    .filter(|kind| matches!(kind, MetadataChildResourceKind::FormContent))
+                    .count()
+                    == 1
+                    && module_count <= 1
+                    && resources.len() == 1 + module_count
+            }
+            MetadataChildProfile::Command => module_count <= 1 && resources.len() == module_count,
+            MetadataChildProfile::Template(template_type) => {
+                let expected_parts = match template_type {
+                    MetadataTemplateType::HtmlDocument => vec![
+                        MetadataTemplateResourcePart::Primary,
+                        MetadataTemplateResourcePart::HtmlPage,
+                    ],
+                    _ => vec![MetadataTemplateResourcePart::Primary],
+                };
+                expected_parts.iter().all(|expected_part| {
+                    resources
+                        .iter()
+                        .filter(|kind| {
+                            matches!(
+                                kind,
+                                MetadataChildResourceKind::TemplateContent {
+                                    template_type: actual_type,
+                                    part,
+                                } if actual_type == &template_type && part == expected_part
+                            )
+                        })
+                        .count()
+                        == 1
+                }) && resources.len() == expected_parts.len()
+            }
+        };
+        if !exact_resources {
+            diagnostics.push(template_resource_set_diagnostic(
+                &footprint.child,
+                "child payload does not contain its exact required resource set",
+            ));
+        }
+    }
+
+    for child in subject
+        .resources
+        .iter()
+        .filter_map(|resource| match &resource.role {
+            MetadataResourceRole::ChildResource { child, .. } => Some(child),
+            _ => None,
+        })
+    {
+        if !seen.contains(child) {
+            diagnostics.push(template_resource_set_diagnostic(
+                child,
+                "child resource has no closed footprint evidence",
+            ));
+        }
+    }
+    for child in subject
+        .resources
+        .iter()
+        .filter_map(|resource| child_descriptor_logical_identity(&resource.role))
+    {
+        if !subject
+            .child_footprints
+            .iter()
+            .any(|footprint| footprint.child.as_str() == child)
+        {
+            let child = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &child)
+                .expect("closed child descriptor roles form metadata addresses");
+            diagnostics.push(template_resource_set_diagnostic(
+                &child,
+                "child descriptor has no closed footprint evidence",
+            ));
+        }
+    }
+}
+
+fn child_descriptor_logical_identity(role: &MetadataResourceRole) -> Option<String> {
+    match role {
+        MetadataResourceRole::Form { owner, name } => Some(format!("{owner}.Form.{name}")),
+        MetadataResourceRole::Template { owner, name } => Some(format!("{owner}.Template.{name}")),
+        MetadataResourceRole::Command { owner, name } => Some(format!("{owner}.Command.{name}")),
+        _ => None,
+    }
+}
+
+fn child_template_type_from_descriptor(bytes: &[u8]) -> Option<MetadataTemplateType> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let document = Document::parse(text.trim_start_matches('\u{feff}')).ok()?;
+    let values = document
+        .descendants()
+        .filter(|node| node.is_element() && node.tag_name().name() == "TemplateType")
+        .filter_map(|node| node.text())
+        .map(str::trim)
+        .collect::<Vec<_>>();
+    let [value] = values.as_slice() else {
+        return None;
+    };
+    MetadataTemplateType::from_descriptor_value(value)
 }
 
 fn validate_template_resource_sets(
@@ -1207,7 +1393,11 @@ fn metadata_validation_subject_from_paths(
         MetaValidationOwnerKind::External => None,
     };
     add_descriptor_references(&mut resources, &descriptor, config_dir)?;
-    Ok(MetadataValidationSubject { target, resources })
+    Ok(MetadataValidationSubject {
+        target,
+        resources,
+        child_footprints: Vec::new(),
+    })
 }
 
 fn metadata_validation_run(
@@ -3205,8 +3395,8 @@ pub(super) fn meta_validate_forbidden_properties(md_type: &str) -> Option<&'stat
 mod tests {
     use super::*;
     use crate::application::ports::{
-        MetadataAuxiliaryXmlKind, MetadataResourceImage, MetadataResourceRole,
-        MetadataValidationSubject,
+        MetadataAuxiliaryXmlKind, MetadataChildFootprintEvidence, MetadataResourceImage,
+        MetadataResourceRole, MetadataValidationSubject,
     };
     use crate::domain::metadata::{MetaDiagnosticCode, MetaValidationStatus};
     use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
@@ -3278,6 +3468,7 @@ mod tests {
         MetadataValidationSubject {
             target: address(target),
             resources,
+            child_footprints: Vec::new(),
         }
     }
 
@@ -3511,6 +3702,7 @@ mod tests {
                     },
                     bytes,
                 )],
+                child_footprints: Vec::new(),
             };
 
             let result = MetadataValidator.validate(&subject, &context());
@@ -3547,6 +3739,7 @@ mod tests {
                     )
                 })
                 .collect(),
+            child_footprints: Vec::new(),
         }
     }
 
@@ -3699,6 +3892,84 @@ mod tests {
                 .message
                 .contains("Catalog.Editable.Template.Html"));
         }
+    }
+
+    #[test]
+    fn child_footprint_evidence_is_independently_checked_against_resources_and_directories() {
+        let child = address("Catalog.Editable.Template.Html");
+        let mut subject = template_subject(
+            child.as_str(),
+            vec![
+                (
+                    MetadataTemplateType::HtmlDocument,
+                    MetadataTemplateResourcePart::Primary,
+                    br#"<Help xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"><Page>ru</Page></Help>"#
+                        .to_vec(),
+                ),
+                (
+                    MetadataTemplateType::HtmlDocument,
+                    MetadataTemplateResourcePart::HtmlPage,
+                    br#"<html><body/></html>"#.to_vec(),
+                ),
+            ],
+        );
+        subject.child_footprints = vec![MetadataChildFootprintEvidence {
+            child: child.clone(),
+            profile: MetadataChildProfile::Template(MetadataTemplateType::HtmlDocument),
+            directories: vec![
+                MetadataChildDirectoryKind::Root,
+                MetadataChildDirectoryKind::Extension,
+            ],
+        }];
+        subject.resources.insert(
+            0,
+            image(
+                MetadataResourceRole::Template {
+                    owner: address("Catalog.Editable"),
+                    name: "Html".to_string(),
+                },
+                b"<TemplateType>HTMLDocument</TemplateType>".to_vec(),
+            ),
+        );
+
+        let mut wrong_directories = Vec::new();
+        validate_child_footprints(&subject, &mut wrong_directories);
+        assert!(wrong_directories
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("directory topology")));
+
+        subject.child_footprints[0]
+            .directories
+            .push(MetadataChildDirectoryKind::HtmlPages);
+        subject.resources.pop();
+        let mut missing_part = Vec::new();
+        validate_child_footprints(&subject, &mut missing_part);
+        assert!(missing_part
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("required resource set")));
+
+        subject.resources.push(image(
+            MetadataResourceRole::ChildResource {
+                child: child.clone(),
+                kind: MetadataChildResourceKind::TemplateContent {
+                    template_type: MetadataTemplateType::HtmlDocument,
+                    part: MetadataTemplateResourcePart::HtmlPage,
+                },
+                ordinal: 1,
+            },
+            br#"<html><body/></html>"#.to_vec(),
+        ));
+        subject.resources[0].bytes = b"<TemplateType>SpreadsheetDocument</TemplateType>".to_vec();
+        let mut forged_profile = Vec::new();
+        validate_child_footprints(&subject, &mut forged_profile);
+        assert!(forged_profile
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("matching descriptor profile")));
+
+        subject.resources[0].bytes = b"<TemplateType>HTMLDocument</TemplateType>".to_vec();
+        let mut exact = Vec::new();
+        validate_child_footprints(&subject, &mut exact);
+        assert!(exact.is_empty(), "{exact:?}");
     }
 
     #[test]
@@ -3900,6 +4171,7 @@ mod tests {
                 MetadataResourceRole::Descriptor,
                 descriptor.into_bytes(),
             )],
+            child_footprints: Vec::new(),
         };
 
         let result = MetadataValidator.validate(&incomplete, &context());
@@ -4001,6 +4273,7 @@ mod tests {
         let inaccessible = MetadataValidationSubject {
             target: address("ScheduledJob.Nightly"),
             resources,
+            child_footprints: Vec::new(),
         };
 
         let result = MetadataValidator.validate(&inaccessible, &context());
@@ -4234,6 +4507,7 @@ mod tests {
                         bytes,
                     ),
                 ],
+                child_footprints: Vec::new(),
             };
 
             let result = MetadataValidator.validate(&invalid, &context());

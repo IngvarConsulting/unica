@@ -120,10 +120,44 @@ pub(crate) enum MetadataTemplateType {
     DataCompositionSchema,
 }
 
+impl MetadataTemplateType {
+    pub(crate) fn from_descriptor_value(value: &str) -> Option<Self> {
+        match value {
+            "HTMLDocument" => Some(Self::HtmlDocument),
+            "TextDocument" => Some(Self::TextDocument),
+            "SpreadsheetDocument" => Some(Self::SpreadsheetDocument),
+            "BinaryData" => Some(Self::BinaryData),
+            "DataCompositionSchema" => Some(Self::DataCompositionSchema),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MetadataTemplateResourcePart {
     Primary,
     HtmlPage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MetadataChildProfile {
+    Form,
+    Command,
+    Template(MetadataTemplateType),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum MetadataChildDirectoryKind {
+    Root,
+    Extension,
+    HtmlPages,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MetadataChildFootprintEvidence {
+    pub(crate) child: MetadataAddress,
+    pub(crate) profile: MetadataChildProfile,
+    pub(crate) directories: Vec<MetadataChildDirectoryKind>,
 }
 
 #[allow(dead_code)] // Concrete providers land after this orchestration seam.
@@ -171,6 +205,7 @@ pub(crate) struct MetadataResourceImage {
 pub(crate) struct MetadataValidationSubject {
     pub(crate) target: MetadataAddress,
     pub(crate) resources: Vec<MetadataResourceImage>,
+    pub(crate) child_footprints: Vec<MetadataChildFootprintEvidence>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

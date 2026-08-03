@@ -1701,6 +1701,7 @@ mod tests {
                 role: MetadataResourceRole::Descriptor,
                 bytes: b"<MetaDataObject/>".to_vec(),
             }],
+            child_footprints: Vec::new(),
         }
     }
 
