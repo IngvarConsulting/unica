@@ -91,6 +91,24 @@ impl MetadataOperations {
         MetadataValidator.validate(subject, context)
     }
 
+    pub(crate) fn validate_read(
+        subject: &MetadataValidationSubject,
+        context: &WorkspaceContext,
+        cancellation: &CancellationToken,
+    ) -> MetadataValidationResult {
+        if cancellation.is_cancelled() {
+            return MetadataValidationResult {
+                status: crate::domain::metadata::MetaValidationStatus::Failed,
+                diagnostics: vec![MetaDiagnostic::error(
+                    MetaDiagnosticCode::ProviderUnavailable,
+                    "metadata read validation was cancelled",
+                )
+                .with_metadata_path(subject.target.clone())],
+            };
+        }
+        MetadataValidator.validate_complete_read(subject, context)
+    }
+
     pub(crate) fn prepare_mutation(
         request: &MetadataRequest,
         context: &WorkspaceContext,

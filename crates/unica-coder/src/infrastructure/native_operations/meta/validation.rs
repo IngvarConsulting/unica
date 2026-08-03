@@ -108,6 +108,20 @@ impl MetadataValidator {
         .0
     }
 
+    pub(crate) fn validate_complete_read(
+        &self,
+        subject: &MetadataValidationSubject,
+        context: &WorkspaceContext,
+    ) -> MetadataValidationResult {
+        let mut result = self.validate(subject, context);
+        let completeness = complete_read_proof_diagnostics(subject);
+        if !completeness.is_empty() {
+            result.status = MetaValidationStatus::Failed;
+            result.diagnostics.extend(completeness);
+        }
+        result
+    }
+
     fn evaluate(
         &self,
         subject: &MetadataValidationSubject,
@@ -395,6 +409,208 @@ impl MetadataValidator {
         };
         (result, legacy_run)
     }
+}
+
+fn complete_read_proof_diagnostics(subject: &MetadataValidationSubject) -> Vec<MetaDiagnostic> {
+    let Some(descriptor) = subject
+        .resources
+        .iter()
+        .find(|resource| matches!(resource.role, MetadataResourceRole::Descriptor))
+    else {
+        return vec![complete_read_missing(
+            subject,
+            "metadata descriptor proof is unavailable",
+        )];
+    };
+    let Ok((_, document)) = parse_metadata_image(&descriptor.bytes) else {
+        return Vec::new();
+    };
+    let Some(object) = document
+        .root_element()
+        .children()
+        .find(|node| node.is_element() && node.tag_name().namespace() == Some(MD_CLASSES_NS))
+    else {
+        return Vec::new();
+    };
+    let object_type = object.tag_name().name();
+    let properties = meta_info_child(object, "Properties");
+    let object_name = properties
+        .and_then(|node| meta_info_child_text(node, "Name"))
+        .unwrap_or_default();
+    let mut diagnostics = Vec::new();
+
+    for language in subject
+        .resources
+        .iter()
+        .find(|resource| matches!(resource.role, MetadataResourceRole::Registration))
+        .and_then(|resource| inspect_metadata_registration_image(&resource.bytes).ok())
+        .into_iter()
+        .flat_map(|registration| registration.registered_languages)
+    {
+        let expected = format!("Language.{language}");
+        if !has_dependency(subject, &expected) {
+            diagnostics.push(complete_read_missing(
+                subject,
+                format!("registered language evidence `{language}` is unavailable"),
+            ));
+        }
+    }
+
+    if object_type == "Document" {
+        for reference in properties
+            .and_then(|node| meta_info_child(node, "RegisterRecords"))
+            .map(|node| meta_info_children(node, "Item"))
+            .unwrap_or_default()
+            .into_iter()
+            .map(meta_info_inner_text)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+        {
+            if !has_dependency(subject, &reference) {
+                diagnostics.push(complete_read_missing(
+                    subject,
+                    format!("referenced metadata evidence `{reference}` is unavailable"),
+                ));
+            }
+        }
+    }
+
+    if matches!(object_type, "EventSubscription" | "ScheduledJob") {
+        let property = if object_type == "EventSubscription" {
+            "Handler"
+        } else {
+            "MethodName"
+        };
+        if let Some(reference) = properties
+            .and_then(|node| meta_info_child_text(node, property))
+            .filter(|value| !value.is_empty())
+        {
+            let parts = reference.split('.').collect::<Vec<_>>();
+            let module_name = if parts.len() == 3 && parts[0] == "CommonModule" {
+                Some(parts[1])
+            } else if parts.len() == 2 {
+                Some(parts[0])
+            } else {
+                None
+            };
+            if let Some(module_name) = module_name {
+                let target = format!("CommonModule.{module_name}");
+                if !has_dependency(subject, &target) {
+                    diagnostics.push(complete_read_missing(
+                        subject,
+                        format!("referenced metadata evidence `{target}` is unavailable"),
+                    ));
+                }
+                let has_module = subject.resources.iter().any(|resource| {
+                    matches!(
+                        &resource.role,
+                        MetadataResourceRole::Module { owner } if owner.as_str() == target
+                    )
+                });
+                if !has_module {
+                    diagnostics.push(complete_read_missing(
+                        subject,
+                        format!("referenced module evidence `{target}` is unavailable"),
+                    ));
+                }
+            }
+        }
+    }
+
+    let reads_registrar = matches!(
+        object_type,
+        "AccumulationRegister" | "AccountingRegister" | "CalculationRegister"
+    ) || (object_type == "InformationRegister"
+        && properties
+            .and_then(|node| meta_info_child_text(node, "WriteMode"))
+            .as_deref()
+            == Some("RecorderSubordinate"));
+    if reads_registrar && !object_name.is_empty() {
+        let reference = format!("{object_type}.{object_name}");
+        let has_registrar = subject.resources.iter().any(|resource| {
+            matches!(
+                &resource.role,
+                MetadataResourceRole::Dependency { target }
+                    if target.segments().next() == Some("Document")
+            ) && document_registers(&resource.bytes, &reference)
+        });
+        if !has_registrar {
+            diagnostics.push(complete_read_invalid(
+                subject,
+                format!("reverse registrar evidence for `{reference}` is inconsistent"),
+            ));
+        }
+    }
+
+    for child in object.descendants().filter(|node| {
+        node.is_element()
+            && matches!(
+                node.tag_name().name(),
+                "Attribute" | "TabularSection" | "Dimension" | "Resource" | "EnumValue" | "Column"
+            )
+    }) {
+        let complete = meta_info_child(child, "Properties")
+            .and_then(|node| meta_info_child_text(node, "Name"))
+            .is_some_and(|name| !name.trim().is_empty());
+        if !complete {
+            diagnostics.push(complete_read_invalid(
+                subject,
+                format!(
+                    "{} child evidence has no complete Properties/Name",
+                    child.tag_name().name()
+                ),
+            ));
+        }
+    }
+    diagnostics
+}
+
+fn has_dependency(subject: &MetadataValidationSubject, expected: &str) -> bool {
+    subject.resources.iter().any(|resource| {
+        matches!(
+            &resource.role,
+            MetadataResourceRole::Dependency { target } if target.as_str() == expected
+        )
+    })
+}
+
+fn document_registers(bytes: &[u8], expected: &str) -> bool {
+    let Ok((_, document)) = parse_metadata_image(bytes) else {
+        return false;
+    };
+    document
+        .root_element()
+        .children()
+        .find(|node| {
+            node.is_element()
+                && node.tag_name().namespace() == Some(MD_CLASSES_NS)
+                && node.tag_name().name() == "Document"
+        })
+        .and_then(|object| meta_info_child(object, "Properties"))
+        .and_then(|properties| meta_info_child(properties, "RegisterRecords"))
+        .is_some_and(|records| {
+            meta_info_children(records, "Item")
+                .into_iter()
+                .any(|item| meta_info_inner_text(item).trim() == expected)
+        })
+}
+
+fn complete_read_missing(
+    subject: &MetadataValidationSubject,
+    message: impl Into<String>,
+) -> MetaDiagnostic {
+    MetaDiagnostic::error(MetaDiagnosticCode::ProviderUnavailable, message)
+        .with_metadata_path(subject.target.clone())
+        .with_field("resources")
+}
+
+fn complete_read_invalid(
+    subject: &MetadataValidationSubject,
+    message: impl Into<String>,
+) -> MetaDiagnostic {
+    MetaDiagnostic::error(MetaDiagnosticCode::ValidationFailed, message)
+        .with_metadata_path(subject.target.clone())
+        .with_field("resources")
 }
 
 fn validate_auxiliary_xml(kind: MetadataAuxiliaryXmlKind, bytes: &[u8]) -> Result<(), String> {
@@ -5661,6 +5877,56 @@ mod tests {
             diagnostic.severity == MetaDiagnosticSeverity::Warning
                 && diagnostic.message.contains("no registrar document found")
         }));
+
+        let complete_read = MetadataValidator.validate_complete_read(&invalid, &context());
+        assert_eq!(complete_read.status, MetaValidationStatus::Failed);
+        assert!(complete_read.diagnostics.iter().any(|diagnostic| {
+            diagnostic.severity == MetaDiagnosticSeverity::Error
+                && diagnostic.code == MetaDiagnosticCode::ValidationFailed
+                && diagnostic.metadata_path.as_ref() == Some(&invalid.target)
+                && diagnostic.field.as_deref() == Some("resources")
+        }));
+    }
+
+    #[test]
+    fn complete_read_proof_accepts_consistent_forward_and_reverse_dependencies() {
+        let document = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Documents/Регистратор.xml"
+        ));
+        let register = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/InformationRegisters/SubordinateRegister.xml"
+        ));
+        let registration = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Configuration.xml"
+        ));
+        let language = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Languages/Русский.xml"
+        ));
+        let document_subject = subject(
+            "Document.Регистратор",
+            Some(document),
+            registration,
+            &[
+                ("Language.Русский", language),
+                ("InformationRegister.SubordinateRegister", register),
+            ],
+        );
+        let register_subject = subject(
+            "InformationRegister.SubordinateRegister",
+            Some(register),
+            registration,
+            &[
+                ("Language.Русский", language),
+                ("Document.Регистратор", document),
+            ],
+        );
+
+        assert!(complete_read_proof_diagnostics(&document_subject).is_empty());
+        assert!(complete_read_proof_diagnostics(&register_subject).is_empty());
     }
 
     #[test]

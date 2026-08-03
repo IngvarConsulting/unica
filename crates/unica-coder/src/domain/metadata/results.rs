@@ -105,6 +105,8 @@ pub(crate) struct MetaPropertyData {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MetaElementData {
     pub(crate) name: String,
+    #[serde(skip_serializing_if = "is_false")]
+    pub(crate) incomplete: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) synonym: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -112,6 +114,10 @@ pub(crate) struct MetaElementData {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) r#type: Option<MetadataType>,
     pub(crate) attributes: Vec<MetaElementData>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

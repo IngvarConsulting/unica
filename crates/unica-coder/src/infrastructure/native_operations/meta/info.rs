@@ -284,20 +284,17 @@ pub(crate) fn read_typed_meta_info(
         },
     ];
     validation_resources.extend(typed_registered_language_images(resolved));
-    super::validation::add_descriptor_references(
+    let _ = super::validation::add_descriptor_references(
         &mut validation_resources,
         &resolved.descriptor_preimage,
         Some(&resolved.source_root),
-    )
-    .map_err(|_| {
-        MetaFailure::from(
-            MetaDiagnostic::error(
-                MetaDiagnosticCode::ProviderUnavailable,
-                "metadata descriptor dependencies are unavailable",
-            )
-            .with_metadata_path(target.clone()),
-        )
-    })?;
+    );
+    validation_resources.extend(typed_registrar_document_images(
+        resolved,
+        kind,
+        &local.name,
+        properties,
+    ));
     let child_resources = super::edit::plan_typed_child_resources(
         &resolved.descriptor_path,
         target,
@@ -313,6 +310,52 @@ pub(crate) fn read_typed_meta_info(
         child_footprints: child_resources.validation_footprints,
     };
     Ok((local, validation_subject))
+}
+
+fn typed_registrar_document_images(
+    resolved: &ResolvedMetadataObject,
+    kind: MetadataKind,
+    name: &str,
+    properties: Option<roxmltree::Node<'_, '_>>,
+) -> Vec<MetadataResourceImage> {
+    let reads_registrars = matches!(
+        kind,
+        MetadataKind::AccumulationRegister
+            | MetadataKind::AccountingRegister
+            | MetadataKind::CalculationRegister
+    ) || (kind == MetadataKind::InformationRegister
+        && properties
+            .and_then(|node| meta_info_child_text(node, "WriteMode"))
+            .as_deref()
+            == Some("RecorderSubordinate"));
+    if !reads_registrars {
+        return Vec::new();
+    }
+    let reference = format!("{}.{name}", kind.as_str());
+    let documents_dir = resolved.source_root.join("Documents");
+    let Ok((paths, _)) = super::validation_context::meta_validate_registrar_document_scan(
+        &documents_dir,
+        &reference,
+    ) else {
+        return Vec::new();
+    };
+    paths
+        .into_iter()
+        .filter_map(|path| std::fs::read(path).ok())
+        .filter_map(|bytes| {
+            let identity =
+                super::validation_context::inspect_metadata_image_identity(&bytes).ok()?;
+            let target = MetadataAddress::parse(
+                PLATFORM_XML_8_3_27_FORMAT_2_20,
+                &format!("{}.{}", identity.object_type, identity.object_name),
+            )
+            .ok()?;
+            Some(MetadataResourceImage {
+                role: MetadataResourceRole::Dependency { target },
+                bytes,
+            })
+        })
+        .collect()
 }
 
 fn typed_registered_language_images(
@@ -438,6 +481,7 @@ fn typed_element(
         let name = meta_info_inner_text(node).trim().to_string();
         return (!name.is_empty()).then_some(MetaElementData {
             name,
+            incomplete: !matches!(node.tag_name().name(), "Form" | "Template" | "Command"),
             synonym: None,
             comment: None,
             r#type: None,
@@ -463,6 +507,7 @@ fn typed_element(
     };
     Some(MetaElementData {
         name,
+        incomplete: false,
         synonym,
         comment,
         r#type,

@@ -2827,6 +2827,16 @@ fn source_generation(source_root: &Path) -> u64 {
     hasher.finish()
 }
 
+/// Opaque, process-local identity of the source bytes that an index answer is
+/// expected to describe. It is deliberately not serializable: callers may
+/// compare proofs, but must never publish filesystem-derived generation data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WorkspaceSourceSnapshot(u64);
+
+pub(crate) fn workspace_source_snapshot(source_root: &Path) -> WorkspaceSourceSnapshot {
+    WorkspaceSourceSnapshot(source_generation(source_root))
+}
+
 fn hash_source_path(hasher: &mut DefaultHasher, path: &Path, depth: usize) {
     if depth > 8 {
         return;

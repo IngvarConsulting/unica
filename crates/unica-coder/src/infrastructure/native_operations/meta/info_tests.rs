@@ -67,6 +67,20 @@ fn typed_info_reads_simple_form_template_and_command_references() {
 }
 
 #[test]
+fn typed_info_marks_nonphysical_children_without_properties_incomplete() {
+    let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Catalog><ChildObjects><Attribute>LooksValidButIsNot</Attribute></ChildObjects></Catalog></MetaDataObject>"#;
+    let document = roxmltree::Document::parse(xml).unwrap();
+    let object = document.root_element().first_element_child().unwrap();
+    let children = meta_info_child(object, "ChildObjects");
+
+    let attributes = typed_elements(xml, children, "Attribute", false);
+    let value = serde_json::to_value(&attributes[0]).unwrap();
+
+    assert_eq!(value["name"], "LooksValidButIsNot");
+    assert_eq!(value["incomplete"], true);
+}
+
+#[test]
 fn meta_info_reads_the_descriptor_named_by_a_logical_address() {
     let context = workspace("reads");
 

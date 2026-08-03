@@ -431,6 +431,15 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         }
     }
 
+    fn validate_metadata_read(
+        &self,
+        subject: &MetadataValidationSubject,
+        context: &WorkspaceContext,
+        cancellation: &CancellationToken,
+    ) -> MetadataValidationResult {
+        self.validate_metadata(subject, context, cancellation)
+    }
+
     fn prepare_metadata_mutation(
         &self,
         _request: &MetadataRequest,

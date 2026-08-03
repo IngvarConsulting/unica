@@ -12,14 +12,29 @@ use crate::domain::metadata::{MetaProfileResult, MetaProfileSection};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::workspace_index::IndexReadiness;
 use crate::infrastructure::workspace_services::{
-    WorkspaceRlmOperation, WorkspaceServiceManager, WorkspaceServiceRlmOutput,
+    workspace_source_snapshot, WorkspaceRlmOperation, WorkspaceServiceManager,
+    WorkspaceServiceRlmOutput, WorkspaceSourceSnapshot,
 };
 use serde_json::{Map, Value};
 use std::collections::HashSet;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const RLM_NAVIGATION_TIMEOUT: Duration = Duration::from_secs(45);
+const RELATED_READINESS_SETTLE_LIMIT: Duration = Duration::from_millis(500);
+const RELATED_READINESS_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RelatedReadinessState {
+    Ready,
+    Stale,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RelatedReadinessProof {
+    state: RelatedReadinessState,
+    source: WorkspaceSourceSnapshot,
+}
 
 trait RlmNavigationClient: Send + Sync {
     fn readiness(
@@ -116,22 +131,9 @@ impl<'a> RlmNavigationAdapter<'a> {
         if cancellation.is_cancelled() || deadline.remaining().is_zero() {
             return unavailable(MetaFreshness::Unknown);
         }
-        let readiness_timeout = deadline.remaining().min(RLM_NAVIGATION_TIMEOUT);
-        let readiness = match self.client.readiness(
-            &context.workspace,
-            &context.source_root.path,
-            readiness_timeout,
-            cancellation,
-        ) {
-            Ok(readiness) => readiness,
-            Err(_) => return unavailable(MetaFreshness::Unknown),
-        };
-        let freshness = match readiness {
-            IndexReadiness::Ready { .. } => MetaFreshness::Current,
-            IndexReadiness::Stale { .. } | IndexReadiness::Building => MetaFreshness::Stale,
-            IndexReadiness::Missing
-            | IndexReadiness::Failed(_)
-            | IndexReadiness::Unavailable(_) => return unavailable(MetaFreshness::Unknown),
+        let before = match related_readiness_proof(self.client, context, deadline, cancellation) {
+            Some(proof) => proof,
+            None => return unavailable(MetaFreshness::Unknown),
         };
         let timeout = deadline.remaining().min(RLM_NAVIGATION_TIMEOUT);
         if timeout.is_zero() {
@@ -159,6 +161,21 @@ impl<'a> RlmNavigationAdapter<'a> {
         }
         let Ok(profile) = profile_result(&value) else {
             return unavailable(MetaFreshness::Unknown);
+        };
+        let freshness = match before.state {
+            RelatedReadinessState::Stale => MetaFreshness::Stale,
+            RelatedReadinessState::Ready => {
+                match related_readiness_proof(self.client, context, deadline, cancellation) {
+                    Some(after)
+                        if after.state == RelatedReadinessState::Ready
+                            && before.source == after.source =>
+                    {
+                        MetaFreshness::Current
+                    }
+                    Some(_) => MetaFreshness::Stale,
+                    None => MetaFreshness::Unknown,
+                }
+            }
         };
         related_sections_from_profile(profile, sections, limit, freshness)
     }
@@ -279,6 +296,83 @@ impl<'a> RlmNavigationAdapter<'a> {
             outcome.stderr = Some(output.stderr);
         }
         Ok(RlmNavigationOutcome { outcome, data })
+    }
+}
+
+fn related_readiness_proof(
+    client: &dyn RlmNavigationClient,
+    context: &CodeIntelligenceContext,
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+) -> Option<RelatedReadinessProof> {
+    let settle_until = Instant::now() + deadline.remaining().min(RELATED_READINESS_SETTLE_LIMIT);
+    let mut ready_snapshot = None;
+    loop {
+        if cancellation.is_cancelled() || deadline.remaining().is_zero() {
+            return None;
+        }
+        let settle_remaining = settle_until.saturating_duration_since(Instant::now());
+        if settle_remaining.is_zero() {
+            return Some(RelatedReadinessProof {
+                state: RelatedReadinessState::Stale,
+                source: workspace_source_snapshot(&context.source_root.path),
+            });
+        }
+        let source_before = workspace_source_snapshot(&context.source_root.path);
+        let readiness = client
+            .readiness(
+                &context.workspace,
+                &context.source_root.path,
+                deadline
+                    .remaining()
+                    .min(RLM_NAVIGATION_TIMEOUT)
+                    .min(settle_remaining),
+                cancellation,
+            )
+            .ok()?;
+        let source_after = workspace_source_snapshot(&context.source_root.path);
+        match readiness {
+            IndexReadiness::Ready { .. } if source_before == source_after => {
+                if ready_snapshot == Some(source_after) {
+                    return Some(RelatedReadinessProof {
+                        state: RelatedReadinessState::Ready,
+                        source: source_after,
+                    });
+                }
+                ready_snapshot = Some(source_after);
+            }
+            IndexReadiness::Stale { .. } => {
+                return Some(RelatedReadinessProof {
+                    state: RelatedReadinessState::Stale,
+                    source: source_after,
+                });
+            }
+            IndexReadiness::Building | IndexReadiness::Ready { .. } => {
+                ready_snapshot = None;
+                if Instant::now() >= settle_until {
+                    return Some(RelatedReadinessProof {
+                        state: RelatedReadinessState::Stale,
+                        source: source_after,
+                    });
+                }
+            }
+            IndexReadiness::Missing
+            | IndexReadiness::Failed(_)
+            | IndexReadiness::Unavailable(_) => return None,
+        }
+        let remaining = deadline.remaining();
+        if remaining.is_zero() {
+            return None;
+        }
+        let settle_remaining = settle_until.saturating_duration_since(Instant::now());
+        if settle_remaining.is_zero() {
+            continue;
+        }
+        std::thread::sleep(
+            remaining
+                .min(RELATED_READINESS_POLL_INTERVAL)
+                .min(settle_remaining),
+        );
     }
 }
 
@@ -1429,5 +1523,351 @@ mod tests {
             result.modules.unwrap().freshness,
             crate::domain::metadata::MetaFreshness::Unknown
         );
+    }
+
+    struct SourceChangingRelatedClient {
+        source_file: PathBuf,
+    }
+
+    impl RlmNavigationClient for SourceChangingRelatedClient {
+        fn readiness(
+            &self,
+            _context: &WorkspaceContext,
+            _source_root: &Path,
+            _timeout: Duration,
+            _cancellation: &CancellationToken,
+        ) -> Result<IndexReadiness, String> {
+            Ok(IndexReadiness::Ready {
+                db_path: PathBuf::from("/private/index.db"),
+            })
+        }
+
+        fn call(
+            &self,
+            _context: &WorkspaceContext,
+            _source_root: &Path,
+            _operation: WorkspaceRlmOperation,
+            _timeout: Duration,
+            _cancellation: &CancellationToken,
+        ) -> Result<WorkspaceServiceRlmOutput, String> {
+            std::fs::write(&self.source_file, "changed during profile read").unwrap();
+            Ok(WorkspaceServiceRlmOutput {
+                result_text: json!({
+                    "object_name": "Catalog.Items",
+                    "sections": {"modules": {"status": "ok", "total": 1, "returned": 1, "items": [{"name": "ObjectModule"}]}}
+                })
+                .to_string(),
+                stderr: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn metadata_related_never_marks_a_changed_real_source_snapshot_current() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-related-generation-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let source_root = root.join("src");
+        std::fs::create_dir_all(source_root.join("CommonModules/Test/Ext")).unwrap();
+        let source_file = source_root.join("CommonModules/Test/Ext/Module.bsl");
+        std::fs::write(&source_file, "initial snapshot").unwrap();
+        let context = CodeIntelligenceContext::new(
+            WorkspaceContext {
+                cwd: root.clone(),
+                workspace_root: root.clone(),
+                cache_root: root.join(".build/unica"),
+                workspace_epoch: 1,
+            },
+            ResolvedSourceRoot {
+                source_set: Some("main".to_string()),
+                path: source_root,
+            },
+        );
+
+        let result =
+            RlmNavigationAdapter::with_client(&SourceChangingRelatedClient { source_file })
+                .metadata_related(
+                    "Catalog.Items",
+                    &["modules".to_string()],
+                    20,
+                    &context,
+                    ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
+                    &CancellationToken::new(),
+                );
+
+        assert_eq!(
+            result.modules.unwrap().freshness,
+            crate::domain::metadata::MetaFreshness::Stale
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    struct BuildingThenReadyClient {
+        readiness_calls: Mutex<usize>,
+    }
+
+    impl RlmNavigationClient for BuildingThenReadyClient {
+        fn readiness(
+            &self,
+            _context: &WorkspaceContext,
+            _source_root: &Path,
+            _timeout: Duration,
+            _cancellation: &CancellationToken,
+        ) -> Result<IndexReadiness, String> {
+            let mut calls = self.readiness_calls.lock().unwrap();
+            *calls += 1;
+            Ok(if *calls == 1 {
+                IndexReadiness::Building
+            } else {
+                IndexReadiness::Ready {
+                    db_path: PathBuf::from("/private/index.db"),
+                }
+            })
+        }
+
+        fn call(
+            &self,
+            _context: &WorkspaceContext,
+            _source_root: &Path,
+            _operation: WorkspaceRlmOperation,
+            _timeout: Duration,
+            _cancellation: &CancellationToken,
+        ) -> Result<WorkspaceServiceRlmOutput, String> {
+            Ok(WorkspaceServiceRlmOutput {
+                result_text: json!({
+                    "object_name": "Catalog.Items",
+                    "sections": {"modules": {"status": "ok", "total": 0, "returned": 0, "items": []}}
+                })
+                .to_string(),
+                stderr: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn metadata_related_boundedly_waits_for_a_production_building_state() {
+        let client = BuildingThenReadyClient {
+            readiness_calls: Mutex::new(0),
+        };
+
+        let result = RlmNavigationAdapter::with_client(&client).metadata_related(
+            "Catalog.Items",
+            &["modules".to_string()],
+            20,
+            &unready_index_context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
+            &CancellationToken::new(),
+        );
+
+        let modules = result.modules.unwrap();
+        assert_eq!(
+            modules.status,
+            crate::domain::metadata::MetaRelatedStatus::Ready
+        );
+        assert_eq!(
+            modules.freshness,
+            crate::domain::metadata::MetaFreshness::Current
+        );
+        assert!(*client.readiness_calls.lock().unwrap() >= 3);
+    }
+
+    struct AlwaysBuildingClient;
+
+    impl RlmNavigationClient for AlwaysBuildingClient {
+        fn readiness(
+            &self,
+            _context: &WorkspaceContext,
+            _source_root: &Path,
+            _timeout: Duration,
+            _cancellation: &CancellationToken,
+        ) -> Result<IndexReadiness, String> {
+            Ok(IndexReadiness::Building)
+        }
+
+        fn call(
+            &self,
+            _context: &WorkspaceContext,
+            _source_root: &Path,
+            _operation: WorkspaceRlmOperation,
+            _timeout: Duration,
+            _cancellation: &CancellationToken,
+        ) -> Result<WorkspaceServiceRlmOutput, String> {
+            Ok(WorkspaceServiceRlmOutput {
+                result_text: json!({
+                    "object_name": "Catalog.Items",
+                    "sections": {"modules": {"status": "ok", "total": 1, "returned": 1, "items": [{"name": "ObjectModule"}]}}
+                })
+                .to_string(),
+                stderr: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn metadata_related_bounds_a_build_that_does_not_settle_and_keeps_data_stale() {
+        let started = Instant::now();
+
+        let result = RlmNavigationAdapter::with_client(&AlwaysBuildingClient).metadata_related(
+            "Catalog.Items",
+            &["modules".to_string()],
+            20,
+            &unready_index_context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(2)),
+            &CancellationToken::new(),
+        );
+
+        assert!(
+            started.elapsed() < Duration::from_millis(900),
+            "a non-settling build must consume at most one bounded readiness window"
+        );
+        let modules = result.modules.unwrap();
+        assert_eq!(
+            modules.freshness,
+            crate::domain::metadata::MetaFreshness::Stale
+        );
+        assert_eq!(modules.items, vec![json!({"name": "ObjectModule"})]);
+    }
+
+    fn selected_related_section<'a>(
+        related: &'a crate::domain::metadata::MetaRelatedSections,
+        name: &str,
+    ) -> &'a crate::domain::metadata::MetaRelatedSection<serde_json::Value> {
+        match name {
+            "modules" => related.modules.as_ref(),
+            "roles" => related.roles.as_ref(),
+            "subscriptions" => related.subscriptions.as_ref(),
+            "functionalOptions" => related.functional_options.as_ref(),
+            "predefinedItems" => related.predefined_items.as_ref(),
+            _ => None,
+        }
+        .unwrap_or_else(|| panic!("missing selected section {name}"))
+    }
+
+    #[test]
+    fn metadata_related_maps_every_section_through_the_complete_status_matrix() {
+        use crate::domain::metadata::{MetaFreshness, MetaRelatedStatus};
+
+        let section_names = [
+            ("modules", "modules"),
+            ("roles", "roles"),
+            ("subscriptions", "subscriptions"),
+            ("functionalOptions", "functional_options"),
+            ("predefinedItems", "predefined_items"),
+        ];
+        for (public_name, upstream_name) in section_names {
+            for scenario in ["ready", "partial", "stale", "unavailable"] {
+                let (readiness, section, want_status, want_freshness, want_counts) = match scenario
+                {
+                    "ready" => (
+                        IndexReadiness::Ready {
+                            db_path: PathBuf::from("/private/index.db"),
+                        },
+                        Some(json!({
+                            "status": "ok",
+                            "total": 4,
+                            "returned": 4,
+                            "items": [
+                                {"name": "First", "path": "/private/root", "nested": {"file": "/private/file"}},
+                                {"name": "First", "nested": {}},
+                                {"name": "Second"},
+                                {"name": "Third"}
+                            ]
+                        })),
+                        MetaRelatedStatus::Ready,
+                        MetaFreshness::Current,
+                        (3, 2, true),
+                    ),
+                    "partial" => (
+                        IndexReadiness::Ready {
+                            db_path: PathBuf::from("/private/index.db"),
+                        },
+                        Some(json!({
+                            "status": "partial",
+                            "total": 4,
+                            "returned": 2,
+                            "items": [{"name": "First"}, {"name": "Second"}],
+                            "_meta": {"error": "incomplete provider answer"}
+                        })),
+                        MetaRelatedStatus::Partial,
+                        MetaFreshness::Current,
+                        (4, 2, true),
+                    ),
+                    "stale" => (
+                        IndexReadiness::Stale {
+                            status: "stale (content)".to_string(),
+                        },
+                        Some(json!({
+                            "status": "ok",
+                            "total": 1,
+                            "returned": 1,
+                            "items": [{"name": "First"}]
+                        })),
+                        MetaRelatedStatus::Ready,
+                        MetaFreshness::Stale,
+                        (1, 1, false),
+                    ),
+                    "unavailable" => (
+                        IndexReadiness::Ready {
+                            db_path: PathBuf::from("/private/index.db"),
+                        },
+                        None,
+                        MetaRelatedStatus::Unavailable,
+                        MetaFreshness::Current,
+                        (0, 0, false),
+                    ),
+                    _ => unreachable!(),
+                };
+                let mut sections = serde_json::Map::new();
+                if let Some(section) = section {
+                    sections.insert(upstream_name.to_string(), section);
+                }
+                let client = related_client(
+                    readiness,
+                    json!({"object_name": "Catalog.Items", "sections": sections}),
+                );
+
+                let related = RlmNavigationAdapter::with_client(&client).metadata_related(
+                    "Catalog.Items",
+                    &[public_name.to_string()],
+                    2,
+                    &unready_index_context(),
+                    ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
+                    &CancellationToken::new(),
+                );
+                let section = selected_related_section(&related, public_name);
+
+                assert_eq!(section.status, want_status, "{public_name}/{scenario}");
+                assert_eq!(
+                    section.freshness, want_freshness,
+                    "{public_name}/{scenario}"
+                );
+                assert_eq!(
+                    (section.total, section.returned, section.truncated),
+                    want_counts,
+                    "{public_name}/{scenario}"
+                );
+                if scenario == "ready" {
+                    assert_eq!(section.items[0], json!({"name": "First", "nested": {}}));
+                    assert_eq!(section.items[1], json!({"name": "Second"}));
+                    assert!(!serde_json::to_string(section).unwrap().contains("/private"));
+                }
+                assert_eq!(related.modules.is_some(), public_name == "modules");
+                assert_eq!(related.roles.is_some(), public_name == "roles");
+                assert_eq!(
+                    related.subscriptions.is_some(),
+                    public_name == "subscriptions"
+                );
+                assert_eq!(
+                    related.functional_options.is_some(),
+                    public_name == "functionalOptions"
+                );
+                assert_eq!(
+                    related.predefined_items.is_some(),
+                    public_name == "predefinedItems"
+                );
+            }
+        }
     }
 }

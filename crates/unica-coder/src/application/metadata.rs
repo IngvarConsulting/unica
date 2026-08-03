@@ -133,7 +133,7 @@ fn invoke_info(
         Ok(read) => read,
         Err(failure) => return Ok(metadata_failure("metadata read failed", failure, None)),
     };
-    let validation = ports.validate_metadata(&read.validation_subject, context, cancellation);
+    let validation = ports.validate_metadata_read(&read.validation_subject, context, cancellation);
     let related = ports.read_metadata_related(request, &read.local, context, cancellation);
     let failed = validation.status == MetaValidationStatus::Failed;
     let diagnostics = validation.diagnostics.clone();

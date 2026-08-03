@@ -98,6 +98,15 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         MetadataOperations::validate(subject, context, cancellation)
     }
 
+    fn validate_metadata_read(
+        &self,
+        subject: &MetadataValidationSubject,
+        context: &WorkspaceContext,
+        cancellation: &CancellationToken,
+    ) -> MetadataValidationResult {
+        MetadataOperations::validate_read(subject, context, cancellation)
+    }
+
     fn prepare_metadata_mutation(
         &self,
         request: &MetadataRequest,
