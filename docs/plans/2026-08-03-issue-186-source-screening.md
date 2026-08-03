@@ -684,7 +684,7 @@ git commit -m "docs(research): shortlist issue 186 deep dives"
 - Consumes: the completed review from Tasks 1–6.
 - Produces: a verified screening PR that is independently reviewable and ready for publication.
 
-- [ ] **Step 1: Run the exact source-coverage check**
+- [x] **Step 1: Run the exact source-coverage check**
 
 ```powershell
 $expectedSources = @(
@@ -699,7 +699,7 @@ foreach ($expectedSource in $expectedSources) {
 
 Expected: no exception.
 
-- [ ] **Step 2: Check immutable snapshots and primary evidence**
+- [x] **Step 2: Check immutable snapshots and primary evidence**
 
 Manually verify each card has:
 
@@ -717,7 +717,7 @@ one normalized decision
 
 Open every link to a pinned GitHub `blob/<full-sha>/...` or `tree/<full-sha>/...` target. Replace branch-based links before completion.
 
-- [ ] **Step 3: Check that no external material entered tracked files**
+- [x] **Step 3: Check that no external material entered tracked files**
 
 Run:
 
@@ -734,7 +734,7 @@ Expected:
 - `.build/issue-186/snapshots.jsonl` is ignored;
 - code, tests, package contracts, provenance manifest, and architecture are unchanged.
 
-- [ ] **Step 4: Run repository documentation checks**
+- [x] **Step 4: Run repository documentation checks**
 
 ```powershell
 python -m pytest tests/ci/test_design_documents.py -q
@@ -743,7 +743,7 @@ git diff --check
 
 Expected: all design-document tests pass and no whitespace errors are reported.
 
-- [ ] **Step 5: Review for placeholders, unsupported certainty, and copied text**
+- [x] **Step 5: Review for placeholders, unsupported certainty, and copied text**
 
 Run:
 
@@ -753,7 +753,7 @@ rg -n 'TBD|TODO|FIXME|\?\?\?|probably|apparently|seems to' docs/provenance/revie
 
 Expected: no placeholders. For any uncertainty, replace vague wording with the exact missing evidence or bounded observation. Confirm that upstream descriptions are paraphrased and linked rather than reproduced.
 
-- [ ] **Step 6: Inspect the complete branch diff**
+- [x] **Step 6: Inspect the complete branch diff**
 
 ```powershell
 git diff --stat upstream/main...HEAD
@@ -763,7 +763,7 @@ git log --oneline upstream/main..HEAD
 
 Expected: a sequence of focused research commits, no runtime or package-contract changes, and a self-contained review covering all 19 sources.
 
-- [ ] **Step 7: Commit completed plan tracking if needed**
+- [x] **Step 7: Commit completed plan tracking if needed**
 
 ```powershell
 git add docs/plans/2026-08-03-issue-186-source-screening.md
