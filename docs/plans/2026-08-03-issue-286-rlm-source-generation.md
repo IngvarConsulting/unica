@@ -617,7 +617,7 @@ git commit -m "fix(cache): bind RLM builds to source generation"
 - Consumes: all production and test changes from Tasks 1-3.
 - Produces: a formatted, lint-clean, fully tested issue #286 implementation with no public contract drift.
 
-- [ ] **Step 1: Run formatting and focused Rust tests**
+- [x] **Step 1: Run formatting and focused Rust tests**
 
 Run:
 
@@ -630,7 +630,7 @@ cargo test -p unica-coder --lib infrastructure::workspace_services::tests
 
 Expected: PASS with no warnings or failures. If formatting differs, run `cargo fmt --all`, inspect the diff, then repeat the check.
 
-- [ ] **Step 2: Run the complete crate suite and lints**
+- [x] **Step 2: Run the complete crate suite and lints**
 
 Run:
 
@@ -641,7 +641,7 @@ cargo clippy -p unica-coder --all-targets -- -D warnings
 
 Expected: all supported tests pass and clippy reports no warnings. If a Windows symlink test skips because privilege is unavailable, record the skip; do not weaken the test.
 
-- [ ] **Step 3: Run documentation and product-contract checks**
+- [x] **Step 3: Run documentation and product-contract checks**
 
 Run with the repository's Python 3.12 interpreter:
 
@@ -653,7 +653,7 @@ python3.12 scripts/ci/check-architecture-sync.py --base upstream/main --strict
 
 Expected: PASS. Architecture sync accepts `Decision: none` because no public surface, layer boundary, cache owner, package contract, or registry rule changed.
 
-- [ ] **Step 4: Inspect the final diff and prohibited paths**
+- [x] **Step 4: Inspect the final diff and prohibited paths**
 
 Run:
 
@@ -671,7 +671,7 @@ Expected:
 - package metadata, public schemas, and bundled tool lock are unchanged;
 - no direct RLM SQLite-schema read was added.
 
-- [ ] **Step 5: Record results and commit plan completion**
+- [x] **Step 5: Record results and commit plan completion**
 
 Check off completed plan steps and append exact test counts or any environment-specific skips to Task 4. Then run:
 
@@ -681,3 +681,14 @@ git commit -m "docs: complete issue 286 implementation plan"
 ```
 
 Expected: clean working tree and an independently reviewable branch based on `upstream/main`.
+
+#### Verification record (2026-08-03)
+
+- `cargo fmt --all -- --check`: passed (exit 0; no formatting changes).
+- Focused tests: `source_roots` was 11/12 passed and `workspace_index` was 57/58 passed; each lone failure attempted to create a Windows symlink and received error 1314 (privilege not held). `workspace_services` was initially 89/90 because `workspace_service_work_saturation_preserves_control_path` received connection reset 10054; repeating exactly that test passed 1/1 (1,774 filtered), and the aggregate crate suite did not reproduce it. All focused Rust invocations emitted the same two warnings from unchanged `infrastructure/runtime_jobs.rs`.
+- Full crate suite: 1,748 passed, 25 failed, 2 ignored out of 1,775. The 25 failures are pre-existing Windows symlink/reparse environment failures (24 error 1314; one Windows anchor test error 5), not changes in this issue's diff. They are failures, not skips, and were not weakened.
+- `cargo clippy -p unica-coder --all-targets -- -D warnings`: failed on the two warnings in unchanged `infrastructure/runtime_jobs.rs` (unused re-export and dead helper `assert_system_cancellation_reaps_process_tree`).
+- With the bundled Python 3.12.13 interpreter: `test_design_documents` passed 8/8; `test_product_contracts` was 35/36 because an unchanged assertion expects `/missing/v8-runner` while Windows returns `\\missing\\v8-runner`; strict architecture sync passed and reported an unchanged public MCP surface.
+- Diff inspection: `git diff --check` passed; the branch changes exactly the three approved infrastructure files plus the design and this plan. The prohibited package manifests, tool lock, and `tool_contracts.rs` have a zero diff. No SQLite client, SQL, or direct RLM SQLite-schema read was added.
+
+The verification commands are complete and the scoped issue #286 regressions are covered, but this record deliberately does **not** claim a clean crate suite or lint-clean branch: the baseline/environment failures above remain visible and require separate remediation if a globally green Windows run is required.
