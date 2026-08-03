@@ -10345,7 +10345,9 @@ mod tests {
         .unwrap();
         std::fs::write(
             src.join("XDTOPackages/Sample.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><XDTOPackage uuid="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"><Properties><Name>Sample</Name><Namespace>urn:test</Namespace></Properties></XDTOPackage></MetaDataObject>"#,
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="{source_format_version}"><XDTOPackage uuid="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"><Properties><Name>Sample</Name><Namespace>urn:test</Namespace></Properties></XDTOPackage></MetaDataObject>"#
+            ),
         )
         .unwrap();
         std::fs::write(
@@ -10647,7 +10649,11 @@ mod tests {
             .unwrap();
             std::fs::write(
                 &object,
-                support_test_catalog_xml("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+                support_test_catalog_xml("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").replacen(
+                    r#"version="2.20""#,
+                    &format!(r#"version="{format}""#),
+                    1,
+                ),
             )
             .unwrap();
             std::fs::copy(&dcs_fixture, &template).unwrap();

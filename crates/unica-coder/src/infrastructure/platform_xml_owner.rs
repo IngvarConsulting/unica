@@ -16,7 +16,7 @@ use crate::infrastructure::source_roots::{
     select_unique_deepest_source_set_match,
 };
 use roxmltree::Document;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -47,6 +47,23 @@ pub(crate) struct PlatformXmlOwner {
     pub path: PathBuf,
     pub version: Option<String>,
     pub raw: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PlatformXmlSourceSetOwnerEvidence {
+    version: Option<String>,
+    registrations: BTreeSet<(String, String)>,
+}
+
+impl PlatformXmlSourceSetOwnerEvidence {
+    pub(crate) fn version(&self) -> Option<&str> {
+        self.version.as_deref()
+    }
+
+    pub(crate) fn registers(&self, kind: &str, name: &str) -> bool {
+        self.registrations
+            .contains(&(kind.to_string(), name.to_string()))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -183,6 +200,44 @@ pub(crate) fn root_version_literal(source: &str, root: roxmltree::Node<'_, '_>) 
         .find(|attribute| attribute.namespace().is_none() && attribute.name() == "version")
         .and_then(|attribute| source.get(attribute.range_value()))
         .map(str::to_owned)
+}
+
+pub(crate) fn prove_already_read_source_set_owner(
+    path: &Path,
+    raw: &[u8],
+    configured_kind: SourceSetKind,
+) -> Result<PlatformXmlSourceSetOwnerEvidence, PlatformXmlOwnerError> {
+    let (source, document) = parse_platform_xml_document(path, raw)?;
+    let root = document.root_element();
+    validate_source_set_owner(root, configured_kind, path)?;
+    let artifact = root
+        .children()
+        .find(|node| node.is_element())
+        .expect("validated source-set owner has one direct artifact");
+    let mut registrations = BTreeSet::new();
+    for child_objects in artifact.children().filter(|node| {
+        node.is_element()
+            && node.tag_name().namespace() == Some(MD_CLASSES_NS)
+            && node.tag_name().name() == "ChildObjects"
+    }) {
+        for registration in child_objects
+            .children()
+            .filter(|node| node.is_element() && node.tag_name().namespace() == Some(MD_CLASSES_NS))
+        {
+            if let Some(name) = registration
+                .text()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+            {
+                registrations
+                    .insert((registration.tag_name().name().to_string(), name.to_string()));
+            }
+        }
+    }
+    Ok(PlatformXmlSourceSetOwnerEvidence {
+        version: root_version_literal(source, root),
+        registrations,
+    })
 }
 
 pub(crate) fn resolve_platform_xml_owners(
@@ -791,15 +846,7 @@ fn parse_platform_xml_owner(
     raw: Vec<u8>,
     expectation: OwnerExpectation,
 ) -> Result<PlatformXmlOwner, PlatformXmlOwnerError> {
-    let text = std::str::from_utf8(&raw).map_err(|error| PlatformXmlOwnerError {
-        path: path.to_path_buf(),
-        message: format!("failed to read {} as UTF-8: {error}", path.display()),
-    })?;
-    let source = text.trim_start_matches('\u{feff}');
-    let document = Document::parse(source).map_err(|error| PlatformXmlOwnerError {
-        path: path.to_path_buf(),
-        message: format!("failed to parse {}: {error}", path.display()),
-    })?;
+    let (source, document) = parse_platform_xml_document(path, &raw)?;
     let root = document.root_element();
     let root_qname = (root.tag_name().namespace(), root.tag_name().name());
     let artifact_children = root
@@ -875,6 +922,22 @@ fn parse_platform_xml_owner(
         version: root_version_literal(source, root),
         raw,
     })
+}
+
+fn parse_platform_xml_document<'a>(
+    path: &Path,
+    raw: &'a [u8],
+) -> Result<(&'a str, Document<'a>), PlatformXmlOwnerError> {
+    let text = std::str::from_utf8(raw).map_err(|error| PlatformXmlOwnerError {
+        path: path.to_path_buf(),
+        message: format!("failed to read {} as UTF-8: {error}", path.display()),
+    })?;
+    let source = text.trim_start_matches('\u{feff}');
+    let document = Document::parse(source).map_err(|error| PlatformXmlOwnerError {
+        path: path.to_path_buf(),
+        message: format!("failed to parse {}: {error}", path.display()),
+    })?;
+    Ok((source, document))
 }
 
 fn validate_source_set_owner(

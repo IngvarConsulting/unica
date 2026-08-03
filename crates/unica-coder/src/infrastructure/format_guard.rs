@@ -2308,7 +2308,7 @@ mod tests {
         std::fs::create_dir_all(resource.parent().unwrap()).unwrap();
         std::fs::write(
             &descriptor,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><XDTOPackage><Properties><Name>Sample</Name></Properties></XDTOPackage></MetaDataObject>"#,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.19"><XDTOPackage><Properties><Name>Sample</Name></Properties></XDTOPackage></MetaDataObject>"#,
         )
         .unwrap();
         std::fs::write(
