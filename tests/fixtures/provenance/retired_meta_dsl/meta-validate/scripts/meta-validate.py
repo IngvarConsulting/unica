@@ -1,3 +1,4 @@
+# Historical external Meta validator evidence; excluded from every execution harness.
 # meta-validate v1.3 — Validate 1C metadata object structure (Python port)
 # Adapted from https://github.com/Nikolay-Shirokov/cc-1c-skills
 import argparse

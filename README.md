@@ -46,7 +46,7 @@ claude plugin install unica@unica
 ```
 
 Затем выполните `/reload-plugins` либо начните новую сессию. Навыки становятся
-доступны с префиксом плагина, например `/unica:meta-validate`.
+доступны с префиксом плагина, например `/unica:meta-info`.
 
 ### Загрузка runtime
 

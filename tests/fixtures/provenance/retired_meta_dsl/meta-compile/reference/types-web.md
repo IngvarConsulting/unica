@@ -1,3 +1,5 @@
+<!-- Historical external Meta DSL evidence; not current contract guidance. -->
+
 # Веб-сервисы: HTTPService, WebService
 
 ## HTTPService

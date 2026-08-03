@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Historical external Meta DSL evidence; excluded from every execution harness.
 # meta-compile v1.14 — Compile 1C metadata object from JSON
 # Adapted from https://github.com/Nikolay-Shirokov/cc-1c-skills
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import shutil
 import subprocess
@@ -16,8 +17,18 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "ci" / "refresh-cc-1c-parity.py"
 
 
+def load_refresh_module():
+    sys.modules.setdefault("donor_parity_contract", contract)
+    spec = importlib.util.spec_from_file_location("refresh_cc_1c_parity", SCRIPT)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"failed to load {SCRIPT}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 class RefreshFixture:
-    def __init__(self, root: Path, *, owner: str = "meta-compile", case_scope: str = "meta-compile") -> None:
+    def __init__(self, root: Path, *, owner: str = "cfe-borrow", case_scope: str = "cfe-borrow") -> None:
         self.repo_root = root / "unica"
         self.upstream = self.repo_root / ".build" / "skill-upstreams" / "cc-1c-skills"
         self.snapshot = (
@@ -292,6 +303,41 @@ class RefreshCc1cParityTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         return RefreshFixture(Path(temporary.name), **kwargs)
+
+    def test_build_baseline_preserves_renamed_owner_for_historical_scope(self) -> None:
+        module = load_refresh_module()
+        with tempfile.TemporaryDirectory() as temporary:
+            snapshot = Path(temporary) / "snapshot"
+            script = snapshot / "skills" / "meta-compile" / "scripts" / "meta-compile.py"
+            script.parent.mkdir(parents=True)
+            script.write_text("print('historical')\n", encoding="utf-8")
+            accepted = "1" * 40
+            old_baseline = {
+                "scopes": {
+                    "meta-compile": {
+                        "ownerSkill": "meta-add",
+                        "acceptedCommit": accepted,
+                        "reviewId": "historical-review",
+                    }
+                }
+            }
+
+            baseline = module.build_baseline(
+                snapshot,
+                {
+                    "repository": "https://example.invalid/donor.git",
+                    "trackingRef": "main",
+                },
+                target_commit="2" * 40,
+                affected_skills=set(),
+                old_baseline=old_baseline,
+                review_id="new-review",
+            )
+
+        self.assertEqual(
+            baseline["scopes"]["meta-compile"]["ownerSkill"],
+            "meta-add",
+        )
 
     def test_prepare_carries_only_unchanged_content_relations(self) -> None:
         fixture = self.fixture()

@@ -25,8 +25,9 @@ allowed-tools:
 Поддерживаются пять значений `op`: `setProperties`, `add`, `update`, `remove`
 и `editRelations`. Для коллекционных операций задаются `collection` и
 структурные `elements` либо `names`; связи задаются через `relation`, `mode` и
-`targets`. Строковая грамматика операций и физические файлы определений в
-публичный контракт не входят.
+`targets`. Допустимые свойства, коллекции, виды типов и связей берите из
+опубликованной схемы операции. Общие прикладные правила находятся в
+[соглашениях по метаданным](../../references/platform/metadata-conventions.md).
 
 ### Изменить свойства
 
@@ -81,5 +82,29 @@ allowed-tools:
 }
 ```
 
-Старые companion-файлы в этом каталоге временно сохраняются для Task 11 fact
-audit, но не описывают публичный MCP и не должны использоваться как маршрут.
+### Изменить типизированную связь
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.meta.edit",
+    "arguments": {
+      "sourceSet": "main",
+      "metadataPath": "Document.ЗаказПокупателя",
+      "operations": [
+        {
+          "op": "editRelations",
+          "relation": "basedOn",
+          "mode": "replace",
+          "targets": [
+            {"metadataPath": "Document.СчетПокупателю"}
+          ]
+        }
+      ],
+      "dryRun": true
+    }
+  }
+}
+```

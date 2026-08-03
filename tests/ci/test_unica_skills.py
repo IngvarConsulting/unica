@@ -60,11 +60,10 @@ IN_SCOPE_TOOLS = {
     "cfe-validate": "unica.cfe.validate",
     "epf-init": "unica.epf.init",
     "erf-init": "unica.erf.init",
-    "meta-compile": "unica.meta.add",
+    "meta-add": "unica.meta.add",
     "meta-edit": "unica.meta.edit",
     "meta-info": "unica.meta.info",
     "meta-remove": "unica.meta.remove",
-    "meta-validate": "unica.meta.info",
     "form-add": "unica.form.add",
     "form-compile": "unica.form.compile",
     "form-edit": "unica.form.edit",
@@ -325,11 +324,10 @@ TASK_EXAMPLE_ARGUMENT_KEYS = {
     "cfe-validate": ["ExtensionPath"],
     "epf-init": ["Name", "OutputDir", "FormName"],
     "erf-init": ["Name", "OutputDir", "FormName"],
-    "meta-compile": ["sourceSet", "kind", "name"],
+    "meta-add": ["sourceSet", "kind", "name"],
     "meta-edit": ["sourceSet", "metadataPath", "operations"],
     "meta-info": ["sourceSet", "metadataPath"],
     "meta-remove": ["sourceSet", "metadataPath", "dryRun"],
-    "meta-validate": ["sourceSet", "metadataPath"],
     "form-add": ["ObjectPath", "FormName", "Purpose"],
     "form-compile": ["JsonPath", "OutputPath"],
     "form-edit": ["FormPath", "JsonPath"],
@@ -368,10 +366,10 @@ SCENARIO_PRESERVING_MIN_MCP_CALLS = {
     "cfe-init": 6,
     "cfe-patch-method": 4,
     "cfe-validate": 2,
+    "meta-add": 1,
     "meta-edit": 2,
-    "meta-info": 14,
+    "meta-info": 5,
     "meta-remove": 1,
-    "meta-validate": 1,
     "form-add": 6,
     "form-compile": 4,
     "form-validate": 2,
@@ -455,11 +453,20 @@ SCENARIO_PRESERVING_TOKENS = {
         '"Context": "НаКлиенте"',
         '"IsFunction": false',
     ],
+    "meta-add": [
+        '"kind": "Catalog"',
+        '"name": "НовыйСправочник"',
+        '"dryRun": true',
+    ],
     "meta-edit": [
         '"op": "setProperties"',
         '"op": "add"',
         '"collection": "attributes"',
         '"allowedLength": "variable"',
+        '"op": "editRelations"',
+        '"relation": "basedOn"',
+        '"mode": "replace"',
+        '"targets": [',
     ],
     # `Name` and `Mode` were report selectors. The typed answer carries the
     # whole object, so the scenarios are preserved by the addresses they read,
@@ -558,10 +565,9 @@ SCENARIO_PRESERVING_TOKENS = {
 # must not keep advertising them: the server would answer such a call with
 # "does not accept argument", so a leftover example is a broken instruction.
 SCENARIO_RETIRED_TOKENS = {
-    "meta-compile": ['"JsonPath"', '"OutputDir"'],
+    "meta-add": ['"JsonPath"', '"OutputDir"', '"DefinitionFile"'],
     "meta-edit": ['"ObjectPath"', '"Operation"', '"Value"', '"DefinitionFile"'],
     "meta-remove": ['"ConfigDir"', '"Object"', '"Force"', '"KeepFiles"', '"keepFiles"'],
-    "meta-validate": ['"ObjectPath"', '"Detailed"', '"MaxErrors"'],
     "cf-info": ['"Mode"', '"Section"', '"Limit"', '"Offset"'],
     "role-info": ['"ShowDenied"', '"Limit"', '"Offset"'],
     "subsystem-info": ['"Mode"', '"Name"', '"Limit"', '"Offset"'],
@@ -646,7 +652,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             "cf-validate",
             "cfe-validate",
             "meta-info",
-            "meta-validate",
             "interface-validate",
             "subsystem-info",
             "subsystem-validate",
@@ -672,6 +677,95 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             / "unica_mcp_script_parity"
             / "unica_reference_models"
         )
+
+    def test_meta_skill_surface_is_exactly_four_typed_operations(self) -> None:
+        expected = {
+            "meta-info": "unica.meta.info",
+            "meta-add": "unica.meta.add",
+            "meta-edit": "unica.meta.edit",
+            "meta-remove": "unica.meta.remove",
+        }
+        actual = {
+            path.name
+            for path in self.skill_root().glob("meta-*")
+            if (path / "SKILL.md").is_file()
+        }
+
+        self.assertEqual(actual, set(expected))
+        for skill, tool in expected.items():
+            with self.subTest(skill=skill):
+                text = (self.skill_root() / skill / "SKILL.md").read_text(
+                    encoding="utf-8"
+                )
+                self.assertIn("## MCP routing", text)
+                self.assertIn("MCP `unica`", text)
+                self.assertIn(tool, text)
+
+    def test_meta_examples_follow_final_typed_contracts(self) -> None:
+        documents = {
+            skill: (self.skill_root() / skill / "SKILL.md").read_text(
+                encoding="utf-8"
+            )
+            for skill in ("meta-info", "meta-add", "meta-edit", "meta-remove")
+        }
+        calls = {
+            skill: [
+                json.loads(block)
+                for block in re.findall(r"```json\n(.*?)\n```", text, flags=re.S)
+                if '"method": "tools/call"' in block
+            ]
+            for skill, text in documents.items()
+        }
+
+        self.assertTrue(calls["meta-add"])
+        for call in calls["meta-add"]:
+            arguments = call["params"]["arguments"]
+            self.assertEqual(call["params"]["name"], "unica.meta.add")
+            self.assertTrue({"sourceSet", "kind", "name"}.issubset(arguments))
+            self.assertLessEqual(set(arguments), {"sourceSet", "kind", "name", "dryRun"})
+
+        self.assertTrue(calls["meta-edit"])
+        for call in calls["meta-edit"]:
+            arguments = call["params"]["arguments"]
+            self.assertEqual(call["params"]["name"], "unica.meta.edit")
+            self.assertEqual(
+                set(arguments) - {"sourceSet", "metadataPath", "operations", "dryRun"},
+                set(),
+            )
+            self.assertIsInstance(arguments["operations"], list)
+            self.assertTrue(arguments["operations"])
+            self.assertTrue(
+                all(isinstance(operation, dict) for operation in arguments["operations"])
+            )
+
+        info = documents["meta-info"]
+        for token in ("`validation`", "status", "freshness", "total", "limit", "truncated"):
+            with self.subTest(info_token=token):
+                self.assertIn(token, info)
+        self.assertIn("soft-fail", info)
+
+        remove = documents["meta-remove"]
+        self.assertIn("`sourceSet + metadataPath`", remove)
+        self.assertIn("`force: true`, `confirm: true`, `dryRun: false`", remove)
+
+    def test_prompt_visible_meta_routes_have_no_retired_contract_grammar(self) -> None:
+        prompt_documents = list(self.skill_root().glob("meta-*/**/*.md")) + [
+            self.repo_root() / "README.md",
+            self.repo_root() / "CLAUDE.md",
+            self.reference_root() / "platform" / "metadata-conventions.md",
+            self.skill_root() / "cf-edit" / "SKILL.md",
+            self.skill_root() / "cf-edit" / "reference.md",
+        ]
+        retired_routes = re.compile(
+            r"(?:/unica:|/)(?:meta-compile|meta-validate|meta-profile)\b|"
+            r"unica\.meta\.(?:compile|validate|profile)\b"
+        )
+        offenders = []
+        for path in prompt_documents:
+            text = path.read_text(encoding="utf-8")
+            if retired_routes.search(text):
+                offenders.append(path.relative_to(self.repo_root()).as_posix())
+        self.assertEqual(offenders, [])
 
     def test_in_scope_skills_route_to_single_unica_mcp(self) -> None:
         for skill, tool_name in IN_SCOPE_TOOLS.items():
@@ -1291,23 +1385,23 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertNotIn(".ps1", meta_info)
         self.assertNotIn(".py", meta_info)
 
-    def test_meta_compile_routes_creation_without_erasing_upstream_facts(self) -> None:
-        meta_compile = (self.skill_root() / "meta-compile" / "SKILL.md").read_text(
+    def test_meta_add_routes_minimal_creation_without_erasing_upstream_facts(self) -> None:
+        meta_add = (self.skill_root() / "meta-add" / "SKILL.md").read_text(
             encoding="utf-8"
         )
         format_facts = (
             self.reference_root() / "specs" / "1c-config-objects-spec.md"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("MCP `unica`", meta_compile)
-        self.assertIn("unica.meta.add", meta_compile)
-        self.assertNotIn("unica.meta.compile", meta_compile)
-        self.assertNotIn('"JsonPath"', meta_compile)
+        self.assertIn("MCP `unica`", meta_add)
+        self.assertIn("unica.meta.add", meta_add)
+        self.assertNotIn("unica.meta.compile", meta_add)
+        self.assertNotIn('"JsonPath"', meta_add)
         self.assertIn("ChoiceHistoryOnInput", format_facts)
-        self.assertNotIn("CLAUDE_SKILL_DIR", meta_compile)
-        self.assertNotIn("powershell.exe", meta_compile)
-        self.assertNotIn(".ps1", meta_compile)
-        self.assertNotIn(".py", meta_compile)
+        self.assertNotIn("CLAUDE_SKILL_DIR", meta_add)
+        self.assertNotIn("powershell.exe", meta_add)
+        self.assertNotIn(".ps1", meta_add)
+        self.assertNotIn(".py", meta_add)
 
     def test_top_level_skills_never_route_to_retired_meta_tools(self) -> None:
         retired = {
@@ -1838,7 +1932,7 @@ Use `.claude/commands/xdto.md` as the execution route.
         }
         self.assertEqual(
             modelled_skills,
-            set(IN_SCOPE_TOOLS) - {"epf-init", "erf-init"},
+            set(IN_SCOPE_TOOLS) - {"epf-init", "erf-init", "meta-add", "meta-edit"},
         )
         allowed_suffixes = {".json", ".md", ".ps1", ".py"}
         for path in models_root.rglob("*"):

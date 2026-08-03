@@ -598,9 +598,10 @@
           "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
         },
         {
-          "skill": "meta-compile",
+          "skill": "meta-add",
           "status": "ported-to-unica",
-          "notes": "Reviewed donor support-guard drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; Unica adapts it at the MCP application layer for this mutating tool using the shared ParentConfigurations.bin parser and .v8-project.json editingAllowedCheck deny|warn|off policy. Raw donor script wrapper path changes are not applicable because the prompt-visible skill routes through typed unica.*. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface. 2026-07-18 local correction: the parity model uses platform-canonical HierarchyOfItems instead of the donor spelling HierarchyItemsOnly; native compile normalizes the legacy spelling before emitting XML.",
+          "donorScope": "meta-compile",
+          "notes": "The local adopted creation owner is meta-add. Historical donor .claude/skills/meta-compile, meta-compile cases, docs and pinned parity baseline remain evidence for the reviewed object-emission facts, but the donor file/string DSL is not executable or prompt-visible. Current creation uses only sourceSet, kind, name and optional dryRun to build a typed minimal template; further changes use meta-edit. Shared support guards and validation remain inside the native mutation pipeline.",
           "upstreamPaths": [
             ".claude/skills/meta-compile/**",
             "tests/skills/cases/meta-compile/**",
@@ -609,13 +610,16 @@
             "docs/1c-config-objects-spec.md"
           ],
           "localPaths": [
-            "plugins/unica/skills/meta-compile",
-            "tests/fixtures/unica_mcp_script_parity/unica_reference_models/meta-compile"
+            "plugins/unica/skills/meta-add",
+            "crates/unica-coder/src/infrastructure/native_operations/meta/template_catalog.rs",
+            "tests/fixtures/provenance/retired_meta_dsl/meta-compile"
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py",
-            "crates/unica-coder/src/infrastructure/native_operations/meta/mod.rs"
+            "tests/ci/test_skill_provenance.py",
+            "tests/ci/test_meta_surface_contract.py",
+            "crates/unica-coder/src/application/metadata.rs",
+            "crates/unica-coder/src/application/tool_contracts.rs"
           ],
           "decision": "ignored-with-reason",
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
@@ -625,7 +629,7 @@
         {
           "skill": "meta-edit",
           "status": "ported-to-unica",
-          "notes": "Reviewed donor support-guard drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; Unica adapts it at the MCP application layer for this mutating tool using the shared ParentConfigurations.bin parser and .v8-project.json editingAllowedCheck deny|warn|off policy. Raw donor script wrapper path changes are not applicable because the prompt-visible skill routes through typed unica.*. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface. 2026-07-18 local correction: the parity model uses platform-canonical HierarchyOfItems instead of the donor spelling HierarchyItemsOnly; native edit normalizes the legacy spelling before emitting XML. 2026-07-19 local MCP-first extension: native modify-attribute and modify-ts-attribute support context-checked typed fillValue updates and nil reset while the retained donor script fixture remains unchanged; successful native edits preserve source BOM, EOL, XML declaration, self-closing style, and trailing-newline state.",
+          "notes": "The current meta-edit skill and native handler use an ordered typed operations array with structured properties, elements, types and relations. Reviewed donor support-guard and XML preservation facts remain relevant, while the former donor file/string DSL adaptation is retained only under the non-executable provenance archive and does not define the public contract.",
           "upstreamPaths": [
             ".claude/skills/meta-edit/**",
             "docs/meta-guide.md",
@@ -634,12 +638,14 @@
           ],
           "localPaths": [
             "plugins/unica/skills/meta-edit",
-            "tests/fixtures/unica_mcp_script_parity/unica_reference_models/meta-edit"
+            "crates/unica-coder/src/domain/metadata/operations.rs",
+            "tests/fixtures/provenance/retired_meta_dsl/meta-edit"
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py",
-            "crates/unica-coder/src/infrastructure/native_operations/meta/mod.rs"
+            "tests/ci/test_meta_surface_contract.py",
+            "crates/unica-coder/src/application/metadata.rs",
+            "crates/unica-coder/src/application/tool_contracts.rs"
           ],
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decision": "ignored-with-reason",
@@ -693,9 +699,11 @@
           "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; none of that donor churn requires adopting donor changes. Separately, Unica deliberately diverges from the donor by retiring the -KeepFiles switch, and that divergence does change the prompt-visible skill, the typed MCP contract, the native operation and the parity model; see the entry notes for the reasoning and the affected surfaces."
         },
         {
-          "skill": "meta-validate",
-          "status": "ported-to-unica",
-          "notes": "Reviewed donor meta-validate batch recursion fix through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe and ported the behavior into native unica.meta.validate: pipe-separated ObjectPath values are validated in-process, with per-object output and batch summary behind the typed MCP boundary. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface. 2026-07-18 local correction: the parity model and native validator use the platform-canonical HierarchyOfItems value instead of the donor spelling HierarchyItemsOnly.",
+          "skill": "meta-info",
+          "status": "adapted",
+          "donorScope": "meta-validate",
+          "componentOwner": "internal-metadata-validator",
+          "notes": "The donor meta-validate history is owned locally by the internal metadata validator, not by a prompt-visible validation skill. Pinned donor paths and parity baseline remain evidence. Validation is returned as meta.info data.validation and runs automatically before meta.add, meta.edit and meta.remove publication; donor batch strings and a separate public route were deliberately retired.",
           "upstreamPaths": [
             ".claude/skills/meta-validate/**",
             "docs/meta-guide.md",
@@ -703,18 +711,18 @@
             "docs/1c-config-objects-spec.md"
           ],
           "localPaths": [
-            "plugins/unica/skills/meta-validate",
-            "tests/fixtures/unica_mcp_script_parity/unica_reference_models/meta-validate"
+            "crates/unica-coder/src/infrastructure/native_operations/meta/validation.rs",
+            "tests/fixtures/provenance/retired_meta_dsl/meta-validate"
           ],
           "contractPaths": [
-            "crates/unica-coder/src/application/mod.rs",
-            "crates/unica-coder/src/infrastructure/native_operations/meta/mod.rs",
-            "tests/ci/test_unica_mcp_script_parity.py",
-            "tests/ci/test_unica_skills.py"
+            "plugins/unica/skills/meta-info/SKILL.md",
+            "crates/unica-coder/src/application/metadata.rs",
+            "tests/ci/test_unica_skills.py",
+            "tests/ci/test_skill_provenance.py"
           ],
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decision": "ignored-with-reason",
-          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required.",
+          "decisionReason": "Reviewed donor drift remains either internal validator evidence or retired wrapper and guidance churn. It does not justify restoring a public validation route or the former batch grammar.",
           "parityBaselineCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e"
         },
         {
@@ -1533,13 +1541,14 @@
       "baselineCommit": "751a51610d97079b77df71b780c3110ec7507558",
       "entries": [
         {
-          "skill": "meta-validate",
+          "skill": "meta-add",
           "status": "adapted",
           "notes": "Unica adapts the naming, synonym, representation, fill-check, catalog code, and information-register command-interface conventions from the TemplatesNewObject1C checklist into its metadata-conventions reference. The source checklist is scoped to 1C:Accounting and warns that other configurations may differ; Unica deliberately adopts the listed guidance as general Unica project conventions, not platform requirements.",
           "upstreamPaths": [
             "README.md"
           ],
           "localPaths": [
+            "plugins/unica/skills/meta-add",
             "plugins/unica/references/platform/metadata-conventions.md"
           ],
           "contractPaths": [

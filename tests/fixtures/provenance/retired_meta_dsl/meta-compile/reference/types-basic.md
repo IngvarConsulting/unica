@@ -1,3 +1,5 @@
+<!-- Historical external Meta DSL evidence; not current contract guidance. -->
+
 # Базовые типы: Catalog, Document, Enum, Constant, DefinedType, Report, DataProcessor
 
 ## Catalog

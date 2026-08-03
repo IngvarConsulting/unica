@@ -1,42 +1,24 @@
 ---
 name: meta-info
-description: Анализ структуры объекта метаданных 1С из XML-выгрузки — реквизиты, табличные части, формы, движения, типы. Используй для изучения структуры объектов (вместо чтения XML-файлов напрямую) и как подготовительный шаг при написании запросов и кода, работающего с объектами
-argument-hint: <sourceSet> <metadataPath>
+description: Прочитать типизированную локальную структуру и validation объекта метаданных 1С, при необходимости дополнив её независимо доступными связанными секциями.
+argument-hint: <sourceSet> <metadataPath> [sections] [limit]
 allowed-tools:
-  - Bash
   - Read
   - Glob
 ---
 
-# /meta-info — Структура объекта метаданных 1С
+# /meta-info — структура и проверка объекта метаданных
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tool `unica.meta.info`; `unica` owns typed metadata reads and validation.
-- Do not call internal MCP/CLI adapters directly. They are hidden behind `unica` and synchronized by the orchestrator.
-- Execution path: call MCP `unica` tool `unica.meta.info`; skill-local operation scripts are not part of the workflow.
-- For mutating operations, pass `dryRun: false` only when the user explicitly requested the change; otherwise keep the default dry run.
-
-Читает объект метаданных 1С по логическому адресу и выводит компактное описание структуры. Раскладка выгрузки конфигуратора знать не нужно: `sourceSet` называет набор исходников из карты проекта, `metadataPath` — сам объект.
-
-В основном выводе показывает `Поддержка` по `Ext/ParentConfigurations.bin`: не на поддержке, на замке, редактируется с сохранением поддержки, снято с поддержки или read-only. Если объект на замке, планируй доработку через CFE/release-support flow, а не через прямую правку raw support metadata.
-
-## MCP параметры
-
-| Параметр | Описание |
-|----------|----------|
-| `sourceSet` | Имя набора исходников из карты проекта; список даёт `unica.project.map` |
-| `metadataPath` | Логический адрес объекта: `Catalog.Номенклатура`, `Справочник.Номенклатура`, `Catalog.Номенклатура.Form.ФормаЭлемента` |
-| `sections` | Связанные индексные секции: `modules`, `roles`, `subscriptions`, `functionalOptions`, `predefinedItems`; без аргумента запрашиваются первые четыре |
-| `limit` | Максимум элементов каждой связанной секции; по умолчанию `20` |
-
-Адрес принимает русские и английские псевдонимы вида, а отвечает канонической
-английской формой в `data.metadataPath` — её можно передать дальше любому
-логическому инструменту. Если известен только путь файла, `unica.source.locate`
-переводит его в адрес, а `unica.source.resolve` ищет объект по имени.
-
-Модуль объекта этот инструмент не читает: `Catalog.X.ObjectModule` отклоняется,
-для кода есть `unica.code.*`.
+- Preferred path: use MCP `unica` tool `unica.meta.info`.
+- Выбирайте объект логически через `sourceSet + metadataPath`; расположение XML
+  внутри выгрузки остаётся внутренней деталью `unica`.
+- Читайте локальную структуру и `data.validation` из одного результата. Отдельный
+  публичный вызов проверки не нужен.
+- Запрашивайте через `sections` только нужные связанные данные и ограничивайте
+  каждую секцию параметром `limit`.
+- Не вызывайте внутренние MCP/CLI-адаптеры и skill-local scripts.
 
 ```json
 {
@@ -46,7 +28,7 @@ allowed-tools:
     "name": "unica.meta.info",
     "arguments": {
       "sourceSet": "main",
-      "metadataPath": "Catalog.Номенклатура"
+      "metadataPath": "Catalog.Валюты"
     }
   }
 }
@@ -54,31 +36,41 @@ allowed-tools:
 
 ## Ответ
 
-Инструмент отвечает типизированным `data`: локальную структуру объекта и
-`validation` он отдаёт целиком — вид, имя, синоним, поддержку, свойства
-**именами платформы** (`NumberType`,
-`Hierarchical`, `LevelCount`…), владельцев, реквизиты, измерения, ресурсы,
-табличные части с колонками, значения перечисления, формы, макеты и команды.
-Запрошенные индексные секции ограничены `limit` и отдельно сообщают статус,
-свежесть, `total` и `truncated`; `predefinedItems` включается только явно.
-Физические режимы и drill-down больше не нужны — берите нужную секцию из
-`data`.
+`data` всегда начинается с локально прочитанной структуры объекта: канонического
+`metadataPath`, вида, имени, синонима, состояния поддержки, свойств именами
+платформы, владельцев, реквизитов, измерений, ресурсов, табличных частей, форм,
+макетов и команд. Поле `validation` (`data.validation`) содержит `status` и
+типизированные `diagnostics`; та же внутренняя проверка выполняется перед каждой
+мутацией.
 
-«Представление типа», «Представление объекта» и представления списка ссылочных
-объектов лежат в `properties` под платформенными именами `ObjectPresentation`,
-`ExtendedObjectPresentation`, `ListPresentation`, `ExtendedListPresentation` —
-переводить их обратно в русские подписи инструмент больше не пытается.
+Каждая запрошенная `data.related.<section>` имеет собственные `status`,
+`freshness`, `total`, `limit` и `truncated`. Недоступность одной индексной секции
+— это `soft-fail`: она получает самостоятельный статус и диагностику, но не
+обесценивает локальную структуру и остальные секции. Без `sections` запрашиваются
+`modules`, `roles`, `subscriptions` и `functionalOptions`; `predefinedItems`
+включается явно.
 
-## Поддерживаемые типы (23)
+Адрес принимает русские и английские псевдонимы вида, а в
+`data.metadataPath` возвращает каноническую английскую форму. Если известен
+только путь файла, сначала используйте `unica.source.locate`; если известно имя
+— `unica.source.resolve`. Адрес модуля (`Catalog.X.ObjectModule`) здесь не
+поддерживается: код читают `unica.code.*`.
 
-**Ссылочные:** Справочник, Документ, Перечисление, Бизнес-процесс, Задача, План обмена, План счетов, ПВХ, ПВР
-**Регистры:** Регистр сведений, Регистр накопления, Регистр бухгалтерии, Регистр расчёта
-**Сервисные:** Отчёт, Обработка, HTTP-сервис, Веб-сервис, Общий модуль, Регламентное задание, Подписка на событие
-**Прочие:** Константа, Журнал документов, Определяемый тип
+«Представление типа», «Представление объекта» и представления списка ссылочного
+объекта находятся в `properties` под платформенными именами
+`ObjectPresentation`, `ExtendedObjectPresentation`, `ListPresentation` и
+`ExtendedListPresentation`.
+
+Раздел «Поддержка» читается из `Ext/ParentConfigurations.bin`. Объект на замке
+изменяйте через CFE/release-support flow, не через raw support metadata.
+
+Соглашения по именам, синонимам и представлениям находятся в
+[общей ссылке](../../references/platform/metadata-conventions.md); перечни видов
+и свойств не дублируются здесь, потому что их публикует схема операции.
 
 ## Примеры
 
-### Справочник: overview
+### Документ и связанные секции
 
 ```json
 {
@@ -88,93 +80,15 @@ allowed-tools:
     "name": "unica.meta.info",
     "arguments": {
       "sourceSet": "main",
-      "metadataPath": "Catalog.Валюты"
+      "metadataPath": "Document.АвансовыйОтчет",
+      "sections": ["modules", "roles", "subscriptions", "functionalOptions"],
+      "limit": 20
     }
   }
 }
 ```
 
-### Документ: полная сводка
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.meta.info",
-    "arguments": {
-      "sourceSet": "main",
-      "metadataPath": "Document.АвансовыйОтчет"
-    }
-  }
-}
-```
-
-### Регистр сведений: краткая сводка
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.meta.info",
-    "arguments": {
-      "sourceSet": "main",
-      "metadataPath": "InformationRegister.КурсыВалют"
-    }
-  }
-}
-```
-
-### Табличные части документа
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.meta.info",
-    "arguments": {
-      "sourceSet": "main",
-      "metadataPath": "Document.АвансовыйОтчет"
-    }
-  }
-}
-```
-
-### Реквизиты справочника
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.meta.info",
-    "arguments": {
-      "sourceSet": "main",
-      "metadataPath": "Catalog.Валюты"
-    }
-  }
-}
-```
-
-### Общий модуль
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.meta.info",
-    "arguments": {
-      "sourceSet": "main",
-      "metadataPath": "CommonModule.ОбщегоНазначения"
-    }
-  }
-}
-```
-
-### HTTP-сервис: шаблоны URL и методы
+### HTTP-сервис
 
 ```json
 {
@@ -190,23 +104,7 @@ allowed-tools:
 }
 ```
 
-### HTTP-сервис: шаблоны URL в `data`
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.meta.info",
-    "arguments": {
-      "sourceSet": "main",
-      "metadataPath": "HTTPService.ExternalAPI"
-    }
-  }
-}
-```
-
-### Веб-сервис: операции с параметрами
+### Веб-сервис
 
 ```json
 {
@@ -217,54 +115,6 @@ allowed-tools:
     "arguments": {
       "sourceSet": "main",
       "metadataPath": "WebService.EnterpriseDataUpload_1_0_1_1"
-    }
-  }
-}
-```
-
-### Веб-сервис: операции в `data`
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.meta.info",
-    "arguments": {
-      "sourceSet": "main",
-      "metadataPath": "WebService.EnterpriseDataUpload_1_0_1_1"
-    }
-  }
-}
-```
-
-### Подписка на событие
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.meta.info",
-    "arguments": {
-      "sourceSet": "main",
-      "metadataPath": "EventSubscription.ПолныйРегистрацияУдаления"
-    }
-  }
-}
-```
-
-### Регламентное задание
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.meta.info",
-    "arguments": {
-      "sourceSet": "main",
-      "metadataPath": "ScheduledJob.АвтоматическоеЗакрытиеМесяца"
     }
   }
 }

@@ -1,3 +1,5 @@
+<!-- Historical external Meta DSL evidence; not current contract guidance. -->
+
 # Процессы и сервисные: BusinessProcess, Task, ExchangePlan, CommonModule, ScheduledJob, EventSubscription, DocumentJournal
 
 ## BusinessProcess

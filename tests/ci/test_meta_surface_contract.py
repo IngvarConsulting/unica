@@ -131,10 +131,9 @@ class MetaSurfaceContractTests(unittest.TestCase):
             "docs/plans/",
             "spec/decisions/",
             "tests/fixtures/unica_mcp_script_parity/cc-1c-skills/",
-            # Task 12 owns provenance reconciliation for these exact retained donors.
-            "tests/fixtures/unica_mcp_script_parity/unica_reference_models/meta-compile/",
-            "tests/fixtures/unica_mcp_script_parity/unica_reference_models/meta-edit/",
-            "tests/fixtures/unica_mcp_script_parity/unica_reference_models/meta-validate/",
+            # Reviewed donor adaptations are retained only in a non-executable
+            # provenance archive; they do not define the current Meta contract.
+            "tests/fixtures/provenance/retired_meta_dsl/",
         )
         retired_files = {
             "crates/unica-coder/src/infrastructure/native_operations/meta/compile_tests.rs",

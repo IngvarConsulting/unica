@@ -1,3 +1,5 @@
+<!-- Historical external Meta DSL evidence; not current contract guidance. -->
+
 # Регистры и планы: InformationRegister, AccumulationRegister, AccountingRegister, CalculationRegister, ChartOfAccounts, ChartOfCharacteristicTypes, ChartOfCalculationTypes
 
 ## Измерения и ресурсы (общее)

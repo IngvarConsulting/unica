@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Historical external Meta DSL evidence; excluded from every execution harness.
 # meta-edit v1.6 — Edit existing 1C metadata object XML (inline mode + complex properties + TS attribute ops + modify-ts)
 # Adapted from https://github.com/Nikolay-Shirokov/cc-1c-skills
 

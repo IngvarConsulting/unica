@@ -1,3 +1,5 @@
+<!-- Historical donor adaptation; not a packaged or executable skill. -->
+
 ---
 name: meta-compile
 description: Создать объект метаданных 1С. Используй когда нужно создать или добавить справочник, документ, регистр, перечисление, константу, общий модуль, обработку, отчёт и др.

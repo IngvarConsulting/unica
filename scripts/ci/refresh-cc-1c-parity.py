@@ -530,7 +530,9 @@ def build_baseline(
                 f"no concrete accepted commit is available for scope {scope}"
             )
         scopes[scope] = {
-            "ownerSkill": scope,
+            # Donor scope names are historical evidence. The local owner may
+            # be renamed or internalized without rewriting that history.
+            "ownerSkill": old_scope.get("ownerSkill", scope),
             "caseScopes": sorted(case_scopes_by_owner.get(scope, set())),
             "acceptedCommit": commit,
             "reviewId": (
