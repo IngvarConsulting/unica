@@ -184,14 +184,22 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
     let search_response = mcp.receive_ids(&[7], RESPONSE_DEADLINE);
     let search = tool_operation(&search_response[&7]);
     assert_eq!(search["ok"], true, "{search:#}");
+    let search_sections = search["data"]["sections"].as_array().unwrap();
     assert_eq!(
-        search["data"]["sections"]
-            .as_array()
-            .unwrap()
+        search_sections
             .iter()
             .map(|section| section["provider"].as_str().unwrap())
             .collect::<Vec<_>>(),
         vec!["rlm", "bsl-analyzer", "git-grep"]
+    );
+    let rlm_status = search_sections
+        .iter()
+        .find(|section| section["provider"] == "rlm")
+        .and_then(|section| section["status"].as_str());
+    assert!(
+        matches!(rlm_status, Some("ok" | "empty")),
+        "the direct recovery probe did not recover RLM: response={search:#}, records={:#?}",
+        fixture.log_records()
     );
     mcp.send(tool_call(
         9,
@@ -206,7 +214,10 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
     assert_meta_info_data(&after_logical_error[&9]);
     assert_eq!(
         tool_operation(&after_logical_error[&9])["data"]["related"]["modules"]["status"],
-        "ready"
+        "ready",
+        "the recovered RLM session was not observable through meta.info: response={:#}, records={:#?}",
+        tool_operation(&after_logical_error[&9]),
+        fixture.log_records()
     );
 
     let expected_root = canonical_display(&fixture.workspace.join("src/cf"));
@@ -1070,6 +1081,12 @@ fn rlm_mcp() {
                 loop { thread::sleep(Duration::from_secs(60)); }
             }
             execute_count += 1;
+            let operation_kind = if line.contains("get_object_profile") {
+                "rlm-execute-profile"
+            } else {
+                "rlm-execute-search"
+            };
+            record(operation_kind, sequence, descendant.id(), &root);
             if line.contains("LogicalError") {
                 respond(id, "{\"error\":\"invalid logical request\"}");
                 continue;
