@@ -1,4 +1,4 @@
-use super::{compile_legacy_metadata_fixture, OperationResult, UnicaApplication};
+use super::{OperationResult, UnicaApplication};
 use crate::composition::testing::{with_registrar_processing_hook, RegistrarProcessingPhase};
 use crate::domain::cancellation::CancellationToken;
 use serde_json::{Map, Value};
@@ -66,33 +66,48 @@ fn create_info_workspace(label: &str) -> TempWorkspace {
         ),
     )
     .unwrap();
-    let definition = workspace.path().join("info-fixture.json");
-    std::fs::write(
-        &definition,
-        serde_json::to_vec(&serde_json::json!([{
-            "type": "Catalog",
-            "name": "Inspectable",
-            "synonym": "Inspectable synonym",
-            "attributes": ["Code: String(9)", "Amount: Number(15,2)"],
-            "tabularSections": [{"name": "Rows", "attributes": ["Value: String(20)"]}]
-        }]))
-        .unwrap(),
-    )
-    .unwrap();
-    let compiled = compile_legacy_metadata_fixture(&Map::from_iter([
-        (
-            "cwd".to_string(),
-            Value::String(workspace.path().display().to_string()),
-        ),
-        (
-            "JsonPath".to_string(),
-            Value::String(definition.display().to_string()),
-        ),
-        ("OutputDir".to_string(), Value::String("src".to_string())),
-        ("dryRun".to_string(), Value::Bool(false)),
-    ]))
-    .unwrap();
-    assert!(compiled.ok, "{:?}", compiled.errors);
+    let previous = std::env::current_dir().unwrap();
+    std::env::set_current_dir(workspace.path()).unwrap();
+    let added = UnicaApplication::new().call_tool(
+        "unica.meta.add",
+        &Map::from_iter([
+            ("sourceSet".to_string(), Value::String("main".to_string())),
+            ("kind".to_string(), Value::String("Catalog".to_string())),
+            ("name".to_string(), Value::String("Inspectable".to_string())),
+            ("dryRun".to_string(), Value::Bool(false)),
+        ]),
+    );
+    let edited = UnicaApplication::new()
+        .call_tool(
+            "unica.meta.edit",
+            &Map::from_iter([
+                ("sourceSet".to_string(), Value::String("main".to_string())),
+                (
+                    "metadataPath".to_string(),
+                    Value::String("Catalog.Inspectable".to_string()),
+                ),
+                (
+                    "operations".to_string(),
+                    serde_json::json!([
+                        {"op": "setProperties", "values": {"Synonym": "Inspectable synonym"}},
+                        {"op": "add", "collection": "attributes", "elements": [
+                            {"name": "Code", "type": {"variants": [{"kind": "string", "length": 9, "allowedLength": "variable"}] }},
+                            {"name": "Amount", "type": {"variants": [{"kind": "number", "digits": 15, "fraction": 2, "sign": "any"}] }}
+                        ]},
+                        {"op": "add", "collection": "tabularSections", "elements": [{
+                            "name": "Rows",
+                            "attributes": [{"name": "Value", "type": {"variants": [{"kind": "string", "length": 20, "allowedLength": "variable"}] }}]
+                        }]}
+                    ]),
+                ),
+                ("dryRun".to_string(), Value::Bool(false)),
+            ]),
+        );
+    std::env::set_current_dir(previous).unwrap();
+    let added = added.unwrap();
+    assert!(added.ok, "{:?}", added.errors);
+    let edited = edited.unwrap();
+    assert!(edited.ok, "{:?}", edited.errors);
     workspace
 }
 

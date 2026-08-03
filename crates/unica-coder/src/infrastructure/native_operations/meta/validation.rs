@@ -6,7 +6,6 @@ use crate::application::ports::{
     MetadataTemplateResourcePart, MetadataTemplateType, MetadataValidationResult,
     MetadataValidationSubject,
 };
-use crate::application::AdapterOutcome;
 use crate::domain::format_profile::{
     classify_root_version, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
 };
@@ -20,14 +19,18 @@ use crate::infrastructure::platform_xml_owner::{
     root_version_literal, PlatformXmlRootExpectation, DCS_ROOT, MXL_ROOT,
 };
 use roxmltree::Document;
-use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use super::super::cf::validate_cf_owner_path;
 use super::super::common::{
-    absolutize, bool_arg, child_text, format_compatibility_warning, int_arg, is_1c_identifier,
-    read_utf8_sig, required_path,
+    absolutize, child_text, format_compatibility_warning, is_1c_identifier, read_utf8_sig,
+};
+use super::super::subsystem::validate_subsystem_owner_path;
+use super::edit::meta_edit_object_node;
+use super::format_contract::{
+    validate_metadata_8_3_27_boolean_contract, validate_metadata_8_3_27_enum_contract,
 };
 use super::info::resolve_meta_info_path;
 use super::validation_context::{
@@ -42,6 +45,57 @@ use super::xml_model::{
 };
 
 const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
+
+pub(super) fn require_meta_configuration_owner_validation(
+    config_path: &Path,
+    context: &WorkspaceContext,
+    operation: &str,
+) -> Result<(), String> {
+    validate_cf_owner_path(config_path, context).map_err(|detail| {
+        format!(
+            "{operation} Configuration owner validation failed for {}: {}",
+            config_path.display(),
+            detail.trim()
+        )
+    })
+}
+
+pub(crate) fn validate_metadata_owner_shape_8_3_27(
+    object_path: &Path,
+    workspace: &WorkspaceContext,
+    operation: &str,
+) -> Result<(), String> {
+    let xml_text = read_utf8_sig(object_path)?;
+    let document = Document::parse(xml_text.trim_start_matches('\u{feff}'))
+        .map_err(|error| format!("XML parse error: {error}"))?;
+    let root_object = meta_edit_object_node(&document)?;
+    match root_object.tag_name().name() {
+        "Configuration" => return validate_cf_owner_path(object_path, workspace),
+        "Subsystem" => return validate_subsystem_owner_path(object_path, workspace),
+        _ => {}
+    }
+    validate_metadata_8_3_27_boolean_contract(&xml_text, operation)?;
+    validate_metadata_8_3_27_enum_contract(&xml_text, operation)?;
+
+    let run = meta_validate_one_with_scope(
+        object_path.to_path_buf(),
+        &MetaValidationOptions {
+            detailed: true,
+            max_errors: 30,
+        },
+        workspace,
+        MetaValidationScope::PostWriteLocal,
+    )?;
+    if run.ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "{operation} owner metadata validation failed for {}: {}",
+            object_path.display(),
+            run.errors.join("; ")
+        ))
+    }
+}
 
 pub(super) struct MetaValidationReporter {
     pub(crate) errors: usize,
@@ -1588,164 +1642,6 @@ impl MetaValidationReporter {
             .collect::<Vec<_>>();
         (ok, self.lines.join("\n"), errors, warnings)
     }
-}
-
-pub(crate) fn validate_meta(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-) -> AdapterOutcome {
-    let result = (|| -> Result<MetaValidationRun, String> {
-        let raw_path = required_path(
-            args,
-            &["objectPath", "ObjectPath", "path", "Path"],
-            "ObjectPath",
-        )?;
-        let raw_path_text = raw_path.to_string_lossy();
-        let paths = raw_path_text
-            .split('|')
-            .map(str::trim)
-            .filter(|path| !path.is_empty())
-            .map(PathBuf::from)
-            .collect::<Vec<_>>();
-        if paths.is_empty() {
-            return Err("[ERROR] No ObjectPath values were provided".to_string());
-        }
-
-        let options = meta_validation_options(args);
-        if paths.len() > 1 {
-            meta_validate_batch(paths, &options, context)
-        } else {
-            meta_validate_one(paths[0].clone(), &options, context)
-        }
-    })();
-
-    match result {
-        Ok(run) => {
-            let artifacts = run
-                .artifacts
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect::<Vec<_>>();
-            AdapterOutcome {
-                ok: run.ok,
-                summary: if run.ok {
-                    "unica.meta.validate completed with native metadata validator".to_string()
-                } else {
-                    "unica.meta.validate failed in native metadata validator".to_string()
-                },
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: run.errors,
-                artifacts,
-                stdout: Some(run.stdout),
-                stderr: Some(String::new()),
-                command: None,
-            }
-        }
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.meta.validate failed in native metadata validator".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: Some(format!("{error}\n")),
-            stderr: Some(String::new()),
-            command: None,
-        },
-    }
-}
-
-pub(super) fn meta_validation_options(args: &Map<String, Value>) -> MetaValidationOptions {
-    MetaValidationOptions {
-        detailed: bool_arg(args, &["detailed", "Detailed"]),
-        max_errors: int_arg(args, &["maxErrors", "MaxErrors"])
-            .and_then(|value| usize::try_from(value).ok())
-            .filter(|value| *value > 0)
-            .unwrap_or(30),
-    }
-}
-
-/// Return the platform XML documents whose contents `meta.validate` reads,
-/// including each member of a batch and the registrar documents inspected for
-/// register cross-reference diagnostics.
-pub(crate) fn meta_validate_format_dependency_paths(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-) -> Result<Vec<PathBuf>, String> {
-    let raw_path = required_path(
-        args,
-        &["objectPath", "ObjectPath", "path", "Path"],
-        "ObjectPath",
-    )?;
-    let raw_path_text = raw_path.to_string_lossy();
-    let mut dependencies = Vec::new();
-    for raw in raw_path_text
-        .split('|')
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-    {
-        let candidate = absolutize(PathBuf::from(raw), &context.cwd);
-        let object_path = resolve_meta_info_path(candidate.clone()).unwrap_or(candidate);
-        let inspection = inspect_meta_validation_reads(&object_path, context);
-        for path in inspection.paths {
-            if !dependencies.contains(&path) {
-                dependencies.push(path);
-            }
-        }
-    }
-    Ok(dependencies)
-}
-
-pub(super) fn meta_validate_batch(
-    paths: Vec<PathBuf>,
-    options: &MetaValidationOptions,
-    context: &WorkspaceContext,
-) -> Result<MetaValidationRun, String> {
-    let total = paths.len();
-    let mut passed = 0usize;
-    let mut failed = 0usize;
-    let mut stdout_blocks = Vec::<String>::new();
-    let mut errors = Vec::<String>::new();
-    let mut warnings = Vec::<String>::new();
-    let mut artifacts = Vec::<PathBuf>::new();
-
-    for path in paths {
-        match meta_validate_one(path.clone(), options, context) {
-            Ok(run) => {
-                if run.ok {
-                    passed += 1;
-                } else {
-                    failed += 1;
-                }
-                errors.extend(run.errors);
-                warnings.extend(run.warnings);
-                artifacts.extend(run.artifacts);
-                stdout_blocks.push(format!("--- {} ---", path.display()));
-                stdout_blocks.push(run.stdout.trim_end().to_string());
-            }
-            Err(error) => {
-                failed += 1;
-                let message = format!("[ERROR] {}: {error}", path.display());
-                errors.push(message.clone());
-                stdout_blocks.push(message);
-            }
-        }
-    }
-
-    stdout_blocks.push(String::new());
-    stdout_blocks.push("=== meta-validate batch summary ===".to_string());
-    stdout_blocks.push(format!("Validated: {total}"));
-    stdout_blocks.push(format!("Passed:    {passed}"));
-    stdout_blocks.push(format!("Failed:    {failed}"));
-
-    Ok(MetaValidationRun {
-        ok: failed == 0,
-        stdout: format!("{}\n", stdout_blocks.join("\n")),
-        artifacts,
-        errors,
-        warnings,
-    })
 }
 
 pub(super) fn meta_validate_one(
@@ -4094,130 +3990,15 @@ mod tests {
         fs::write(path, bytes).unwrap();
     }
 
-    fn real_legacy_outcome(name: &str, subject: &MetadataValidationSubject) -> AdapterOutcome {
-        let context = temp_context(name);
-        let descriptor_path = metadata_path(&context.cwd, &subject.target);
-        for resource in &subject.resources {
-            match &resource.role {
-                MetadataResourceRole::Descriptor => write_bytes(&descriptor_path, &resource.bytes),
-                MetadataResourceRole::Registration => {
-                    write_bytes(&context.cwd.join("Configuration.xml"), &resource.bytes)
-                }
-                MetadataResourceRole::Dependency { target } => {
-                    write_bytes(&metadata_path(&context.cwd, target), &resource.bytes)
-                }
-                MetadataResourceRole::Module { owner } => {
-                    let mut segments = owner.segments();
-                    let kind = segments.next().unwrap();
-                    let object_name = segments.next().unwrap();
-                    write_bytes(
-                        &context
-                            .cwd
-                            .join(metadata_collection(kind))
-                            .join(object_name)
-                            .join("Ext/Module.bsl"),
-                        &resource.bytes,
-                    );
-                }
-                MetadataResourceRole::Form { owner, name }
-                | MetadataResourceRole::Template { owner, name }
-                | MetadataResourceRole::Command { owner, name } => {
-                    let mut segments = owner.segments();
-                    let kind = segments.next().unwrap();
-                    let object_name = segments.next().unwrap();
-                    let collection = match &resource.role {
-                        MetadataResourceRole::Form { .. } => "Forms",
-                        MetadataResourceRole::Template { .. } => "Templates",
-                        MetadataResourceRole::Command { .. } => "Commands",
-                        _ => unreachable!(),
-                    };
-                    write_bytes(
-                        &context
-                            .cwd
-                            .join(metadata_collection(kind))
-                            .join(object_name)
-                            .join(collection)
-                            .join(format!("{name}.xml")),
-                        &resource.bytes,
-                    );
-                }
-                MetadataResourceRole::AuxiliaryXml { owner, kind } => {
-                    let mut segments = owner.segments();
-                    let object_kind = segments.next().unwrap();
-                    let object_name = segments.next().unwrap();
-                    let file_name = match kind {
-                        MetadataAuxiliaryXmlKind::ExchangePlanContent => "Content.xml",
-                        MetadataAuxiliaryXmlKind::BusinessProcessFlowchart => "Flowchart.xml",
-                    };
-                    write_bytes(
-                        &context
-                            .cwd
-                            .join(metadata_collection(object_kind))
-                            .join(object_name)
-                            .join("Ext")
-                            .join(file_name),
-                        &resource.bytes,
-                    );
-                }
-                MetadataResourceRole::ChildResource { .. } => {}
-            }
-        }
-        let outcome = validate_meta(&meta_validate_args(&descriptor_path), &context);
-        let _ = fs::remove_dir_all(&context.cwd);
-        outcome
-    }
-
-    fn meta_validate_args(path: &Path) -> Map<String, Value> {
-        Map::from_iter([
-            (
-                "ObjectPath".to_string(),
-                Value::String(path.display().to_string()),
-            ),
-            ("Detailed".to_string(), Value::Bool(true)),
-        ])
-    }
-
-    fn assert_real_legacy_equivalent(
-        name: &str,
+    fn assert_internal_status(
+        _name: &str,
         subject: &MetadataValidationSubject,
         expected: MetaValidationStatus,
     ) -> crate::domain::metadata::MetaValidationData {
         let context = context();
         let internal = MetadataValidator.validate(subject, &context);
-        let legacy = real_legacy_outcome(name, subject);
         assert_eq!(internal.status, expected);
-        assert_eq!(legacy.ok, expected == MetaValidationStatus::Passed);
         internal
-    }
-
-    fn assert_report_summary_matches_lines(stdout: &str) {
-        let summary = stdout
-            .lines()
-            .find(|line| line.starts_with("=== Result:"))
-            .unwrap_or_else(|| panic!("missing reporter summary: {stdout}"));
-        let parts = summary.split_whitespace().collect::<Vec<_>>();
-        let reported_errors = parts[2].parse::<usize>().unwrap();
-        let reported_warnings = parts[4].parse::<usize>().unwrap();
-        let reported_checks = parts[6].trim_start_matches('(').parse::<usize>().unwrap();
-        let actual_errors = stdout
-            .lines()
-            .filter(|line| line.starts_with("[ERROR] "))
-            .count();
-        let actual_warnings = stdout
-            .lines()
-            .filter(|line| line.starts_with("[WARN]  "))
-            .count();
-        let actual_checks = stdout
-            .lines()
-            .filter(|line| {
-                line.starts_with("[OK]    ")
-                    || line.starts_with("[ERROR] ")
-                    || line.starts_with("[WARN]  ")
-            })
-            .count();
-        assert_eq!(reported_errors, actual_errors, "{stdout}");
-        assert_eq!(reported_warnings, actual_warnings, "{stdout}");
-        assert_eq!(reported_checks, actual_checks, "{stdout}");
     }
 
     #[test]
@@ -5483,7 +5264,7 @@ mod tests {
             &registration,
             &[],
         );
-        assert_real_legacy_equivalent("valid", &valid, MetaValidationStatus::Passed);
+        assert_internal_status("valid", &valid, MetaValidationStatus::Passed);
 
         let invalid_descriptor = format!(
             r#"<MetaDataObject xmlns="{MD_NS}" version="2.20">
@@ -5497,11 +5278,8 @@ mod tests {
             &registration,
             &[],
         );
-        let result = assert_real_legacy_equivalent(
-            "semantic-invalid",
-            &invalid,
-            MetaValidationStatus::Failed,
-        );
+        let result =
+            assert_internal_status("semantic-invalid", &invalid, MetaValidationStatus::Failed);
         assert_eq!(
             result.diagnostics[0].code,
             MetaDiagnosticCode::ValidationFailed
@@ -5515,101 +5293,6 @@ mod tests {
     }
 
     #[test]
-    fn real_public_adapter_preserves_detailed_legacy_stdout_and_artifact() {
-        let descriptor = common_module("Service");
-        let registration = owner(&[("CommonModule", "Service")]);
-        let valid = subject(
-            "CommonModule.Service",
-            Some(&descriptor),
-            &registration,
-            &[],
-        );
-
-        let outcome = real_legacy_outcome("detailed-stdout", &valid);
-        let stdout = outcome.stdout.clone().unwrap_or_default();
-
-        assert!(outcome.ok, "{outcome:?}");
-        assert!(stdout.contains("[OK]"), "{stdout}");
-        assert!(stdout.contains("checks) ==="), "{stdout}");
-        assert_eq!(outcome.artifacts.len(), 1, "{outcome:?}");
-    }
-
-    #[test]
-    fn real_public_method_proof_is_counted_by_the_single_reporter() {
-        let descriptor = scheduled_job("Nightly", "CommonModule.Target.Run");
-        let registration = owner(&[("ScheduledJob", "Nightly"), ("CommonModule", "Target")]);
-        let module_descriptor = common_module("Target");
-        let mut valid = subject(
-            "ScheduledJob.Nightly",
-            Some(&descriptor),
-            &registration,
-            &[("CommonModule.Target", &module_descriptor)],
-        );
-        valid.resources.push(image(
-            MetadataResourceRole::Module {
-                owner: address("CommonModule.Target"),
-            },
-            b"Procedure Run() Export\nEndProcedure".to_vec(),
-        ));
-
-        let outcome = real_legacy_outcome("method-reporter", &valid);
-        let stdout = outcome.stdout.clone().unwrap_or_default();
-
-        assert!(outcome.ok, "{outcome:?}");
-        assert!(
-            stdout.contains("[OK]    13. Method reference: MethodName = 'CommonModule.Target.Run'"),
-            "{stdout}"
-        );
-        assert!(!stdout.contains("Subject proof diagnostics"), "{stdout}");
-        assert_report_summary_matches_lines(&stdout);
-    }
-
-    #[test]
-    fn real_public_registrar_proof_is_counted_by_the_single_reporter() {
-        let descriptor = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/InformationRegisters/SubordinateRegister.xml"
-        ));
-        let registration = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Configuration.xml"
-        ));
-        let language = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Languages/Русский.xml"
-        ));
-        let registrar = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Documents/Регистратор.xml"
-        ))
-        .replace(
-            "InformationRegister.SubordinateRegister",
-            "InformationRegister.Other",
-        );
-        let invalid = subject(
-            "InformationRegister.SubordinateRegister",
-            Some(descriptor),
-            registration,
-            &[
-                ("Language.Русский", language),
-                ("Document.Регистратор", &registrar),
-            ],
-        );
-
-        let outcome = real_legacy_outcome("registrar-reporter", &invalid);
-        let stdout = outcome.stdout.clone().unwrap_or_default();
-
-        assert!(outcome.ok, "{outcome:?}");
-        assert!(stdout.contains("no registrar document found"), "{stdout}");
-        assert!(
-            !stdout.contains("[OK]    10. Cross-property consistency"),
-            "{stdout}"
-        );
-        assert!(!stdout.contains("Subject proof diagnostics"), "{stdout}");
-        assert_report_summary_matches_lines(&stdout);
-    }
-
-    #[test]
     fn internal_malformed_xml_is_a_hard_failure_matching_legacy_classification() {
         let registration = owner(&[("CommonModule", "Service")]);
         let malformed = subject(
@@ -5619,7 +5302,7 @@ mod tests {
             &[],
         );
 
-        let result = assert_real_legacy_equivalent(
+        let result = assert_internal_status(
             "malformed-descriptor",
             &malformed,
             MetaValidationStatus::Failed,
@@ -5646,7 +5329,7 @@ mod tests {
             &[],
         );
 
-        let result = assert_real_legacy_equivalent(
+        let result = assert_internal_status(
             "missing-registration",
             &invalid,
             MetaValidationStatus::Failed,
@@ -5699,11 +5382,8 @@ mod tests {
         let registration = owner(&[("HTTPService", "Api")]);
         let duplicate = subject("HTTPService.Api", Some(&descriptor), &registration, &[]);
 
-        let result = assert_real_legacy_equivalent(
-            "duplicate-child",
-            &duplicate,
-            MetaValidationStatus::Failed,
-        );
+        let result =
+            assert_internal_status("duplicate-child", &duplicate, MetaValidationStatus::Failed);
 
         assert!(result
             .diagnostics
@@ -5728,11 +5408,8 @@ mod tests {
             &[],
         );
 
-        let result = assert_real_legacy_equivalent(
-            "invalid-reference",
-            &invalid,
-            MetaValidationStatus::Failed,
-        );
+        let result =
+            assert_internal_status("invalid-reference", &invalid, MetaValidationStatus::Failed);
 
         assert!(result
             .diagnostics
@@ -5815,7 +5492,7 @@ mod tests {
             &[],
         );
 
-        let result = assert_real_legacy_equivalent(
+        let result = assert_internal_status(
             "missing-method-dependency",
             &missing,
             MetaValidationStatus::Failed,
@@ -5843,7 +5520,7 @@ mod tests {
             b"Procedure Run() Export\nEndProcedure".to_vec(),
         ));
 
-        let result = assert_real_legacy_equivalent(
+        let result = assert_internal_status(
             "corrupt-method-dependency",
             &invalid,
             MetaValidationStatus::Failed,

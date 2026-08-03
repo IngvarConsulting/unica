@@ -34,9 +34,8 @@ use crate::infrastructure::native_operations::interface::{
     interface_metadata_owner_path, resolve_interface_validate_path,
 };
 use crate::infrastructure::native_operations::meta::{
-    meta_compile_format_dependency_paths, meta_remove_reference_xml_dependency_paths,
-    meta_remove_subsystem_dependency_paths, meta_remove_type_plural,
-    meta_validate_format_dependency_paths, resolve_meta_edit_object_path, resolve_meta_info_path,
+    meta_remove_reference_xml_dependency_paths, meta_remove_subsystem_dependency_paths,
+    meta_remove_type_plural, resolve_meta_edit_object_path, resolve_meta_info_path,
 };
 use crate::infrastructure::native_operations::mxl::resolve_mxl_validate_path;
 use crate::infrastructure::native_operations::role::role_read_format_dependency_paths;
@@ -394,16 +393,6 @@ fn add_operation_format_dependencies(
             add_cfe_read_format_dependencies(operation, args, context, paths)
         }
         "cfe-init" => add_cfe_init_format_dependencies(args, context, paths),
-        "meta-compile" => {
-            if let Ok(dependencies) = meta_compile_format_dependency_paths(args, context) {
-                paths.extend(dependencies);
-            }
-        }
-        "meta-validate" => {
-            if let Ok(dependencies) = meta_validate_format_dependency_paths(args, context) {
-                paths.extend(dependencies);
-            }
-        }
         "meta-remove" => add_meta_remove_format_dependencies(args, context, paths)?,
         "help-add" => add_help_format_dependencies(args, context, paths)?,
         "form-add" => add_form_add_format_dependencies(args, paths)?,
@@ -1137,42 +1126,6 @@ mod tests {
         src.join("Configuration.xml")
     }
 
-    fn meta_validate_owner(
-        root: &std::path::Path,
-        object_type: &str,
-        object_name: &str,
-        owner_version: &str,
-        languages: &[(&str, &str, &str)],
-    ) -> (std::path::PathBuf, Vec<std::path::PathBuf>) {
-        let src = root.join("src");
-        let language_children = languages
-            .iter()
-            .map(|(name, _, _)| format!("<Language>{name}</Language>"))
-            .collect::<String>();
-        let configuration = src.join("Configuration.xml");
-        std::fs::create_dir_all(src.join("Languages")).unwrap();
-        std::fs::write(
-            &configuration,
-            format!(
-                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="{owner_version}"><Configuration uuid="11111111-1111-4111-8111-111111111111"><Properties><Name>Owner</Name></Properties><ChildObjects>{language_children}<{object_type}>{object_name}</{object_type}></ChildObjects></Configuration></MetaDataObject>"#
-            ),
-        )
-        .unwrap();
-        let mut language_paths = Vec::new();
-        for (name, code, version) in languages {
-            let path = src.join("Languages").join(format!("{name}.xml"));
-            std::fs::write(
-                &path,
-                format!(
-                    r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="{version}"><Language uuid="22222222-2222-4222-8222-222222222222"><Properties><Name>{name}</Name><LanguageCode>{code}</LanguageCode></Properties></Language></MetaDataObject>"#
-                ),
-            )
-            .unwrap();
-            language_paths.push(path);
-        }
-        (configuration, language_paths)
-    }
-
     struct CfeReadGraph {
         extension: std::path::PathBuf,
         object: std::path::PathBuf,
@@ -1265,9 +1218,7 @@ mod tests {
     }
 
     fn spec(name: &str) -> crate::application::ToolSpec {
-        crate::application::legacy_metadata_tool_spec_for_tests(name)
-            .or_else(|| tools().into_iter().find(|tool| tool.name == name))
-            .unwrap()
+        tools().into_iter().find(|tool| tool.name == name).unwrap()
     }
 
     fn assert_platform_reexport_warning(warning: &str) {
@@ -2644,12 +2595,6 @@ mod tests {
                 vec![config_path.clone()],
             ),
             (
-                "meta-edit",
-                "Path",
-                object_dir.clone(),
-                vec![object_xml.clone()],
-            ),
-            (
                 "form-add",
                 "path",
                 object_dir,
@@ -2864,50 +2809,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    /// `meta.info` has no path argument left, so its format guard has to reach
-    /// the descriptor through the same logical resolution its handler uses.
-    #[test]
-    fn meta_info_guards_the_descriptor_resolved_from_its_logical_address() {
-        let root = test_root("meta-info-logical");
-        let catalog_xml = root.join("src/Catalogs/Goods.xml");
-        std::fs::create_dir_all(catalog_xml.parent().unwrap()).unwrap();
-        std::fs::write(
-            root.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        std::fs::write(
-            root.join("src/Configuration.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><ChildObjects><Catalog>Goods</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
-        )
-        .unwrap();
-        std::fs::write(
-            &catalog_xml,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Goods</Name></Properties></Catalog></MetaDataObject>"#,
-        )
-        .unwrap();
-        let args = Map::from_iter([
-            ("sourceSet".to_string(), Value::String("main".to_string())),
-            (
-                "metadataPath".to_string(),
-                Value::String("Catalog.Goods".to_string()),
-            ),
-        ]);
-        let descriptor = native_operation_descriptor("meta-info").unwrap();
-
-        assert_eq!(
-            effective_format_paths(descriptor, &args, &context(&root)).unwrap(),
-            vec![normalized_path(&catalog_xml)]
-        );
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
     #[test]
     fn read_only_xml_analyzers_preflight_the_exact_file_resolved_from_a_directory() {
         let root = test_root("read-resolved-xml");
         let catalog_dir = root.join("detached/Catalogs/Goods");
-        let catalog_xml = root.join("detached/Catalogs/Goods.xml");
         let form_dir = catalog_dir.join("Forms/Main");
         let form_xml = form_dir.join("Ext/Form.xml");
         let dcs_dir = catalog_dir.join("Templates/Schema");
@@ -2924,11 +2829,6 @@ mod tests {
             })
             .unwrap();
         }
-        std::fs::write(
-            &catalog_xml,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog/></MetaDataObject>"#,
-        )
-        .unwrap();
         std::fs::write(
             &form_xml,
             r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"/>"#,
@@ -2951,12 +2851,6 @@ mod tests {
         .unwrap();
 
         for (operation, argument, directory, expected) in [
-            (
-                "meta-validate",
-                "Path",
-                catalog_dir,
-                normalized_path(&catalog_xml),
-            ),
             ("form-info", "path", form_dir.clone(), form_xml.clone()),
             ("form-validate", "Path", form_dir, form_xml),
             ("dcs-validate", "path", dcs_dir, dcs_xml),
@@ -3410,82 +3304,6 @@ mod tests {
     }
 
     #[test]
-    fn malformed_owner_returns_structured_format_version_invalid() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-malformed-owner-{}",
-            std::process::id()
-        ));
-        let owner = config(&root, Some("2.20"));
-        std::fs::write(&owner, "<broken").unwrap();
-        let mut args = Map::new();
-        args.insert(
-            "ObjectPath".into(),
-            Value::String(root.join("src/Catalogs/Items.xml").display().to_string()),
-        );
-
-        let check = evaluate_format_guard(spec("unica.meta.edit"), &args, &context(&root)).unwrap();
-        let FormatGuardCheck::Block { diagnostic, .. } = check else {
-            panic!("malformed owner must produce a structured blocking diagnostic");
-        };
-        assert_eq!(diagnostic["code"], "formatVersionInvalid");
-        assert!(diagnostic["root"]
-            .as_str()
-            .is_some_and(|path| std::path::Path::new(path).ends_with("src/Configuration.xml")));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn unreadable_utf8_owner_returns_structured_format_version_invalid() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-unreadable-owner-{}",
-            std::process::id()
-        ));
-        let owner = config(&root, Some("2.20"));
-        std::fs::write(&owner, [0xff, 0xfe, 0xfd]).unwrap();
-        let mut args = Map::new();
-        args.insert(
-            "ObjectPath".into(),
-            Value::String(root.join("src/Catalogs/Items.xml").display().to_string()),
-        );
-
-        let check = evaluate_format_guard(spec("unica.meta.edit"), &args, &context(&root)).unwrap();
-        let FormatGuardCheck::Block { diagnostic, .. } = check else {
-            panic!("non-UTF-8 owner must produce a structured blocking diagnostic");
-        };
-        assert_eq!(diagnostic["code"], "formatVersionInvalid");
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn missing_owner_inside_recognized_source_set_is_invalid() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-missing-owner-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(root.join("src/Catalogs")).unwrap();
-        std::fs::write(
-            root.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        let mut args = Map::new();
-        args.insert(
-            "ObjectPath".into(),
-            Value::String(root.join("src/Catalogs/Items.xml").display().to_string()),
-        );
-
-        let check = evaluate_format_guard(spec("unica.meta.edit"), &args, &context(&root)).unwrap();
-        let FormatGuardCheck::Block { diagnostic, .. } = check else {
-            panic!("missing owner in a configured source set must block");
-        };
-        assert_eq!(diagnostic["code"], "formatVersionInvalid");
-        assert!(diagnostic["root"]
-            .as_str()
-            .is_some_and(|path| std::path::Path::new(path).ends_with("src/Configuration.xml")));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn malformed_existing_standalone_xml_is_invalid_not_new_output() {
         let root = std::env::temp_dir().join(format!(
             "unica-format-guard-malformed-standalone-{}",
@@ -3536,65 +3354,6 @@ mod tests {
     }
 
     #[test]
-    fn direct_external_descriptor_uses_external_owner_copy() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-direct-external-owner-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        let descriptor = root.join("PriceLoader.xml");
-        std::fs::write(
-            &descriptor,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.19"><ExternalDataProcessor/></MetaDataObject>"#,
-        )
-        .unwrap();
-        let mut args = Map::new();
-        args.insert(
-            "ObjectPath".into(),
-            Value::String(descriptor.display().to_string()),
-        );
-
-        let check = evaluate_format_guard(spec("unica.meta.edit"), &args, &context(&root)).unwrap();
-        let FormatGuardCheck::Block {
-            outcome,
-            diagnostic,
-        } = check
-        else {
-            panic!("old direct EPF descriptor must block");
-        };
-        assert_eq!(diagnostic["ownerKind"], "external_processor");
-        assert_platform_reexport_warning(&outcome.warnings.join("\n"));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn direct_external_descriptor_rejects_extra_artifact_children() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-direct-external-extra-child-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        let descriptor = root.join("PriceLoader.xml");
-        std::fs::write(
-            &descriptor,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><ExternalDataProcessor/><Catalog/></MetaDataObject>"#,
-        )
-        .unwrap();
-        let mut args = Map::new();
-        args.insert(
-            "ObjectPath".into(),
-            Value::String(descriptor.display().to_string()),
-        );
-
-        let check = evaluate_format_guard(spec("unica.meta.edit"), &args, &context(&root)).unwrap();
-        let FormatGuardCheck::Block { diagnostic, .. } = check else {
-            panic!("direct EPF owner with extra artifact child must be invalid");
-        };
-        assert_eq!(diagnostic["code"], "formatVersionInvalid");
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn external_source_root_with_one_descriptor_resolves_that_owner() {
         let root = std::env::temp_dir().join(format!(
             "unica-format-guard-external-root-owner-{}",
@@ -3617,76 +3376,6 @@ mod tests {
         assert!(diagnostic["root"]
             .as_str()
             .is_some_and(|path| std::path::Path::new(path).ends_with("erf/Sales.xml")));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn configured_owner_rejects_wrong_root_qname_and_artifact_type() {
-        for (case, owner) in [
-            (
-                "wrong-root",
-                r#"<garbage xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration/></garbage>"#,
-            ),
-            (
-                "wrong-namespace",
-                r#"<MetaDataObject xmlns="urn:wrong" version="2.20"><Configuration/></MetaDataObject>"#,
-            ),
-        ] {
-            let root = std::env::temp_dir().join(format!(
-                "unica-format-guard-configured-{case}-{}",
-                std::process::id()
-            ));
-            std::fs::create_dir_all(root.join("src/Catalogs")).unwrap();
-            std::fs::write(
-                root.join("v8project.yaml"),
-                "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-            )
-            .unwrap();
-            std::fs::write(root.join("src/Configuration.xml"), owner).unwrap();
-            let mut args = Map::new();
-            args.insert(
-                "ObjectPath".into(),
-                Value::String(root.join("src/Catalogs/Items.xml").display().to_string()),
-            );
-
-            let check =
-                evaluate_format_guard(spec("unica.meta.edit"), &args, &context(&root)).unwrap();
-            let FormatGuardCheck::Block { diagnostic, .. } = check else {
-                panic!("{case}: wrong configured owner contract must block");
-            };
-            assert_eq!(diagnostic["code"], "formatVersionInvalid", "{case}");
-            let _ = std::fs::remove_dir_all(root);
-        }
-
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-wrong-external-kind-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(root.join("epf/PriceLoader")).unwrap();
-        std::fs::write(
-            root.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: external\n    type: EXTERNAL_DATA_PROCESSORS\n    path: epf\n",
-        )
-        .unwrap();
-        std::fs::write(
-            root.join("epf/PriceLoader.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><ExternalReport/></MetaDataObject>"#,
-        )
-        .unwrap();
-        let mut args = Map::new();
-        args.insert(
-            "TemplatePath".into(),
-            Value::String(
-                root.join("epf/PriceLoader/Templates/Main/Ext/Template.xml")
-                    .display()
-                    .to_string(),
-            ),
-        );
-        let check = evaluate_format_guard(spec("unica.dcs.edit"), &args, &context(&root)).unwrap();
-        let FormatGuardCheck::Block { diagnostic, .. } = check else {
-            panic!("EPF source set must reject an ERF owner descriptor");
-        };
-        assert_eq!(diagnostic["code"], "formatVersionInvalid");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3826,452 +3515,6 @@ mod tests {
                 diagnostic["root"].as_str().unwrap()
             )),
             normalized_path(&child)
-        );
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn meta_validate_dependencies_include_owner_and_registered_languages() {
-        let root = test_root("meta-validate-owner-languages");
-        let (configuration, languages) = meta_validate_owner(
-            &root,
-            "Enum",
-            "Statuses",
-            "2.20",
-            &[("Russian", "ru", "2.20"), ("English", "en", "2.20")],
-        );
-        let russian = languages[0].clone();
-        let english = languages[1].clone();
-        let object = root.join("src/Enums/Statuses.xml");
-        let unused = root.join("src/Languages/Unused.xml");
-        std::fs::create_dir_all(object.parent().unwrap()).unwrap();
-        std::fs::write(
-            &object,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Enum uuid="33333333-3333-4333-8333-333333333333"><Properties><Name>Statuses</Name></Properties><ChildObjects/></Enum></MetaDataObject>"#,
-        )
-        .unwrap();
-        std::fs::write(
-            &unused,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Language/></MetaDataObject>"#,
-        )
-        .unwrap();
-        let args = Map::from_iter([(
-            "ObjectPath".to_string(),
-            Value::String(object.display().to_string()),
-        )]);
-        let descriptor = native_operation_descriptor("meta-validate").unwrap();
-
-        let dependencies = effective_format_paths(descriptor, &args, &context(&root)).unwrap();
-
-        assert_eq!(
-            dependencies
-                .iter()
-                .map(|path| normalized_path(path))
-                .collect::<Vec<_>>(),
-            [&object, &configuration, &russian, &english]
-                .into_iter()
-                .map(|path| normalized_path(path))
-                .collect::<Vec<_>>()
-        );
-        assert!(!dependencies.contains(&unused), "{dependencies:?}");
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn meta_validate_warns_for_newer_owner_it_reads() {
-        let root = test_root("meta-validate-newer-owner");
-        let (configuration, _) = meta_validate_owner(
-            &root,
-            "Enum",
-            "Statuses",
-            "2.21",
-            &[("Russian", "ru", "2.20")],
-        );
-        let object = root.join("src/Enums/Statuses.xml");
-        std::fs::create_dir_all(object.parent().unwrap()).unwrap();
-        std::fs::write(
-            &object,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Enum><Properties><Name>Statuses</Name></Properties><ChildObjects/></Enum></MetaDataObject>"#,
-        )
-        .unwrap();
-        let args = Map::from_iter([(
-            "ObjectPath".to_string(),
-            Value::String(object.display().to_string()),
-        )]);
-
-        let check =
-            evaluate_format_guard(spec("unica.meta.validate"), &args, &context(&root)).unwrap();
-        let FormatGuardCheck::Warn { diagnostic, .. } = check else {
-            panic!("metadata owner must participate in format preflight");
-        };
-
-        assert_eq!(diagnostic["actualFormat"], "2.21");
-        assert_eq!(
-            normalized_path(std::path::Path::new(diagnostic["root"].as_str().unwrap())),
-            normalized_path(&configuration)
-        );
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn meta_validate_warns_for_newer_registered_language_it_reads() {
-        let root = test_root("meta-validate-newer-language");
-        let (_, languages) = meta_validate_owner(
-            &root,
-            "Enum",
-            "Statuses",
-            "2.20",
-            &[("English", "en", "2.21")],
-        );
-        let english = languages[0].clone();
-        let object = root.join("src/Enums/Statuses.xml");
-        std::fs::create_dir_all(object.parent().unwrap()).unwrap();
-        std::fs::write(
-            &object,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Enum><Properties><Name>Statuses</Name></Properties><ChildObjects/></Enum></MetaDataObject>"#,
-        )
-        .unwrap();
-        let args = Map::from_iter([(
-            "ObjectPath".to_string(),
-            Value::String(object.display().to_string()),
-        )]);
-
-        let check =
-            evaluate_format_guard(spec("unica.meta.validate"), &args, &context(&root)).unwrap();
-        let FormatGuardCheck::Warn { diagnostic, .. } = check else {
-            panic!("registered language must participate in format preflight");
-        };
-
-        assert_eq!(diagnostic["actualFormat"], "2.21");
-        assert_eq!(
-            normalized_path(std::path::Path::new(diagnostic["root"].as_str().unwrap())),
-            normalized_path(&english)
-        );
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn meta_validate_warns_for_newer_registrar_document_it_reads() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-meta-validate-registrar-{}",
-            std::process::id()
-        ));
-        let (configuration, languages) = meta_validate_owner(
-            &root,
-            "AccumulationRegister",
-            "Sales",
-            "2.20",
-            &[("Russian", "ru", "2.20")],
-        );
-        let language = languages[0].clone();
-        let register = root.join("src/AccumulationRegisters/Sales.xml");
-        let document = root.join("src/Documents/Recorder.xml");
-        std::fs::create_dir_all(register.parent().unwrap()).unwrap();
-        std::fs::create_dir_all(document.parent().unwrap()).unwrap();
-        std::fs::write(
-            &register,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><AccumulationRegister><Properties><Name>Sales</Name></Properties><ChildObjects/></AccumulationRegister></MetaDataObject>"#,
-        )
-        .unwrap();
-        std::fs::write(
-            &document,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Document><Properties><Name>Recorder</Name></Properties><ChildObjects/></Document></MetaDataObject>"#,
-        )
-        .unwrap();
-        let args = Map::from_iter([(
-            "ObjectPath".to_string(),
-            Value::String(register.display().to_string()),
-        )]);
-
-        let check =
-            evaluate_format_guard(spec("unica.meta.validate"), &args, &context(&root)).unwrap();
-        let FormatGuardCheck::Warn { diagnostic, .. } = check else {
-            panic!("newer registrar document read by meta.validate must warn");
-        };
-        assert_eq!(diagnostic["actualFormat"], "2.21");
-        assert_eq!(
-            normalized_path(&std::path::PathBuf::from(
-                diagnostic["root"].as_str().unwrap()
-            )),
-            normalized_path(&document)
-        );
-        assert_eq!(
-            effective_format_paths(
-                native_operation_descriptor("meta-validate").unwrap(),
-                &args,
-                &context(&root)
-            )
-            .unwrap()
-            .iter()
-            .map(|path| normalized_path(path))
-            .collect::<Vec<_>>(),
-            [&register, &configuration, &language, &document]
-                .into_iter()
-                .map(|path| normalized_path(path))
-                .collect::<Vec<_>>()
-        );
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn meta_validate_registrar_dependencies_follow_sorted_handler_read_order() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-meta-validate-sorted-registrar-{}",
-            std::process::id()
-        ));
-        let (configuration, languages) = meta_validate_owner(
-            &root,
-            "AccumulationRegister",
-            "Sales",
-            "2.20",
-            &[("Russian", "ru", "2.20")],
-        );
-        let language = languages[0].clone();
-        let register = root.join("src/AccumulationRegisters/Sales.xml");
-        let later = root.join("src/Documents/z-later.xml");
-        let first = root.join("src/Documents/a-first.xml");
-        for path in [&register, &later, &first] {
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        }
-        std::fs::write(
-            &register,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><AccumulationRegister><Properties><Name>Sales</Name></Properties><ChildObjects/></AccumulationRegister></MetaDataObject>"#,
-        )
-        .unwrap();
-        std::fs::write(
-            &later,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Document><Properties><Name>Later</Name></Properties><ChildObjects/></Document></MetaDataObject>"#,
-        )
-        .unwrap();
-        std::fs::write(
-            &first,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Document><Properties><Name>First</Name><RegisterRecords>AccumulationRegister.Sales</RegisterRecords></Properties><ChildObjects/></Document></MetaDataObject>"#,
-        )
-        .unwrap();
-        let args = Map::from_iter([(
-            "ObjectPath".to_string(),
-            Value::String(register.display().to_string()),
-        )]);
-        let descriptor = native_operation_descriptor("meta-validate").unwrap();
-
-        let dependencies = effective_format_paths(descriptor, &args, &context(&root)).unwrap();
-
-        assert_eq!(
-            dependencies
-                .iter()
-                .map(|path| normalized_path(path))
-                .collect::<Vec<_>>(),
-            [&register, &configuration, &language, &first]
-                .into_iter()
-                .map(|path| normalized_path(path))
-                .collect::<Vec<_>>()
-        );
-        assert!(!dependencies.contains(&later), "{dependencies:?}");
-        assert!(matches!(
-            evaluate_format_guard(spec("unica.meta.validate"), &args, &context(&root)).unwrap(),
-            FormatGuardCheck::Allow
-        ));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn meta_compile_does_not_treat_unrelated_documents_as_format_dependencies() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-meta-compile-local-owner-{}",
-            std::process::id()
-        ));
-        config(&root, Some("2.20"));
-        let document = root.join("src/Documents/Unrelated.xml");
-        std::fs::create_dir_all(document.parent().unwrap()).unwrap();
-        std::fs::write(
-            &document,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Document/></MetaDataObject>"#,
-        )
-        .unwrap();
-        let definition = root.join("register.json");
-        std::fs::write(
-            &definition,
-            r#"{"type":"AccumulationRegister","name":"Generated"}"#,
-        )
-        .unwrap();
-        let args = Map::from_iter([
-            (
-                "JsonPath".to_string(),
-                Value::String(definition.display().to_string()),
-            ),
-            (
-                "OutputDir".to_string(),
-                Value::String(root.join("src").display().to_string()),
-            ),
-        ]);
-
-        assert!(matches!(
-            evaluate_format_guard(spec("unica.meta.compile"), &args, &context(&root)).unwrap(),
-            FormatGuardCheck::Allow
-        ));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn meta_compile_guards_detached_configuration_owner() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-meta-compile-detached-owner-{}",
-            std::process::id()
-        ));
-        let configuration = config(&root, Some("2.21"));
-        let definition = root.join("catalog.json");
-        std::fs::write(&definition, r#"{"type":"Catalog","name":"Generated"}"#).unwrap();
-        let args = Map::from_iter([
-            (
-                "JsonPath".to_string(),
-                Value::String(definition.display().to_string()),
-            ),
-            (
-                "OutputDir".to_string(),
-                Value::String(root.join("src").display().to_string()),
-            ),
-        ]);
-
-        let descriptor = native_operation_descriptor("meta-compile").unwrap();
-        let dependencies = effective_format_paths(descriptor, &args, &context(&root)).unwrap();
-        assert!(dependencies.contains(&configuration), "{dependencies:?}");
-        let check =
-            evaluate_format_guard(spec("unica.meta.compile"), &args, &context(&root)).unwrap();
-        let FormatGuardCheck::Block { diagnostic, .. } = check else {
-            panic!("detached Configuration.xml must participate in meta.compile preflight");
-        };
-        assert_eq!(diagnostic["actualFormat"], "2.21");
-        assert_eq!(
-            normalized_path(&std::path::PathBuf::from(
-                diagnostic["root"].as_str().unwrap()
-            )),
-            normalized_path(&configuration)
-        );
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn meta_remove_guards_every_xml_content_read_but_not_probe_only_xml() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-meta-remove-read-set-{}",
-            std::process::id()
-        ));
-        config(&root, Some("2.20"));
-        let victim = root.join("src/Catalogs/Victim.xml");
-        let referrer = root.join("src/Documents/Referrer.xml");
-        let subsystem = root.join("src/Subsystems/Empty.xml");
-        let probe_only = root.join("src/Subsystems/Empty/Ext/CommandInterface.xml");
-        let dump_info = root.join("src/ConfigDumpInfo.xml");
-        for path in [&victim, &referrer, &subsystem, &probe_only, &dump_info] {
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        }
-        std::fs::write(
-            &victim,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog/></MetaDataObject>"#,
-        )
-        .unwrap();
-        std::fs::write(
-            &referrer,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Document/></MetaDataObject>"#,
-        )
-        .unwrap();
-        std::fs::write(
-            &subsystem,
-            crate::infrastructure::native_operations::subsystem::child_subsystem_stub_xml(
-                "Empty", "2.20",
-            ),
-        )
-        .unwrap();
-        std::fs::write(
-            &probe_only,
-            r#"<CommandInterface xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.21"/>"#,
-        )
-        .unwrap();
-        std::fs::write(
-            &dump_info,
-            r#"<ConfigDumpInfo xmlns="http://v8.1c.ru/8.3/xcf/dumpinfo" version="2.21"/>"#,
-        )
-        .unwrap();
-        let args = Map::from_iter([
-            (
-                "ConfigDir".to_string(),
-                Value::String(root.join("src").display().to_string()),
-            ),
-            (
-                "Object".to_string(),
-                Value::String("Catalog.Victim".to_string()),
-            ),
-            ("Force".to_string(), Value::Bool(true)),
-        ]);
-        let descriptor = native_operation_descriptor("meta-remove").unwrap();
-        let dependencies = effective_format_paths(descriptor, &args, &context(&root)).unwrap();
-
-        assert!(dependencies.contains(&referrer), "{dependencies:?}");
-        assert!(dependencies.contains(&subsystem), "{dependencies:?}");
-        assert!(!dependencies.contains(&probe_only), "{dependencies:?}");
-        assert!(!dependencies.contains(&dump_info), "{dependencies:?}");
-        let check =
-            evaluate_format_guard(spec("unica.meta.remove"), &args, &context(&root)).unwrap();
-        let FormatGuardCheck::Block { diagnostic, .. } = check else {
-            panic!("newer XML read by reference scan must block meta.remove");
-        };
-        assert_eq!(diagnostic["actualFormat"], "2.21");
-        assert_eq!(
-            normalized_path(&std::path::PathBuf::from(
-                diagnostic["root"].as_str().unwrap()
-            )),
-            normalized_path(&referrer)
-        );
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn meta_remove_guards_subsystem_descriptor_even_without_target_reference() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-meta-remove-subsystem-read-{}",
-            std::process::id()
-        ));
-        config(&root, Some("2.20"));
-        let victim = root.join("src/Catalogs/Victim.xml");
-        let subsystem = root.join("src/Subsystems/Empty.xml");
-        for path in [&victim, &subsystem] {
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        }
-        std::fs::write(
-            &victim,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog/></MetaDataObject>"#,
-        )
-        .unwrap();
-        std::fs::write(
-            &subsystem,
-            crate::infrastructure::native_operations::subsystem::child_subsystem_stub_xml(
-                "Empty", "2.21",
-            ),
-        )
-        .unwrap();
-        let args = Map::from_iter([
-            (
-                "ConfigDir".to_string(),
-                Value::String(root.join("src").display().to_string()),
-            ),
-            (
-                "Object".to_string(),
-                Value::String("Catalog.Victim".to_string()),
-            ),
-            ("Force".to_string(), Value::Bool(true)),
-        ]);
-
-        let check =
-            evaluate_format_guard(spec("unica.meta.remove"), &args, &context(&root)).unwrap();
-        let FormatGuardCheck::Block { diagnostic, .. } = check else {
-            panic!("every subsystem descriptor read by the planner must be guarded");
-        };
-        assert_eq!(diagnostic["actualFormat"], "2.21");
-        assert_eq!(
-            normalized_path(&std::path::PathBuf::from(
-                diagnostic["root"].as_str().unwrap()
-            )),
-            normalized_path(&subsystem)
         );
         let _ = std::fs::remove_dir_all(root);
     }

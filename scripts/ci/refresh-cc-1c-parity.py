@@ -20,7 +20,6 @@ CASE_SCOPE_OWNERS = {
     "cfe-borrow": "cfe-borrow",
     "form-compile": "form-compile",
     "form-compile-from-object": "form-compile",
-    "meta-compile": "meta-compile",
     "skd-compile": "dcs-compile",
 }
 DONOR_SKILL_OWNERS = {

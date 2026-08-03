@@ -971,8 +971,9 @@ mod tests {
     }
 
     fn valid_report_owner_xml(with_template: bool) -> String {
-        let (xml, _) = meta_compile_object_xml(&Map::new(), "Report", "Sales", "2.20")
-            .expect("report fixture must satisfy the fixed 8.3.27 contract");
+        let (xml, _) =
+            minimal_metadata_xml_for_tests(crate::domain::metadata::MetadataKind::Report, "Sales")
+                .expect("report fixture must satisfy the fixed 8.3.27 contract");
         if with_template {
             xml.replacen(
                 "\t\t<ChildObjects/>",

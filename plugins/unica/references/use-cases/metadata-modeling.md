@@ -26,7 +26,7 @@ source-set. The format decision belongs to the selected source-set.
 Use native MCP tools exposed by the public `unica` server:
 
 - `unica.cf.*` for `Configuration.xml`, languages, roles, and child-object registration.
-- `unica.meta.*` for metadata object info/compile/edit/remove/validate.
+- `unica.meta.*` for typed metadata object info/add/edit/remove operations.
 - `unica.subsystem.*` and `unica.interface.*` for sections and command interface.
 - `unica.template.*` for adding or removing metadata templates.
 
@@ -41,5 +41,4 @@ format evidence, and keep it out of Git. A legitimate metadata descriptor
 
 - `../specs/1c-configuration-spec.md`
 - `../specs/1c-config-objects-spec.md`
-- `../specs/meta-dsl-spec.md`
 - `../specs/1c-subsystem-spec.md`

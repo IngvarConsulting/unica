@@ -76,7 +76,6 @@ KNOWN_UNREACHABLE = frozenset(
         "specs/1c-subsystem-spec.md",
         "specs/README.md",
         "specs/format-index.md",
-        "specs/meta-dsl-spec.md",
         "specs/web-spec.md",
         "tooling/runtime-build.md",
         "tooling/v8project.md",

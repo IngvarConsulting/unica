@@ -3249,55 +3249,6 @@ mod tests {
         root
     }
 
-    fn call_meta_compile(
-        workspace: &Path,
-        json_path: &Path,
-    ) -> crate::application::OperationResult {
-        let mut args = Map::new();
-        args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        args.insert("dryRun".to_string(), Value::Bool(false));
-        args.insert(
-            "JsonPath".to_string(),
-            Value::String(json_path.display().to_string()),
-        );
-        args.insert("OutputDir".to_string(), Value::String("src".to_string()));
-        crate::application::call_legacy_metadata_tool_for_tests("unica.meta.compile", &args)
-            .unwrap()
-    }
-
-    #[test]
-    fn public_meta_compile_batch_rolls_back_after_object_files_failure() {
-        let root = public_compile_workspace("public-meta-batch-rollback");
-        let workspace = root.join("workspace");
-        let src = workspace.join("src");
-        let config_path = src.join("Configuration.xml");
-        let config_before = fs::read(&config_path).unwrap();
-        let json_path = workspace.join("batch.json");
-        fs::write(
-            &json_path,
-            r#"[
-  {"type":"CommonModule","name":"RollbackService"},
-  {"type":"Catalog","name":"RollbackCatalog"}
-]"#,
-        )
-        .unwrap();
-
-        let result = with_commit_failpoint(CommitFailpoint::AfterObjectFiles, || {
-            call_meta_compile(&workspace, &json_path)
-        });
-
-        assert!(!result.ok, "{result:?}");
-        assert!(result.errors.join("\n").contains("after object files"));
-        assert_eq!(fs::read(&config_path).unwrap(), config_before);
-        assert!(!src.join("CommonModules").exists());
-        assert!(!src.join("Catalogs").exists());
-
-        let _ = fs::remove_dir_all(root);
-    }
-
     #[test]
     fn public_role_compile_rolls_back_after_object_files_failure() {
         let root = public_compile_workspace("public-role-rollback");

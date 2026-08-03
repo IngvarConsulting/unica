@@ -41,7 +41,7 @@ use super::super::role::role_info_element;
 use super::super::subsystem::subsystem_validation_format_dependency_paths;
 use super::edit::ResolvedMetadataObject;
 use super::info::MetaRemoveError;
-use super::legacy_dsl::{
+use super::validation::{
     require_meta_configuration_owner_validation, validate_metadata_owner_shape_8_3_27,
 };
 

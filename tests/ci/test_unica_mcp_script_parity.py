@@ -97,20 +97,6 @@ class FileFixture:
     target: str
 
 
-META_VALIDATE_COMPILED_OWNER_FIXTURES = (
-    FileFixture("meta-validate-parity-owner/Configuration.xml", "src/Configuration.xml"),
-    FileFixture(
-        "meta-validate-parity-owner/Languages/Русский.xml",
-        "src/Languages/Русский.xml",
-    ),
-)
-
-BSP_META_VALIDATE_OWNER_FIXTURES = (
-    FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),
-    FileFixture("bsp/meta/Languages/Русский.xml", "src/Languages/Русский.xml"),
-)
-
-
 @dataclasses.dataclass(frozen=True)
 class ParityScenario:
     name: str
@@ -204,195 +190,6 @@ SUCCESS_SCENARIOS = [
             "MaxErrors": 80,
         },
         fixtures=(FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="meta-compile-catalog",
-        tool="unica.meta.compile",
-        skill="meta-compile",
-        script="meta-compile.py",
-        arguments={"JsonPath": "fixtures/meta-catalog.json", "OutputDir": "src"},
-        fixtures=(FileFixture("meta-catalog.json", "fixtures/meta-catalog.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="meta-validate-catalog-detailed-outfile",
-        tool="unica.meta.validate",
-        skill="meta-validate",
-        script="meta-validate.py",
-        arguments={
-            "ObjectPath": "src/Catalogs/ParityCatalog.xml",
-            "Detailed": True,
-        },
-        setup_steps=(
-            SetupStep(
-                skill="meta-compile",
-                script="meta-compile.py",
-                arguments={"JsonPath": "fixtures/meta-catalog.json", "OutputDir": "src"},
-            ),
-        ),
-        fixtures=META_VALIDATE_COMPILED_OWNER_FIXTURES
-        + (FileFixture("meta-catalog.json", "fixtures/meta-catalog.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="meta-validate-language-aware",
-        tool="unica.meta.validate",
-        skill="meta-validate",
-        script="meta-validate.py",
-        arguments={
-            "ObjectPath": "src/Enums/LanguageAware.xml",
-            "Detailed": True,
-        },
-        fixtures=(
-            FileFixture(
-                "meta-validate-language-aware/Configuration.xml",
-                "src/Configuration.xml",
-            ),
-            FileFixture(
-                "meta-validate-language-aware/Languages/Русский.xml",
-                "src/Languages/Русский.xml",
-            ),
-            FileFixture(
-                "meta-validate-language-aware/Languages/English.xml",
-                "src/Languages/English.xml",
-            ),
-            FileFixture(
-                "meta-validate-language-aware/Enums/LanguageAware.xml",
-                "src/Enums/LanguageAware.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="meta-validate-subordinate-register",
-        tool="unica.meta.validate",
-        skill="meta-validate",
-        script="meta-validate.py",
-        arguments={
-            "ObjectPath": "src/InformationRegisters/SubordinateRegister.xml",
-            "Detailed": True,
-        },
-        fixtures=(
-            FileFixture(
-                "meta-validate-subordinate-register/Configuration.xml",
-                "src/Configuration.xml",
-            ),
-            FileFixture(
-                "meta-validate-subordinate-register/Languages/Русский.xml",
-                "src/Languages/Русский.xml",
-            ),
-            FileFixture(
-                "meta-validate-subordinate-register/Documents/Регистратор.xml",
-                "src/Documents/Регистратор.xml",
-            ),
-            FileFixture(
-                "meta-validate-subordinate-register/InformationRegisters/SubordinateRegister.xml",
-                "src/InformationRegisters/SubordinateRegister.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-meta-validate-catalog-detailed",
-        tool="unica.meta.validate",
-        skill="meta-validate",
-        script="meta-validate.py",
-        arguments={
-            "ObjectPath": "src/Catalogs/Валюты.xml",
-            "Detailed": True,
-            "MaxErrors": 80,
-        },
-        fixtures=BSP_META_VALIDATE_OWNER_FIXTURES
-        + (FileFixture(BSP_META_CATALOG_FIXTURE, "src/Catalogs/Валюты.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-meta-validate-document-detailed",
-        tool="unica.meta.validate",
-        skill="meta-validate",
-        script="meta-validate.py",
-        arguments={
-            "ObjectPath": "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
-            "Detailed": True,
-            "MaxErrors": 80,
-        },
-        fixtures=BSP_META_VALIDATE_OWNER_FIXTURES
-        + (
-            FileFixture(
-                BSP_META_DOCUMENT_FIXTURE,
-                "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-meta-validate-report-detailed",
-        tool="unica.meta.validate",
-        skill="meta-validate",
-        script="meta-validate.py",
-        arguments={
-            "ObjectPath": "src/Reports/АнализВерсийОбъектов.xml",
-            "Detailed": True,
-            "MaxErrors": 80,
-        },
-        fixtures=BSP_META_VALIDATE_OWNER_FIXTURES
-        + (FileFixture(BSP_META_REPORT_FIXTURE, "src/Reports/АнализВерсийОбъектов.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-meta-validate-common-module-detailed",
-        tool="unica.meta.validate",
-        skill="meta-validate",
-        script="meta-validate.py",
-        arguments={
-            "ObjectPath": "src/CommonModules/GoogleПереводчик.xml",
-            "Detailed": True,
-            "MaxErrors": 80,
-        },
-        fixtures=BSP_META_VALIDATE_OWNER_FIXTURES
-        + (
-            FileFixture(BSP_META_COMMON_MODULE_FIXTURE, "src/CommonModules/GoogleПереводчик.xml"),
-            FileFixture(
-                BSP_META_COMMON_MODULE_BSL_FIXTURE,
-                "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-meta-validate-enum-detailed",
-        tool="unica.meta.validate",
-        skill="meta-validate",
-        script="meta-validate.py",
-        arguments={
-            "ObjectPath": "src/Enums/ВажностьПроблемыУчета.xml",
-            "Detailed": True,
-            "MaxErrors": 80,
-        },
-        fixtures=BSP_META_VALIDATE_OWNER_FIXTURES
-        + (FileFixture(BSP_META_ENUM_FIXTURE, "src/Enums/ВажностьПроблемыУчета.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-meta-validate-information-register-detailed",
-        tool="unica.meta.validate",
-        skill="meta-validate",
-        script="meta-validate.py",
-        arguments={
-            "ObjectPath": "src/InformationRegisters/АдминистративнаяИерархия.xml",
-            "Detailed": True,
-            "MaxErrors": 80,
-        },
-        fixtures=BSP_META_VALIDATE_OWNER_FIXTURES
-        + (
-            FileFixture(
-                BSP_META_INFORMATION_REGISTER_FIXTURE,
-                "src/InformationRegisters/АдминистративнаяИерархия.xml",
-            ),
-        ),
         expect_ok=True,
     ),
     ParityScenario(
@@ -1018,48 +815,6 @@ SUCCESS_SCENARIOS = [
 
 VALIDATION_FAILURE_SCENARIOS = [
     ParityScenario(
-        name="meta-validate-missing-owner",
-        tool="unica.meta.validate",
-        skill="meta-validate",
-        script="meta-validate.py",
-        arguments={
-            "ObjectPath": "src/Enums/LanguageAware.xml",
-            "Detailed": True,
-        },
-        expect_ok=False,
-        fixtures=(
-            FileFixture(
-                "meta-validate-language-aware/Enums/LanguageAware.xml",
-                "src/Enums/LanguageAware.xml",
-            ),
-        ),
-    ),
-    ParityScenario(
-        name="meta-validate-missing-registered-language",
-        tool="unica.meta.validate",
-        skill="meta-validate",
-        script="meta-validate.py",
-        arguments={
-            "ObjectPath": "src/Enums/LanguageAware.xml",
-            "Detailed": True,
-        },
-        expect_ok=False,
-        fixtures=(
-            FileFixture(
-                "meta-validate-language-aware/Configuration.xml",
-                "src/Configuration.xml",
-            ),
-            FileFixture(
-                "meta-validate-language-aware/Languages/Русский.xml",
-                "src/Languages/Русский.xml",
-            ),
-            FileFixture(
-                "meta-validate-language-aware/Enums/LanguageAware.xml",
-                "src/Enums/LanguageAware.xml",
-            ),
-        ),
-    ),
-    ParityScenario(
         name="form-validate-bare-type-is-error",
         tool="unica.form.validate",
         skill="form-validate",
@@ -1144,14 +899,6 @@ MISSING_INPUT_SCENARIOS = [
     # are different contracts by construction. The typed refusal is covered by
     # `meta_info_reports_an_unknown_address_without_naming_a_path`.
     ParityScenario(
-        "meta-validate-missing-object",
-        "unica.meta.validate",
-        "meta-validate",
-        "meta-validate.py",
-        {"ObjectPath": "missing/Catalog.xml", "Detailed": True},
-        False,
-    ),
-    ParityScenario(
         "form-validate-missing-form",
         "unica.form.validate",
         "form-validate",
@@ -1223,22 +970,8 @@ MISSING_INPUT_SCENARIOS = [
     ),
 ]
 
-RETIRED_PUBLIC_META_TOOLS = {
-    "unica.meta.compile",
-    "unica.meta.validate",
-}
-ALL_PARITY_SCENARIOS = tuple(
-    SUCCESS_SCENARIOS + VALIDATION_FAILURE_SCENARIOS + MISSING_INPUT_SCENARIOS
-)
-# Keep the immutable inputs above until Task 11 completes its fact audit, but do
-# not execute them through names that ADR-0025 deliberately removed from MCP.
-RETIRED_META_SCENARIOS = tuple(
-    scenario for scenario in ALL_PARITY_SCENARIOS
-    if scenario.tool in RETIRED_PUBLIC_META_TOOLS
-)
 SCENARIOS = tuple(
-    scenario for scenario in ALL_PARITY_SCENARIOS
-    if scenario.tool not in RETIRED_PUBLIC_META_TOOLS
+    SUCCESS_SCENARIOS + VALIDATION_FAILURE_SCENARIOS + MISSING_INPUT_SCENARIOS
 )
 MIN_NATIVE_PARITY_COVERAGE = 1.0
 
@@ -1460,28 +1193,6 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
             manifest_sources - used_sources,
             retired_meta_sources - used_sources,
         )
-
-    def test_retired_meta_parity_is_preserved_as_internal_evidence_only(self) -> None:
-        self.assertTrue(RETIRED_META_SCENARIOS)
-        self.assertEqual(
-            {scenario.tool for scenario in RETIRED_META_SCENARIOS},
-            RETIRED_PUBLIC_META_TOOLS,
-        )
-        self.assertEqual(
-            {scenario.tool for scenario in SCENARIOS} & RETIRED_PUBLIC_META_TOOLS,
-            set(),
-        )
-        add_tests = (
-            REPO_ROOT
-            / "crates/unica-coder/src/application/meta_add_surface_tests.rs"
-        ).read_text(encoding="utf-8")
-        corpus = (
-            REPO_ROOT
-            / "crates/unica-coder/tests/format_8_3_27_xml_corpus.rs"
-        ).read_text(encoding="utf-8")
-        self.assertIn("meta_add_apply_all_23_kinds_is_atomic", add_tests)
-        self.assertIn("unica.meta.add", corpus)
-        self.assertIn("unica.meta.edit", corpus)
 
     def test_language_aware_fixture_proves_list_presentation_precedence(self) -> None:
         fixture = (

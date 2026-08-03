@@ -1,4 +1,4 @@
-use super::{compile_legacy_metadata_fixture, OperationResult, UnicaApplication};
+use super::{OperationResult, UnicaApplication};
 use crate::domain::cancellation::CancellationToken;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -81,34 +81,16 @@ fn create_configuration_workspace(label: &str) -> TempWorkspace {
         ),
     )
     .unwrap();
-    let prerequisites = workspace.path().join("meta-add-prerequisites.json");
-    std::fs::write(
-        &prerequisites,
-        serde_json::to_vec(&serde_json::json!([
-            {"type": "Catalog", "name": "MetaAddSource"},
-            {"type": "Document", "name": "MetaAddRegistrar"},
-            {"type": "ChartOfAccounts", "name": "MetaAddAccounts"},
-            {"type": "ChartOfCalculationTypes", "name": "MetaAddCalculationTypes"},
-            {"type": "CommonModule", "name": "MetaAddHandlers", "server": true}
-        ]))
-        .unwrap(),
-    )
-    .unwrap();
-    let compile_args = Map::from_iter([
-        (
-            "cwd".to_string(),
-            Value::String(workspace.path().display().to_string()),
-        ),
-        (
-            "JsonPath".to_string(),
-            Value::String(prerequisites.display().to_string()),
-        ),
-        ("OutputDir".to_string(), Value::String("src".to_string())),
-        ("dryRun".to_string(), Value::Bool(false)),
-    ]);
-    let compiled =
-        compile_legacy_metadata_fixture(&compile_args).expect("prerequisite metadata compile");
-    assert!(compiled.ok, "{:?}", compiled.errors);
+    for (kind, name) in [
+        ("Catalog", "MetaAddSource"),
+        ("Document", "MetaAddRegistrar"),
+        ("ChartOfAccounts", "MetaAddAccounts"),
+        ("ChartOfCalculationTypes", "MetaAddCalculationTypes"),
+        ("CommonModule", "MetaAddHandlers"),
+    ] {
+        let added = call_add(workspace.path(), kind, name, false);
+        assert!(added.ok, "{kind}.{name}: {:?}", added.errors);
+    }
     std::fs::write(
         workspace
             .path()

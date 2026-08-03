@@ -171,25 +171,7 @@ fn support_guard_target(
         SupportGuardPolicy::ObjectName { requirement } => {
             support_guard_object_name_target(args, context).map(|path| (path, requirement))
         }
-        #[cfg(test)]
-        SupportGuardPolicy::MetaRemove { requirement } => {
-            support_guard_meta_remove_target(args, context).map(|path| (path, requirement))
-        }
     }
-}
-
-#[cfg(test)]
-fn support_guard_meta_remove_target(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-) -> Option<PathBuf> {
-    let config_dir = path_arg(args, &["ConfigDir", "configDir"])
-        .map(|path| absolutize(path, &context.cwd))
-        .unwrap_or_else(|| context.cwd.join("src"));
-    let object = required_string(args, &["Object", "object"], "Object").ok()?;
-    let (kind, name) = object.split_once('.')?;
-    let plural = crate::infrastructure::native_operations::meta::meta_remove_type_plural(kind)?;
-    Some(config_dir.join(plural).join(format!("{name}.xml")))
 }
 
 fn support_guard_path_arg(

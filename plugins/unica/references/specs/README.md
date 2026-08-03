@@ -6,7 +6,7 @@ skill example maps to the expected file shape.
 
 | Area | Files |
 | --- | --- |
-| Configuration and metadata | `1c-configuration-spec.md`, `1c-config-objects-spec.md`, `1c-xdto-spec.md`, `meta-dsl-spec.md` |
+| Configuration and metadata | `1c-configuration-spec.md`, `1c-config-objects-spec.md`, `1c-xdto-spec.md` |
 | Extensions | `1c-extension-spec.md` |
 | Forms | `1c-form-spec.md`, `form-dsl-spec.md`, `form-patterns.md` |
 | Reports and printing | `1c-dcs-spec.md`, `dcs-dsl-spec.md`, `1c-spreadsheet-spec.md`, `mxl-dsl-spec.md` |

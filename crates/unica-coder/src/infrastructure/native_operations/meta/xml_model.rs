@@ -6,12 +6,65 @@ use super::super::common::{escape_xml, multilang_text};
 use super::super::form::form_is_xml_ncname;
 use super::super::role::role_info_element;
 use super::info::meta_info_object_type_ru;
-use super::legacy_dsl::{
-    meta_compile_is_config_type, parse_meta_number_type, parse_meta_string_type, resolve_meta_type,
-};
 use crate::domain::metadata::{
     DateFractions, MetaFillValue, MetadataType, MetadataTypeVariant, NumberSign, StringLengthMode,
 };
+
+fn canonical_metadata_type(type_name: &str) -> String {
+    type_name.to_string()
+}
+
+fn is_configuration_metadata_type(type_name: &str) -> bool {
+    [
+        "CatalogRef.",
+        "CatalogObject.",
+        "DocumentRef.",
+        "DocumentObject.",
+        "EnumRef.",
+        "ChartOfAccountsRef.",
+        "ChartOfAccountsObject.",
+        "ChartOfCharacteristicTypesRef.",
+        "ChartOfCharacteristicTypesObject.",
+        "ChartOfCalculationTypesRef.",
+        "ChartOfCalculationTypesObject.",
+        "ExchangePlanRef.",
+        "ExchangePlanObject.",
+        "BusinessProcessRef.",
+        "BusinessProcessObject.",
+        "TaskRef.",
+        "TaskObject.",
+        "ReportObject.",
+        "DataProcessorObject.",
+        "DefinedType.",
+    ]
+    .iter()
+    .any(|prefix| type_name.starts_with(prefix))
+}
+
+fn string_type_length(value: &str) -> Option<u32> {
+    let rest = value.strip_prefix("String(")?.strip_suffix(')')?.trim();
+    if rest.is_empty() || rest.contains(',') {
+        return None;
+    }
+    rest.parse().ok().filter(|length| *length <= 1024)
+}
+
+fn number_type_parts(value: &str) -> Option<(u32, u32, bool)> {
+    let rest = value.strip_prefix("Number(")?.strip_suffix(')')?;
+    let parts = rest.split(',').map(str::trim).collect::<Vec<_>>();
+    if !matches!(parts.len(), 2 | 3)
+        || parts.iter().any(|part| part.is_empty())
+        || (parts.len() == 3 && parts[2] != "nonneg")
+    {
+        return None;
+    }
+    let digits = parts[0].parse().ok()?;
+    let fraction = parts[1].parse().ok()?;
+    if digits > 38 || fraction > digits {
+        return None;
+    }
+    Some((digits, fraction, parts.len() == 3))
+}
 
 pub(crate) fn parse_metadata_image(
     bytes: &[u8],
@@ -163,7 +216,7 @@ fn emit_meta_type_contents_with_string_length<'a>(
         .flat_map(|type_name| type_name.split('+'))
         .map(str::trim)
         .filter(|type_name| !type_name.is_empty())
-        .map(resolve_meta_type)
+        .map(canonical_metadata_type)
         .collect::<Vec<_>>();
     // 8.3.27 groups concrete configuration types before primitive types, but
     // orders configuration types by their xr:TypeId from the surrounding
@@ -218,9 +271,9 @@ fn meta_type_wire_contract(resolved: &str) -> (&'static str, String) {
         ("Type", "v8:ValueStorage".to_string())
     } else if resolved == "String" || resolved.starts_with("String(") {
         ("Type", "xs:string".to_string())
-    } else if resolved == "Number" || parse_meta_number_type(resolved).is_some() {
+    } else if resolved == "Number" || number_type_parts(resolved).is_some() {
         ("Type", "xs:decimal".to_string())
-    } else if meta_compile_is_config_type(resolved) {
+    } else if is_configuration_metadata_type(resolved) {
         ("Type", format!("cfg:{resolved}"))
     } else {
         ("Type", resolved.to_string())
@@ -239,7 +292,7 @@ pub(super) fn validate_meta_type_union<'a>(
             .map(str::trim)
             .filter(|item| !item.is_empty())
         {
-            let resolved = resolve_meta_type(type_name);
+            let resolved = canonical_metadata_type(type_name);
             validate_meta_resolved_type(type_name, &resolved)?;
             type_count += 1;
             has_value_storage |= resolved == "ValueStorage";
@@ -265,7 +318,7 @@ pub(super) fn validate_meta_resolved_type(raw: &str, resolved: &str) -> Result<(
         return Ok(());
     }
     if resolved.starts_with("String") {
-        if parse_meta_string_type(resolved).is_none() {
+        if string_type_length(resolved).is_none() {
             return Err(format!(
                 "type {raw} is not valid for 8.3.27; expected String or String(integer length 0..=1024)"
             ));
@@ -276,7 +329,7 @@ pub(super) fn validate_meta_resolved_type(raw: &str, resolved: &str) -> Result<(
         return Ok(());
     }
     if resolved.starts_with("Number") {
-        if parse_meta_number_type(resolved).is_none() {
+        if number_type_parts(resolved).is_none() {
             return Err(format!(
                 "type {raw} is not valid for 8.3.27; expected Number(integer digits 0..=38, integer fraction 0..=digits[,nonneg])"
             ));
@@ -288,7 +341,7 @@ pub(super) fn validate_meta_resolved_type(raw: &str, resolved: &str) -> Result<(
             "type {raw} is not valid for 8.3.27; parameters are supported only for String and Number"
         ));
     }
-    if meta_compile_is_config_type(resolved) {
+    if is_configuration_metadata_type(resolved) {
         let invalid_name = resolved
             .split_once('.')
             .is_none_or(|(_, name)| name.trim().is_empty() || name.contains('.'));
@@ -319,7 +372,7 @@ pub(super) fn emit_meta_number_qualifiers(lines: &mut Vec<String>, indent: &str,
     let number = if resolved == "Number" {
         Some((10, 0, false))
     } else {
-        parse_meta_number_type(resolved)
+        number_type_parts(resolved)
     };
     if let Some((digits, fraction, nonnegative)) = number {
         lines.push(format!("{indent}<v8:NumberQualifiers>"));
@@ -348,7 +401,7 @@ fn emit_meta_string_qualifiers_with_length(
     let length = if resolved == "String" {
         Some(length_override.unwrap_or(10))
     } else {
-        parse_meta_string_type(resolved).map(|length| length_override.unwrap_or(length))
+        string_type_length(resolved).map(|length| length_override.unwrap_or(length))
     };
     if let Some(length) = length {
         lines.push(format!("{indent}<v8:StringQualifiers>"));
@@ -375,7 +428,7 @@ pub(super) fn emit_meta_fill_value(lines: &mut Vec<String>, indent: &str, type_n
         lines.push(format!("{indent}<FillValue xsi:nil=\"true\"/>"));
         return;
     }
-    let resolved = resolve_meta_type(type_name);
+    let resolved = canonical_metadata_type(type_name);
     if resolved == "Boolean" {
         lines.push(format!(
             "{indent}<FillValue xsi:type=\"xs:boolean\">false</FillValue>"

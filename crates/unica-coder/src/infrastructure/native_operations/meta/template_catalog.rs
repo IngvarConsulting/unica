@@ -5,7 +5,6 @@ use serde_json::{Map, Value};
 
 use super::super::common::is_1c_identifier;
 use super::super::common::{escape_xml, json_i64_value, json_value_to_python_string};
-use super::legacy_dsl::normalize_meta_object_type;
 use super::publisher::fresh_meta_compile_uuid;
 use super::xml_model::{
     emit_meta_event_subscription_source_type_contents, emit_meta_fill_value, emit_meta_mltext,
@@ -512,8 +511,7 @@ pub(crate) fn minimal_auxiliary_files(
     }
 }
 
-pub(super) enum MetaTemplateDefinition<'a> {
-    Legacy(&'a Map<String, Value>),
+pub(super) enum MetaTemplateDefinition {
     Minimal(MinimalTemplateValues),
 }
 
@@ -525,21 +523,14 @@ pub(super) struct MinimalTemplateValues {
     handler: Option<String>,
 }
 
-impl<'a> MetaTemplateDefinition<'a> {
-    pub(super) fn legacy(value: &'a Map<String, Value>) -> Self {
-        Self::Legacy(value)
-    }
-
+impl MetaTemplateDefinition {
     fn get(&self, key: &str) -> Option<&Value> {
-        match self {
-            Self::Legacy(value) => value.get(key),
-            Self::Minimal(_) => None,
-        }
+        let _ = key;
+        None
     }
 
     fn string(&self, key: &str) -> Option<&str> {
         match self {
-            Self::Legacy(value) => value.get(key).and_then(Value::as_str),
             Self::Minimal(value) => match key {
                 "chartOfAccounts" => value.chart_of_accounts.as_deref(),
                 "chartOfCalculationTypes" => value.chart_of_calculation_types.as_deref(),
@@ -552,27 +543,14 @@ impl<'a> MetaTemplateDefinition<'a> {
 
     fn string_list(&self, key: &str) -> Vec<String> {
         match self {
-            Self::Legacy(value) => meta_compile_string_list(value.get(key)),
             Self::Minimal(value) if key == "source" => value.sources.clone(),
             Self::Minimal(_) => Vec::new(),
         }
     }
 }
 
-pub(super) fn meta_compile_catalog_xml(
-    defn: &Map<String, Value>,
-    obj_name: &str,
-    format_version: &str,
-) -> Result<(String, String), String> {
-    emit_meta_catalog_xml(
-        &MetaTemplateDefinition::legacy(defn),
-        obj_name,
-        format_version,
-    )
-}
-
 fn emit_meta_catalog_xml(
-    defn: &MetaTemplateDefinition<'_>,
+    defn: &MetaTemplateDefinition,
     obj_name: &str,
     format_version: &str,
 ) -> Result<(String, String), String> {
@@ -769,6 +747,26 @@ fn minimal_metadata_xml(
     lines.push(format!("\t</{object_type}>"));
     lines.push("</MetaDataObject>".to_string());
     Ok((format!("{}\n", lines.join("\n")), obj_uuid))
+}
+
+#[cfg(test)]
+pub(crate) fn minimal_metadata_xml_for_tests(
+    kind: MetadataKind,
+    name: &str,
+) -> Result<(String, String), String> {
+    minimal_metadata_xml(
+        kind,
+        name,
+        "2.20",
+        &MinimalTemplateContext {
+            chart_of_accounts: None,
+            chart_of_calculation_types: None,
+            method_name: None,
+            event_source: None,
+            event_handler: None,
+            dependencies: Vec::new(),
+        },
+    )
 }
 
 pub(super) fn meta_xmlns_decl() -> &'static str {
@@ -985,7 +983,7 @@ pub(crate) fn emit_meta_internal_info<F>(
 pub(super) fn emit_meta_catalog_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &MetaTemplateDefinition<'_>,
+    defn: &MetaTemplateDefinition,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -1115,7 +1113,7 @@ pub(super) fn emit_meta_catalog_properties(
     }
 }
 
-pub(super) fn meta_compile_synonym(defn: &MetaTemplateDefinition<'_>, obj_name: &str) -> String {
+pub(super) fn meta_compile_synonym(defn: &MetaTemplateDefinition, obj_name: &str) -> String {
     defn.get("synonym")
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
@@ -1125,7 +1123,7 @@ pub(super) fn meta_compile_synonym(defn: &MetaTemplateDefinition<'_>, obj_name: 
 pub(super) fn emit_meta_base_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &MetaTemplateDefinition<'_>,
+    defn: &MetaTemplateDefinition,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -1145,7 +1143,7 @@ pub(super) fn emit_meta_base_properties(
 pub(super) fn emit_meta_enum_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &MetaTemplateDefinition<'_>,
+    defn: &MetaTemplateDefinition,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -1176,7 +1174,7 @@ pub(super) fn emit_meta_enum_properties(
 pub(super) fn emit_meta_constant_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &MetaTemplateDefinition<'_>,
+    defn: &MetaTemplateDefinition,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -1227,7 +1225,7 @@ pub(super) fn emit_meta_constant_properties(
 pub(super) fn emit_meta_document_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &MetaTemplateDefinition<'_>,
+    defn: &MetaTemplateDefinition,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -1330,7 +1328,7 @@ pub(super) fn emit_meta_document_properties(
 pub(super) fn emit_meta_information_register_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &MetaTemplateDefinition<'_>,
+    defn: &MetaTemplateDefinition,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -1392,7 +1390,7 @@ pub(super) fn emit_meta_information_register_properties(
 pub(super) fn emit_meta_accumulation_register_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &MetaTemplateDefinition<'_>,
+    defn: &MetaTemplateDefinition,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -1424,7 +1422,7 @@ pub(super) fn emit_meta_accumulation_register_properties(
 pub(super) fn emit_meta_accounting_register_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &MetaTemplateDefinition<'_>,
+    defn: &MetaTemplateDefinition,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -1474,7 +1472,7 @@ pub(super) fn emit_meta_accounting_register_properties(
 pub(super) fn emit_meta_calculation_register_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &MetaTemplateDefinition<'_>,
+    defn: &MetaTemplateDefinition,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -1531,7 +1529,7 @@ pub(super) fn emit_meta_calculation_register_properties(
 pub(super) fn emit_meta_chart_of_accounts_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &MetaTemplateDefinition<'_>,
+    defn: &MetaTemplateDefinition,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -1687,7 +1685,7 @@ pub(super) fn emit_meta_chart_of_accounts_properties(
 pub(super) fn emit_meta_chart_of_characteristic_types_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &MetaTemplateDefinition<'_>,
+    defn: &MetaTemplateDefinition,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -1833,7 +1831,7 @@ pub(super) fn emit_meta_chart_of_characteristic_types_properties(
 pub(super) fn emit_meta_chart_of_calculation_types_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &MetaTemplateDefinition<'_>,
+    defn: &MetaTemplateDefinition,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -1943,7 +1941,7 @@ pub(super) fn emit_meta_chart_of_calculation_types_properties(
 pub(super) fn emit_meta_business_process_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &MetaTemplateDefinition<'_>,
+    defn: &MetaTemplateDefinition,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -2048,7 +2046,7 @@ pub(super) fn emit_meta_business_process_properties(
 pub(super) fn emit_meta_task_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &MetaTemplateDefinition<'_>,
+    defn: &MetaTemplateDefinition,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -2149,7 +2147,7 @@ pub(super) fn emit_meta_task_properties(
 pub(super) fn emit_meta_exchange_plan_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &MetaTemplateDefinition<'_>,
+    defn: &MetaTemplateDefinition,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -2256,7 +2254,7 @@ pub(super) fn emit_meta_exchange_plan_properties(
 pub(super) fn emit_meta_document_journal_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &MetaTemplateDefinition<'_>,
+    defn: &MetaTemplateDefinition,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -2290,7 +2288,7 @@ pub(super) fn emit_meta_document_journal_properties(
 pub(super) fn emit_meta_report_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &MetaTemplateDefinition<'_>,
+    defn: &MetaTemplateDefinition,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -2322,7 +2320,7 @@ pub(super) fn emit_meta_report_properties(
 pub(super) fn emit_meta_data_processor_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &MetaTemplateDefinition<'_>,
+    defn: &MetaTemplateDefinition,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -2352,7 +2350,7 @@ pub(super) fn emit_meta_data_processor_properties(
 pub(super) fn emit_meta_scheduled_job_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &MetaTemplateDefinition<'_>,
+    defn: &MetaTemplateDefinition,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -2400,7 +2398,7 @@ pub(super) fn emit_meta_scheduled_job_properties(
 pub(super) fn emit_meta_event_subscription_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &MetaTemplateDefinition<'_>,
+    defn: &MetaTemplateDefinition,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -2435,7 +2433,7 @@ pub(super) fn emit_meta_event_subscription_properties(
 pub(super) fn emit_meta_http_service_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &MetaTemplateDefinition<'_>,
+    defn: &MetaTemplateDefinition,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -2466,7 +2464,7 @@ pub(super) fn emit_meta_http_service_properties(
 pub(super) fn emit_meta_web_service_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &MetaTemplateDefinition<'_>,
+    defn: &MetaTemplateDefinition,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -2504,7 +2502,7 @@ pub(super) fn emit_meta_web_service_properties(
     ));
 }
 
-pub(super) fn meta_compile_root_value_type(defn: &MetaTemplateDefinition<'_>) -> String {
+pub(super) fn meta_compile_root_value_type(defn: &MetaTemplateDefinition) -> String {
     let mut type_name = defn
         .get("valueType")
         .and_then(Value::as_str)
@@ -2535,7 +2533,7 @@ pub(super) fn meta_compile_root_value_type(defn: &MetaTemplateDefinition<'_>) ->
 pub(super) fn emit_meta_common_module_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &MetaTemplateDefinition<'_>,
+    defn: &MetaTemplateDefinition,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -2546,13 +2544,9 @@ pub(super) fn emit_meta_common_module_properties(
         .unwrap_or_default();
     // A newly added common module must have at least one execution context;
     // otherwise the typed object is structurally valid but cannot be borrowed
-    // into an extension or used by code tooling. Legacy DSL definitions keep
-    // their explicit context semantics, while the typed minimal template uses
-    // the server as its conservative executable default.
-    let mut server = match defn {
-        MetaTemplateDefinition::Minimal(_) => true,
-        MetaTemplateDefinition::Legacy(_) => bool_arg_from_json(defn, "server"),
-    };
+    // into an extension or used by code tooling. The typed minimal template
+    // uses the server as its conservative executable default.
+    let mut server = true;
     let mut server_call = bool_arg_from_json(defn, "serverCall");
     let mut client_managed = bool_arg_from_json(defn, "clientManagedApplication");
     match context {
@@ -2597,7 +2591,7 @@ pub(super) fn emit_meta_common_module_properties(
 pub(super) fn emit_meta_defined_type_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &MetaTemplateDefinition<'_>,
+    defn: &MetaTemplateDefinition,
     obj_name: &str,
     synonym: &str,
 ) {
@@ -2616,11 +2610,11 @@ pub(super) fn emit_meta_defined_type_properties(
     lines.push(format!("{indent}</Type>"));
 }
 
-pub(super) fn bool_arg_from_json(defn: &MetaTemplateDefinition<'_>, field_name: &str) -> bool {
+pub(super) fn bool_arg_from_json(defn: &MetaTemplateDefinition, field_name: &str) -> bool {
     defn.get(field_name).and_then(Value::as_bool) == Some(true)
 }
 
-pub(super) fn meta_compile_value_types(defn: &MetaTemplateDefinition<'_>) -> Vec<String> {
+pub(super) fn meta_compile_value_types(defn: &MetaTemplateDefinition) -> Vec<String> {
     let value = defn.get("valueTypes").or_else(|| defn.get("valueType"));
     match value {
         Some(Value::Array(items)) => items
@@ -2689,8 +2683,7 @@ pub(super) fn normalize_meta_object_ref(value: &str) -> String {
     let Some((prefix, suffix)) = value.split_once('.') else {
         return value.to_string();
     };
-    let normalized = normalize_meta_object_type(prefix);
-    format!("{normalized}.{suffix}")
+    format!("{prefix}.{suffix}")
 }
 
 pub(super) fn emit_meta_md_object_refs(
@@ -2755,7 +2748,7 @@ pub(super) fn emit_meta_lock_search_presentation_tail(
 pub(super) fn emit_meta_register_tail(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &MetaTemplateDefinition<'_>,
+    defn: &MetaTemplateDefinition,
 ) {
     lines.push(format!(
         "{indent}<DataLockControlMode>{}</DataLockControlMode>",
@@ -2770,7 +2763,7 @@ pub(super) fn emit_meta_register_tail(
 pub(super) fn emit_meta_code_description_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &MetaTemplateDefinition<'_>,
+    defn: &MetaTemplateDefinition,
     default_code_length: i64,
     default_description_length: i64,
     include_check_unique: bool,
@@ -2871,7 +2864,7 @@ pub(super) fn emit_meta_choice_object_tail(
 pub(super) fn emit_meta_number_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &MetaTemplateDefinition<'_>,
+    defn: &MetaTemplateDefinition,
     default_number_length: i64,
 ) {
     lines.push(format!(
@@ -3006,7 +2999,7 @@ pub(super) fn emit_meta_enum_value<F>(
 pub(super) fn emit_meta_child_objects<F>(
     lines: &mut Vec<String>,
     indent: &str,
-    defn: &MetaTemplateDefinition<'_>,
+    defn: &MetaTemplateDefinition,
     obj_type: &str,
     obj_name: &str,
     next_uuid: &mut F,
@@ -3739,7 +3732,7 @@ pub(super) fn emit_meta_operation_parameter<F>(
 }
 
 pub(super) fn meta_enum_prop(
-    defn: &MetaTemplateDefinition<'_>,
+    defn: &MetaTemplateDefinition,
     field_name: &str,
     default: &str,
 ) -> String {

@@ -896,7 +896,7 @@ class VerifierContractTests(unittest.TestCase):
                     "emptyDirectoryPaths": ["pre-case"],
                     "cases": [{
                         "id": "flowchart", "workspacePath": "case", "preSnapshotPath": "pre-case",
-                        "toolId": "unica.meta.compile", "xmlImpact": "created",
+                        "toolId": "unica.meta.add", "xmlImpact": "created",
                         "preFiles": [], "preOwnerVersions": {},
                         "files": [{
                             "path": "case/Flowchart.xml", "sha256": sha(path.read_bytes()),

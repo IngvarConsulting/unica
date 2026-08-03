@@ -42,10 +42,6 @@ pub(crate) enum SupportGuardPolicy {
     ObjectName {
         requirement: SupportGuardRequirement,
     },
-    #[cfg(test)]
-    MetaRemove {
-        requirement: SupportGuardRequirement,
-    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,8 +52,6 @@ pub(crate) struct PathAliasGroup {
 
 const EMPTY: &[&str] = &[];
 pub(crate) const CF_PATH: &[&str] = &["ConfigPath", "configPath", "Path", "path"];
-#[cfg(test)]
-const CONFIG_DIR: &[&str] = &["ConfigDir", "configDir"];
 const OUTPUT_DIR: &[&str] = &["OutputDir", "outputDir"];
 const EXTENSION_PATH: &[&str] = &["ExtensionPath", "extensionPath"];
 pub(crate) const CFE_VALIDATE_PATH: &[&str] = &["ExtensionPath", "extensionPath", "Path", "path"];
@@ -65,8 +59,6 @@ const CFE_BORROW_SOURCE: &[&str] = &["ExtensionPath", "ConfigPath", "extensionPa
 const CFE_INIT_BASE: &[&str] = &["ConfigPath", "configPath"];
 const CFE_INIT_OUTPUT: &[&str] = &["OutputDir", "outputDir", "ExtensionPath", "extensionPath"];
 pub(crate) const OBJECT_PATH: &[&str] = &["ObjectPath", "objectPath", "Path", "path"];
-#[cfg(test)]
-const OBJECT_PATH_REQUIRED: &[&str] = &["ObjectPath"];
 const SRC_DIR: &[&str] = &["SrcDir", "srcDir"];
 pub(crate) const FORM_PATH: &[&str] = &["FormPath", "formPath", "Path", "path"];
 const FORM_PATH_REQUIRED: &[&str] = &["FormPath"];
@@ -92,10 +84,6 @@ const CFE_PATCH_METHOD_REQUIRED: &[&str] = &[
 ];
 const CFE_VALIDATE_REQUIRED: &[&str] = &["ExtensionPath"];
 const OBJECT_NAME_REQUIRED: &[&str] = &["ObjectName"];
-#[cfg(test)]
-const META_COMPILE_REQUIRED: &[&str] = &["JsonPath", "OutputDir"];
-#[cfg(test)]
-const META_INFO_REQUIRED: &[&str] = &["sourceSet", "metadataPath"];
 const FORM_COMPILE_REQUIRED: &[&str] = &["OutputPath"];
 const FORM_EDIT_REQUIRED: &[&str] = &["FormPath"];
 const SUBSYSTEM_COMPILE_REQUIRED: &[&str] = &["OutputDir"];
@@ -121,8 +109,6 @@ const MODULE_PATH: &[&str] = &["ModulePath", "modulePath"];
 const PARENT_PATH: &[&str] = &["Parent", "parent"];
 
 const CF_PATH_GROUP: PathAliasGroup = path_alias_group("ConfigPath", CF_PATH);
-#[cfg(test)]
-const CONFIG_DIR_GROUP: PathAliasGroup = path_alias_group("ConfigDir", CONFIG_DIR);
 const OUTPUT_DIR_GROUP: PathAliasGroup = path_alias_group("OutputDir", OUTPUT_DIR);
 const EXTENSION_PATH_GROUP: PathAliasGroup = path_alias_group("ExtensionPath", EXTENSION_PATH);
 const CFE_VALIDATE_PATH_GROUP: PathAliasGroup =
@@ -151,12 +137,6 @@ const CFE_INIT_PATH_GROUPS: &[PathAliasGroup] = &[CF_PATH_GROUP, CFE_INIT_OUTPUT
 const CFE_PATCH_METHOD_PATH_GROUPS: &[PathAliasGroup] = &[EXTENSION_PATH_GROUP, MODULE_PATH_GROUP];
 const CFE_VALIDATE_PATH_GROUPS: &[PathAliasGroup] = &[CFE_VALIDATE_PATH_GROUP];
 const COMPILE_TO_DIR_PATH_GROUPS: &[PathAliasGroup] = &[JSON_PATH_GROUP, OUTPUT_DIR_GROUP];
-#[cfg(test)]
-const META_EDIT_PATH_GROUPS: &[PathAliasGroup] = &[OBJECT_PATH_GROUP, DEFINITION_FILE_GROUP];
-#[cfg(test)]
-const OBJECT_READ_PATH_GROUPS: &[PathAliasGroup] = &[OBJECT_PATH_GROUP];
-#[cfg(test)]
-const META_REMOVE_PATH_GROUPS: &[PathAliasGroup] = &[CONFIG_DIR_GROUP];
 const SRC_DIR_PATH_GROUPS: &[PathAliasGroup] = &[SRC_DIR_GROUP];
 const OBJECT_PATH_GROUPS: &[PathAliasGroup] = &[OBJECT_PATH_GROUP];
 const FORM_COMPILE_PATH_GROUPS: &[PathAliasGroup] =
@@ -187,14 +167,6 @@ pub(crate) fn native_path_alias_groups(operation: &str) -> &'static [PathAliasGr
         "cfe-init" => CFE_INIT_PATH_GROUPS,
         "cfe-patch-method" => CFE_PATCH_METHOD_PATH_GROUPS,
         "cfe-validate" => CFE_VALIDATE_PATH_GROUPS,
-        #[cfg(test)]
-        "meta-compile" => COMPILE_TO_DIR_PATH_GROUPS,
-        #[cfg(test)]
-        "meta-edit" => META_EDIT_PATH_GROUPS,
-        #[cfg(test)]
-        "meta-validate" => OBJECT_READ_PATH_GROUPS,
-        #[cfg(test)]
-        "meta-remove" => META_REMOVE_PATH_GROUPS,
         "role-compile" => COMPILE_TO_DIR_PATH_GROUPS,
         "help-add" | "form-remove" | "template-add" | "template-remove" => SRC_DIR_PATH_GROUPS,
         "form-add" => OBJECT_PATH_GROUPS,
@@ -216,71 +188,10 @@ pub(crate) fn native_path_alias_groups(operation: &str) -> &'static [PathAliasGr
     }
 }
 
-// The breaking public switch deliberately removes these operations from the
-// production descriptor registry. Their implementations survive until the
-// cleanup task, and test-only callers keep exercising those internals without
-// making the retired MCP names dispatchable again.
-#[cfg(test)]
-const LEGACY_META_TEST_DESCRIPTORS: &[OperationDescriptor] = &[
-    descriptor(
-        "meta-compile",
-        META_COMPILE_REQUIRED,
-        OUTPUT_DIR,
-        OUTPUT_DIR,
-        Some(path_guard(OUTPUT_DIR, SupportGuardRequirement::Editable)),
-    ),
-    descriptor_with_paths(
-        "meta-edit",
-        OBJECT_PATH_REQUIRED,
-        OBJECT_PATH,
-        OBJECT_PATH,
-        FormatGuardPolicy::ExistingDump,
-        FormatPathPolicy::HandlerResolved,
-        Some(path_guard(OBJECT_PATH, SupportGuardRequirement::Editable)),
-    ),
-    descriptor_with_paths(
-        "meta-info",
-        META_INFO_REQUIRED,
-        EMPTY,
-        EMPTY,
-        FormatGuardPolicy::ExistingDump,
-        FormatPathPolicy::HandlerResolved,
-        None,
-    ),
-    descriptor(
-        "meta-remove",
-        EMPTY,
-        CONFIG_DIR,
-        CONFIG_DIR,
-        Some(meta_remove_guard()),
-    ),
-    descriptor_with_paths(
-        "meta-validate",
-        OBJECT_PATH_REQUIRED,
-        EMPTY,
-        OBJECT_PATH,
-        FormatGuardPolicy::ExistingDump,
-        FormatPathPolicy::HandlerResolved,
-        None,
-    ),
-];
-
 pub(crate) fn native_operation_descriptor(operation: &str) -> Option<&'static OperationDescriptor> {
-    let descriptor = NATIVE_OPERATION_DESCRIPTORS
+    NATIVE_OPERATION_DESCRIPTORS
         .iter()
-        .find(|descriptor| descriptor.operation == operation);
-    #[cfg(test)]
-    {
-        descriptor.or_else(|| {
-            LEGACY_META_TEST_DESCRIPTORS
-                .iter()
-                .find(|descriptor| descriptor.operation == operation)
-        })
-    }
-    #[cfg(not(test))]
-    {
-        descriptor
-    }
+        .find(|descriptor| descriptor.operation == operation)
 }
 
 pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
@@ -688,13 +599,6 @@ const fn path_guard(
 
 const fn handler_resolved_guard(requirement: SupportGuardRequirement) -> SupportGuardPolicy {
     SupportGuardPolicy::HandlerResolved { requirement }
-}
-
-#[cfg(test)]
-const fn meta_remove_guard() -> SupportGuardPolicy {
-    SupportGuardPolicy::MetaRemove {
-        requirement: SupportGuardRequirement::Removed,
-    }
 }
 
 const fn object_name_guard(requirement: SupportGuardRequirement) -> SupportGuardPolicy {

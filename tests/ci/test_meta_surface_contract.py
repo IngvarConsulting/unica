@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -58,6 +59,67 @@ def registered_tool_blocks() -> dict[str, str]:
 
 
 class MetaSurfaceContractTests(unittest.TestCase):
+    def test_tracked_tree_has_no_executable_legacy_meta_dsl_bridge(self) -> None:
+        tracked = subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+        ).stdout.decode("utf-8").split("\0")
+        excluded_prefixes = (
+            "docs/design/",
+            "docs/plans/",
+            "spec/decisions/",
+            "tests/fixtures/unica_mcp_script_parity/cc-1c-skills/",
+            # Task 12 owns provenance reconciliation for these exact retained donors.
+            "tests/fixtures/unica_mcp_script_parity/unica_reference_models/meta-compile/",
+            "tests/fixtures/unica_mcp_script_parity/unica_reference_models/meta-edit/",
+            "tests/fixtures/unica_mcp_script_parity/unica_reference_models/meta-validate/",
+        )
+        retired_files = {
+            "crates/unica-coder/src/infrastructure/native_operations/meta/compile_tests.rs",
+            "crates/unica-coder/src/infrastructure/native_operations/meta/legacy_dsl.rs",
+            "plugins/unica/references/specs/meta-dsl-spec.md",
+            "plugins/unica/skills/meta-edit/child-operations.md",
+            "plugins/unica/skills/meta-edit/json-dsl.md",
+            "plugins/unica/skills/meta-edit/properties-reference.md",
+        }
+        retired_identifiers = re.compile(
+            r"call_legacy_metadata_tool_for_tests|"
+            r"legacy_metadata_tool_spec_for_tests|"
+            r"compile_legacy_metadata_fixture|"
+            r"LEGACY_META_TEST_DESCRIPTORS|"
+            r"parse_meta_edit_dsl_input|"
+            r"meta_compile_object_xml|"
+            r"meta_edit_apply_inline_operation|"
+            r"meta_edit_apply_definition"
+        )
+
+        violations: list[str] = []
+        for relative in tracked:
+            if not relative or relative.startswith(excluded_prefixes):
+                continue
+            if relative == "tests/ci/test_meta_surface_contract.py":
+                continue
+            path = REPO_ROOT / relative
+            if relative in retired_files and path.exists():
+                violations.append(relative)
+                continue
+            if not path.exists():
+                continue
+            try:
+                source = path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            if retired_identifiers.search(source):
+                violations.append(relative)
+
+        self.assertEqual(
+            sorted(set(violations)),
+            [],
+            "tracked executable Meta DSL bridges remain:\n" + "\n".join(violations),
+        )
+
     def test_registry_is_exactly_the_four_typed_metadata_handlers(self) -> None:
         blocks = registered_tool_blocks()
         meta = {name: block for name, block in blocks.items() if name.startswith("unica.meta.")}

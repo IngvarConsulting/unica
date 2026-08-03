@@ -1,4 +1,4 @@
-use super::{compile_legacy_metadata_fixture, OperationResult, UnicaApplication};
+use super::{OperationResult, UnicaApplication};
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -55,30 +55,23 @@ fn create_remove_workspace(label: &str) -> TempWorkspace {
         ),
     )
     .unwrap();
-    let definition = workspace.path().join("remove-fixture.json");
-    std::fs::write(
-        &definition,
-        serde_json::to_vec(&serde_json::json!([
-            {"type": "Catalog", "name": "Removable"},
-            {"type": "Catalog", "name": "Sibling"}
-        ]))
-        .unwrap(),
-    )
-    .unwrap();
-    let compiled = compile_legacy_metadata_fixture(&Map::from_iter([
-        (
-            "cwd".to_string(),
-            Value::String(workspace.path().display().to_string()),
-        ),
-        (
-            "JsonPath".to_string(),
-            Value::String(definition.display().to_string()),
-        ),
-        ("OutputDir".to_string(), Value::String("src".to_string())),
-        ("dryRun".to_string(), Value::Bool(false)),
-    ]))
-    .unwrap();
-    assert!(compiled.ok, "{:?}", compiled.errors);
+    for name in ["Removable", "Sibling"] {
+        let previous = std::env::current_dir().unwrap();
+        std::env::set_current_dir(workspace.path()).unwrap();
+        let added = UnicaApplication::new()
+            .call_tool(
+                "unica.meta.add",
+                &Map::from_iter([
+                    ("sourceSet".to_string(), Value::String("main".to_string())),
+                    ("kind".to_string(), Value::String("Catalog".to_string())),
+                    ("name".to_string(), Value::String(name.to_string())),
+                    ("dryRun".to_string(), Value::Bool(false)),
+                ]),
+            )
+            .unwrap();
+        std::env::set_current_dir(previous).unwrap();
+        assert!(added.ok, "Catalog.{name}: {:?}", added.errors);
+    }
     workspace
 }
 

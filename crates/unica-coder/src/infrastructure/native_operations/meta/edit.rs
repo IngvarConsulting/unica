@@ -1,7 +1,6 @@
 #![allow(dead_code, unused_imports)]
 
 use crate::application::metadata::{MetaEditRequest, MetaFailure};
-use crate::application::operation_descriptors::OBJECT_PATH;
 use crate::application::ports::{
     MetadataChildDirectoryKind, MetadataChildFootprintEvidence, MetadataChildProfile,
     MetadataChildResourceKind, MetadataResourceImage, MetadataResourceRole,
@@ -54,13 +53,6 @@ use super::format_contract::{
     meta_8_3_27_boolean_properties, validate_meta_8_3_27_boolean_property_value,
     validate_metadata_8_3_27_boolean_contract, validate_metadata_8_3_27_enum_contract,
 };
-use super::legacy_dsl::{
-    meta_edit_apply_definition, meta_edit_apply_inline_operation,
-    meta_edit_definition_requests_line_number_length, meta_edit_inline_requests_line_number_length,
-    parse_meta_edit_dsl_input, read_meta_edit_definition, validate_meta_8_3_27_property_value,
-    validate_meta_compile_attr_type, validate_meta_compile_name,
-    validate_meta_compile_tabular_section_types, MetaEditDslInput,
-};
 use super::publisher::{fresh_meta_compile_uuid, PreparedMetaEdit};
 use super::template_catalog::{
     emit_meta_attribute, emit_meta_column, emit_meta_enum_value, emit_meta_register_field,
@@ -84,6 +76,68 @@ pub(super) struct MetaEditCounts {
     pub(crate) added: usize,
     pub(crate) modified: usize,
     pub(crate) removed: usize,
+}
+
+fn validate_metadata_name(context: &str, name: &str) -> Result<(), String> {
+    if is_1c_identifier(name) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{context} name `{name}` is not a valid 1C identifier"
+        ))
+    }
+}
+
+fn validate_metadata_property_value(
+    context: &str,
+    property_name: &str,
+    raw_value: &str,
+) -> Result<(), String> {
+    let Some((_, allowed_values)) = super::validation::meta_validate_property_values()
+        .iter()
+        .find(|(known_property, _)| *known_property == property_name)
+    else {
+        return Ok(());
+    };
+    let normalized = normalize_meta_enum_value(raw_value);
+    if allowed_values.contains(&normalized.as_str()) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{context} property {property_name} value '{normalized}' is not valid for 8.3.27; expected one of: {}",
+            allowed_values.join(", ")
+        ))
+    }
+}
+
+fn validate_metadata_attribute(attr: &MetaCompileAttr, context: &str) -> Result<(), String> {
+    validate_metadata_name(context, &attr.name)?;
+    if !attr.fill_checking.is_empty() {
+        validate_metadata_property_value(context, "FillChecking", &attr.fill_checking)?;
+    }
+    if !attr.indexing.is_empty() {
+        validate_metadata_property_value(context, "Indexing", &attr.indexing)?;
+    }
+    if attr.type_name.trim().is_empty() {
+        return Ok(());
+    }
+    validate_meta_type_union(std::iter::once(attr.type_name.as_str())).map_err(|error| {
+        format!(
+            "invalid 8.3.27 type for {context} attribute {}: {error}",
+            attr.name
+        )
+    })
+}
+
+fn validate_metadata_tabular_section(
+    section: &MetaCompileTabularSection,
+    context: &str,
+) -> Result<(), String> {
+    validate_metadata_name(context, &section.name)?;
+    for attr in &section.columns {
+        validate_metadata_attribute(attr, context)?;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -115,248 +169,6 @@ struct MetaEditLineNumberLengthAuthorization {
 /// Typed answer of `unica.meta.edit` (ADR-0023). The projected diff stays a
 /// string because a unified diff is a format, not a rendered report -- the same
 /// choice `unica.code.patch` makes.
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct MetaEditData {
-    pub(crate) object_kind: String,
-    pub(crate) object_name: String,
-    pub(crate) changed: bool,
-    pub(crate) counts: MetaEditCountsData,
-    pub(crate) diff: Option<String>,
-}
-
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct MetaEditCountsData {
-    pub(crate) added: usize,
-    pub(crate) removed: usize,
-    pub(crate) modified: usize,
-}
-
-pub(crate) struct MetaEditExecution {
-    pub(crate) outcome: AdapterOutcome,
-    pub(crate) data: Option<MetaEditData>,
-}
-
-pub(super) fn edit_meta(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
-    edit_meta_with_data(args, context).outcome
-}
-
-pub(crate) fn edit_meta_with_data(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-) -> MetaEditExecution {
-    edit_meta_with_mode(args, context, false)
-}
-
-/// Validates a metadata edit and reports its planned effects without writing files.
-pub(crate) fn preview_meta_edit(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-) -> AdapterOutcome {
-    preview_meta_edit_with_data(args, context).outcome
-}
-
-pub(crate) fn preview_meta_edit_with_data(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-) -> MetaEditExecution {
-    edit_meta_with_mode(args, context, true)
-}
-
-/// Runs the shared metadata-edit workflow in either preview or apply mode.
-fn edit_meta_with_mode(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-    dry_run: bool,
-) -> MetaEditExecution {
-    let edit_result = (|| -> Result<(MetaEditData, PathBuf, bool, Vec<String>), String> {
-        let input = parse_meta_edit_dsl_input(args)?;
-        let object_path_raw = required_path(args, OBJECT_PATH, "ObjectPath")?;
-        let object_path = resolve_meta_edit_object_path(&object_path_raw, &context.cwd)?;
-
-        let original_bytes = fs::read(&object_path)
-            .map_err(|err| format!("failed to read {}: {err}", object_path.display()))?;
-        let mut xml_text = String::from_utf8(original_bytes.clone())
-            .map_err(|err| format!("failed to read {}: {err}", object_path.display()))?;
-        let source_format = MetaEditSourceFormat {
-            has_bom: original_bytes.starts_with(b"\xef\xbb\xbf"),
-            eol: meta_edit_source_eol(&xml_text),
-        };
-        if xml_text.starts_with('\u{feff}') {
-            xml_text = xml_text.trim_start_matches('\u{feff}').to_string();
-        }
-        let (object_type, object_name) = meta_edit_object_identity(&xml_text)?;
-        validate_metadata_8_3_27_enum_contract(&xml_text, "meta.edit")?;
-
-        let mut counts = MetaEditCounts::default();
-        // The old report echoed the operation and value the caller had just
-        // sent, plus the path that `artifacts` already names. Data keeps what
-        // only the tool knows: whether anything changed, how much, and the diff.
-        let mut projected_diff = None;
-        let mut transaction = CompileTransaction::new();
-        let line_number_length_provenance = match input {
-            MetaEditDslInput::File(definition_file) => {
-                let definition =
-                    read_meta_edit_definition(&definition_file, context, &mut transaction)?;
-                let authorization = if meta_edit_definition_requests_line_number_length(&definition)
-                {
-                    meta_edit_line_number_length_policy(
-                        &object_type,
-                        &object_path,
-                        context,
-                        &mut transaction,
-                    )?
-                } else {
-                    MetaEditLineNumberLengthAuthorization {
-                        policy: MetaEditLineNumberLengthPolicy::UnknownCompatibility,
-                        provenance: None,
-                    }
-                };
-                meta_edit_apply_definition(
-                    &mut xml_text,
-                    &object_type,
-                    &object_name,
-                    &definition,
-                    authorization.policy,
-                    &mut counts,
-                )?;
-                authorization.provenance
-            }
-            MetaEditDslInput::Inline { operation, value } => {
-                let authorization =
-                    if meta_edit_inline_requests_line_number_length(&operation, &value) {
-                        meta_edit_line_number_length_policy(
-                            &object_type,
-                            &object_path,
-                            context,
-                            &mut transaction,
-                        )?
-                    } else {
-                        MetaEditLineNumberLengthAuthorization {
-                            policy: MetaEditLineNumberLengthPolicy::UnknownCompatibility,
-                            provenance: None,
-                        }
-                    };
-                meta_edit_apply_inline_operation(
-                    &mut xml_text,
-                    &object_type,
-                    &object_name,
-                    &operation,
-                    &value,
-                    authorization.policy,
-                    &mut counts,
-                )?;
-                authorization.provenance
-            }
-        };
-
-        #[cfg(test)]
-        run_meta_edit_after_line_number_length_policy_hook();
-
-        Document::parse(xml_text.trim_start_matches('\u{feff}'))
-            .map_err(|err| format!("XML parse error after meta-edit: {err}"))?;
-        validate_metadata_8_3_27_boolean_contract(&xml_text, "meta.edit")?;
-        let serialized_bytes = meta_edit_preserve_source_format(&xml_text, source_format);
-        let changed = serialized_bytes != original_bytes;
-        let mut warnings = Vec::new();
-        if changed && !dry_run {
-            transaction.replace_bytes(&object_path, &original_bytes, serialized_bytes)?;
-            if let Some(provenance) = line_number_length_provenance {
-                provenance.bind_to(&mut transaction)?;
-            }
-            guard_active_format_owner(&mut transaction, &object_path, context)?;
-            let validation_path = object_path.clone();
-            warnings = transaction
-                .commit_with_post_validation(move || {
-                    let published = read_utf8_sig(&validation_path)?;
-                    validate_metadata_8_3_27_boolean_contract(&published, "meta.edit")?;
-                    validate_metadata_8_3_27_enum_contract(&published, "meta.edit")
-                })?
-                .cleanup_warnings;
-        } else if changed {
-            let diff_path = object_path
-                .strip_prefix(&context.cwd)
-                .unwrap_or(&object_path)
-                .display()
-                .to_string();
-            let before = String::from_utf8(original_bytes.clone())
-                .map_err(|err| format!("failed to preview {}: {err}", object_path.display()))?;
-            let after = String::from_utf8(serialized_bytes)
-                .map_err(|err| format!("failed to preview {}: {err}", object_path.display()))?;
-            projected_diff = meta_edit_projected_diff(
-                &mut warnings,
-                meta_edit_unified_diff(&diff_path, &before, &after),
-            );
-        } else {
-            counts = MetaEditCounts::default();
-        }
-        let data = MetaEditData {
-            object_kind: object_type.to_string(),
-            object_name: object_name.to_string(),
-            changed,
-            counts: MetaEditCountsData {
-                added: counts.added,
-                removed: counts.removed,
-                modified: counts.modified,
-            },
-            diff: projected_diff,
-        };
-        Ok((data, object_path, changed, warnings))
-    })();
-
-    match edit_result {
-        Ok((data, object_path, changed, warnings)) => MetaEditExecution {
-            outcome: AdapterOutcome {
-                ok: true,
-                summary: if dry_run {
-                    if changed {
-                        "dry run: unica.meta.edit planned native metadata edit".to_string()
-                    } else {
-                        "dry run: unica.meta.edit found no metadata changes".to_string()
-                    }
-                } else {
-                    "unica.meta.edit completed with native metadata editor".to_string()
-                },
-                changes: if changed {
-                    vec![if dry_run {
-                        format!("would update {}", object_path.display())
-                    } else {
-                        format!("updated {}", object_path.display())
-                    }]
-                } else {
-                    Vec::new()
-                },
-                warnings,
-                errors: Vec::new(),
-                artifacts: vec![object_path.display().to_string()],
-                stdout: None,
-                stderr: None,
-                command: None,
-            },
-            data: Some(data),
-        },
-        Err(error) => MetaEditExecution {
-            outcome: AdapterOutcome {
-                ok: false,
-                summary: if dry_run {
-                    "dry run: unica.meta.edit failed in native metadata editor".to_string()
-                } else {
-                    "unica.meta.edit failed in native metadata editor".to_string()
-                },
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: vec![error.clone()],
-                artifacts: Vec::new(),
-                stdout: None,
-                stderr: Some(format!("{error}\n")),
-                command: None,
-            },
-            data: None,
-        },
-    }
-}
-
 /// Returns a verified diff or records a non-fatal renderer diagnostic. A
 /// renderer fault must not turn a valid edit into a failure.
 pub(super) fn meta_edit_projected_diff(
@@ -920,7 +732,7 @@ pub(super) fn meta_edit_set_scalar_property(
     let object_type = object.tag_name().name();
     let normalized = normalize_meta_edit_scalar_property_value(object_type, key, raw_value);
     if key == "Name" {
-        validate_meta_compile_name("meta.edit object", &normalized)?;
+        validate_metadata_name("meta.edit object", &normalized)?;
     }
     let properties = meta_info_child(object, "Properties")
         .ok_or_else(|| "Object has no Properties".to_string())?;
@@ -935,7 +747,7 @@ pub(super) fn meta_edit_set_scalar_property(
             "Properties contains {matching_properties} direct <{key}> elements; expected at most one"
         ));
     }
-    validate_meta_8_3_27_property_value("meta.edit", key, &normalized)?;
+    validate_metadata_property_value("meta.edit", key, &normalized)?;
     validate_meta_8_3_27_boolean_property_value("meta.edit", object_type, key, &normalized)?;
     let range = properties.range();
     drop(doc);
@@ -962,7 +774,7 @@ pub(super) fn meta_edit_add_child_value(
             if attr.name.is_empty() {
                 return Err("add-attribute requires Value like Name: Type".to_string());
             }
-            validate_meta_compile_attr_type(&attr, "meta.edit add attribute")?;
+            validate_metadata_attribute(&attr, "meta.edit add attribute")?;
             meta_edit_ensure_top_child_name_free(xml_text, "Attribute", &attr.name)?;
             let context = meta_edit_attribute_context(object_type);
             let mut lines = Vec::new();
@@ -1000,7 +812,7 @@ pub(super) fn meta_edit_add_child_value(
             if attr.name.is_empty() {
                 return Err(format!("add-{child_type} requires Value like Name: Type"));
             }
-            validate_meta_compile_attr_type(&attr, "meta.edit add register field")?;
+            validate_metadata_attribute(&attr, "meta.edit add register field")?;
             let tag = if child_type == "dimensions" {
                 "Dimension"
             } else {
@@ -1021,7 +833,7 @@ pub(super) fn meta_edit_add_child_value(
         }
         "enumValues" => {
             let enum_value = meta_edit_enum_value_from_value(&value)?;
-            validate_meta_compile_name("meta.edit enum value", &enum_value.name)?;
+            validate_metadata_name("meta.edit enum value", &enum_value.name)?;
             meta_edit_ensure_top_child_name_free(xml_text, "EnumValue", &enum_value.name)?;
             let mut lines = Vec::new();
             let mut next_uuid = fresh_meta_compile_uuid;
@@ -1037,7 +849,7 @@ pub(super) fn meta_edit_add_child_value(
             let column_value = meta_edit_column_value(&value);
             let column_name = meta_edit_value_name(&column_value)
                 .ok_or_else(|| "add-column requires non-empty name".to_string())?;
-            validate_meta_compile_name("meta.edit column", &column_name)?;
+            validate_metadata_name("meta.edit column", &column_name)?;
             meta_edit_ensure_top_child_name_free(xml_text, "Column", &column_name)?;
             let mut lines = Vec::new();
             let mut next_uuid = fresh_meta_compile_uuid;
@@ -1052,7 +864,7 @@ pub(super) fn meta_edit_add_child_value(
             };
             let name = meta_edit_value_name(&value)
                 .ok_or_else(|| format!("add-{child_type} requires non-empty name"))?;
-            validate_meta_compile_name(&format!("meta.edit {child_type}"), &name)?;
+            validate_metadata_name(&format!("meta.edit {child_type}"), &name)?;
             meta_edit_ensure_top_child_name_free(xml_text, tag, &name)?;
             let mut lines = Vec::new();
             let mut next_uuid = fresh_meta_compile_uuid;
@@ -1615,7 +1427,7 @@ pub(super) fn meta_edit_tabular_section_from_value(
         name: name.to_string(),
         columns: meta_compile_attributes(columns_value),
     };
-    validate_meta_compile_tabular_section_types(&section, "meta.edit tabular section")?;
+    validate_metadata_tabular_section(&section, "meta.edit tabular section")?;
     Ok(section)
 }
 
@@ -1780,7 +1592,7 @@ pub(super) fn meta_edit_add_attribute(
     if attr.name.is_empty() {
         return Err("add-attribute requires Value like Name: Type".to_string());
     }
-    validate_meta_compile_attr_type(&attr, "meta.edit add-attribute")?;
+    validate_metadata_attribute(&attr, "meta.edit add-attribute")?;
     meta_edit_ensure_top_child_name_free(xml_text, "Attribute", &attr.name)?;
     let context = meta_edit_attribute_context(object_type);
     let mut lines = Vec::new();
@@ -1823,7 +1635,7 @@ pub(super) fn meta_edit_parse_tabular_section(
             name: value.to_string(),
             columns: Vec::new(),
         };
-        validate_meta_compile_tabular_section_types(&section, "meta.edit add-ts")?;
+        validate_metadata_tabular_section(&section, "meta.edit add-ts")?;
         return Ok(section);
     };
 
@@ -1837,7 +1649,7 @@ pub(super) fn meta_edit_parse_tabular_section(
         name: name.to_string(),
         columns,
     };
-    validate_meta_compile_tabular_section_types(&section, "meta.edit add-ts")?;
+    validate_metadata_tabular_section(&section, "meta.edit add-ts")?;
     Ok(section)
 }
 
@@ -1875,7 +1687,7 @@ pub(super) fn meta_edit_parse_tabular_section_columns(
                     "add-ts column requires Value like Name: Type, got: {column}"
                 ));
             }
-            validate_meta_compile_attr_type(&attr, "meta.edit add-ts column")?;
+            validate_metadata_attribute(&attr, "meta.edit add-ts column")?;
             Ok(attr)
         })
         .collect()
@@ -1933,7 +1745,7 @@ pub(super) fn meta_edit_add_tabular_section_attribute_value(
     if section_name.is_empty() || attr.name.is_empty() {
         return Err("add-ts-attribute requires Value like Section.Attribute: Type".to_string());
     }
-    validate_meta_compile_attr_type(&attr, "meta.edit add-ts-attribute")?;
+    validate_metadata_attribute(&attr, "meta.edit add-ts-attribute")?;
     meta_edit_ensure_tabular_child_name_free(xml_text, section_name, "Attribute", &attr.name)?;
     let mut lines = Vec::new();
     let mut next_uuid = fresh_meta_compile_uuid;
@@ -2232,7 +2044,7 @@ pub(super) fn meta_edit_modify_properties_range(
         let canonical = meta_edit_canonical_attribute_property(key, target)?;
         match canonical.as_str() {
             "Name" => {
-                validate_meta_compile_name("meta.edit rename", value)?;
+                validate_metadata_name("meta.edit rename", value)?;
                 let replacement = format!("{child_indent}<Name>{}</Name>", escape_xml(value));
                 meta_edit_replace_or_insert_property(
                     &mut properties,
@@ -2581,7 +2393,7 @@ pub(super) fn meta_edit_requested_name(
             if name.is_empty() {
                 return Err("modify name requires non-empty value".to_string());
             }
-            validate_meta_compile_name("meta.edit rename", name)?;
+            validate_metadata_name("meta.edit rename", name)?;
             return Ok(Some(name.to_string()));
         }
     }
