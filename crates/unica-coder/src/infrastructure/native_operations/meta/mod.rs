@@ -203,7 +203,7 @@ pub(crate) use legacy_dsl::{
     meta_compile_format_dependency_paths, meta_compile_object_xml, preview_meta_compile,
     validate_metadata_owner_shape_8_3_27,
 };
-pub(crate) use publisher::{fresh_meta_compile_uuid, prepare_meta_add};
+pub(crate) use publisher::{fresh_meta_compile_uuid, prepare_meta_add, prepare_meta_remove};
 pub(crate) use remove::{
     meta_remove_reference_xml_dependency_paths, meta_remove_subsystem_dependency_paths,
     meta_remove_type_plural, remove_metadata_child_text, remove_metadata_child_text_lxml,

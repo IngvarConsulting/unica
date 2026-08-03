@@ -10,7 +10,8 @@ use crate::domain::metadata::{
 };
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::meta::{
-    prepare_meta_add, prepare_typed_edit, resolve_typed_edit_object, MetadataValidator,
+    prepare_meta_add, prepare_meta_remove, prepare_typed_edit, resolve_typed_edit_object,
+    MetadataValidator,
 };
 
 pub(crate) struct MetadataOperations;
@@ -69,7 +70,8 @@ impl MetadataOperations {
                 let resolved = resolve_typed_edit_object(request, context, cancellation)?;
                 prepare_typed_edit(request, resolved, context)
             }
-            MetadataRequest::Info(_) | MetadataRequest::Remove(_) => Err(capability_unavailable(
+            MetadataRequest::Remove(request) => prepare_meta_remove(request, context, cancellation),
+            MetadataRequest::Info(_) => Err(capability_unavailable(
                 "typed metadata mutation provider is not available yet",
             )),
         }
@@ -97,7 +99,7 @@ fn capability_unavailable(message: &str) -> MetaFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::metadata::{MetaAddRequest, MetaEditRequest};
+    use crate::application::metadata::{MetaAddRequest, MetaEditRequest, MetaRemoveRequest};
     use crate::application::ports::{
         MetadataChildDirectoryKind, MetadataChildProfile, MetadataChildResourceKind,
         MetadataResourceRole, MetadataTemplateResourcePart, MetadataTemplateType,
@@ -244,6 +246,22 @@ mod tests {
                 metadata_path: self.target.clone(),
                 operations,
                 dry_run: false,
+            })
+        }
+
+        fn remove_request(
+            &self,
+            target: MetadataAddress,
+            dry_run: bool,
+            force: bool,
+            confirm: bool,
+        ) -> MetadataRequest {
+            MetadataRequest::Remove(MetaRemoveRequest {
+                source_set: "main".into(),
+                metadata_path: target,
+                dry_run,
+                force,
+                confirm,
             })
         }
 
@@ -2462,5 +2480,524 @@ mod tests {
         assert!(!failure.diagnostics[0]
             .message
             .contains(fixture.root.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn meta_remove_preview_resolves_the_logical_request_through_the_typed_mutation_path() {
+        let fixture = Fixture::new("remove-logical-preview");
+        let cancellation = CancellationToken::new();
+        let request = MetadataRequest::Remove(MetaRemoveRequest {
+            source_set: "main".into(),
+            metadata_path: fixture.target.clone(),
+            dry_run: true,
+            force: false,
+            confirm: false,
+        });
+        let descriptor_before = fs::read(&fixture.descriptor).unwrap();
+        let owner_before = fs::read(&fixture.owner).unwrap();
+
+        let prepared =
+            MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+                .expect("typed logical remove must prepare a guarded preview");
+
+        assert_eq!(prepared.preview().metadata_path, fixture.target);
+        assert!(prepared.preview().changed);
+        assert!(!prepared
+            .validation_subject()
+            .resources
+            .iter()
+            .any(|resource| matches!(resource.role, MetadataResourceRole::Descriptor)));
+        assert_eq!(fs::read(&fixture.descriptor).unwrap(), descriptor_before);
+        assert_eq!(fs::read(&fixture.owner).unwrap(), owner_before);
+    }
+
+    #[test]
+    fn meta_remove_plans_and_deletes_the_complete_logical_resource_footprint() {
+        let fixture = Fixture::new("remove-resource-footprint");
+        fixture.publish_form_add("Main");
+        let cancellation = CancellationToken::new();
+        let request = fixture.remove_request(fixture.target.clone(), false, false, false);
+
+        let prepared =
+            MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+                .unwrap();
+        assert!(prepared.preview().publication_plan.iter().any(|entry| {
+            entry.action == MetaPublicationAction::Remove
+                && entry.resource == MetaPublicationResource::Descriptor
+                && entry.metadata_path.as_ref() == Some(&fixture.target)
+        }));
+        assert!(prepared.preview().publication_plan.iter().any(|entry| {
+            entry.action == MetaPublicationAction::Remove
+                && entry.resource == MetaPublicationResource::Form
+                && entry
+                    .metadata_path
+                    .as_ref()
+                    .is_some_and(|target| target.as_str() == "Catalog.Editable.Form.Main")
+        }));
+        assert!(prepared.preview().publication_plan.iter().any(|entry| {
+            entry.action == MetaPublicationAction::Update
+                && entry.resource == MetaPublicationResource::Registration
+        }));
+        let public_preview = serde_json::to_string(prepared.preview()).unwrap();
+        assert!(!public_preview.contains(fixture.root.to_string_lossy().as_ref()));
+        assert!(!public_preview.contains("PlatformXml"));
+
+        prepared.publish(&cancellation).unwrap();
+
+        assert!(!fixture.root.join("src/Catalogs/Editable.xml").exists());
+        assert!(!fixture.root.join("src/Catalogs/Editable").exists());
+        assert!(!fixture.root.join("src/Catalogs").exists());
+    }
+
+    #[test]
+    fn meta_remove_force_apply_validates_only_changed_post_images_and_guards_reference_evidence() {
+        let fixture = Fixture::new("remove-forced-reference");
+        let cancellation = CancellationToken::new();
+        let referenced = fixture.add_object(MetadataKind::Catalog, "Referenced");
+        MetadataOperations::prepare_mutation(
+            &fixture.owners_request(RelationEditMode::Add, vec![referenced.clone()]),
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap()
+        .publish(&cancellation)
+        .unwrap();
+        let referencing_descriptor = fixture.descriptor.clone();
+        let referenced_descriptor = fixture.root.join("src/Catalogs/Referenced.xml");
+
+        let blocked = match MetadataOperations::prepare_mutation(
+            &fixture.remove_request(referenced.clone(), true, false, false),
+            &fixture.context,
+            &cancellation,
+        ) {
+            Ok(_) => panic!("unforced referenced object unexpectedly prepared"),
+            Err(failure) => failure,
+        };
+        assert_eq!(
+            blocked.diagnostics[0].code,
+            MetaDiagnosticCode::ReferenceConflict
+        );
+
+        let request = fixture.remove_request(referenced.clone(), false, true, true);
+        let prepared =
+            MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+                .unwrap();
+        let validation = MetadataOperations::validate(
+            prepared.validation_subject(),
+            &fixture.context,
+            &cancellation,
+        );
+        assert_eq!(validation.status, MetaValidationStatus::Passed);
+        assert!(!prepared.validation_subject().resources.iter().any(|resource| {
+            matches!(&resource.role, MetadataResourceRole::Dependency { target } if target == &fixture.target)
+        }));
+
+        let mut external_reference = fs::read(&referencing_descriptor).unwrap();
+        external_reference.extend_from_slice(b"\n");
+        fs::write(&referencing_descriptor, &external_reference).unwrap();
+        let conflict = match prepared.publish(&cancellation) {
+            Ok(_) => panic!("reference evidence drift unexpectedly published"),
+            Err(failure) => failure,
+        };
+        assert_eq!(
+            conflict.diagnostics[0].code,
+            MetaDiagnosticCode::ConcurrentModification
+        );
+        assert!(referenced_descriptor.is_file());
+
+        let prepared =
+            MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+                .unwrap();
+        assert_eq!(
+            MetadataOperations::validate(
+                prepared.validation_subject(),
+                &fixture.context,
+                &cancellation,
+            )
+            .status,
+            MetaValidationStatus::Passed
+        );
+        prepared.publish(&cancellation).unwrap();
+
+        assert!(!referenced_descriptor.exists());
+        assert!(
+            String::from_utf8(fs::read(&referencing_descriptor).unwrap())
+                .unwrap()
+                .contains("Catalog.Referenced")
+        );
+        assert!(!String::from_utf8(fs::read(&fixture.owner).unwrap())
+            .unwrap()
+            .contains("<Catalog>Referenced</Catalog>"));
+    }
+
+    #[test]
+    fn meta_remove_preview_and_apply_clean_subsystems_and_validate_the_surviving_post_state() {
+        let fixture = Fixture::new("remove-subsystem-cleanup");
+        let cancellation = CancellationToken::new();
+        let subsystem = fixture.root.join("src/Subsystems/Main.xml");
+        fs::create_dir_all(subsystem.parent().unwrap()).unwrap();
+        let subsystem_before = concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">\n",
+            "<Subsystem uuid=\"11111111-1111-1111-1111-111111111111\">\n",
+            "<Properties><Name>Main</Name></Properties>\n",
+            "<Content><Item>Catalog.Editable</Item><Item>Catalog.Keep</Item></Content>\n",
+            "</Subsystem>\n",
+            "</MetaDataObject>"
+        );
+        fs::write(&subsystem, subsystem_before).unwrap();
+        let request = fixture.remove_request(fixture.target.clone(), false, false, false);
+
+        let prepared =
+            MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+                .unwrap();
+        let dependency = prepared
+            .validation_subject()
+            .resources
+            .iter()
+            .find(|resource| {
+                matches!(&resource.role, MetadataResourceRole::Dependency { target } if target.as_str() == "Subsystem.Main")
+            })
+            .expect("subsystem post-image must be a logical validation dependency");
+        let dependency_text = String::from_utf8(dependency.bytes.clone()).unwrap();
+        assert!(!dependency_text.contains("Catalog.Editable"));
+        assert!(dependency_text.contains("Catalog.Keep"));
+        assert!(!dependency.bytes.starts_with(b"\xef\xbb\xbf"));
+        assert!(!dependency.bytes.ends_with(b"\n"));
+        assert_eq!(fs::read(&subsystem).unwrap(), subsystem_before.as_bytes());
+        assert_eq!(
+            MetadataOperations::validate(
+                prepared.validation_subject(),
+                &fixture.context,
+                &cancellation,
+            )
+            .status,
+            MetaValidationStatus::Passed
+        );
+
+        prepared.publish(&cancellation).unwrap();
+
+        let subsystem_after = fs::read(&subsystem).unwrap();
+        assert!(!subsystem_after.starts_with(b"\xef\xbb\xbf"));
+        assert!(!subsystem_after.ends_with(b"\n"));
+        let subsystem_after = String::from_utf8(subsystem_after).unwrap();
+        assert!(!subsystem_after.contains("Catalog.Editable"));
+        assert!(subsystem_after.contains("Catalog.Keep"));
+        assert!(!fixture.descriptor.exists());
+    }
+
+    #[test]
+    fn meta_remove_reports_logical_missing_format_support_and_cancellation_diagnostics() {
+        let cancellation = CancellationToken::new();
+
+        let missing_source = Fixture::new("remove-missing-source");
+        let mut request =
+            missing_source.remove_request(missing_source.target.clone(), true, false, false);
+        let MetadataRequest::Remove(request) = &mut request else {
+            unreachable!()
+        };
+        request.source_set = "missing".into();
+        let request = MetadataRequest::Remove(request.clone());
+        let failure = match MetadataOperations::prepare_mutation(
+            &request,
+            &missing_source.context,
+            &cancellation,
+        ) {
+            Ok(_) => panic!("unknown source set unexpectedly prepared"),
+            Err(failure) => failure,
+        };
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::TargetNotFound
+        );
+        assert_eq!(
+            failure.diagnostics[0].field.as_deref(),
+            Some("metadataPath")
+        );
+        assert!(!failure.diagnostics[0]
+            .message
+            .contains(missing_source.root.to_string_lossy().as_ref()));
+
+        let missing_target = Fixture::new("remove-missing-target");
+        let missing =
+            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Missing").unwrap();
+        let failure = match MetadataOperations::prepare_mutation(
+            &missing_target.remove_request(missing, true, false, false),
+            &missing_target.context,
+            &cancellation,
+        ) {
+            Ok(_) => panic!("missing metadata object unexpectedly prepared"),
+            Err(failure) => failure,
+        };
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::TargetNotFound
+        );
+
+        let unsupported = Fixture::new("remove-format-gate");
+        let descriptor = String::from_utf8(fs::read(&unsupported.descriptor).unwrap())
+            .unwrap()
+            .replacen("version=\"2.20\"", "version=\"2.19\"", 1);
+        fs::write(&unsupported.descriptor, descriptor).unwrap();
+        let failure = match MetadataOperations::prepare_mutation(
+            &unsupported.remove_request(unsupported.target.clone(), true, false, false),
+            &unsupported.context,
+            &cancellation,
+        ) {
+            Ok(_) => panic!("unsupported descriptor format unexpectedly prepared"),
+            Err(failure) => failure,
+        };
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::CapabilityUnavailable
+        );
+
+        let locked = Fixture::new("remove-support-lock");
+        fs::create_dir_all(locked.root.join("src/Ext")).unwrap();
+        fs::write(
+            locked.root.join("src/Ext/ParentConfigurations.bin"),
+            concat!(
+                "\u{feff}{6,1,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,",
+                "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",",
+                "\"VendorConf\",0,0,0}"
+            ),
+        )
+        .unwrap();
+        let failure = match MetadataOperations::prepare_mutation(
+            &locked.remove_request(locked.target.clone(), true, false, false),
+            &locked.context,
+            &cancellation,
+        ) {
+            Ok(_) => panic!("support-locked metadata object unexpectedly prepared"),
+            Err(failure) => failure,
+        };
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::SupportLocked
+        );
+
+        let cancelled = Fixture::new("remove-cancelled-prepare");
+        let cancelled_token = CancellationToken::new();
+        cancelled_token.cancel();
+        let failure = match MetadataOperations::prepare_mutation(
+            &cancelled.remove_request(cancelled.target.clone(), false, false, false),
+            &cancelled.context,
+            &cancelled_token,
+        ) {
+            Ok(_) => panic!("cancelled metadata removal unexpectedly prepared"),
+            Err(failure) => failure,
+        };
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::ProviderUnavailable
+        );
+        assert!(cancelled.descriptor.exists());
+    }
+
+    #[test]
+    fn meta_remove_rejects_a_read_capable_source_without_remove_capability() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-meta-remove-read-only-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(root.join("erf")).unwrap();
+        fs::write(
+            root.join("erf/ReadOnly.xml"),
+            concat!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">",
+                "<ExternalReport uuid=\"11111111-1111-1111-1111-111111111111\">",
+                "<Properties><Name>ReadOnly</Name></Properties>",
+                "</ExternalReport></MetaDataObject>\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            concat!(
+                "format: DESIGNER\n",
+                "source-set:\n",
+                "  - name: main\n",
+                "    type: EXTERNAL_REPORTS\n",
+                "    path: erf\n"
+            ),
+        )
+        .unwrap();
+        let context = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 0,
+        };
+        let target =
+            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "ExternalReport.ReadOnly")
+                .unwrap();
+        let cancellation = CancellationToken::new();
+        let request = MetadataRequest::Remove(MetaRemoveRequest {
+            source_set: "main".into(),
+            metadata_path: target,
+            dry_run: true,
+            force: false,
+            confirm: false,
+        });
+
+        let failure = match MetadataOperations::prepare_mutation(&request, &context, &cancellation)
+        {
+            Ok(_) => panic!("read-only source unexpectedly provided remove capability"),
+            Err(failure) => failure,
+        };
+
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::CapabilityUnavailable
+        );
+        assert!(root.join("erf/ReadOnly.xml").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn meta_remove_publish_honors_cancellation_and_owner_exact_preimages() {
+        let cancellation_fixture = Fixture::new("remove-publish-cancelled");
+        let cancellation = CancellationToken::new();
+        let request = cancellation_fixture.remove_request(
+            cancellation_fixture.target.clone(),
+            false,
+            false,
+            false,
+        );
+        let prepared = MetadataOperations::prepare_mutation(
+            &request,
+            &cancellation_fixture.context,
+            &cancellation,
+        )
+        .unwrap();
+        let descriptor_before = fs::read(&cancellation_fixture.descriptor).unwrap();
+        let owner_before = fs::read(&cancellation_fixture.owner).unwrap();
+        cancellation.cancel();
+        let failure = match prepared.publish(&cancellation) {
+            Ok(_) => panic!("cancelled metadata removal unexpectedly published"),
+            Err(failure) => failure,
+        };
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::ProviderUnavailable
+        );
+        assert_eq!(
+            fs::read(&cancellation_fixture.descriptor).unwrap(),
+            descriptor_before
+        );
+        assert_eq!(fs::read(&cancellation_fixture.owner).unwrap(), owner_before);
+
+        let owner_fixture = Fixture::new("remove-owner-drift");
+        let cancellation = CancellationToken::new();
+        let request =
+            owner_fixture.remove_request(owner_fixture.target.clone(), false, false, false);
+        let prepared =
+            MetadataOperations::prepare_mutation(&request, &owner_fixture.context, &cancellation)
+                .unwrap();
+        let descriptor_before = fs::read(&owner_fixture.descriptor).unwrap();
+        let mut external_owner = fs::read(&owner_fixture.owner).unwrap();
+        external_owner.extend_from_slice(b"\n");
+        fs::write(&owner_fixture.owner, &external_owner).unwrap();
+        let failure = match prepared.publish(&cancellation) {
+            Ok(_) => panic!("owner-preimage drift unexpectedly published"),
+            Err(failure) => failure,
+        };
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::ConcurrentModification
+        );
+        assert_eq!(fs::read(&owner_fixture.owner).unwrap(), external_owner);
+        assert_eq!(
+            fs::read(&owner_fixture.descriptor).unwrap(),
+            descriptor_before
+        );
+    }
+
+    #[test]
+    fn meta_remove_rollback_restores_exact_bytes_and_reports_incomplete_rollback() {
+        let rollback = Fixture::new("remove-rollback");
+        rollback.add_object(MetadataKind::Catalog, "Sibling");
+        let cancellation = CancellationToken::new();
+        let request = rollback.remove_request(rollback.target.clone(), false, false, false);
+        let descriptor_before = fs::read(&rollback.descriptor).unwrap();
+        let owner_before = fs::read(&rollback.owner).unwrap();
+        let prepared =
+            MetadataOperations::prepare_mutation(&request, &rollback.context, &cancellation)
+                .unwrap();
+        let failure = match with_commit_failpoint(CommitFailpoint::PostWriteValidation, || {
+            prepared.publish(&cancellation)
+        }) {
+            Ok(_) => panic!("post-write failure unexpectedly published metadata removal"),
+            Err(failure) => failure,
+        };
+        assert_ne!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::RollbackFailed
+        );
+        assert_eq!(fs::read(&rollback.descriptor).unwrap(), descriptor_before);
+        assert_eq!(fs::read(&rollback.owner).unwrap(), owner_before);
+
+        let incomplete = Fixture::new("remove-rollback-failed");
+        incomplete.add_object(MetadataKind::Catalog, "Sibling");
+        let cancellation = CancellationToken::new();
+        let request = incomplete.remove_request(incomplete.target.clone(), false, false, false);
+        let prepared =
+            MetadataOperations::prepare_mutation(&request, &incomplete.context, &cancellation)
+                .unwrap();
+        let failure = match with_before_rollback_mutation_hook(
+            |path| fs::write(path, b"external bytes during rollback").unwrap(),
+            || {
+                with_commit_failpoint(CommitFailpoint::PostWriteValidation, || {
+                    prepared.publish(&cancellation)
+                })
+            },
+        ) {
+            Ok(_) => panic!("rollback-conflict failpoint unexpectedly published removal"),
+            Err(failure) => failure,
+        };
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::RollbackFailed
+        );
+        assert!(!failure.diagnostics[0]
+            .message
+            .contains(incomplete.root.to_string_lossy().as_ref()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn meta_remove_denies_a_source_set_that_escapes_workspace_containment() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = Fixture::new("remove-containment");
+        let outside = std::env::temp_dir().join(format!(
+            "unica-meta-remove-outside-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        fs::rename(fixture.root.join("src"), &outside).unwrap();
+        symlink(&outside, fixture.root.join("src")).unwrap();
+        let cancellation = CancellationToken::new();
+
+        let failure = match MetadataOperations::prepare_mutation(
+            &fixture.remove_request(fixture.target.clone(), true, false, false),
+            &fixture.context,
+            &cancellation,
+        ) {
+            Ok(_) => panic!("out-of-workspace source set unexpectedly prepared"),
+            Err(failure) => failure,
+        };
+
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::ProviderUnavailable
+        );
+        assert!(!failure.diagnostics[0]
+            .message
+            .contains(outside.to_string_lossy().as_ref()));
+        fs::remove_file(fixture.root.join("src")).unwrap();
+        fs::rename(&outside, fixture.root.join("src")).unwrap();
     }
 }

@@ -2215,13 +2215,6 @@ fn resolve_platform_xml_object(
                 "metadataPath does not identify a known metadata object",
             )
         })?;
-    validate_platform_xml_module_descriptors(
-        context,
-        &selected.path,
-        std::slice::from_ref(&relative_path),
-    )
-    .map_err(|error| public_evidence_error(target, error))?;
-
     let target_path = WorkspacePathPolicy::new(context)
         .resolve_write(selected.path.join(&relative_path))
         .map_err(|_| target_containment_error(&target.source_set))?;
@@ -2232,6 +2225,30 @@ fn resolve_platform_xml_object(
     if !target_identity.starts_with(&selected.path) {
         return Err(target_containment_error(&target.source_set));
     }
+    let existing_export_format = fs::read_to_string(&target_path).ok().and_then(|text| {
+        roxmltree::Document::parse(text.trim_start_matches('\u{feff}'))
+            .ok()
+            .and_then(|document| {
+                document
+                    .root_element()
+                    .attribute("version")
+                    .map(str::to_string)
+            })
+    });
+    if existing_export_format.as_deref()
+        != Some(crate::domain::format_profile::ACTIVE_FORMAT_PROFILE.export_format)
+        && existing_export_format.is_some()
+    {
+        return Err(SourceTargetError::source_format_unsupported(format!(
+            "metadataPath `{address}` is outside the supported Platform XML export format"
+        )));
+    }
+    validate_platform_xml_module_descriptors(
+        context,
+        &selected.path,
+        std::slice::from_ref(&relative_path),
+    )
+    .map_err(|error| public_evidence_error(target, error))?;
 
     match exact_object_outcome(&selected.path, address, &CancellationToken::new()) {
         Ok(ExactCandidate::Proven) => {}

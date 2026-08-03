@@ -1,6 +1,8 @@
 #![allow(dead_code, unused_imports)]
 
-use crate::application::metadata::{MetaAddRequest, MetaEditRequest, MetaFailure};
+use crate::application::metadata::{
+    MetaAddRequest, MetaEditRequest, MetaFailure, MetaRemoveRequest,
+};
 use crate::application::ports::{
     MetaPublishReport, MetadataResourceImage, MetadataResourceRole, MetadataValidationSubject,
     PreparedMetadataMutation,
@@ -28,13 +30,14 @@ use super::super::common::{
 use super::super::compile_transaction::{
     CompileTransaction, DirectoryMembershipSnapshot, RegistrationStatus,
 };
-use super::edit::{ResolvedMetadataObject, TypedChildResourcePlan};
+use super::edit::{resolve_typed_metadata_object, ResolvedMetadataObject, TypedChildResourcePlan};
 use super::legacy_dsl::{
     compile_meta_value, meta_compile_definition_format_dependency_paths,
     meta_compile_event_subscription_dependencies, read_meta_compile_definition_guarded,
     require_meta_configuration_owner_validation,
     validate_meta_compile_event_subscription_dependencies, validate_metadata_owner_shape_8_3_27,
 };
+use super::remove::{plan_typed_remove, TypedMetaRemovePlan};
 use super::template_catalog::{
     MetadataTemplateCatalog, MetadataTemplateFileMode, MetadataTemplateFileRole,
     PlatformMetadataTemplateCatalog,
@@ -98,6 +101,16 @@ pub(crate) struct PreparedMetaEdit {
     context: WorkspaceContext,
     resolved: ResolvedMetadataObject,
     expected_post_image: Vec<u8>,
+}
+
+pub(crate) struct PreparedMetaRemove {
+    preview: MetaMutationData,
+    validation_subject: MetadataValidationSubject,
+    transaction: CompileTransaction,
+    context: WorkspaceContext,
+    resolved: ResolvedMetadataObject,
+    expected_post_images: Vec<(PathBuf, Vec<u8>)>,
+    expected_absent: Vec<PathBuf>,
 }
 
 impl PreparedMetaEdit {
@@ -294,6 +307,95 @@ impl PreparedMetadataMutation for PreparedMetaEdit {
                 revalidate_platform_xml_target(context, handle)
                     .map(|_| ())
                     .map_err(|_| "metadata target changed during publication".to_string())
+            })
+            .map_err(|message| publication_failure(&target, message))?;
+        Ok(MetaPublishReport { data: self.preview })
+    }
+}
+
+pub(crate) fn prepare_meta_remove(
+    request: &MetaRemoveRequest,
+    context: &WorkspaceContext,
+    cancellation: &CancellationToken,
+) -> Result<Box<dyn PreparedMetadataMutation>, MetaFailure> {
+    let resolved = resolve_typed_metadata_object(
+        &request.source_set,
+        &request.metadata_path,
+        "remove",
+        context,
+        cancellation,
+    )?;
+    let TypedMetaRemovePlan {
+        preview,
+        validation_subject,
+        transaction,
+        resolved,
+        expected_post_images,
+        expected_absent,
+    } = plan_typed_remove(request, resolved, context, cancellation)?;
+    Ok(Box::new(PreparedMetaRemove {
+        preview,
+        validation_subject,
+        transaction,
+        context: context.clone(),
+        resolved,
+        expected_post_images,
+        expected_absent,
+    }))
+}
+
+impl PreparedMetadataMutation for PreparedMetaRemove {
+    fn preview(&self) -> &MetaMutationData {
+        &self.preview
+    }
+
+    fn validation_subject(&self) -> &MetadataValidationSubject {
+        &self.validation_subject
+    }
+
+    fn publish(
+        self: Box<Self>,
+        cancellation: &CancellationToken,
+    ) -> Result<MetaPublishReport, MetaFailure> {
+        if cancellation.is_cancelled() {
+            return Err(MetaDiagnostic::error(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata removal was cancelled before publication",
+            )
+            .with_metadata_path(self.preview.metadata_path.clone())
+            .into());
+        }
+        let target = self.preview.metadata_path.clone();
+        revalidate_platform_xml_target(&self.context, &self.resolved.handle).map_err(|_| {
+            MetaFailure::from(
+                MetaDiagnostic::error(
+                    MetaDiagnosticCode::ConcurrentModification,
+                    format!("metadata source changed while publishing `{target}`"),
+                )
+                .with_metadata_path(target.clone()),
+            )
+        })?;
+        let expected_post_images = self.expected_post_images.clone();
+        let expected_absent = self.expected_absent.clone();
+        self.transaction
+            .commit_with_post_validation(move || {
+                for (path, expected) in &expected_post_images {
+                    let actual = fs::read(path)
+                        .map_err(|_| "published metadata post-image is unavailable".to_string())?;
+                    if &actual != expected {
+                        return Err("published metadata post-image differs from its plan".into());
+                    }
+                }
+                for path in &expected_absent {
+                    match fs::symlink_metadata(path) {
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Ok(_) => return Err("removed metadata resource is still present".into()),
+                        Err(_) => {
+                            return Err("removed metadata resource could not be inspected".into())
+                        }
+                    }
+                }
+                Ok(())
             })
             .map_err(|message| publication_failure(&target, message))?;
         Ok(MetaPublishReport { data: self.preview })

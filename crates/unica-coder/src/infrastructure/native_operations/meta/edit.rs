@@ -4122,32 +4122,48 @@ pub(crate) fn resolve_typed_edit_object(
     context: &WorkspaceContext,
     cancellation: &CancellationToken,
 ) -> Result<ResolvedMetadataObject, MetaFailure> {
+    resolve_typed_metadata_object(
+        &request.source_set,
+        &request.metadata_path,
+        "edit",
+        context,
+        cancellation,
+    )
+}
+
+pub(crate) fn resolve_typed_metadata_object(
+    source_set: &str,
+    metadata_path: &MetadataAddress,
+    operation: &str,
+    context: &WorkspaceContext,
+    cancellation: &CancellationToken,
+) -> Result<ResolvedMetadataObject, MetaFailure> {
     if cancellation.is_cancelled() {
         return Err(typed_diagnostic(
             MetaDiagnosticCode::ProviderUnavailable,
-            "metadata edit was cancelled before source resolution",
+            format!("metadata {operation} was cancelled before source resolution"),
             None,
         )
-        .with_metadata_path(request.metadata_path.clone())
+        .with_metadata_path(metadata_path.clone())
         .into());
     }
     let target = SourceTarget {
-        source_set: request.source_set.clone(),
-        metadata_path: Some(request.metadata_path.clone()),
+        source_set: source_set.to_string(),
+        metadata_path: Some(metadata_path.clone()),
     };
     let resolution = resolve_platform_xml_target(context, &target, TargetKindPolicy::Any)
-        .map_err(|error| typed_resolution_failure(request, error.code))?;
+        .map_err(|error| typed_resolution_failure(metadata_path, operation, error.code))?;
     if resolution.resolved.target_kind != TargetKind::MetadataObject {
         return Err(typed_diagnostic(
             MetaDiagnosticCode::InvalidArguments,
             "metadataPath must identify one existing metadata object",
             Some("metadataPath"),
         )
-        .with_metadata_path(request.metadata_path.clone())
+        .with_metadata_path(metadata_path.clone())
         .into());
     }
     let evidence = platform_xml_resource_evidence(context, &resolution.handle)
-        .map_err(|error| typed_resolution_failure(request, error.code))?;
+        .map_err(|error| typed_resolution_failure(metadata_path, operation, error.code))?;
     let descriptor_preimage = fs::read(&evidence.target_path).map_err(|_| {
         MetaFailure::from(
             typed_diagnostic(
@@ -4155,7 +4171,7 @@ pub(crate) fn resolve_typed_edit_object(
                 "metadata descriptor image is unavailable",
                 None,
             )
-            .with_metadata_path(request.metadata_path.clone()),
+            .with_metadata_path(metadata_path.clone()),
         )
     })?;
     let owner_preimage = fs::read(&evidence.registration_path).map_err(|_| {
@@ -4165,7 +4181,7 @@ pub(crate) fn resolve_typed_edit_object(
                 "metadata owner image is unavailable",
                 None,
             )
-            .with_metadata_path(request.metadata_path.clone()),
+            .with_metadata_path(metadata_path.clone()),
         )
     })?;
     let (_, descriptor) =
@@ -4176,7 +4192,7 @@ pub(crate) fn resolve_typed_edit_object(
                     "metadata descriptor image is unreadable",
                     None,
                 )
-                .with_metadata_path(request.metadata_path.clone()),
+                .with_metadata_path(metadata_path.clone()),
             )
         })?;
     if descriptor.root_element().attribute("version") != Some(ACTIVE_FORMAT_PROFILE.export_format) {
@@ -4188,7 +4204,7 @@ pub(crate) fn resolve_typed_edit_object(
             ),
             None,
         )
-        .with_metadata_path(request.metadata_path.clone())
+        .with_metadata_path(metadata_path.clone())
         .into());
     }
     Ok(ResolvedMetadataObject {
@@ -4202,7 +4218,8 @@ pub(crate) fn resolve_typed_edit_object(
 }
 
 fn typed_resolution_failure(
-    request: &MetaEditRequest,
+    metadata_path: &MetadataAddress,
+    operation: &str,
     code: crate::domain::source_target::SourceTargetErrorCode,
 ) -> MetaFailure {
     use crate::domain::source_target::SourceTargetErrorCode;
@@ -4219,15 +4236,18 @@ fn typed_resolution_failure(
         diagnostic_code,
         match diagnostic_code {
             MetaDiagnosticCode::TargetNotFound => "metadata target was not found",
-            MetaDiagnosticCode::InvalidArguments => "metadata target is not an editable object",
+            MetaDiagnosticCode::InvalidArguments => "metadata target is not a mutable object",
             MetaDiagnosticCode::ProviderUnavailable => {
                 "metadata target could not be resolved safely"
             }
-            _ => "metadata target does not provide typed Platform XML editing",
+            _ => match operation {
+                "remove" => "metadata target does not provide typed Platform XML removal",
+                _ => "metadata target does not provide typed Platform XML editing",
+            },
         },
         Some("metadataPath"),
     )
-    .with_metadata_path(request.metadata_path.clone())
+    .with_metadata_path(metadata_path.clone())
     .into()
 }
 

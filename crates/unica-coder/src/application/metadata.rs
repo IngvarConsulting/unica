@@ -353,10 +353,10 @@ pub(crate) fn parse_metadata_request(
             let dry_run = optional_bool(args, "dryRun", true)?;
             let force = optional_bool(args, "force", false)?;
             let confirm = optional_bool(args, "confirm", false)?;
-            if (force && (dry_run || !confirm)) || (confirm && !force) {
+            if (force && !confirm) || (confirm && !force) {
                 return Err(invalid(
                     "force",
-                    "forced remove apply requires force=true, confirm=true, and dryRun=false",
+                    "forced remove requires force=true and confirm=true; dryRun=false applies it",
                 )
                 .into());
             }
@@ -2452,6 +2452,20 @@ mod tests {
         assert!(preview.dry_run);
         assert!(!preview.force);
         assert!(!preview.confirm);
+
+        let MetadataRequest::Remove(forced_preview) = parse_metadata_request(
+            MetadataOperation::Remove,
+            &object(json!({
+                "sourceSet": "main",
+                "metadataPath": "Catalog.Items",
+                "force": true,
+                "confirm": true
+            })),
+        )
+        .unwrap() else {
+            panic!("expected forced remove preview request")
+        };
+        assert!(forced_preview.dry_run && forced_preview.force && forced_preview.confirm);
 
         let MetadataRequest::Remove(forced) = parse_metadata_request(
             MetadataOperation::Remove,
