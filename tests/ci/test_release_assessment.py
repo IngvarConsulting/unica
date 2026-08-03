@@ -32,6 +32,34 @@ def load_bsp_harvest_module():
 
 
 class ReleaseAssessmentTests(unittest.TestCase):
+    def test_release_gate_requires_only_the_four_current_meta_tools(self) -> None:
+        module = load_assessment_module()
+        meta_tools = {
+            name
+            for name in module.EXPECTED_PUBLIC_TOOLS
+            if name.startswith("unica.meta.")
+        }
+
+        self.assertEqual(
+            meta_tools,
+            {
+                "unica.meta.info",
+                "unica.meta.add",
+                "unica.meta.edit",
+                "unica.meta.remove",
+            },
+        )
+        self.assertTrue(
+            all(
+                name not in module.EXPECTED_PUBLIC_TOOLS
+                for name in (
+                    "unica.meta.compile",
+                    "unica.meta.profile",
+                    "unica.meta.validate",
+                )
+            )
+        )
+
     def write_response_id_mcp(self, path: Path, response_ids: list[int]) -> None:
         path.write_text(
             f"""#!/usr/bin/env python3
@@ -157,6 +185,9 @@ TOOLS = [
     "unica.code.search",
     "unica.code.outline",
     "unica.meta.info",
+    "unica.meta.add",
+    "unica.meta.edit",
+    "unica.meta.remove",
     "unica.standards.explain",
 ]
 

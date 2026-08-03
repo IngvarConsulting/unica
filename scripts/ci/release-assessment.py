@@ -36,6 +36,9 @@ EXPECTED_PUBLIC_TOOLS = {
     "unica.code.search",
     "unica.code.outline",
     "unica.meta.info",
+    "unica.meta.add",
+    "unica.meta.edit",
+    "unica.meta.remove",
     "unica.standards.explain",
 }
 

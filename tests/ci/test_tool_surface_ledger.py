@@ -64,6 +64,39 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
     def test_xdto_group_has_a_human_domain_title(self) -> None:
         self.assertEqual(self.module.GROUP_TITLES.get("xdto"), "xdto — пакеты XDTO")
 
+    def test_meta_surface_is_exactly_four_typed_operation_contracts(self) -> None:
+        expected = {
+            "unica.meta.info",
+            "unica.meta.add",
+            "unica.meta.edit",
+            "unica.meta.remove",
+        }
+        published = {
+            tool["name"]: tool
+            for tool in self.tools
+            if tool["name"].startswith("unica.meta.")
+        }
+        reviewed = {name for name in self.review if name.startswith("unica.meta.")}
+
+        self.assertEqual(set(published), expected)
+        self.assertEqual(reviewed, expected)
+        for name in sorted(expected):
+            with self.subTest(tool=name):
+                self.assertEqual(self.review[name]["scope"], "in")
+                self.assertEqual(self.review[name]["result"]["contract"], "typed")
+
+        operations = published["unica.meta.edit"]["inputSchema"]["properties"][
+            "operations"
+        ]
+        self.assertEqual(operations["type"], "array")
+        self.assertEqual(operations["minItems"], 1)
+        self.assertEqual(operations["items"]["type"], "object")
+        self.assertFalse(operations["items"]["additionalProperties"])
+        self.assertEqual(
+            operations["items"]["properties"]["op"]["enum"],
+            ["setProperties", "add", "update", "remove", "editRelations"],
+        )
+
     def test_every_review_entry_states_a_contract_and_scenarios(self) -> None:
         for name, entry in sorted(self.review.items()):
             with self.subTest(tool=name):
