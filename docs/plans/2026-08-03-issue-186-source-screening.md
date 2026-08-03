@@ -248,7 +248,7 @@ git commit -m "docs(research): define issue 186 screening method"
 - Produces: eight draft source cards; Task 6 owns their final decisions and summary rows.
 - Produces: an explicit reconciliation of `comol/ai_rules_1c` with its existing inspiration-only provenance.
 
-- [ ] **Step 1: Inspect the eight pinned trees**
+- [x] **Step 1: Inspect the eight pinned trees**
 
 Inspect exactly:
 
@@ -271,7 +271,7 @@ git -C <exact-source-path> ls-tree -r --name-only HEAD | rg '(^|/)(LICENSE|NOTIC
 
 Replace `<exact-source-path>` with the concrete path under `.build/issue-186/sources/` for that repository. Read the matched implementation, test, configuration, and licensing files at the detached HEAD; do not infer behavior from filenames alone.
 
-- [ ] **Step 2: Map workflow mechanisms to live Unica evidence**
+- [x] **Step 2: Map workflow mechanisms to live Unica evidence**
 
 For every claimed mechanism, search Unica before declaring a gap:
 
@@ -290,7 +290,7 @@ tests/ci/test_skill_provenance.py
 
 Record whether each source adds a mechanism, duplicates a current process, or only offers prose without enforceable evidence.
 
-- [ ] **Step 3: Write all eight draft cards**
+- [x] **Step 3: Write all eight draft cards**
 
 `gpt-5.6-luna` may execute this evidence-extraction step when available. Each
 draft card must cite at least:
@@ -304,7 +304,7 @@ draft card must cite at least:
 
 For `Menestre1/reasoning-bank-poc`, explicitly resolve the issue's preliminary ISC claim against the pinned tree. For `vgtitov/bsl-ai-toolkit`, separate proven open-source behavior from unverified byte-perfect, round-trip, RLS, masking, or paid capability claims.
 
-- [ ] **Step 4: Verify cohort completeness**
+- [x] **Step 4: Verify cohort completeness**
 
 Run:
 
@@ -316,7 +316,7 @@ $workflowSources | ForEach-Object { if (($reviewText.Split("### `$_`").Count - 1
 
 Expected: no exception; every workflow source appears as exactly one detailed card.
 
-- [ ] **Step 5: Commit the workflow cohort**
+- [x] **Step 5: Commit the workflow cohort**
 
 ```powershell
 git add docs/provenance/reviews/2026-08-03-issue-186-source-screening.md docs/plans/2026-08-03-issue-186-source-screening.md
