@@ -5538,8 +5538,10 @@ fn main() {
         let session_retired = runtime.rlm.lock().unwrap().is_none();
         wait_for_atomic_value(&maintenance_requests, 1, Duration::from_secs(2));
         let maintenance_requests = maintenance_requests.load(Ordering::Acquire);
+        let teardown_drained = runtime.session_teardowns.drain(SESSION_TEARDOWN_GRACE);
         drop(runtime);
-        let fixture_exited = wait_for_process_exit(fixture_pid, Duration::from_secs(2));
+        let fixture_exited =
+            teardown_drained && wait_for_process_exit(fixture_pid, Duration::from_secs(2));
         cleanup(&context);
 
         BlockingRlmObservation {
