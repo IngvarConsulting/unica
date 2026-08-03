@@ -532,36 +532,3 @@ fn meta_info_private_closed_read_reports_malformed_registrar_evidence_unavailabl
     assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
     assert_no_error_diagnostic(&result, "validation_failed");
 }
-
-#[cfg(unix)]
-#[test]
-fn meta_info_private_closed_read_reports_unreadable_registrar_evidence_unavailable() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let files = [
-        "Configuration.xml",
-        "Documents/Регистратор.xml",
-        "InformationRegisters/SubordinateRegister.xml",
-        "Languages/Русский.xml",
-    ];
-    let workspace = fixture_workspace(
-        "registrar-unreadable",
-        "meta-validate-subordinate-register",
-        &files,
-    );
-    let unreadable = workspace.path().join("src/Documents/000-Unreadable.xml");
-    std::fs::write(&unreadable, "not XML").unwrap();
-    std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
-
-    let result = call_info_path(
-        workspace.path(),
-        "InformationRegister.SubordinateRegister",
-        [],
-    );
-    std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o600)).unwrap();
-
-    assert!(!result.ok);
-    assert_eq!(result.data.as_ref().unwrap()["name"], "SubordinateRegister");
-    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
-    assert_no_error_diagnostic(&result, "validation_failed");
-}

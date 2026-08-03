@@ -1,9 +1,10 @@
 use crate::infrastructure::platform::filesystem::{
     file_identity, open_any_child_nofollow, open_directory_child_nofollow,
-    open_regular_child_nofollow, read_directory_names, OpenedChildKind,
+    read_directory_names_bounded, FileIdentity, OpenedChildKind,
 };
+use std::ffi::OsString;
 use std::fs::File;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
@@ -22,32 +23,98 @@ pub(crate) enum SecureReadPhase {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SecureTreePhase {
     RootOpened,
+    StartOpened(PathBuf),
+    AfterDirectoryListed(PathBuf),
     BeforeOpenEntry(PathBuf),
+    BeforeReadEntry(PathBuf),
     BeforeRebindEntry(PathBuf),
+    AfterRebindEntry(PathBuf),
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct SecureTreeLimits {
+pub(crate) struct SecureTreeCaptureLimits {
     pub(crate) maximum_depth: usize,
     pub(crate) maximum_entries: usize,
     pub(crate) maximum_files: usize,
+    pub(crate) maximum_bytes: usize,
 }
 
 #[derive(Debug)]
-pub(crate) struct SecureFileList {
-    pub(crate) files: Vec<SecureFileEntry>,
+pub(crate) struct SecureFileSnapshot {
+    pub(crate) files: Vec<SecureFileSnapshotEntry>,
     pub(crate) start_missing: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SecureFileEntry {
+pub(crate) struct SecureFileSnapshotEntry {
     pub(crate) logical_path: String,
-    pub(crate) relative_path: PathBuf,
+    pub(crate) bytes: Vec<u8>,
+}
+
+#[derive(Debug)]
+struct RetainedDirectoryPath {
+    handles: Vec<File>,
+    names: Vec<OsString>,
+    identities: Vec<FileIdentity>,
+}
+
+impl RetainedDirectoryPath {
+    fn new(namespace_root: File) -> io::Result<Self> {
+        let identity = file_identity(&namespace_root)?;
+        Ok(Self {
+            handles: vec![namespace_root],
+            names: Vec::new(),
+            identities: vec![identity],
+        })
+    }
+
+    fn current(&self) -> &File {
+        self.handles
+            .last()
+            .expect("retained directory path always owns its namespace root")
+    }
+
+    fn push(&mut self, name: OsString, directory: File) -> io::Result<()> {
+        self.identities.push(file_identity(&directory)?);
+        self.names.push(name);
+        self.handles.push(directory);
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct RetainedTree {
+    directory: File,
+    initial_names: Vec<OsString>,
+    children: Vec<RetainedChild>,
+}
+
+#[derive(Debug)]
+struct RetainedChild {
+    name: OsString,
+    identity: FileIdentity,
+    kind: RetainedChildKind,
+}
+
+#[derive(Debug)]
+enum RetainedChildKind {
+    Directory(Option<Box<RetainedTree>>),
+    RegularFile(Option<usize>),
+    Unsupported,
+}
+
+struct CaptureState {
+    entry_count: usize,
+    total_bytes: usize,
+    files: Vec<SecureFileSnapshotEntry>,
 }
 
 #[cfg(test)]
+type SecureTreeTestHook = Box<dyn FnMut(&SecureTreePhase)>;
+
+#[cfg(test)]
 thread_local! {
-    static SECURE_TREE_TEST_HOOK: std::cell::RefCell<Option<Box<dyn FnMut(&SecureTreePhase)>>> =
+    static SECURE_TREE_TEST_HOOK: std::cell::RefCell<Option<SecureTreeTestHook>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -56,7 +123,7 @@ pub(crate) fn with_secure_tree_test_hook<T>(
     hook: impl FnMut(&SecureTreePhase) + 'static,
     action: impl FnOnce() -> T,
 ) -> T {
-    struct Reset(Option<Box<dyn FnMut(&SecureTreePhase)>>);
+    struct Reset(Option<SecureTreeTestHook>);
     impl Drop for Reset {
         fn drop(&mut self) {
             SECURE_TREE_TEST_HOOK.with(|slot| *slot.borrow_mut() = self.0.take());
@@ -111,19 +178,19 @@ pub(crate) fn read_root_relative_regular_file_checked(
     })
 }
 
-pub(crate) fn list_root_relative_regular_files(
+pub(crate) fn capture_root_relative_regular_files(
     root: &Path,
     start: &Path,
-    limits: SecureTreeLimits,
+    limits: SecureTreeCaptureLimits,
     mut descend: impl FnMut(&Path) -> bool,
     mut select: impl FnMut(&Path) -> bool,
     mut checkpoint: impl FnMut() -> io::Result<()>,
-) -> io::Result<SecureFileList> {
+) -> io::Result<SecureFileSnapshot> {
     checkpoint()?;
-    let root_handle = imp::open_absolute_directory(root)?;
+    let mut retained_path = imp::open_absolute_directory_path(root)?;
     emit_tree_phase(SecureTreePhase::RootOpened);
-    let mut start_handle = root_handle.try_clone()?;
     let mut logical_start = PathBuf::new();
+    let entry_count = 0usize;
     for component in start.components() {
         use std::path::Component;
         let Component::Normal(name) = component else {
@@ -138,105 +205,199 @@ pub(crate) fn list_root_relative_regular_files(
         logical_start.push(name);
         checkpoint()?;
         emit_tree_phase(SecureTreePhase::BeforeOpenEntry(logical_start.clone()));
-        match open_directory_child_nofollow(&start_handle, name) {
-            Ok(child) => start_handle = child,
+        match open_directory_child_nofollow(retained_path.current(), name) {
+            Ok(child) => retained_path.push(name.to_os_string(), child)?,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return Ok(SecureFileList {
-                    files: Vec::new(),
-                    start_missing: true,
-                })
+                return prove_missing_start(
+                    retained_path,
+                    name,
+                    limits.maximum_entries,
+                    entry_count,
+                    &mut checkpoint,
+                )
             }
             Err(error) => return Err(error),
         }
     }
+    emit_tree_phase(SecureTreePhase::StartOpened(logical_start.clone()));
 
-    let mut state = (0usize, Vec::new());
-    walk_directory(
-        &start_handle,
+    let start_handle = retained_path.current().try_clone()?;
+    let mut state = CaptureState {
+        entry_count,
+        total_bytes: 0,
+        files: Vec::new(),
+    };
+    let tree = capture_directory(
+        start_handle,
         &logical_start,
-        SecureWalkPosition { depth: 0, limits },
+        0,
+        limits,
         &mut descend,
         &mut select,
         &mut checkpoint,
         &mut state,
     )?;
+    prove_tree(&tree, &state.files, &mut checkpoint)?;
+    prove_directory_path(&retained_path, &mut checkpoint)?;
     state
-        .1
+        .files
         .sort_by(|left, right| left.logical_path.cmp(&right.logical_path));
-    Ok(SecureFileList {
-        files: state.1,
+    Ok(SecureFileSnapshot {
+        files: state.files,
         start_missing: false,
     })
 }
 
-#[derive(Clone, Copy)]
-struct SecureWalkPosition {
-    depth: usize,
-    limits: SecureTreeLimits,
+fn prove_missing_start(
+    retained_path: RetainedDirectoryPath,
+    missing_name: &std::ffi::OsStr,
+    maximum_entries: usize,
+    entry_count: usize,
+    checkpoint: &mut impl FnMut() -> io::Result<()>,
+) -> io::Result<SecureFileSnapshot> {
+    let remaining = maximum_entries.checked_sub(entry_count).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::FileTooLarge,
+            "secure tree exceeds the entry-count limit",
+        )
+    })?;
+    let initial_names =
+        read_directory_names_bounded(retained_path.current(), remaining, &mut *checkpoint)?;
+    if initial_names.iter().any(|name| name == missing_name) {
+        return Err(io::Error::other(
+            "secure tree start changed while proving absence",
+        ));
+    }
+    match open_directory_child_nofollow(retained_path.current(), missing_name) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Ok(_) => {
+            return Err(io::Error::other(
+                "secure tree start appeared while proving absence",
+            ))
+        }
+        Err(error) => return Err(error),
+    }
+    let final_names = read_directory_names_bounded(
+        retained_path.current(),
+        initial_names.len(),
+        &mut *checkpoint,
+    )?;
+    if final_names != initial_names {
+        return Err(io::Error::other(
+            "directory membership changed while proving absent secure-tree start",
+        ));
+    }
+    prove_directory_path(&retained_path, checkpoint)?;
+    Ok(SecureFileSnapshot {
+        files: Vec::new(),
+        start_missing: true,
+    })
 }
 
-fn walk_directory(
-    directory: &File,
+#[allow(clippy::too_many_arguments)]
+fn capture_directory(
+    directory: File,
     logical_directory: &Path,
-    position: SecureWalkPosition,
+    depth: usize,
+    limits: SecureTreeCaptureLimits,
     descend: &mut impl FnMut(&Path) -> bool,
     select: &mut impl FnMut(&Path) -> bool,
     checkpoint: &mut impl FnMut() -> io::Result<()>,
-    state: &mut impl SecureWalkState,
-) -> io::Result<()> {
+    state: &mut CaptureState,
+) -> io::Result<RetainedTree> {
     checkpoint()?;
-    let initial_names = read_directory_names(directory)?;
-    state.add_entries(initial_names.len(), position.limits.maximum_entries)?;
+    let remaining_entries = limits
+        .maximum_entries
+        .checked_sub(state.entry_count)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "secure tree exceeds the entry-count limit",
+            )
+        })?;
+    let initial_names =
+        read_directory_names_bounded(&directory, remaining_entries, &mut *checkpoint)?;
+    state.entry_count = state
+        .entry_count
+        .checked_add(initial_names.len())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "secure-tree entry count overflowed",
+            )
+        })?;
+    emit_tree_phase(SecureTreePhase::AfterDirectoryListed(
+        logical_directory.to_path_buf(),
+    ));
+    let mut children = Vec::with_capacity(initial_names.len());
     for name in &initial_names {
         checkpoint()?;
         let logical_path = logical_directory.join(name);
         emit_tree_phase(SecureTreePhase::BeforeOpenEntry(logical_path.clone()));
-        let (child, kind) = open_any_child_nofollow(directory, name)?;
+        let (mut child, kind) = open_any_child_nofollow(&directory, name)?;
         let identity = file_identity(&child)?;
-        match kind {
+        let retained_kind = match kind {
             OpenedChildKind::Directory => {
                 let should_descend = descend(&logical_path);
-                if should_descend && position.depth >= position.limits.maximum_depth {
+                if should_descend && depth >= limits.maximum_depth {
                     return Err(io::Error::new(
                         io::ErrorKind::FileTooLarge,
                         "secure tree exceeds the traversal-depth limit",
                     ));
                 }
-                if should_descend {
-                    walk_directory(
-                        &child,
+                let subtree = if should_descend {
+                    Some(Box::new(capture_directory(
+                        child,
                         &logical_path,
-                        SecureWalkPosition {
-                            depth: position.depth + 1,
-                            ..position
-                        },
+                        depth + 1,
+                        limits,
                         descend,
                         select,
                         checkpoint,
                         state,
-                    )?;
-                }
-                checkpoint()?;
-                emit_tree_phase(SecureTreePhase::BeforeRebindEntry(logical_path.clone()));
-                let rebound = open_directory_child_nofollow(directory, name)?;
-                if file_identity(&rebound)? != identity {
-                    return Err(io::Error::other(
-                        "directory identity changed while enumerating secure tree",
-                    ));
-                }
+                    )?))
+                } else {
+                    None
+                };
+                RetainedChildKind::Directory(subtree)
             }
             OpenedChildKind::RegularFile => {
-                if select(&logical_path) {
-                    state.add_file(logical_path.clone(), position.limits.maximum_files)?;
-                }
-                checkpoint()?;
-                emit_tree_phase(SecureTreePhase::BeforeRebindEntry(logical_path.clone()));
-                let rebound = open_regular_child_nofollow(directory, name)?;
-                if file_identity(&rebound)? != identity {
-                    return Err(io::Error::other(
-                        "file identity changed while enumerating secure tree",
-                    ));
-                }
+                let captured_index = if select(&logical_path) {
+                    if state.files.len() >= limits.maximum_files {
+                        return Err(io::Error::new(
+                            io::ErrorKind::FileTooLarge,
+                            "secure tree exceeds the selected-file limit",
+                        ));
+                    }
+                    let remaining_bytes = limits
+                        .maximum_bytes
+                        .checked_sub(state.total_bytes)
+                        .ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::FileTooLarge,
+                                "secure tree exceeds the captured-byte limit",
+                            )
+                        })?;
+                    emit_tree_phase(SecureTreePhase::BeforeReadEntry(logical_path.clone()));
+                    let bytes = read_open_regular_file(&mut child, remaining_bytes, checkpoint)?;
+                    state.total_bytes =
+                        state.total_bytes.checked_add(bytes.len()).ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::FileTooLarge,
+                                "secure-tree captured byte count overflowed",
+                            )
+                        })?;
+                    let logical_name = logical_utf8_path(&logical_path)?;
+                    let index = state.files.len();
+                    state.files.push(SecureFileSnapshotEntry {
+                        logical_path: logical_name,
+                        bytes,
+                    });
+                    Some(index)
+                } else {
+                    None
+                };
+                RetainedChildKind::RegularFile(captured_index)
             }
             OpenedChildKind::ReparsePoint => {
                 return Err(io::Error::new(
@@ -251,65 +412,226 @@ fn walk_directory(
                         "selected secure-tree entry is not a regular file",
                     ));
                 }
+                RetainedChildKind::Unsupported
             }
+        };
+        checkpoint()?;
+        emit_tree_phase(SecureTreePhase::BeforeRebindEntry(logical_path.clone()));
+        prove_child_binding(&directory, name, identity, kind)?;
+        emit_tree_phase(SecureTreePhase::AfterRebindEntry(logical_path.clone()));
+        children.push(RetainedChild {
+            name: name.clone(),
+            identity,
+            kind: retained_kind,
+        });
+    }
+    Ok(RetainedTree {
+        directory,
+        initial_names,
+        children,
+    })
+}
+
+fn prove_tree(
+    tree: &RetainedTree,
+    captured: &[SecureFileSnapshotEntry],
+    checkpoint: &mut impl FnMut() -> io::Result<()>,
+) -> io::Result<()> {
+    checkpoint()?;
+    let final_names =
+        read_directory_names_bounded(&tree.directory, tree.initial_names.len(), &mut *checkpoint)?;
+    if final_names != tree.initial_names {
+        return Err(io::Error::other(
+            "directory membership changed while capturing secure tree",
+        ));
+    }
+    for child in &tree.children {
+        checkpoint()?;
+        let (mut rebound, kind) = open_any_child_nofollow(&tree.directory, &child.name)?;
+        if file_identity(&rebound)? != child.identity || !retained_kind_matches(&child.kind, kind) {
+            return Err(io::Error::other(
+                "entry identity changed before secure-tree final proof",
+            ));
+        }
+        match &child.kind {
+            RetainedChildKind::Directory(Some(subtree)) => {
+                prove_tree(subtree, captured, checkpoint)?;
+                prove_child_binding(
+                    &tree.directory,
+                    &child.name,
+                    child.identity,
+                    OpenedChildKind::Directory,
+                )?;
+            }
+            RetainedChildKind::RegularFile(Some(index)) => {
+                let expected = captured.get(*index).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "captured file proof index is invalid",
+                    )
+                })?;
+                verify_open_regular_file(&mut rebound, &expected.bytes, checkpoint)?;
+                prove_child_binding(
+                    &tree.directory,
+                    &child.name,
+                    child.identity,
+                    OpenedChildKind::RegularFile,
+                )?;
+            }
+            RetainedChildKind::Directory(None)
+            | RetainedChildKind::RegularFile(None)
+            | RetainedChildKind::Unsupported => {}
         }
     }
-    checkpoint()?;
-    if read_directory_names(directory)? != initial_names {
+    Ok(())
+}
+
+fn prove_directory_path(
+    path: &RetainedDirectoryPath,
+    checkpoint: &mut impl FnMut() -> io::Result<()>,
+) -> io::Result<()> {
+    for (handle, identity) in path.handles.iter().zip(&path.identities) {
+        checkpoint()?;
+        if file_identity(handle)? != *identity {
+            return Err(io::Error::other(
+                "retained absolute directory identity changed",
+            ));
+        }
+    }
+    for (index, name) in path.names.iter().enumerate() {
+        checkpoint()?;
+        let rebound = open_directory_child_nofollow(&path.handles[index], name)?;
+        if file_identity(&rebound)? != path.identities[index + 1] {
+            return Err(io::Error::other(
+                "absolute root or secure-tree start identity changed",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn read_open_regular_file(
+    file: &mut File,
+    maximum_bytes: usize,
+    checkpoint: &mut impl FnMut() -> io::Result<()>,
+) -> io::Result<Vec<u8>> {
+    let opened = file.metadata()?;
+    if !opened.is_file()
+        || usize::try_from(opened.len()).map_or(true, |length| length > maximum_bytes)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::FileTooLarge,
+            "secure tree exceeds the captured-byte limit",
+        ));
+    }
+    let mut bytes = Vec::with_capacity(opened.len() as usize);
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        checkpoint()?;
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buffer[..read]);
+        if bytes.len() > maximum_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "secure tree exceeds the captured-byte limit",
+            ));
+        }
+    }
+    let after = file.metadata()?;
+    if opened.len() != after.len() || opened.modified().ok() != after.modified().ok() {
         return Err(io::Error::other(
-            "directory membership changed while enumerating secure tree",
+            "secure-tree file changed while capturing bytes",
+        ));
+    }
+    Ok(bytes)
+}
+
+fn verify_open_regular_file(
+    file: &mut File,
+    expected: &[u8],
+    checkpoint: &mut impl FnMut() -> io::Result<()>,
+) -> io::Result<()> {
+    let opened = file.metadata()?;
+    if !opened.is_file() || opened.len() != expected.len() as u64 {
+        return Err(io::Error::other(
+            "secure-tree file bytes changed before final proof",
+        ));
+    }
+    let mut offset = 0usize;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        checkpoint()?;
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        let end = offset.checked_add(read).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "secure-tree byte offset overflowed",
+            )
+        })?;
+        if expected.get(offset..end) != Some(&buffer[..read]) {
+            return Err(io::Error::other(
+                "secure-tree file bytes changed before final proof",
+            ));
+        }
+        offset = end;
+    }
+    let after = file.metadata()?;
+    if offset != expected.len()
+        || opened.len() != after.len()
+        || opened.modified().ok() != after.modified().ok()
+    {
+        return Err(io::Error::other(
+            "secure-tree file changed during final proof",
         ));
     }
     Ok(())
 }
 
-trait SecureWalkState {
-    fn add_entries(&mut self, count: usize, maximum: usize) -> io::Result<()>;
-    fn add_file(&mut self, path: PathBuf, maximum: usize) -> io::Result<()>;
+fn prove_child_binding(
+    directory: &File,
+    name: &std::ffi::OsStr,
+    identity: FileIdentity,
+    kind: OpenedChildKind,
+) -> io::Result<()> {
+    let (rebound, rebound_kind) = open_any_child_nofollow(directory, name)?;
+    if file_identity(&rebound)? != identity || rebound_kind != kind {
+        return Err(io::Error::other(
+            "entry identity changed while capturing secure tree",
+        ));
+    }
+    Ok(())
 }
 
-impl SecureWalkState for (usize, Vec<SecureFileEntry>) {
-    fn add_entries(&mut self, count: usize, maximum: usize) -> io::Result<()> {
-        self.0 = self.0.checked_add(count).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::FileTooLarge,
-                "secure-tree entry count overflowed",
+fn retained_kind_matches(retained: &RetainedChildKind, actual: OpenedChildKind) -> bool {
+    matches!(
+        (retained, actual),
+        (RetainedChildKind::Directory(_), OpenedChildKind::Directory)
+            | (
+                RetainedChildKind::RegularFile(_),
+                OpenedChildKind::RegularFile
             )
-        })?;
-        if self.0 > maximum {
-            return Err(io::Error::new(
-                io::ErrorKind::FileTooLarge,
-                "secure tree exceeds the entry-count limit",
-            ));
-        }
-        Ok(())
-    }
+            | (RetainedChildKind::Unsupported, OpenedChildKind::Unsupported)
+    )
+}
 
-    fn add_file(&mut self, path: PathBuf, maximum: usize) -> io::Result<()> {
-        if self.1.len() >= maximum {
-            return Err(io::Error::new(
-                io::ErrorKind::FileTooLarge,
-                "secure tree exceeds the selected-file limit",
-            ));
-        }
-        let logical_path = path
-            .components()
-            .map(|component| {
-                component.as_os_str().to_str().ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "secure-tree logical path is not UTF-8",
-                    )
-                })
+fn logical_utf8_path(path: &Path) -> io::Result<String> {
+    path.components()
+        .map(|component| {
+            component.as_os_str().to_str().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "secure-tree logical path is not UTF-8",
+                )
             })
-            .collect::<io::Result<Vec<_>>>()?
-            .join("/");
-        self.1.push(SecureFileEntry {
-            logical_path,
-            relative_path: path,
-        });
-        Ok(())
-    }
+        })
+        .collect::<io::Result<Vec<_>>>()
+        .map(|components| components.join("/"))
 }
 
 fn relative_path<'a>(root: &Path, path: &'a Path) -> io::Result<&'a Path> {
@@ -323,7 +645,7 @@ fn relative_path<'a>(root: &Path, path: &'a Path) -> io::Result<&'a Path> {
 
 #[cfg(unix)]
 mod imp {
-    use super::{relative_path, SecureRead, SecureReadPhase};
+    use super::{relative_path, RetainedDirectoryPath, SecureRead, SecureReadPhase};
     use crate::infrastructure::platform::filesystem::{
         file_identity, open_directory_child_nofollow, open_directory_nofollow,
         open_regular_child_nofollow,
@@ -398,6 +720,10 @@ mod imp {
     }
 
     pub(super) fn open_absolute_directory(path: &Path) -> io::Result<File> {
+        open_absolute_directory_path(path)?.current().try_clone()
+    }
+
+    pub(super) fn open_absolute_directory_path(path: &Path) -> io::Result<RetainedDirectoryPath> {
         if !path.is_absolute() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -425,11 +751,13 @@ mod imp {
                 }
             }
         }
-        let mut current = open_directory_nofollow(Path::new("/"))?;
+        let namespace_root = open_directory_nofollow(Path::new("/"))?;
+        let mut retained = RetainedDirectoryPath::new(namespace_root)?;
         for name in names {
-            current = open_directory_child_nofollow(&current, &name)?;
+            let child = open_directory_child_nofollow(retained.current(), &name)?;
+            retained.push(name, child)?;
         }
-        Ok(current)
+        Ok(retained)
     }
 
     fn open_relative_directory(root: &File, path: &Path) -> io::Result<File> {
@@ -581,14 +909,10 @@ mod tests {
                 }
             },
             || {
-                list_root_relative_regular_files(
+                capture_root_relative_regular_files(
                     &fixture.root,
                     Path::new(""),
-                    SecureTreeLimits {
-                        maximum_depth: 8,
-                        maximum_entries: 100,
-                        maximum_files: 100,
-                    },
+                    capture_limits(),
                     |_| true,
                     |path| path.extension().and_then(|value| value.to_str()) == Some("xml"),
                     || Ok(()),
@@ -618,14 +942,10 @@ mod tests {
                 }
             },
             || {
-                list_root_relative_regular_files(
+                capture_root_relative_regular_files(
                     &fixture.root,
                     Path::new(""),
-                    SecureTreeLimits {
-                        maximum_depth: 8,
-                        maximum_entries: 100,
-                        maximum_files: 100,
-                    },
+                    capture_limits(),
                     |_| true,
                     |path| path.extension().and_then(|value| value.to_str()) == Some("xml"),
                     || Ok(()),
@@ -652,14 +972,10 @@ mod tests {
                 }
             },
             || {
-                list_root_relative_regular_files(
+                capture_root_relative_regular_files(
                     &fixture.root,
                     Path::new(""),
-                    SecureTreeLimits {
-                        maximum_depth: 8,
-                        maximum_entries: 100,
-                        maximum_files: 100,
-                    },
+                    capture_limits(),
                     |_| true,
                     |path| path.extension().and_then(|value| value.to_str()) == Some("xml"),
                     || Ok(()),
@@ -675,14 +991,10 @@ mod tests {
         let fixture = Fixture::new();
         fs::write(fixture.root.join("z.xml"), b"z").unwrap();
         fs::write(fixture.root.join("a.xml"), b"a").unwrap();
-        let listed = list_root_relative_regular_files(
+        let listed = capture_root_relative_regular_files(
             &fixture.root,
             Path::new(""),
-            SecureTreeLimits {
-                maximum_depth: 8,
-                maximum_entries: 100,
-                maximum_files: 100,
-            },
+            capture_limits(),
             |_| true,
             |path| path.extension().and_then(|value| value.to_str()) == Some("xml"),
             || Ok(()),
@@ -696,40 +1008,32 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["a.xml", "parent/resource.xml", "z.xml"]
         );
-        let cap = list_root_relative_regular_files(
+        let mut entry_cap = capture_limits();
+        entry_cap.maximum_entries = 2;
+        let cap = capture_root_relative_regular_files(
             &fixture.root,
             Path::new(""),
-            SecureTreeLimits {
-                maximum_depth: 8,
-                maximum_entries: 2,
-                maximum_files: 100,
-            },
+            entry_cap,
             |_| true,
             |_| true,
             || Ok(()),
         );
         assert_eq!(cap.unwrap_err().kind(), io::ErrorKind::FileTooLarge);
-        let depth_cap = list_root_relative_regular_files(
+        let mut depth_limits = capture_limits();
+        depth_limits.maximum_depth = 0;
+        let depth_cap = capture_root_relative_regular_files(
             &fixture.root,
             Path::new(""),
-            SecureTreeLimits {
-                maximum_depth: 0,
-                maximum_entries: 100,
-                maximum_files: 100,
-            },
+            depth_limits,
             |_| true,
             |_| true,
             || Ok(()),
         );
         assert_eq!(depth_cap.unwrap_err().kind(), io::ErrorKind::FileTooLarge);
-        let cancelled = list_root_relative_regular_files(
+        let cancelled = capture_root_relative_regular_files(
             &fixture.root,
             Path::new(""),
-            SecureTreeLimits {
-                maximum_depth: 8,
-                maximum_entries: 100,
-                maximum_files: 100,
-            },
+            capture_limits(),
             |_| true,
             |_| true,
             || Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled")),
@@ -747,14 +1051,10 @@ mod tests {
         // SAFETY: fifo_name is a live NUL-terminated pathname and mode is a valid permission mask.
         assert_eq!(unsafe { libc::mkfifo(fifo_name.as_ptr(), 0o600) }, 0);
 
-        let result = list_root_relative_regular_files(
+        let result = capture_root_relative_regular_files(
             &fixture.root,
             Path::new(""),
-            SecureTreeLimits {
-                maximum_depth: 8,
-                maximum_entries: 100,
-                maximum_files: 100,
-            },
+            capture_limits(),
             |_| true,
             |path| path.extension().and_then(|value| value.to_str()) == Some("xml"),
             || Ok(()),
@@ -771,14 +1071,12 @@ mod tests {
         fs::write(outside.join("outside.xml"), b"outside").unwrap();
         symlink(&outside, fixture.root.join("Documents")).unwrap();
 
-        let result = list_root_relative_regular_files(
+        let mut limits = capture_limits();
+        limits.maximum_depth = 0;
+        let result = capture_root_relative_regular_files(
             &fixture.root,
             Path::new("Documents"),
-            SecureTreeLimits {
-                maximum_depth: 0,
-                maximum_entries: 100,
-                maximum_files: 100,
-            },
+            limits,
             |_| false,
             |_| true,
             || Ok(()),
@@ -802,6 +1100,280 @@ mod tests {
         );
 
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Interrupted);
+    }
+
+    fn capture_limits() -> SecureTreeCaptureLimits {
+        SecureTreeCaptureLimits {
+            maximum_depth: 8,
+            maximum_entries: 100,
+            maximum_files: 100,
+            maximum_bytes: 1024,
+        }
+    }
+
+    #[test]
+    fn captured_tree_returns_exact_bytes_only_after_a_stable_complete_proof() {
+        let fixture = Fixture::new();
+        fs::write(fixture.root.join("a.xml"), b"alpha").unwrap();
+        fs::write(fixture.root.join("z.xml"), b"zeta").unwrap();
+
+        let captured = capture_root_relative_regular_files(
+            &fixture.root,
+            Path::new(""),
+            capture_limits(),
+            |_| true,
+            |path| path.extension().and_then(|value| value.to_str()) == Some("xml"),
+            || Ok(()),
+        )
+        .unwrap();
+
+        assert!(!captured.start_missing);
+        assert_eq!(
+            captured
+                .files
+                .iter()
+                .map(|file| (file.logical_path.as_str(), file.bytes.as_slice()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("a.xml", b"alpha".as_slice()),
+                ("parent/resource.xml", b"trusted".as_slice()),
+                ("z.xml", b"zeta".as_slice()),
+            ]
+        );
+    }
+
+    #[test]
+    fn captured_tree_rejects_a_new_file_created_after_listing_before_bytes() {
+        let fixture = Fixture::new();
+        fs::write(fixture.root.join("candidate.xml"), b"trusted-candidate").unwrap();
+        let inserted = fixture.root.join("inserted.xml");
+        let result = with_secure_tree_test_hook(
+            move |phase| {
+                if phase == &SecureTreePhase::AfterDirectoryListed(PathBuf::new()) {
+                    fs::write(&inserted, b"must-not-be-published").unwrap();
+                }
+            },
+            || {
+                capture_root_relative_regular_files(
+                    &fixture.root,
+                    Path::new(""),
+                    capture_limits(),
+                    |_| true,
+                    |path| path.extension().and_then(|value| value.to_str()) == Some("xml"),
+                    || Ok(()),
+                )
+            },
+        );
+
+        assert!(result.is_err(), "a post-listing create must fail closed");
+    }
+
+    #[test]
+    fn captured_tree_rejects_absolute_root_same_name_replacement() {
+        let fixture = Fixture::new();
+        let root = fixture.root.clone();
+        let displaced = root.with_extension("original-root");
+        let root_for_hook = root.clone();
+        let displaced_for_hook = displaced.clone();
+        let result = with_secure_tree_test_hook(
+            move |phase| {
+                if phase == &SecureTreePhase::RootOpened {
+                    fs::rename(&root_for_hook, &displaced_for_hook).unwrap();
+                    fs::create_dir(&root_for_hook).unwrap();
+                    fs::write(root_for_hook.join("outside.xml"), b"outside-root").unwrap();
+                }
+            },
+            || {
+                capture_root_relative_regular_files(
+                    &root,
+                    Path::new(""),
+                    capture_limits(),
+                    |_| true,
+                    |_| true,
+                    || Ok(()),
+                )
+            },
+        );
+        fs::remove_dir_all(&root).unwrap();
+        fs::rename(&displaced, &root).unwrap();
+
+        assert!(
+            result.is_err(),
+            "same-name root replacement must fail closed"
+        );
+    }
+
+    #[test]
+    fn captured_tree_rejects_start_directory_same_name_replacement() {
+        let fixture = Fixture::new();
+        let start = fixture.root.join("Documents");
+        let displaced = fixture.root.join("Documents-original");
+        fs::create_dir(&start).unwrap();
+        fs::write(start.join("trusted.xml"), b"trusted-document").unwrap();
+        let start_for_hook = start.clone();
+        let displaced_for_hook = displaced.clone();
+        let result = with_secure_tree_test_hook(
+            move |phase| {
+                if phase == &SecureTreePhase::StartOpened(PathBuf::from("Documents")) {
+                    fs::rename(&start_for_hook, &displaced_for_hook).unwrap();
+                    fs::create_dir(&start_for_hook).unwrap();
+                    fs::write(start_for_hook.join("outside.xml"), b"outside-start").unwrap();
+                }
+            },
+            || {
+                capture_root_relative_regular_files(
+                    &fixture.root,
+                    Path::new("Documents"),
+                    capture_limits(),
+                    |_| false,
+                    |_| true,
+                    || Ok(()),
+                )
+            },
+        );
+        fs::remove_dir_all(&start).unwrap();
+        fs::rename(&displaced, &start).unwrap();
+
+        assert!(
+            result.is_err(),
+            "same-name start replacement must fail closed"
+        );
+    }
+
+    #[test]
+    fn captured_tree_final_proof_rejects_early_child_replacement_after_immediate_rebind() {
+        let fixture = Fixture::new();
+        let early = fixture.root.join("a-early.xml");
+        let displaced = fixture.root.join("a-early-original.xml");
+        let replacement = fixture.root.join("replacement.bin");
+        fs::write(&early, b"trusted-early").unwrap();
+        fs::write(fixture.root.join("z-late.xml"), b"trusted-late").unwrap();
+        fs::write(&replacement, b"outside-early").unwrap();
+        let early_for_hook = early.clone();
+        let result = with_secure_tree_test_hook(
+            move |phase| {
+                if phase == &SecureTreePhase::AfterRebindEntry(PathBuf::from("a-early.xml")) {
+                    fs::rename(&early_for_hook, &displaced).unwrap();
+                    fs::rename(&replacement, &early_for_hook).unwrap();
+                }
+            },
+            || {
+                capture_root_relative_regular_files(
+                    &fixture.root,
+                    Path::new(""),
+                    capture_limits(),
+                    |_| true,
+                    |path| path.extension().and_then(|value| value.to_str()) == Some("xml"),
+                    || Ok(()),
+                )
+            },
+        );
+
+        assert!(
+            result.is_err(),
+            "an early same-name swap must fail final proof"
+        );
+    }
+
+    #[test]
+    fn captured_tree_final_proof_rejects_same_identity_content_mutation() {
+        let fixture = Fixture::new();
+        let candidate = fixture.root.join("a-early.xml");
+        fs::write(&candidate, b"trusted-early").unwrap();
+        fs::write(fixture.root.join("z-late.xml"), b"trusted-late").unwrap();
+        let candidate_for_hook = candidate.clone();
+        let result = with_secure_tree_test_hook(
+            move |phase| {
+                if phase == &SecureTreePhase::AfterRebindEntry(PathBuf::from("a-early.xml")) {
+                    fs::write(&candidate_for_hook, b"mutated-early").unwrap();
+                }
+            },
+            || {
+                capture_root_relative_regular_files(
+                    &fixture.root,
+                    Path::new(""),
+                    capture_limits(),
+                    |_| true,
+                    |path| path.extension().and_then(|value| value.to_str()) == Some("xml"),
+                    || Ok(()),
+                )
+            },
+        );
+
+        assert!(
+            result.is_err(),
+            "same-identity byte mutation must fail final proof"
+        );
+    }
+
+    #[test]
+    fn captured_tree_reads_from_open_file_identity_and_rejects_per_file_swap() {
+        let fixture = Fixture::new();
+        let candidate = fixture.root.join("candidate.xml");
+        let displaced = fixture.root.join("candidate-original.xml");
+        let replacement = fixture.root.join("replacement.bin");
+        fs::write(&candidate, b"trusted-candidate").unwrap();
+        fs::write(&replacement, b"outside-candidate").unwrap();
+        let candidate_for_hook = candidate.clone();
+        let result = with_secure_tree_test_hook(
+            move |phase| {
+                if phase == &SecureTreePhase::BeforeReadEntry(PathBuf::from("candidate.xml")) {
+                    fs::rename(&candidate_for_hook, &displaced).unwrap();
+                    fs::rename(&replacement, &candidate_for_hook).unwrap();
+                }
+            },
+            || {
+                capture_root_relative_regular_files(
+                    &fixture.root,
+                    Path::new(""),
+                    capture_limits(),
+                    |_| true,
+                    |path| path.extension().and_then(|value| value.to_str()) == Some("xml"),
+                    || Ok(()),
+                )
+            },
+        );
+
+        assert!(result.is_err(), "a per-file identity swap must fail closed");
+    }
+
+    #[test]
+    fn captured_tree_enforces_total_bytes_and_cancels_during_entry_enumeration() {
+        let fixture = Fixture::new();
+        for index in 0..32 {
+            fs::write(fixture.root.join(format!("{index:02}.xml")), b"payload").unwrap();
+        }
+        let mut tiny = capture_limits();
+        tiny.maximum_bytes = 8;
+        let oversized = capture_root_relative_regular_files(
+            &fixture.root,
+            Path::new(""),
+            tiny,
+            |_| true,
+            |_| true,
+            || Ok(()),
+        );
+        assert_eq!(oversized.unwrap_err().kind(), io::ErrorKind::FileTooLarge);
+
+        let checkpoints = std::cell::Cell::new(0usize);
+        let cancelled = capture_root_relative_regular_files(
+            &fixture.root,
+            Path::new(""),
+            capture_limits(),
+            |_| true,
+            |_| true,
+            || {
+                let next = checkpoints.get() + 1;
+                checkpoints.set(next);
+                if next == 6 {
+                    Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"))
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert_eq!(cancelled.unwrap_err().kind(), io::ErrorKind::Interrupted);
+        assert_eq!(checkpoints.get(), 6);
     }
 
     #[test]
@@ -927,7 +1499,7 @@ mod windows_tests {
 
 #[cfg(windows)]
 mod imp {
-    use super::{relative_path, SecureRead, SecureReadPhase};
+    use super::{relative_path, RetainedDirectoryPath, SecureRead, SecureReadPhase};
     use crate::infrastructure::platform::filesystem::{
         open_directory_child_nofollow, open_directory_nofollow, open_regular_child_nofollow,
     };
@@ -1016,6 +1588,10 @@ mod imp {
     }
 
     pub(super) fn open_absolute_directory(path: &Path) -> io::Result<File> {
+        open_absolute_directory_path(path)?.current().try_clone()
+    }
+
+    pub(super) fn open_absolute_directory_path(path: &Path) -> io::Result<RetainedDirectoryPath> {
         use std::path::{Component, PathBuf};
 
         if !path.is_absolute() {
@@ -1054,11 +1630,13 @@ mod imp {
                 }
             }
         }
-        let mut current = open_directory_nofollow(&namespace_root)?;
+        let namespace_root = open_directory_nofollow(&namespace_root)?;
+        let mut retained = RetainedDirectoryPath::new(namespace_root)?;
         for name in names {
-            current = open_directory_child_nofollow(&current, &name)?;
+            let child = open_directory_child_nofollow(retained.current(), &name)?;
+            retained.push(name, child)?;
         }
-        Ok(current)
+        Ok(retained)
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1078,7 +1656,7 @@ mod imp {
 
 #[cfg(not(any(unix, windows)))]
 mod imp {
-    use super::{SecureRead, SecureReadPhase};
+    use super::{RetainedDirectoryPath, SecureRead, SecureReadPhase};
     use std::io;
     use std::path::Path;
 
@@ -1096,6 +1674,13 @@ mod imp {
     }
 
     pub(super) fn open_absolute_directory(_path: &Path) -> io::Result<std::fs::File> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "secure no-follow directory traversal is unavailable on this platform",
+        ))
+    }
+
+    pub(super) fn open_absolute_directory_path(_path: &Path) -> io::Result<RetainedDirectoryPath> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "secure no-follow directory traversal is unavailable on this platform",

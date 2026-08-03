@@ -296,10 +296,27 @@ pub(crate) fn open_any_child_nofollow(
 }
 
 #[cfg(unix)]
-pub(crate) fn read_directory_names(directory: &fs::File) -> io::Result<Vec<std::ffi::OsString>> {
-    let mut names = cap_primitives::fs::read_base_dir(directory)?
-        .map(|entry| entry.map(|entry| entry.file_name()))
-        .collect::<io::Result<Vec<_>>>()?;
+pub(crate) fn read_directory_names_bounded(
+    directory: &fs::File,
+    maximum_entries: usize,
+    mut checkpoint: impl FnMut() -> io::Result<()>,
+) -> io::Result<Vec<std::ffi::OsString>> {
+    let mut entries = cap_primitives::fs::read_base_dir(directory)?;
+    let mut names = Vec::new();
+    loop {
+        checkpoint()?;
+        let Some(entry) = entries.next() else {
+            break;
+        };
+        let name = entry?.file_name();
+        if names.len() >= maximum_entries {
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "directory exceeds the retained enumeration entry limit",
+            ));
+        }
+        names.push(name);
+    }
     names.sort();
     Ok(names)
 }
@@ -1561,6 +1578,16 @@ fn parse_directory_information_buffer(
     buffer: &[u8],
     names: &mut Vec<std::ffi::OsString>,
 ) -> io::Result<()> {
+    parse_directory_information_buffer_bounded(buffer, names, usize::MAX, &mut || Ok(()))
+}
+
+#[cfg(windows)]
+fn parse_directory_information_buffer_bounded(
+    buffer: &[u8],
+    names: &mut Vec<std::ffi::OsString>,
+    maximum_entries: usize,
+    checkpoint: &mut impl FnMut() -> io::Result<()>,
+) -> io::Result<()> {
     use std::mem::{offset_of, size_of};
     use std::os::windows::ffi::OsStringExt;
     use windows_sys::Win32::Storage::FileSystem::FILE_ID_BOTH_DIR_INFO;
@@ -1620,7 +1647,14 @@ fn parse_directory_information_buffer(
             });
         }
         let name = std::ffi::OsString::from_wide(&name);
+        checkpoint()?;
         if name != "." && name != ".." {
+            if names.len() >= maximum_entries {
+                return Err(io::Error::new(
+                    io::ErrorKind::FileTooLarge,
+                    "directory exceeds the retained enumeration entry limit",
+                ));
+            }
             names.push(name);
         }
 
@@ -1662,6 +1696,15 @@ fn parse_directory_information_buffer(
     reason = "the following Windows full-dump tree-inspection task consumes retained enumeration"
 )]
 pub(crate) fn read_directory_names(directory: &fs::File) -> io::Result<Vec<std::ffi::OsString>> {
+    read_directory_names_bounded(directory, usize::MAX, || Ok(()))
+}
+
+#[cfg(windows)]
+pub(crate) fn read_directory_names_bounded(
+    directory: &fs::File,
+    maximum_entries: usize,
+    mut checkpoint: impl FnMut() -> io::Result<()>,
+) -> io::Result<Vec<std::ffi::OsString>> {
     use std::mem::size_of;
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
@@ -1706,7 +1749,12 @@ pub(crate) fn read_directory_names(directory: &fs::File) -> io::Result<Vec<std::
         // complete structure, name, and next-record bounds checks before reading each field.
         let buffer =
             unsafe { std::slice::from_raw_parts(storage.as_ptr().cast::<u8>(), buffer_bytes) };
-        parse_directory_information_buffer(buffer, &mut names)?;
+        parse_directory_information_buffer_bounded(
+            buffer,
+            &mut names,
+            maximum_entries,
+            &mut checkpoint,
+        )?;
     }
     names.sort();
     Ok(names)
@@ -3374,6 +3422,38 @@ mod tests {
         assert_eq!(staged_metadata.permissions().mode() & 0o7777, 0o600);
 
         drop(staged_file);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn retained_directory_enumeration_applies_cap_and_checkpoint_incrementally() {
+        use super::{open_directory_nofollow, read_directory_names_bounded};
+
+        let root = unique_temp_root("bounded-retained-enumeration");
+        fs::create_dir_all(&root).unwrap();
+        for index in 0..64 {
+            fs::write(root.join(format!("{index:02}.xml")), b"x").unwrap();
+        }
+        let directory = open_directory_nofollow(&root).unwrap();
+
+        let capped = read_directory_names_bounded(&directory, 3, || Ok(()));
+        assert_eq!(capped.unwrap_err().kind(), io::ErrorKind::FileTooLarge);
+
+        let checkpoints = std::cell::Cell::new(0usize);
+        let cancelled = read_directory_names_bounded(&directory, 64, || {
+            let next = checkpoints.get() + 1;
+            checkpoints.set(next);
+            if next == 5 {
+                Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"))
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(cancelled.unwrap_err().kind(), io::ErrorKind::Interrupted);
+        assert_eq!(checkpoints.get(), 5);
+
+        drop(directory);
         fs::remove_dir_all(root).unwrap();
     }
 

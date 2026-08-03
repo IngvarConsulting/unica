@@ -22,7 +22,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::infrastructure::platform::secure_read::{
-    list_root_relative_regular_files, read_root_relative_regular_file_checked, SecureTreeLimits,
+    capture_root_relative_regular_files, SecureTreeCaptureLimits,
 };
 
 const REGISTRAR_SCAN_MAX_ENTRIES: usize = 20_000;
@@ -346,13 +346,14 @@ fn typed_registrar_document_images(
         return (Vec::new(), MetadataEvidenceAvailability::Complete);
     }
     let checkpoint = || registrar_scan_checkpoint(deadline, cancellation);
-    let entries = match list_root_relative_regular_files(
+    let entries = match capture_root_relative_regular_files(
         &resolved.source_root,
         Path::new("Documents"),
-        SecureTreeLimits {
+        SecureTreeCaptureLimits {
             maximum_depth: 0,
             maximum_entries: REGISTRAR_SCAN_MAX_ENTRIES,
             maximum_files: REGISTRAR_SCAN_MAX_FILES,
+            maximum_bytes: REGISTRAR_SCAN_MAX_BYTES,
         },
         |_| false,
         |path| path.extension().and_then(|extension| extension.to_str()) == Some("xml"),
@@ -370,42 +371,9 @@ fn typed_registrar_document_images(
         return (Vec::new(), MetadataEvidenceAvailability::Complete);
     }
     let mut resources = Vec::new();
-    let mut total_bytes = 0usize;
     let register_reference = target.as_str().to_string();
     for entry in entries.files {
-        let remaining = match REGISTRAR_SCAN_MAX_BYTES.checked_sub(total_bytes) {
-            Some(remaining) => remaining,
-            None => {
-                return registrar_evidence_unavailable(
-                    target,
-                    "registrar evidence exceeds the byte limit",
-                )
-            }
-        };
-        let bytes = match read_root_relative_regular_file_checked(
-            &resolved.source_root,
-            &resolved.source_root.join(&entry.relative_path),
-            remaining,
-            || registrar_scan_checkpoint(deadline, cancellation),
-            |_| {},
-        ) {
-            Ok(read) => read.bytes,
-            Err(_) => {
-                return registrar_evidence_unavailable(
-                    target,
-                    "registrar evidence candidate cannot be read",
-                )
-            }
-        };
-        total_bytes = match total_bytes.checked_add(bytes.len()) {
-            Some(total) if total <= REGISTRAR_SCAN_MAX_BYTES => total,
-            _ => {
-                return registrar_evidence_unavailable(
-                    target,
-                    "registrar evidence exceeds the byte limit",
-                )
-            }
-        };
+        let bytes = entry.bytes;
         let identity = match super::validation_context::inspect_metadata_image_identity(&bytes) {
             Ok(identity) if identity.object_type == "Document" => identity,
             _ => {

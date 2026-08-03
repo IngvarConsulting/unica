@@ -1,7 +1,4 @@
 use super::{OperationResult, UnicaApplication};
-use crate::infrastructure::native_operations::compile_transaction::{
-    with_commit_failpoint, CommitFailpoint,
-};
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -154,22 +151,4 @@ fn meta_remove_private_coordinator_preview_and_apply_publish_events_cache_and_fi
     assert!(!std::fs::read_to_string(owner)
         .unwrap()
         .contains("<Catalog>Removable</Catalog>"));
-}
-
-#[test]
-fn meta_remove_private_coordinator_rolls_back_exact_bytes_and_emits_no_event() {
-    let workspace = create_remove_workspace("rollback");
-    let descriptor = workspace.path().join("src/Catalogs/Removable.xml");
-    let owner = workspace.path().join("src/Configuration.xml");
-    let descriptor_before = std::fs::read(&descriptor).unwrap();
-    let owner_before = std::fs::read(&owner).unwrap();
-
-    let result = with_commit_failpoint(CommitFailpoint::PostWriteValidation, || {
-        call_remove(workspace.path(), false)
-    });
-
-    assert!(!result.ok);
-    assert!(result.cache.events.is_empty());
-    assert_eq!(std::fs::read(&descriptor).unwrap(), descriptor_before);
-    assert_eq!(std::fs::read(&owner).unwrap(), owner_before);
 }

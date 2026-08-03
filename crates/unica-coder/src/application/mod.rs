@@ -201,7 +201,7 @@ impl UnicaApplication {
     }
 
     #[cfg(test)]
-    fn call_unregistered_meta_remove_for_integration_tests(
+    pub(crate) fn call_unregistered_meta_remove_for_integration_tests(
         &self,
         args: &Map<String, Value>,
     ) -> Result<OperationResult, String> {

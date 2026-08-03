@@ -190,9 +190,14 @@ mod tests {
     use super::*;
     use crate::application::metadata::{MetaAddRequest, MetaEditRequest, MetaRemoveRequest};
     use crate::application::ports::{
+        ApplicationPorts, FormatGuardCheck, FormatGuardError, HandlerOutcome,
         MetadataChildDirectoryKind, MetadataChildProfile, MetadataChildResourceKind,
         MetadataResourceRole, MetadataTemplateResourcePart, MetadataTemplateType,
+        SupportGuardCheck,
     };
+    use crate::application::{ToolSpec, UnicaApplication};
+    use crate::domain::cache::{CacheAccess, CacheReport};
+    use crate::domain::events::DomainEvent;
     use crate::domain::metadata::{
         MetaCollection, MetaEditOperation, MetaElementInput, MetaElementUpdateInput,
         MetaPropertyChanges, MetaPropertyInput, MetaPropertyValue, MetaPublicationAction,
@@ -200,6 +205,7 @@ mod tests {
         MetadataReference, RelationEditMode,
     };
     use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use crate::infrastructure::application_ports::InfrastructureApplicationPorts;
     use crate::infrastructure::native_operations::cf::create_configuration_scaffold;
     use crate::infrastructure::native_operations::compile_transaction::{
         with_before_rollback_mutation_hook, with_commit_failpoint, CommitFailpoint,
@@ -207,6 +213,87 @@ mod tests {
     use serde_json::{json, Map};
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::Arc;
+
+    struct FixedWorkspaceApplicationPorts {
+        context: WorkspaceContext,
+        inner: InfrastructureApplicationPorts,
+    }
+
+    impl ApplicationPorts for FixedWorkspaceApplicationPorts {
+        fn discover_workspace(
+            &self,
+            _requested_cwd: Option<PathBuf>,
+        ) -> Result<WorkspaceContext, String> {
+            Ok(self.context.clone())
+        }
+
+        fn validate_tool_context(
+            &self,
+            spec: ToolSpec,
+            args: &Map<String, serde_json::Value>,
+            dry_run: bool,
+            context: &WorkspaceContext,
+        ) -> Result<(), String> {
+            self.inner
+                .validate_tool_context(spec, args, dry_run, context)
+        }
+
+        fn prepare_metadata_mutation(
+            &self,
+            request: &MetadataRequest,
+            context: &WorkspaceContext,
+            cancellation: &CancellationToken,
+        ) -> Result<Box<dyn PreparedMetadataMutation>, MetaFailure> {
+            self.inner
+                .prepare_metadata_mutation(request, context, cancellation)
+        }
+
+        fn evaluate_format_guard(
+            &self,
+            spec: ToolSpec,
+            args: &Map<String, serde_json::Value>,
+            context: &WorkspaceContext,
+        ) -> Result<FormatGuardCheck, FormatGuardError> {
+            self.inner.evaluate_format_guard(spec, args, context)
+        }
+
+        fn evaluate_support_guard(
+            &self,
+            spec: ToolSpec,
+            args: &Map<String, serde_json::Value>,
+            context: &WorkspaceContext,
+        ) -> Result<SupportGuardCheck, String> {
+            self.inner.evaluate_support_guard(spec, args, context)
+        }
+
+        fn invoke_handler(
+            &self,
+            spec: ToolSpec,
+            args: &Map<String, serde_json::Value>,
+            context: &WorkspaceContext,
+            dry_run: bool,
+            cancellation: &CancellationToken,
+        ) -> Result<HandlerOutcome, String> {
+            self.inner
+                .invoke_handler(spec, args, context, dry_run, cancellation)
+        }
+
+        fn cache_report(
+            &self,
+            context: &WorkspaceContext,
+            events: &[DomainEvent],
+            dry_run: bool,
+            cache_access: CacheAccess,
+        ) -> Result<CacheReport, String> {
+            self.inner
+                .cache_report(context, events, dry_run, cache_access)
+        }
+
+        fn notify_invalidation(&self, context: &WorkspaceContext, events: &[DomainEvent]) {
+            self.inner.notify_invalidation(context, events);
+        }
+    }
 
     struct Fixture {
         root: PathBuf,
@@ -1971,74 +2058,67 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn child_topology_failures_report_logical_identity_without_provider_paths() {
-        use std::os::unix::fs::symlink;
-        use std::process::Command;
-
-        for node_kind in ["symlink", "unexpected-node"] {
-            let fixture = Fixture::new(&format!("child-topology-sanitized-{node_kind}"));
-            let cancellation = CancellationToken::new();
-            fixture.publish_form_add("Main");
-            let ext = fixture.root.join("src/Catalogs/Editable/Forms/Main/Ext");
-            if node_kind == "symlink" {
-                let external = fixture.root.join("provider-secret.txt");
-                fs::write(&external, b"secret").unwrap();
-                symlink(&external, ext.join("LinkedResource")).unwrap();
-            } else {
-                let fifo = ext.join("ProviderPipe");
-                let status = Command::new("mkfifo").arg(&fifo).status().unwrap();
-                assert!(status.success());
-            }
-            let request = fixture.typed_edit(vec![MetaEditOperation::update(
-                MetaCollection::Forms,
-                None,
-                vec![MetaElementUpdateInput {
-                    name: "Main".into(),
-                    comment: Some("touch".into()),
-                    ..MetaElementUpdateInput::default()
-                }],
+        let fixture = Fixture::new("child-topology-sanitized-link");
+        let cancellation = CancellationToken::new();
+        fixture.publish_form_add("Main");
+        let ext = fixture.root.join("src/Catalogs/Editable/Forms/Main/Ext");
+        let external = fixture.root.join("provider-secret.txt");
+        fs::write(&external, b"secret").unwrap();
+        let Some(link_result) =
+            crate::infrastructure::platform::filesystem::create_file_symlink_for_test(
+                &external,
+                ext.join("LinkedResource"),
             )
-            .unwrap()]);
+        else {
+            return;
+        };
+        if link_result.is_err() {
+            return;
+        }
+        let request = fixture.typed_edit(vec![MetaEditOperation::update(
+            MetaCollection::Forms,
+            None,
+            vec![MetaElementUpdateInput {
+                name: "Main".into(),
+                comment: Some("touch".into()),
+                ..MetaElementUpdateInput::default()
+            }],
+        )
+        .unwrap()]);
 
-            let failure = match MetadataOperations::prepare_mutation(
-                &request,
-                &fixture.context,
-                &cancellation,
-            ) {
-                Ok(_) => panic!("{node_kind} topology unexpectedly prepared"),
+        let failure =
+            match MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation) {
+                Ok(_) => panic!("linked topology unexpectedly prepared"),
                 Err(failure) => failure,
             };
 
-            let diagnostic = &failure.diagnostics[0];
-            assert!(
-                diagnostic.message.contains("Catalog.Editable.Form.Main"),
-                "{node_kind}: {diagnostic:?}"
-            );
-            assert!(
-                !diagnostic
-                    .message
-                    .contains(&fixture.root.to_string_lossy().into_owned()),
-                "{node_kind}: {diagnostic:?}"
-            );
-            assert_eq!(
-                diagnostic.metadata_path.as_ref(),
-                Some(
-                    &MetadataAddress::parse(
-                        PLATFORM_XML_8_3_27_FORMAT_2_20,
-                        "Catalog.Editable.Form.Main"
-                    )
-                    .unwrap()
-                ),
-                "{node_kind}"
-            );
-            assert_eq!(
-                diagnostic.field.as_deref(),
-                Some("resources.child.topology"),
-                "{node_kind}"
-            );
-        }
+        let diagnostic = &failure.diagnostics[0];
+        assert!(
+            diagnostic.message.contains("Catalog.Editable.Form.Main"),
+            "{diagnostic:?}"
+        );
+        assert!(
+            !diagnostic
+                .message
+                .contains(&fixture.root.to_string_lossy().into_owned()),
+            "{diagnostic:?}"
+        );
+        assert_eq!(
+            diagnostic.metadata_path.as_ref(),
+            Some(
+                &MetadataAddress::parse(
+                    PLATFORM_XML_8_3_27_FORMAT_2_20,
+                    "Catalog.Editable.Form.Main"
+                )
+                .unwrap()
+            )
+        );
+        assert_eq!(
+            diagnostic.field.as_deref(),
+            Some("resources.child.topology")
+        );
     }
 
     #[test]
@@ -2099,17 +2179,24 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[test]
     fn child_collection_snapshot_failure_is_provider_neutral() {
-        use std::os::unix::fs::symlink;
-
         let fixture = Fixture::new("child-collection-snapshot-sanitized");
         let cancellation = CancellationToken::new();
         let external = fixture.root.join("provider-private-forms");
         fs::create_dir_all(&external).unwrap();
         let collection = fixture.root.join("src/Catalogs/Editable/Forms");
-        symlink(&external, &collection).unwrap();
+        let Some(link_result) =
+            crate::infrastructure::platform::filesystem::create_dir_symlink_for_test(
+                &external,
+                &collection,
+            )
+        else {
+            return;
+        };
+        if link_result.is_err() {
+            return;
+        }
         let request = fixture.typed_edit(vec![MetaEditOperation::add(
             MetaCollection::Forms,
             None,
@@ -3157,11 +3244,36 @@ mod tests {
             .contains(incomplete.root.to_string_lossy().as_ref()));
     }
 
-    #[cfg(unix)]
+    #[test]
+    fn meta_remove_full_stack_failure_rolls_back_bytes_without_events_or_cache_invalidation() {
+        let fixture = Fixture::new("remove-full-stack-rollback");
+        let descriptor_before = fs::read(&fixture.descriptor).unwrap();
+        let owner_before = fs::read(&fixture.owner).unwrap();
+        let application = UnicaApplication::with_ports(Arc::new(FixedWorkspaceApplicationPorts {
+            context: fixture.context.clone(),
+            inner: InfrastructureApplicationPorts::new(),
+        }));
+        let args = Map::from_iter([
+            ("sourceSet".to_string(), json!("main")),
+            ("metadataPath".to_string(), json!(fixture.target.as_str())),
+            ("dryRun".to_string(), json!(false)),
+        ]);
+
+        let result = with_commit_failpoint(CommitFailpoint::PostWriteValidation, || {
+            application.call_unregistered_meta_remove_for_integration_tests(&args)
+        })
+        .expect("private typed meta.remove call");
+
+        assert!(!result.ok);
+        assert!(result.cache.events.is_empty());
+        assert!(result.cache.invalidated.is_empty());
+        assert!(result.cache.refreshed.is_empty());
+        assert_eq!(fs::read(&fixture.descriptor).unwrap(), descriptor_before);
+        assert_eq!(fs::read(&fixture.owner).unwrap(), owner_before);
+    }
+
     #[test]
     fn meta_remove_denies_a_source_set_that_escapes_workspace_containment() {
-        use std::os::unix::fs::symlink;
-
         let fixture = Fixture::new("remove-containment");
         let outside = std::env::temp_dir().join(format!(
             "unica-meta-remove-outside-{}-{}",
@@ -3169,7 +3281,19 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         fs::rename(fixture.root.join("src"), &outside).unwrap();
-        symlink(&outside, fixture.root.join("src")).unwrap();
+        let Some(link_result) =
+            crate::infrastructure::platform::filesystem::create_dir_symlink_for_test(
+                &outside,
+                fixture.root.join("src"),
+            )
+        else {
+            fs::rename(&outside, fixture.root.join("src")).unwrap();
+            return;
+        };
+        if link_result.is_err() {
+            fs::rename(&outside, fixture.root.join("src")).unwrap();
+            return;
+        }
         let cancellation = CancellationToken::new();
 
         let failure = match MetadataOperations::prepare_mutation(

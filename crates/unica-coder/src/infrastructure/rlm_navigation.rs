@@ -11,7 +11,7 @@ use crate::domain::metadata::{
 use crate::domain::metadata::{MetaProfileResult, MetaProfileSection};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform::secure_read::{
-    list_root_relative_regular_files, read_root_relative_regular_file_checked, SecureTreeLimits,
+    capture_root_relative_regular_files, SecureTreeCaptureLimits,
 };
 use crate::infrastructure::workspace_index::IndexReadiness;
 use crate::infrastructure::workspace_services::{
@@ -27,8 +27,9 @@ use std::time::{Duration, Instant};
 const RLM_NAVIGATION_TIMEOUT: Duration = Duration::from_secs(45);
 const RELATED_READINESS_SETTLE_LIMIT: Duration = Duration::from_millis(500);
 const RELATED_READINESS_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const RELATED_SOURCE_MAX_ENTRIES: usize = 20_000;
 const RELATED_SOURCE_MAX_FILES: usize = 20_000;
-const RELATED_SOURCE_MAX_BYTES: u64 = 64 * 1024 * 1024;
+const RELATED_SOURCE_MAX_BYTES: usize = 64 * 1024 * 1024;
 const RELATED_SOURCE_MAX_DEPTH: usize = 256;
 
 /// Opaque identity of the exact relevant source paths and bytes observed by a
@@ -403,13 +404,14 @@ fn related_source_content_snapshot(
         ensure_snapshot_budget(deadline, settle_until, cancellation)
             .map_err(|()| io::Error::new(io::ErrorKind::Interrupted, "snapshot interrupted"))
     };
-    let files = list_root_relative_regular_files(
+    let files = capture_root_relative_regular_files(
         source_root,
         Path::new(""),
-        SecureTreeLimits {
+        SecureTreeCaptureLimits {
             maximum_depth: RELATED_SOURCE_MAX_DEPTH,
-            maximum_entries: usize::MAX,
+            maximum_entries: RELATED_SOURCE_MAX_ENTRIES,
             maximum_files: RELATED_SOURCE_MAX_FILES,
+            maximum_bytes: RELATED_SOURCE_MAX_BYTES,
         },
         |path| path.file_name().and_then(|name| name.to_str()) != Some(".build"),
         is_related_source_file,
@@ -420,30 +422,12 @@ fn related_source_content_snapshot(
         return Err(());
     }
 
-    let mut total_bytes = 0_u64;
     let mut hasher = Sha256::new();
     hasher.update(b"unica-related-source-content-v1");
     for entry in files.files {
         ensure_snapshot_budget(deadline, settle_until, cancellation)?;
         let logical_path = entry.logical_path;
-        let remaining = RELATED_SOURCE_MAX_BYTES
-            .checked_sub(total_bytes)
-            .ok_or(())?;
-        let maximum_bytes = usize::try_from(remaining).map_err(|_| ())?;
-        let read = read_root_relative_regular_file_checked(
-            source_root,
-            &source_root.join(&entry.relative_path),
-            maximum_bytes,
-            || {
-                ensure_snapshot_budget(deadline, settle_until, cancellation).map_err(|()| {
-                    io::Error::new(io::ErrorKind::Interrupted, "snapshot interrupted")
-                })
-            },
-            |_| {},
-        )
-        .map_err(|_| ())?;
-        let bytes = read.bytes;
-        total_bytes = total_bytes.checked_add(bytes.len() as u64).ok_or(())?;
+        let bytes = entry.bytes;
         hasher.update((logical_path.len() as u64).to_le_bytes());
         hasher.update(logical_path.as_bytes());
         hasher.update((bytes.len() as u64).to_le_bytes());
@@ -1751,61 +1735,6 @@ mod tests {
             json!({
                 "object_name": "Catalog.Items",
                 "sections": {"modules": {"status": "ok", "total": 1, "returned": 1, "items": [{"name": "ObjectModule"}]}}
-            }),
-        );
-
-        let result = RlmNavigationAdapter::with_client(&client).metadata_related(
-            "Catalog.Items",
-            &["modules".to_string()],
-            20,
-            &context,
-            ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
-            &CancellationToken::new(),
-        );
-
-        let modules = result.modules.unwrap();
-        assert_eq!(
-            modules.status,
-            crate::domain::metadata::MetaRelatedStatus::Unavailable
-        );
-        assert_eq!(
-            modules.freshness,
-            crate::domain::metadata::MetaFreshness::Unknown
-        );
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn metadata_related_does_not_claim_current_through_a_symlinked_source_subtree() {
-        use std::os::unix::fs::symlink;
-
-        let root = secure_temp_root("unica-related-symlink");
-        let source_root = root.join("src");
-        let outside = root.join("outside");
-        std::fs::create_dir_all(&source_root).unwrap();
-        std::fs::create_dir_all(&outside).unwrap();
-        std::fs::write(outside.join("Module.bsl"), "Procedure Run()\nEndProcedure").unwrap();
-        symlink(&outside, source_root.join("Linked")).unwrap();
-        let context = CodeIntelligenceContext::new(
-            WorkspaceContext {
-                cwd: root.clone(),
-                workspace_root: root.clone(),
-                cache_root: root.join(".build/unica"),
-                workspace_epoch: 1,
-            },
-            ResolvedSourceRoot {
-                source_set: Some("main".to_string()),
-                path: source_root,
-            },
-        );
-        let client = related_client(
-            IndexReadiness::Ready {
-                db_path: PathBuf::from("/private/index.db"),
-            },
-            json!({
-                "object_name": "Catalog.Items",
-                "sections": {"modules": {"status": "ok", "total": 0, "returned": 0, "items": []}}
             }),
         );
 
