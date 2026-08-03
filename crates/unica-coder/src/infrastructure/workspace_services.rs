@@ -6588,7 +6588,7 @@ fn main() {
     }
 
     #[test]
-    fn rlm_execute_returns_stale_response_before_index_maintenance_finishes() {
+    fn rlm_execute_returns_stale_responses_and_deduplicates_blocked_maintenance() {
         let context = test_context("rlm-nonblocking-maintenance");
         let source_root = context.workspace_root.join("src");
         let module = source_root.join("CommonModules/SmokeModule.bsl");
@@ -6605,17 +6605,19 @@ fn main() {
             let maintenance_requests = Arc::clone(&maintenance_requests);
             let maintenance_release_rx = Arc::clone(&maintenance_release_rx);
             move |_context, _source_root, _cancellation| {
-                maintenance_requests.fetch_add(1, Ordering::AcqRel);
-                maintenance_started_tx.send(()).unwrap();
-                maintenance_release_rx.lock().unwrap().recv().unwrap();
+                let request_index = maintenance_requests.fetch_add(1, Ordering::AcqRel);
+                maintenance_started_tx.send(request_index).unwrap();
+                if request_index == 0 {
+                    maintenance_release_rx.lock().unwrap().recv().unwrap();
+                }
             }
         });
         fs::write(&module, "Процедура Smoke(НовыйПараметр)\nКонецПроцедуры\n").unwrap();
         let runtime = Arc::new(runtime);
-        let caller_runtime = Arc::clone(&runtime);
-        let (response_tx, response_rx) = mpsc::channel();
-        let caller = thread::spawn(move || {
-            let response = caller_runtime.handle_rlm_mcp(
+        let first_runtime = Arc::clone(&runtime);
+        let (first_response_tx, first_response_rx) = mpsc::channel();
+        let first_caller = thread::spawn(move || {
+            let response = first_runtime.handle_rlm_mcp(
                 WorkspaceRlmOperation::Search {
                     query: "Smoke".to_string(),
                     limit: 20,
@@ -6623,35 +6625,57 @@ fn main() {
                 1_000,
                 &CancellationToken::new(),
             );
-            response_tx.send(response).unwrap();
+            first_response_tx.send(response).unwrap();
         });
 
-        maintenance_started_rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("maintenance request was not started");
-        let early_response = response_rx.recv_timeout(Duration::from_millis(250));
-        maintenance_release_tx.send(()).unwrap();
-        let returned_before_maintenance_finished = early_response.is_ok();
-        let response = match early_response {
-            Ok(response) => response,
-            Err(mpsc::RecvTimeoutError::Timeout) => response_rx
+        assert_eq!(
+            maintenance_started_rx
                 .recv_timeout(Duration::from_secs(2))
-                .expect("stale response did not arrive after maintenance was released"),
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                panic!("stale response channel disconnected")
-            }
-        };
-        caller.join().unwrap();
+                .expect("maintenance request was not started"),
+            0
+        );
+        let first_response = first_response_rx
+            .recv_timeout(Duration::from_millis(250))
+            .expect("first stale response waited for index maintenance");
+        let second_runtime = Arc::clone(&runtime);
+        let (second_response_tx, second_response_rx) = mpsc::channel();
+        let second_caller = thread::spawn(move || {
+            let response = second_runtime.handle_rlm_mcp(
+                WorkspaceRlmOperation::Search {
+                    query: "Smoke".to_string(),
+                    limit: 20,
+                },
+                1_000,
+                &CancellationToken::new(),
+            );
+            second_response_tx.send(response).unwrap();
+        });
+        let second_response = second_response_rx
+            .recv_timeout(Duration::from_millis(250))
+            .expect("second stale response waited for index maintenance");
+        assert!(
+            matches!(
+                maintenance_started_rx.recv_timeout(Duration::from_millis(250)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "a second stale request started duplicate index maintenance"
+        );
+
+        assert!(!first_response.ok);
+        assert_eq!(first_response.index_status.as_deref(), Some("stale"));
+        assert!(!second_response.ok);
+        assert_eq!(second_response.index_status.as_deref(), Some("stale"));
+        assert_eq!(
+            maintenance_requests.load(Ordering::Acquire),
+            1,
+            "a second stale request started duplicate index maintenance"
+        );
+
+        maintenance_release_tx.send(()).unwrap();
+        first_caller.join().unwrap();
+        second_caller.join().unwrap();
         drop(runtime);
         cleanup(&context);
-
-        assert!(
-            returned_before_maintenance_finished,
-            "stale response waited for index maintenance"
-        );
-        assert!(!response.ok);
-        assert_eq!(response.index_status.as_deref(), Some("stale"));
-        assert_eq!(maintenance_requests.load(Ordering::Acquire), 1);
     }
 
     #[test]
