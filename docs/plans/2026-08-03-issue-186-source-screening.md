@@ -311,7 +311,7 @@ Run:
 ```powershell
 $workflowSources = @('SteelMorgan/1c-agent-based-dev-framework','comol/ai_rules_1c','AndreevED/1c-ai-feature-dev-workflow','rmartynenko/workflow-dev-1c-claude-code','Pradushkoai/1c-ai-dev-env','Arman-Kudaibergenov/1c-ai-development-kit','Menestre1/reasoning-bank-poc','vgtitov/bsl-ai-toolkit')
 $reviewText = Get-Content -Raw -Encoding UTF8 'docs\provenance\reviews\2026-08-03-issue-186-source-screening.md'
-$workflowSources | ForEach-Object { if (($reviewText.Split("### `$_`").Count - 1) -ne 1) { throw "missing or duplicate workflow card: $_" } }
+$workflowSources | ForEach-Object { $heading = '### `' + $_ + '`'; if ([regex]::Matches($reviewText, [regex]::Escape($heading)).Count -ne 1) { throw "missing or duplicate workflow card: $_" } }
 ```
 
 Expected: no exception; every workflow source appears as exactly one detailed card.
@@ -485,7 +485,7 @@ Run:
 ```powershell
 $specializedSources = @('feenlace/mcp-1c','DitriXNew/EDT-MCP','Desko77/1c-formsserver','alexiosus/mxl-merge-tool','rzateev/onec-help-mcp','mussolene/1c_hbk_bsl')
 $reviewText = Get-Content -Raw -Encoding UTF8 'docs\provenance\reviews\2026-08-03-issue-186-source-screening.md'
-$specializedSources | ForEach-Object { if (($reviewText.Split("### `$_`").Count - 1) -ne 1) { throw "missing or duplicate specialized card: $_" } }
+$specializedSources | ForEach-Object { $heading = '### `' + $_ + '`'; if ([regex]::Matches($reviewText, [regex]::Escape($heading)).Count -ne 1) { throw "missing or duplicate specialized card: $_" } }
 ```
 
 Expected: no exception.
@@ -555,7 +555,7 @@ Run after writing:
 ```powershell
 $evaluationSources = @('genlab-1c/prism','comol/1CLLMBenchTasks','alonehobo/1c-trusted-gateway')
 $reviewText = Get-Content -Raw -Encoding UTF8 'docs\provenance\reviews\2026-08-03-issue-186-source-screening.md'
-$evaluationSources | ForEach-Object { if (($reviewText.Split("### `$_`").Count - 1) -ne 1) { throw "missing or duplicate evaluation/safety card: $_" } }
+$evaluationSources | ForEach-Object { $heading = '### `' + $_ + '`'; if ([regex]::Matches($reviewText, [regex]::Escape($heading)).Count -ne 1) { throw "missing or duplicate evaluation/safety card: $_" } }
 ```
 
 Expected: no exception.
@@ -692,8 +692,8 @@ $expectedSources = @(
 )
 $reviewText = Get-Content -Raw -Encoding UTF8 'docs\provenance\reviews\2026-08-03-issue-186-source-screening.md'
 foreach ($expectedSource in $expectedSources) {
-  $occurrences = $reviewText.Split("### `$expectedSource`").Count - 1
-  if ($occurrences -ne 1) { throw "$expectedSource card count is $occurrences" }
+  $heading = '### `' + $expectedSource + '`'
+  if ([regex]::Matches($reviewText, [regex]::Escape($heading)).Count -ne 1) { throw "missing or duplicate card: $expectedSource" }
 }
 ```
 
