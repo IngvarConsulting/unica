@@ -861,10 +861,6 @@ pub(crate) fn find_element_bounds(
     None
 }
 
-pub(crate) fn remove_template_child_text_lxml(xml_text: &str, template_name: &str) -> String {
-    remove_metadata_child_text_lxml(xml_text, "Template", template_name)
-}
-
 fn remove_owner_template_child_text(xml_text: &str, template_name: &str) -> Option<(String, bool)> {
     let document = Document::parse(xml_text).ok()?;
     let object = document

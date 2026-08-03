@@ -94,7 +94,7 @@ pub(crate) use info::{with_registrar_processing_hook, RegistrarProcessingPhase};
 pub(crate) use publisher::{fresh_metadata_uuid, prepare_meta_add, prepare_meta_remove};
 pub(crate) use remove::{
     meta_remove_reference_xml_dependency_paths, meta_remove_subsystem_dependency_paths,
-    meta_remove_type_plural, remove_metadata_child_text_lxml, remove_metadata_child_text_with_flag,
+    meta_remove_type_plural, remove_metadata_child_text_with_flag,
     remove_metadata_object_with_data,
 };
 pub(crate) use template_catalog::metadata_generated_types_8_3_27;

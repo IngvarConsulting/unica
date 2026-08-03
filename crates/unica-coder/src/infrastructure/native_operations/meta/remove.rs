@@ -1533,61 +1533,6 @@ pub(crate) fn remove_metadata_object_with_data(
     }
 }
 
-pub(crate) fn remove_metadata_child_text_lxml(
-    xml_text: &str,
-    local_name: &str,
-    item_name: &str,
-) -> String {
-    let plain = format!("<{local_name}>{item_name}</{local_name}>");
-    let prefixed = format!("<md:{local_name}>{item_name}</md:{local_name}>");
-    for (open, target) in [
-        ("<ChildObjects>", plain.as_str()),
-        ("<md:ChildObjects>", prefixed.as_str()),
-    ] {
-        let Some(open_idx) = xml_text.find(open) else {
-            continue;
-        };
-        let after_open = open_idx + open.len();
-        if !xml_text[after_open..].starts_with('\n') {
-            continue;
-        }
-        let child_indent_start = after_open + 1;
-        let child_start = child_indent_start
-            + xml_text[child_indent_start..]
-                .chars()
-                .take_while(|ch| *ch == '\t' || *ch == ' ')
-                .map(char::len_utf8)
-                .sum::<usize>();
-        if !xml_text[child_start..].starts_with(target) {
-            continue;
-        }
-        let after_child = child_start + target.len();
-        if !xml_text[after_child..].starts_with('\n') {
-            continue;
-        }
-        let next_line_start = after_child + 1;
-        let next_content_start = next_line_start
-            + xml_text[next_line_start..]
-                .chars()
-                .take_while(|ch| *ch == '\t' || *ch == ' ')
-                .map(char::len_utf8)
-                .sum::<usize>();
-        let mut result = String::with_capacity(xml_text.len());
-        result.push_str(&xml_text[..after_open]);
-        result.push_str(&xml_text[next_content_start..]);
-        return result;
-    }
-    remove_metadata_child_text(xml_text, local_name, item_name)
-}
-
-pub(crate) fn remove_metadata_child_text(
-    xml_text: &str,
-    local_name: &str,
-    item_name: &str,
-) -> String {
-    remove_metadata_child_text_with_flag(xml_text, local_name, item_name).0
-}
-
 pub(crate) fn remove_metadata_child_text_with_flag(
     xml_text: &str,
     local_name: &str,
