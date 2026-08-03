@@ -194,8 +194,8 @@ mod xml_model;
 // The split stays private. This is the exact pre-existing meta::* compatibility
 // surface required by native-operation callers outside this family.
 pub(crate) use edit::{
-    edit_meta_with_data, preview_meta_edit, preview_meta_edit_with_data,
-    resolve_meta_edit_object_path,
+    edit_meta_with_data, prepare_typed_edit, preview_meta_edit, preview_meta_edit_with_data,
+    resolve_meta_edit_object_path, resolve_typed_edit_object,
 };
 pub(crate) use info::{analyze_meta_info_with_data, resolve_meta_info_path};
 pub(crate) use legacy_dsl::{

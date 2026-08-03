@@ -1,6 +1,6 @@
 #![allow(dead_code, unused_imports)]
 
-use crate::application::metadata::{MetaAddRequest, MetaFailure};
+use crate::application::metadata::{MetaAddRequest, MetaEditRequest, MetaFailure};
 use crate::application::ports::{
     MetaPublishReport, MetadataResourceImage, MetadataResourceRole, MetadataValidationSubject,
     PreparedMetadataMutation,
@@ -22,11 +22,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::super::common::{
-    absolutize, guard_active_format_dependencies, read_utf8_sig, read_utf8_sig_snapshot, string_arg,
+    absolutize, guard_active_format_dependencies, guard_resolved_platform_xml_target_dependencies,
+    read_utf8_sig, read_utf8_sig_snapshot, string_arg,
 };
 use super::super::compile_transaction::{
     CompileTransaction, DirectoryMembershipSnapshot, RegistrationStatus,
 };
+use super::edit::ResolvedMetadataObject;
 use super::legacy_dsl::{
     compile_meta_value, meta_compile_definition_format_dependency_paths,
     meta_compile_event_subscription_dependencies, read_meta_compile_definition_guarded,
@@ -39,7 +41,7 @@ use super::template_catalog::{
 };
 use crate::infrastructure::platform_xml_source_targets::{
     bind_metadata_add_source_evidence, resolve_metadata_add_source, revalidate_metadata_add_source,
-    ResolvedSourceSet,
+    revalidate_platform_xml_target, ResolvedSourceSet,
 };
 use crate::infrastructure::support_guard::{
     bind_resolved_support_guard_evidence, evaluate_resolved_support_guard,
@@ -87,6 +89,160 @@ pub(crate) struct PreparedMetaAdd {
     transaction: CompileTransaction,
     context: WorkspaceContext,
     source: ResolvedSourceSet,
+}
+
+pub(crate) struct PreparedMetaEdit {
+    preview: MetaMutationData,
+    validation_subject: MetadataValidationSubject,
+    transaction: CompileTransaction,
+    context: WorkspaceContext,
+    resolved: ResolvedMetadataObject,
+    expected_post_image: Vec<u8>,
+}
+
+impl PreparedMetaEdit {
+    pub(super) fn prepare(
+        request: &MetaEditRequest,
+        resolved: ResolvedMetadataObject,
+        context: &WorkspaceContext,
+        post_image: Vec<u8>,
+        diagnostics: Vec<MetaDiagnostic>,
+    ) -> Result<Box<dyn PreparedMetadataMutation>, MetaFailure> {
+        let target = request.metadata_path.clone();
+        let changed = post_image != resolved.descriptor_preimage;
+        let mut transaction = CompileTransaction::new();
+        if changed {
+            transaction
+                .replace_bytes(
+                    &resolved.descriptor_path,
+                    &resolved.descriptor_preimage,
+                    post_image.clone(),
+                )
+                .map_err(|message| provider_failure(&target, message))?;
+        } else {
+            transaction
+                .guard_or_verify_exact_preimage(
+                    &resolved.descriptor_path,
+                    &resolved.descriptor_preimage,
+                )
+                .map_err(|message| provider_failure(&target, message))?;
+        }
+        transaction
+            .guard_or_verify_exact_preimage(&resolved.owner_path, &resolved.owner_preimage)
+            .map_err(|message| provider_failure(&target, message))?;
+        guard_resolved_platform_xml_target_dependencies(
+            &mut transaction,
+            &resolved.handle,
+            context,
+        )
+        .map_err(|message| provider_failure(&target, message))?;
+        bind_resolved_support_guard_evidence(&mut transaction, &resolved.descriptor_path, context)
+            .map_err(|message| provider_failure(&target, message))?;
+
+        let mut validation_resources = vec![
+            MetadataResourceImage {
+                role: MetadataResourceRole::Descriptor,
+                bytes: post_image.clone(),
+            },
+            MetadataResourceImage {
+                role: MetadataResourceRole::Registration,
+                bytes: resolved.owner_preimage.clone(),
+            },
+        ];
+        for (dependency_path, dependency_target, bytes) in
+            registered_language_images(&resolved.source_root, &resolved.owner_preimage)
+                .map_err(|message| provider_failure(&target, message))?
+        {
+            transaction
+                .guard_or_verify_exact_preimage(dependency_path, &bytes)
+                .map_err(|message| provider_failure(&target, message))?;
+            validation_resources.push(MetadataResourceImage {
+                role: MetadataResourceRole::Dependency {
+                    target: dependency_target,
+                },
+                bytes,
+            });
+        }
+        let validation_subject = MetadataValidationSubject {
+            target: target.clone(),
+            resources: validation_resources,
+        };
+        Ok(Box::new(Self {
+            preview: MetaMutationData {
+                metadata_path: target.clone(),
+                changed,
+                publication_plan: changed
+                    .then(|| MetaPublicationPlanEntry {
+                        action: MetaPublicationAction::Update,
+                        resource: MetaPublicationResource::Descriptor,
+                        metadata_path: Some(target),
+                    })
+                    .into_iter()
+                    .collect(),
+                validation: MetaValidationData {
+                    status: MetaValidationStatus::Passed,
+                    diagnostics: Vec::new(),
+                },
+                diagnostics,
+            },
+            validation_subject,
+            transaction,
+            context: context.clone(),
+            resolved,
+            expected_post_image: post_image,
+        }))
+    }
+}
+
+impl PreparedMetadataMutation for PreparedMetaEdit {
+    fn preview(&self) -> &MetaMutationData {
+        &self.preview
+    }
+
+    fn validation_subject(&self) -> &MetadataValidationSubject {
+        &self.validation_subject
+    }
+
+    fn publish(
+        self: Box<Self>,
+        cancellation: &CancellationToken,
+    ) -> Result<MetaPublishReport, MetaFailure> {
+        if cancellation.is_cancelled() {
+            return Err(MetaDiagnostic::error(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata edit was cancelled before publication",
+            )
+            .with_metadata_path(self.preview.metadata_path.clone())
+            .into());
+        }
+        let target = self.preview.metadata_path.clone();
+        revalidate_platform_xml_target(&self.context, &self.resolved.handle).map_err(|_| {
+            MetaFailure::from(
+                MetaDiagnostic::error(
+                    MetaDiagnosticCode::ConcurrentModification,
+                    format!("metadata source changed while publishing `{target}`"),
+                )
+                .with_metadata_path(target.clone()),
+            )
+        })?;
+        let descriptor_path = self.resolved.descriptor_path.clone();
+        let expected = self.expected_post_image.clone();
+        let handle = &self.resolved.handle;
+        let context = &self.context;
+        self.transaction
+            .commit_with_post_validation(|| {
+                let published = fs::read(&descriptor_path)
+                    .map_err(|_| "published metadata descriptor is unavailable".to_string())?;
+                if published != expected {
+                    return Err("published metadata descriptor differs from its post-image".into());
+                }
+                revalidate_platform_xml_target(context, handle)
+                    .map(|_| ())
+                    .map_err(|_| "metadata target changed during publication".to_string())
+            })
+            .map_err(|message| publication_failure(&target, message))?;
+        Ok(MetaPublishReport { data: self.preview })
+    }
 }
 
 pub(crate) fn prepare_meta_add(
@@ -263,7 +419,8 @@ pub(crate) fn prepare_meta_add(
         bytes: registration_image,
     });
     for (dependency_path, target, bytes) in
-        registered_language_images(&source).map_err(|message| provider_failure(&target, message))?
+        registered_language_images(&source.source_root, &source.owner_preimage)
+            .map_err(|message| provider_failure(&target, message))?
     {
         transaction
             .guard_or_verify_exact_preimage(dependency_path, &bytes)
@@ -301,7 +458,8 @@ pub(crate) fn prepare_meta_add(
 }
 
 fn registered_language_images(
-    source: &ResolvedSourceSet,
+    source_root: &Path,
+    owner_preimage: &[u8],
 ) -> Result<
     Vec<(
         PathBuf,
@@ -310,7 +468,7 @@ fn registered_language_images(
     )>,
     String,
 > {
-    let xml = std::str::from_utf8(&source.owner_preimage)
+    let xml = std::str::from_utf8(owner_preimage)
         .map_err(|_| "metadata owner image is not UTF-8".to_string())?
         .trim_start_matches('\u{feff}');
     let document =
@@ -328,10 +486,7 @@ fn registered_language_images(
             &format!("Language.{name}"),
         )
         .map_err(|_| "registered language has an invalid logical identity".to_string())?;
-        let path = source
-            .source_root
-            .join("Languages")
-            .join(format!("{name}.xml"));
+        let path = source_root.join("Languages").join(format!("{name}.xml"));
         let bytes = fs::read(&path)
             .map_err(|_| format!("registered language `{name}` image is unavailable"))?;
         images.push((path, target, bytes));

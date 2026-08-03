@@ -1,11 +1,32 @@
 #![allow(dead_code, unused_imports)]
 
+use crate::application::metadata::{MetaEditRequest, MetaFailure};
 use crate::application::operation_descriptors::OBJECT_PATH;
+use crate::application::ports::{
+    MetadataResourceImage, MetadataResourceRole, MetadataValidationSubject,
+    PreparedMetadataMutation,
+};
 use crate::application::AdapterOutcome;
+use crate::domain::cancellation::CancellationToken;
 use crate::domain::format_profile::ACTIVE_FORMAT_PROFILE;
+use crate::domain::metadata::{
+    DateFractions, MetaCollection, MetaDiagnostic, MetaDiagnosticCode, MetaEditOperation,
+    MetaElementDefinition, MetaElementUpdate, MetaFillValue, MetaPosition, MetaPropertyKey,
+    MetaPropertyValue, MetaRelation, MetadataType, MetadataTypeVariant, NumberSign,
+    RelationEditMode, StringLengthMode,
+};
+use crate::domain::source_target::{SourceTarget, TargetKind};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform_xml_owner::{
     resolve_platform_xml_owners_with_provenance, PlatformXmlOwnerKind, PlatformXmlOwnerProvenance,
+};
+use crate::infrastructure::platform_xml_source_targets::{
+    platform_xml_resource_evidence, resolve_platform_xml_target, ClosedPlatformXmlTarget,
+    TargetKindPolicy,
+};
+use crate::infrastructure::support_guard::{
+    bind_resolved_support_guard_evidence, evaluate_resolved_support_guard,
+    ResolvedSupportGuardCheck,
 };
 use diffy::{apply, DiffOptions, Patch};
 use roxmltree::Document;
@@ -29,7 +50,7 @@ use super::legacy_dsl::{
     validate_meta_compile_tabular_section_types, validate_metadata_8_3_27_boolean_contract,
     validate_metadata_8_3_27_enum_contract, MetaEditDslInput,
 };
-use super::publisher::fresh_meta_compile_uuid;
+use super::publisher::{fresh_meta_compile_uuid, PreparedMetaEdit};
 use super::template_catalog::{
     emit_meta_attribute, emit_meta_column, emit_meta_enum_value, emit_meta_register_field,
     emit_meta_tabular_section, meta_compile_attributes, meta_compile_enum_values,
@@ -38,14 +59,15 @@ use super::template_catalog::{
     MetaCompileTabularSection,
 };
 use super::xml_model::{
-    emit_meta_fill_value, emit_meta_mltext, emit_meta_value_type, meta_info_child,
-    meta_info_child_text, meta_info_children, validate_meta_type_union,
+    emit_meta_fill_value, emit_meta_mltext, emit_meta_typed_fill_value, emit_meta_typed_value_type,
+    emit_meta_value_type, meta_info_child, meta_info_child_text, meta_info_children,
+    validate_meta_type_union,
 };
 
 #[cfg(test)]
 use super::run_meta_edit_after_line_number_length_policy_hook;
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(super) struct MetaEditCounts {
     pub(crate) added: usize,
     pub(crate) modified: usize,
@@ -3090,6 +3112,1587 @@ pub(super) fn normalize_meta_edit_property_value(key: &str, value: &str) -> Stri
         "Posting" => normalize_meta_enum_value(value),
         "EditType" => normalize_meta_enum_value(value),
         _ => value.to_string(),
+    }
+}
+
+pub(crate) struct ResolvedMetadataObject {
+    pub(super) handle: ClosedPlatformXmlTarget,
+    pub(super) descriptor_path: PathBuf,
+    pub(super) descriptor_preimage: Vec<u8>,
+    pub(super) source_root: PathBuf,
+    pub(super) owner_path: PathBuf,
+    pub(super) owner_preimage: Vec<u8>,
+}
+
+pub(crate) fn resolve_typed_edit_object(
+    request: &MetaEditRequest,
+    context: &WorkspaceContext,
+    cancellation: &CancellationToken,
+) -> Result<ResolvedMetadataObject, MetaFailure> {
+    if cancellation.is_cancelled() {
+        return Err(typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata edit was cancelled before source resolution",
+            None,
+        )
+        .with_metadata_path(request.metadata_path.clone())
+        .into());
+    }
+    let target = SourceTarget {
+        source_set: request.source_set.clone(),
+        metadata_path: Some(request.metadata_path.clone()),
+    };
+    let resolution = resolve_platform_xml_target(context, &target, TargetKindPolicy::Any)
+        .map_err(|error| typed_resolution_failure(request, error.code))?;
+    if resolution.resolved.target_kind != TargetKind::MetadataObject {
+        return Err(typed_diagnostic(
+            MetaDiagnosticCode::InvalidArguments,
+            "metadataPath must identify one existing metadata object",
+            Some("metadataPath"),
+        )
+        .with_metadata_path(request.metadata_path.clone())
+        .into());
+    }
+    let evidence = platform_xml_resource_evidence(context, &resolution.handle)
+        .map_err(|error| typed_resolution_failure(request, error.code))?;
+    let descriptor_preimage = fs::read(&evidence.target_path).map_err(|_| {
+        MetaFailure::from(
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata descriptor image is unavailable",
+                None,
+            )
+            .with_metadata_path(request.metadata_path.clone()),
+        )
+    })?;
+    let owner_preimage = fs::read(&evidence.registration_path).map_err(|_| {
+        MetaFailure::from(
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata owner image is unavailable",
+                None,
+            )
+            .with_metadata_path(request.metadata_path.clone()),
+        )
+    })?;
+    let (_, descriptor) =
+        super::xml_model::parse_metadata_image(&descriptor_preimage).map_err(|_| {
+            MetaFailure::from(
+                typed_diagnostic(
+                    MetaDiagnosticCode::ProviderUnavailable,
+                    "metadata descriptor image is unreadable",
+                    None,
+                )
+                .with_metadata_path(request.metadata_path.clone()),
+            )
+        })?;
+    if descriptor.root_element().attribute("version") != Some(ACTIVE_FORMAT_PROFILE.export_format) {
+        return Err(typed_diagnostic(
+            MetaDiagnosticCode::CapabilityUnavailable,
+            format!(
+                "metadata object is outside the supported {} export format",
+                ACTIVE_FORMAT_PROFILE.export_format
+            ),
+            None,
+        )
+        .with_metadata_path(request.metadata_path.clone())
+        .into());
+    }
+    Ok(ResolvedMetadataObject {
+        handle: resolution.handle,
+        descriptor_path: evidence.target_path,
+        descriptor_preimage,
+        source_root: evidence.source_root,
+        owner_path: evidence.registration_path,
+        owner_preimage,
+    })
+}
+
+fn typed_resolution_failure(
+    request: &MetaEditRequest,
+    code: crate::domain::source_target::SourceTargetErrorCode,
+) -> MetaFailure {
+    use crate::domain::source_target::SourceTargetErrorCode;
+    let diagnostic_code = match code {
+        SourceTargetErrorCode::SourceSetNotFound
+        | SourceTargetErrorCode::MetadataAddressNotFound => MetaDiagnosticCode::TargetNotFound,
+        SourceTargetErrorCode::MetadataAddressInvalid
+        | SourceTargetErrorCode::TargetKindMismatch
+        | SourceTargetErrorCode::SourceSetRequired => MetaDiagnosticCode::InvalidArguments,
+        SourceTargetErrorCode::ContainmentDenied => MetaDiagnosticCode::ProviderUnavailable,
+        _ => MetaDiagnosticCode::CapabilityUnavailable,
+    };
+    typed_diagnostic(
+        diagnostic_code,
+        match diagnostic_code {
+            MetaDiagnosticCode::TargetNotFound => "metadata target was not found",
+            MetaDiagnosticCode::InvalidArguments => "metadata target is not an editable object",
+            MetaDiagnosticCode::ProviderUnavailable => {
+                "metadata target could not be resolved safely"
+            }
+            _ => "metadata target does not provide typed Platform XML editing",
+        },
+        Some("metadataPath"),
+    )
+    .with_metadata_path(request.metadata_path.clone())
+    .into()
+}
+
+pub(crate) fn prepare_typed_edit(
+    request: &MetaEditRequest,
+    resolved: ResolvedMetadataObject,
+    context: &WorkspaceContext,
+) -> Result<Box<dyn PreparedMetadataMutation>, MetaFailure> {
+    let target = request.metadata_path.clone();
+    let mut diagnostics = Vec::new();
+    match evaluate_resolved_support_guard(
+        &resolved.descriptor_path,
+        crate::application::SupportGuardRequirement::Editable,
+        context,
+    ) {
+        ResolvedSupportGuardCheck::Allow => {}
+        ResolvedSupportGuardCheck::Warn(_) => diagnostics.push(MetaDiagnostic {
+            code: MetaDiagnosticCode::SupportLocked,
+            severity: crate::domain::metadata::MetaDiagnosticSeverity::Warning,
+            message: "metadata source support policy permits editing with a warning".to_string(),
+            metadata_path: Some(target.clone()),
+            operation_index: None,
+            field: None,
+        }),
+        ResolvedSupportGuardCheck::Block(_) => {
+            return Err(typed_diagnostic(
+                MetaDiagnosticCode::SupportLocked,
+                "metadata source support policy blocks object editing",
+                None,
+            )
+            .with_metadata_path(target)
+            .into())
+        }
+    }
+    let mut xml = String::from_utf8(resolved.descriptor_preimage.clone()).map_err(|_| {
+        MetaFailure::from(
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata descriptor image is not UTF-8",
+                None,
+            )
+            .with_metadata_path(request.metadata_path.clone()),
+        )
+    })?;
+    let source_format = MetaEditSourceFormat {
+        has_bom: resolved.descriptor_preimage.starts_with(b"\xef\xbb\xbf"),
+        eol: meta_edit_source_eol(&xml),
+    };
+    if xml.starts_with('\u{feff}') {
+        xml = xml.trim_start_matches('\u{feff}').to_string();
+    }
+    apply_typed_operations(&mut xml, &request.operations).map_err(|mut failure| {
+        for diagnostic in &mut failure.diagnostics {
+            diagnostic.metadata_path = Some(request.metadata_path.clone());
+        }
+        failure
+    })?;
+    let post_image = meta_edit_preserve_source_format(&xml, source_format);
+    PreparedMetaEdit::prepare(request, resolved, context, post_image, diagnostics)
+}
+
+/// Apply a closed sequence to one private working image. The caller observes
+/// either the complete post-image or the exact preimage; partial operation
+/// results never escape this function.
+pub(crate) fn apply_typed_operations(
+    xml_text: &mut String,
+    operations: &[MetaEditOperation],
+) -> Result<MetaEditCounts, MetaFailure> {
+    let mut working = xml_text.clone();
+    let mut counts = MetaEditCounts::default();
+    for (operation_index, operation) in operations.iter().enumerate() {
+        if let Err(diagnostic) = apply_typed_operation(&mut working, operation, &mut counts) {
+            return Err(diagnostic.with_operation_index(operation_index).into());
+        }
+        Document::parse(working.trim_start_matches('\u{feff}')).map_err(|_| {
+            MetaFailure::from(
+                typed_diagnostic(
+                    MetaDiagnosticCode::ValidationFailed,
+                    "typed metadata operation produced invalid XML",
+                    None,
+                )
+                .with_operation_index(operation_index),
+            )
+        })?;
+        validate_metadata_8_3_27_boolean_contract(&working, "meta.edit").map_err(|_| {
+            MetaFailure::from(
+                typed_diagnostic(
+                    MetaDiagnosticCode::ValidationFailed,
+                    "typed metadata operation violates the boolean format contract",
+                    None,
+                )
+                .with_operation_index(operation_index),
+            )
+        })?;
+        validate_metadata_8_3_27_enum_contract(&working, "meta.edit").map_err(|_| {
+            MetaFailure::from(
+                typed_diagnostic(
+                    MetaDiagnosticCode::ValidationFailed,
+                    "typed metadata operation violates the enum format contract",
+                    None,
+                )
+                .with_operation_index(operation_index),
+            )
+        })?;
+    }
+    *xml_text = working;
+    Ok(counts)
+}
+
+fn apply_typed_operation(
+    xml_text: &mut String,
+    operation: &MetaEditOperation,
+    counts: &mut MetaEditCounts,
+) -> Result<(), MetaDiagnostic> {
+    let (object_kind, object_name) = meta_edit_object_identity(xml_text).map_err(|_| {
+        typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata descriptor identity is unavailable",
+            None,
+        )
+    })?;
+    match operation {
+        MetaEditOperation::SetProperties { values } => {
+            apply_typed_properties(xml_text, values)?;
+            counts.modified += values.entries().len();
+        }
+        MetaEditOperation::Add {
+            collection,
+            scope,
+            elements,
+        } => {
+            ensure_typed_collection_allowed(&object_kind, *collection)?;
+            for (index, element) in elements.iter().enumerate() {
+                add_typed_element(
+                    xml_text,
+                    &object_kind,
+                    &object_name,
+                    *collection,
+                    scope.as_ref().map(|scope| scope.tabular_section.as_str()),
+                    element,
+                )
+                .map_err(|mut diagnostic| {
+                    diagnostic
+                        .field
+                        .get_or_insert_with(|| format!("elements[{index}]"));
+                    diagnostic
+                })?;
+                counts.added += 1;
+            }
+        }
+        MetaEditOperation::Update {
+            collection,
+            scope,
+            elements,
+        } => {
+            ensure_typed_collection_allowed(&object_kind, *collection)?;
+            for (index, element) in elements.iter().enumerate() {
+                update_typed_element(
+                    xml_text,
+                    *collection,
+                    scope.as_ref().map(|scope| scope.tabular_section.as_str()),
+                    element,
+                )
+                .map_err(|mut diagnostic| {
+                    diagnostic
+                        .field
+                        .get_or_insert_with(|| format!("elements[{index}]"));
+                    diagnostic
+                })?;
+                counts.modified += 1;
+            }
+        }
+        MetaEditOperation::Remove {
+            collection,
+            scope,
+            names,
+        } => {
+            ensure_typed_collection_allowed(&object_kind, *collection)?;
+            for (index, name) in names.iter().enumerate() {
+                remove_typed_element(
+                    xml_text,
+                    *collection,
+                    scope.as_ref().map(|scope| scope.tabular_section.as_str()),
+                    name,
+                )
+                .map_err(|mut diagnostic| {
+                    diagnostic
+                        .field
+                        .get_or_insert_with(|| format!("names[{index}]"));
+                    diagnostic
+                })?;
+                counts.removed += 1;
+            }
+        }
+        MetaEditOperation::EditRelations {
+            relation,
+            mode,
+            targets,
+        } => {
+            apply_typed_relations(xml_text, &object_kind, *relation, *mode, targets)?;
+            counts.modified += 1;
+        }
+    }
+    Ok(())
+}
+
+fn typed_diagnostic(
+    code: MetaDiagnosticCode,
+    message: impl Into<String>,
+    field: Option<&str>,
+) -> MetaDiagnostic {
+    let diagnostic = MetaDiagnostic::error(code, message);
+    match field {
+        Some(field) => diagnostic.with_field(field),
+        None => diagnostic,
+    }
+}
+
+fn ensure_typed_collection_allowed(
+    object_kind: &str,
+    collection: MetaCollection,
+) -> Result<(), MetaDiagnostic> {
+    let allowed = match collection {
+        MetaCollection::Attributes => matches!(
+            object_kind,
+            "Catalog"
+                | "Document"
+                | "Report"
+                | "DataProcessor"
+                | "ExchangePlan"
+                | "ChartOfCharacteristicTypes"
+                | "ChartOfAccounts"
+                | "ChartOfCalculationTypes"
+                | "BusinessProcess"
+                | "Task"
+                | "InformationRegister"
+                | "AccumulationRegister"
+                | "AccountingRegister"
+                | "CalculationRegister"
+        ),
+        MetaCollection::TabularSections => matches!(
+            object_kind,
+            "Catalog"
+                | "Document"
+                | "Report"
+                | "DataProcessor"
+                | "ExchangePlan"
+                | "ChartOfCharacteristicTypes"
+                | "ChartOfAccounts"
+                | "ChartOfCalculationTypes"
+                | "BusinessProcess"
+                | "Task"
+        ),
+        MetaCollection::Dimensions | MetaCollection::Resources => matches!(
+            object_kind,
+            "InformationRegister"
+                | "AccumulationRegister"
+                | "AccountingRegister"
+                | "CalculationRegister"
+        ),
+        MetaCollection::EnumValues => object_kind == "Enum",
+        MetaCollection::Columns => object_kind == "DocumentJournal",
+        MetaCollection::Forms | MetaCollection::Templates | MetaCollection::Commands => matches!(
+            object_kind,
+            "Catalog"
+                | "Document"
+                | "Enum"
+                | "Constant"
+                | "InformationRegister"
+                | "AccumulationRegister"
+                | "AccountingRegister"
+                | "CalculationRegister"
+                | "ChartOfAccounts"
+                | "ChartOfCharacteristicTypes"
+                | "ChartOfCalculationTypes"
+                | "BusinessProcess"
+                | "Task"
+                | "ExchangePlan"
+                | "DocumentJournal"
+                | "Report"
+                | "DataProcessor"
+        ),
+    };
+    if allowed {
+        Ok(())
+    } else {
+        Err(typed_diagnostic(
+            MetaDiagnosticCode::UnsupportedKind,
+            format!(
+                "collection `{}` is not supported for {object_kind}",
+                collection.as_str()
+            ),
+            Some("collection"),
+        ))
+    }
+}
+
+fn apply_typed_properties(
+    xml_text: &mut String,
+    changes: &crate::domain::metadata::MetaPropertyChanges,
+) -> Result<(), MetaDiagnostic> {
+    let doc = Document::parse(xml_text.trim_start_matches('\u{feff}')).map_err(|_| {
+        typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata descriptor is not valid XML",
+            None,
+        )
+    })?;
+    let object = meta_edit_object_node(&doc).map_err(|_| {
+        typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata descriptor object is unavailable",
+            None,
+        )
+    })?;
+    let properties = meta_info_child(object, "Properties").ok_or_else(|| {
+        typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata descriptor has no Properties",
+            None,
+        )
+    })?;
+    let range = properties.range();
+    drop(doc);
+    let mut text = xml_text[range.clone()].to_string();
+    let indent = meta_edit_property_child_indent(&text);
+    for (key, value) in changes.entries() {
+        let tag = match key {
+            MetaPropertyKey::Synonym => "Synonym",
+            MetaPropertyKey::Comment => "Comment",
+            MetaPropertyKey::NumberLength => "NumberLength",
+            MetaPropertyKey::CheckUnique => "CheckUnique",
+            MetaPropertyKey::CodeLength => "CodeLength",
+            MetaPropertyKey::DescriptionLength => "DescriptionLength",
+            MetaPropertyKey::Hierarchical => "Hierarchical",
+            MetaPropertyKey::Autonumbering => "Autonumbering",
+            MetaPropertyKey::UseStandardCommands => "UseStandardCommands",
+        };
+        if meta_edit_xml_element_range(&text, tag)
+            .map_err(|_| {
+                typed_diagnostic(
+                    MetaDiagnosticCode::ProviderUnavailable,
+                    "metadata property image is malformed",
+                    Some("values"),
+                )
+            })?
+            .is_none()
+        {
+            return Err(typed_diagnostic(
+                MetaDiagnosticCode::InvalidArguments,
+                format!("property `{tag}` is not present on this metadata object"),
+                Some("values"),
+            ));
+        }
+        let replacement = match (key, value) {
+            (MetaPropertyKey::Synonym, MetaPropertyValue::String(value)) => {
+                let mut lines = Vec::new();
+                emit_meta_mltext(&mut lines, &indent, tag, value);
+                lines.join("\n")
+            }
+            (MetaPropertyKey::Comment, MetaPropertyValue::String(value)) if value.is_empty() => {
+                format!("{indent}<{tag}/>")
+            }
+            (_, MetaPropertyValue::String(value)) => {
+                format!("{indent}<{tag}>{}</{tag}>", escape_xml(value))
+            }
+            (_, MetaPropertyValue::Boolean(value)) => {
+                format!("{indent}<{tag}>{value}</{tag}>")
+            }
+            (_, MetaPropertyValue::UnsignedInteger(value)) => {
+                format!("{indent}<{tag}>{value}</{tag}>")
+            }
+        };
+        meta_edit_replace_or_insert_property(&mut text, tag, &replacement, &indent).map_err(
+            |_| {
+                typed_diagnostic(
+                    MetaDiagnosticCode::ProviderUnavailable,
+                    "metadata property could not be updated",
+                    Some("values"),
+                )
+            },
+        )?;
+    }
+    xml_text.replace_range(range, &text);
+    Ok(())
+}
+
+fn collection_tag(collection: MetaCollection) -> &'static str {
+    match collection {
+        MetaCollection::Attributes => "Attribute",
+        MetaCollection::TabularSections => "TabularSection",
+        MetaCollection::Dimensions => "Dimension",
+        MetaCollection::Resources => "Resource",
+        MetaCollection::EnumValues => "EnumValue",
+        MetaCollection::Columns => "Column",
+        MetaCollection::Forms => "Form",
+        MetaCollection::Templates => "Template",
+        MetaCollection::Commands => "Command",
+    }
+}
+
+fn add_typed_element(
+    xml_text: &mut String,
+    object_kind: &str,
+    object_name: &str,
+    collection: MetaCollection,
+    scope: Option<&str>,
+    element: &MetaElementDefinition,
+) -> Result<(), MetaDiagnostic> {
+    validate_meta_compile_name("typed metadata element", &element.name).map_err(|_| {
+        typed_diagnostic(
+            MetaDiagnosticCode::InvalidArguments,
+            "metadata element name is invalid",
+            Some("name"),
+        )
+    })?;
+    let tag = collection_tag(collection);
+    ensure_typed_name_free(xml_text, tag, scope, &element.name)?;
+    let position = typed_insert_position(element.position.as_ref());
+    let lines = render_typed_element(object_kind, object_name, collection, element);
+    let result = match scope {
+        Some(section) => meta_edit_insert_tabular_child_object_with_position(
+            xml_text, section, tag, &position, &lines,
+        ),
+        None => meta_edit_insert_top_child_object_with_position(xml_text, tag, &position, &lines),
+    };
+    result.map_err(|_| {
+        typed_diagnostic(
+            MetaDiagnosticCode::TargetNotFound,
+            "metadata position or scope target was not found",
+            Some(if scope.is_some() { "scope" } else { "position" }),
+        )
+    })
+}
+
+fn typed_insert_position(position: Option<&MetaPosition>) -> MetaEditInsertPosition {
+    position.map_or_else(MetaEditInsertPosition::default, |position| {
+        MetaEditInsertPosition {
+            before: position.before.clone(),
+            after: position.after.clone(),
+        }
+    })
+}
+
+fn ensure_typed_name_free(
+    xml_text: &str,
+    tag: &str,
+    scope: Option<&str>,
+    name: &str,
+) -> Result<(), MetaDiagnostic> {
+    let result = match scope {
+        Some(section) => meta_edit_ensure_tabular_child_name_free(xml_text, section, tag, name),
+        None => meta_edit_ensure_top_child_name_free(xml_text, tag, name),
+    };
+    result.map_err(|message| {
+        let code = if message.contains("already exists") {
+            MetaDiagnosticCode::AlreadyExists
+        } else {
+            MetaDiagnosticCode::TargetNotFound
+        };
+        typed_diagnostic(
+            code,
+            "metadata element identity is not available",
+            Some("name"),
+        )
+    })
+}
+
+fn render_typed_element(
+    object_kind: &str,
+    object_name: &str,
+    collection: MetaCollection,
+    element: &MetaElementDefinition,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut next_uuid = fresh_meta_compile_uuid;
+    let attr = || MetaCompileAttr {
+        name: element.name.clone(),
+        type_name: String::new(),
+        synonym: element
+            .synonym
+            .clone()
+            .unwrap_or_else(|| split_meta_camel_case(&element.name)),
+        flags: element
+            .required
+            .is_some_and(|required| required)
+            .then(|| "req".to_string())
+            .into_iter()
+            .collect(),
+        fill_checking: String::new(),
+        indexing: String::new(),
+        multi_line: false,
+        choice_history_on_input: String::new(),
+    };
+    match collection {
+        MetaCollection::Attributes => emit_meta_attribute(
+            &mut lines,
+            "\t\t\t",
+            &attr(),
+            if object_kind == "Catalog" {
+                "catalog"
+            } else {
+                "object"
+            },
+            &mut next_uuid,
+        ),
+        MetaCollection::TabularSections => {
+            let columns = element
+                .attributes
+                .iter()
+                .map(|attribute| MetaCompileAttr {
+                    name: attribute.name.clone(),
+                    type_name: String::new(),
+                    synonym: attribute
+                        .synonym
+                        .clone()
+                        .unwrap_or_else(|| split_meta_camel_case(&attribute.name)),
+                    flags: Vec::new(),
+                    fill_checking: String::new(),
+                    indexing: String::new(),
+                    multi_line: false,
+                    choice_history_on_input: String::new(),
+                })
+                .collect();
+            emit_meta_tabular_section(
+                &mut lines,
+                "\t\t\t",
+                &MetaCompileTabularSection {
+                    name: element.name.clone(),
+                    columns,
+                },
+                object_kind,
+                object_name,
+                &mut next_uuid,
+            );
+        }
+        MetaCollection::Dimensions | MetaCollection::Resources => emit_meta_register_field(
+            &mut lines,
+            "\t\t\t",
+            collection_tag(collection),
+            &attr(),
+            object_kind,
+            &mut next_uuid,
+        ),
+        MetaCollection::EnumValues => emit_meta_enum_value(
+            &mut lines,
+            "\t\t\t",
+            &MetaCompileEnumValue {
+                name: element.name.clone(),
+                synonym: element
+                    .synonym
+                    .clone()
+                    .unwrap_or_else(|| split_meta_camel_case(&element.name)),
+                comment: element.comment.clone().unwrap_or_default(),
+            },
+            &mut next_uuid,
+        ),
+        MetaCollection::Columns
+        | MetaCollection::Forms
+        | MetaCollection::Templates
+        | MetaCollection::Commands => emit_meta_simple_child(
+            &mut lines,
+            "\t\t\t",
+            collection_tag(collection),
+            &element.name,
+            &mut next_uuid,
+        ),
+    }
+    let mut rendered = lines.join("\n");
+    apply_typed_element_fields(&mut rendered, element);
+    rendered.lines().map(ToOwned::to_owned).collect()
+}
+
+fn apply_typed_element_fields(xml: &mut String, element: &MetaElementDefinition) {
+    let Some(range) = typed_properties_text_range(xml) else {
+        return;
+    };
+    let mut text = xml[range.clone()].to_string();
+    let indent = meta_edit_property_child_indent(&text);
+    if let Some(synonym) = &element.synonym {
+        let mut lines = Vec::new();
+        emit_meta_mltext(&mut lines, &indent, "Synonym", synonym);
+        let _ =
+            meta_edit_replace_or_insert_property(&mut text, "Synonym", &lines.join("\n"), &indent);
+    }
+    if let Some(comment) = &element.comment {
+        let replacement = if comment.is_empty() {
+            format!("{indent}<Comment/>")
+        } else {
+            format!("{indent}<Comment>{}</Comment>", escape_xml(comment))
+        };
+        let _ = meta_edit_replace_or_insert_property(&mut text, "Comment", &replacement, &indent);
+    }
+    if let Some(metadata_type) = &element.r#type {
+        let mut lines = Vec::new();
+        emit_meta_typed_value_type(&mut lines, &indent, metadata_type);
+        let _ = meta_edit_replace_or_insert_property(&mut text, "Type", &lines.join("\n"), &indent);
+    }
+    if element.fill_value.is_some() {
+        let mut lines = Vec::new();
+        emit_meta_typed_fill_value(&mut lines, &indent, element.fill_value.as_ref());
+        let _ = meta_edit_replace_or_insert_property(
+            &mut text,
+            "FillValue",
+            &lines.join("\n"),
+            &indent,
+        );
+    }
+    if let Some(required) = element.required {
+        let replacement = format!(
+            "{indent}<FillChecking>{}</FillChecking>",
+            if required { "ShowError" } else { "DontCheck" }
+        );
+        let _ =
+            meta_edit_replace_or_insert_property(&mut text, "FillChecking", &replacement, &indent);
+    }
+    xml.replace_range(range, &text);
+}
+
+fn typed_properties_text_range(text: &str) -> Option<std::ops::Range<usize>> {
+    let start = text.find("<Properties>")?;
+    let close = "</Properties>";
+    let relative_end = text[start..].find(close)?;
+    Some(start..start + relative_end + close.len())
+}
+
+fn find_typed_element_range(
+    xml_text: &str,
+    tag: &str,
+    scope: Option<&str>,
+    name: &str,
+) -> Result<std::ops::Range<usize>, MetaDiagnostic> {
+    let doc = Document::parse(xml_text.trim_start_matches('\u{feff}')).map_err(|_| {
+        typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata descriptor is not valid XML",
+            None,
+        )
+    })?;
+    let object = meta_edit_object_node(&doc).map_err(|_| {
+        typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata object is unavailable",
+            None,
+        )
+    })?;
+    let parent = if let Some(section_name) = scope {
+        let section = meta_edit_find_tabular_section(object, section_name).ok_or_else(|| {
+            typed_diagnostic(
+                MetaDiagnosticCode::TargetNotFound,
+                "tabular section scope was not found",
+                Some("scope.tabularSection"),
+            )
+        })?;
+        meta_info_child(section, "ChildObjects")
+    } else {
+        meta_info_child(object, "ChildObjects")
+    }
+    .ok_or_else(|| {
+        typed_diagnostic(
+            MetaDiagnosticCode::TargetNotFound,
+            "metadata collection is empty",
+            Some("name"),
+        )
+    })?;
+    meta_info_children(parent, tag)
+        .into_iter()
+        .find(|child| meta_edit_child_object_name(*child).as_deref() == Some(name))
+        .map(|node| node.range())
+        .ok_or_else(|| {
+            typed_diagnostic(
+                MetaDiagnosticCode::TargetNotFound,
+                format!("element `{name}` was not found"),
+                Some("name"),
+            )
+        })
+}
+
+fn update_typed_element(
+    xml_text: &mut String,
+    collection: MetaCollection,
+    scope: Option<&str>,
+    update: &MetaElementUpdate,
+) -> Result<(), MetaDiagnostic> {
+    let tag = collection_tag(collection);
+    let range = find_typed_element_range(xml_text, tag, scope, &update.name)?;
+    if let Some(new_name) = update
+        .new_name
+        .as_deref()
+        .filter(|name| *name != update.name)
+    {
+        ensure_typed_name_free(xml_text, tag, scope, new_name)?;
+    }
+    let node_xml = xml_text[range.clone()].to_string();
+    let properties_range = typed_properties_text_range(&node_xml).ok_or_else(|| {
+        typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata element has no Properties",
+            None,
+        )
+    })?;
+    let mut properties_text = node_xml[properties_range.clone()].to_string();
+    let indent = meta_edit_property_child_indent(&properties_text);
+    if let Some(new_name) = &update.new_name {
+        let replacement = format!("{indent}<Name>{}</Name>", escape_xml(new_name));
+        meta_edit_replace_or_insert_property(&mut properties_text, "Name", &replacement, &indent)
+            .map_err(|_| {
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata element name could not be updated",
+                Some("newName"),
+            )
+        })?;
+    }
+    if let Some(synonym) = &update.synonym {
+        let mut lines = Vec::new();
+        emit_meta_mltext(&mut lines, &indent, "Synonym", synonym);
+        meta_edit_replace_or_insert_property(
+            &mut properties_text,
+            "Synonym",
+            &lines.join("\n"),
+            &indent,
+        )
+        .map_err(|_| {
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata synonym could not be updated",
+                Some("synonym"),
+            )
+        })?;
+    }
+    if let Some(comment) = &update.comment {
+        let replacement = if comment.is_empty() {
+            format!("{indent}<Comment/>")
+        } else {
+            format!("{indent}<Comment>{}</Comment>", escape_xml(comment))
+        };
+        meta_edit_replace_or_insert_property(
+            &mut properties_text,
+            "Comment",
+            &replacement,
+            &indent,
+        )
+        .map_err(|_| {
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata comment could not be updated",
+                Some("comment"),
+            )
+        })?;
+    }
+    if let Some(metadata_type) = &update.r#type {
+        let mut lines = Vec::new();
+        emit_meta_typed_value_type(&mut lines, &indent, metadata_type);
+        meta_edit_replace_or_insert_property(
+            &mut properties_text,
+            "Type",
+            &lines.join("\n"),
+            &indent,
+        )
+        .map_err(|_| {
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata type could not be updated",
+                Some("type"),
+            )
+        })?;
+    }
+    if let Some(fill_value) = &update.fill_value {
+        let mut lines = Vec::new();
+        emit_meta_typed_fill_value(&mut lines, &indent, Some(fill_value));
+        meta_edit_replace_or_insert_property(
+            &mut properties_text,
+            "FillValue",
+            &lines.join("\n"),
+            &indent,
+        )
+        .map_err(|_| {
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata fill value could not be updated",
+                Some("fillValue"),
+            )
+        })?;
+    }
+    if let Some(required) = update.required {
+        let replacement = format!(
+            "{indent}<FillChecking>{}</FillChecking>",
+            if required { "ShowError" } else { "DontCheck" }
+        );
+        meta_edit_replace_or_insert_property(
+            &mut properties_text,
+            "FillChecking",
+            &replacement,
+            &indent,
+        )
+        .map_err(|_| {
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata required flag could not be updated",
+                Some("required"),
+            )
+        })?;
+    }
+    let mut updated_node = node_xml;
+    updated_node.replace_range(properties_range, &properties_text);
+    xml_text.replace_range(range, &updated_node);
+    if let Some(position) = &update.position {
+        let current_name = update.new_name.as_deref().unwrap_or(&update.name);
+        let range = find_typed_element_range(xml_text, tag, scope, current_name)?;
+        let node = xml_text[range.clone()].to_string();
+        meta_edit_remove_xml_node_range(xml_text, range);
+        let lines = node.lines().map(ToOwned::to_owned).collect::<Vec<_>>();
+        let position = typed_insert_position(Some(position));
+        let result = match scope {
+            Some(section) => meta_edit_insert_tabular_child_object_with_position(
+                xml_text, section, tag, &position, &lines,
+            ),
+            None => {
+                meta_edit_insert_top_child_object_with_position(xml_text, tag, &position, &lines)
+            }
+        };
+        result.map_err(|_| {
+            typed_diagnostic(
+                MetaDiagnosticCode::TargetNotFound,
+                "metadata position anchor was not found",
+                Some("position"),
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn remove_typed_element(
+    xml_text: &mut String,
+    collection: MetaCollection,
+    scope: Option<&str>,
+    name: &str,
+) -> Result<(), MetaDiagnostic> {
+    let tag = collection_tag(collection);
+    let range = find_typed_element_range(xml_text, tag, scope, name)?;
+    meta_edit_remove_xml_node_range(xml_text, range);
+    Ok(())
+}
+
+fn apply_typed_relations(
+    xml_text: &mut String,
+    object_kind: &str,
+    relation: MetaRelation,
+    mode: RelationEditMode,
+    targets: &[crate::domain::metadata::MetadataReference],
+) -> Result<(), MetaDiagnostic> {
+    if relation == MetaRelation::RegisterRecords && object_kind != "Document" {
+        return Err(typed_diagnostic(
+            MetaDiagnosticCode::UnsupportedKind,
+            "registerRecords is supported for Document only",
+            Some("relation"),
+        ));
+    }
+    let tag = match relation {
+        MetaRelation::Owners => "Owners",
+        MetaRelation::RegisterRecords => "RegisterRecords",
+        MetaRelation::BasedOn => "BasedOn",
+        MetaRelation::InputByString => "InputByString",
+    };
+    let item_tag = if relation == MetaRelation::InputByString {
+        "xr:Field"
+    } else {
+        "xr:Item"
+    };
+    let doc = Document::parse(xml_text.trim_start_matches('\u{feff}')).map_err(|_| {
+        typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata descriptor is not valid XML",
+            None,
+        )
+    })?;
+    let object = meta_edit_object_node(&doc).map_err(|_| {
+        typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata object is unavailable",
+            None,
+        )
+    })?;
+    let properties = meta_info_child(object, "Properties").ok_or_else(|| {
+        typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata descriptor has no Properties",
+            None,
+        )
+    })?;
+    let relation_node = meta_info_child(properties, tag).ok_or_else(|| {
+        typed_diagnostic(
+            MetaDiagnosticCode::InvalidArguments,
+            format!(
+                "relation `{}` is not present on this metadata object",
+                relation.as_str()
+            ),
+            Some("relation"),
+        )
+    })?;
+    let mut values = relation_node
+        .children()
+        .filter(|child| child.is_element())
+        .filter_map(|child| child.text())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    let range = properties.range();
+    drop(doc);
+    let requested = targets
+        .iter()
+        .map(|target| target.metadata_path.as_str().to_string())
+        .collect::<Vec<_>>();
+    match mode {
+        RelationEditMode::Add => {
+            for target in requested {
+                if values.contains(&target) {
+                    return Err(typed_diagnostic(
+                        MetaDiagnosticCode::AlreadyExists,
+                        "metadata relation target already exists",
+                        Some("targets"),
+                    ));
+                }
+                values.push(target);
+            }
+        }
+        RelationEditMode::Remove => {
+            for target in requested {
+                let Some(index) = values.iter().position(|value| value == &target) else {
+                    return Err(typed_diagnostic(
+                        MetaDiagnosticCode::TargetNotFound,
+                        "metadata relation target was not found",
+                        Some("targets"),
+                    ));
+                };
+                values.remove(index);
+            }
+        }
+        RelationEditMode::Replace => {
+            let unique = requested.iter().collect::<std::collections::HashSet<_>>();
+            if unique.len() != requested.len() {
+                return Err(typed_diagnostic(
+                    MetaDiagnosticCode::InvalidArguments,
+                    "metadata relation targets contain duplicates",
+                    Some("targets"),
+                ));
+            }
+            values = requested;
+        }
+    }
+    let mut properties_text = xml_text[range.clone()].to_string();
+    let indent = meta_edit_property_child_indent(&properties_text);
+    let replacement = if values.is_empty() {
+        format!("{indent}<{tag}/>")
+    } else {
+        let items = values
+            .iter()
+            .map(|value| format!("{indent}\t<{item_tag}>{}</{item_tag}>", escape_xml(value)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("{indent}<{tag}>\n{items}\n{indent}</{tag}>")
+    };
+    meta_edit_replace_or_insert_property(&mut properties_text, tag, &replacement, &indent)
+        .map_err(|_| {
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata relation could not be updated",
+                Some("relation"),
+            )
+        })?;
+    xml_text.replace_range(range, &properties_text);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::metadata::{
+        DateFractions, MetaCollection, MetaEditOperation, MetaElementInput, MetaElementUpdateInput,
+        MetaFillValue, MetaPosition, MetaPropertyChanges, MetaPropertyInput, MetaPropertyValue,
+        MetaRelation, MetaScope, MetadataReference, MetadataType, MetadataTypeVariant, NumberSign,
+        RelationEditMode, StringLengthMode,
+    };
+    use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+
+    fn object_xml(kind: &str, name: &str, properties: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+	<{kind} uuid="11111111-1111-4111-8111-111111111111">
+		<Properties><Name>{name}</Name><Synonym/><Comment/>{properties}</Properties>
+		<ChildObjects/>
+	</{kind}>
+</MetaDataObject>
+"#
+        )
+    }
+
+    fn metadata_reference(path: &str) -> MetadataReference {
+        MetadataReference {
+            metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, path).unwrap(),
+        }
+    }
+
+    #[test]
+    fn typed_set_properties_and_relations_apply_without_legacy_dsl() {
+        let mut xml = object_xml(
+            "Document",
+            "Order",
+            "<NumberLength>9</NumberLength><CheckUnique>true</CheckUnique><RegisterRecords/><BasedOn/><InputByString/>",
+        );
+        let operations = vec![
+            MetaEditOperation::SetProperties {
+                values: MetaPropertyChanges::convert(
+                    crate::domain::metadata::MetadataKind::Document,
+                    vec![
+                        MetaPropertyInput::new(
+                            "Synonym",
+                            MetaPropertyValue::String("Customer order".into()),
+                        ),
+                        MetaPropertyInput::new(
+                            "NumberLength",
+                            MetaPropertyValue::UnsignedInteger(12),
+                        ),
+                        MetaPropertyInput::new("CheckUnique", MetaPropertyValue::Boolean(false)),
+                    ],
+                )
+                .unwrap(),
+            },
+            MetaEditOperation::edit_relations(
+                MetaRelation::RegisterRecords,
+                RelationEditMode::Replace,
+                vec![metadata_reference("InformationRegister.OrderFacts")],
+            )
+            .unwrap(),
+            MetaEditOperation::edit_relations(
+                MetaRelation::BasedOn,
+                RelationEditMode::Add,
+                vec![metadata_reference("Document.Quote")],
+            )
+            .unwrap(),
+            MetaEditOperation::edit_relations(
+                MetaRelation::InputByString,
+                RelationEditMode::Replace,
+                vec![metadata_reference("Document.Order")],
+            )
+            .unwrap(),
+        ];
+
+        apply_typed_operations(&mut xml, &operations).unwrap();
+
+        assert!(xml.contains("<v8:content>Customer order</v8:content>"));
+        assert!(xml.contains("<NumberLength>12</NumberLength>"));
+        assert!(xml.contains("<CheckUnique>false</CheckUnique>"));
+        assert!(xml.contains("<xr:Item>InformationRegister.OrderFacts</xr:Item>"));
+        assert!(xml.contains("<xr:Item>Document.Quote</xr:Item>"));
+        assert!(xml.contains("<xr:Field>Document.Order</xr:Field>"));
+    }
+
+    #[test]
+    fn typed_collection_matrix_adds_updates_and_removes_every_supported_collection() {
+        let cases = [
+            (MetaCollection::Attributes, "Document", "Attribute"),
+            (
+                MetaCollection::TabularSections,
+                "Document",
+                "TabularSection",
+            ),
+            (
+                MetaCollection::Dimensions,
+                "InformationRegister",
+                "Dimension",
+            ),
+            (MetaCollection::Resources, "InformationRegister", "Resource"),
+            (MetaCollection::EnumValues, "Enum", "EnumValue"),
+            (MetaCollection::Columns, "DocumentJournal", "Column"),
+            (MetaCollection::Forms, "Document", "Form"),
+            (MetaCollection::Templates, "Document", "Template"),
+            (MetaCollection::Commands, "Document", "Command"),
+        ];
+
+        for (collection, kind, tag) in cases {
+            let mut xml = object_xml(kind, "Sample", "");
+            let mut added = MetaElementInput::named("First");
+            if matches!(
+                collection,
+                MetaCollection::Attributes
+                    | MetaCollection::Dimensions
+                    | MetaCollection::Resources
+                    | MetaCollection::Columns
+            ) {
+                added.r#type = Some(
+                    MetadataType::new(vec![MetadataTypeVariant::String {
+                        length: 20,
+                        allowed_length: StringLengthMode::Variable,
+                    }])
+                    .unwrap(),
+                );
+            }
+            let operations = vec![
+                MetaEditOperation::add(collection, None, vec![added]).unwrap(),
+                MetaEditOperation::update(
+                    collection,
+                    None,
+                    vec![MetaElementUpdateInput {
+                        name: "First".into(),
+                        new_name: Some("Second".into()),
+                        ..MetaElementUpdateInput::default()
+                    }],
+                )
+                .unwrap(),
+                MetaEditOperation::remove(collection, None, vec!["Second".into()]).unwrap(),
+            ];
+
+            apply_typed_operations(&mut xml, &operations).unwrap();
+            assert!(!xml.contains(&format!("<{tag} uuid=")), "{collection:?}");
+        }
+    }
+
+    #[test]
+    fn typed_operations_are_ordered_support_scoped_attributes_and_emit_structured_types() {
+        let mut xml = object_xml("Document", "Order", "<RegisterRecords/>");
+        let structured_types = vec![
+            MetadataTypeVariant::String {
+                length: 40,
+                allowed_length: StringLengthMode::Fixed,
+            },
+            MetadataTypeVariant::Number {
+                digits: 15,
+                fraction: 3,
+                sign: NumberSign::NonNegative,
+            },
+            MetadataTypeVariant::Boolean,
+            MetadataTypeVariant::Date {
+                fractions: DateFractions::DateTime,
+            },
+            MetadataTypeVariant::Reference {
+                metadata_path: metadata_reference("Catalog.Items").metadata_path,
+            },
+            MetadataTypeVariant::DefinedType {
+                metadata_path: metadata_reference("DefinedType.ExternalCode").metadata_path,
+            },
+        ];
+        let operations = vec![
+            MetaEditOperation::add(
+                MetaCollection::TabularSections,
+                None,
+                vec![MetaElementInput::named("Lines")],
+            )
+            .unwrap(),
+            MetaEditOperation::add(
+                MetaCollection::Attributes,
+                Some(MetaScope {
+                    tabular_section: "Lines".into(),
+                }),
+                vec![MetaElementInput {
+                    name: "Value".into(),
+                    r#type: Some(MetadataType::new(structured_types).unwrap()),
+                    required: Some(true),
+                    ..MetaElementInput::default()
+                }],
+            )
+            .unwrap(),
+        ];
+
+        apply_typed_operations(&mut xml, &operations).unwrap();
+
+        assert!(xml.contains("<v8:Type>xs:string</v8:Type>"));
+        assert!(xml.contains("<v8:AllowedLength>Fixed</v8:AllowedLength>"));
+        assert!(xml.contains("<v8:Type>xs:decimal</v8:Type>"));
+        assert!(xml.contains("<v8:Type>xs:boolean</v8:Type>"));
+        assert!(xml.contains("<v8:Type>xs:dateTime</v8:Type>"));
+        assert!(xml.contains("<v8:Type>cfg:CatalogRef.Items</v8:Type>"));
+        assert!(xml.contains("<v8:TypeSet>cfg:DefinedType.ExternalCode</v8:TypeSet>"));
+        assert!(xml.contains("<FillChecking>ShowError</FillChecking>"));
+    }
+
+    #[test]
+    fn typed_positions_and_fill_values_preserve_requested_order_and_wire_types() {
+        let mut xml = object_xml("Document", "Order", "<RegisterRecords/>");
+        let typed_attribute =
+            |name: &str,
+             variant: MetadataTypeVariant,
+             fill_value: Option<MetaFillValue>,
+             position: Option<MetaPosition>| MetaElementInput {
+                name: name.into(),
+                r#type: Some(MetadataType::new(vec![variant]).unwrap()),
+                fill_value,
+                position,
+                ..MetaElementInput::default()
+            };
+        let operations = vec![
+            MetaEditOperation::add(
+                MetaCollection::Attributes,
+                None,
+                vec![
+                    typed_attribute(
+                        "StringValue",
+                        MetadataTypeVariant::String {
+                            length: 30,
+                            allowed_length: StringLengthMode::Variable,
+                        },
+                        Some(MetaFillValue::String("A&B".into())),
+                        None,
+                    ),
+                    typed_attribute(
+                        "BooleanValue",
+                        MetadataTypeVariant::Boolean,
+                        Some(MetaFillValue::Boolean(true)),
+                        Some(MetaPosition::new(Some("StringValue".into()), None).unwrap()),
+                    ),
+                    typed_attribute(
+                        "NumberValue",
+                        MetadataTypeVariant::Number {
+                            digits: 10,
+                            fraction: 2,
+                            sign: NumberSign::Any,
+                        },
+                        Some(MetaFillValue::Number("12.50".into())),
+                        Some(MetaPosition::new(None, Some("StringValue".into())).unwrap()),
+                    ),
+                    typed_attribute(
+                        "DateValue",
+                        MetadataTypeVariant::Date {
+                            fractions: DateFractions::DateTime,
+                        },
+                        Some(MetaFillValue::DateTime("2026-08-03T10:11:12".into())),
+                        None,
+                    ),
+                    typed_attribute(
+                        "ReferenceValue",
+                        MetadataTypeVariant::Reference {
+                            metadata_path: metadata_reference("Catalog.Items").metadata_path,
+                        },
+                        Some(MetaFillValue::Reference(metadata_reference(
+                            "Catalog.Items",
+                        ))),
+                        None,
+                    ),
+                    typed_attribute(
+                        "StorageValue",
+                        MetadataTypeVariant::ValueStorage,
+                        None,
+                        None,
+                    ),
+                ],
+            )
+            .unwrap(),
+            MetaEditOperation::update(
+                MetaCollection::Attributes,
+                None,
+                vec![MetaElementUpdateInput {
+                    name: "DateValue".into(),
+                    position: Some(MetaPosition::new(Some("BooleanValue".into()), None).unwrap()),
+                    ..MetaElementUpdateInput::default()
+                }],
+            )
+            .unwrap(),
+        ];
+
+        apply_typed_operations(&mut xml, &operations).unwrap();
+
+        let boolean = xml.find("<Name>BooleanValue</Name>").unwrap();
+        let date = xml.find("<Name>DateValue</Name>").unwrap();
+        let string = xml.find("<Name>StringValue</Name>").unwrap();
+        let number = xml.find("<Name>NumberValue</Name>").unwrap();
+        assert!(
+            date < boolean && boolean < string && string < number,
+            "unexpected typed attribute order: date={date}, boolean={boolean}, string={string}, number={number}\n{xml}"
+        );
+        assert!(xml.contains("<FillValue xsi:type=\"xs:string\">A&amp;B</FillValue>"));
+        assert!(xml.contains("<FillValue xsi:type=\"xs:boolean\">true</FillValue>"));
+        assert!(xml.contains("<FillValue xsi:type=\"xs:decimal\">12.50</FillValue>"));
+        assert!(xml.contains("<FillValue xsi:type=\"xs:dateTime\">2026-08-03T10:11:12</FillValue>"));
+        assert!(xml.contains("<FillValue xsi:type=\"xr:DesignTimeRef\">Catalog.Items</FillValue>"));
+        assert!(xml.contains("<v8:Type>v8:ValueStorage</v8:Type>"));
+    }
+
+    #[test]
+    fn typed_relations_cover_all_relations_and_edit_modes() {
+        let mut catalog = object_xml("Catalog", "Child", "<Owners/>");
+        let owners = vec![
+            MetaEditOperation::edit_relations(
+                MetaRelation::Owners,
+                RelationEditMode::Replace,
+                vec![metadata_reference("Catalog.Parent")],
+            )
+            .unwrap(),
+            MetaEditOperation::edit_relations(
+                MetaRelation::Owners,
+                RelationEditMode::Add,
+                vec![metadata_reference("Catalog.SecondParent")],
+            )
+            .unwrap(),
+            MetaEditOperation::edit_relations(
+                MetaRelation::Owners,
+                RelationEditMode::Remove,
+                vec![metadata_reference("Catalog.Parent")],
+            )
+            .unwrap(),
+        ];
+        apply_typed_operations(&mut catalog, &owners).unwrap();
+        assert!(!catalog.contains("Catalog.Parent</xr:Item>"));
+        assert!(catalog.contains("Catalog.SecondParent</xr:Item>"));
+
+        let mut document = object_xml(
+            "Document",
+            "Order",
+            "<RegisterRecords/><BasedOn/><InputByString/>",
+        );
+        for (relation, target) in [
+            (
+                MetaRelation::RegisterRecords,
+                "InformationRegister.OrderFacts",
+            ),
+            (MetaRelation::BasedOn, "Document.Quote"),
+            (MetaRelation::InputByString, "Document.Order"),
+        ] {
+            let operations = [
+                MetaEditOperation::edit_relations(
+                    relation,
+                    RelationEditMode::Replace,
+                    vec![metadata_reference(target)],
+                )
+                .unwrap(),
+                MetaEditOperation::edit_relations(
+                    relation,
+                    RelationEditMode::Remove,
+                    vec![metadata_reference(target)],
+                )
+                .unwrap(),
+            ];
+            apply_typed_operations(&mut document, &operations).unwrap();
+        }
+        assert!(document.contains("<RegisterRecords/>"));
+        assert!(document.contains("<BasedOn/>"));
+        assert!(document.contains("<InputByString/>"));
+    }
+
+    #[test]
+    fn typed_failures_are_indexed_and_never_upsert_missing_targets() {
+        let mut xml = object_xml("Document", "Order", "<RegisterRecords/>");
+        let original = xml.clone();
+        let operations = vec![
+            MetaEditOperation::add(
+                MetaCollection::Attributes,
+                None,
+                vec![MetaElementInput::named("Created")],
+            )
+            .unwrap(),
+            MetaEditOperation::update(
+                MetaCollection::Attributes,
+                None,
+                vec![MetaElementUpdateInput {
+                    name: "Missing".into(),
+                    synonym: Some("must not upsert".into()),
+                    ..MetaElementUpdateInput::default()
+                }],
+            )
+            .unwrap(),
+        ];
+
+        let failure = apply_typed_operations(&mut xml, &operations).unwrap_err();
+
+        assert_eq!(failure.diagnostics[0].operation_index, Some(1));
+        assert_eq!(
+            failure.diagnostics[0].code,
+            crate::domain::metadata::MetaDiagnosticCode::TargetNotFound
+        );
+        assert_eq!(
+            xml, original,
+            "failed ordered edits must leave the caller image unchanged"
+        );
+    }
+
+    #[test]
+    fn typed_duplicate_rename_collision_and_invalid_scope_have_stable_diagnostics() {
+        let mut duplicate_xml = object_xml("Document", "Order", "<RegisterRecords/>");
+        let duplicates = [
+            MetaEditOperation::add(
+                MetaCollection::Attributes,
+                None,
+                vec![MetaElementInput::named("Same")],
+            )
+            .unwrap(),
+            MetaEditOperation::add(
+                MetaCollection::Attributes,
+                None,
+                vec![MetaElementInput::named("Same")],
+            )
+            .unwrap(),
+        ];
+        let failure = apply_typed_operations(&mut duplicate_xml, &duplicates).unwrap_err();
+        assert_eq!(failure.diagnostics[0].operation_index, Some(1));
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::AlreadyExists
+        );
+
+        let mut collision_xml = object_xml("Document", "Order", "<RegisterRecords/>");
+        let operations = [
+            MetaEditOperation::add(
+                MetaCollection::Attributes,
+                None,
+                vec![
+                    MetaElementInput::named("First"),
+                    MetaElementInput::named("Second"),
+                ],
+            )
+            .unwrap(),
+            MetaEditOperation::update(
+                MetaCollection::Attributes,
+                None,
+                vec![MetaElementUpdateInput {
+                    name: "First".into(),
+                    new_name: Some("Second".into()),
+                    ..MetaElementUpdateInput::default()
+                }],
+            )
+            .unwrap(),
+        ];
+        let failure = apply_typed_operations(&mut collision_xml, &operations).unwrap_err();
+        assert_eq!(failure.diagnostics[0].operation_index, Some(1));
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::AlreadyExists
+        );
+
+        let mut scope_xml = object_xml("Document", "Order", "<RegisterRecords/>");
+        let invalid_scope = MetaEditOperation::add(
+            MetaCollection::Attributes,
+            Some(MetaScope {
+                tabular_section: "Missing".into(),
+            }),
+            vec![MetaElementInput::named("Value")],
+        )
+        .unwrap();
+        let failure = apply_typed_operations(&mut scope_xml, &[invalid_scope]).unwrap_err();
+        assert_eq!(failure.diagnostics[0].operation_index, Some(0));
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::TargetNotFound
+        );
+    }
+
+    #[test]
+    fn typed_invalid_property_is_rejected_before_xml_mutation() {
+        let diagnostic = MetaPropertyChanges::convert(
+            crate::domain::metadata::MetadataKind::Catalog,
+            vec![MetaPropertyInput::new(
+                "NumberLength",
+                MetaPropertyValue::UnsignedInteger(10),
+            )],
+        )
+        .unwrap_err();
+
+        assert_eq!(diagnostic.code, MetaDiagnosticCode::UnsupportedKind);
+        assert_eq!(diagnostic.field.as_deref(), Some("values.NumberLength"));
     }
 }
 

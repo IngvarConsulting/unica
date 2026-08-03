@@ -9,6 +9,9 @@ use super::info::meta_info_object_type_ru;
 use super::legacy_dsl::{
     meta_compile_is_config_type, parse_meta_number_type, parse_meta_string_type, resolve_meta_type,
 };
+use crate::domain::metadata::{
+    DateFractions, MetaFillValue, MetadataType, MetadataTypeVariant, NumberSign, StringLengthMode,
+};
 
 pub(crate) fn parse_metadata_image(
     bytes: &[u8],
@@ -385,5 +388,127 @@ pub(super) fn emit_meta_fill_value(lines: &mut Vec<String>, indent: &str, type_n
         ));
     } else {
         lines.push(format!("{indent}<FillValue xsi:nil=\"true\"/>"));
+    }
+}
+
+/// Emit the closed metadata type algebra directly to Platform XML. This is the
+/// typed writer boundary: it intentionally does not round-trip through the
+/// legacy string grammar.
+pub(super) fn emit_meta_typed_value_type(
+    lines: &mut Vec<String>,
+    indent: &str,
+    metadata_type: &MetadataType,
+) {
+    lines.push(format!("{indent}<Type>"));
+    let content_indent = format!("{indent}\t");
+    for variant in &metadata_type.variants {
+        let (tag, wire_name) = typed_wire_type(variant);
+        lines.push(format!(
+            "{content_indent}<v8:{tag}>{}</v8:{tag}>",
+            escape_xml(&wire_name)
+        ));
+    }
+    for variant in &metadata_type.variants {
+        match variant {
+            MetadataTypeVariant::String {
+                length,
+                allowed_length,
+            } => {
+                lines.push(format!("{content_indent}<v8:StringQualifiers>"));
+                lines.push(format!("{content_indent}\t<v8:Length>{length}</v8:Length>"));
+                lines.push(format!(
+                    "{content_indent}\t<v8:AllowedLength>{}</v8:AllowedLength>",
+                    match allowed_length {
+                        StringLengthMode::Variable => "Variable",
+                        StringLengthMode::Fixed => "Fixed",
+                    }
+                ));
+                lines.push(format!("{content_indent}</v8:StringQualifiers>"));
+            }
+            MetadataTypeVariant::Number {
+                digits,
+                fraction,
+                sign,
+            } => {
+                lines.push(format!("{content_indent}<v8:NumberQualifiers>"));
+                lines.push(format!("{content_indent}\t<v8:Digits>{digits}</v8:Digits>"));
+                lines.push(format!(
+                    "{content_indent}\t<v8:FractionDigits>{fraction}</v8:FractionDigits>"
+                ));
+                lines.push(format!(
+                    "{content_indent}\t<v8:AllowedSign>{}</v8:AllowedSign>",
+                    match sign {
+                        NumberSign::Any => "Any",
+                        NumberSign::NonNegative => "Nonnegative",
+                    }
+                ));
+                lines.push(format!("{content_indent}</v8:NumberQualifiers>"));
+            }
+            MetadataTypeVariant::Date { fractions } => {
+                lines.push(format!("{content_indent}<v8:DateQualifiers>"));
+                lines.push(format!(
+                    "{content_indent}\t<v8:DateFractions>{}</v8:DateFractions>",
+                    match fractions {
+                        DateFractions::Date => "Date",
+                        DateFractions::Time => "Time",
+                        DateFractions::DateTime => "DateTime",
+                    }
+                ));
+                lines.push(format!("{content_indent}</v8:DateQualifiers>"));
+            }
+            MetadataTypeVariant::Boolean
+            | MetadataTypeVariant::ValueStorage
+            | MetadataTypeVariant::Reference { .. }
+            | MetadataTypeVariant::DefinedType { .. } => {}
+        }
+    }
+    lines.push(format!("{indent}</Type>"));
+}
+
+fn typed_wire_type(variant: &MetadataTypeVariant) -> (&'static str, String) {
+    match variant {
+        MetadataTypeVariant::String { .. } => ("Type", "xs:string".to_string()),
+        MetadataTypeVariant::Number { .. } => ("Type", "xs:decimal".to_string()),
+        MetadataTypeVariant::Boolean => ("Type", "xs:boolean".to_string()),
+        MetadataTypeVariant::Date { .. } => ("Type", "xs:dateTime".to_string()),
+        MetadataTypeVariant::ValueStorage => ("Type", "v8:ValueStorage".to_string()),
+        MetadataTypeVariant::Reference { metadata_path } => {
+            let mut segments = metadata_path.segments();
+            let kind = segments.next().unwrap_or_default();
+            let tail = segments.collect::<Vec<_>>().join(".");
+            ("Type", format!("cfg:{kind}Ref.{tail}"))
+        }
+        MetadataTypeVariant::DefinedType { metadata_path } => {
+            ("TypeSet", format!("cfg:{}", metadata_path.as_str()))
+        }
+    }
+}
+
+pub(super) fn emit_meta_typed_fill_value(
+    lines: &mut Vec<String>,
+    indent: &str,
+    fill_value: Option<&MetaFillValue>,
+) {
+    match fill_value {
+        None => lines.push(format!("{indent}<FillValue xsi:nil=\"true\"/>")),
+        Some(MetaFillValue::String(value)) => lines.push(format!(
+            "{indent}<FillValue xsi:type=\"xs:string\">{}</FillValue>",
+            escape_xml(value)
+        )),
+        Some(MetaFillValue::Number(value)) => lines.push(format!(
+            "{indent}<FillValue xsi:type=\"xs:decimal\">{}</FillValue>",
+            escape_xml(value)
+        )),
+        Some(MetaFillValue::Boolean(value)) => lines.push(format!(
+            "{indent}<FillValue xsi:type=\"xs:boolean\">{value}</FillValue>"
+        )),
+        Some(MetaFillValue::DateTime(value)) => lines.push(format!(
+            "{indent}<FillValue xsi:type=\"xs:dateTime\">{}</FillValue>",
+            escape_xml(value)
+        )),
+        Some(MetaFillValue::Reference(reference)) => lines.push(format!(
+            "{indent}<FillValue xsi:type=\"xr:DesignTimeRef\">{}</FillValue>",
+            escape_xml(reference.metadata_path.as_str())
+        )),
     }
 }

@@ -3098,7 +3098,7 @@ fn with_registration_recovery_pause<T>(
 }
 
 #[cfg(test)]
-fn with_before_rollback_mutation_hook<T>(
+pub(crate) fn with_before_rollback_mutation_hook<T>(
     hook: impl FnOnce(&Path) + 'static,
     action: impl FnOnce() -> T,
 ) -> T {
