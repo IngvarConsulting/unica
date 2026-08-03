@@ -15,6 +15,8 @@ OPERATION_DESCRIPTORS = (
 )
 META_RUNTIME = REPO_ROOT / "crates/unica-coder/src/infrastructure/native_operations/meta"
 FORMAT_GUARD = REPO_ROOT / "crates/unica-coder/src/infrastructure/format_guard.rs"
+CF_RUNTIME = REPO_ROOT / "crates/unica-coder/src/infrastructure/native_operations/cf.rs"
+TOOL_CONTEXT = REPO_ROOT / "crates/unica-coder/src/infrastructure/tool_context.rs"
 
 
 def rust_function(source: str, signature: str) -> str:
@@ -61,6 +63,30 @@ def registered_tool_blocks() -> dict[str, str]:
 
 
 class MetaSurfaceContractTests(unittest.TestCase):
+    def test_live_rust_guidance_never_advertises_retired_meta_routes(self) -> None:
+        retired_route = re.compile(
+            r"(?<![A-Za-z0-9_])meta-(?:compile|validate|profile)\b|"
+            r"unica\.meta\.(?:compile|validate|profile)\b"
+        )
+        production_surfaces = (
+            (CF_RUNTIME, "pub(crate) fn edit_cf_with_data"),
+            (TOOL_CONTEXT, "fn validates_compile_preview_like_apply"),
+        )
+        violations: list[str] = []
+        for path, signature in production_surfaces:
+            production = rust_function(path.read_text(encoding="utf-8"), signature)
+            if retired_route.search(production):
+                violations.append(
+                    f"{path.relative_to(REPO_ROOT).as_posix()}: {signature}"
+                )
+
+        self.assertEqual(
+            violations,
+            [],
+            "live Rust error/help paths still advertise retired Meta routes:\n"
+            + "\n".join(violations),
+        )
+
     def test_live_meta_runtime_has_no_file_or_string_dsl_grammar(self) -> None:
         sources = sorted(
             path

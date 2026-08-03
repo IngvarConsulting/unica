@@ -600,7 +600,6 @@
         {
           "skill": "meta-add",
           "status": "ported-to-unica",
-          "donorScope": "meta-compile",
           "notes": "The local adopted creation owner is meta-add. Historical donor .claude/skills/meta-compile, meta-compile cases, docs and pinned parity baseline remain evidence for the reviewed object-emission facts, but the donor file/string DSL is not executable or prompt-visible. Current creation uses only sourceSet, kind, name and optional dryRun to build a typed minimal template; further changes use meta-edit. Shared support guards and validation remain inside the native mutation pipeline.",
           "upstreamPaths": [
             ".claude/skills/meta-compile/**",
@@ -654,27 +653,34 @@
         {
           "skill": "meta-info",
           "status": "ported-to-unica",
-          "notes": "Support-state reporting from Ext/ParentConfigurations.bin was reviewed at current donor head and ported through unica.meta.info together with prior presentation output; object status remains read-only reporting, while mutating support-guard stays open. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface.",
+          "notes": "One local owner combines the donor meta-info reader and donor meta-validate evidence without restoring a separate validation skill. Support-state and presentation reporting are exposed through unica.meta.info; the internal validator is returned in data.validation and runs before meta.add, meta.edit and meta.remove publication. Pinned donor paths and the parity baseline preserve both histories, while donor batch strings and wrapper routes remain retired.",
           "upstreamPaths": [
             ".claude/skills/meta-info/**",
+            ".claude/skills/meta-validate/**",
             "docs/meta-guide.md",
             "docs/meta-dsl-spec.md",
             "docs/1c-config-objects-spec.md"
           ],
           "localPaths": [
             "plugins/unica/skills/meta-info",
-            "tests/fixtures/unica_mcp_script_parity/unica_reference_models/meta-info"
+            "tests/fixtures/unica_mcp_script_parity/unica_reference_models/meta-info",
+            "crates/unica-coder/src/infrastructure/native_operations/meta/validation.rs",
+            "tests/fixtures/provenance/retired_meta_dsl/meta-validate"
           ],
           "contractPaths": [
+            "plugins/unica/skills/meta-info/SKILL.md",
             "tests/ci/test_unica_skills.py",
+            "tests/ci/test_skill_provenance.py",
             "tests/ci/test_unica_mcp_script_parity.py",
+            "crates/unica-coder/src/application/metadata.rs",
             "crates/unica-coder/src/infrastructure/native_operations/meta/mod.rs",
             "crates/unica-coder/src/application/mod.rs",
             "crates/unica-coder/src/infrastructure/native_operations/common.rs"
           ],
           "decision": "ignored-with-reason",
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
-          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+          "decisionReason": "Reviewed donor drift remains either typed meta.info/internal-validator evidence or retired wrapper and guidance churn. It does not justify restoring a public validation route or the former batch grammar.",
+          "parityBaselineCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e"
         },
         {
           "skill": "meta-remove",
@@ -697,33 +703,6 @@
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decision": "ignored-with-reason",
           "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; none of that donor churn requires adopting donor changes. Separately, Unica deliberately diverges from the donor by retiring the -KeepFiles switch, and that divergence does change the prompt-visible skill, the typed MCP contract, the native operation and the parity model; see the entry notes for the reasoning and the affected surfaces."
-        },
-        {
-          "skill": "meta-info",
-          "status": "adapted",
-          "donorScope": "meta-validate",
-          "componentOwner": "internal-metadata-validator",
-          "notes": "The donor meta-validate history is owned locally by the internal metadata validator, not by a prompt-visible validation skill. Pinned donor paths and parity baseline remain evidence. Validation is returned as meta.info data.validation and runs automatically before meta.add, meta.edit and meta.remove publication; donor batch strings and a separate public route were deliberately retired.",
-          "upstreamPaths": [
-            ".claude/skills/meta-validate/**",
-            "docs/meta-guide.md",
-            "docs/meta-dsl-spec.md",
-            "docs/1c-config-objects-spec.md"
-          ],
-          "localPaths": [
-            "crates/unica-coder/src/infrastructure/native_operations/meta/validation.rs",
-            "tests/fixtures/provenance/retired_meta_dsl/meta-validate"
-          ],
-          "contractPaths": [
-            "plugins/unica/skills/meta-info/SKILL.md",
-            "crates/unica-coder/src/application/metadata.rs",
-            "tests/ci/test_unica_skills.py",
-            "tests/ci/test_skill_provenance.py"
-          ],
-          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
-          "decision": "ignored-with-reason",
-          "decisionReason": "Reviewed donor drift remains either internal validator evidence or retired wrapper and guidance churn. It does not justify restoring a public validation route or the former batch grammar.",
-          "parityBaselineCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e"
         },
         {
           "skill": "mxl-compile",

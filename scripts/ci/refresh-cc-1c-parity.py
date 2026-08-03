@@ -16,13 +16,19 @@ from typing import Any, Iterable
 import donor_parity_contract as contract
 
 
+HISTORICAL_DONOR_SCOPE_OWNERS = {
+    "meta-compile": "meta-add",
+    "meta-validate": "meta-info",
+}
 CASE_SCOPE_OWNERS = {
     "cfe-borrow": "cfe-borrow",
     "form-compile": "form-compile",
     "form-compile-from-object": "form-compile",
+    "meta-compile": HISTORICAL_DONOR_SCOPE_OWNERS["meta-compile"],
     "skd-compile": "dcs-compile",
 }
 DONOR_SKILL_OWNERS = {
+    **HISTORICAL_DONOR_SCOPE_OWNERS,
     "skd-compile": "dcs-compile",
     "skd-edit": "dcs-edit",
     "skd-info": "dcs-info",
@@ -481,13 +487,16 @@ def build_baseline(
     tracking_ref = upstream.get("trackingRef")
     old_scopes = old_baseline.get("scopes") or {}
     discovered_cases = contract.discover_case_ids(snapshot_root)
-    case_scopes_by_owner: dict[str, set[str]] = {}
+    case_scopes_by_baseline_scope: dict[str, set[str]] = {}
     for case_id in discovered_cases:
         case_scope = case_id.split("/", 1)[0]
         owner = CASE_SCOPE_OWNERS.get(case_scope)
         if owner is None:
             raise RefreshError(f"case scope has no explicit owner: {case_scope}")
-        case_scopes_by_owner.setdefault(owner, set()).add(case_scope)
+        baseline_scope = donor_baseline_scope(case_scope, owner)
+        case_scopes_by_baseline_scope.setdefault(baseline_scope, set()).add(
+            case_scope
+        )
 
     file_records = []
     scopes_with_files: set[str] = set()
@@ -496,9 +505,10 @@ def build_baseline(
         scope, upstream_path = _snapshot_file_source(local_path)
         scopes_with_files.add(scope)
         old_scope = old_scopes.get(scope) or {}
+        owner = baseline_scope_owner(scope, old_scope)
         commit = (
             target_commit
-            if scope in affected_skills
+            if owner in affected_skills
             else old_scope.get("acceptedCommit")
         )
         if not isinstance(commit, str) or not contract.HEX_40.fullmatch(commit):
@@ -516,13 +526,23 @@ def build_baseline(
         )
     file_records.sort(key=lambda item: item["localPath"])
 
-    scope_names = scopes_with_files | affected_skills | set(case_scopes_by_owner)
+    represented_owners = {
+        baseline_scope_owner(scope, old_scopes.get(scope) or {})
+        for scope in scopes_with_files | set(case_scopes_by_baseline_scope)
+    }
+    unrepresented_affected = affected_skills - represented_owners
+    scope_names = (
+        scopes_with_files
+        | unrepresented_affected
+        | set(case_scopes_by_baseline_scope)
+    )
     scopes = {}
     for scope in sorted(scope_names):
         old_scope = old_scopes.get(scope) or {}
+        owner = baseline_scope_owner(scope, old_scope)
         commit = (
             target_commit
-            if scope in affected_skills
+            if owner in affected_skills
             else old_scope.get("acceptedCommit")
         )
         if not isinstance(commit, str) or not contract.HEX_40.fullmatch(commit):
@@ -530,14 +550,14 @@ def build_baseline(
                 f"no concrete accepted commit is available for scope {scope}"
             )
         scopes[scope] = {
-            # Donor scope names are historical evidence. The local owner may
-            # be renamed or internalized without rewriting that history.
-            "ownerSkill": old_scope.get("ownerSkill", scope),
-            "caseScopes": sorted(case_scopes_by_owner.get(scope, set())),
+            "ownerSkill": owner,
+            "caseScopes": sorted(
+                case_scopes_by_baseline_scope.get(scope, set())
+            ),
             "acceptedCommit": commit,
             "reviewId": (
                 review_id
-                if scope in affected_skills
+                if owner in affected_skills
                 else old_scope.get("reviewId")
             ),
             "contentDigest": contract.scope_content_digest(
@@ -548,8 +568,9 @@ def build_baseline(
     cases = {}
     for case_id in discovered_cases:
         case_scope = case_id.split("/", 1)[0]
+        owner = CASE_SCOPE_OWNERS[case_scope]
         cases[case_id] = {
-            "scope": CASE_SCOPE_OWNERS[case_scope],
+            "scope": donor_baseline_scope(case_scope, owner),
             "contentDigest": contract.case_content_digest(
                 snapshot_root, case_id
             ),
@@ -829,15 +850,30 @@ def _snapshot_file_source(local_path: str) -> tuple[str, str]:
         owner = CASE_SCOPE_OWNERS.get(case_scope)
         if owner is None:
             raise RefreshError(f"case scope has no explicit owner: {case_scope}")
-        return owner, f"tests/skills/{local_path}"
+        return donor_baseline_scope(case_scope, owner), f"tests/skills/{local_path}"
     if len(path.parts) >= 4 and path.parts[0] == "skills":
         donor_skill = path.parts[1]
-        return donor_skill_owner(donor_skill), f".claude/{local_path}"
+        owner = donor_skill_owner(donor_skill)
+        return donor_baseline_scope(donor_skill, owner), f".claude/{local_path}"
     raise RefreshError(f"unsupported donor snapshot path: {local_path}")
 
 
 def donor_skill_owner(donor_skill: str) -> str:
     return DONOR_SKILL_OWNERS.get(donor_skill, donor_skill)
+
+
+def donor_baseline_scope(donor_scope: str, owner: str) -> str:
+    if donor_scope in HISTORICAL_DONOR_SCOPE_OWNERS:
+        return donor_scope
+    return owner
+
+
+def baseline_scope_owner(scope: str, old_scope: dict[str, Any]) -> str:
+    historical_owner = HISTORICAL_DONOR_SCOPE_OWNERS.get(scope)
+    if historical_owner is not None:
+        return historical_owner
+    owner = old_scope.get("ownerSkill")
+    return owner if isinstance(owner, str) and owner else scope
 
 
 def _changed_snapshot_paths(before: Path, after: Path) -> list[str]:
