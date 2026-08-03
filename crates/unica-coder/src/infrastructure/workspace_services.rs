@@ -4,7 +4,7 @@ use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
 use crate::infrastructure::platform::{ManagedChild, ManagedStartupChild};
 use crate::infrastructure::plugin_runtime::find_plugin_root;
-use crate::infrastructure::source_roots::normalize_path_identity;
+use crate::infrastructure::source_roots::{normalize_path_identity, source_generation};
 use crate::infrastructure::workspace_index::{IndexReadiness, WorkspaceIndexService};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -2819,54 +2819,6 @@ fn service_cache_root(service_dir: &Path) -> PathBuf {
         .and_then(Path::parent)
         .map(Path::to_path_buf)
         .unwrap_or_else(|| service_dir.to_path_buf())
-}
-
-fn source_generation(source_root: &Path) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    hash_source_path(&mut hasher, source_root, 0);
-    hasher.finish()
-}
-
-fn hash_source_path(hasher: &mut DefaultHasher, path: &Path, depth: usize) {
-    if depth > 8 {
-        return;
-    }
-    let Ok(metadata) = path.metadata() else {
-        0_u8.hash(hasher);
-        return;
-    };
-    path.display().to_string().hash(hasher);
-    if !metadata.is_dir() {
-        metadata.len().hash(hasher);
-        if let Ok(modified) = metadata.modified() {
-            if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
-                duration.as_secs().hash(hasher);
-                duration.subsec_nanos().hash(hasher);
-            }
-        }
-        return;
-    }
-    let Ok(entries) = fs::read_dir(path) else {
-        return;
-    };
-    let mut paths = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|value| value.to_str())
-                .is_none_or(|name| name != ".build")
-                && (path.is_dir()
-                    || matches!(
-                        path.extension().and_then(|value| value.to_str()),
-                        Some("bsl" | "xml" | "yaml" | "yml")
-                    ))
-        })
-        .collect::<Vec<_>>();
-    paths.sort();
-    for child in paths.into_iter().take(20_000) {
-        hash_source_path(hasher, &child, depth + 1);
-    }
 }
 
 pub fn run_workspace_service_from_args(args: &[String]) -> Result<(), String> {

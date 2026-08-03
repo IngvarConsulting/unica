@@ -3,8 +3,10 @@ use crate::domain::source_roots::{select_default_source_set, ResolvedSourceRoot}
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform::filesystem::strip_windows_extended_length_prefix;
 use crate::infrastructure::project_sources::discover_project_source_map;
+use std::collections::hash_map::DefaultHasher;
 use std::fmt;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -196,6 +198,54 @@ pub(crate) fn normalize_path_identity(path: &Path) -> Result<PathBuf, String> {
     Ok(strip_windows_extended_length_prefix(&canonical))
 }
 
+pub(crate) fn source_generation(source_root: &Path) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    hash_source_path(&mut hasher, source_root, 0);
+    hasher.finish()
+}
+
+fn hash_source_path(hasher: &mut DefaultHasher, path: &Path, depth: usize) {
+    if depth > 8 {
+        return;
+    }
+    let Ok(metadata) = path.metadata() else {
+        0_u8.hash(hasher);
+        return;
+    };
+    path.display().to_string().hash(hasher);
+    if !metadata.is_dir() {
+        metadata.len().hash(hasher);
+        if let Ok(modified) = metadata.modified() {
+            if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
+                duration.as_secs().hash(hasher);
+                duration.subsec_nanos().hash(hasher);
+            }
+        }
+        return;
+    }
+    let Ok(entries) = fs::read_dir(path) else {
+        return;
+    };
+    let mut paths = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .is_none_or(|name| name != ".build")
+                && (path.is_dir()
+                    || matches!(
+                        path.extension().and_then(|value| value.to_str()),
+                        Some("bsl" | "xml" | "yaml" | "yml")
+                    ))
+        })
+        .collect::<Vec<_>>();
+    paths.sort();
+    for child in paths.into_iter().take(20_000) {
+        hash_source_path(hasher, &child, depth + 1);
+    }
+}
+
 fn canonicalize_existing_ancestor(path: &Path) -> Result<PathBuf, String> {
     for ancestor in path.ancestors() {
         match fs::symlink_metadata(ancestor) {
@@ -355,7 +405,7 @@ fn normalize_lexically(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_path_identity, resolve_source_root};
+    use super::{normalize_path_identity, resolve_source_root, source_generation};
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::workspace::discover_workspace;
     use std::fs;
@@ -364,6 +414,29 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static TEMP_WORKSPACE_NONCE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn source_generation_ignores_build_cache_and_tracks_bsl_changes() {
+        let context = fixture(&[("main", "CONFIGURATION", "src")]);
+        let source_root = context.workspace_root.join("src");
+        let module = source_root.join("CommonModules/SmokeModule.bsl");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        fs::write(&module, "Процедура Тест() Экспорт\nКонецПроцедуры\n").unwrap();
+        let baseline = source_generation(&source_root);
+
+        let generated = source_root.join(".build/bsl-graph.db");
+        fs::create_dir_all(generated.parent().unwrap()).unwrap();
+        fs::write(&generated, "generated cache").unwrap();
+        assert_eq!(source_generation(&source_root), baseline);
+
+        fs::write(
+            &module,
+            "Процедура Тест(НовыйПараметр = Неопределено) Экспорт\nКонецПроцедуры\n",
+        )
+        .unwrap();
+        assert_ne!(source_generation(&source_root), baseline);
+        cleanup(&context);
+    }
 
     #[test]
     fn uses_explicit_source_dir_relative_to_cwd() {

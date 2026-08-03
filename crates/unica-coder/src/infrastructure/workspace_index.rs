@@ -61,6 +61,8 @@ pub struct BslIndexStatus {
     pub message: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_class: Option<BslIndexFailureClass>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_generation: Option<u64>,
     pub updated_at: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_run: Option<BslIndexRunMetrics>,
@@ -516,6 +518,7 @@ impl BslIndexStatus {
             db_path: Some(db_path.display().to_string()),
             message: None,
             failure_class: None,
+            source_generation: None,
             updated_at: now_secs(),
             last_run: None,
         }
@@ -528,6 +531,7 @@ impl BslIndexStatus {
             db_path: None,
             message: Some(format!("rlm index {action} started")),
             failure_class: None,
+            source_generation: None,
             updated_at: now_secs(),
             last_run: None,
         }
@@ -540,6 +544,7 @@ impl BslIndexStatus {
             db_path: None,
             message: Some(message.to_string()),
             failure_class: Some(BslIndexFailureClass::Retryable),
+            source_generation: None,
             updated_at: now_secs(),
             last_run: None,
         }
@@ -552,6 +557,7 @@ impl BslIndexStatus {
             db_path: None,
             message: Some(message.to_string()),
             failure_class: Some(BslIndexFailureClass::Terminal),
+            source_generation: None,
             updated_at: now_secs(),
             last_run: None,
         }
@@ -564,6 +570,7 @@ impl BslIndexStatus {
             db_path: None,
             message: Some(message.to_string()),
             failure_class: None,
+            source_generation: None,
             updated_at: now_secs(),
             last_run: None,
         }
@@ -571,6 +578,11 @@ impl BslIndexStatus {
 
     fn with_last_run(mut self, metrics: BslIndexRunMetrics) -> Self {
         self.last_run = Some(metrics);
+        self
+    }
+
+    fn with_source_generation(mut self, generation: u64) -> Self {
+        self.source_generation = Some(generation);
         self
     }
 }
@@ -1493,6 +1505,30 @@ mod tests {
     use crate::domain::cancellation::CancellationToken;
     use crate::infrastructure::platform::testing;
     use std::cell::RefCell;
+
+    #[test]
+    fn legacy_status_without_source_generation_remains_readable() {
+        let status: BslIndexStatus = serde_json::from_str(
+            r#"{
+                "status":"ready",
+                "source_root":"C:/workspace/src",
+                "db_path":"C:/cache/bsl_index.db",
+                "message":null,
+                "updated_at":1
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(status.source_generation, None);
+    }
+
+    #[test]
+    fn ready_status_can_carry_a_source_generation() {
+        let status = BslIndexStatus::ready(Path::new("src"), Path::new("index.db"))
+            .with_source_generation(42);
+
+        assert_eq!(status.source_generation, Some(42));
+    }
 
     #[test]
     fn dry_run_does_not_start_indexing_or_write_state() {
