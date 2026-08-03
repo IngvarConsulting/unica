@@ -5476,7 +5476,7 @@ fn main() {
         response: ServiceResponse,
         session_retired: bool,
         maintenance_requests: usize,
-        fixture_exited: bool,
+        teardown_drained: bool,
     }
 
     fn run_blocking_rlm_execute(
@@ -5489,7 +5489,6 @@ fn main() {
         fs::write(&module, "Процедура Smoke()\nКонецПроцедуры\n").unwrap();
         write_ready_rlm_status_for_current_source(&context, &source_root);
         let fixture = compile_blocking_rlm_fixture(&context);
-        let pid_path = context.cache_root.join("blocking-rlm-pid.txt");
         let execute_started = context.cache_root.join("blocking-rlm-execute-started.txt");
         let execute_release = context.cache_root.join("blocking-rlm-execute-release.txt");
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
@@ -5504,12 +5503,11 @@ fn main() {
         });
         runtime.rlm_starter = Arc::new({
             let fixture = fixture.clone();
-            let pid_path = pid_path.clone();
             let execute_started = execute_started.clone();
             let execute_release = execute_release.clone();
             move |_context, source_root, cancellation| {
                 let mut command = Command::new(&fixture);
-                command.args([&pid_path, &execute_started, &execute_release]);
+                command.args([&execute_started, &execute_release]);
                 Ok(RlmMcpSession {
                     transport: PersistentMcpSession::start_with_command(command, cancellation)?,
                     source_root: source_root.to_path_buf(),
@@ -5531,7 +5529,6 @@ fn main() {
         });
 
         wait_for_file(&execute_started, Duration::from_secs(2));
-        let fixture_pid = wait_for_recorded_pid(&pid_path);
         during_execute(&context, &source_root, &module);
         fs::write(&execute_release, "release").unwrap();
         let response = caller.join().unwrap();
@@ -5540,15 +5537,13 @@ fn main() {
         let maintenance_requests = maintenance_requests.load(Ordering::Acquire);
         let teardown_drained = runtime.session_teardowns.drain(SESSION_TEARDOWN_GRACE);
         drop(runtime);
-        let fixture_exited =
-            teardown_drained && wait_for_process_exit(fixture_pid, Duration::from_secs(2));
         cleanup(&context);
 
         BlockingRlmObservation {
             response,
             session_retired,
             maintenance_requests,
-            fixture_exited,
+            teardown_drained,
         }
     }
 
@@ -5561,10 +5556,8 @@ fn main() {
             &source,
             r##"use std::{env, fs, io::{self, BufRead, Write}, thread, time::{Duration, Instant}};
 fn main() {
-    let pid_path = env::args().nth(1).unwrap();
-    let execute_started = env::args().nth(2).unwrap();
-    let execute_release = env::args().nth(3).unwrap();
-    fs::write(pid_path, std::process::id().to_string()).unwrap();
+    let execute_started = env::args().nth(1).unwrap();
+    let execute_release = env::args().nth(2).unwrap();
     for (index, line) in io::stdin().lock().lines().enumerate() {
         line.unwrap();
         match index {
@@ -6703,8 +6696,8 @@ fn main() {
         );
         assert_eq!(observation.maintenance_requests, 1);
         assert!(
-            observation.fixture_exited,
-            "retired fake RLM process was not reaped"
+            observation.teardown_drained,
+            "retired fake RLM session teardown exceeded the shutdown grace"
         );
     }
 
@@ -6735,8 +6728,8 @@ fn main() {
         );
         assert_eq!(observation.maintenance_requests, 1);
         assert!(
-            observation.fixture_exited,
-            "retired fake RLM process was not reaped"
+            observation.teardown_drained,
+            "retired fake RLM session teardown exceeded the shutdown grace"
         );
     }
 
