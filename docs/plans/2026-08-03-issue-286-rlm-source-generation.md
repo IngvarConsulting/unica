@@ -58,7 +58,7 @@ No public contract, package manifest, RLM adapter query, or tool-specific implem
 - Produces: `BslIndexStatus::with_source_generation(self, generation: u64) -> Self`
 - Consumes: existing bounded traversal policy: depth at most 8, at most 20,000 sorted entries, `.build` excluded, and only directories plus `bsl|xml|yaml|yml` files.
 
-- [ ] **Step 1: Write failing tests for the shared helper and backward-compatible status field**
+- [x] **Step 1: Write failing tests for the shared helper and backward-compatible status field**
 
 Add to `source_roots.rs` tests:
 
@@ -115,7 +115,7 @@ fn ready_status_can_carry_a_source_generation() {
 }
 ```
 
-- [ ] **Step 2: Run the tests and verify RED**
+- [x] **Step 2: Run the tests and verify RED**
 
 Run:
 
@@ -127,7 +127,7 @@ cargo test -p unica-coder --lib infrastructure::workspace_index::tests::ready_st
 
 Expected: compilation fails because `source_roots::source_generation`, `BslIndexStatus::source_generation`, and `with_source_generation` do not exist.
 
-- [ ] **Step 3: Move the existing generation algorithm to `source_roots.rs`**
+- [x] **Step 3: Move the existing generation algorithm to `source_roots.rs`**
 
 Add the required imports and move the existing functions without changing their limits or file filter:
 
@@ -186,7 +186,7 @@ fn hash_source_path(hasher: &mut DefaultHasher, path: &Path, depth: usize) {
 
 In `workspace_services.rs`, import `source_generation` from `source_roots` and remove only the local `source_generation` and `hash_source_path` definitions. Keep `DefaultHasher`, `Hash`, and `Hasher` imports if their other call sites still use them.
 
-- [ ] **Step 4: Add the optional generation to `BslIndexStatus`**
+- [x] **Step 4: Add the optional generation to `BslIndexStatus`**
 
 Add a backward-compatible field and builder:
 
@@ -206,7 +206,7 @@ fn with_source_generation(mut self, generation: u64) -> Self {
 
 Do not add the field to `BslIndexRunMetrics`; generation describes the indexed source snapshot, not command telemetry.
 
-- [ ] **Step 5: Run the focused tests and verify GREEN**
+- [x] **Step 5: Run the focused tests and verify GREEN**
 
 Run the three commands from Step 2 plus:
 
@@ -216,7 +216,7 @@ cargo test -p unica-coder --lib infrastructure::workspace_services::tests::sourc
 
 Expected: all pass; the existing workspace-service regression still proves session invalidation uses the same generation semantics.
 
-- [ ] **Step 6: Commit the shared primitive**
+- [x] **Step 6: Commit the shared primitive**
 
 ```powershell
 git add crates/unica-coder/src/infrastructure/source_roots.rs crates/unica-coder/src/infrastructure/workspace_services.rs crates/unica-coder/src/infrastructure/workspace_index.rs
@@ -238,7 +238,7 @@ git commit -m "refactor(cache): share source generation fingerprint"
 - Produces: `const SOURCE_GENERATION_STALE_STATUS: &str = "stale (source generation)"`.
 - Produces: `bind_readiness_to_source_generation(context, source_root, generation, readiness) -> IndexReadiness`.
 
-- [ ] **Step 1: Add failing regressions for matching, legacy, and changed generations**
+- [x] **Step 1: Add failing regressions for matching, legacy, and changed generations**
 
 Add a test helper:
 
@@ -349,7 +349,7 @@ fn changed_bsl_rejects_fresh_info_after_service_recreation() {
 }
 ```
 
-- [ ] **Step 2: Run the new tests and verify RED**
+- [x] **Step 2: Run the new tests and verify RED**
 
 Run:
 
@@ -361,7 +361,7 @@ cargo test -p unica-coder --lib infrastructure::workspace_index::tests::changed_
 
 Expected: the first test passes only after test fixtures use the new field; the legacy and changed-source tests fail because current code trusts RLM `fresh` and rewrites the ready marker.
 
-- [ ] **Step 3: Implement generation-bound readiness**
+- [x] **Step 3: Implement generation-bound readiness**
 
 Import `source_generation` and add:
 
@@ -397,13 +397,13 @@ In both `start_for_workspace_cancellable` and `ready_index_cancellable`, keep th
 
 Delete the calls that create or rewrite a ready marker merely because `index info` said fresh. Remove `ready_status_preserving_last_run`; only the background worker may publish a new ready proof after Task 3.
 
-- [ ] **Step 4: Update existing fresh-index fixtures without weakening them**
+- [x] **Step 4: Update existing fresh-index fixtures without weakening them**
 
 For every existing workspace-index test whose intended state is Ready, write a matching ready marker with `write_ready_status_for_current_source` before returning scripted `fresh` info. Do not add a matching marker to tests for legacy migration, changed sources, missing indexes, stale indexes, active locks, or failures.
 
 Update `ready_info_preserves_existing_last_run_metrics` to attach the current generation to its existing metric-bearing ready marker. Its assertion should prove the marker and `last_run` remain unchanged after a fresh readiness probe, rather than being rewritten by that probe.
 
-- [ ] **Step 5: Run readiness tests and verify GREEN**
+- [x] **Step 5: Run readiness tests and verify GREEN**
 
 Run:
 
@@ -417,7 +417,7 @@ cargo test -p unica-coder --lib infrastructure::workspace_index::tests
 
 Expected: all workspace-index tests pass; a matching marker is Ready, while legacy and changed generations never expose the DB path.
 
-- [ ] **Step 6: Commit the readiness gate**
+- [x] **Step 6: Commit the readiness gate**
 
 ```powershell
 git add crates/unica-coder/src/infrastructure/workspace_index.rs
@@ -440,7 +440,7 @@ git commit -m "fix(cache): reject stale RLM source generations"
 - Produces: successful normal and recovery ready markers bound to the captured generation.
 - Preserves: failed/building/unavailable markers do not claim a ready generation.
 
-- [ ] **Step 1: Add failing worker tests for success, concurrent change, and failure**
+- [x] **Step 1: Add failing worker tests for success, concurrent change, and failure**
 
 Extend `successful_background_job_records_last_run_metrics_in_status` to construct the job with `source_generation: 42` and assert:
 
@@ -494,7 +494,7 @@ Extend `cancelled_background_job_records_failure_and_releases_lock` with:
 assert_eq!(current_status.source_generation, None);
 ```
 
-- [ ] **Step 2: Run the worker tests and verify RED**
+- [x] **Step 2: Run the worker tests and verify RED**
 
 Run:
 
@@ -506,7 +506,7 @@ cargo test -p unica-coder --lib infrastructure::workspace_index::tests::cancelle
 
 Expected: compilation fails because `IndexBackgroundJob::source_generation` does not exist, or the success assertion fails because ready markers do not publish it.
 
-- [ ] **Step 3: Capture the generation when maintenance starts**
+- [x] **Step 3: Capture the generation when maintenance starts**
 
 Add to `IndexBackgroundJob`:
 
@@ -522,7 +522,7 @@ let source_generation = source_generation(&source_root);
 
 Pass it into `IndexBackgroundJob`. Add an explicit `source_generation` to every direct test constructor and to `test_background_job`; use the source root's current generation unless the test needs a named sentinel such as `42`.
 
-- [ ] **Step 4: Publish generation only on successful ready states**
+- [x] **Step 4: Publish generation only on successful ready states**
 
 Change both successful ready writes in `run_background_job_with`:
 
@@ -542,7 +542,7 @@ BslIndexStatus::ready(&job.source_root, &db_path)
 
 Do not attach the generation to `building`, `failed`, `terminal_failure`, or `unavailable` writes.
 
-- [ ] **Step 5: Add and run the complete update-cycle regression**
+- [x] **Step 5: Add and run the complete update-cycle regression**
 
 Add a test that runs a scripted update job to fresh, then creates a new `WorkspaceIndexService` and returns scripted `fresh` info:
 
@@ -595,7 +595,7 @@ cargo test -p unica-coder --lib infrastructure::workspace_index::tests
 
 Expected: all pass. Successful normal and recovery jobs publish the captured generation; failure does not; unchanged sources become Ready after update.
 
-- [ ] **Step 6: Commit worker publication**
+- [x] **Step 6: Commit worker publication**
 
 ```powershell
 git add crates/unica-coder/src/infrastructure/workspace_index.rs
@@ -692,3 +692,40 @@ Expected: clean working tree and an independently reviewable branch based on `up
 - Diff inspection: `git diff --check` passed; the branch changes exactly the three approved infrastructure files plus the design and this plan. The prohibited package manifests, tool lock, and `tool_contracts.rs` have a zero diff. No SQLite client, SQL, or direct RLM SQLite-schema read was added.
 
 The verification commands are complete and the scoped issue #286 regressions are covered, but this record deliberately does **not** claim a clean crate suite or lint-clean branch: the baseline/environment failures above remain visible and require separate remediation if a globally green Windows run is required.
+
+#### Final review fix-wave verification (2026-08-03)
+
+- Tasks 1–3 checkboxes now match the completed/reviewed commits recorded in the
+  SDD ledger.
+- TDD RED: `rlm_execute_rechecks_generation_after_readiness_before_starting_session`
+  failed because the stale generation still started RLM once instead of zero
+  times; `rlm_execute_discards_output_when_source_changes_before_fake_execute_returns`
+  failed because the old fake result was returned with `ok = true`.
+  `rlm_execute_preserves_active_index_lock_priority_after_source_change` then
+  failed with `stale` instead of `building`, and
+  `rlm_execute_returns_stale_response_before_index_maintenance_finishes`
+  failed because the response waited for the blocked maintenance request.
+- TDD GREEN: all four execution-boundary regressions passed 4/4. They prove
+  pre-start rejection, post-execute output rejection, active-lock priority,
+  prompt stale response, retired stale sessions, and exactly one maintenance
+  request. The focused stale-content recovery regression, now asserting the
+  sentinel generation `73`, passed 1/1.
+- `cargo test -p unica-coder --lib infrastructure::workspace_services::tests`
+  passed 94/94.
+- `cargo test -p unica-coder --lib infrastructure::workspace_index::tests` was
+  57/58; its only failure remains
+  `path_normalization_failures_do_not_match_index_identity` at Windows symlink
+  creation with error 1314. Both module-suite commands emitted the two unchanged
+  `runtime_jobs.rs` warnings already recorded above.
+- `cargo fmt --all -- --check`, `cargo check -p unica-coder --lib`, and
+  `cargo clippy -p unica-coder --lib -- -D warnings` passed. The narrower lib
+  clippy result does not supersede the recorded all-targets baseline failure.
+- With the installed Python 3.13.14 interpreter, `test_design_documents` passed
+  8/8; strict architecture sync again reported an unchanged public MCP
+  surface. `git diff --check` and the prohibited-path diff passed; no SQLite
+  client or SQL was added.
+
+This fix-wave record is scoped evidence only. It does not claim a globally
+clean suite, and it leaves the unrelated Windows 1314/5 failures, all-targets
+`runtime_jobs.rs` warnings, and product-contract path-separator failure exactly
+as recorded above.

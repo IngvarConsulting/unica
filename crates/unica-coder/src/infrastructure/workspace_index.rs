@@ -26,7 +26,7 @@ const LOCK_SCHEMA_VERSION: u32 = 1;
 const RLM_INDEX_DIR_NAME: &str = "rlm-tools-bsl";
 const STATUS_FILE_NAME: &str = "bsl_index_status.json";
 const LOCK_FILE_NAME: &str = "bsl_index.lock";
-const SOURCE_GENERATION_STALE_STATUS: &str = "stale (source generation)";
+pub(crate) const SOURCE_GENERATION_STALE_STATUS: &str = "stale (source generation)";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IndexReadiness {
@@ -1190,6 +1190,52 @@ pub fn bsl_index_is_ready(context: &WorkspaceContext) -> bool {
     }
 }
 
+pub(crate) fn ready_index_for_source_generation(
+    context: &WorkspaceContext,
+    source_root: &Path,
+    generation: u64,
+) -> IndexReadiness {
+    if active_lock(context, source_root) {
+        return IndexReadiness::Building;
+    }
+    let readiness = match read_bsl_index_status(context) {
+        Some(status) if stored_path_matches(status.source_root.as_deref(), source_root) => {
+            match status.status.as_str() {
+                "ready" if status.source_generation == Some(generation) => status
+                    .db_path
+                    .map(PathBuf::from)
+                    .filter(|db_path| db_path.is_file())
+                    .map(|db_path| IndexReadiness::Ready { db_path })
+                    .unwrap_or_else(source_generation_stale_readiness),
+                "building" => IndexReadiness::Building,
+                "failed" => IndexReadiness::Failed(
+                    status
+                        .message
+                        .unwrap_or_else(|| "rlm index failed".to_string()),
+                ),
+                "unavailable" => IndexReadiness::Unavailable(
+                    status
+                        .message
+                        .unwrap_or_else(|| "rlm index unavailable".to_string()),
+                ),
+                _ => source_generation_stale_readiness(),
+            }
+        }
+        _ => source_generation_stale_readiness(),
+    };
+    if active_lock(context, source_root) {
+        IndexReadiness::Building
+    } else {
+        readiness
+    }
+}
+
+fn source_generation_stale_readiness() -> IndexReadiness {
+    IndexReadiness::Stale {
+        status: SOURCE_GENERATION_STALE_STATUS.to_string(),
+    }
+}
+
 pub fn status_path(context: &WorkspaceContext) -> PathBuf {
     context.cache_root.join("caches").join(STATUS_FILE_NAME)
 }
@@ -1454,9 +1500,7 @@ fn bind_readiness_to_source_generation(
     if matches {
         IndexReadiness::Ready { db_path }
     } else {
-        IndexReadiness::Stale {
-            status: SOURCE_GENERATION_STALE_STATUS.to_string(),
-        }
+        source_generation_stale_readiness()
     }
 }
 
@@ -2382,6 +2426,7 @@ source-set:
         fs::create_dir_all(db_path.parent().unwrap()).unwrap();
         fs::write(&db_path, "").unwrap();
         let mut job = test_background_job(&context, "update");
+        job.source_generation = 73;
         job.recovery_build = Some(inert_index_command(&context, "build"));
         let mut outputs = vec![
             IndexOutput::success("Updated in 0.1s"),
@@ -2408,6 +2453,7 @@ source-set:
         );
         let status = read_bsl_index_status(&context).unwrap();
         assert_eq!(status.status, "ready");
+        assert_eq!(status.source_generation, Some(73));
         let metrics = status.last_run.unwrap();
         assert_eq!(metrics.action, "update->build");
         assert_eq!(

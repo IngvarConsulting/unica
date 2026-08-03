@@ -5,7 +5,10 @@ use crate::infrastructure::bundled_tools::resolve_bundled_tool;
 use crate::infrastructure::platform::{ManagedChild, ManagedStartupChild};
 use crate::infrastructure::plugin_runtime::find_plugin_root;
 use crate::infrastructure::source_roots::{normalize_path_identity, source_generation};
-use crate::infrastructure::workspace_index::{IndexReadiness, WorkspaceIndexService};
+use crate::infrastructure::workspace_index::{
+    ready_index_for_source_generation, IndexReadiness, WorkspaceIndexService,
+    SOURCE_GENERATION_STALE_STATUS,
+};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -1285,6 +1288,8 @@ struct WorkspaceServiceRuntime {
     rlm_lane: AnalyzerLane,
     rlm: Mutex<Option<RlmMcpSession>>,
     rlm_starter: Arc<RlmSessionStarter>,
+    rlm_maintenance_requester: Arc<RlmIndexMaintenanceRequester>,
+    rlm_maintenance_pending: Arc<AtomicBool>,
     session_teardowns: SessionTeardownLifecycle,
     analyzer_source_generation: Mutex<u64>,
     rlm_source_generation: Mutex<u64>,
@@ -1305,6 +1310,16 @@ type BslSessionStarter = dyn Fn(&WorkspaceContext, &Path, &CancellationToken) ->
 type RlmSessionStarter = dyn Fn(&WorkspaceContext, &Path, &CancellationToken) -> Result<RlmMcpSession, String>
     + Send
     + Sync;
+type RlmIndexMaintenanceRequester =
+    dyn Fn(WorkspaceContext, PathBuf, CancellationToken) + Send + Sync;
+
+struct RlmMaintenanceRequestGuard(Arc<AtomicBool>);
+
+impl Drop for RlmMaintenanceRequestGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
 
 impl WorkspaceServiceRuntime {
     fn new(identity: WorkspaceServiceIdentity, record_owner: &WorkspaceServiceRecord) -> Self {
@@ -1326,6 +1341,20 @@ impl WorkspaceServiceRuntime {
             rlm_lane: AnalyzerLane::default(),
             rlm: Mutex::new(None),
             rlm_starter: Arc::new(RlmMcpSession::start),
+            rlm_maintenance_requester: Arc::new(|context, source_root, cancellation| {
+                let mut args = Map::new();
+                args.insert(
+                    "sourceDir".to_string(),
+                    Value::String(source_root.display().to_string()),
+                );
+                let _ = WorkspaceIndexService::new().start_for_workspace_cancellable(
+                    &context,
+                    &args,
+                    false,
+                    &cancellation,
+                );
+            }),
+            rlm_maintenance_pending: Arc::new(AtomicBool::new(false)),
             session_teardowns: SessionTeardownLifecycle::default(),
             analyzer_source_generation: Mutex::new(source_generation),
             rlm_source_generation: Mutex::new(source_generation),
@@ -1587,6 +1616,38 @@ impl WorkspaceServiceRuntime {
         ServiceResponse::from_readiness(readiness, start_report.warnings)
     }
 
+    fn request_rlm_index_maintenance(&self, cancellation: &CancellationToken) -> Vec<String> {
+        if cancellation.is_cancelled() {
+            return vec![cancelled_error("rlm index operation stopped before work")];
+        }
+        if self
+            .rlm_maintenance_pending
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Vec::new();
+        }
+        let requester = Arc::clone(&self.rlm_maintenance_requester);
+        let context = self.context.clone();
+        let source_root = PathBuf::from(&self.identity.source_root);
+        let cancellation = cancellation.clone();
+        let pending = Arc::clone(&self.rlm_maintenance_pending);
+        match thread::Builder::new()
+            .name("unica-rlm-index-maintenance".to_string())
+            .spawn(move || {
+                let _pending = RlmMaintenanceRequestGuard(pending);
+                requester(context, source_root, cancellation);
+            }) {
+            Ok(_) => Vec::new(),
+            Err(error) => {
+                self.rlm_maintenance_pending.store(false, Ordering::Release);
+                vec![format!(
+                    "rlm index maintenance could not be scheduled: {error}"
+                )]
+            }
+        }
+    }
+
     fn handle_rlm_mcp(
         &self,
         operation: WorkspaceRlmOperation,
@@ -1600,15 +1661,19 @@ impl WorkspaceServiceRuntime {
             Ok(lane) => lane,
             Err(error) => return ServiceResponse::error(error),
         };
+        if cancellation.is_cancelled() {
+            return ServiceResponse::error(cancelled_error("workspace RLM operation stopped"));
+        }
         let mut rlm = self.rlm.lock().unwrap_or_else(|error| error.into_inner());
         let mut stale_session = None;
-        let current_generation = source_generation(Path::new(&self.identity.source_root));
+        let source_root = Path::new(&self.identity.source_root);
+        let pre_execution_generation = source_generation(source_root);
         if let Ok(mut generation) = self.rlm_source_generation.lock() {
             if self.rlm_invalidated.swap(false, Ordering::AcqRel)
-                || current_generation != *generation
+                || pre_execution_generation != *generation
             {
                 stale_session = rlm.take();
-                *generation = current_generation;
+                *generation = pre_execution_generation;
             }
         }
         if stale_session.is_none() && rlm.as_mut().is_some_and(|session| !session.is_reusable()) {
@@ -1618,6 +1683,17 @@ impl WorkspaceServiceRuntime {
             drop(rlm);
             self.retire_session(stale_session);
             rlm = self.rlm.lock().unwrap_or_else(|error| error.into_inner());
+        }
+        let pre_execution_readiness =
+            ready_index_for_source_generation(&self.context, source_root, pre_execution_generation);
+        if !matches!(pre_execution_readiness, IndexReadiness::Ready { .. }) {
+            let stale_session = rlm.take();
+            drop(rlm);
+            if let Some(stale_session) = stale_session {
+                self.retire_session(stale_session);
+            }
+            let warnings = self.request_rlm_index_maintenance(cancellation);
+            return ServiceResponse::unavailable_rlm_execution(pre_execution_readiness, warnings);
         }
         let timeout = Duration::from_millis(timeout_millis.max(1));
         let result = (|| {
@@ -1633,12 +1709,41 @@ impl WorkspaceServiceRuntime {
                 .execute(&operation, timeout, cancellation)
         })();
         match result {
-            Ok(output) => ServiceResponse {
-                ok: true,
-                result_text: Some(output.result_text),
-                stderr: Some(output.stderr),
-                ..ServiceResponse::default()
-            },
+            Ok(output) => {
+                let post_execution_generation = source_generation(source_root);
+                let boundary_readiness = ready_index_for_source_generation(
+                    &self.context,
+                    source_root,
+                    pre_execution_generation,
+                );
+                let post_execution_readiness = match (
+                    post_execution_generation == pre_execution_generation,
+                    boundary_readiness,
+                ) {
+                    (false, IndexReadiness::Ready { .. }) => IndexReadiness::Stale {
+                        status: SOURCE_GENERATION_STALE_STATUS.to_string(),
+                    },
+                    (_, readiness) => readiness,
+                };
+                if !matches!(post_execution_readiness, IndexReadiness::Ready { .. }) {
+                    let stale_session = rlm.take();
+                    drop(rlm);
+                    if let Some(stale_session) = stale_session {
+                        self.retire_session(stale_session);
+                    }
+                    let warnings = self.request_rlm_index_maintenance(cancellation);
+                    return ServiceResponse::unavailable_rlm_execution(
+                        post_execution_readiness,
+                        warnings,
+                    );
+                }
+                ServiceResponse {
+                    ok: true,
+                    result_text: Some(output.result_text),
+                    stderr: Some(output.stderr),
+                    ..ServiceResponse::default()
+                }
+            }
             Err(error) => {
                 let stale_session = if rlm.as_mut().is_some_and(|session| !session.is_reusable()) {
                     rlm.take()
@@ -1946,6 +2051,21 @@ impl ServiceResponse {
                 ..Self::default()
             },
         }
+    }
+
+    fn unavailable_rlm_execution(readiness: IndexReadiness, warnings: Vec<String>) -> Self {
+        let mut response = Self::from_readiness(readiness, warnings);
+        response.ok = false;
+        if response.error.is_none() {
+            response.error = Some(match response.index_status.as_deref() {
+                Some("missing") => "rlm index is missing".to_string(),
+                Some("building") => "rlm index building".to_string(),
+                _ => "rlm index unavailable at execution boundary".to_string(),
+            });
+        }
+        response.result_text = None;
+        response.stderr = None;
+        response
     }
 
     fn index_readiness(&self) -> IndexReadiness {
@@ -5272,6 +5392,17 @@ fn main() {
         }
     }
 
+    fn wait_for_atomic_value(value: &AtomicUsize, expected: usize, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        while value.load(Ordering::Acquire) != expected {
+            assert!(
+                Instant::now() < deadline,
+                "atomic value did not become {expected}"
+            );
+            thread::yield_now();
+        }
+    }
+
     fn wait_for_runtime_reader_terminal(runtime: &WorkspaceServiceRuntime, timeout: Duration) {
         let deadline = Instant::now() + timeout;
         loop {
@@ -5294,6 +5425,178 @@ fn main() {
 
     fn wait_for_process_exit(pid: u32, timeout: Duration) -> bool {
         testing::wait_for_process_exit(pid, timeout)
+    }
+
+    fn write_ready_rlm_status_for_current_source(context: &WorkspaceContext, source_root: &Path) {
+        let db_path = context.cache_root.join("rlm-tools-bsl/test/bsl_index.db");
+        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        fs::write(&db_path, "ready index").unwrap();
+        let status = crate::infrastructure::workspace_index::BslIndexStatus {
+            status: "ready".to_string(),
+            source_root: Some(source_root.display().to_string()),
+            db_path: Some(db_path.display().to_string()),
+            message: None,
+            failure_class: None,
+            source_generation: Some(source_generation(source_root)),
+            updated_at: now_secs_for_test(),
+            last_run: None,
+        };
+        let status_path = crate::infrastructure::workspace_index::status_path(context);
+        fs::create_dir_all(status_path.parent().unwrap()).unwrap();
+        fs::write(
+            status_path,
+            serde_json::to_string_pretty(&status).unwrap() + "\n",
+        )
+        .unwrap();
+    }
+
+    fn write_active_rlm_index_lock(context: &WorkspaceContext, source_root: &Path) {
+        let lock_path = context.cache_root.join("locks/bsl_index.lock");
+        fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+        let now = now_secs_for_test();
+        fs::write(
+            lock_path,
+            serde_json::to_string_pretty(&json!({
+                "schema_version": 1,
+                "lock_id": "blocking-execute-lock",
+                "owner_pid": std::process::id(),
+                "action": "update",
+                "source_root": source_root.display().to_string(),
+                "started_at": now,
+                "updated_at": now,
+                "state": "active"
+            }))
+            .unwrap()
+                + "\n",
+        )
+        .unwrap();
+    }
+
+    struct BlockingRlmObservation {
+        response: ServiceResponse,
+        session_retired: bool,
+        maintenance_requests: usize,
+        fixture_exited: bool,
+    }
+
+    fn run_blocking_rlm_execute(
+        name: &str,
+        during_execute: impl FnOnce(&WorkspaceContext, &Path, &Path),
+    ) -> BlockingRlmObservation {
+        let context = test_context(name);
+        let source_root = context.workspace_root.join("src");
+        let module = source_root.join("CommonModules/SmokeModule.bsl");
+        fs::write(&module, "Процедура Smoke()\nКонецПроцедуры\n").unwrap();
+        write_ready_rlm_status_for_current_source(&context, &source_root);
+        let fixture = compile_blocking_rlm_fixture(&context);
+        let pid_path = context.cache_root.join("blocking-rlm-pid.txt");
+        let execute_started = context.cache_root.join("blocking-rlm-execute-started.txt");
+        let execute_release = context.cache_root.join("blocking-rlm-execute-release.txt");
+        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
+        let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
+        let maintenance_requests = Arc::new(AtomicUsize::new(0));
+        runtime.rlm_maintenance_requester = Arc::new({
+            let maintenance_requests = Arc::clone(&maintenance_requests);
+            move |_context, _source_root, _cancellation| {
+                maintenance_requests.fetch_add(1, Ordering::AcqRel);
+            }
+        });
+        runtime.rlm_starter = Arc::new({
+            let fixture = fixture.clone();
+            let pid_path = pid_path.clone();
+            let execute_started = execute_started.clone();
+            let execute_release = execute_release.clone();
+            move |_context, source_root, cancellation| {
+                let mut command = Command::new(&fixture);
+                command.args([&pid_path, &execute_started, &execute_release]);
+                Ok(RlmMcpSession {
+                    transport: PersistentMcpSession::start_with_command(command, cancellation)?,
+                    source_root: source_root.to_path_buf(),
+                    session_id: None,
+                })
+            }
+        });
+        let runtime = Arc::new(runtime);
+        let caller_runtime = Arc::clone(&runtime);
+        let caller = thread::spawn(move || {
+            caller_runtime.handle_rlm_mcp(
+                WorkspaceRlmOperation::Search {
+                    query: "Smoke".to_string(),
+                    limit: 20,
+                },
+                5_000,
+                &CancellationToken::new(),
+            )
+        });
+
+        wait_for_file(&execute_started, Duration::from_secs(2));
+        let fixture_pid = wait_for_recorded_pid(&pid_path);
+        during_execute(&context, &source_root, &module);
+        fs::write(&execute_release, "release").unwrap();
+        let response = caller.join().unwrap();
+        let session_retired = runtime.rlm.lock().unwrap().is_none();
+        wait_for_atomic_value(&maintenance_requests, 1, Duration::from_secs(2));
+        let maintenance_requests = maintenance_requests.load(Ordering::Acquire);
+        drop(runtime);
+        let fixture_exited = wait_for_process_exit(fixture_pid, Duration::from_secs(2));
+        cleanup(&context);
+
+        BlockingRlmObservation {
+            response,
+            session_retired,
+            maintenance_requests,
+            fixture_exited,
+        }
+    }
+
+    fn compile_blocking_rlm_fixture(context: &WorkspaceContext) -> PathBuf {
+        let source = context.cache_root.join("blocking-rlm-fixture.rs");
+        let executable =
+            testing::fixture_executable_path(&context.cache_root, "blocking-rlm-fixture");
+        fs::create_dir_all(&context.cache_root).unwrap();
+        fs::write(
+            &source,
+            r##"use std::{env, fs, io::{self, BufRead, Write}, thread, time::{Duration, Instant}};
+fn main() {
+    let pid_path = env::args().nth(1).unwrap();
+    let execute_started = env::args().nth(2).unwrap();
+    let execute_release = env::args().nth(3).unwrap();
+    fs::write(pid_path, std::process::id().to_string()).unwrap();
+    for (index, line) in io::stdin().lock().lines().enumerate() {
+        line.unwrap();
+        match index {
+            0 => println!("{}", r#"{"jsonrpc":"2.0","id":1,"result":{}}"#),
+            2 => println!("{}", r#"{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"{\"session_id\":\"session-1\",\"index\":{\"index_status\":\"ready\"}}"}]}}"#),
+            3 => {
+                fs::write(&execute_started, "started").unwrap();
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while !std::path::Path::new(&execute_release).is_file() && Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                assert!(std::path::Path::new(&execute_release).is_file());
+                println!("{}", r#"{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"{\"stdout\":\"[\\\"old-index-result\\\"]\"}"}]}}"#);
+            }
+            4 => {
+                println!("{}", r#"{"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"{}"}]}}"#);
+                io::stdout().flush().unwrap();
+                break;
+            }
+            _ => {}
+        }
+        io::stdout().flush().unwrap();
+    }
+}"##,
+        )
+        .unwrap();
+        let status = Command::new("rustc")
+            .arg(&source)
+            .arg("-o")
+            .arg(&executable)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        executable
     }
 
     fn compile_initialize_fixture(context: &WorkspaceContext) -> PathBuf {
@@ -6231,6 +6534,184 @@ fn main() {
         .unwrap();
         assert_ne!(source_generation(&source_root), baseline);
         cleanup(&context);
+    }
+
+    #[test]
+    fn rlm_execute_rechecks_generation_after_readiness_before_starting_session() {
+        let context = test_context("rlm-generation-before-execute");
+        let source_root = context.workspace_root.join("src");
+        let module = source_root.join("CommonModules/SmokeModule.bsl");
+        fs::write(&module, "Процедура Smoke()\nКонецПроцедуры\n").unwrap();
+        write_ready_rlm_status_for_current_source(&context, &source_root);
+        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
+        let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
+        let starts = Arc::new(AtomicUsize::new(0));
+        let maintenance_requests = Arc::new(AtomicUsize::new(0));
+        runtime.rlm_maintenance_requester = Arc::new({
+            let maintenance_requests = Arc::clone(&maintenance_requests);
+            move |_context, _source_root, _cancellation| {
+                maintenance_requests.fetch_add(1, Ordering::AcqRel);
+            }
+        });
+        runtime.rlm_starter = Arc::new({
+            let starts = Arc::clone(&starts);
+            move |_context, _source_root, _cancellation| {
+                starts.fetch_add(1, Ordering::AcqRel);
+                Err("RLM execute crossed a stale generation boundary".to_string())
+            }
+        });
+
+        fs::write(&module, "Процедура Smoke(НовыйПараметр)\nКонецПроцедуры\n").unwrap();
+        let response = runtime.handle_rlm_mcp(
+            WorkspaceRlmOperation::Search {
+                query: "Smoke".to_string(),
+                limit: 20,
+            },
+            1_000,
+            &CancellationToken::new(),
+        );
+        wait_for_atomic_value(&maintenance_requests, 1, Duration::from_secs(2));
+        cleanup(&context);
+
+        assert_eq!(
+            starts.load(Ordering::Acquire),
+            0,
+            "RLM must not start over a ready marker for an older source generation"
+        );
+        assert!(!response.ok);
+        assert_eq!(response.index_status.as_deref(), Some("stale"));
+        assert_eq!(response.error.as_deref(), Some("stale (source generation)"));
+        assert!(response.result_text.is_none());
+        assert!(response.stderr.is_none());
+        assert_eq!(maintenance_requests.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn rlm_execute_returns_stale_response_before_index_maintenance_finishes() {
+        let context = test_context("rlm-nonblocking-maintenance");
+        let source_root = context.workspace_root.join("src");
+        let module = source_root.join("CommonModules/SmokeModule.bsl");
+        fs::write(&module, "Процедура Smoke()\nКонецПроцедуры\n").unwrap();
+        write_ready_rlm_status_for_current_source(&context, &source_root);
+        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
+        let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
+        let maintenance_requests = Arc::new(AtomicUsize::new(0));
+        let (maintenance_started_tx, maintenance_started_rx) = mpsc::channel();
+        let (maintenance_release_tx, maintenance_release_rx) = mpsc::channel();
+        let maintenance_release_rx = Arc::new(Mutex::new(maintenance_release_rx));
+        runtime.rlm_maintenance_requester = Arc::new({
+            let maintenance_requests = Arc::clone(&maintenance_requests);
+            let maintenance_release_rx = Arc::clone(&maintenance_release_rx);
+            move |_context, _source_root, _cancellation| {
+                maintenance_requests.fetch_add(1, Ordering::AcqRel);
+                maintenance_started_tx.send(()).unwrap();
+                maintenance_release_rx.lock().unwrap().recv().unwrap();
+            }
+        });
+        fs::write(&module, "Процедура Smoke(НовыйПараметр)\nКонецПроцедуры\n").unwrap();
+        let runtime = Arc::new(runtime);
+        let caller_runtime = Arc::clone(&runtime);
+        let (response_tx, response_rx) = mpsc::channel();
+        let caller = thread::spawn(move || {
+            let response = caller_runtime.handle_rlm_mcp(
+                WorkspaceRlmOperation::Search {
+                    query: "Smoke".to_string(),
+                    limit: 20,
+                },
+                1_000,
+                &CancellationToken::new(),
+            );
+            response_tx.send(response).unwrap();
+        });
+
+        maintenance_started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("maintenance request was not started");
+        let early_response = response_rx.recv_timeout(Duration::from_millis(250));
+        maintenance_release_tx.send(()).unwrap();
+        let returned_before_maintenance_finished = early_response.is_ok();
+        let response = match early_response {
+            Ok(response) => response,
+            Err(mpsc::RecvTimeoutError::Timeout) => response_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("stale response did not arrive after maintenance was released"),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("stale response channel disconnected")
+            }
+        };
+        caller.join().unwrap();
+        drop(runtime);
+        cleanup(&context);
+
+        assert!(
+            returned_before_maintenance_finished,
+            "stale response waited for index maintenance"
+        );
+        assert!(!response.ok);
+        assert_eq!(response.index_status.as_deref(), Some("stale"));
+        assert_eq!(maintenance_requests.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn rlm_execute_discards_output_when_source_changes_before_fake_execute_returns() {
+        let observation = run_blocking_rlm_execute(
+            "rlm-generation-during-execute",
+            |_context, _source_root, module| {
+                fs::write(module, "Процедура Smoke(НовыйПараметр)\nКонецПроцедуры\n").unwrap();
+            },
+        );
+
+        assert!(!observation.response.ok);
+        assert_eq!(observation.response.index_status.as_deref(), Some("stale"));
+        assert_eq!(
+            observation.response.error.as_deref(),
+            Some("stale (source generation)")
+        );
+        assert!(observation.response.result_text.is_none());
+        assert!(observation.response.stderr.is_none());
+        assert!(
+            observation.session_retired,
+            "stale logical RLM session was retained"
+        );
+        assert_eq!(observation.maintenance_requests, 1);
+        assert!(
+            observation.fixture_exited,
+            "retired fake RLM process was not reaped"
+        );
+    }
+
+    #[test]
+    fn rlm_execute_preserves_active_index_lock_priority_after_source_change() {
+        let observation = run_blocking_rlm_execute(
+            "rlm-active-lock-during-execute",
+            |context, source_root, module| {
+                fs::write(module, "Процедура Smoke(НовыйПараметр)\nКонецПроцедуры\n").unwrap();
+                write_active_rlm_index_lock(context, source_root);
+            },
+        );
+
+        assert!(!observation.response.ok);
+        assert_eq!(
+            observation.response.index_status.as_deref(),
+            Some("building")
+        );
+        assert_eq!(
+            observation.response.error.as_deref(),
+            Some("rlm index building")
+        );
+        assert!(observation.response.result_text.is_none());
+        assert!(observation.response.stderr.is_none());
+        assert!(
+            observation.session_retired,
+            "stale logical RLM session was retained"
+        );
+        assert_eq!(observation.maintenance_requests, 1);
+        assert!(
+            observation.fixture_exited,
+            "retired fake RLM process was not reaped"
+        );
     }
 
     #[test]
