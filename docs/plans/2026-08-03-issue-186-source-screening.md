@@ -391,7 +391,7 @@ Run:
 
 ```powershell
 $reviewText = Get-Content -Raw -Encoding UTF8 'docs\provenance\reviews\2026-08-03-issue-186-source-screening.md'
-@('Regsorm/code-index-mcp','Arman-Kudaibergenov/bsl-atlas') | ForEach-Object { if (($reviewText.Split("### `$_`").Count - 1) -ne 1) { throw "missing or duplicate code-intelligence card: $_" } }
+@('Regsorm/code-index-mcp','Arman-Kudaibergenov/bsl-atlas') | ForEach-Object { $n = ([regex]::Matches($reviewText, [regex]::Escape(('### `' + $_ + '`')))).Count; if ($n -ne 1) { throw "missing or duplicate code-intelligence card: $_" } }
 @('bsl-analyzer','rlm-tools-bsl','rlm-bsl-index') | ForEach-Object { if ($reviewText -notmatch [regex]::Escape($_)) { throw "missing existing-engine classification: $_" } }
 ```
 
