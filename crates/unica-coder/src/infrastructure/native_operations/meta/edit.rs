@@ -73,7 +73,7 @@ use super::template_catalog::{
 use super::xml_model::{
     emit_meta_fill_value, emit_meta_mltext, emit_meta_typed_fill_value, emit_meta_typed_value_type,
     emit_meta_value_type, meta_info_child, meta_info_child_text, meta_info_children,
-    validate_meta_type_union,
+    meta_info_inner_text, validate_meta_type_union,
 };
 
 #[cfg(test)]
@@ -3253,6 +3253,53 @@ fn plan_typed_child_resources(
         }
     }
 
+    let final_document =
+        Document::parse(post_image.trim_start_matches('\u{feff}')).map_err(|_| {
+            MetaFailure::from(
+                typed_diagnostic(
+                    MetaDiagnosticCode::ProviderUnavailable,
+                    "typed owner post-image is not valid XML",
+                    None,
+                )
+                .with_metadata_path(owner.clone()),
+            )
+        })?;
+    let final_object = meta_edit_object_node(&final_document).map_err(|_| {
+        MetaFailure::from(
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "typed owner post-image object is unavailable",
+                None,
+            )
+            .with_metadata_path(owner.clone()),
+        )
+    })?;
+    if let Some(children) = meta_info_child(final_object, "ChildObjects") {
+        for (collection, tag) in [
+            (MetaCollection::Forms, "Form"),
+            (MetaCollection::Templates, "Template"),
+            (MetaCollection::Commands, "Command"),
+        ] {
+            for child in meta_info_children(children, tag) {
+                let Some(name) = typed_physical_owner_child_name(child) else {
+                    continue;
+                };
+                if states.iter().any(|state| {
+                    state.collection == collection
+                        && state.current_name.as_deref() == Some(name.as_str())
+                }) {
+                    continue;
+                }
+                touched_collections.insert(collection.as_str().to_string());
+                states.push(State {
+                    collection,
+                    origin: Origin::Existing(name.clone()),
+                    current_name: Some(name),
+                });
+            }
+        }
+    }
+
     let object_dir = descriptor_path.with_extension("");
     let mut initial_files = BTreeMap::<PathBuf, Vec<u8>>::new();
     let mut final_files = BTreeMap::<PathBuf, Vec<u8>>::new();
@@ -3323,7 +3370,13 @@ fn plan_typed_child_resources(
                 post_image,
                 collection_tag(state.collection),
                 final_name,
-            )?;
+            )
+            .or_else(|failure| match &state.origin {
+                Origin::Existing(initial_name) if initial_name == final_name => {
+                    initial_descriptor.clone().ok_or(failure)
+                }
+                Origin::Existing(_) | Origin::Added => Err(failure),
+            })?;
             final_files.insert(
                 collection_dir.join(format!("{final_name}.xml")),
                 bytes.clone(),
@@ -3381,14 +3434,13 @@ fn plan_typed_child_resources(
             for relative in &final_payload_directories {
                 final_directories.insert(payload_root.join(relative));
             }
-            for (ordinal, (relative, bytes)) in final_payload.iter().enumerate() {
+            for (relative, bytes) in &final_payload {
                 final_files.insert(payload_root.join(relative), bytes.clone());
                 plan.validation_resources.push(MetadataResourceImage {
                     role: typed_child_payload_role(
                         state.collection,
                         &child_address,
                         relative,
-                        ordinal,
                         template_type,
                     )?,
                     bytes: bytes.clone(),
@@ -3584,6 +3636,14 @@ fn plan_typed_child_resources(
     Ok(plan)
 }
 
+fn typed_physical_owner_child_name(node: roxmltree::Node<'_, '_>) -> Option<String> {
+    meta_edit_child_object_name(node).or_else(|| {
+        (!node.children().any(|child| child.is_element()))
+            .then(|| meta_info_inner_text(node).trim().to_string())
+            .filter(|name| !name.is_empty())
+    })
+}
+
 fn typed_physical_collection(
     collection: MetaCollection,
 ) -> Option<(&'static str, MetaPublicationResource)> {
@@ -3749,7 +3809,6 @@ fn typed_child_payload_role(
     collection: MetaCollection,
     child: &MetadataAddress,
     relative_path: &Path,
-    ordinal: usize,
     template_type: Option<MetadataTemplateType>,
 ) -> Result<MetadataResourceRole, MetaFailure> {
     let kind = match collection {
@@ -3813,6 +3872,26 @@ fn typed_child_payload_role(
                 "child payload contains an unsupported resource role",
             ))
         }
+    };
+    let ordinal = match (collection, kind) {
+        (MetaCollection::Forms, MetadataChildResourceKind::FormContent) => 0,
+        (MetaCollection::Forms, MetadataChildResourceKind::Module) => 1,
+        (MetaCollection::Commands, MetadataChildResourceKind::Module) => 0,
+        (
+            MetaCollection::Templates,
+            MetadataChildResourceKind::TemplateContent {
+                part: MetadataTemplateResourcePart::Primary,
+                ..
+            },
+        ) => 0,
+        (
+            MetaCollection::Templates,
+            MetadataChildResourceKind::TemplateContent {
+                part: MetadataTemplateResourcePart::HtmlPage,
+                ..
+            },
+        ) => 1,
+        _ => unreachable!("closed child resource kind is owned by its collection"),
     };
     Ok(MetadataResourceRole::ChildResource {
         child: child.clone(),
@@ -3957,9 +4036,9 @@ impl TypedChildTreeError {
     }
 }
 
-fn read_typed_child_tree(
-    root: &Path,
-) -> Result<(Vec<(PathBuf, Vec<u8>)>, Vec<PathBuf>), TypedChildTreeError> {
+type TypedChildTree = (Vec<(PathBuf, Vec<u8>)>, Vec<PathBuf>);
+
+fn read_typed_child_tree(root: &Path) -> Result<TypedChildTree, TypedChildTreeError> {
     fn visit(
         root: &Path,
         current: &Path,
@@ -4252,9 +4331,7 @@ fn restore_initial_empty_top_child_objects(pre_image: &str, post_image: &mut Str
     };
     let pre_range = pre_children.range();
     let pre_source = &pre_image[pre_range.clone()];
-    if !pre_source.trim_end().ends_with("/>")
-        || pre_children.children().any(|child| child.is_element())
-    {
+    if pre_children.children().any(|child| child.is_element()) {
         return;
     }
 

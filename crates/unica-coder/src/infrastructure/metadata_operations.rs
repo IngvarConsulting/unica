@@ -100,7 +100,7 @@ mod tests {
     use crate::application::metadata::{MetaAddRequest, MetaEditRequest};
     use crate::application::ports::{
         MetadataChildDirectoryKind, MetadataChildProfile, MetadataChildResourceKind,
-        MetadataResourceRole, MetadataTemplateType,
+        MetadataResourceRole, MetadataTemplateResourcePart, MetadataTemplateType,
     };
     use crate::domain::metadata::{
         MetaCollection, MetaEditOperation, MetaElementInput, MetaElementUpdateInput,
@@ -321,6 +321,61 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_edit_validates_the_complete_unchanged_final_child_graph() {
+        let fixture = Fixture::new("ordinary-edit-complete-child-graph");
+        let cancellation = CancellationToken::new();
+        fixture.publish_form_add("Existing");
+        let mut owner = String::from_utf8(fs::read(&fixture.descriptor).unwrap()).unwrap();
+        let form_start = owner.find("<Form uuid=").unwrap();
+        let form_end = owner[form_start..].find("</Form>").unwrap() + form_start + "</Form>".len();
+        owner.replace_range(form_start..form_end, "<Form>Existing</Form>");
+        fs::write(&fixture.descriptor, owner.as_bytes()).unwrap();
+        let child_descriptor = fixture
+            .root
+            .join("src/Catalogs/Editable/Forms/Existing.xml");
+        let child_content = fixture
+            .root
+            .join("src/Catalogs/Editable/Forms/Existing/Ext/Form.xml");
+        let child_descriptor_before = fs::read(&child_descriptor).unwrap();
+        let child_content_before = fs::read(&child_content).unwrap();
+        let request = fixture.edit("Comment", MetaPropertyValue::String("changed".into()));
+
+        let prepared =
+            MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+                .unwrap();
+        let validation = MetadataOperations::validate(
+            prepared.validation_subject(),
+            &fixture.context,
+            &cancellation,
+        );
+
+        assert_eq!(
+            validation.status,
+            MetaValidationStatus::Passed,
+            "{:?}",
+            validation.diagnostics
+        );
+        assert!(prepared
+            .validation_subject()
+            .child_footprints
+            .iter()
+            .any(|footprint| {
+                footprint.child.as_str() == "Catalog.Editable.Form.Existing"
+                    && footprint.profile == MetadataChildProfile::Form
+            }));
+        assert!(prepared
+            .preview()
+            .publication_plan
+            .iter()
+            .all(|entry| entry.resource == MetaPublicationResource::Descriptor));
+
+        prepared.publish(&cancellation).unwrap();
+
+        assert_eq!(fs::read(child_descriptor).unwrap(), child_descriptor_before);
+        assert_eq!(fs::read(child_content).unwrap(), child_content_before);
+    }
+
+    #[test]
     fn transient_typed_child_add_remove_preserves_preexisting_empty_collection_directory() {
         for (label, collection, directory) in [
             ("forms", MetaCollection::Forms, "Forms"),
@@ -365,6 +420,190 @@ mod tests {
             assert!(collection_dir.is_dir(), "{label}");
             assert_eq!(fs::read_dir(&collection_dir).unwrap().count(), 0, "{label}");
         }
+    }
+
+    #[test]
+    fn net_zero_child_sequences_restore_every_empty_childobjects_spelling_byte_exactly() {
+        for (spelling_label, spelling) in [
+            ("self-closing", "<ChildObjects/>"),
+            ("expanded", "<ChildObjects></ChildObjects>"),
+            ("whitespace-expanded", "<ChildObjects>\n\t\t</ChildObjects>"),
+            (
+                "comment-expanded",
+                "<ChildObjects><!-- preserve me -->\n\t\t</ChildObjects>",
+            ),
+        ] {
+            for (collection_label, collection, directory) in [
+                ("forms", MetaCollection::Forms, "Forms"),
+                ("templates", MetaCollection::Templates, "Templates"),
+                ("commands", MetaCollection::Commands, "Commands"),
+            ] {
+                let fixture =
+                    Fixture::new(&format!("net-zero-{spelling_label}-{collection_label}"));
+                let cancellation = CancellationToken::new();
+                let source = String::from_utf8(fs::read(&fixture.descriptor).unwrap()).unwrap();
+                let source = source.replacen("<ChildObjects/>", spelling, 1);
+                fs::write(&fixture.descriptor, source.as_bytes()).unwrap();
+                let collection_dir = fixture
+                    .root
+                    .join(format!("src/Catalogs/Editable/{directory}"));
+                fs::create_dir_all(&collection_dir).unwrap();
+                let owner_before = fs::read(&fixture.descriptor).unwrap();
+                let request = fixture.typed_edit(vec![
+                    MetaEditOperation::add(
+                        collection,
+                        None,
+                        vec![MetaElementInput::named("Transient")],
+                    )
+                    .unwrap(),
+                    MetaEditOperation::update(
+                        collection,
+                        None,
+                        vec![MetaElementUpdateInput {
+                            name: "Transient".into(),
+                            new_name: Some("Renamed".into()),
+                            ..MetaElementUpdateInput::default()
+                        }],
+                    )
+                    .unwrap(),
+                    MetaEditOperation::remove(collection, None, vec!["Renamed".into()]).unwrap(),
+                ]);
+
+                let prepared =
+                    MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+                        .unwrap();
+
+                assert!(
+                    !prepared.preview().changed,
+                    "{spelling_label}/{collection_label}"
+                );
+                assert!(
+                    prepared.preview().publication_plan.is_empty(),
+                    "{spelling_label}/{collection_label}"
+                );
+                assert!(
+                    prepared.validation_subject().child_footprints.is_empty(),
+                    "{spelling_label}/{collection_label}"
+                );
+                let report = prepared.publish(&cancellation).unwrap();
+                assert!(!report.data.changed, "{spelling_label}/{collection_label}");
+                assert_eq!(
+                    fs::read(&fixture.descriptor).unwrap(),
+                    owner_before,
+                    "{spelling_label}/{collection_label}"
+                );
+                assert!(collection_dir.is_dir());
+                assert_eq!(fs::read_dir(collection_dir).unwrap().count(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn empty_fragment_restoration_does_not_erase_property_or_unrelated_child_edits() {
+        let fixture = Fixture::new("net-zero-child-with-property-edit");
+        let cancellation = CancellationToken::new();
+        let source = String::from_utf8(fs::read(&fixture.descriptor).unwrap())
+            .unwrap()
+            .replacen(
+                "<ChildObjects/>",
+                "<ChildObjects><!-- exact source comment -->\n\t\t</ChildObjects>",
+                1,
+            );
+        fs::write(&fixture.descriptor, source.as_bytes()).unwrap();
+        let request = fixture.typed_edit(vec![
+            MetaEditOperation::SetProperties {
+                values: MetaPropertyChanges::convert(
+                    MetadataKind::Catalog,
+                    vec![MetaPropertyInput::new(
+                        "Comment",
+                        MetaPropertyValue::String("real property edit".into()),
+                    )],
+                )
+                .unwrap(),
+            },
+            MetaEditOperation::add(
+                MetaCollection::Forms,
+                None,
+                vec![MetaElementInput::named("Transient")],
+            )
+            .unwrap(),
+            MetaEditOperation::remove(MetaCollection::Forms, None, vec!["Transient".into()])
+                .unwrap(),
+        ]);
+        let prepared =
+            MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+                .unwrap();
+        let descriptor_post_image = prepared
+            .validation_subject()
+            .resources
+            .iter()
+            .find(|resource| matches!(resource.role, MetadataResourceRole::Descriptor))
+            .unwrap()
+            .bytes
+            .clone();
+        let post_image = String::from_utf8(descriptor_post_image.clone()).unwrap();
+        assert!(prepared.preview().changed);
+        assert!(post_image.contains("<Comment>real property edit</Comment>"));
+        assert!(
+            post_image.contains("<ChildObjects><!-- exact source comment -->\n\t\t</ChildObjects>")
+        );
+        assert!(prepared
+            .preview()
+            .publication_plan
+            .iter()
+            .all(|entry| entry.resource == MetaPublicationResource::Descriptor));
+        prepared.publish(&cancellation).unwrap();
+        assert_eq!(
+            fs::read(&fixture.descriptor).unwrap(),
+            descriptor_post_image
+        );
+
+        let retained = Fixture::new("net-zero-child-with-retained-child-edit");
+        retained.publish_form_add("Stable");
+        let request = retained.typed_edit(vec![
+            MetaEditOperation::add(
+                MetaCollection::Forms,
+                None,
+                vec![MetaElementInput::named("Transient")],
+            )
+            .unwrap(),
+            MetaEditOperation::update(
+                MetaCollection::Forms,
+                None,
+                vec![MetaElementUpdateInput {
+                    name: "Stable".into(),
+                    comment: Some("real child edit".into()),
+                    ..MetaElementUpdateInput::default()
+                }],
+            )
+            .unwrap(),
+            MetaEditOperation::remove(MetaCollection::Forms, None, vec!["Transient".into()])
+                .unwrap(),
+        ]);
+        let prepared =
+            MetadataOperations::prepare_mutation(&request, &retained.context, &cancellation)
+                .unwrap();
+        assert!(prepared.preview().changed);
+        assert!(prepared.preview().publication_plan.iter().any(|entry| {
+            entry.resource == MetaPublicationResource::Form
+                && entry.action == MetaPublicationAction::Update
+                && entry
+                    .metadata_path
+                    .as_ref()
+                    .is_some_and(|path| path.as_str() == "Catalog.Editable.Form.Stable")
+        }));
+        assert!(!prepared.preview().publication_plan.iter().any(|entry| {
+            entry
+                .metadata_path
+                .as_ref()
+                .is_some_and(|path| path.as_str().contains("Transient"))
+        }));
+        prepared.publish(&cancellation).unwrap();
+        assert!(String::from_utf8(
+            fs::read(retained.root.join("src/Catalogs/Editable/Forms/Stable.xml")).unwrap()
+        )
+        .unwrap()
+        .contains("real child edit"));
     }
 
     #[test]
@@ -979,6 +1218,29 @@ mod tests {
             .resources
             .iter()
             .any(|resource| resource.bytes == module_bytes));
+        assert!(prepared
+            .validation_subject()
+            .resources
+            .iter()
+            .any(|resource| matches!(
+                resource.role,
+                MetadataResourceRole::ChildResource {
+                    kind: MetadataChildResourceKind::Module,
+                    ordinal: 0,
+                    ref child,
+                } if child.as_str() == "Catalog.Editable.Command.RunNew"
+            )));
+        let validation = MetadataOperations::validate(
+            prepared.validation_subject(),
+            &fixture.context,
+            &cancellation,
+        );
+        assert_eq!(
+            validation.status,
+            MetaValidationStatus::Passed,
+            "{:?}",
+            validation.diagnostics
+        );
         prepared.publish(&cancellation).unwrap();
         assert!(!object_root.join("Templates/Print.xml").exists());
         assert!(!object_root.join("Commands/Run.xml").exists());
@@ -1470,6 +1732,30 @@ mod tests {
                 MetadataChildDirectoryKind::Extension,
             ]
         );
+        assert!(prepared
+            .validation_subject()
+            .resources
+            .iter()
+            .any(|resource| matches!(
+                resource.role,
+                MetadataResourceRole::ChildResource {
+                    kind: MetadataChildResourceKind::FormContent,
+                    ordinal: 0,
+                    ..
+                }
+            )));
+        assert!(prepared
+            .validation_subject()
+            .resources
+            .iter()
+            .any(|resource| matches!(
+                resource.role,
+                MetadataResourceRole::ChildResource {
+                    kind: MetadataChildResourceKind::Module,
+                    ordinal: 1,
+                    ..
+                }
+            )));
         let validation = MetadataOperations::validate(
             prepared.validation_subject(),
             &form.context,
@@ -1535,6 +1821,36 @@ mod tests {
                 MetadataChildDirectoryKind::HtmlPages,
             ]
         );
+        assert!(prepared
+            .validation_subject()
+            .resources
+            .iter()
+            .any(|resource| matches!(
+                resource.role,
+                MetadataResourceRole::ChildResource {
+                    kind: MetadataChildResourceKind::TemplateContent {
+                        part: MetadataTemplateResourcePart::Primary,
+                        ..
+                    },
+                    ordinal: 0,
+                    ..
+                }
+            )));
+        assert!(prepared
+            .validation_subject()
+            .resources
+            .iter()
+            .any(|resource| matches!(
+                resource.role,
+                MetadataResourceRole::ChildResource {
+                    kind: MetadataChildResourceKind::TemplateContent {
+                        part: MetadataTemplateResourcePart::HtmlPage,
+                        ..
+                    },
+                    ordinal: 1,
+                    ..
+                }
+            )));
         let validation = MetadataOperations::validate(
             prepared.validation_subject(),
             &html.context,

@@ -40,6 +40,8 @@ use super::xml_model::{
     parse_metadata_image,
 };
 
+const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
+
 pub(super) struct MetaValidationReporter {
     pub(crate) errors: usize,
     pub(crate) warnings: usize,
@@ -81,6 +83,12 @@ struct MetaValidationReferenceInputs<'a> {
 
 pub(crate) struct MetadataValidator;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChildGraphValidation {
+    Closed,
+    DescriptorOnly,
+}
+
 impl MetadataValidator {
     pub(crate) fn validate(
         &self,
@@ -95,6 +103,7 @@ impl MetadataValidator {
                 max_errors: 30,
             },
             None,
+            ChildGraphValidation::Closed,
         )
         .0
     }
@@ -105,6 +114,7 @@ impl MetadataValidator {
         _context: &WorkspaceContext,
         options: &MetaValidationOptions,
         artifact: Option<PathBuf>,
+        child_graph_validation: ChildGraphValidation,
     ) -> (MetadataValidationResult, Option<MetaValidationRun>) {
         let mut diagnostics = Vec::new();
         let mut legacy_run = None;
@@ -210,7 +220,9 @@ impl MetadataValidator {
             }
         }
 
-        validate_child_footprints(subject, &mut diagnostics);
+        if child_graph_validation == ChildGraphValidation::Closed {
+            validate_child_footprints(subject, &mut diagnostics);
+        }
 
         if diagnostics
             .iter()
@@ -449,129 +461,71 @@ fn validate_child_footprints(
     subject: &MetadataValidationSubject,
     diagnostics: &mut Vec<MetaDiagnostic>,
 ) {
-    if subject.child_footprints.is_empty() {
-        validate_template_resource_sets(subject, diagnostics);
-        return;
-    }
+    let expected = final_owner_child_graph(subject, diagnostics);
+    let descriptors = actual_child_descriptor_graph(subject, diagnostics);
 
-    let mut seen = HashSet::new();
-    for footprint in &subject.child_footprints {
-        if !seen.insert(footprint.child.clone()) {
+    for child in &expected {
+        let matching_descriptors = descriptors
+            .iter()
+            .filter(|candidate| candidate.0.child == child.child)
+            .collect::<Vec<_>>();
+        let descriptor = matching_descriptors
+            .first()
+            .filter(|descriptor| {
+                matching_descriptors.len() == 1
+                    && child.kind.matches(descriptor.0.profile)
+                    && child_descriptor_role_matches(
+                        &descriptor.1,
+                        &child.child,
+                        descriptor.0.profile,
+                    )
+            })
+            .map(|descriptor| &descriptor.0);
+        let Some(descriptor) = descriptor else {
             diagnostics.push(template_resource_set_diagnostic(
-                &footprint.child,
-                "validation subject contains duplicate child footprint evidence",
+                &child.child,
+                "final child is not backed by exactly one byte-matching descriptor",
+            ));
+            continue;
+        };
+
+        let footprints = subject
+            .child_footprints
+            .iter()
+            .filter(|footprint| footprint.child == child.child)
+            .collect::<Vec<_>>();
+        if footprints.len() != 1 || footprints[0].profile != descriptor.profile {
+            diagnostics.push(template_resource_set_diagnostic(
+                &child.child,
+                "final child is not backed by exactly one matching footprint evidence",
             ));
             continue;
         }
-        let descriptors = subject
-            .resources
-            .iter()
-            .filter(|resource| {
-                child_descriptor_logical_identity(&resource.role)
-                    .as_deref()
-                    .is_some_and(|identity| identity == footprint.child.as_str())
-            })
-            .collect::<Vec<_>>();
-        let descriptor_matches_profile = descriptors.len() == 1
-            && match (&footprint.profile, &descriptors[0].role) {
-                (MetadataChildProfile::Form, MetadataResourceRole::Form { .. })
-                | (MetadataChildProfile::Command, MetadataResourceRole::Command { .. }) => true,
-                (
-                    MetadataChildProfile::Template(expected_type),
-                    MetadataResourceRole::Template { .. },
-                ) => child_template_type_from_descriptor(&descriptors[0].bytes)
-                    .is_some_and(|actual_type| actual_type == *expected_type),
-                _ => false,
-            };
-        if !descriptor_matches_profile {
-            diagnostics.push(template_resource_set_diagnostic(
-                &footprint.child,
-                "child footprint is not backed by exactly one matching descriptor profile",
-            ));
-        }
-        let resources = subject
-            .resources
-            .iter()
-            .filter_map(|resource| match &resource.role {
-                MetadataResourceRole::ChildResource { child, kind, .. }
-                    if child == &footprint.child =>
-                {
-                    Some(*kind)
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        let module_count = resources
-            .iter()
-            .filter(|kind| matches!(kind, MetadataChildResourceKind::Module))
-            .count();
-        let expected_directories = match footprint.profile {
-            MetadataChildProfile::Command if module_count == 0 => Vec::new(),
-            MetadataChildProfile::Form | MetadataChildProfile::Command => vec![
-                MetadataChildDirectoryKind::Root,
-                MetadataChildDirectoryKind::Extension,
-            ],
-            MetadataChildProfile::Template(MetadataTemplateType::HtmlDocument) => vec![
-                MetadataChildDirectoryKind::Root,
-                MetadataChildDirectoryKind::Extension,
-                MetadataChildDirectoryKind::HtmlPages,
-            ],
-            MetadataChildProfile::Template(_) => vec![
-                MetadataChildDirectoryKind::Root,
-                MetadataChildDirectoryKind::Extension,
-            ],
-        };
-        if footprint.directories != expected_directories {
-            diagnostics.push(template_resource_set_diagnostic(
-                &footprint.child,
-                "child footprint does not contain its exact required directory topology",
-            ));
-        }
 
-        let exact_resources = match footprint.profile {
-            MetadataChildProfile::Form => {
-                resources
-                    .iter()
-                    .filter(|kind| matches!(kind, MetadataChildResourceKind::FormContent))
-                    .count()
-                    == 1
-                    && module_count <= 1
-                    && resources.len() == 1 + module_count
-            }
-            MetadataChildProfile::Command => module_count <= 1 && resources.len() == module_count,
-            MetadataChildProfile::Template(template_type) => {
-                let expected_parts = match template_type {
-                    MetadataTemplateType::HtmlDocument => vec![
-                        MetadataTemplateResourcePart::Primary,
-                        MetadataTemplateResourcePart::HtmlPage,
-                    ],
-                    _ => vec![MetadataTemplateResourcePart::Primary],
-                };
-                expected_parts.iter().all(|expected_part| {
-                    resources
-                        .iter()
-                        .filter(|kind| {
-                            matches!(
-                                kind,
-                                MetadataChildResourceKind::TemplateContent {
-                                    template_type: actual_type,
-                                    part,
-                                } if actual_type == &template_type && part == expected_part
-                            )
-                        })
-                        .count()
-                        == 1
-                }) && resources.len() == expected_parts.len()
-            }
-        };
-        if !exact_resources {
+        validate_one_child_footprint(subject, descriptor, footprints[0], diagnostics);
+    }
+
+    for descriptor in &descriptors {
+        if !expected.iter().any(|child| {
+            child.child == descriptor.0.child && child.kind.matches(descriptor.0.profile)
+        }) {
             diagnostics.push(template_resource_set_diagnostic(
-                &footprint.child,
-                "child payload does not contain its exact required resource set",
+                &descriptor.0.child,
+                "child descriptor is orphaned from the final owner graph",
             ));
         }
     }
-
+    for footprint in &subject.child_footprints {
+        if !expected
+            .iter()
+            .any(|child| child.child == footprint.child && child.kind.matches(footprint.profile))
+        {
+            diagnostics.push(template_resource_set_diagnostic(
+                &footprint.child,
+                "child footprint evidence is orphaned from the final owner graph",
+            ));
+        }
+    }
     for child in subject
         .resources
         .iter()
@@ -580,118 +534,396 @@ fn validate_child_footprints(
             _ => None,
         })
     {
-        if !seen.contains(child) {
+        if !expected.iter().any(|expected| &expected.child == child) {
             diagnostics.push(template_resource_set_diagnostic(
                 child,
-                "child resource has no closed footprint evidence",
-            ));
-        }
-    }
-    for child in subject
-        .resources
-        .iter()
-        .filter_map(|resource| child_descriptor_logical_identity(&resource.role))
-    {
-        if !subject
-            .child_footprints
-            .iter()
-            .any(|footprint| footprint.child.as_str() == child)
-        {
-            let child = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &child)
-                .expect("closed child descriptor roles form metadata addresses");
-            diagnostics.push(template_resource_set_diagnostic(
-                &child,
-                "child descriptor has no closed footprint evidence",
+                "child resource is orphaned from the final owner graph",
             ));
         }
     }
 }
 
-fn child_descriptor_logical_identity(role: &MetadataResourceRole) -> Option<String> {
-    match role {
-        MetadataResourceRole::Form { owner, name } => Some(format!("{owner}.Form.{name}")),
-        MetadataResourceRole::Template { owner, name } => Some(format!("{owner}.Template.{name}")),
-        MetadataResourceRole::Command { owner, name } => Some(format!("{owner}.Command.{name}")),
-        _ => None,
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ClosedChildDescriptor {
+    child: MetadataAddress,
+    profile: MetadataChildProfile,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClosedChildKind {
+    Form,
+    Template,
+    Command,
+}
+
+impl ClosedChildKind {
+    fn matches(self, profile: MetadataChildProfile) -> bool {
+        matches!(
+            (self, profile),
+            (Self::Form, MetadataChildProfile::Form)
+                | (Self::Template, MetadataChildProfile::Template(_))
+                | (Self::Command, MetadataChildProfile::Command)
+        )
     }
 }
 
-fn child_template_type_from_descriptor(bytes: &[u8]) -> Option<MetadataTemplateType> {
-    let text = std::str::from_utf8(bytes).ok()?;
-    let document = Document::parse(text.trim_start_matches('\u{feff}')).ok()?;
-    let values = document
-        .descendants()
-        .filter(|node| node.is_element() && node.tag_name().name() == "TemplateType")
-        .filter_map(|node| node.text())
-        .map(str::trim)
-        .collect::<Vec<_>>();
-    let [value] = values.as_slice() else {
-        return None;
-    };
-    MetadataTemplateType::from_descriptor_value(value)
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ClosedOwnerChild {
+    child: MetadataAddress,
+    kind: ClosedChildKind,
 }
 
-fn validate_template_resource_sets(
+fn final_owner_child_graph(
     subject: &MetadataValidationSubject,
     diagnostics: &mut Vec<MetaDiagnostic>,
-) {
-    let mut sets = Vec::<(
-        MetadataAddress,
-        MetadataTemplateType,
-        Vec<MetadataTemplateResourcePart>,
-    )>::new();
-    for resource in &subject.resources {
-        let MetadataResourceRole::ChildResource {
-            child,
-            kind:
-                MetadataChildResourceKind::TemplateContent {
-                    template_type,
-                    part,
-                },
-            ..
-        } = &resource.role
-        else {
-            continue;
-        };
-        if let Some((_, declared_type, parts)) =
-            sets.iter_mut().find(|(candidate, _, _)| candidate == child)
-        {
-            if declared_type != template_type {
-                diagnostics.push(template_resource_set_diagnostic(
-                    child,
-                    "template payload mixes multiple TemplateType profiles",
-                ));
-                continue;
-            }
-            parts.push(*part);
-        } else {
-            sets.push((child.clone(), *template_type, vec![*part]));
-        }
-    }
-
-    for (child, template_type, parts) in sets {
-        let expected = match template_type {
-            MetadataTemplateType::HtmlDocument => vec![
-                MetadataTemplateResourcePart::Primary,
-                MetadataTemplateResourcePart::HtmlPage,
-            ],
-            MetadataTemplateType::TextDocument
-            | MetadataTemplateType::SpreadsheetDocument
-            | MetadataTemplateType::BinaryData
-            | MetadataTemplateType::DataCompositionSchema => {
-                vec![MetadataTemplateResourcePart::Primary]
-            }
-        };
-        if expected
-            .iter()
-            .any(|expected_part| parts.iter().filter(|part| *part == expected_part).count() != 1)
-            || parts.len() != expected.len()
+) -> Vec<ClosedOwnerChild> {
+    let owners = subject
+        .resources
+        .iter()
+        .filter(|resource| matches!(resource.role, MetadataResourceRole::Descriptor))
+        .collect::<Vec<_>>();
+    let [owner] = owners.as_slice() else {
+        if !subject.child_footprints.is_empty()
+            || subject.resources.iter().any(|resource| {
+                matches!(
+                    resource.role,
+                    MetadataResourceRole::Form { .. }
+                        | MetadataResourceRole::Template { .. }
+                        | MetadataResourceRole::Command { .. }
+                        | MetadataResourceRole::ChildResource { .. }
+                )
+            })
         {
             diagnostics.push(template_resource_set_diagnostic(
-                &child,
-                "template child payload does not contain its exact required resource set",
+                &subject.target,
+                "child validation requires exactly one final owner descriptor",
             ));
         }
+        return Vec::new();
+    };
+    let Ok(identity) = inspect_metadata_image_identity(&owner.bytes) else {
+        return Vec::new();
+    };
+    if subject.target.as_str() != format!("{}.{}", identity.object_type, identity.object_name) {
+        return Vec::new();
+    }
+    match parse_final_owner_children(&owner.bytes, &subject.target) {
+        Ok(children) => {
+            let mut seen = HashSet::new();
+            for child in &children {
+                if !seen.insert(child.child.clone()) {
+                    diagnostics.push(template_resource_set_diagnostic(
+                        &child.child,
+                        "final owner graph contains a duplicate child identity",
+                    ));
+                }
+            }
+            children
+        }
+        Err(message) => {
+            diagnostics.push(template_resource_set_diagnostic(&subject.target, &message));
+            Vec::new()
+        }
+    }
+}
+
+fn actual_child_descriptor_graph(
+    subject: &MetadataValidationSubject,
+    diagnostics: &mut Vec<MetaDiagnostic>,
+) -> Vec<(ClosedChildDescriptor, MetadataResourceRole)> {
+    let mut descriptors = Vec::new();
+    for resource in &subject.resources {
+        if matches!(resource.role, MetadataResourceRole::Descriptor) {
+            continue;
+        }
+        let declared_child = matches!(
+            resource.role,
+            MetadataResourceRole::Form { .. }
+                | MetadataResourceRole::Template { .. }
+                | MetadataResourceRole::Command { .. }
+        );
+        match parse_child_descriptor(&resource.bytes, &subject.target) {
+            Ok(Some(actual)) => descriptors.push((actual, resource.role.clone())),
+            Ok(None) if declared_child => diagnostics.push(template_resource_set_diagnostic(
+                &subject.target,
+                "declared child descriptor bytes contain a different metadata kind",
+            )),
+            Err(message) if declared_child => diagnostics.push(template_resource_set_diagnostic(
+                &subject.target,
+                &format!("declared child descriptor is invalid: {message}"),
+            )),
+            Ok(None) | Err(_) => {}
+        }
+    }
+    descriptors
+}
+
+fn parse_final_owner_children(
+    bytes: &[u8],
+    owner: &MetadataAddress,
+) -> Result<Vec<ClosedOwnerChild>, String> {
+    let (_, document) = parse_metadata_image(bytes)?;
+    let artifact = exact_metadata_artifact(&document)?;
+    let Some(children) = meta_info_child(artifact, "ChildObjects") else {
+        return Ok(Vec::new());
+    };
+    children
+        .children()
+        .filter(roxmltree::Node::is_element)
+        .filter(|child| matches!(child.tag_name().name(), "Form" | "Template" | "Command"))
+        .map(|child| parse_owner_child_artifact(child, owner))
+        .collect()
+}
+
+fn parse_owner_child_artifact(
+    artifact: roxmltree::Node<'_, '_>,
+    owner: &MetadataAddress,
+) -> Result<ClosedOwnerChild, String> {
+    if artifact.tag_name().namespace() != Some(MD_CLASSES_NS) {
+        return Err("owner child entry is outside the MDClasses namespace".into());
+    }
+    let (kind, child_kind) = match artifact.tag_name().name() {
+        "Form" => (ClosedChildKind::Form, "Form"),
+        "Template" => (ClosedChildKind::Template, "Template"),
+        "Command" => (ClosedChildKind::Command, "Command"),
+        _ => return Err("owner child entry is not a closed physical child kind".into()),
+    };
+    let properties = meta_info_children(artifact, "Properties");
+    let name = match properties.as_slice() {
+        [] => {
+            if artifact.children().any(|node| node.is_element()) {
+                return Err(format!(
+                    "{child_kind} owner entry has elements but no exact Properties"
+                ));
+            }
+            meta_info_inner_text(artifact).trim().to_string()
+        }
+        [properties] => exact_child_name(*properties, child_kind)?,
+        _ => {
+            return Err(format!(
+                "{child_kind} owner entry must contain at most one Properties"
+            ))
+        }
+    };
+    if name.is_empty() {
+        return Err(format!("{child_kind} owner entry name is empty"));
+    }
+    let child = MetadataAddress::parse(
+        PLATFORM_XML_8_3_27_FORMAT_2_20,
+        &format!("{owner}.{child_kind}.{name}"),
+    )
+    .map_err(|_| "owner child identity is not representable".to_string())?;
+    Ok(ClosedOwnerChild { child, kind })
+}
+
+fn parse_child_descriptor(
+    bytes: &[u8],
+    owner: &MetadataAddress,
+) -> Result<Option<ClosedChildDescriptor>, String> {
+    let (_, document) = parse_metadata_image(bytes)?;
+    let artifact = exact_metadata_artifact(&document)?;
+    if !matches!(artifact.tag_name().name(), "Form" | "Template" | "Command") {
+        return Ok(None);
+    }
+    parse_child_artifact(artifact, owner).map(Some)
+}
+
+fn exact_metadata_artifact<'a, 'input>(
+    document: &'a Document<'input>,
+) -> Result<roxmltree::Node<'a, 'input>, String> {
+    let root = document.root_element();
+    if root.tag_name().namespace() != Some(MD_CLASSES_NS)
+        || root.tag_name().name() != "MetaDataObject"
+        || root.attribute("version") != Some(ACTIVE_FORMAT_PROFILE.export_format)
+    {
+        return Err("metadata descriptor root does not match the active MDClasses profile".into());
+    }
+    let artifacts = root
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().namespace() == Some(MD_CLASSES_NS))
+        .collect::<Vec<_>>();
+    let [artifact] = artifacts.as_slice() else {
+        return Err("metadata descriptor must contain exactly one artifact".into());
+    };
+    Ok(*artifact)
+}
+
+fn parse_child_artifact(
+    artifact: roxmltree::Node<'_, '_>,
+    owner: &MetadataAddress,
+) -> Result<ClosedChildDescriptor, String> {
+    if artifact.tag_name().namespace() != Some(MD_CLASSES_NS) {
+        return Err("child metadata artifact is outside the MDClasses namespace".into());
+    }
+    let kind = artifact.tag_name().name();
+    let child_kind = match kind {
+        "Form" => "Form",
+        "Template" => "Template",
+        "Command" => "Command",
+        _ => return Err("metadata artifact is not a closed physical child kind".into()),
+    };
+    let properties = meta_info_children(artifact, "Properties");
+    let [properties] = properties.as_slice() else {
+        return Err(format!(
+            "{kind} descriptor must contain exactly one Properties"
+        ));
+    };
+    let name = exact_child_name(*properties, kind)?;
+    let profile = match kind {
+        "Form" => MetadataChildProfile::Form,
+        "Command" => MetadataChildProfile::Command,
+        "Template" => {
+            let template_types = meta_info_children(*properties, "TemplateType");
+            let [template_type] = template_types.as_slice() else {
+                return Err("Template descriptor must contain exactly one TemplateType".into());
+            };
+            let value = meta_info_inner_text(*template_type);
+            MetadataChildProfile::Template(
+                MetadataTemplateType::from_descriptor_value(value.trim()).ok_or_else(|| {
+                    "Template descriptor has unsupported TemplateType".to_string()
+                })?,
+            )
+        }
+        _ => unreachable!(),
+    };
+    let child = MetadataAddress::parse(
+        PLATFORM_XML_8_3_27_FORMAT_2_20,
+        &format!("{owner}.{child_kind}.{name}"),
+    )
+    .map_err(|_| "child descriptor identity is not representable".to_string())?;
+    Ok(ClosedChildDescriptor { child, profile })
+}
+
+fn exact_child_name(properties: roxmltree::Node<'_, '_>, kind: &str) -> Result<String, String> {
+    let names = meta_info_children(properties, "Name");
+    let [name] = names.as_slice() else {
+        return Err(format!("{kind} descriptor must contain exactly one Name"));
+    };
+    let name = meta_info_inner_text(*name).trim().to_string();
+    if name.is_empty() {
+        return Err(format!("{kind} descriptor Name is empty"));
+    }
+    Ok(name)
+}
+
+fn child_descriptor_role_matches(
+    role: &MetadataResourceRole,
+    child: &MetadataAddress,
+    profile: MetadataChildProfile,
+) -> bool {
+    match (role, profile) {
+        (MetadataResourceRole::Form { owner, name }, MetadataChildProfile::Form) => {
+            child.as_str() == format!("{owner}.Form.{name}")
+        }
+        (MetadataResourceRole::Command { owner, name }, MetadataChildProfile::Command) => {
+            child.as_str() == format!("{owner}.Command.{name}")
+        }
+        (MetadataResourceRole::Template { owner, name }, MetadataChildProfile::Template(_)) => {
+            child.as_str() == format!("{owner}.Template.{name}")
+        }
+        _ => false,
+    }
+}
+
+fn validate_one_child_footprint(
+    subject: &MetadataValidationSubject,
+    expected: &ClosedChildDescriptor,
+    footprint: &crate::application::ports::MetadataChildFootprintEvidence,
+    diagnostics: &mut Vec<MetaDiagnostic>,
+) {
+    let resources = subject
+        .resources
+        .iter()
+        .filter_map(|resource| match resource.role {
+            MetadataResourceRole::ChildResource {
+                ref child,
+                kind,
+                ordinal,
+            } if child == &expected.child => Some((kind, ordinal)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let module_count = resources
+        .iter()
+        .filter(|(kind, _)| matches!(kind, MetadataChildResourceKind::Module))
+        .count();
+    let expected_directories = match expected.profile {
+        MetadataChildProfile::Command if module_count == 0 => Vec::new(),
+        MetadataChildProfile::Form | MetadataChildProfile::Command => vec![
+            MetadataChildDirectoryKind::Root,
+            MetadataChildDirectoryKind::Extension,
+        ],
+        MetadataChildProfile::Template(MetadataTemplateType::HtmlDocument) => vec![
+            MetadataChildDirectoryKind::Root,
+            MetadataChildDirectoryKind::Extension,
+            MetadataChildDirectoryKind::HtmlPages,
+        ],
+        MetadataChildProfile::Template(_) => vec![
+            MetadataChildDirectoryKind::Root,
+            MetadataChildDirectoryKind::Extension,
+        ],
+    }
+    .into_iter()
+    .collect::<std::collections::BTreeSet<_>>();
+    let observed_directories = footprint
+        .directories
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    if observed_directories != expected_directories
+        || observed_directories.len() != footprint.directories.len()
+    {
+        diagnostics.push(template_resource_set_diagnostic(
+            &expected.child,
+            "child footprint does not contain its exact required directory set",
+        ));
+    }
+
+    let expected_kinds = match expected.profile {
+        MetadataChildProfile::Form => {
+            let mut kinds = vec![(MetadataChildResourceKind::FormContent, 0)];
+            if module_count == 1 {
+                kinds.push((MetadataChildResourceKind::Module, 1));
+            }
+            kinds
+        }
+        MetadataChildProfile::Command => (module_count == 1)
+            .then_some((MetadataChildResourceKind::Module, 0))
+            .into_iter()
+            .collect(),
+        MetadataChildProfile::Template(template_type) => {
+            let mut kinds = vec![(
+                MetadataChildResourceKind::TemplateContent {
+                    template_type,
+                    part: MetadataTemplateResourcePart::Primary,
+                },
+                0,
+            )];
+            if template_type == MetadataTemplateType::HtmlDocument {
+                kinds.push((
+                    MetadataChildResourceKind::TemplateContent {
+                        template_type,
+                        part: MetadataTemplateResourcePart::HtmlPage,
+                    },
+                    1,
+                ));
+            }
+            kinds
+        }
+    };
+    if resources.len() != expected_kinds.len()
+        || expected_kinds.iter().any(|expected_resource| {
+            resources
+                .iter()
+                .filter(|observed| *observed == expected_resource)
+                .count()
+                != 1
+        })
+    {
+        diagnostics.push(template_resource_set_diagnostic(
+            &expected.child,
+            "child payload does not contain its exact canonical resource and ordinal set",
+        ));
     }
 }
 
@@ -1406,8 +1638,13 @@ fn metadata_validation_run(
     context: &WorkspaceContext,
     artifact: PathBuf,
 ) -> MetaValidationRun {
-    let (result, legacy_run) =
-        MetadataValidator.evaluate(subject, context, options, Some(artifact));
+    let (result, legacy_run) = MetadataValidator.evaluate(
+        subject,
+        context,
+        options,
+        Some(artifact),
+        ChildGraphValidation::DescriptorOnly,
+    );
     let ok = result.status == MetaValidationStatus::Passed;
     if let Some(run) = legacy_run {
         debug_assert_eq!(run.ok, ok, "report and validation status diverged");
@@ -3720,27 +3957,652 @@ mod tests {
         child: &str,
         resources: Vec<(MetadataTemplateType, MetadataTemplateResourcePart, Vec<u8>)>,
     ) -> MetadataValidationSubject {
+        let child_address = address(child);
+        let name = child_address.segments().last().unwrap().to_string();
+        let template_type = resources.first().unwrap().0;
+        let template_type_value = match template_type {
+            MetadataTemplateType::HtmlDocument => "HTMLDocument",
+            MetadataTemplateType::TextDocument => "TextDocument",
+            MetadataTemplateType::SpreadsheetDocument => "SpreadsheetDocument",
+            MetadataTemplateType::BinaryData => "BinaryData",
+            MetadataTemplateType::DataCompositionSchema => "DataCompositionSchema",
+        };
+        let descriptor = typed_child_xml("Template", &name, Some(template_type_value));
+        let directories = if template_type == MetadataTemplateType::HtmlDocument {
+            vec![
+                MetadataChildDirectoryKind::Root,
+                MetadataChildDirectoryKind::Extension,
+                MetadataChildDirectoryKind::HtmlPages,
+            ]
+        } else {
+            vec![
+                MetadataChildDirectoryKind::Root,
+                MetadataChildDirectoryKind::Extension,
+            ]
+        };
+        let kinds = resources
+            .iter()
+            .enumerate()
+            .map(|(ordinal, (template_type, part, _))| {
+                (
+                    MetadataChildResourceKind::TemplateContent {
+                        template_type: *template_type,
+                        part: *part,
+                    },
+                    ordinal,
+                )
+            })
+            .collect();
+        let mut subject = closed_child_subject(
+            "Template",
+            &name,
+            Some(template_type_value),
+            &descriptor,
+            directories,
+            kinds,
+        );
+        for (ordinal, (_, _, bytes)) in resources.into_iter().enumerate() {
+            if let Some(resource) = subject.resources.iter_mut().find(|resource| {
+                matches!(
+                    resource.role,
+                    MetadataResourceRole::ChildResource {
+                        ordinal: candidate,
+                        ..
+                    } if candidate == ordinal
+                )
+            }) {
+                resource.bytes = bytes;
+            }
+        }
+        subject
+    }
+
+    fn typed_child_xml(kind: &str, name: &str, template_type: Option<&str>) -> String {
+        let template_type = template_type
+            .map(|value| format!("<TemplateType>{value}</TemplateType>"))
+            .unwrap_or_default();
+        format!(
+            r#"<{kind} uuid="77777777-7777-4777-8777-777777777777"><Properties><Name>{name}</Name>{template_type}</Properties><ChildObjects/></{kind}>"#
+        )
+    }
+
+    fn typed_owner_descriptor(children: &[String]) -> Vec<u8> {
+        format!(
+            r#"<MetaDataObject xmlns="{MD_NS}" version="2.20"><Catalog uuid="66666666-6666-4666-8666-666666666666"><Properties><Name>Editable</Name></Properties><ChildObjects>{}</ChildObjects></Catalog></MetaDataObject>"#,
+            children.join("")
+        )
+        .into_bytes()
+    }
+
+    fn typed_child_descriptor(child: &str) -> Vec<u8> {
+        format!(r#"<MetaDataObject xmlns="{MD_NS}" version="2.20">{child}</MetaDataObject>"#)
+            .into_bytes()
+    }
+
+    fn closed_child_subject(
+        kind: &str,
+        name: &str,
+        template_type: Option<&str>,
+        descriptor_child: &str,
+        directories: Vec<MetadataChildDirectoryKind>,
+        child_resources: Vec<(MetadataChildResourceKind, usize)>,
+    ) -> MetadataValidationSubject {
+        let owner = address("Catalog.Editable");
+        let expected_child = typed_child_xml(kind, name, template_type);
+        let child = address(&format!("Catalog.Editable.{kind}.{name}"));
+        let profile = match kind {
+            "Form" => MetadataChildProfile::Form,
+            "Command" => MetadataChildProfile::Command,
+            "Template" => MetadataChildProfile::Template(
+                MetadataTemplateType::from_descriptor_value(template_type.unwrap()).unwrap(),
+            ),
+            _ => unreachable!(),
+        };
+        let descriptor_role = match kind {
+            "Form" => MetadataResourceRole::Form {
+                owner: owner.clone(),
+                name: name.to_string(),
+            },
+            "Template" => MetadataResourceRole::Template {
+                owner: owner.clone(),
+                name: name.to_string(),
+            },
+            "Command" => MetadataResourceRole::Command {
+                owner,
+                name: name.to_string(),
+            },
+            _ => unreachable!(),
+        };
+        let mut resources = vec![
+            image(
+                MetadataResourceRole::Descriptor,
+                typed_owner_descriptor(&[expected_child]),
+            ),
+            image(descriptor_role, typed_child_descriptor(descriptor_child)),
+        ];
+        resources.extend(child_resources.into_iter().map(|(kind, ordinal)| {
+            image(
+                MetadataResourceRole::ChildResource {
+                    child: child.clone(),
+                    kind,
+                    ordinal,
+                },
+                Vec::new(),
+            )
+        }));
         MetadataValidationSubject {
             target: address("Catalog.Editable"),
-            resources: resources
-                .into_iter()
-                .enumerate()
-                .map(|(ordinal, (template_type, part, bytes))| {
-                    image(
-                        MetadataResourceRole::ChildResource {
-                            child: address(child),
-                            kind: MetadataChildResourceKind::TemplateContent {
-                                template_type,
-                                part,
-                            },
-                            ordinal,
-                        },
-                        bytes,
-                    )
-                })
-                .collect(),
-            child_footprints: Vec::new(),
+            resources,
+            child_footprints: vec![MetadataChildFootprintEvidence {
+                child,
+                profile,
+                directories,
+            }],
         }
+    }
+
+    fn closed_child_diagnostics(subject: &MetadataValidationSubject) -> Vec<String> {
+        let mut messages = subject
+            .resources
+            .iter()
+            .filter_map(|resource| match resource.role {
+                MetadataResourceRole::ChildResource { kind, .. } => {
+                    validate_child_resource(kind, &resource.bytes).err()
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let mut diagnostics = Vec::new();
+        validate_child_footprints(subject, &mut diagnostics);
+        messages.extend(diagnostics.into_iter().map(|diagnostic| diagnostic.message));
+        messages
+    }
+
+    #[test]
+    fn final_child_graph_rejects_wholly_omitted_evidence_for_every_profile() {
+        for (label, mut subject) in [
+            (
+                "form",
+                closed_child_subject(
+                    "Form",
+                    "Main",
+                    None,
+                    &typed_child_xml("Form", "Main", None),
+                    vec![
+                        MetadataChildDirectoryKind::Root,
+                        MetadataChildDirectoryKind::Extension,
+                    ],
+                    vec![(MetadataChildResourceKind::FormContent, 0)],
+                ),
+            ),
+            (
+                "template",
+                closed_child_subject(
+                    "Template",
+                    "Main",
+                    Some("TextDocument"),
+                    &typed_child_xml("Template", "Main", Some("TextDocument")),
+                    vec![
+                        MetadataChildDirectoryKind::Root,
+                        MetadataChildDirectoryKind::Extension,
+                    ],
+                    vec![(
+                        MetadataChildResourceKind::TemplateContent {
+                            template_type: MetadataTemplateType::TextDocument,
+                            part: MetadataTemplateResourcePart::Primary,
+                        },
+                        0,
+                    )],
+                ),
+            ),
+            (
+                "command",
+                closed_child_subject(
+                    "Command",
+                    "Main",
+                    None,
+                    &typed_child_xml("Command", "Main", None),
+                    Vec::new(),
+                    Vec::new(),
+                ),
+            ),
+        ] {
+            subject.child_footprints.clear();
+            let mut diagnostics = Vec::new();
+
+            validate_child_footprints(&subject, &mut diagnostics);
+
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains("footprint evidence")),
+                "{label}: {diagnostics:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn child_descriptor_bytes_reject_forged_role_kind_and_name_for_every_profile() {
+        let cases = [
+            (
+                "form-name",
+                "Form",
+                None,
+                typed_child_xml("Form", "Other", None),
+                vec![(MetadataChildResourceKind::FormContent, 0)],
+            ),
+            (
+                "form-kind",
+                "Form",
+                None,
+                typed_child_xml("Template", "Main", Some("TextDocument")),
+                vec![(MetadataChildResourceKind::FormContent, 0)],
+            ),
+            (
+                "template-name",
+                "Template",
+                Some("TextDocument"),
+                typed_child_xml("Template", "Other", Some("TextDocument")),
+                vec![(
+                    MetadataChildResourceKind::TemplateContent {
+                        template_type: MetadataTemplateType::TextDocument,
+                        part: MetadataTemplateResourcePart::Primary,
+                    },
+                    0,
+                )],
+            ),
+            (
+                "template-kind",
+                "Template",
+                Some("TextDocument"),
+                typed_child_xml("Form", "Main", None),
+                vec![(
+                    MetadataChildResourceKind::TemplateContent {
+                        template_type: MetadataTemplateType::TextDocument,
+                        part: MetadataTemplateResourcePart::Primary,
+                    },
+                    0,
+                )],
+            ),
+            (
+                "template-type",
+                "Template",
+                Some("TextDocument"),
+                typed_child_xml("Template", "Main", Some("HTMLDocument")),
+                vec![(
+                    MetadataChildResourceKind::TemplateContent {
+                        template_type: MetadataTemplateType::TextDocument,
+                        part: MetadataTemplateResourcePart::Primary,
+                    },
+                    0,
+                )],
+            ),
+            (
+                "command-name",
+                "Command",
+                None,
+                typed_child_xml("Command", "Other", None),
+                Vec::new(),
+            ),
+            (
+                "command-kind",
+                "Command",
+                None,
+                typed_child_xml("Form", "Main", None),
+                Vec::new(),
+            ),
+        ];
+        for (label, kind, template_type, forged_descriptor, resources) in cases {
+            let directories = if kind == "Command" {
+                Vec::new()
+            } else {
+                vec![
+                    MetadataChildDirectoryKind::Root,
+                    MetadataChildDirectoryKind::Extension,
+                ]
+            };
+            let subject = closed_child_subject(
+                kind,
+                "Main",
+                template_type,
+                &forged_descriptor,
+                directories,
+                resources,
+            );
+            let mut diagnostics = Vec::new();
+
+            validate_child_footprints(&subject, &mut diagnostics);
+
+            let expected_message = if label == "template-type" {
+                "footprint evidence"
+            } else {
+                "byte-matching descriptor"
+            };
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains(expected_message)),
+                "{label}: {diagnostics:?}"
+            );
+        }
+
+        let form = typed_child_xml("Form", "Main", None);
+        for (label, descriptor) in [
+            (
+                "root-namespace",
+                String::from_utf8(typed_child_descriptor(&form))
+                    .unwrap()
+                    .replace(MD_CLASSES_NS, "urn:foreign"),
+            ),
+            (
+                "root-version",
+                String::from_utf8(typed_child_descriptor(&form))
+                    .unwrap()
+                    .replace("version=\"2.20\"", "version=\"2.19\""),
+            ),
+            (
+                "artifact-namespace",
+                format!(
+                    r#"<MetaDataObject xmlns="{MD_CLASSES_NS}" version="2.20"><x:Form xmlns:x="urn:foreign"><x:Properties><x:Name>Main</x:Name></x:Properties><x:ChildObjects/></x:Form></MetaDataObject>"#
+                ),
+            ),
+        ] {
+            let subject = closed_child_subject(
+                "Form",
+                "Main",
+                None,
+                &form,
+                vec![
+                    MetadataChildDirectoryKind::Root,
+                    MetadataChildDirectoryKind::Extension,
+                ],
+                vec![(MetadataChildResourceKind::FormContent, 0)],
+            );
+            let mut subject = subject;
+            subject.resources[1].bytes = descriptor.into_bytes();
+            let mut diagnostics = Vec::new();
+
+            validate_child_footprints(&subject, &mut diagnostics);
+
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains("byte-matching descriptor")),
+                "{label}: {diagnostics:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn child_footprint_sets_are_order_independent_but_ordinals_are_canonical() {
+        let html = typed_child_xml("Template", "Main", Some("HTMLDocument"));
+        let primary = MetadataChildResourceKind::TemplateContent {
+            template_type: MetadataTemplateType::HtmlDocument,
+            part: MetadataTemplateResourcePart::Primary,
+        };
+        let page = MetadataChildResourceKind::TemplateContent {
+            template_type: MetadataTemplateType::HtmlDocument,
+            part: MetadataTemplateResourcePart::HtmlPage,
+        };
+        let mut reordered = closed_child_subject(
+            "Template",
+            "Main",
+            Some("HTMLDocument"),
+            &html,
+            vec![
+                MetadataChildDirectoryKind::HtmlPages,
+                MetadataChildDirectoryKind::Root,
+                MetadataChildDirectoryKind::Extension,
+            ],
+            vec![(page, 1), (primary, 0)],
+        );
+        reordered.resources.reverse();
+        let mut diagnostics = Vec::new();
+        validate_child_footprints(&reordered, &mut diagnostics);
+        assert!(diagnostics.is_empty(), "reordered: {diagnostics:?}");
+
+        for (label, resources) in [
+            ("duplicate", vec![(primary, 0), (page, 0)]),
+            ("gap", vec![(primary, 0), (page, 2)]),
+            ("swapped", vec![(primary, 1), (page, 0)]),
+        ] {
+            let subject = closed_child_subject(
+                "Template",
+                "Main",
+                Some("HTMLDocument"),
+                &html,
+                vec![
+                    MetadataChildDirectoryKind::Root,
+                    MetadataChildDirectoryKind::Extension,
+                    MetadataChildDirectoryKind::HtmlPages,
+                ],
+                resources,
+            );
+            let mut diagnostics = Vec::new();
+            validate_child_footprints(&subject, &mut diagnostics);
+            assert!(
+                diagnostics.iter().any(|diagnostic| diagnostic
+                    .message
+                    .contains("canonical resource and ordinal set")),
+                "{label}: {diagnostics:?}"
+            );
+        }
+
+        let mut duplicate_directory = closed_child_subject(
+            "Template",
+            "Main",
+            Some("HTMLDocument"),
+            &html,
+            vec![
+                MetadataChildDirectoryKind::Root,
+                MetadataChildDirectoryKind::Extension,
+                MetadataChildDirectoryKind::HtmlPages,
+                MetadataChildDirectoryKind::Root,
+            ],
+            vec![(primary, 0), (page, 1)],
+        );
+        duplicate_directory.child_footprints.reverse();
+        let mut diagnostics = Vec::new();
+        validate_child_footprints(&duplicate_directory, &mut diagnostics);
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("directory set")));
+
+        let form = typed_child_xml("Form", "Main", None);
+        let subject = closed_child_subject(
+            "Form",
+            "Main",
+            None,
+            &form,
+            vec![
+                MetadataChildDirectoryKind::Extension,
+                MetadataChildDirectoryKind::Root,
+            ],
+            vec![
+                (MetadataChildResourceKind::Module, 0),
+                (MetadataChildResourceKind::FormContent, 1),
+            ],
+        );
+        let mut diagnostics = Vec::new();
+        validate_child_footprints(&subject, &mut diagnostics);
+        assert!(diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("canonical resource and ordinal set")));
+    }
+
+    #[test]
+    fn complete_multi_child_graph_is_permutation_safe_and_rejects_duplicate_or_orphan_groups() {
+        let form_xml = typed_child_xml("Form", "Entry", None);
+        let template_xml = typed_child_xml("Template", "Print", Some("TextDocument"));
+        let command_xml = typed_child_xml("Command", "Run", None);
+        let mut form = closed_child_subject(
+            "Form",
+            "Entry",
+            None,
+            &form_xml,
+            vec![
+                MetadataChildDirectoryKind::Root,
+                MetadataChildDirectoryKind::Extension,
+            ],
+            vec![(MetadataChildResourceKind::FormContent, 0)],
+        );
+        let template = closed_child_subject(
+            "Template",
+            "Print",
+            Some("TextDocument"),
+            &template_xml,
+            vec![
+                MetadataChildDirectoryKind::Extension,
+                MetadataChildDirectoryKind::Root,
+            ],
+            vec![(
+                MetadataChildResourceKind::TemplateContent {
+                    template_type: MetadataTemplateType::TextDocument,
+                    part: MetadataTemplateResourcePart::Primary,
+                },
+                0,
+            )],
+        );
+        let command =
+            closed_child_subject("Command", "Run", None, &command_xml, Vec::new(), Vec::new());
+        form.resources[0].bytes = typed_owner_descriptor(&[
+            "<Command>Run</Command>".to_string(),
+            "<Form>Entry</Form>".to_string(),
+            "<Template>Print</Template>".to_string(),
+        ]);
+        form.resources
+            .extend(template.resources.into_iter().skip(1));
+        form.resources.extend(command.resources.into_iter().skip(1));
+        form.child_footprints.extend(template.child_footprints);
+        form.child_footprints.extend(command.child_footprints);
+        form.resources.reverse();
+        form.child_footprints.reverse();
+
+        let mut exact = Vec::new();
+        validate_child_footprints(&form, &mut exact);
+        assert!(exact.is_empty(), "exact permutation: {exact:?}");
+
+        let mut duplicate_descriptor = form.clone();
+        let descriptor = duplicate_descriptor
+            .resources
+            .iter()
+            .find(|resource| matches!(resource.role, MetadataResourceRole::Form { .. }))
+            .unwrap()
+            .clone();
+        duplicate_descriptor.resources.push(descriptor);
+        let mut diagnostics = Vec::new();
+        validate_child_footprints(&duplicate_descriptor, &mut diagnostics);
+        assert!(diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("exactly one byte-matching descriptor")));
+
+        let mut orphan_descriptor = form.clone();
+        let orphan_xml = typed_child_xml("Form", "Orphan", None);
+        orphan_descriptor.resources.push(image(
+            MetadataResourceRole::Form {
+                owner: address("Catalog.Editable"),
+                name: "Orphan".to_string(),
+            },
+            typed_child_descriptor(&orphan_xml),
+        ));
+        let mut diagnostics = Vec::new();
+        validate_child_footprints(&orphan_descriptor, &mut diagnostics);
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("descriptor is orphaned")));
+
+        let mut duplicate_evidence = form.clone();
+        duplicate_evidence
+            .child_footprints
+            .push(duplicate_evidence.child_footprints[0].clone());
+        let mut diagnostics = Vec::new();
+        validate_child_footprints(&duplicate_evidence, &mut diagnostics);
+        assert!(diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("exactly one matching footprint evidence")));
+
+        let mut orphan_evidence = form.clone();
+        orphan_evidence
+            .child_footprints
+            .push(MetadataChildFootprintEvidence {
+                child: address("Catalog.Editable.Command.Orphan"),
+                profile: MetadataChildProfile::Command,
+                directories: Vec::new(),
+            });
+        let mut diagnostics = Vec::new();
+        validate_child_footprints(&orphan_evidence, &mut diagnostics);
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("evidence is orphaned")));
+
+        let mut duplicate_resource = form.clone();
+        let resource = duplicate_resource
+            .resources
+            .iter()
+            .find(|resource| {
+                matches!(
+                    resource.role,
+                    MetadataResourceRole::ChildResource {
+                        kind: MetadataChildResourceKind::FormContent,
+                        ..
+                    }
+                )
+            })
+            .unwrap()
+            .clone();
+        duplicate_resource.resources.push(resource);
+        let mut diagnostics = Vec::new();
+        validate_child_footprints(&duplicate_resource, &mut diagnostics);
+        assert!(diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("canonical resource and ordinal set")));
+
+        let mut mislabeled_resource = form.clone();
+        let resource = mislabeled_resource
+            .resources
+            .iter_mut()
+            .find(|resource| {
+                matches!(
+                    resource.role,
+                    MetadataResourceRole::ChildResource {
+                        kind: MetadataChildResourceKind::FormContent,
+                        ..
+                    }
+                )
+            })
+            .unwrap();
+        let MetadataResourceRole::ChildResource { child, .. } = &mut resource.role else {
+            unreachable!()
+        };
+        *child = address("Catalog.Editable.Form.Orphan");
+        let mut diagnostics = Vec::new();
+        validate_child_footprints(&mislabeled_resource, &mut diagnostics);
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("canonical resource and ordinal set")
+        }));
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("resource is orphaned")));
+
+        let mut duplicate_owner_child = form.clone();
+        duplicate_owner_child
+            .resources
+            .iter_mut()
+            .find(|resource| matches!(resource.role, MetadataResourceRole::Descriptor))
+            .unwrap()
+            .bytes = typed_owner_descriptor(&[
+            typed_child_xml("Form", "Entry", None),
+            typed_child_xml("Form", "Entry", None),
+            typed_child_xml("Template", "Print", Some("TextDocument")),
+            typed_child_xml("Command", "Run", None),
+        ]);
+        let mut diagnostics = Vec::new();
+        validate_child_footprints(&duplicate_owner_child, &mut diagnostics);
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("duplicate child identity")));
     }
 
     #[test]
@@ -3797,8 +4659,8 @@ mod tests {
         ];
 
         for subject in cases {
-            let result = MetadataValidator.validate(&subject, &context());
-            assert_eq!(result.status, MetaValidationStatus::Passed, "{result:?}");
+            let diagnostics = closed_child_diagnostics(&subject);
+            assert!(diagnostics.is_empty(), "{diagnostics:?}");
         }
     }
 
@@ -3842,8 +4704,8 @@ mod tests {
         ];
 
         for subject in cases {
-            let result = MetadataValidator.validate(&subject, &context());
-            assert_eq!(result.status, MetaValidationStatus::Failed, "{result:?}");
+            let diagnostics = closed_child_diagnostics(&subject);
+            assert!(!diagnostics.is_empty());
         }
     }
 
@@ -3885,20 +4747,16 @@ mod tests {
         ] {
             let subject = template_subject("Catalog.Editable.Template.Html", resources);
 
-            let result = MetadataValidator.validate(&subject, &context());
+            let diagnostics = closed_child_diagnostics(&subject);
 
-            assert_eq!(result.status, MetaValidationStatus::Failed, "{label}");
-            assert!(result.diagnostics[0]
-                .message
-                .contains("Catalog.Editable.Template.Html"));
+            assert!(!diagnostics.is_empty(), "{label}");
         }
     }
 
     #[test]
     fn child_footprint_evidence_is_independently_checked_against_resources_and_directories() {
-        let child = address("Catalog.Editable.Template.Html");
         let mut subject = template_subject(
-            child.as_str(),
+            "Catalog.Editable.Template.Html",
             vec![
                 (
                     MetadataTemplateType::HtmlDocument,
@@ -3913,30 +4771,15 @@ mod tests {
                 ),
             ],
         );
-        subject.child_footprints = vec![MetadataChildFootprintEvidence {
-            child: child.clone(),
-            profile: MetadataChildProfile::Template(MetadataTemplateType::HtmlDocument),
-            directories: vec![
-                MetadataChildDirectoryKind::Root,
-                MetadataChildDirectoryKind::Extension,
-            ],
-        }];
-        subject.resources.insert(
-            0,
-            image(
-                MetadataResourceRole::Template {
-                    owner: address("Catalog.Editable"),
-                    name: "Html".to_string(),
-                },
-                b"<TemplateType>HTMLDocument</TemplateType>".to_vec(),
-            ),
-        );
+        subject.child_footprints[0]
+            .directories
+            .retain(|directory| *directory != MetadataChildDirectoryKind::HtmlPages);
 
         let mut wrong_directories = Vec::new();
         validate_child_footprints(&subject, &mut wrong_directories);
         assert!(wrong_directories
             .iter()
-            .any(|diagnostic| diagnostic.message.contains("directory topology")));
+            .any(|diagnostic| diagnostic.message.contains("directory set")));
 
         subject.child_footprints[0]
             .directories
@@ -3946,11 +4789,11 @@ mod tests {
         validate_child_footprints(&subject, &mut missing_part);
         assert!(missing_part
             .iter()
-            .any(|diagnostic| diagnostic.message.contains("required resource set")));
+            .any(|diagnostic| diagnostic.message.contains("canonical resource")));
 
         subject.resources.push(image(
             MetadataResourceRole::ChildResource {
-                child: child.clone(),
+                child: address("Catalog.Editable.Template.Html"),
                 kind: MetadataChildResourceKind::TemplateContent {
                     template_type: MetadataTemplateType::HtmlDocument,
                     part: MetadataTemplateResourcePart::HtmlPage,
@@ -3959,14 +4802,26 @@ mod tests {
             },
             br#"<html><body/></html>"#.to_vec(),
         ));
-        subject.resources[0].bytes = b"<TemplateType>SpreadsheetDocument</TemplateType>".to_vec();
+        let forged = typed_child_xml("Template", "Html", Some("SpreadsheetDocument"));
+        subject
+            .resources
+            .iter_mut()
+            .find(|resource| matches!(resource.role, MetadataResourceRole::Template { .. }))
+            .unwrap()
+            .bytes = typed_child_descriptor(&forged);
         let mut forged_profile = Vec::new();
         validate_child_footprints(&subject, &mut forged_profile);
         assert!(forged_profile
             .iter()
-            .any(|diagnostic| diagnostic.message.contains("matching descriptor profile")));
+            .any(|diagnostic| diagnostic.message.contains("footprint evidence")));
 
-        subject.resources[0].bytes = b"<TemplateType>HTMLDocument</TemplateType>".to_vec();
+        let exact = typed_child_xml("Template", "Html", Some("HTMLDocument"));
+        subject
+            .resources
+            .iter_mut()
+            .find(|resource| matches!(resource.role, MetadataResourceRole::Template { .. }))
+            .unwrap()
+            .bytes = typed_child_descriptor(&exact);
         let mut exact = Vec::new();
         validate_child_footprints(&subject, &mut exact);
         assert!(exact.is_empty(), "{exact:?}");

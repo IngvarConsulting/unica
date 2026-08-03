@@ -226,7 +226,7 @@ impl PreparedMetaEdit {
                 metadata_path: target.clone(),
                 changed: changed || !child_resources.publication_plan.is_empty(),
                 publication_plan: changed
-                    .then(|| MetaPublicationPlanEntry {
+                    .then_some(MetaPublicationPlanEntry {
                         action: MetaPublicationAction::Update,
                         resource: MetaPublicationResource::Descriptor,
                         metadata_path: Some(target),
