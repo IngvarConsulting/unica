@@ -4568,6 +4568,26 @@ mod tests {
             template_type: MetadataTemplateType::HtmlDocument,
             part: MetadataTemplateResourcePart::HtmlPage,
         };
+        let set_html_descriptor = |subject: &mut MetadataValidationSubject| {
+            subject
+                .resources
+                .iter_mut()
+                .find(|resource| {
+                    matches!(
+                        resource.role,
+                        MetadataResourceRole::ChildResource {
+                            kind: MetadataChildResourceKind::TemplateContent {
+                                template_type: MetadataTemplateType::HtmlDocument,
+                                part: MetadataTemplateResourcePart::Primary,
+                            },
+                            ..
+                        }
+                    )
+                })
+                .unwrap()
+                .bytes = br#"<Help xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"><Page>ru</Page></Help>"#
+                .to_vec();
+        };
         let mut reordered = closed_child_subject(
             "Template",
             "Main",
@@ -4580,6 +4600,7 @@ mod tests {
             ],
             vec![(page, 1), (primary, 0)],
         );
+        set_html_descriptor(&mut reordered);
         reordered.resources.reverse();
         let mut diagnostics = Vec::new();
         validate_child_footprints(&reordered, &mut diagnostics);
@@ -4590,7 +4611,7 @@ mod tests {
             ("gap", vec![(primary, 0), (page, 2)]),
             ("swapped", vec![(primary, 1), (page, 0)]),
         ] {
-            let subject = closed_child_subject(
+            let mut subject = closed_child_subject(
                 "Template",
                 "Main",
                 Some("HTMLDocument"),
@@ -4602,6 +4623,7 @@ mod tests {
                 ],
                 resources,
             );
+            set_html_descriptor(&mut subject);
             let mut diagnostics = Vec::new();
             validate_child_footprints(&subject, &mut diagnostics);
             assert!(

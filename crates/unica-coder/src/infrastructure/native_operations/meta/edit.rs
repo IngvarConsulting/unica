@@ -6016,10 +6016,18 @@ mod tests {
         ];
 
         for (label, collection, template_type, file_names, directory_names, wrong_part) in cases {
-            let files = file_names
+            let mut files = file_names
                 .iter()
                 .map(|path| (PathBuf::from(path), Vec::new()))
                 .collect::<Vec<_>>();
+            if template_type == Some(MetadataTemplateType::HtmlDocument) {
+                files
+                    .iter_mut()
+                    .find(|(path, _)| path == Path::new("Ext/Template.xml"))
+                    .unwrap()
+                    .1 = br#"<Help xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"><Page>ru</Page></Help>"#
+                    .to_vec();
+            }
             let directories = directory_names
                 .iter()
                 .map(PathBuf::from)
