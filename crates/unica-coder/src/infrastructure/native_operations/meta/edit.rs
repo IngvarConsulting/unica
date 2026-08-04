@@ -4423,12 +4423,6 @@ mod tests {
                 &[Document],
             ),
             (
-                "RegisterType",
-                "RegisterType",
-                MetaPropertyValue::String("Turnovers".into()),
-                &[AccumulationRegister],
-            ),
-            (
                 "RestartCountOnFailure",
                 "RestartCountOnFailure",
                 MetaPropertyValue::UnsignedInteger(5),

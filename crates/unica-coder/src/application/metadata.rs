@@ -2744,6 +2744,14 @@ mod tests {
     }
 
     #[test]
+    fn property_schema_excludes_removed_register_type() {
+        let schema = property_values_schema();
+        let properties = schema["properties"].as_object().unwrap();
+
+        assert!(!properties.contains_key("RegisterType"));
+    }
+
+    #[test]
     fn property_parser_rejects_an_enum_outside_the_exact_kind_domain() {
         let error = diagnostic(
             MetadataOperation::Edit,

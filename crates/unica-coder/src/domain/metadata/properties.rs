@@ -46,7 +46,6 @@ pub(crate) enum MetaPropertyKey {
     RealTimePosting,
     RegisterRecordsDeletion,
     RegisterRecordsWritingOnPost,
-    RegisterType,
     RestartCountOnFailure,
     RestartIntervalOnFailure,
     ReturnValuesReuse,
@@ -249,7 +248,6 @@ const POSTING_VALUES: &[&str] = &["Allow", "Deny"];
 const REGISTER_RECORDS_DELETION_VALUES: &[&str] =
     &["AutoDelete", "AutoDeleteOnUnpost", "AutoDeleteOff"];
 const REGISTER_RECORDS_WRITING_VALUES: &[&str] = &["WriteModified", "WriteSelected", "WriteAll"];
-const REGISTER_TYPE_VALUES: &[&str] = &["Balance", "Turnovers"];
 const RETURN_VALUES_REUSE_VALUES: &[&str] = &["DontUse", "DuringRequest", "DuringSession"];
 const REUSE_SESSIONS_VALUES: &[&str] = &["DontUse", "AutoUse"];
 const SUBORDINATION_USE_VALUES: &[&str] = &["ToFolders", "ToFoldersAndItems", "ToItems"];
@@ -516,13 +514,6 @@ pub(crate) const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         MetaPropertyKey::RegisterRecordsWritingOnPost,
         DOCUMENT_KINDS,
         REGISTER_RECORDS_WRITING_VALUES,
-    ),
-    enum_property(
-        "RegisterType",
-        "RegisterType",
-        MetaPropertyKey::RegisterType,
-        ACCUMULATION_REGISTER_KINDS,
-        REGISTER_TYPE_VALUES,
     ),
     property(
         "RestartCountOnFailure",
@@ -1050,11 +1041,6 @@ mod tests {
                 "RegisterRecordsWritingOnPost",
                 MetaPropertyValue::String("WriteAll".into()),
                 &[Document],
-            ),
-            (
-                "RegisterType",
-                MetaPropertyValue::String("Turnovers".into()),
-                &[AccumulationRegister],
             ),
             (
                 "RestartCountOnFailure",

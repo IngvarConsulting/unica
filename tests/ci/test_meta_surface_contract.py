@@ -85,6 +85,16 @@ def retired_meta_table_capabilities() -> dict[str, set[str]]:
     return dict(capabilities)
 
 
+def registered_metadata_properties() -> set[str]:
+    return set(
+        re.findall(
+            r'(?:public_name:\s*|(?:property|enum_property)\(\s*)'
+            r'"([A-Za-z][A-Za-z0-9]*)"',
+            META_PROPERTY_REGISTRY.read_text(encoding="utf-8"),
+        )
+    )
+
+
 def rust_function(source: str, signature: str) -> str:
     start = source.index(signature)
     opening = source.index("{", start)
@@ -155,13 +165,7 @@ class MetaSurfaceContractTests(unittest.TestCase):
             "ledger keys differ from the retired types-*.md capability tables",
         )
 
-        registry = set(
-            re.findall(
-                r'(?:public_name:\s*|(?:property|enum_property)\(\s*)'
-                r'"([A-Za-z][A-Za-z0-9]*)"',
-                META_PROPERTY_REGISTRY.read_text(encoding="utf-8"),
-            )
-        )
+        registry = registered_metadata_properties()
         operation_registry = META_OPERATION_REGISTRY.read_text(encoding="utf-8")
         for legacy_key, legacy_kinds in sorted(donor.items()):
             entry = entries[legacy_key]
@@ -199,6 +203,15 @@ class MetaSurfaceContractTests(unittest.TestCase):
                         self.assertIn(operation_evidence[contract], operation_registry)
                 else:
                     self.assertNotRegex(contract, r"(?i)^\s*(?:the )?dsl (?:was )?removed")
+
+    def test_removed_register_type_is_absent_from_public_registry(self) -> None:
+        ledger = json.loads(META_CAPABILITY_LEDGER.read_text(encoding="utf-8"))
+        register_type = next(
+            entry for entry in ledger if entry["legacyKey"] == "registerType"
+        )
+
+        self.assertEqual(register_type["status"], "removed")
+        self.assertNotIn("RegisterType", registered_metadata_properties())
 
     def test_live_rust_guidance_never_advertises_retired_meta_routes(self) -> None:
         retired_route = re.compile(

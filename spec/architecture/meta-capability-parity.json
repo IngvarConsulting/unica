@@ -600,8 +600,8 @@
     "legacyKinds": [
       "AccumulationRegister"
     ],
-    "status": "supported",
-    "typedOperation": "unica.meta.edit.setProperties.RegisterType"
+    "status": "removed",
+    "removalReason": "The complete RegisterType enum domain is unresolved: current code and donor evidence use Balance while the normative format specification says Balances, and Turnovers proves only one branch. Migration cannot pass registerType; create the register without this override, then set and verify its type in Designer before using its data."
   },
   {
     "legacyKey": "registeredDocuments",
