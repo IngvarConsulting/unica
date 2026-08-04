@@ -186,6 +186,24 @@ fn add_applies_operations_atomically() {
         "Catalog.Configured"
     );
     assert_eq!(
+        preview.data.as_ref().unwrap()["effects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|effect| effect["operation"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["setProperties", "add"]
+    );
+    assert_eq!(
+        preview.data.as_ref().unwrap()["effects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|effect| effect["operationIndex"].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![0, 1]
+    );
+    assert_eq!(
         tree_snapshot(&source),
         before,
         "preview changed source bytes"

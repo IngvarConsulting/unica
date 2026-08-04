@@ -7,8 +7,9 @@ use crate::application::AdapterOutcome;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::metadata::{
-    MetaCollectionsData, MetaDiagnostic, MetaDiagnosticCode, MetaElementData, MetaPropertyData,
-    MetaPropertyValue, MetaSupportStatus, MetadataKind, MetadataReference, METADATA_PROPERTY_SPECS,
+    MetaCollectionsData, MetaDiagnostic, MetaDiagnosticCode, MetaDiagnosticSeverity,
+    MetaElementData, MetaPropertyData, MetaPropertyValue, MetaRelationTargetData,
+    MetaRelationsData, MetaSupportStatus, MetadataKind, METADATA_PROPERTY_SPECS,
 };
 use crate::domain::source_target::ResolvedTarget;
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
@@ -298,6 +299,7 @@ pub(crate) fn read_typed_meta_info(
         .map(meta_info_ml_text)
         .filter(|value| !value.is_empty());
 
+    let mut diagnostics = Vec::new();
     let local = MetaLocalInfo {
         metadata_path: target.clone(),
         kind,
@@ -305,18 +307,91 @@ pub(crate) fn read_typed_meta_info(
         synonym,
         support: typed_support_status(&resolved.descriptor_path),
         properties: typed_properties(properties, kind),
-        owners: typed_owners(properties),
+        relations: typed_relations(properties, target, &mut diagnostics),
         collections: MetaCollectionsData {
-            attributes: typed_elements(xml, child_objects, "Attribute", false),
-            tabular_sections: typed_elements(xml, child_objects, "TabularSection", true),
-            dimensions: typed_elements(xml, child_objects, "Dimension", false),
-            resources: typed_elements(xml, child_objects, "Resource", false),
-            enum_values: typed_elements(xml, child_objects, "EnumValue", false),
-            columns: typed_elements(xml, child_objects, "Column", false),
-            forms: typed_elements(xml, child_objects, "Form", false),
-            templates: typed_elements(xml, child_objects, "Template", false),
-            commands: typed_elements(xml, child_objects, "Command", false),
+            attributes: typed_elements_with_diagnostics(
+                xml,
+                child_objects,
+                "Attribute",
+                false,
+                "collections.attributes",
+                target,
+                &mut diagnostics,
+            ),
+            tabular_sections: typed_elements_with_diagnostics(
+                xml,
+                child_objects,
+                "TabularSection",
+                true,
+                "collections.tabularSections",
+                target,
+                &mut diagnostics,
+            ),
+            dimensions: typed_elements_with_diagnostics(
+                xml,
+                child_objects,
+                "Dimension",
+                false,
+                "collections.dimensions",
+                target,
+                &mut diagnostics,
+            ),
+            resources: typed_elements_with_diagnostics(
+                xml,
+                child_objects,
+                "Resource",
+                false,
+                "collections.resources",
+                target,
+                &mut diagnostics,
+            ),
+            enum_values: typed_elements_with_diagnostics(
+                xml,
+                child_objects,
+                "EnumValue",
+                false,
+                "collections.enumValues",
+                target,
+                &mut diagnostics,
+            ),
+            columns: typed_elements_with_diagnostics(
+                xml,
+                child_objects,
+                "Column",
+                false,
+                "collections.columns",
+                target,
+                &mut diagnostics,
+            ),
+            forms: typed_elements_with_diagnostics(
+                xml,
+                child_objects,
+                "Form",
+                false,
+                "collections.forms",
+                target,
+                &mut diagnostics,
+            ),
+            templates: typed_elements_with_diagnostics(
+                xml,
+                child_objects,
+                "Template",
+                false,
+                "collections.templates",
+                target,
+                &mut diagnostics,
+            ),
+            commands: typed_elements_with_diagnostics(
+                xml,
+                child_objects,
+                "Command",
+                false,
+                "collections.commands",
+                target,
+                &mut diagnostics,
+            ),
         },
+        diagnostics,
     };
     let mut validation_resources = vec![
         MetadataResourceImage {
@@ -568,7 +643,7 @@ fn typed_support_status(path: &Path) -> MetaSupportStatus {
     }
 }
 
-fn typed_properties(
+pub(super) fn typed_properties(
     properties: Option<roxmltree::Node<'_, '_>>,
     kind: MetadataKind,
 ) -> Vec<MetaPropertyData> {
@@ -606,35 +681,79 @@ fn typed_properties(
         .collect()
 }
 
-fn typed_owners(properties: Option<roxmltree::Node<'_, '_>>) -> Vec<MetadataReference> {
-    let Some(owners) = properties.and_then(|node| meta_info_child(node, "Owners")) else {
-        return Vec::new();
+pub(super) fn typed_relations(
+    properties: Option<roxmltree::Node<'_, '_>>,
+    target: &MetadataAddress,
+    diagnostics: &mut Vec<MetaDiagnostic>,
+) -> MetaRelationsData {
+    let mut read = |tag: &str, public_name: &str, kind: &str| {
+        let Some(container) = properties.and_then(|node| meta_info_child(node, tag)) else {
+            return Vec::new();
+        };
+        container
+            .children()
+            .filter(|node| node.is_element())
+            .enumerate()
+            .filter_map(|(index, node)| {
+                let raw = meta_info_inner_text(node);
+                let normalized = meta_info_normalize_cfg_prefix(raw.trim());
+                let normalized = normalized.strip_prefix("cfg:").unwrap_or(&normalized);
+                let valid = if kind == "field" {
+                    crate::domain::metadata::MetadataFieldPath::parse(normalized).is_ok()
+                } else {
+                    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, normalized).is_ok()
+                };
+                if !valid {
+                    diagnostics.push(
+                        MetaDiagnostic::error(
+                            MetaDiagnosticCode::ValidationFailed,
+                            "metadata relation target is malformed",
+                        )
+                        .with_metadata_path(target.clone())
+                        .with_field(format!("relations.{public_name}[{index}]")),
+                    );
+                    return None;
+                }
+                Some(MetaRelationTargetData {
+                    kind: kind.to_string(),
+                    value: normalized.to_string(),
+                })
+            })
+            .collect()
     };
-    meta_info_children(owners, "Item")
-        .into_iter()
-        .filter_map(|node| {
-            let raw = meta_info_inner_text(node);
-            let raw = meta_info_normalize_cfg_prefix(raw.trim());
-            let raw = raw.strip_prefix("cfg:").unwrap_or(&raw);
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw)
-                .ok()
-                .map(|metadata_path| MetadataReference { metadata_path })
-        })
-        .collect()
+    MetaRelationsData {
+        owners: read("Owners", "owners", "object"),
+        register_records: read("RegisterRecords", "registerRecords", "object"),
+        based_on: read("BasedOn", "basedOn", "object"),
+        input_by_string: read("InputByString", "inputByString", "field"),
+    }
 }
 
-pub(super) fn typed_elements(
+pub(super) fn typed_elements_with_diagnostics(
     xml: &str,
     parent: Option<roxmltree::Node<'_, '_>>,
     tag: &str,
     nested_attributes: bool,
+    field: &str,
+    target: &MetadataAddress,
+    diagnostics: &mut Vec<MetaDiagnostic>,
 ) -> Vec<MetaElementData> {
     let Some(parent) = parent else {
         return Vec::new();
     };
     meta_info_children(parent, tag)
         .into_iter()
-        .filter_map(|node| typed_element(xml, node, nested_attributes))
+        .enumerate()
+        .filter_map(|(index, node)| {
+            typed_element(
+                xml,
+                node,
+                nested_attributes,
+                &format!("{field}[{index}]"),
+                target,
+                diagnostics,
+            )
+        })
         .collect()
 }
 
@@ -642,6 +761,9 @@ fn typed_element(
     xml: &str,
     node: roxmltree::Node<'_, '_>,
     nested_attributes: bool,
+    field: &str,
+    target: &MetadataAddress,
+    diagnostics: &mut Vec<MetaDiagnostic>,
 ) -> Option<MetaElementData> {
     let Some(properties) = meta_info_child(node, "Properties") else {
         let name = meta_info_inner_text(node).trim().to_string();
@@ -655,24 +777,89 @@ fn typed_element(
             synonym: None,
             comment: None,
             r#type: None,
+            required: None,
+            fill_value: None,
             attributes: Vec::new(),
         });
     };
     let raw_name = meta_info_child_text(properties, "Name").unwrap_or_default();
-    let incomplete = raw_name.trim().is_empty();
+    let mut incomplete = raw_name.trim().is_empty();
     let name = if incomplete { String::new() } else { raw_name };
     let synonym = meta_info_child(properties, "Synonym")
         .map(meta_info_ml_text)
         .filter(|value| !value.is_empty());
     let comment = meta_info_child_text(properties, "Comment").filter(|value| !value.is_empty());
-    let r#type = meta_info_child(properties, "Type")
-        .and_then(|_| super::edit::parse_typed_metadata_type(&xml[properties.range()]).ok());
+    let properties_text = &xml[properties.range()];
+    let r#type = if meta_info_child(properties, "Type").is_some() {
+        match super::edit::parse_typed_metadata_type(properties_text) {
+            Ok(value) => Some(value),
+            Err(diagnostic) => {
+                incomplete = true;
+                let read_only = typed_read_only_platform_type(properties_text);
+                diagnostics.push(MetaDiagnostic {
+                    code: MetaDiagnosticCode::ValidationFailed,
+                    severity: if read_only {
+                        MetaDiagnosticSeverity::Warning
+                    } else {
+                        MetaDiagnosticSeverity::Error
+                    },
+                    message: if read_only {
+                        "metadata type is valid but outside the public mutation algebra".to_string()
+                    } else {
+                        diagnostic.message
+                    },
+                    metadata_path: Some(target.clone()),
+                    operation_index: None,
+                    field: Some(format!("{field}.type")),
+                });
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let fill_value = if meta_info_child(properties, "FillValue").is_some() {
+        match super::edit::parse_typed_fill_value(properties_text) {
+            Ok(value) => value,
+            Err(diagnostic) => {
+                incomplete = true;
+                diagnostics.push(
+                    MetaDiagnostic::error(MetaDiagnosticCode::ValidationFailed, diagnostic.message)
+                        .with_metadata_path(target.clone())
+                        .with_field(format!("{field}.fillValue")),
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let required = match meta_info_child_text(properties, "FillChecking").as_deref() {
+        Some("ShowError") => Some(true),
+        Some("DontCheck") => Some(false),
+        None => None,
+        Some(_) => {
+            incomplete = true;
+            diagnostics.push(
+                MetaDiagnostic::error(
+                    MetaDiagnosticCode::ValidationFailed,
+                    "metadata required flag is malformed",
+                )
+                .with_metadata_path(target.clone())
+                .with_field(format!("{field}.required")),
+            );
+            None
+        }
+    };
     let attributes = if nested_attributes {
-        typed_elements(
+        typed_elements_with_diagnostics(
             xml,
             meta_info_child(node, "ChildObjects"),
             "Attribute",
             false,
+            &format!("{field}.attributes"),
+            target,
+            diagnostics,
         )
     } else {
         Vec::new()
@@ -683,8 +870,43 @@ fn typed_element(
         synonym,
         comment,
         r#type,
+        required,
+        fill_value,
         attributes,
     })
+}
+
+fn typed_read_only_platform_type(properties_text: &str) -> bool {
+    const WRAPPER_START: &str = r#"<Root xmlns:v8="http://v8.1c.ru/8.1/data/core">"#;
+    let wrapped = format!("{WRAPPER_START}{properties_text}</Root>");
+    let Ok(document) = Document::parse(&wrapped) else {
+        return false;
+    };
+    document.descendants().any(|node| {
+        node.is_element()
+            && node.tag_name().namespace() == Some("http://v8.1c.ru/8.1/data/core")
+            && node.tag_name().name() == "Type"
+            && matches!(node.text(), Some("v8:UUID"))
+    })
+}
+
+#[cfg(test)]
+pub(super) fn typed_elements(
+    xml: &str,
+    parent: Option<roxmltree::Node<'_, '_>>,
+    tag: &str,
+    nested_attributes: bool,
+) -> Vec<MetaElementData> {
+    let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Test").unwrap();
+    typed_elements_with_diagnostics(
+        xml,
+        parent,
+        tag,
+        nested_attributes,
+        "collections.test",
+        &target,
+        &mut Vec::new(),
+    )
 }
 
 /// The resolved logical target rides in typed data rather than in the printed

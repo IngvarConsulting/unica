@@ -919,6 +919,7 @@ pub(crate) fn plan_typed_remove(
             metadata_path: target.clone(),
             changed: true,
             publication_plan,
+            effects: Vec::new(),
             validation: MetaValidationData {
                 status: MetaValidationStatus::Passed,
                 diagnostics: Vec::new(),

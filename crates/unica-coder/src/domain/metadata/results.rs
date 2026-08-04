@@ -1,6 +1,5 @@
 use super::{
-    MetaDiagnostic, MetaPropertyKey, MetaPropertyValue, MetadataKind, MetadataReference,
-    MetadataType,
+    MetaDiagnostic, MetaFillValue, MetaPropertyKey, MetaPropertyValue, MetadataKind, MetadataType,
 };
 use crate::domain::source_target::MetadataAddress;
 use serde::Serialize;
@@ -113,6 +112,10 @@ pub(crate) struct MetaElementData {
     pub(crate) comment: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) r#type: Option<MetadataType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) required: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) fill_value: Option<MetaFillValue>,
     pub(crate) attributes: Vec<MetaElementData>,
 }
 
@@ -134,6 +137,22 @@ pub(crate) struct MetaCollectionsData {
     pub(crate) commands: Vec<MetaElementData>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MetaRelationTargetData {
+    pub(crate) kind: String,
+    pub(crate) value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MetaRelationsData {
+    pub(crate) owners: Vec<MetaRelationTargetData>,
+    pub(crate) register_records: Vec<MetaRelationTargetData>,
+    pub(crate) based_on: Vec<MetaRelationTargetData>,
+    pub(crate) input_by_string: Vec<MetaRelationTargetData>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum MetaSupportStatus {
@@ -152,7 +171,7 @@ pub(crate) struct MetaInfoData {
     pub(crate) synonym: Option<String>,
     pub(crate) support: MetaSupportStatus,
     pub(crate) properties: Vec<MetaPropertyData>,
-    pub(crate) owners: Vec<MetadataReference>,
+    pub(crate) relations: MetaRelationsData,
     pub(crate) collections: MetaCollectionsData,
     pub(crate) validation: MetaValidationData,
     pub(crate) related: MetaRelatedSections,
@@ -193,8 +212,20 @@ pub(crate) struct MetaMutationData {
     pub(crate) metadata_path: MetadataAddress,
     pub(crate) changed: bool,
     pub(crate) publication_plan: Vec<MetaPublicationPlanEntry>,
+    pub(crate) effects: Vec<MetaMutationEffect>,
     pub(crate) validation: MetaValidationData,
     pub(crate) diagnostics: Vec<MetaDiagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MetaMutationEffect {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) operation_index: Option<u64>,
+    pub(crate) operation: String,
+    pub(crate) target: String,
+    pub(crate) before: Option<Value>,
+    pub(crate) after: Option<Value>,
 }
 
 #[cfg(test)]

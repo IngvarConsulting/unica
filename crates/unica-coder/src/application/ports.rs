@@ -14,7 +14,7 @@ use crate::domain::events::DomainEvent;
 use crate::domain::metadata::{
     MetaCollectionsData, MetaDiagnostic, MetaDiagnosticCode, MetaInfoData, MetaMutationData,
     MetaPropertyData, MetaRelatedSection, MetaRelatedSections, MetaRelatedStatus,
-    MetaSupportStatus, MetaValidationData, MetaValidationStatus, MetadataKind, MetadataReference,
+    MetaRelationsData, MetaSupportStatus, MetaValidationData, MetaValidationStatus, MetadataKind,
 };
 use crate::domain::source_resources::{
     ResourceManifestPage, SourceReadResult, SourceResourceError,
@@ -224,8 +224,9 @@ pub(crate) struct MetaLocalInfo {
     pub(crate) synonym: Option<String>,
     pub(crate) support: MetaSupportStatus,
     pub(crate) properties: Vec<MetaPropertyData>,
-    pub(crate) owners: Vec<MetadataReference>,
+    pub(crate) relations: MetaRelationsData,
     pub(crate) collections: MetaCollectionsData,
+    pub(crate) diagnostics: Vec<MetaDiagnostic>,
 }
 
 impl MetaLocalInfo {
@@ -241,7 +242,7 @@ impl MetaLocalInfo {
             synonym: self.synonym,
             support: self.support,
             properties: self.properties,
-            owners: self.owners,
+            relations: self.relations,
             collections: self.collections,
             validation,
             related,

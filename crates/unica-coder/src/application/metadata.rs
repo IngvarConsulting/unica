@@ -126,7 +126,16 @@ fn invoke_info(
         Ok(read) => read,
         Err(failure) => return Ok(metadata_failure("metadata read failed", failure, None)),
     };
-    let validation = ports.validate_metadata_read(&read.validation_subject, context, cancellation);
+    let mut validation =
+        ports.validate_metadata_read(&read.validation_subject, context, cancellation);
+    if read.local.diagnostics.iter().any(|diagnostic| {
+        diagnostic.severity == crate::domain::metadata::MetaDiagnosticSeverity::Error
+    }) {
+        validation.status = MetaValidationStatus::Failed;
+    }
+    validation
+        .diagnostics
+        .extend(read.local.diagnostics.iter().cloned());
     let related = if request.sections.is_empty() {
         empty_related_sections()
     } else {
@@ -2104,6 +2113,10 @@ mod tests {
         }
     }
 
+    fn empty_relations() -> crate::domain::metadata::MetaRelationsData {
+        crate::domain::metadata::MetaRelationsData::default()
+    }
+
     fn validation_subject() -> MetadataValidationSubject {
         MetadataValidationSubject {
             target: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Document.Order")
@@ -2126,6 +2139,7 @@ mod tests {
             .unwrap(),
             changed,
             publication_plan: Vec::new(),
+            effects: Vec::new(),
             validation: passed_validation(),
             diagnostics: Vec::new(),
         }
@@ -2172,8 +2186,9 @@ mod tests {
                         synonym: Some("Order".to_string()),
                         support: MetaSupportStatus::Supported,
                         properties: Vec::new(),
-                        owners: Vec::new(),
+                        relations: empty_relations(),
                         collections: empty_collections(),
+                        diagnostics: Vec::new(),
                     },
                     validation_subject: subject,
                 }))),
@@ -2196,6 +2211,103 @@ mod tests {
     }
 
     #[test]
+    fn preview_effects_follow_operation_order() {
+        let workspace = std::env::temp_dir().join(format!(
+            "unica-meta-effect-order-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&workspace).unwrap();
+        let initialized = crate::application::UnicaApplication::new()
+            .call_tool(
+                "unica.cf.init",
+                &object(json!({
+                    "cwd": workspace.display().to_string(),
+                    "Name": "EffectOrder",
+                    "OutputDir": "src",
+                    "dryRun": false
+                })),
+            )
+            .unwrap();
+        assert!(initialized.ok, "{:?}", initialized.errors);
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let previous = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&workspace).unwrap();
+        let application = crate::application::UnicaApplication::new();
+        for name in ["Owner", "Subject"] {
+            let added = application
+                .call_tool(
+                    "unica.meta.add",
+                    &object(json!({
+                        "sourceSet": "main",
+                        "kind": "Catalog",
+                        "name": name,
+                        "dryRun": false
+                    })),
+                )
+                .unwrap();
+            assert!(added.ok, "{name}: {:?}", added.errors);
+        }
+        let operations = json!([
+            {"op": "setProperties", "values": {"Comment": "ordered"}},
+            {"op": "add", "collection": "attributes", "elements": [{"name": "Transient"}]},
+            {"op": "update", "collection": "attributes", "elements": [{"name": "Transient", "newName": "Updated"}]},
+            {"op": "remove", "collection": "attributes", "names": ["Updated"]},
+            {"op": "editRelations", "relation": "owners", "mode": "replace", "targets": [{"metadataPath": "Catalog.Owner"}]}
+        ]);
+        let preview = application
+            .call_tool(
+                "unica.meta.edit",
+                &object(json!({
+                    "sourceSet": "main",
+                    "metadataPath": "Catalog.Subject",
+                    "operations": operations,
+                    "dryRun": true
+                })),
+            )
+            .unwrap();
+        let template = application
+            .call_tool(
+                "unica.meta.add",
+                &object(json!({
+                    "sourceSet": "main",
+                    "kind": "Catalog",
+                    "name": "TemplateOnly",
+                    "dryRun": true
+                })),
+            )
+            .unwrap();
+        std::env::set_current_dir(previous).unwrap();
+        let _ = std::fs::remove_dir_all(&workspace);
+
+        assert!(preview.ok, "{:?}", preview.errors);
+        let effects = preview.data.unwrap()["effects"].clone();
+        assert_eq!(
+            effects
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|effect| effect["operation"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["setProperties", "add", "update", "remove", "editRelations"]
+        );
+        assert!(effects
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .all(|(index, effect)| effect["operationIndex"] == index as u64));
+        assert_eq!(
+            template.data.unwrap()["effects"][0]["operation"],
+            "createTemplate"
+        );
+    }
+
+    #[test]
     fn coordinator_info_reads_validates_then_enriches_and_keeps_local_data_when_related_is_unavailable(
     ) {
         let state = Arc::new(Mutex::new(CoordinatorState::default()));
@@ -2211,8 +2323,9 @@ mod tests {
                     synonym: Some("Order".to_string()),
                     support: MetaSupportStatus::Supported,
                     properties: Vec::new(),
-                    owners: Vec::new(),
+                    relations: empty_relations(),
                     collections: empty_collections(),
+                    diagnostics: Vec::new(),
                 },
                 validation_subject: subject,
             }))),

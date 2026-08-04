@@ -2,6 +2,8 @@ use super::{
     MetaDiagnostic, MetaDiagnosticCode, MetaPropertyChanges, MetadataReference, MetadataType,
 };
 use crate::domain::source_target::MetadataAddress;
+use serde::ser::SerializeStruct;
+use serde::{Serialize, Serializer};
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -142,6 +144,46 @@ pub(crate) enum MetaFillValue {
     Boolean(bool),
     DateTime(String),
     Reference(MetadataReference),
+}
+
+impl Serialize for MetaFillValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::String(value) => {
+                let mut state = serializer.serialize_struct("MetaFillValue", 2)?;
+                state.serialize_field("kind", "string")?;
+                state.serialize_field("value", value)?;
+                state.end()
+            }
+            Self::Number(value) => {
+                let mut state = serializer.serialize_struct("MetaFillValue", 2)?;
+                state.serialize_field("kind", "number")?;
+                state.serialize_field("value", value)?;
+                state.end()
+            }
+            Self::Boolean(value) => {
+                let mut state = serializer.serialize_struct("MetaFillValue", 2)?;
+                state.serialize_field("kind", "boolean")?;
+                state.serialize_field("value", value)?;
+                state.end()
+            }
+            Self::DateTime(value) => {
+                let mut state = serializer.serialize_struct("MetaFillValue", 2)?;
+                state.serialize_field("kind", "dateTime")?;
+                state.serialize_field("value", value)?;
+                state.end()
+            }
+            Self::Reference(reference) => {
+                let mut state = serializer.serialize_struct("MetaFillValue", 2)?;
+                state.serialize_field("kind", "reference")?;
+                state.serialize_field("metadataPath", &reference.metadata_path)?;
+                state.end()
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

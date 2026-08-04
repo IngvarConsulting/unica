@@ -8,10 +8,10 @@ use crate::domain::cancellation::CancellationToken;
 use crate::domain::format_profile::ACTIVE_FORMAT_PROFILE;
 use crate::domain::metadata::{
     DateFractions, MetaCollection, MetaDiagnostic, MetaDiagnosticCode, MetaEditOperation,
-    MetaElementDefinition, MetaElementUpdate, MetaFillValue, MetaPosition, MetaPropertyKey,
-    MetaPropertyValue, MetaPublicationAction, MetaPublicationPlanEntry, MetaPublicationResource,
-    MetaRelation, MetadataType, MetadataTypeVariant, NumberSign, RelationEditMode,
-    StringLengthMode,
+    MetaElementDefinition, MetaElementUpdate, MetaFillValue, MetaMutationEffect, MetaPosition,
+    MetaPropertyKey, MetaPropertyValue, MetaPublicationAction, MetaPublicationPlanEntry,
+    MetaPublicationResource, MetaRelation, MetadataType, MetadataTypeVariant, NumberSign,
+    RelationEditMode, StringLengthMode,
 };
 use crate::domain::source_target::{
     MetadataAddress, SourceTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
@@ -25,6 +25,7 @@ use crate::infrastructure::support_guard::{
     evaluate_resolved_support_guard, ResolvedSupportGuardCheck,
 };
 use roxmltree::Document;
+use serde_json::{Map as JsonMap, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -53,6 +54,7 @@ pub(super) struct MetaEditCounts {
     pub(crate) added: usize,
     pub(crate) modified: usize,
     pub(crate) removed: usize,
+    pub(crate) effects: Vec<MetaMutationEffect>,
 }
 
 #[derive(Clone, Copy)]
@@ -680,6 +682,7 @@ pub(super) struct TypedRelationDependency {
 pub(super) struct TypedOperationPostImage {
     pub(super) descriptor: Vec<u8>,
     pub(super) child_resources: TypedChildResourcePlan,
+    pub(super) effects: Vec<MetaMutationEffect>,
 }
 
 /// Build the complete descriptor and child-resource plan privately. No
@@ -710,7 +713,7 @@ pub(super) fn build_typed_operation_post_image(
         xml = xml.trim_start_matches('\u{feff}').to_string();
     }
     let normalized_preimage = xml.clone();
-    apply_typed_operations(&mut xml, operations).map_err(|mut failure| {
+    let applied = apply_typed_operations(&mut xml, operations).map_err(|mut failure| {
         for diagnostic in &mut failure.diagnostics {
             diagnostic.metadata_path = Some(target.clone());
         }
@@ -740,6 +743,7 @@ pub(super) fn build_typed_operation_post_image(
     Ok(TypedOperationPostImage {
         descriptor: meta_edit_preserve_source_format(&xml, source_format),
         child_resources,
+        effects: applied.effects,
     })
 }
 
@@ -1866,6 +1870,7 @@ pub(crate) fn prepare_typed_edit(
     let TypedOperationPostImage {
         descriptor: post_image,
         child_resources,
+        effects,
     } = build_typed_operation_post_image(
         &request.source_set,
         &resolved.descriptor_path,
@@ -1881,6 +1886,7 @@ pub(crate) fn prepare_typed_edit(
         post_image,
         diagnostics,
         child_resources,
+        effects,
     )
 }
 
@@ -2210,6 +2216,10 @@ pub(crate) fn apply_typed_operations(
     let mut working = xml_text.clone();
     let mut counts = MetaEditCounts::default();
     for (operation_index, operation) in operations.iter().enumerate() {
+        // Capture before applying, but let the writer own invalid-operation
+        // diagnostics. A missing remove/update target must stay target_not_found
+        // rather than being replaced by an effect-projection failure.
+        let before = typed_operation_effect_value(&working, operation, false);
         if let Err(diagnostic) = apply_typed_operation(&mut working, operation, &mut counts) {
             let mut diagnostic = diagnostic.with_operation_index(operation_index);
             if let Some(field) = diagnostic.field.as_mut() {
@@ -2249,9 +2259,284 @@ pub(crate) fn apply_typed_operations(
                 .with_operation_index(operation_index),
             )
         })?;
+        let before = before.map_err(|diagnostic| {
+            MetaFailure::from(diagnostic.with_operation_index(operation_index))
+        })?;
+        let after =
+            typed_operation_effect_value(&working, operation, true).map_err(|diagnostic| {
+                MetaFailure::from(diagnostic.with_operation_index(operation_index))
+            })?;
+        counts.effects.push(MetaMutationEffect {
+            operation_index: Some(operation_index as u64),
+            operation: typed_operation_name(operation).to_string(),
+            target: typed_operation_target(&working, operation)?,
+            before,
+            after,
+        });
     }
     *xml_text = working;
     Ok(counts)
+}
+
+fn typed_operation_name(operation: &MetaEditOperation) -> &'static str {
+    match operation {
+        MetaEditOperation::SetProperties { .. } => "setProperties",
+        MetaEditOperation::Add { .. } => "add",
+        MetaEditOperation::Update { .. } => "update",
+        MetaEditOperation::Remove { .. } => "remove",
+        MetaEditOperation::EditRelations { .. } => "editRelations",
+    }
+}
+
+fn typed_operation_target(xml: &str, operation: &MetaEditOperation) -> Result<String, MetaFailure> {
+    let (kind, name) = meta_edit_object_identity(xml).map_err(|_| {
+        MetaFailure::from(typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata descriptor identity is unavailable for semantic effect",
+            None,
+        ))
+    })?;
+    let base = format!("{kind}.{name}");
+    Ok(match operation {
+        MetaEditOperation::SetProperties { .. } => format!("{base}.properties"),
+        MetaEditOperation::Add {
+            collection, scope, ..
+        }
+        | MetaEditOperation::Update {
+            collection, scope, ..
+        }
+        | MetaEditOperation::Remove {
+            collection, scope, ..
+        } => match scope {
+            Some(scope) => format!(
+                "{base}.collections.tabularSections.{}.{}",
+                scope.tabular_section,
+                collection.as_str()
+            ),
+            None => format!("{base}.collections.{}", collection.as_str()),
+        },
+        MetaEditOperation::EditRelations { relation, .. } => {
+            format!("{base}.relations.{}", relation.as_str())
+        }
+    })
+}
+
+fn typed_operation_effect_value(
+    xml: &str,
+    operation: &MetaEditOperation,
+    after: bool,
+) -> Result<Option<Value>, MetaDiagnostic> {
+    match operation {
+        MetaEditOperation::Add { .. } if !after => return Ok(None),
+        MetaEditOperation::Remove { .. } if after => return Ok(None),
+        _ => {}
+    }
+    let (kind_name, object_name) = meta_edit_object_identity(xml).map_err(|_| {
+        typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata descriptor identity is unavailable for semantic effect",
+            None,
+        )
+    })?;
+    let kind = crate::domain::metadata::MetadataKind::parse(&kind_name).map_err(|_| {
+        typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata descriptor kind is unavailable for semantic effect",
+            None,
+        )
+    })?;
+    let target = MetadataAddress::parse(
+        PLATFORM_XML_8_3_27_FORMAT_2_20,
+        &format!("{kind_name}.{object_name}"),
+    )
+    .map_err(|_| {
+        typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata descriptor address is unavailable for semantic effect",
+            None,
+        )
+    })?;
+    let document = Document::parse(xml.trim_start_matches('\u{feff}')).map_err(|_| {
+        typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata descriptor is not valid XML",
+            None,
+        )
+    })?;
+    let object = meta_edit_object_node(&document).map_err(|_| {
+        typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata object is unavailable for semantic effect",
+            None,
+        )
+    })?;
+    let properties = meta_info_child(object, "Properties");
+    let value = match operation {
+        MetaEditOperation::SetProperties { values } => {
+            let observed = super::info::typed_properties(properties, kind);
+            let mut selected = JsonMap::new();
+            for (key, _) in values.entries() {
+                let property = observed
+                    .iter()
+                    .find(|property| &property.key == key)
+                    .ok_or_else(|| {
+                        typed_diagnostic(
+                            MetaDiagnosticCode::ProviderUnavailable,
+                            "metadata property is unavailable for semantic effect",
+                            Some("values"),
+                        )
+                    })?;
+                let key = serde_json::to_value(property.key)
+                    .ok()
+                    .and_then(|value| value.as_str().map(str::to_string))
+                    .ok_or_else(|| {
+                        typed_diagnostic(
+                            MetaDiagnosticCode::ProviderUnavailable,
+                            "metadata property name cannot be normalized",
+                            Some("values"),
+                        )
+                    })?;
+                selected.insert(
+                    key,
+                    serde_json::to_value(&property.value).map_err(|_| {
+                        typed_diagnostic(
+                            MetaDiagnosticCode::ProviderUnavailable,
+                            "metadata property value cannot be normalized",
+                            Some("values"),
+                        )
+                    })?,
+                );
+            }
+            Value::Object(selected)
+        }
+        MetaEditOperation::Add {
+            collection,
+            scope,
+            elements,
+        } => typed_collection_effect_value(
+            xml,
+            object,
+            *collection,
+            scope.as_ref(),
+            elements.iter().map(|element| element.name.as_str()),
+            &target,
+        )?,
+        MetaEditOperation::Update {
+            collection,
+            scope,
+            elements,
+        } => typed_collection_effect_value(
+            xml,
+            object,
+            *collection,
+            scope.as_ref(),
+            elements.iter().map(|element| {
+                if after {
+                    element.new_name.as_deref().unwrap_or(&element.name)
+                } else {
+                    &element.name
+                }
+            }),
+            &target,
+        )?,
+        MetaEditOperation::Remove {
+            collection,
+            scope,
+            names,
+        } => typed_collection_effect_value(
+            xml,
+            object,
+            *collection,
+            scope.as_ref(),
+            names.iter().map(String::as_str),
+            &target,
+        )?,
+        MetaEditOperation::EditRelations { relation, .. } => {
+            let mut diagnostics = Vec::new();
+            let relations = super::info::typed_relations(properties, &target, &mut diagnostics);
+            if let Some(diagnostic) = diagnostics.into_iter().next() {
+                return Err(diagnostic);
+            }
+            serde_json::to_value(match relation {
+                MetaRelation::Owners => relations.owners,
+                MetaRelation::RegisterRecords => relations.register_records,
+                MetaRelation::BasedOn => relations.based_on,
+                MetaRelation::InputByString => relations.input_by_string,
+            })
+            .map_err(|_| {
+                typed_diagnostic(
+                    MetaDiagnosticCode::ProviderUnavailable,
+                    "metadata relations cannot be normalized",
+                    Some("relation"),
+                )
+            })?
+        }
+    };
+    Ok(Some(value))
+}
+
+fn typed_collection_effect_value<'a>(
+    xml: &str,
+    object: roxmltree::Node<'a, 'a>,
+    collection: MetaCollection,
+    scope: Option<&crate::domain::metadata::MetaScope>,
+    names: impl Iterator<Item = &'a str>,
+    target: &MetadataAddress,
+) -> Result<Value, MetaDiagnostic> {
+    let top = meta_info_child(object, "ChildObjects");
+    let parent = if let Some(scope) = scope {
+        let section = top
+            .into_iter()
+            .flat_map(|node| meta_info_children(node, "TabularSection"))
+            .find(|node| {
+                meta_edit_child_object_name(*node).as_deref()
+                    == Some(scope.tabular_section.as_str())
+            })
+            .ok_or_else(|| {
+                typed_diagnostic(
+                    MetaDiagnosticCode::TargetNotFound,
+                    "metadata effect scope was not found",
+                    Some("scope"),
+                )
+            })?;
+        meta_info_child(section, "ChildObjects")
+    } else {
+        top
+    };
+    let requested = names.collect::<BTreeSet<_>>();
+    let mut diagnostics = Vec::new();
+    let elements = super::info::typed_elements_with_diagnostics(
+        xml,
+        parent,
+        collection_tag(collection),
+        collection == MetaCollection::TabularSections,
+        "effect",
+        target,
+        &mut diagnostics,
+    );
+    if let Some(diagnostic) = diagnostics.into_iter().find(|diagnostic| {
+        diagnostic.severity == crate::domain::metadata::MetaDiagnosticSeverity::Error
+    }) {
+        return Err(diagnostic);
+    }
+    let selected = elements
+        .into_iter()
+        .filter(|element| requested.contains(element.name.as_str()))
+        .collect::<Vec<_>>();
+    if selected.len() != requested.len() {
+        return Err(typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata element is unavailable for semantic effect",
+            Some("elements"),
+        ));
+    }
+    serde_json::to_value(selected).map_err(|_| {
+        typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata elements cannot be normalized",
+            Some("elements"),
+        )
+    })
 }
 
 fn apply_typed_operation(
@@ -2717,6 +3002,7 @@ fn render_typed_element(
                 &mut next_uuid,
             );
             let mut rendered = lines.join("\n");
+            apply_typed_element_fields(&mut rendered, element);
             apply_typed_nested_attribute_fields(&mut rendered, &ordered_attributes)?;
             return Ok(rendered.lines().map(ToOwned::to_owned).collect());
         }
@@ -3340,7 +3626,9 @@ fn update_typed_element(
     Ok(())
 }
 
-fn parse_typed_fill_value(properties_text: &str) -> Result<Option<MetaFillValue>, MetaDiagnostic> {
+pub(super) fn parse_typed_fill_value(
+    properties_text: &str,
+) -> Result<Option<MetaFillValue>, MetaDiagnostic> {
     const WRAPPER_START: &str = r#"<Root xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config">"#;
     let wrapped = format!("{WRAPPER_START}{properties_text}</Root>");
     let document = Document::parse(&wrapped).map_err(|_| {
@@ -3370,7 +3658,14 @@ fn parse_typed_fill_value(properties_text: &str) -> Result<Option<MetaFillValue>
         .unwrap_or_default();
     match value_type {
         "xs:string" => Ok(Some(MetaFillValue::String(value))),
-        "xs:decimal" => Ok(Some(MetaFillValue::Number(value))),
+        "xs:decimal" if typed_decimal_shape(&value).is_some() => {
+            Ok(Some(MetaFillValue::Number(value)))
+        }
+        "xs:decimal" => Err(typed_diagnostic(
+            MetaDiagnosticCode::ValidationFailed,
+            "existing numeric fill value is not canonical",
+            Some("fillValue"),
+        )),
         "xs:boolean" => match value.as_str() {
             "true" => Ok(Some(MetaFillValue::Boolean(true))),
             "false" => Ok(Some(MetaFillValue::Boolean(false))),
@@ -3380,7 +3675,14 @@ fn parse_typed_fill_value(properties_text: &str) -> Result<Option<MetaFillValue>
                 Some("fillValue"),
             )),
         },
-        "xs:dateTime" => Ok(Some(MetaFillValue::DateTime(value))),
+        "xs:dateTime" if typed_xs_datetime_is_valid(&value) => {
+            Ok(Some(MetaFillValue::DateTime(value)))
+        }
+        "xs:dateTime" => Err(typed_diagnostic(
+            MetaDiagnosticCode::ValidationFailed,
+            "existing date-time fill value is not canonical",
+            Some("fillValue"),
+        )),
         "xr:DesignTimeRef" => Ok(Some(MetaFillValue::Reference(
             crate::domain::metadata::MetadataReference {
                 metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &value)
@@ -3414,12 +3716,23 @@ pub(super) fn parse_typed_metadata_type(
             Some("type"),
         )
     })?;
-    let text = |name: &str| {
+    let qualifier_text = |container: &str, name: &str| -> Option<&str> {
         document
             .descendants()
-            .find(|node| node.is_element() && node.tag_name().name() == name)
+            .find(|node| node.is_element() && node.tag_name().name() == container)
+            .and_then(|node| meta_info_child(node, name))
             .and_then(|node| node.text())
-            .unwrap_or_default()
+    };
+    let qualifier_u32 = |container: &str, name: &str| -> Result<u32, MetaDiagnostic> {
+        qualifier_text(container, name).map_or(Ok(0), |value| {
+            value.parse().map_err(|_| {
+                typed_diagnostic(
+                    MetaDiagnosticCode::ValidationFailed,
+                    format!("existing metadata type has malformed {container}.{name}"),
+                    Some("type"),
+                )
+            })
+        })
     };
     let mut variants = Vec::new();
     for node in document.descendants().filter(|node| {
@@ -3443,36 +3756,61 @@ pub(super) fn parse_typed_metadata_type(
         } else {
             match value {
                 "xs:string" => MetadataTypeVariant::String {
-                    length: text("Length").parse().unwrap_or(0),
-                    allowed_length: if text("AllowedLength") == "Fixed" {
-                        StringLengthMode::Fixed
-                    } else {
-                        StringLengthMode::Variable
+                    length: qualifier_u32("StringQualifiers", "Length")?,
+                    allowed_length: match qualifier_text("StringQualifiers", "AllowedLength") {
+                        Some("Fixed") => StringLengthMode::Fixed,
+                        Some("Variable") | None => StringLengthMode::Variable,
+                        Some(_) => {
+                            return Err(typed_diagnostic(
+                                MetaDiagnosticCode::ValidationFailed,
+                                "existing string length mode is unsupported",
+                                Some("type"),
+                            ))
+                        }
                     },
                 },
                 "xs:decimal" => MetadataTypeVariant::Number {
-                    digits: text("Digits").parse().unwrap_or(0),
-                    fraction: text("FractionDigits").parse().unwrap_or(0),
-                    sign: if text("AllowedSign") == "Nonnegative" {
-                        NumberSign::NonNegative
-                    } else {
-                        NumberSign::Any
+                    digits: qualifier_u32("NumberQualifiers", "Digits")?,
+                    fraction: qualifier_u32("NumberQualifiers", "FractionDigits")?,
+                    sign: match qualifier_text("NumberQualifiers", "AllowedSign") {
+                        Some("Nonnegative") => NumberSign::NonNegative,
+                        Some("Any") | None => NumberSign::Any,
+                        Some(_) => {
+                            return Err(typed_diagnostic(
+                                MetaDiagnosticCode::ValidationFailed,
+                                "existing number sign mode is unsupported",
+                                Some("type"),
+                            ))
+                        }
                     },
                 },
                 "xs:boolean" => MetadataTypeVariant::Boolean,
                 "xs:dateTime" => MetadataTypeVariant::Date {
-                    fractions: match text("DateFractions") {
-                        "Date" => DateFractions::Date,
-                        "Time" => DateFractions::Time,
-                        _ => DateFractions::DateTime,
+                    fractions: match qualifier_text("DateQualifiers", "DateFractions") {
+                        Some("Date") => DateFractions::Date,
+                        Some("Time") => DateFractions::Time,
+                        Some("DateTime") | None => DateFractions::DateTime,
+                        Some(_) => {
+                            return Err(typed_diagnostic(
+                                MetaDiagnosticCode::ValidationFailed,
+                                "existing date fractions mode is unsupported",
+                                Some("type"),
+                            ))
+                        }
                     },
                 },
                 "xs:binary" => MetadataTypeVariant::BinaryData {
-                    length: text("Length").parse().unwrap_or(0),
-                    allowed_length: if text("AllowedLength") == "Fixed" {
-                        StringLengthMode::Fixed
-                    } else {
-                        StringLengthMode::Variable
+                    length: qualifier_u32("BinaryDataQualifiers", "Length")?,
+                    allowed_length: match qualifier_text("BinaryDataQualifiers", "AllowedLength") {
+                        Some("Fixed") => StringLengthMode::Fixed,
+                        Some("Variable") | None => StringLengthMode::Variable,
+                        Some(_) => {
+                            return Err(typed_diagnostic(
+                                MetaDiagnosticCode::ValidationFailed,
+                                "existing binary length mode is unsupported",
+                                Some("type"),
+                            ))
+                        }
                     },
                 },
                 "v8:ValueStorage" => MetadataTypeVariant::ValueStorage,

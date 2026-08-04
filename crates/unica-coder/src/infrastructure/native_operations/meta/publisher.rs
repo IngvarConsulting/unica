@@ -9,8 +9,8 @@ use crate::application::SupportGuardRequirement;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::metadata::{
     MetaDiagnostic, MetaDiagnosticCode, MetaDiagnosticSeverity, MetaMutationData,
-    MetaPublicationAction, MetaPublicationPlanEntry, MetaPublicationResource, MetaValidationData,
-    MetaValidationStatus,
+    MetaMutationEffect, MetaPublicationAction, MetaPublicationPlanEntry, MetaPublicationResource,
+    MetaValidationData, MetaValidationStatus,
 };
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::metadata_kinds::metadata_layout;
@@ -113,6 +113,7 @@ impl PreparedMetaEdit {
         post_image: Vec<u8>,
         diagnostics: Vec<MetaDiagnostic>,
         child_resources: TypedChildResourcePlan,
+        effects: Vec<MetaMutationEffect>,
     ) -> Result<Box<dyn PreparedMetadataMutation>, MetaFailure> {
         let target = request.metadata_path.clone();
         let changed = post_image != resolved.descriptor_preimage;
@@ -240,6 +241,7 @@ impl PreparedMetaEdit {
                     .into_iter()
                     .chain(child_resources.publication_plan)
                     .collect(),
+                effects,
                 validation: MetaValidationData {
                     status: MetaValidationStatus::Passed,
                     diagnostics: Vec::new(),
@@ -434,6 +436,7 @@ pub(crate) fn prepare_meta_add(
     let TypedOperationPostImage {
         descriptor,
         child_resources,
+        effects,
     } = build_typed_operation_post_image(
         &request.source_set,
         &descriptor_path,
@@ -443,6 +446,20 @@ pub(crate) fn prepare_meta_add(
         context,
     )?;
     descriptor_file.bytes = descriptor;
+    let effects = if request.operations.is_empty() {
+        vec![MetaMutationEffect {
+            operation_index: None,
+            operation: "createTemplate".to_string(),
+            target: target.as_str().to_string(),
+            before: None,
+            after: Some(serde_json::json!({
+                "kind": request.kind.as_str(),
+                "name": request.name,
+            })),
+        }]
+    } else {
+        effects
+    };
 
     #[cfg(test)]
     run_meta_add_after_authorization_hook();
@@ -669,6 +686,7 @@ pub(crate) fn prepare_meta_add(
             metadata_path: target.clone(),
             changed: true,
             publication_plan,
+            effects,
             validation: MetaValidationData {
                 status: MetaValidationStatus::Passed,
                 diagnostics: Vec::new(),

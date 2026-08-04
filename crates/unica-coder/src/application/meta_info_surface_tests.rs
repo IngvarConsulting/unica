@@ -162,6 +162,54 @@ fn call_info_path_cancellable(
     result.expect("private typed meta.info call")
 }
 
+fn call_meta_tool(workspace: &Path, tool: &str, args: Map<String, Value>) -> OperationResult {
+    let _cwd_lock = process_cwd_lock();
+    let previous = std::env::current_dir().unwrap();
+    std::env::set_current_dir(workspace).unwrap();
+    let result = UnicaApplication::new().call_tool(tool, &args);
+    std::env::set_current_dir(previous).unwrap();
+    result.expect("private typed metadata call")
+}
+
+fn add_catalog(
+    workspace: &Path,
+    name: &str,
+    operations: Option<Value>,
+    dry_run: bool,
+) -> OperationResult {
+    let mut args = Map::from_iter([
+        ("sourceSet".to_string(), Value::String("main".to_string())),
+        ("kind".to_string(), Value::String("Catalog".to_string())),
+        ("name".to_string(), Value::String(name.to_string())),
+        ("dryRun".to_string(), Value::Bool(dry_run)),
+    ]);
+    if let Some(operations) = operations {
+        args.insert("operations".to_string(), operations);
+    }
+    call_meta_tool(workspace, "unica.meta.add", args)
+}
+
+fn call_edit(
+    workspace: &Path,
+    metadata_path: &str,
+    operations: Value,
+    dry_run: bool,
+) -> OperationResult {
+    call_meta_tool(
+        workspace,
+        "unica.meta.edit",
+        Map::from_iter([
+            ("sourceSet".to_string(), Value::String("main".to_string())),
+            (
+                "metadataPath".to_string(),
+                Value::String(metadata_path.to_string()),
+            ),
+            ("operations".to_string(), operations),
+            ("dryRun".to_string(), Value::Bool(dry_run)),
+        ]),
+    )
+}
+
 fn assert_logical_diagnostic(result: &OperationResult, workspace: &Path, code: &str) {
     let diagnostics = result
         .diagnostics
@@ -229,7 +277,7 @@ fn info_without_sections_is_local_only() {
     assert_eq!(data["synonym"], "Inspectable synonym");
     assert_eq!(data["support"], "supported");
     assert!(!data["properties"].as_array().unwrap().is_empty());
-    assert!(data["owners"].as_array().unwrap().is_empty());
+    assert!(data["relations"]["owners"].as_array().unwrap().is_empty());
     assert_eq!(data["validation"]["status"], "passed");
     assert_eq!(
         data["collections"]["attributes"].as_array().unwrap().len(),
@@ -259,6 +307,209 @@ fn info_without_sections_is_local_only() {
     }
     assert_eq!(data["related"], serde_json::json!({}));
     assert!(result.stdout.is_none());
+}
+
+#[test]
+fn info_observes_every_typed_mutation_field() {
+    let workspace = create_info_workspace("round-trip-fields");
+    let owner = add_catalog(workspace.path(), "Owner", None, false);
+    assert!(owner.ok, "{:?}", owner.errors);
+    let seeded = add_catalog(
+        workspace.path(),
+        "RoundTrip",
+        Some(serde_json::json!([{
+            "op": "add",
+            "collection": "attributes",
+            "elements": [
+                {"name": "First"},
+                {"name": "Existing", "type": {"variants": [{"kind": "string", "length": 8, "allowedLength": "variable"}]}},
+                {"name": "RemoveMe"},
+                {"name": "Last"}
+            ]
+        }])),
+        false,
+    );
+    assert!(seeded.ok, "{:?}", seeded.errors);
+    let operations = serde_json::json!([
+        {"op": "setProperties", "values": {"Comment": "Observed comment"}},
+        {"op": "add", "collection": "attributes", "elements": [{
+            "name": "Added",
+            "synonym": "Added synonym",
+            "comment": "Added comment",
+            "type": {"variants": [{"kind": "string", "length": 12, "allowedLength": "fixed"}]},
+            "required": true,
+            "fillValue": {"kind": "string", "value": "seed"},
+            "position": {"before": "Existing"}
+        }]},
+        {"op": "add", "collection": "tabularSections", "elements": [{
+            "name": "Rows",
+            "synonym": "Rows synonym",
+            "comment": "Rows comment",
+            "attributes": [
+                {"name": "LineText", "type": {"variants": [{"kind": "string", "length": 20, "allowedLength": "variable"}]}, "required": true},
+                {"name": "LineNumber", "type": {"variants": [{"kind": "number", "digits": 10, "fraction": 2, "sign": "nonNegative"}]}, "required": false, "position": {"before": "LineText"}}
+            ]
+        }]},
+        {"op": "update", "collection": "attributes", "elements": [{
+            "name": "Existing",
+            "newName": "Renamed",
+            "synonym": "Renamed synonym",
+            "comment": "Renamed comment",
+            "type": {"variants": [{"kind": "number", "digits": 6, "fraction": 2, "sign": "any"}]},
+            "required": true,
+            "fillValue": {"kind": "number", "value": "12.50"},
+            "position": {"before": "First"}
+        }]},
+        {"op": "remove", "collection": "attributes", "names": ["RemoveMe"]},
+        {"op": "editRelations", "relation": "owners", "mode": "replace", "targets": [{"metadataPath": "Catalog.Owner"}]}
+    ]);
+
+    let preview = call_edit(
+        workspace.path(),
+        "Catalog.RoundTrip",
+        operations.clone(),
+        true,
+    );
+    assert!(preview.ok, "{:?}", preview.errors);
+    let effects = preview.data.as_ref().unwrap()["effects"]
+        .as_array()
+        .expect("semantic preview effects");
+    assert_eq!(effects.len(), operations.as_array().unwrap().len());
+    assert_eq!(
+        effects
+            .iter()
+            .map(|effect| effect["operation"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec![
+            "setProperties",
+            "add",
+            "add",
+            "update",
+            "remove",
+            "editRelations"
+        ]
+    );
+    assert!(effects[1]["before"].is_null());
+    assert!(effects[4]["after"].is_null());
+    assert_eq!(effects[0]["before"], serde_json::json!({"Comment": ""}));
+    assert_eq!(
+        effects[0]["after"],
+        serde_json::json!({"Comment": "Observed comment"})
+    );
+    assert_eq!(effects[1]["after"][0]["name"], "Added");
+    assert_eq!(effects[1]["after"][0]["required"], true);
+    assert_eq!(
+        effects[1]["after"][0]["fillValue"],
+        serde_json::json!({"kind": "string", "value": "seed"})
+    );
+    assert_eq!(effects[3]["before"][0]["name"], "Existing");
+    assert_eq!(effects[3]["after"][0]["name"], "Renamed");
+    assert_eq!(
+        effects[3]["after"][0]["fillValue"],
+        serde_json::json!({"kind": "number", "value": "12.50"})
+    );
+    assert_eq!(effects[4]["before"][0]["name"], "RemoveMe");
+    assert_eq!(effects[5]["before"], serde_json::json!([]));
+    assert_eq!(
+        effects[5]["after"],
+        serde_json::json!([{"kind": "object", "value": "Catalog.Owner"}])
+    );
+    assert!(effects
+        .iter()
+        .enumerate()
+        .all(|(index, effect)| effect["operationIndex"] == Value::Number((index as u64).into())));
+    assert!(!serde_json::to_string(effects)
+        .unwrap()
+        .contains("MetaDataObject"));
+
+    let applied = call_edit(workspace.path(), "Catalog.RoundTrip", operations, false);
+    assert!(applied.ok, "{:?}", applied.errors);
+    let result = call_info_path(workspace.path(), "Catalog.RoundTrip", []);
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.unwrap();
+    assert!(data["properties"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|property| {
+            property["key"] == "Comment" && property["value"] == "Observed comment"
+        }));
+    assert_eq!(
+        data["collections"]["attributes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|element| element["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["Renamed", "First", "Added", "Last"]
+    );
+    let renamed = &data["collections"]["attributes"][0];
+    assert_eq!(renamed["synonym"], "Renamed synonym");
+    assert_eq!(renamed["comment"], "Renamed comment");
+    assert_eq!(renamed["required"], true);
+    assert_eq!(
+        renamed["fillValue"],
+        serde_json::json!({"kind": "number", "value": "12.50"})
+    );
+    assert_eq!(renamed["type"]["variants"][0]["kind"], "number");
+    let rows = &data["collections"]["tabularSections"][0];
+    assert_eq!(rows["synonym"], "Rows synonym");
+    assert_eq!(rows["comment"], "Rows comment");
+    assert_eq!(
+        rows["attributes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|element| element["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["LineNumber", "LineText"]
+    );
+    assert_eq!(rows["attributes"][0]["required"], false);
+    assert_eq!(rows["attributes"][1]["required"], true);
+    assert_eq!(
+        data["relations"]["owners"],
+        serde_json::json!([{"kind": "object", "value": "Catalog.Owner"}])
+    );
+
+    let template_preview = add_catalog(workspace.path(), "TemplateOnly", None, true);
+    assert!(template_preview.ok, "{:?}", template_preview.errors);
+    assert_eq!(
+        template_preview.data.unwrap()["effects"],
+        serde_json::json!([{
+            "operation": "createTemplate",
+            "target": "Catalog.TemplateOnly",
+            "before": null,
+            "after": {"kind": "Catalog", "name": "TemplateOnly"}
+        }])
+    );
+}
+
+#[test]
+fn info_marks_malformed_optional_field_incomplete_with_diagnostic() {
+    let workspace = create_info_workspace("malformed-optional-type");
+    let descriptor = workspace.path().join("src/Catalogs/Inspectable.xml");
+    let xml = std::fs::read_to_string(&descriptor).unwrap();
+    let malformed = xml.replacen(
+        "<v8:Type>xs:string</v8:Type>",
+        "<v8:Type>xs:unsupported</v8:Type>",
+        1,
+    );
+    assert_ne!(malformed, xml, "fixture must contain a typed attribute");
+    std::fs::write(&descriptor, malformed).unwrap();
+
+    let result = call_info(workspace.path(), []);
+
+    assert!(!result.ok);
+    let data = result.data.as_ref().expect("partial typed info");
+    assert_eq!(data["collections"]["attributes"][0]["incomplete"], true);
+    assert!(result
+        .diagnostics
+        .as_ref()
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|diagnostic| diagnostic["field"] == "collections.attributes[0].type"));
 }
 
 #[test]
