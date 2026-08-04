@@ -3493,6 +3493,16 @@ mod tests {
         }
     }
 
+    fn resolve_metadata_schema_base<'a>(root: &'a Value, schema: &'a Value) -> &'a Value {
+        let resolved = resolve_metadata_schema_reference(root, schema);
+        resolved
+            .get("allOf")
+            .and_then(Value::as_array)
+            .and_then(|schemas| schemas.first())
+            .map(|schema| resolve_metadata_schema_reference(root, schema))
+            .unwrap_or(resolved)
+    }
+
     fn sorted_property_names(value: &Value) -> Vec<&str> {
         let mut names = value["properties"]
             .as_object()
@@ -3671,29 +3681,50 @@ mod tests {
                 vec!["mode", "op", "relation", "targets"],
             ),
         ] {
-            let variant = resolve_metadata_schema_reference(&edit, variant);
+            let variant = resolve_metadata_schema_base(&edit, variant);
             assert_eq!(variant["type"], "object", "{tag}");
             assert_eq!(variant["additionalProperties"], false, "{tag}");
             assert_eq!(variant["required"], required, "{tag}");
             assert_eq!(sorted_property_names(variant), properties, "{tag}");
             assert_eq!(variant["properties"]["op"]["enum"], json!([tag]));
         }
-        let add_variant = resolve_metadata_schema_reference(&edit, &variants[1]);
-        let relations_variant = resolve_metadata_schema_reference(&edit, &variants[4]);
+        let add_profile = resolve_metadata_schema_reference(&edit, &variants[1]);
+        let mut add_collections = add_profile["allOf"][1]["oneOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|branch| {
+                resolve_metadata_schema_reference(&edit, branch)["properties"]["collection"]["enum"]
+                    [0]
+                .as_str()
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        add_collections.sort_unstable();
+        add_collections.dedup();
         assert_eq!(
-            add_variant["properties"]["collection"]["enum"],
-            json!([
+            add_collections,
+            vec![
                 "attributes",
-                "tabularSections",
+                "commands",
                 "forms",
+                "tabularSections",
                 "templates",
-                "commands"
-            ])
+            ]
         );
+        let relations_profile = resolve_metadata_schema_reference(&edit, &variants[4]);
+        let mut relations = relations_profile["allOf"][1]["oneOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|branch| branch["properties"]["relation"]["const"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        relations.sort_unstable();
         assert_eq!(
-            relations_variant["properties"]["relation"]["enum"],
-            json!(["owners", "registerRecords", "basedOn", "inputByString"])
+            relations,
+            vec!["basedOn", "inputByString", "registerRecords"]
         );
+        let relations_variant = resolve_metadata_schema_base(&edit, &variants[4]);
         assert_eq!(
             relations_variant["properties"]["mode"]["enum"],
             json!(["add", "remove", "replace"])

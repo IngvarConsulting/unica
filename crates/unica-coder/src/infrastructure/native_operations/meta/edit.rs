@@ -4766,9 +4766,6 @@ mod tests {
                             kinds[0].as_str()
                         )))
                     }
-                    Some(MetaRelationTargetPolicy::SameOwnerKind) => MetaRelationTarget::Object(
-                        metadata_reference(&format!("{}.Target", kind.as_str())),
-                    ),
                     Some(MetaRelationTargetPolicy::SameOwnerField) => {
                         let field = metadata_standard_attribute_names(kind.as_str())
                             .first()

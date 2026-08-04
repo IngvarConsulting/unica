@@ -618,8 +618,6 @@ pub(crate) enum MetaRelationTargetPolicy {
     /// The target must be a metadata object whose kind belongs to this closed
     /// list.
     MetadataKinds(&'static [MetadataKind]),
-    /// The target must be a metadata object of the exact owner kind.
-    SameOwnerKind,
     /// The target must be a field path belonging to the exact owner object.
     /// Field existence remains a post-image validation because earlier
     /// operations in the same request may create or rename the field.
@@ -946,16 +944,6 @@ pub(crate) fn validate_metadata_relation_target_profile(
                 ))
             }
         }
-        (MetaRelationTargetPolicy::SameOwnerKind, MetaRelationTarget::Object(reference)) => {
-            if reference.metadata_path.segments().next() == Some(owner_kind.as_str()) {
-                Ok(())
-            } else {
-                Err(invalid_operation(
-                    "targets",
-                    "basedOn target kind must match the edited object kind",
-                ))
-            }
-        }
         (MetaRelationTargetPolicy::SameOwnerField, MetaRelationTarget::Field(field)) => {
             if &field.owner == owner {
                 Ok(())
@@ -969,13 +957,12 @@ pub(crate) fn validate_metadata_relation_target_profile(
         (MetaRelationTargetPolicy::SameOwnerField, MetaRelationTarget::Object(_)) => Err(
             invalid_operation("targets", "inputByString requires typed field paths"),
         ),
-        (
-            MetaRelationTargetPolicy::MetadataKinds(_) | MetaRelationTargetPolicy::SameOwnerKind,
-            MetaRelationTarget::Field(_),
-        ) => Err(invalid_operation(
-            "targets",
-            "metadata object relation requires metadata object targets",
-        )),
+        (MetaRelationTargetPolicy::MetadataKinds(_), MetaRelationTarget::Field(_)) => {
+            Err(invalid_operation(
+                "targets",
+                "metadata object relation requires metadata object targets",
+            ))
+        }
     }
 }
 

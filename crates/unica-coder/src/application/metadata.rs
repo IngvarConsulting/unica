@@ -3,11 +3,13 @@ use super::AdapterOutcome;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::events::{DomainEvent, DomainEventKind};
 use crate::domain::metadata::{
-    metadata_collection_spec, metadata_kind_collections, validate_metadata_kind_collection,
-    DateFractions, MetaCollection, MetaDiagnostic, MetaDiagnosticCode, MetaEditOperation,
-    MetaEditOperationTag, MetaElementInput, MetaElementUpdateInput, MetaFillValue, MetaPosition,
-    MetaPropertyChanges, MetaPropertyInput, MetaPropertyValue, MetaPropertyValueKind, MetaRelation,
-    MetaRelationTarget, MetaScope, MetaValidationStatus, MetadataFieldPath, MetadataKind,
+    metadata_collection_spec, metadata_fill_value_is_allowed, metadata_kind_collections,
+    metadata_relation_specs, validate_metadata_kind_collection,
+    validate_metadata_operation_capabilities, DateFractions, MetaCollection, MetaDiagnostic,
+    MetaDiagnosticCode, MetaEditOperation, MetaEditOperationTag, MetaElementInput,
+    MetaElementScope, MetaElementUpdateInput, MetaFillValue, MetaPosition, MetaPropertyChanges,
+    MetaPropertyInput, MetaPropertyValue, MetaPropertyValueKind, MetaRelation, MetaRelationTarget,
+    MetaRelationTargetPolicy, MetaScope, MetaValidationStatus, MetadataFieldPath, MetadataKind,
     MetadataReference, MetadataType, MetadataTypeVariant, NumberSign, RelationEditMode,
     StringLengthMode, METADATA_PROPERTY_SPECS,
 };
@@ -339,7 +341,8 @@ pub(crate) fn parse_metadata_request(
             let raw_kind = required_string(args, "kind")?;
             let kind = MetadataKind::parse(&raw_kind)?;
             let name = required_string(args, "name")?;
-            let operations = parse_operations(args.get("operations"), false, kind)?;
+            let owner = metadata_owner(kind, &name)?;
+            let operations = parse_operations(args.get("operations"), false, kind, &owner)?;
             let dry_run = optional_bool(args, "dryRun", true)?;
             Ok(MetadataRequest::Add(MetaAddRequest {
                 source_set,
@@ -352,7 +355,7 @@ pub(crate) fn parse_metadata_request(
         MetadataOperation::Edit => {
             let metadata_path = required_metadata_path(args, "metadataPath")?;
             let kind = metadata_kind_for_address(&metadata_path)?;
-            let operations = parse_operations(args.get("operations"), true, kind)?;
+            let operations = parse_operations(args.get("operations"), true, kind, &metadata_path)?;
             let dry_run = optional_bool(args, "dryRun", true)?;
             Ok(MetadataRequest::Edit(MetaEditRequest {
                 source_set,
@@ -388,6 +391,7 @@ fn parse_operations(
     value: Option<&Value>,
     required: bool,
     kind: MetadataKind,
+    owner: &MetadataAddress,
 ) -> Result<Vec<MetaEditOperation>, MetaFailure> {
     let Some(value) = value else {
         return if required {
@@ -406,10 +410,22 @@ fn parse_operations(
         .iter()
         .enumerate()
         .map(|(index, raw_operation)| {
-            parse_edit_operation(raw_operation, kind)
-                .map_err(|diagnostic| MetaFailure::from(diagnostic.with_operation_index(index)))
+            let operation = parse_edit_operation(raw_operation, kind)
+                .map_err(|diagnostic| diagnostic.with_operation_index(index))?;
+            validate_metadata_operation_capabilities(kind, owner, &operation)
+                .map_err(|diagnostic| diagnostic.with_operation_index(index))?;
+            Ok(operation)
         })
-        .collect()
+        .collect::<Result<Vec<_>, MetaDiagnostic>>()
+        .map_err(Into::into)
+}
+
+fn metadata_owner(kind: MetadataKind, name: &str) -> Result<MetadataAddress, MetaFailure> {
+    let owner = parse_address(&format!("{}.{name}", kind.as_str()), "name")?;
+    if owner.segments().count() != 2 {
+        return Err(invalid("name", "metadata object name must be one address segment").into());
+    }
+    Ok(owner)
 }
 
 fn reject_unknown_top_level(
@@ -616,9 +632,7 @@ fn parse_property_changes(
                 .as_bool()
                 .map(MetaPropertyValue::Boolean)
                 .ok_or_else(|| invalid(&field, "property value must be a boolean"))?,
-            MetaPropertyValueKind::UnsignedInteger => value
-                .as_u64()
-                .and_then(|value| u32::try_from(value).ok())
+            MetaPropertyValueKind::UnsignedInteger => json_u32(value)
                 .map(MetaPropertyValue::UnsignedInteger)
                 .ok_or_else(|| {
                     invalid(&field, "property value must be an unsigned 32-bit integer")
@@ -1197,8 +1211,7 @@ fn parse_bounded_usize(
     let Some(value) = value else {
         return Ok(default);
     };
-    let value = value
-        .as_u64()
+    let value = json_u32(value)
         .and_then(|value| usize::try_from(value).ok())
         .filter(|value| (1..=maximum).contains(value))
         .ok_or_else(|| {
@@ -1215,16 +1228,25 @@ fn required_u32(
     key: &str,
     field: &str,
 ) -> Result<u32, MetaDiagnostic> {
-    object
-        .get(key)
-        .and_then(Value::as_u64)
-        .and_then(|value| u32::try_from(value).ok())
-        .ok_or_else(|| {
-            invalid(
-                format!("{field}.{key}"),
-                format!("`{key}` must be an unsigned 32-bit integer"),
-            )
-        })
+    object.get(key).and_then(json_u32).ok_or_else(|| {
+        invalid(
+            format!("{field}.{key}"),
+            format!("`{key}` must be an unsigned 32-bit integer"),
+        )
+    })
+}
+
+fn json_u32(value: &Value) -> Option<u32> {
+    let number = value.as_number()?;
+    if let Some(value) = number.as_u64() {
+        return u32::try_from(value).ok();
+    }
+    if let Some(value) = number.as_i64() {
+        return u32::try_from(value).ok();
+    }
+    let value = number.as_f64()?;
+    (value.is_finite() && value.fract() == 0.0 && (0.0..=f64::from(u32::MAX)).contains(&value))
+        .then_some(value as u32)
 }
 
 fn invalid(field: impl Into<String>, message: impl Into<String>) -> MetaDiagnostic {
@@ -1284,7 +1306,12 @@ pub(crate) fn metadata_input_schema(operation: MetadataOperation) -> Value {
             );
             properties.insert(
                 "name".into(),
-                string("Metadata object name using a valid 1C identifier."),
+                json!({
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[^.]+$",
+                    "description": "Metadata object name using a valid 1C identifier.",
+                }),
             );
             properties.insert(
                 "operations".into(),
@@ -1415,32 +1442,93 @@ fn metadata_schema_definitions() -> Map<String, Value> {
     definitions.insert("position".into(), position_schema());
     definitions.insert("metadataType".into(), metadata_type_schema());
     definitions.insert("fillValue".into(), fill_value_schema());
-    for collection in MetaCollection::ALL.iter().copied() {
+    definitions.insert("relationOperation".into(), relation_operation_schema());
+    definitions.insert(
+        "metadataRelationTarget".into(),
+        metadata_relation_target_schema(),
+    );
+    definitions.insert("fieldRelationTarget".into(), field_relation_target_schema());
+    for tag in [
+        MetaEditOperationTag::Add,
+        MetaEditOperationTag::Update,
+        MetaEditOperationTag::Remove,
+    ] {
         definitions.insert(
-            add_element_definition_name(collection),
-            add_element_schema(collection),
-        );
-        definitions.insert(
-            update_element_definition_name(collection),
-            update_element_schema(collection),
+            collection_operation_base_definition_name(tag).into(),
+            collection_operation_base_schema(tag),
         );
     }
-    definitions.insert("editRelationsOperation".into(), edit_relations_schema());
+    for kind in MetadataKind::ALL.iter().copied() {
+        for collection in metadata_kind_collections(kind).iter().copied() {
+            for scope in if collection == MetaCollection::Attributes {
+                &[MetaElementScope::TopLevel, MetaElementScope::TabularSection][..]
+            } else {
+                &[MetaElementScope::TopLevel][..]
+            } {
+                definitions
+                    .entry(add_element_definition_name(kind, collection, *scope))
+                    .or_insert_with(|| add_element_schema(kind, collection, *scope));
+                definitions
+                    .entry(update_element_definition_name(kind, collection, *scope))
+                    .or_insert_with(|| update_element_schema(kind, collection, *scope));
+            }
+        }
+    }
     for kind in MetadataKind::ALL.iter().copied() {
         if metadata_kind_collections(kind).is_empty() {
-            continue;
+        } else {
+            for tag in [
+                MetaEditOperationTag::Add,
+                MetaEditOperationTag::Update,
+                MetaEditOperationTag::Remove,
+            ] {
+                for collection in metadata_kind_collections(kind).iter().copied() {
+                    for (scope, requires_scope) in
+                        collection_operation_branch_profiles(tag, collection)
+                    {
+                        definitions
+                            .entry(collection_operation_branch_definition_name(
+                                kind,
+                                tag,
+                                collection,
+                                scope,
+                                requires_scope,
+                            ))
+                            .or_insert_with(|| {
+                                collection_operation_branch(
+                                    kind,
+                                    tag,
+                                    collection,
+                                    scope,
+                                    requires_scope,
+                                )
+                            });
+                    }
+                }
+                definitions
+                    .entry(collection_operation_definition_name(kind, tag))
+                    .or_insert_with(|| collection_operation_schema(kind, tag));
+            }
         }
-        for tag in [
-            MetaEditOperationTag::Add,
-            MetaEditOperationTag::Update,
-            MetaEditOperationTag::Remove,
-        ] {
-            definitions
-                .entry(collection_operation_definition_name(kind, tag))
-                .or_insert_with(|| collection_operation_schema(kind, tag));
+        if !metadata_relation_specs(kind).is_empty() {
+            for spec in metadata_relation_specs(kind) {
+                definitions
+                    .entry(relation_target_policy_definition_name(
+                        spec.target_policy,
+                        kind,
+                    ))
+                    .or_insert_with(|| relation_target_policy_schema(spec.target_policy, kind));
+            }
+            definitions.insert(
+                relation_operation_definition_name(kind),
+                edit_relations_schema(kind),
+            );
         }
     }
     for kind in MetadataKind::ALL.iter().copied() {
+        definitions
+            .entry(set_properties_definition_name(kind))
+            .or_insert_with(|| set_properties_schema(kind));
         definitions.insert(operation_definition_name(kind), operation_schema(kind));
     }
     definitions
@@ -1454,50 +1542,162 @@ fn operation_definition_name(kind: MetadataKind) -> String {
     format!("operationsFor{}", kind.as_str())
 }
 
-fn add_element_definition_name(collection: MetaCollection) -> String {
+fn set_properties_definition_name(kind: MetadataKind) -> String {
+    let values = property_values_schema(kind);
+    let profile_owner = MetadataKind::ALL
+        .iter()
+        .copied()
+        .find(|candidate| property_values_schema(*candidate) == values)
+        .expect("metadata property profile must have an owner");
+    format!("setPropertiesFor{}", profile_owner.as_str())
+}
+
+fn add_element_definition_name(
+    kind: MetadataKind,
+    collection: MetaCollection,
+    scope: MetaElementScope,
+) -> String {
     let profile_owner = MetaCollection::ALL
         .iter()
         .copied()
-        .find(|candidate| same_add_element_profile(*candidate, collection))
+        .find(|candidate| same_collection_shape(*candidate, collection))
         .expect("metadata add-element profile must have an owner");
-    format!("addElementFor{}", profile_owner.as_str())
+    let fill = metadata_fill_value_is_allowed(kind, collection, scope);
+    let nested_fill = metadata_collection_spec(collection).allows_nested_attributes
+        && metadata_fill_value_is_allowed(
+            kind,
+            MetaCollection::Attributes,
+            MetaElementScope::TabularSection,
+        );
+    format!(
+        "a{}{}{}",
+        collection_index(profile_owner),
+        u8::from(fill),
+        u8::from(nested_fill)
+    )
 }
 
-fn update_element_definition_name(collection: MetaCollection) -> String {
+fn update_element_definition_name(
+    kind: MetadataKind,
+    collection: MetaCollection,
+    scope: MetaElementScope,
+) -> String {
     let profile_owner = MetaCollection::ALL
         .iter()
         .copied()
-        .find(|candidate| same_update_element_profile(*candidate, collection))
+        .find(|candidate| same_collection_shape(*candidate, collection))
         .expect("metadata update-element profile must have an owner");
-    format!("updateElementFor{}", profile_owner.as_str())
+    format!(
+        "u{}{}",
+        collection_index(profile_owner),
+        u8::from(metadata_fill_value_is_allowed(kind, collection, scope))
+    )
 }
 
-fn same_add_element_profile(left: MetaCollection, right: MetaCollection) -> bool {
+fn same_collection_shape(left: MetaCollection, right: MetaCollection) -> bool {
     let left = metadata_collection_spec(left);
     let right = metadata_collection_spec(right);
     left.allows_type == right.allows_type
         && left.allows_required == right.allows_required
-        && left.allows_fill_value == right.allows_fill_value
         && left.allows_nested_attributes == right.allows_nested_attributes
         && left.allows_position == right.allows_position
 }
 
-fn same_update_element_profile(left: MetaCollection, right: MetaCollection) -> bool {
-    let left = metadata_collection_spec(left);
-    let right = metadata_collection_spec(right);
-    left.allows_type == right.allows_type
-        && left.allows_required == right.allows_required
-        && left.allows_fill_value == right.allows_fill_value
-        && left.allows_position == right.allows_position
+fn collection_index(collection: MetaCollection) -> usize {
+    MetaCollection::ALL
+        .iter()
+        .position(|candidate| *candidate == collection)
+        .expect("closed collection must have an index")
 }
 
 fn collection_operation_definition_name(kind: MetadataKind, tag: MetaEditOperationTag) -> String {
     let profile_owner = MetadataKind::ALL
         .iter()
         .copied()
-        .find(|candidate| metadata_kind_collections(*candidate) == metadata_kind_collections(kind))
+        .find(|candidate| same_collection_operation_profile(*candidate, kind, tag))
         .expect("metadata collection profile must have an owner");
     format!("{}OperationFor{}", tag.as_str(), profile_owner.as_str())
+}
+
+fn same_collection_operation_profile(
+    left: MetadataKind,
+    right: MetadataKind,
+    tag: MetaEditOperationTag,
+) -> bool {
+    let left_collections = metadata_kind_collections(left);
+    if left_collections != metadata_kind_collections(right) {
+        return false;
+    }
+    if tag == MetaEditOperationTag::Remove {
+        return true;
+    }
+    left_collections.iter().copied().all(|collection| {
+        let left_name = if tag == MetaEditOperationTag::Add {
+            add_element_definition_name(left, collection, MetaElementScope::TopLevel)
+        } else {
+            update_element_definition_name(left, collection, MetaElementScope::TopLevel)
+        };
+        let right_name = if tag == MetaEditOperationTag::Add {
+            add_element_definition_name(right, collection, MetaElementScope::TopLevel)
+        } else {
+            update_element_definition_name(right, collection, MetaElementScope::TopLevel)
+        };
+        let scoped_match = collection != MetaCollection::Attributes || {
+            let left_scoped = if tag == MetaEditOperationTag::Add {
+                add_element_definition_name(left, collection, MetaElementScope::TabularSection)
+            } else {
+                update_element_definition_name(left, collection, MetaElementScope::TabularSection)
+            };
+            let right_scoped = if tag == MetaEditOperationTag::Add {
+                add_element_definition_name(right, collection, MetaElementScope::TabularSection)
+            } else {
+                update_element_definition_name(right, collection, MetaElementScope::TabularSection)
+            };
+            left_scoped == right_scoped
+        };
+        left_name == right_name && scoped_match
+    })
+}
+
+fn relation_operation_definition_name(kind: MetadataKind) -> String {
+    format!("relationsFor{}", kind.as_str())
+}
+
+fn relation_target_policy_definition_name(
+    policy: MetaRelationTargetPolicy,
+    owner_kind: MetadataKind,
+) -> String {
+    match policy {
+        MetaRelationTargetPolicy::MetadataKinds(kinds) => format!(
+            "m{}",
+            kinds
+                .iter()
+                .map(|kind| metadata_kind_index(*kind).to_string())
+                .collect::<Vec<_>>()
+                .join("x")
+        ),
+        MetaRelationTargetPolicy::SameOwnerField => {
+            format!("f{}", metadata_kind_index(owner_kind))
+        }
+    }
+}
+
+fn metadata_kind_index(kind: MetadataKind) -> usize {
+    MetadataKind::ALL
+        .iter()
+        .position(|candidate| *candidate == kind)
+        .expect("closed metadata kind must have an index")
+}
+
+fn collection_operation_base_definition_name(tag: MetaEditOperationTag) -> &'static str {
+    match tag {
+        MetaEditOperationTag::Add => "addOperation",
+        MetaEditOperationTag::Update => "updateOperation",
+        MetaEditOperationTag::Remove => "removeOperation",
+        MetaEditOperationTag::SetProperties | MetaEditOperationTag::EditRelations => {
+            unreachable!("only collection operations have a shared base")
+        }
+    }
 }
 
 fn owner_operation_branches(operation: MetadataOperation) -> Vec<Value> {
@@ -1571,14 +1771,7 @@ fn metadata_kind_edit_path_pattern(kind: MetadataKind) -> String {
 }
 
 fn operation_schema(kind: MetadataKind) -> Value {
-    let mut set_properties = Map::new();
-    set_properties.insert("values".into(), property_values_schema(kind));
-
-    let mut variants = vec![tagged_operation_variant(
-        MetaEditOperationTag::SetProperties,
-        set_properties,
-        &["op", "values"],
-    )];
+    let mut variants = vec![schema_reference(set_properties_definition_name(kind))];
     if !metadata_kind_collections(kind).is_empty() {
         variants.extend(
             [
@@ -1589,12 +1782,24 @@ fn operation_schema(kind: MetadataKind) -> Value {
             .map(|tag| schema_reference(collection_operation_definition_name(kind, tag))),
         );
     }
-    variants.push(schema_reference("editRelationsOperation"));
+    if !metadata_relation_specs(kind).is_empty() {
+        variants.push(schema_reference(relation_operation_definition_name(kind)));
+    }
 
     json!({
         "oneOf": variants,
         "description": "Exactly one typed metadata edit operation.",
     })
+}
+
+fn set_properties_schema(kind: MetadataKind) -> Value {
+    let mut properties = Map::new();
+    properties.insert("values".into(), property_values_schema(kind));
+    tagged_operation_variant(
+        MetaEditOperationTag::SetProperties,
+        properties,
+        &["op", "values"],
+    )
 }
 
 fn tagged_operation_variant(
@@ -1620,11 +1825,41 @@ fn tagged_operation_variant(
 
 fn collection_operation_schema(kind: MetadataKind, tag: MetaEditOperationTag) -> Value {
     let collections = metadata_kind_collections(kind);
+    let collection_branches = collections
+        .iter()
+        .copied()
+        .flat_map(|collection| {
+            collection_operation_branch_profiles(tag, collection).map(
+                move |(scope, requires_scope)| {
+                    schema_reference(collection_operation_branch_definition_name(
+                        kind,
+                        tag,
+                        collection,
+                        scope,
+                        requires_scope,
+                    ))
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "allOf": [
+            schema_reference(collection_operation_base_definition_name(tag)),
+            {"oneOf": collection_branches},
+        ],
+    })
+}
+
+fn collection_operation_base_schema(tag: MetaEditOperationTag) -> Value {
     let mut properties = Map::new();
-    properties.insert("collection".into(), collection_schema(collections));
-    if collections.contains(&MetaCollection::Attributes) {
-        properties.insert("scope".into(), schema_reference("scope"));
-    }
+    properties.insert(
+        "collection".into(),
+        json!({
+            "type": "string",
+            "description": "Metadata child collection to change.",
+        }),
+    );
+    properties.insert("scope".into(), schema_reference("scope"));
     let required = match tag {
         MetaEditOperationTag::Add | MetaEditOperationTag::Update => {
             properties.insert(
@@ -1658,20 +1893,61 @@ fn collection_operation_schema(kind: MetadataKind, tag: MetaEditOperationTag) ->
             unreachable!("collection schema requires a collection operation tag")
         }
     };
-    let mut schema = tagged_operation_variant(tag, properties, required);
-    let collection_branches = collections
-        .iter()
-        .copied()
-        .map(|collection| collection_operation_branch(tag, collection))
-        .collect::<Vec<_>>();
-    schema
-        .as_object_mut()
-        .expect("collection operation schema is always an object")
-        .insert("oneOf".into(), Value::Array(collection_branches));
-    schema
+    tagged_operation_variant(tag, properties, required)
 }
 
-fn collection_operation_branch(tag: MetaEditOperationTag, collection: MetaCollection) -> Value {
+fn collection_operation_branch_profiles(
+    tag: MetaEditOperationTag,
+    collection: MetaCollection,
+) -> impl Iterator<Item = (MetaElementScope, bool)> {
+    let mut profiles = vec![(MetaElementScope::TopLevel, false)];
+    if collection == MetaCollection::Attributes
+        && matches!(
+            tag,
+            MetaEditOperationTag::Add | MetaEditOperationTag::Update
+        )
+    {
+        profiles.push((MetaElementScope::TabularSection, true));
+    }
+    profiles.into_iter()
+}
+
+fn collection_operation_branch_definition_name(
+    kind: MetadataKind,
+    tag: MetaEditOperationTag,
+    collection: MetaCollection,
+    scope: MetaElementScope,
+    requires_scope: bool,
+) -> String {
+    let tag = match tag {
+        MetaEditOperationTag::Add => "a",
+        MetaEditOperationTag::Update => "u",
+        MetaEditOperationTag::Remove => "r",
+        MetaEditOperationTag::SetProperties | MetaEditOperationTag::EditRelations => {
+            unreachable!("only collection operations have collection branches")
+        }
+    };
+    let element = match tag {
+        "a" => add_element_definition_name(kind, collection, scope),
+        "u" => update_element_definition_name(kind, collection, scope),
+        "r" => String::new(),
+        _ => unreachable!("closed collection operation tag"),
+    };
+    format!(
+        "b{tag}{}{}{}",
+        collection_index(collection),
+        u8::from(requires_scope),
+        element
+    )
+}
+
+fn collection_operation_branch(
+    kind: MetadataKind,
+    tag: MetaEditOperationTag,
+    collection: MetaCollection,
+    scope: MetaElementScope,
+    requires_scope: bool,
+) -> Value {
     let mut properties = Map::new();
     properties.insert(
         "collection".into(),
@@ -1685,9 +1961,9 @@ fn collection_operation_branch(tag: MetaEditOperationTag, collection: MetaCollec
         MetaEditOperationTag::Add | MetaEditOperationTag::Update
     ) {
         let item_schema = if tag == MetaEditOperationTag::Add {
-            schema_reference(add_element_definition_name(collection))
+            schema_reference(add_element_definition_name(kind, collection, scope))
         } else {
-            schema_reference(update_element_definition_name(collection))
+            schema_reference(update_element_definition_name(kind, collection, scope))
         };
         properties.insert(
             "elements".into(),
@@ -1699,7 +1975,17 @@ fn collection_operation_branch(tag: MetaEditOperationTag, collection: MetaCollec
         );
     }
     let mut branch = json!({"properties": properties});
-    if collection != MetaCollection::Attributes {
+    if requires_scope {
+        branch
+            .as_object_mut()
+            .unwrap()
+            .insert("required".into(), json!(["scope"]));
+    } else if collection != MetaCollection::Attributes
+        || matches!(
+            tag,
+            MetaEditOperationTag::Add | MetaEditOperationTag::Update
+        )
+    {
         branch
             .as_object_mut()
             .unwrap()
@@ -1708,21 +1994,12 @@ fn collection_operation_branch(tag: MetaEditOperationTag, collection: MetaCollec
     branch
 }
 
-fn collection_schema(collections: &[MetaCollection]) -> Value {
-    json!({
-        "type": "string",
-        "enum": collections.iter().copied().map(MetaCollection::as_str).collect::<Vec<_>>(),
-        "description": "Metadata child collection to change.",
-    })
-}
-
-fn edit_relations_schema() -> Value {
+fn relation_operation_schema() -> Value {
     let mut properties = Map::new();
     properties.insert(
         "relation".into(),
         json!({
             "type": "string",
-            "enum": MetaRelation::ALL.iter().copied().map(MetaRelation::as_str).collect::<Vec<_>>(),
             "description": "Metadata relation to edit.",
         }),
     );
@@ -1740,47 +2017,38 @@ fn edit_relations_schema() -> Value {
             "type": "array",
             "minItems": 1,
             "description": "Target metadata objects or field paths for the relation.",
-            "items": relation_target_schema(),
         }),
     );
-    let mut schema = tagged_operation_variant(
+    tagged_operation_variant(
         MetaEditOperationTag::EditRelations,
         properties,
         &["op", "relation", "mode", "targets"],
-    );
-    schema
-        .as_object_mut()
-        .expect("edit relation operation schema is always an object")
-        .insert(
-            "oneOf".into(),
-            json!([
-                {
-                    "properties": {
-                        "relation": {
-                            "type": "string",
-                            "enum": ["owners", "registerRecords", "basedOn"],
-                        },
-                        "targets": {
-                            "type": "array",
-                            "items": metadata_relation_target_schema(),
-                        },
+    )
+}
+
+fn edit_relations_schema(kind: MetadataKind) -> Value {
+    let variants = metadata_relation_specs(kind)
+        .iter()
+        .map(|spec| {
+            json!({
+                "properties": {
+                    "relation": {"const": spec.relation.as_str()},
+                    "targets": {
+                        "items": schema_reference(relation_target_policy_definition_name(
+                            spec.target_policy,
+                            kind,
+                        )),
                     },
                 },
-                {
-                    "properties": {
-                        "relation": {
-                            "type": "string",
-                            "enum": ["inputByString"],
-                        },
-                        "targets": {
-                            "type": "array",
-                            "items": field_relation_target_schema(),
-                        },
-                    },
-                },
-            ]),
-        );
-    schema
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "allOf": [
+            schema_reference("relationOperation"),
+            {"oneOf": variants},
+        ],
+    })
 }
 
 fn property_values_schema(kind: MetadataKind) -> Value {
@@ -1840,14 +2108,51 @@ fn scope_schema() -> Value {
     })
 }
 
-fn relation_target_schema() -> Value {
+fn relation_target_policy_schema(
+    policy: MetaRelationTargetPolicy,
+    owner_kind: MetadataKind,
+) -> Value {
+    let (definition, field, pattern) = match policy {
+        MetaRelationTargetPolicy::MetadataKinds(kinds) => (
+            "metadataRelationTarget",
+            "metadataPath",
+            metadata_kinds_object_pattern(kinds),
+        ),
+        MetaRelationTargetPolicy::SameOwnerField => (
+            "fieldRelationTarget",
+            "fieldPath",
+            metadata_kind_field_pattern(owner_kind),
+        ),
+    };
     json!({
-        "oneOf": [
-            metadata_relation_target_schema(),
-            field_relation_target_schema(),
+        "allOf": [
+            schema_reference(definition),
+            {"properties": {field: {"pattern": pattern}}},
         ],
-        "description": "One relation target, expressed as an object or field reference.",
     })
+}
+
+fn metadata_kinds_object_pattern(kinds: &[MetadataKind]) -> String {
+    format!(
+        r"^({})\.[^.]+$",
+        kinds
+            .iter()
+            .flat_map(|kind| {
+                metadata_address_kind_spellings(kind.as_str())
+                    .expect("relation target kind must have registered spellings")
+            })
+            .collect::<Vec<_>>()
+            .join("|")
+    )
+}
+
+fn metadata_kind_field_pattern(kind: MetadataKind) -> String {
+    format!(
+        r"^({})\.[^.]+\.(Attribute|StandardAttribute)\.[^.]+$",
+        metadata_address_kind_spellings(kind.as_str())
+            .expect("relation owner kind must have registered spellings")
+            .join("|")
+    )
 }
 
 fn metadata_relation_target_schema() -> Value {
@@ -2129,7 +2434,11 @@ fn tagged_fill_value_variant(kind: &str, fields: Value, required: &[&str]) -> Va
     })
 }
 
-fn add_element_schema(collection: MetaCollection) -> Value {
+fn add_element_schema(
+    kind: MetadataKind,
+    collection: MetaCollection,
+    scope: MetaElementScope,
+) -> Value {
     let spec = metadata_collection_spec(collection);
     let mut properties = Map::new();
     properties.insert(
@@ -2153,7 +2462,7 @@ fn add_element_schema(collection: MetaCollection) -> Value {
             json!({"type": "boolean", "description": "Whether the new element is required."}),
         );
     }
-    if spec.allows_fill_value {
+    if spec.allows_fill_value && metadata_fill_value_is_allowed(kind, collection, scope) {
         properties.insert("fillValue".into(), schema_reference("fillValue"));
     }
     if spec.allows_position {
@@ -2166,7 +2475,11 @@ fn add_element_schema(collection: MetaCollection) -> Value {
                 "type": "array",
                 "minItems": 1,
                 "description": "Attributes nested under a new tabular section.",
-                "items": schema_reference(add_element_definition_name(MetaCollection::Attributes)),
+                "items": schema_reference(add_element_definition_name(
+                    kind,
+                    MetaCollection::Attributes,
+                    MetaElementScope::TabularSection,
+                )),
             }),
         );
     }
@@ -2179,7 +2492,11 @@ fn add_element_schema(collection: MetaCollection) -> Value {
     })
 }
 
-fn update_element_schema(collection: MetaCollection) -> Value {
+fn update_element_schema(
+    kind: MetadataKind,
+    collection: MetaCollection,
+    scope: MetaElementScope,
+) -> Value {
     let spec = metadata_collection_spec(collection);
     let mut properties = json!({
         "name": {"type": "string", "minLength": 1, "description": "Name of the existing metadata element to update."},
@@ -2199,7 +2516,7 @@ fn update_element_schema(collection: MetaCollection) -> Value {
             json!({"type": "boolean", "description": "Optional replacement required flag."}),
         );
     }
-    if spec.allows_fill_value {
+    if spec.allows_fill_value && metadata_fill_value_is_allowed(kind, collection, scope) {
         properties.insert("fillValue".into(), schema_reference("fillValue"));
     }
     if spec.allows_position {
@@ -2261,6 +2578,16 @@ mod tests {
         }
     }
 
+    fn resolve_operation_variant<'a>(root: &'a Value, schema: &'a Value) -> &'a Value {
+        let resolved = resolve_definition(root, schema);
+        resolved
+            .get("allOf")
+            .and_then(Value::as_array)
+            .and_then(|schemas| schemas.first())
+            .map(|schema| resolve_definition(root, schema))
+            .unwrap_or(resolved)
+    }
+
     fn operation_schema_for_kind(root: &Value, kind: MetadataKind) -> &Value {
         &root["$defs"][operation_definition_name(kind)]
     }
@@ -2283,6 +2610,18 @@ mod tests {
             "metadataPath": "Document.Order",
             "operations": [operation]
         })
+    }
+
+    fn validate_schema_and_parse(operation: MetadataOperation, call: &Value) -> bool {
+        let schema = metadata_input_schema(operation);
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let schema_accepts = validator.is_valid(call);
+        let parser_accepts = parse_metadata_request(operation, call.as_object().unwrap()).is_ok();
+        assert_eq!(
+            schema_accepts, parser_accepts,
+            "schema/parser disagreement for {call}"
+        );
+        schema_accepts
     }
 
     #[derive(Default)]
@@ -2647,18 +2986,50 @@ mod tests {
             {"op": "add", "collection": "attributes", "elements": [{"name": "Transient"}]},
             {"op": "update", "collection": "attributes", "elements": [{"name": "Transient", "newName": "Updated"}]},
             {"op": "remove", "collection": "attributes", "names": ["Updated"]},
-            {"op": "editRelations", "relation": "owners", "mode": "replace", "targets": [{"metadataPath": "Catalog.Owner"}]}
+            {
+                "op": "add",
+                "collection": "attributes",
+                "elements": [{
+                    "name": "SearchKey",
+                    "type": {"variants": [{
+                        "kind": "string",
+                        "length": 20,
+                        "allowedLength": "variable"
+                    }]},
+                    "fillValue": {"kind": "string", "value": "ready"}
+                }]
+            },
+            {"op": "editRelations", "relation": "owners", "mode": "replace", "targets": [{"metadataPath": "Catalog.Owner"}]},
+            {"op": "editRelations", "relation": "inputByString", "mode": "replace", "targets": [{"fieldPath": "Catalog.Subject.Attribute.SearchKey"}]}
         ]);
+        let preview_call = json!({
+            "sourceSet": "main",
+            "metadataPath": "Catalog.Subject",
+            "operations": operations,
+            "dryRun": true
+        });
+        let missing_final_field_call = json!({
+            "sourceSet": "main",
+            "metadataPath": "Catalog.Subject",
+            "operations": [{
+                "op": "editRelations",
+                "relation": "inputByString",
+                "mode": "replace",
+                "targets": [{
+                    "fieldPath": "Catalog.Subject.Attribute.Missing"
+                }]
+            }],
+            "dryRun": true
+        });
+        let edit_schema = metadata_input_schema(MetadataOperation::Edit);
+        let edit_validator = jsonschema::validator_for(&edit_schema).unwrap();
+        assert!(edit_validator.is_valid(&preview_call));
+        assert!(edit_validator.is_valid(&missing_final_field_call));
         let preview = application
-            .call_tool(
-                "unica.meta.edit",
-                &object(json!({
-                    "sourceSet": "main",
-                    "metadataPath": "Catalog.Subject",
-                    "operations": operations,
-                    "dryRun": true
-                })),
-            )
+            .call_tool("unica.meta.edit", &object(preview_call))
+            .unwrap();
+        let missing_final_field = application
+            .call_tool("unica.meta.edit", &object(missing_final_field_call))
             .unwrap();
         let template = application
             .call_tool(
@@ -2675,6 +3046,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&workspace);
 
         assert!(preview.ok, "{:?}", preview.errors);
+        assert!(!missing_final_field.ok);
+        assert!(missing_final_field
+            .errors
+            .iter()
+            .any(|error| error.contains("does not exist in the owner post-image")));
+        assert_eq!(
+            missing_final_field.diagnostics.unwrap()[0]["field"],
+            "operations[0].targets[0]"
+        );
         let effects = preview.data.unwrap()["effects"].clone();
         assert_eq!(
             effects
@@ -2683,7 +3063,15 @@ mod tests {
                 .iter()
                 .map(|effect| effect["operation"].as_str().unwrap())
                 .collect::<Vec<_>>(),
-            vec!["setProperties", "add", "update", "remove", "editRelations"]
+            vec![
+                "setProperties",
+                "add",
+                "update",
+                "remove",
+                "add",
+                "editRelations",
+                "editRelations",
+            ]
         );
         assert!(effects
             .as_array()
@@ -3082,7 +3470,7 @@ mod tests {
         for (op, required) in expected {
             let variant = variants
                 .iter()
-                .map(|variant| resolve_definition(&root, variant))
+                .map(|variant| resolve_operation_variant(&root, variant))
                 .find(|variant| variant["properties"]["op"]["enum"] == json!([op]))
                 .unwrap_or_else(|| panic!("missing {op} operation schema variant"));
             assert_eq!(variant["type"], json!("object"));
@@ -3393,6 +3781,118 @@ mod tests {
     }
 
     #[test]
+    fn parser_accepts_every_json_lexeme_that_schema_integer_accepts() {
+        let edit_schema = metadata_input_schema(MetadataOperation::Edit);
+        let edit_validator = jsonschema::validator_for(&edit_schema).unwrap();
+        for raw in [
+            r#"{
+                "sourceSet":"main",
+                "metadataPath":"Document.Order",
+                "operations":[{
+                    "op":"add",
+                    "collection":"attributes",
+                    "elements":[{
+                        "name":"Text",
+                        "type":{"variants":[{
+                            "kind":"string",
+                            "length":1.0,
+                            "allowedLength":"fixed"
+                        }]}
+                    }]
+                }]
+            }"#,
+            r#"{
+                "sourceSet":"main",
+                "metadataPath":"Document.Order",
+                "operations":[{
+                    "op":"add",
+                    "collection":"attributes",
+                    "elements":[{
+                        "name":"Payload",
+                        "type":{"variants":[{
+                            "kind":"binaryData",
+                            "length":1e0,
+                            "allowedLength":"fixed"
+                        }]}
+                    }]
+                }]
+            }"#,
+            r#"{
+                "sourceSet":"main",
+                "metadataPath":"Document.Order",
+                "operations":[{
+                    "op":"add",
+                    "collection":"attributes",
+                    "elements":[{
+                        "name":"Amount",
+                        "type":{"variants":[{
+                            "kind":"number",
+                            "digits":1.0,
+                            "fraction":0.0,
+                            "sign":"any"
+                        }]}
+                    }]
+                }]
+            }"#,
+            r#"{
+                "sourceSet":"main",
+                "metadataPath":"Document.Order",
+                "operations":[{
+                    "op":"setProperties",
+                    "values":{"NumberLength":1e0}
+                }]
+            }"#,
+        ] {
+            let call: Value = serde_json::from_str(raw).unwrap();
+            assert!(edit_validator.is_valid(&call), "schema rejected {call}");
+            parse_metadata_request(MetadataOperation::Edit, call.as_object().unwrap())
+                .unwrap_or_else(|error| panic!("parser rejected {call}: {error:?}"));
+        }
+
+        let info: Value = serde_json::from_str(
+            r#"{"sourceSet":"main","metadataPath":"Document.Order","limit":1e0}"#,
+        )
+        .unwrap();
+        let info_schema = metadata_input_schema(MetadataOperation::Info);
+        assert!(jsonschema::validator_for(&info_schema)
+            .unwrap()
+            .is_valid(&info));
+        parse_metadata_request(MetadataOperation::Info, info.as_object().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn schema_and_parser_reject_non_u32_json_numbers() {
+        let schema = metadata_input_schema(MetadataOperation::Edit);
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        for number in ["1.5", "-1.0", "4294967296.0"] {
+            let raw = format!(
+                r#"{{
+                    "sourceSet":"main",
+                    "metadataPath":"Document.Order",
+                    "operations":[{{
+                        "op":"add",
+                        "collection":"attributes",
+                        "elements":[{{
+                            "name":"Payload",
+                            "type":{{"variants":[{{
+                                "kind":"binaryData",
+                                "length":{number},
+                                "allowedLength":"fixed"
+                            }}]}}
+                        }}]
+                    }}]
+                }}"#,
+            );
+            let call: Value = serde_json::from_str(&raw).unwrap();
+            assert!(!validator.is_valid(&call), "schema accepted {call}");
+            assert!(
+                parse_metadata_request(MetadataOperation::Edit, call.as_object().unwrap()).is_err(),
+                "parser accepted {call}"
+            );
+        }
+    }
+
+    #[test]
     fn parser_rejects_a_collection_outside_the_owner_kind_registry() {
         let call = json!({
             "sourceSet": "main",
@@ -3447,7 +3947,7 @@ mod tests {
 
     #[test]
     fn schema_and_parser_accept_every_registered_kind_collection_and_operation_tag() {
-        fn add_element(collection: MetaCollection) -> Value {
+        fn add_element(kind: MetadataKind, collection: MetaCollection) -> Value {
             let mut element = json!({
                 "name": "Element",
                 "synonym": "Element synonym",
@@ -3463,20 +3963,36 @@ mod tests {
                 | MetaCollection::Resources => {
                     element.insert("type".into(), json!({"variants": [{"kind": "boolean"}]}));
                     element.insert("required".into(), json!(true));
-                    element.insert(
-                        "fillValue".into(),
-                        json!({"kind": "boolean", "value": false}),
-                    );
+                    if metadata_fill_value_is_allowed(kind, collection, MetaElementScope::TopLevel)
+                    {
+                        element.insert(
+                            "fillValue".into(),
+                            json!({"kind": "boolean", "value": false}),
+                        );
+                    }
                 }
                 MetaCollection::TabularSections => {
+                    let mut nested = json!({
+                        "name": "Nested",
+                        "type": {"variants": [{"kind": "boolean"}]},
+                        "required": true,
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone();
+                    if metadata_fill_value_is_allowed(
+                        kind,
+                        MetaCollection::Attributes,
+                        MetaElementScope::TabularSection,
+                    ) {
+                        nested.insert(
+                            "fillValue".into(),
+                            json!({"kind": "boolean", "value": false}),
+                        );
+                    }
                     element.insert(
                         "attributes".into(),
-                        json!([{
-                            "name": "Nested",
-                            "type": {"variants": [{"kind": "boolean"}]},
-                            "required": true,
-                            "fillValue": {"kind": "boolean", "value": false},
-                        }]),
+                        Value::Array(vec![Value::Object(nested)]),
                     );
                 }
                 MetaCollection::Columns => {
@@ -3490,7 +4006,7 @@ mod tests {
             Value::Object(element)
         }
 
-        fn update_element(collection: MetaCollection) -> Value {
+        fn update_element(kind: MetadataKind, collection: MetaCollection) -> Value {
             let mut element = json!({
                 "name": "Element",
                 "newName": "Renamed",
@@ -3507,10 +4023,13 @@ mod tests {
                 | MetaCollection::Resources => {
                     element.insert("type".into(), json!({"variants": [{"kind": "boolean"}]}));
                     element.insert("required".into(), json!(false));
-                    element.insert(
-                        "fillValue".into(),
-                        json!({"kind": "boolean", "value": true}),
-                    );
+                    if metadata_fill_value_is_allowed(kind, collection, MetaElementScope::TopLevel)
+                    {
+                        element.insert(
+                            "fillValue".into(),
+                            json!({"kind": "boolean", "value": true}),
+                        );
+                    }
                 }
                 MetaCollection::Columns => {
                     element.insert("type".into(), json!({"variants": [{"kind": "boolean"}]}));
@@ -3529,15 +4048,24 @@ mod tests {
         let edit_schema = metadata_input_schema(MetadataOperation::Edit);
         let edit_validator = jsonschema::validator_for(&edit_schema).unwrap();
         for kind in MetadataKind::ALL {
-            let common_operations = [
-                json!({"op": "setProperties", "values": {"Comment": "typed"}}),
-                json!({
+            let mut common_operations =
+                vec![json!({"op": "setProperties", "values": {"Comment": "typed"}})];
+            if let Some(spec) = metadata_relation_specs(*kind).first() {
+                let target = match spec.target_policy {
+                    MetaRelationTargetPolicy::MetadataKinds(kinds) => {
+                        json!({"metadataPath": format!("{}.Target", kinds[0].as_str())})
+                    }
+                    MetaRelationTargetPolicy::SameOwnerField => json!({
+                        "fieldPath": format!("{}.Object.Attribute.Code", kind.as_str()),
+                    }),
+                };
+                common_operations.push(json!({
                     "op": "editRelations",
-                    "relation": "basedOn",
+                    "relation": spec.relation.as_str(),
                     "mode": "add",
-                    "targets": [{"metadataPath": "Catalog.Items"}],
-                }),
-            ];
+                    "targets": [target],
+                }));
+            }
             let collection_operations = crate::domain::metadata::metadata_kind_collections(*kind)
                 .iter()
                 .flat_map(|collection| {
@@ -3546,12 +4074,12 @@ mod tests {
                         json!({
                             "op": "add",
                             "collection": collection_name,
-                            "elements": [add_element(*collection)],
+                            "elements": [add_element(*kind, *collection)],
                         }),
                         json!({
                             "op": "update",
                             "collection": collection_name,
-                            "elements": [update_element(*collection)],
+                            "elements": [update_element(*kind, *collection)],
                         }),
                         json!({
                             "op": "remove",
@@ -3633,7 +4161,7 @@ mod tests {
         let validator = jsonschema::validator_for(&schema).unwrap();
         let invalid_owners_target = json!({
             "sourceSet": "main",
-            "metadataPath": "Document.Order",
+            "metadataPath": "Catalog.Items",
             "operations": [{
                 "op": "editRelations",
                 "relation": "owners",
@@ -3660,6 +4188,361 @@ mod tests {
             !validator.is_valid(&invalid_input_by_string_target),
             "inputByString must reject metadataPath targets"
         );
+    }
+
+    #[test]
+    fn schema_and_parser_follow_every_owner_relation_profile() {
+        use crate::domain::metadata::{metadata_relation_specs, MetaRelationTargetPolicy};
+
+        let add_schema = metadata_input_schema(MetadataOperation::Add);
+        let add_validator = jsonschema::validator_for(&add_schema).unwrap();
+        let edit_schema = metadata_input_schema(MetadataOperation::Edit);
+        let edit_validator = jsonschema::validator_for(&edit_schema).unwrap();
+
+        for kind in MetadataKind::ALL.iter().copied() {
+            let owner = format!("{}.Object", kind.as_str());
+            for spec in metadata_relation_specs(kind) {
+                let target = match spec.target_policy {
+                    MetaRelationTargetPolicy::MetadataKinds(kinds) => {
+                        json!({"metadataPath": format!("{}.Target", kinds[0].as_str())})
+                    }
+                    MetaRelationTargetPolicy::SameOwnerField => json!({
+                        "fieldPath": format!("{}.Attribute.Code", owner),
+                    }),
+                };
+                let operation = json!({
+                    "op": "editRelations",
+                    "relation": spec.relation.as_str(),
+                    "mode": "replace",
+                    "targets": [target],
+                });
+                let add_call = json!({
+                    "sourceSet": "main",
+                    "kind": kind.as_str(),
+                    "name": "Object",
+                    "operations": [operation.clone()],
+                });
+                assert!(
+                    add_validator.is_valid(&add_call),
+                    "schema rejected {add_call}"
+                );
+                parse_metadata_request(MetadataOperation::Add, add_call.as_object().unwrap())
+                    .unwrap_or_else(|error| panic!("parser rejected {add_call}: {error:?}"));
+
+                let edit_call = json!({
+                    "sourceSet": "main",
+                    "metadataPath": owner,
+                    "operations": [operation],
+                });
+                assert!(
+                    edit_validator.is_valid(&edit_call),
+                    "schema rejected {edit_call}"
+                );
+                parse_metadata_request(MetadataOperation::Edit, edit_call.as_object().unwrap())
+                    .unwrap_or_else(|error| panic!("parser rejected {edit_call}: {error:?}"));
+            }
+        }
+
+        let cross_kind_based_on = json!({
+            "sourceSet": "main",
+            "metadataPath": "Catalog.Items",
+            "operations": [{
+                "op": "editRelations",
+                "relation": "basedOn",
+                "mode": "add",
+                "targets": [{"metadataPath": "Document.Order"}],
+            }],
+        });
+        assert!(
+            validate_schema_and_parse(MetadataOperation::Edit, &cross_kind_based_on),
+            "the platform BasedOn generation matrix permits cross-kind targets"
+        );
+    }
+
+    #[test]
+    fn schema_and_parser_reject_owner_relation_cross_products() {
+        let calls = [
+            json!({
+                "sourceSet": "main",
+                "metadataPath": "CommonModule.Utility",
+                "operations": [{
+                    "op": "editRelations",
+                    "relation": "basedOn",
+                    "mode": "add",
+                    "targets": [{"metadataPath": "CommonModule.Base"}],
+                }],
+            }),
+            json!({
+                "sourceSet": "main",
+                "metadataPath": "Catalog.Items",
+                "operations": [{
+                    "op": "editRelations",
+                    "relation": "owners",
+                    "mode": "add",
+                    "targets": [{"metadataPath": "Document.Order"}],
+                }],
+            }),
+            json!({
+                "sourceSet": "main",
+                "metadataPath": "Document.Order",
+                "operations": [{
+                    "op": "editRelations",
+                    "relation": "registerRecords",
+                    "mode": "add",
+                    "targets": [{"metadataPath": "Catalog.Items"}],
+                }],
+            }),
+            json!({
+                "sourceSet": "main",
+                "metadataPath": "Catalog.Items",
+                "operations": [{
+                    "op": "editRelations",
+                    "relation": "basedOn",
+                    "mode": "add",
+                    "targets": [{"metadataPath": "InformationRegister.Facts"}],
+                }],
+            }),
+            json!({
+                "sourceSet": "main",
+                "metadataPath": "Document.Order",
+                "operations": [{
+                    "op": "editRelations",
+                    "relation": "inputByString",
+                    "mode": "add",
+                    "targets": [{"fieldPath": "Catalog.Items.Attribute.Code"}],
+                }],
+            }),
+        ];
+
+        for call in calls {
+            assert!(
+                !validate_schema_and_parse(MetadataOperation::Edit, &call),
+                "owner relation cross-product was accepted: {call}"
+            );
+        }
+    }
+
+    #[test]
+    fn input_by_string_exact_owner_name_is_a_parser_constraint() {
+        let call = json!({
+            "sourceSet": "main",
+            "metadataPath": "Catalog.Items",
+            "operations": [{
+                "op": "editRelations",
+                "relation": "inputByString",
+                "mode": "add",
+                "targets": [{"fieldPath": "Catalog.Other.Attribute.Code"}],
+            }],
+        });
+        let schema = metadata_input_schema(MetadataOperation::Edit);
+        let validator = jsonschema::validator_for(&schema).unwrap();
+
+        assert!(
+            validator.is_valid(&call),
+            "standard JSON Schema cannot correlate the root owner name into fieldPath"
+        );
+        let error = diagnostic(MetadataOperation::Edit, call);
+        assert_eq!(error.code, MetaDiagnosticCode::InvalidArguments);
+        assert_eq!(error.operation_index, Some(0));
+        assert_eq!(error.field.as_deref(), Some("targets[0]"));
+    }
+
+    #[test]
+    fn parser_reports_owner_capability_failures_before_provider_dispatch() {
+        let cases = [
+            (
+                MetadataOperation::Edit,
+                json!({
+                    "sourceSet": "main",
+                    "metadataPath": "CommonModule.Utility",
+                    "operations": [
+                        {"op": "setProperties", "values": {"Comment": "ok"}},
+                        {
+                            "op": "editRelations",
+                            "relation": "basedOn",
+                            "mode": "add",
+                            "targets": [{"metadataPath": "CommonModule.Base"}],
+                        },
+                    ],
+                }),
+                MetaDiagnosticCode::UnsupportedKind,
+                "relation",
+            ),
+            (
+                MetadataOperation::Edit,
+                json!({
+                    "sourceSet": "main",
+                    "metadataPath": "AccountingRegister.Ledger",
+                    "operations": [
+                        {"op": "setProperties", "values": {"Comment": "ok"}},
+                        {
+                            "op": "add",
+                            "collection": "dimensions",
+                            "elements": [{
+                                "name": "Account",
+                                "fillValue": {"kind": "boolean", "value": false},
+                            }],
+                        },
+                    ],
+                }),
+                MetaDiagnosticCode::InvalidArguments,
+                "elements[0].fillValue",
+            ),
+            (
+                MetadataOperation::Add,
+                json!({
+                    "sourceSet": "main",
+                    "kind": "Catalog",
+                    "name": "Items",
+                    "operations": [
+                        {"op": "setProperties", "values": {"Comment": "ok"}},
+                        {
+                            "op": "editRelations",
+                            "relation": "inputByString",
+                            "mode": "add",
+                            "targets": [{"fieldPath": "Catalog.Other.Attribute.Code"}],
+                        },
+                    ],
+                }),
+                MetaDiagnosticCode::InvalidArguments,
+                "targets[0]",
+            ),
+        ];
+
+        for (operation, call, code, field) in cases {
+            let error = diagnostic(operation, call);
+            assert_eq!(error.code, code, "{error:?}");
+            assert_eq!(error.operation_index, Some(1), "{error:?}");
+            assert_eq!(error.field.as_deref(), Some(field), "{error:?}");
+        }
+    }
+
+    #[test]
+    fn schema_and_parser_follow_every_fill_value_context() {
+        use crate::domain::metadata::{metadata_fill_value_contexts, MetaElementScope};
+
+        for kind in MetadataKind::ALL.iter().copied() {
+            for context in metadata_fill_value_contexts(kind) {
+                for tag in ["add", "update"] {
+                    let mut operation = json!({
+                        "op": tag,
+                        "collection": context.collection.as_str(),
+                        "elements": [{
+                            "name": "Value",
+                            "type": {"variants": [{"kind": "boolean"}]},
+                            "fillValue": {"kind": "boolean", "value": false},
+                        }],
+                    });
+                    if context.scope == MetaElementScope::TabularSection {
+                        operation["scope"] = json!({"tabularSection": "Lines"});
+                    }
+                    let call = json!({
+                        "sourceSet": "main",
+                        "metadataPath": format!("{}.Object", kind.as_str()),
+                        "operations": [operation],
+                    });
+                    assert!(
+                        validate_schema_and_parse(MetadataOperation::Edit, &call),
+                        "registered fillValue context was rejected: {call}"
+                    );
+                }
+            }
+        }
+
+        for kind in [MetadataKind::Report, MetadataKind::DataProcessor] {
+            let call = json!({
+                "sourceSet": "main",
+                "metadataPath": format!("{}.Object", kind.as_str()),
+                "operations": [{
+                    "op": "add",
+                    "collection": "tabularSections",
+                    "elements": [{
+                        "name": "Lines",
+                        "attributes": [{
+                            "name": "Value",
+                            "type": {"variants": [{"kind": "boolean"}]},
+                            "fillValue": {"kind": "boolean", "value": false},
+                        }],
+                    }],
+                }],
+            });
+            assert!(
+                validate_schema_and_parse(MetadataOperation::Edit, &call),
+                "nested registered fillValue context was rejected: {call}"
+            );
+        }
+    }
+
+    #[test]
+    fn schema_and_parser_reject_fill_value_outside_owner_context() {
+        let calls = [
+            json!({
+                "sourceSet": "main",
+                "metadataPath": "AccountingRegister.Ledger",
+                "operations": [{
+                    "op": "add",
+                    "collection": "dimensions",
+                    "elements": [{
+                        "name": "Account",
+                        "fillValue": {"kind": "boolean", "value": false},
+                    }],
+                }],
+            }),
+            json!({
+                "sourceSet": "main",
+                "metadataPath": "Catalog.Items",
+                "operations": [{
+                    "op": "update",
+                    "collection": "attributes",
+                    "scope": {"tabularSection": "Lines"},
+                    "elements": [{
+                        "name": "Value",
+                        "fillValue": {"kind": "boolean", "value": false},
+                    }],
+                }],
+            }),
+            json!({
+                "sourceSet": "main",
+                "metadataPath": "Report.Sales",
+                "operations": [{
+                    "op": "add",
+                    "collection": "attributes",
+                    "elements": [{
+                        "name": "Value",
+                        "fillValue": {"kind": "boolean", "value": false},
+                    }],
+                }],
+            }),
+            json!({
+                "sourceSet": "main",
+                "metadataPath": "Catalog.Items",
+                "operations": [{
+                    "op": "add",
+                    "collection": "tabularSections",
+                    "elements": [{
+                        "name": "Lines",
+                        "attributes": [{
+                            "name": "Value",
+                            "fillValue": {"kind": "boolean", "value": false},
+                        }],
+                    }],
+                }],
+            }),
+        ];
+
+        for call in calls {
+            assert!(
+                !validate_schema_and_parse(MetadataOperation::Edit, &call),
+                "out-of-context fillValue was accepted: {call}"
+            );
+        }
+
+        let common_module = operation_schema_for_kind(
+            &metadata_input_schema(MetadataOperation::Edit),
+            MetadataKind::CommonModule,
+        )
+        .clone();
+        assert_eq!(common_module["oneOf"].as_array().unwrap().len(), 1);
     }
 
     #[test]
@@ -3746,21 +4629,34 @@ mod tests {
 
         for relation in MetaRelation::ALL {
             let relation_name = relation.as_str();
-            let target = if *relation == MetaRelation::InputByString {
-                json!({"fieldPath": "Catalog.Items.StandardAttribute.Code"})
-            } else {
-                json!({"metadataPath": "Catalog.Items"})
+            let (metadata_path, target) = match relation {
+                MetaRelation::Owners => ("Catalog.Items", json!({"metadataPath": "Catalog.Owner"})),
+                MetaRelation::RegisterRecords => (
+                    "Document.Order",
+                    json!({"metadataPath": "InformationRegister.Entries"}),
+                ),
+                MetaRelation::BasedOn => {
+                    ("Document.Order", json!({"metadataPath": "Catalog.Items"}))
+                }
+                MetaRelation::InputByString => (
+                    "Catalog.Items",
+                    json!({"fieldPath": "Catalog.Items.StandardAttribute.Code"}),
+                ),
             };
             for mode in RelationEditMode::ALL {
                 let mode_name = mode.as_str();
                 let MetadataRequest::Edit(request) = parse_metadata_request(
                     MetadataOperation::Edit,
-                    &object(edit(json!({
-                        "op": "editRelations",
-                        "relation": relation_name,
-                        "mode": mode_name,
-                        "targets": [target]
-                    }))),
+                    &object(json!({
+                        "sourceSet": "main",
+                        "metadataPath": metadata_path,
+                        "operations": [{
+                            "op": "editRelations",
+                            "relation": relation_name,
+                            "mode": mode_name,
+                            "targets": [target]
+                        }]
+                    })),
                 )
                 .unwrap() else {
                     panic!("expected edit request")
