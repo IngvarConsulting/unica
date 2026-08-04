@@ -4125,108 +4125,6 @@ mod edit_tests {
     }
 
     #[test]
-    fn meta_edit_add_resource_preserves_source_format_and_uses_edit_defaults() {
-        let context = temp_context("add-resource-crlf-bom-tail-entities");
-        let object_path = context
-            .cwd
-            .join("InformationRegisters")
-            .join("SampleStock.xml");
-        let original_bytes = include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/bsp/meta/InformationRegisters/АдминистративнаяИерархия.xml"
-        ))
-        .to_vec();
-        assert!(original_bytes.starts_with(b"\xef\xbb\xbf"));
-        assert!(!original_bytes.ends_with(b"\r\n"));
-        assert!(original_bytes.windows(2).any(|pair| pair == b"\r\n"));
-        assert!(
-            original_bytes
-                .iter()
-                .enumerate()
-                .all(|(index, byte)| match *byte {
-                    b'\n' => index > 0 && original_bytes[index - 1] == b'\r',
-                    b'\r' => original_bytes.get(index + 1) == Some(&b'\n'),
-                    _ => true,
-                }),
-            "source fixture must use uniform CRLF"
-        );
-        fs::create_dir_all(object_path.parent().unwrap()).unwrap();
-        fs::write(&object_path, &original_bytes).unwrap();
-        let args = meta_edit_args(
-            &object_path,
-            "add-resource",
-            "PurchaseAmount30Days: Number(15,2)",
-        );
-
-        let preview = preview_meta_edit_with_data(&args, &context);
-
-        assert!(preview.outcome.ok, "{:?}", preview.outcome.errors);
-        assert_eq!(fs::read(&object_path).unwrap(), original_bytes);
-        let data = preview.data.expect("typed preview data");
-        assert!(data.changed);
-        assert_eq!(data.counts.added, 1);
-        assert_eq!(data.counts.removed, 0);
-        assert_eq!(data.counts.modified, 0);
-        let diff = data.diff.expect("projected diff");
-        assert!(!diff.contains("&#13;"), "{diff}");
-        assert!(
-            diff.contains("+\t\t\t\t\t<FullTextSearch>DontUse</FullTextSearch>"),
-            "{diff}"
-        );
-        assert!(
-            diff.contains("+\t\t\t\t\t<DataHistory>DontUse</DataHistory>"),
-            "{diff}"
-        );
-
-        let outcome = edit_meta(&args, &context);
-
-        assert!(outcome.ok, "{:?}", outcome.errors);
-        let updated = fs::read(&object_path).unwrap();
-        assert!(updated.starts_with(b"\xef\xbb\xbf"));
-        let updated_text = std::str::from_utf8(&updated[3..]).unwrap();
-        assert!(!updated_text.ends_with(['\r', '\n']), "{updated_text:?}");
-        assert!(
-            updated_text
-                .as_bytes()
-                .iter()
-                .enumerate()
-                .all(|(index, byte)| match *byte {
-                    b'\n' => index > 0 && updated_text.as_bytes()[index - 1] == b'\r',
-                    b'\r' => updated_text.as_bytes().get(index + 1) == Some(&b'\n'),
-                    _ => true,
-                }),
-            "mixed or isolated EOL in {updated_text:?}"
-        );
-        assert!(!updated_text.contains("&#13;"), "{updated_text}");
-        let document = Document::parse(updated_text).unwrap();
-        let resource = document
-            .descendants()
-            .filter(|node| node.is_element() && node.tag_name().name() == "Resource")
-            .find(|node| {
-                meta_info_child(*node, "Properties")
-                    .and_then(|properties| meta_info_child_text(properties, "Name"))
-                    .as_deref()
-                    == Some("PurchaseAmount30Days")
-            })
-            .expect("added resource");
-        let properties = meta_info_child(resource, "Properties").unwrap();
-        assert_eq!(
-            meta_info_child_text(properties, "Indexing").as_deref(),
-            Some("DontIndex")
-        );
-        assert_eq!(
-            meta_info_child_text(properties, "FullTextSearch").as_deref(),
-            Some("DontUse")
-        );
-        assert_eq!(
-            meta_info_child_text(properties, "DataHistory").as_deref(),
-            Some("DontUse")
-        );
-
-        let _ = fs::remove_dir_all(&context.cwd);
-    }
-
-    #[test]
     fn edit_meta_adds_and_removes_enum_values_and_simple_children() {
         let context = temp_context("enum-and-simple-children");
         let object_path = context.cwd.join("Enums").join("SampleStatuses.xml");
@@ -4607,6 +4505,108 @@ mod edit_tests {
         assert!(organization < warehouse && warehouse < comment, "{updated}");
         assert!(!updated.contains("&#13;"), "{updated}");
         Document::parse(updated.trim_start_matches('\u{feff}')).unwrap();
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn meta_edit_add_resource_preserves_source_format_and_uses_edit_defaults() {
+        let context = temp_context("add-resource-crlf-bom-tail-entities");
+        let object_path = context
+            .cwd
+            .join("InformationRegisters")
+            .join("SampleStock.xml");
+        let original_bytes = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/unica_mcp_script_parity/bsp/meta/InformationRegisters/АдминистративнаяИерархия.xml"
+        ))
+        .to_vec();
+        assert!(original_bytes.starts_with(b"\xef\xbb\xbf"));
+        assert!(!original_bytes.ends_with(b"\r\n"));
+        assert!(original_bytes.windows(2).any(|pair| pair == b"\r\n"));
+        assert!(
+            original_bytes
+                .iter()
+                .enumerate()
+                .all(|(index, byte)| match *byte {
+                    b'\n' => index > 0 && original_bytes[index - 1] == b'\r',
+                    b'\r' => original_bytes.get(index + 1) == Some(&b'\n'),
+                    _ => true,
+                }),
+            "source fixture must use uniform CRLF"
+        );
+        fs::create_dir_all(object_path.parent().unwrap()).unwrap();
+        fs::write(&object_path, &original_bytes).unwrap();
+        let args = meta_edit_args(
+            &object_path,
+            "add-resource",
+            "PurchaseAmount30Days: Number(15,2)",
+        );
+
+        let preview = preview_meta_edit_with_data(&args, &context);
+
+        assert!(preview.outcome.ok, "{:?}", preview.outcome.errors);
+        assert_eq!(fs::read(&object_path).unwrap(), original_bytes);
+        let data = preview.data.expect("typed preview data");
+        assert!(data.changed);
+        assert_eq!(data.counts.added, 1);
+        assert_eq!(data.counts.removed, 0);
+        assert_eq!(data.counts.modified, 0);
+        let diff = data.diff.expect("projected diff");
+        assert!(!diff.contains("&#13;"), "{diff}");
+        assert!(
+            diff.contains("+\t\t\t\t\t<FullTextSearch>DontUse</FullTextSearch>"),
+            "{diff}"
+        );
+        assert!(
+            diff.contains("+\t\t\t\t\t<DataHistory>DontUse</DataHistory>"),
+            "{diff}"
+        );
+
+        let outcome = edit_meta(&args, &context);
+
+        assert!(outcome.ok, "{:?}", outcome.errors);
+        let updated = fs::read(&object_path).unwrap();
+        assert!(updated.starts_with(b"\xef\xbb\xbf"));
+        let updated_text = std::str::from_utf8(&updated[3..]).unwrap();
+        assert!(!updated_text.ends_with(['\r', '\n']), "{updated_text:?}");
+        assert!(
+            updated_text
+                .as_bytes()
+                .iter()
+                .enumerate()
+                .all(|(index, byte)| match *byte {
+                    b'\n' => index > 0 && updated_text.as_bytes()[index - 1] == b'\r',
+                    b'\r' => updated_text.as_bytes().get(index + 1) == Some(&b'\n'),
+                    _ => true,
+                }),
+            "mixed or isolated EOL in {updated_text:?}"
+        );
+        assert!(!updated_text.contains("&#13;"), "{updated_text}");
+        let document = Document::parse(updated_text).unwrap();
+        let resource = document
+            .descendants()
+            .filter(|node| node.is_element() && node.tag_name().name() == "Resource")
+            .find(|node| {
+                meta_info_child(*node, "Properties")
+                    .and_then(|properties| meta_info_child_text(properties, "Name"))
+                    .as_deref()
+                    == Some("PurchaseAmount30Days")
+            })
+            .expect("added resource");
+        let properties = meta_info_child(resource, "Properties").unwrap();
+        assert_eq!(
+            meta_info_child_text(properties, "Indexing").as_deref(),
+            Some("DontIndex")
+        );
+        assert_eq!(
+            meta_info_child_text(properties, "FullTextSearch").as_deref(),
+            Some("DontUse")
+        );
+        assert_eq!(
+            meta_info_child_text(properties, "DataHistory").as_deref(),
+            Some("DontUse")
+        );
 
         let _ = fs::remove_dir_all(&context.cwd);
     }
