@@ -4125,6 +4125,108 @@ mod edit_tests {
     }
 
     #[test]
+    fn meta_edit_add_resource_preserves_source_format_and_uses_edit_defaults() {
+        let context = temp_context("add-resource-crlf-bom-tail-entities");
+        let object_path = context
+            .cwd
+            .join("InformationRegisters")
+            .join("SampleStock.xml");
+        let original_bytes = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/unica_mcp_script_parity/bsp/meta/InformationRegisters/АдминистративнаяИерархия.xml"
+        ))
+        .to_vec();
+        assert!(original_bytes.starts_with(b"\xef\xbb\xbf"));
+        assert!(!original_bytes.ends_with(b"\r\n"));
+        assert!(original_bytes.windows(2).any(|pair| pair == b"\r\n"));
+        assert!(
+            original_bytes
+                .iter()
+                .enumerate()
+                .all(|(index, byte)| match *byte {
+                    b'\n' => index > 0 && original_bytes[index - 1] == b'\r',
+                    b'\r' => original_bytes.get(index + 1) == Some(&b'\n'),
+                    _ => true,
+                }),
+            "source fixture must use uniform CRLF"
+        );
+        fs::create_dir_all(object_path.parent().unwrap()).unwrap();
+        fs::write(&object_path, &original_bytes).unwrap();
+        let args = meta_edit_args(
+            &object_path,
+            "add-resource",
+            "PurchaseAmount30Days: Number(15,2)",
+        );
+
+        let preview = preview_meta_edit_with_data(&args, &context);
+
+        assert!(preview.outcome.ok, "{:?}", preview.outcome.errors);
+        assert_eq!(fs::read(&object_path).unwrap(), original_bytes);
+        let data = preview.data.expect("typed preview data");
+        assert!(data.changed);
+        assert_eq!(data.counts.added, 1);
+        assert_eq!(data.counts.removed, 0);
+        assert_eq!(data.counts.modified, 0);
+        let diff = data.diff.expect("projected diff");
+        assert!(!diff.contains("&#13;"), "{diff}");
+        assert!(
+            diff.contains("+\t\t\t\t\t<FullTextSearch>DontUse</FullTextSearch>"),
+            "{diff}"
+        );
+        assert!(
+            diff.contains("+\t\t\t\t\t<DataHistory>DontUse</DataHistory>"),
+            "{diff}"
+        );
+
+        let outcome = edit_meta(&args, &context);
+
+        assert!(outcome.ok, "{:?}", outcome.errors);
+        let updated = fs::read(&object_path).unwrap();
+        assert!(updated.starts_with(b"\xef\xbb\xbf"));
+        let updated_text = std::str::from_utf8(&updated[3..]).unwrap();
+        assert!(!updated_text.ends_with(['\r', '\n']), "{updated_text:?}");
+        assert!(
+            updated_text
+                .as_bytes()
+                .iter()
+                .enumerate()
+                .all(|(index, byte)| match *byte {
+                    b'\n' => index > 0 && updated_text.as_bytes()[index - 1] == b'\r',
+                    b'\r' => updated_text.as_bytes().get(index + 1) == Some(&b'\n'),
+                    _ => true,
+                }),
+            "mixed or isolated EOL in {updated_text:?}"
+        );
+        assert!(!updated_text.contains("&#13;"), "{updated_text}");
+        let document = Document::parse(updated_text).unwrap();
+        let resource = document
+            .descendants()
+            .filter(|node| node.is_element() && node.tag_name().name() == "Resource")
+            .find(|node| {
+                meta_info_child(*node, "Properties")
+                    .and_then(|properties| meta_info_child_text(properties, "Name"))
+                    .as_deref()
+                    == Some("PurchaseAmount30Days")
+            })
+            .expect("added resource");
+        let properties = meta_info_child(resource, "Properties").unwrap();
+        assert_eq!(
+            meta_info_child_text(properties, "Indexing").as_deref(),
+            Some("DontIndex")
+        );
+        assert_eq!(
+            meta_info_child_text(properties, "FullTextSearch").as_deref(),
+            Some("DontUse")
+        );
+        assert_eq!(
+            meta_info_child_text(properties, "DataHistory").as_deref(),
+            Some("DontUse")
+        );
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
     fn edit_meta_adds_and_removes_enum_values_and_simple_children() {
         let context = temp_context("enum-and-simple-children");
         let object_path = context.cwd.join("Enums").join("SampleStatuses.xml");
@@ -4503,6 +4605,7 @@ mod edit_tests {
         let warehouse = updated.find("<Name>Warehouse</Name>").unwrap();
         let comment = updated.find("<Name>Comment</Name>").unwrap();
         assert!(organization < warehouse && warehouse < comment, "{updated}");
+        assert!(!updated.contains("&#13;"), "{updated}");
         Document::parse(updated.trim_start_matches('\u{feff}')).unwrap();
 
         let _ = fs::remove_dir_all(&context.cwd);
@@ -15169,6 +15272,7 @@ where
                         "Dimension",
                         dimension,
                         obj_type,
+                        META_COMPILE_REGISTER_FIELD_DEFAULTS,
                         next_uuid,
                     );
                 }
@@ -15179,6 +15283,7 @@ where
                         "Resource",
                         resource,
                         obj_type,
+                        META_COMPILE_REGISTER_FIELD_DEFAULTS,
                         next_uuid,
                     );
                 }
@@ -15190,6 +15295,7 @@ where
                         "Resource",
                         resource,
                         obj_type,
+                        META_COMPILE_REGISTER_FIELD_DEFAULTS,
                         next_uuid,
                     );
                 }
@@ -15200,6 +15306,7 @@ where
                         "Dimension",
                         dimension,
                         obj_type,
+                        META_COMPILE_REGISTER_FIELD_DEFAULTS,
                         next_uuid,
                     );
                 }
@@ -15280,12 +15387,31 @@ pub(crate) fn meta_compile_value_items(value: Option<&Value>) -> Vec<Value> {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MetaRegisterFieldDefaults {
+    pub(crate) full_text_search: &'static str,
+    pub(crate) data_history: &'static str,
+}
+
+pub(crate) const META_COMPILE_REGISTER_FIELD_DEFAULTS: MetaRegisterFieldDefaults =
+    MetaRegisterFieldDefaults {
+        full_text_search: "Use",
+        data_history: "Use",
+    };
+
+pub(crate) const META_EDIT_INFORMATION_RESOURCE_DEFAULTS: MetaRegisterFieldDefaults =
+    MetaRegisterFieldDefaults {
+        full_text_search: "DontUse",
+        data_history: "DontUse",
+    };
+
 pub(crate) fn emit_meta_register_field<F>(
     lines: &mut Vec<String>,
     indent: &str,
     field_tag: &str,
     attr: &MetaCompileAttr,
     register_type: &str,
+    defaults: MetaRegisterFieldDefaults,
     next_uuid: &mut F,
 ) where
     F: FnMut() -> String,
@@ -15403,7 +15529,10 @@ pub(crate) fn emit_meta_register_field<F>(
             escape_xml(indexing)
         ));
     }
-    lines.push(format!("{indent}\t\t<FullTextSearch>Use</FullTextSearch>"));
+    lines.push(format!(
+        "{indent}\t\t<FullTextSearch>{}</FullTextSearch>",
+        defaults.full_text_search
+    ));
     if field_tag == "Dimension" && register_type == "AccumulationRegister" {
         let use_in_totals = !attr.flags.iter().any(|flag| flag == "nouseintotals");
         lines.push(format!(
@@ -15411,7 +15540,10 @@ pub(crate) fn emit_meta_register_field<F>(
         ));
     }
     if register_type == "InformationRegister" {
-        lines.push(format!("{indent}\t\t<DataHistory>Use</DataHistory>"));
+        lines.push(format!(
+            "{indent}\t\t<DataHistory>{}</DataHistory>",
+            defaults.data_history
+        ));
         if field_tag == "Dimension" {
             lines.push(format!(
                 "{indent}\t\t<TypeReductionMode>TransformValues</TypeReductionMode>"
@@ -18084,12 +18216,18 @@ pub(crate) fn meta_edit_add_child_value(
             meta_edit_ensure_top_child_name_free(xml_text, tag, &attr.name)?;
             let mut lines = Vec::new();
             let mut next_uuid = fresh_meta_compile_uuid;
+            let defaults = if object_type == "InformationRegister" && tag == "Resource" {
+                META_EDIT_INFORMATION_RESOURCE_DEFAULTS
+            } else {
+                META_COMPILE_REGISTER_FIELD_DEFAULTS
+            };
             emit_meta_register_field(
                 &mut lines,
                 "\t\t\t",
                 tag,
                 &attr,
                 object_type,
+                defaults,
                 &mut next_uuid,
             );
             meta_edit_insert_top_child_object_with_position(xml_text, tag, &position, &lines)
@@ -20056,27 +20194,11 @@ pub(crate) fn meta_edit_insert_lines_into_child_objects(
         .chars()
         .all(|ch| ch == '\t' || ch == ' ');
     if insert_at_closing_indent {
-        let insert_pos = meta_edit_mark_lxml_append_tail(xml_text, line_start);
-        xml_text.insert_str(insert_pos, &format!("{content}\n"));
+        xml_text.insert_str(line_start, &format!("{content}\n"));
     } else {
         xml_text.insert_str(close_pos, &format!("{content}\n{close_indent}"));
     }
     Ok(())
-}
-
-pub(crate) fn meta_edit_mark_lxml_append_tail(xml_text: &mut String, insert_pos: usize) -> usize {
-    if insert_pos == 0 || xml_text[..insert_pos].ends_with("&#13;\n") {
-        return insert_pos;
-    }
-    if insert_pos >= 2 && &xml_text[insert_pos - 2..insert_pos] == "\r\n" {
-        xml_text.replace_range(insert_pos - 2..insert_pos, "&#13;\n");
-        return insert_pos + 4;
-    }
-    if insert_pos >= 1 && &xml_text[insert_pos - 1..insert_pos] == "\n" {
-        xml_text.replace_range(insert_pos - 1..insert_pos, "&#13;\n");
-        return insert_pos + 5;
-    }
-    insert_pos
 }
 
 pub(crate) fn meta_edit_insert_lines_near_node(
@@ -20089,7 +20211,7 @@ pub(crate) fn meta_edit_insert_lines_near_node(
     if after {
         if let Some(relative_newline) = xml_text[range.end..].find('\n') {
             let insert_pos = range.end + relative_newline + 1;
-            xml_text.insert_str(insert_pos, &format!("{content}&#13;\n"));
+            xml_text.insert_str(insert_pos, &format!("{content}\n"));
         } else {
             xml_text.insert_str(range.end, &format!("\n{content}"));
         }
@@ -21656,6 +21778,27 @@ mod tests {
 
         assert_eq!(last.tag_name().name(), "TypeReductionMode", "{xml}");
         assert_eq!(last.text(), Some("TransformValues"), "{xml}");
+    }
+
+    #[test]
+    fn information_register_compile_resource_preserves_compile_defaults() {
+        let xml = test_compile_meta_xml(
+            "InformationRegister",
+            "CorpusInformationRegister",
+            json!({"resources": ["Amount:Number(15,2)"]}),
+        );
+        let document = Document::parse(&xml).unwrap();
+        let resource = test_meta_named_object(&document, "Resource", "Amount");
+        let properties = meta_info_child(resource, "Properties").unwrap();
+
+        assert_eq!(
+            meta_info_child_text(properties, "FullTextSearch").as_deref(),
+            Some("Use")
+        );
+        assert_eq!(
+            meta_info_child_text(properties, "DataHistory").as_deref(),
+            Some("Use")
+        );
     }
 
     #[test]
