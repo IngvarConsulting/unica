@@ -244,13 +244,13 @@ pub(crate) struct MetaElementUpdate {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct MetaCollectionSpec {
-    collection: MetaCollection,
-    allows_type: bool,
-    allows_required: bool,
-    allows_fill_value: bool,
-    allows_nested_attributes: bool,
-    allows_position: bool,
+pub(crate) struct MetaCollectionSpec {
+    pub(crate) collection: MetaCollection,
+    pub(crate) allows_type: bool,
+    pub(crate) allows_required: bool,
+    pub(crate) allows_fill_value: bool,
+    pub(crate) allows_nested_attributes: bool,
+    pub(crate) allows_position: bool,
 }
 
 const COLLECTION_SPECS: &[MetaCollectionSpec] = &[
@@ -290,11 +290,30 @@ const fn collection_spec(
     }
 }
 
-fn collection_spec_for(collection: MetaCollection) -> &'static MetaCollectionSpec {
+pub(crate) fn metadata_collection_spec(collection: MetaCollection) -> &'static MetaCollectionSpec {
     COLLECTION_SPECS
         .iter()
         .find(|spec| spec.collection == collection)
         .expect("closed collection registry must be exhaustive")
+}
+
+pub(crate) fn validate_metadata_kind_collection(
+    kind: super::MetadataKind,
+    collection: MetaCollection,
+) -> Result<(), MetaDiagnostic> {
+    if metadata_kind_collections(kind).contains(&collection) {
+        Ok(())
+    } else {
+        Err(MetaDiagnostic::error(
+            MetaDiagnosticCode::UnsupportedKind,
+            format!(
+                "collection `{}` is not supported for {}",
+                collection.as_str(),
+                kind.as_str()
+            ),
+        )
+        .with_field("collection"))
+    }
 }
 
 pub(crate) fn validate_collection_scope(
@@ -332,7 +351,7 @@ impl MetaElementDefinition {
         field: &str,
     ) -> Result<Self, MetaDiagnostic> {
         validate_name(&input.name, &format!("{field}.name"))?;
-        let spec = collection_spec_for(collection);
+        let spec = metadata_collection_spec(collection);
         validate_element_fields(
             spec,
             field,
@@ -407,7 +426,7 @@ impl MetaElementUpdate {
                 "update must change at least one field",
             ));
         }
-        let spec = collection_spec_for(collection);
+        let spec = metadata_collection_spec(collection);
         validate_element_fields(
             spec,
             field,

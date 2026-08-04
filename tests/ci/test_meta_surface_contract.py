@@ -461,7 +461,7 @@ class MetaSurfaceContractTests(unittest.TestCase):
             ),
         )
 
-        edit_items = rust_function(metadata, "fn operation_schema()")
+        edit_items = rust_function(metadata, "fn operation_schema(kind: MetadataKind)")
         self.assertIn('"oneOf"', edit_items)
         for composition in ("anyOf", "allOf"):
             self.assertNotIn(composition, edit_items)

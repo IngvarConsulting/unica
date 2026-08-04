@@ -89,23 +89,52 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
             name: published[name]["inputSchema"]["properties"]["operations"]
             for name in ("unica.meta.add", "unica.meta.edit")
         }
-        self.assertEqual(
-            operation_schemas["unica.meta.add"]["items"],
-            operation_schemas["unica.meta.edit"]["items"],
-        )
         for name, operations in operation_schemas.items():
             with self.subTest(tool=name, field="operations"):
                 self.assertEqual(operations["type"], "array")
                 self.assertEqual(operations["minItems"], 1)
-                variants = operations["items"]["oneOf"]
-                self.assertEqual(
-                    [variant["properties"]["op"]["enum"][0] for variant in variants],
-                    ["setProperties", "add", "update", "remove", "editRelations"],
-                )
-                for variant in variants:
-                    self.assertEqual(variant["type"], "object")
-                    self.assertFalse(variant["additionalProperties"])
-                    self.assertIn("op", variant["required"])
+                self.assertNotIn("items", operations)
+
+        add_branches = published["unica.meta.add"]["inputSchema"]["allOf"]
+        edit_branches = published["unica.meta.edit"]["inputSchema"]["allOf"]
+        add_root = published["unica.meta.add"]["inputSchema"]
+        edit_root = published["unica.meta.edit"]["inputSchema"]
+        self.assertEqual(add_root["$defs"], edit_root["$defs"])
+        self.assertEqual(len(add_branches), 23)
+        self.assertEqual(len(edit_branches), 23)
+        published_tags: set[str] = set()
+        for add_branch, edit_branch in zip(add_branches, edit_branches, strict=True):
+            kind = add_branch["if"]["properties"]["kind"]["enum"]
+            self.assertEqual(len(kind), 1)
+            self.assertIn(
+                kind[0],
+                edit_branch["if"]["properties"]["metadataPath"]["pattern"],
+            )
+            add_items = add_branch["then"]["properties"]["operations"]["items"]
+            edit_items = edit_branch["then"]["properties"]["operations"]["items"]
+            self.assertEqual(add_items, edit_items)
+            reference = add_items["$ref"]
+            self.assertTrue(reference.startswith("#/$defs/"))
+            definition = reference.removeprefix("#/$defs/")
+            variants = add_root["$defs"][definition]["oneOf"]
+            variants = [
+                add_root["$defs"][variant["$ref"].removeprefix("#/$defs/")]
+                if "$ref" in variant
+                else variant
+                for variant in variants
+            ]
+            published_tags.update(
+                variant["properties"]["op"]["enum"][0] for variant in variants
+            )
+            for variant in variants:
+                self.assertEqual(variant["type"], "object")
+                self.assertFalse(variant["additionalProperties"])
+                self.assertIn("op", variant["required"])
+
+        self.assertEqual(
+            published_tags,
+            {"setProperties", "add", "update", "remove", "editRelations"},
+        )
 
     def test_every_review_entry_states_a_contract_and_scenarios(self) -> None:
         for name, entry in sorted(self.review.items()):

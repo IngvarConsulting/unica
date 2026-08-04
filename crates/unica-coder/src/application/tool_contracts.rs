@@ -3442,6 +3442,7 @@ mod tests {
     use super::*;
     use crate::application::metadata::MetadataOperation;
     use crate::application::tools;
+    use crate::domain::metadata::MetadataKind;
 
     fn metadata_tool(operation: MetadataOperation) -> ToolSpec {
         ToolSpec {
@@ -3455,6 +3456,40 @@ mod tests {
             mutating: !matches!(operation, MetadataOperation::Info),
             cache_access: crate::domain::cache::CacheAccess::default(),
             handler: ToolHandler::Metadata { operation },
+        }
+    }
+
+    fn metadata_operation_schema_for_kind(schema: &Value, kind: MetadataKind) -> &Value {
+        let branch = schema["allOf"]
+            .as_array()
+            .expect("metadata mutation schema must publish owner branches")
+            .iter()
+            .find(|branch| {
+                branch["if"]["properties"]["kind"]["enum"] == json!([kind.as_str()])
+                    || branch["if"]["properties"]["metadataPath"]["pattern"]
+                        .as_str()
+                        .is_some_and(|pattern| {
+                            pattern.starts_with(&format!("^({}|", kind.as_str()))
+                        })
+            })
+            .unwrap_or_else(|| panic!("missing metadata owner branch for {}", kind.as_str()));
+        let items = &branch["then"]["properties"]["operations"]["items"];
+        let definition = items["$ref"]
+            .as_str()
+            .and_then(|reference| reference.strip_prefix("#/$defs/"))
+            .expect("metadata operation items must reference one shared definition");
+        &schema["$defs"][definition]
+    }
+
+    fn resolve_metadata_schema_reference<'a>(root: &'a Value, schema: &'a Value) -> &'a Value {
+        match schema.get("$ref").and_then(Value::as_str) {
+            Some(reference) => {
+                let definition = reference
+                    .strip_prefix("#/$defs/")
+                    .expect("metadata schema reference must target root definitions");
+                &root["$defs"][definition]
+            }
+            None => schema,
         }
     }
 
@@ -3576,12 +3611,32 @@ mod tests {
         );
 
         let edit = input_schema_for_tool(&metadata_tool(MetadataOperation::Edit));
-        assert_eq!(
-            add["properties"]["operations"]["items"], edit["properties"]["operations"]["items"],
-            "meta.add and meta.edit must publish one operation schema"
-        );
         assert_eq!(add["properties"]["operations"]["minItems"], 1);
-        let item = &edit["properties"]["operations"]["items"];
+        let add_branches = add["allOf"].as_array().expect("add owner branches");
+        let edit_branches = edit["allOf"].as_array().expect("edit owner branches");
+        assert_eq!(add_branches.len(), MetadataKind::ALL.len());
+        assert_eq!(edit_branches.len(), MetadataKind::ALL.len());
+        for ((kind, add_branch), edit_branch) in MetadataKind::ALL
+            .iter()
+            .zip(add_branches)
+            .zip(edit_branches)
+        {
+            assert_eq!(
+                add_branch["if"]["properties"]["kind"]["enum"],
+                json!([kind.as_str()])
+            );
+            assert!(edit_branch["if"]["properties"]["metadataPath"]["pattern"]
+                .as_str()
+                .unwrap()
+                .contains(kind.as_str()));
+            assert_eq!(
+                add_branch["then"]["properties"]["operations"]["items"],
+                edit_branch["then"]["properties"]["operations"]["items"],
+                "meta.add and meta.edit must publish one operation schema for {}",
+                kind.as_str()
+            );
+        }
+        let item = metadata_operation_schema_for_kind(&edit, MetadataKind::Document);
         let variants = item["oneOf"].as_array().expect("closed operation union");
         assert_eq!(variants.len(), 5);
         for (variant, tag, required, properties) in [
@@ -3616,32 +3671,31 @@ mod tests {
                 vec!["mode", "op", "relation", "targets"],
             ),
         ] {
+            let variant = resolve_metadata_schema_reference(&edit, variant);
             assert_eq!(variant["type"], "object", "{tag}");
             assert_eq!(variant["additionalProperties"], false, "{tag}");
             assert_eq!(variant["required"], required, "{tag}");
             assert_eq!(sorted_property_names(variant), properties, "{tag}");
             assert_eq!(variant["properties"]["op"]["enum"], json!([tag]));
         }
+        let add_variant = resolve_metadata_schema_reference(&edit, &variants[1]);
+        let relations_variant = resolve_metadata_schema_reference(&edit, &variants[4]);
         assert_eq!(
-            variants[1]["properties"]["collection"]["enum"],
+            add_variant["properties"]["collection"]["enum"],
             json!([
                 "attributes",
                 "tabularSections",
-                "dimensions",
-                "resources",
-                "enumValues",
-                "columns",
                 "forms",
                 "templates",
                 "commands"
             ])
         );
         assert_eq!(
-            variants[4]["properties"]["relation"]["enum"],
+            relations_variant["properties"]["relation"]["enum"],
             json!(["owners", "registerRecords", "basedOn", "inputByString"])
         );
         assert_eq!(
-            variants[4]["properties"]["mode"]["enum"],
+            relations_variant["properties"]["mode"]["enum"],
             json!(["add", "remove", "replace"])
         );
 
@@ -4546,6 +4600,24 @@ mod tests {
     }
 
     #[test]
+    fn meta_mutation_schemas_fit_the_mcp_context_budget() {
+        // These schemas are sent on every tools/list response and occupy model
+        // context before the caller supplies any task data. Kind correlation
+        // once expanded the response to 2.4 MB, so keep each standalone schema
+        // below the reviewed compact-JSON budget while retaining closed shapes.
+        for operation in [MetadataOperation::Add, MetadataOperation::Edit] {
+            let schema = input_schema_for_tool(&metadata_tool(operation));
+            let compact_bytes = serde_json::to_vec(&schema)
+                .expect("metadata input schema must serialize as compact JSON")
+                .len();
+            assert!(
+                compact_bytes < 70_000,
+                "{operation:?} input schema consumes {compact_bytes} compact JSON bytes"
+            );
+        }
+    }
+
+    #[test]
     fn meta_info_publishes_only_the_logical_selector_and_what_it_reads() {
         let tool = tools()
             .into_iter()
@@ -5062,10 +5134,12 @@ mod tests {
         let schema = input_schema_for_tool(&tool);
         assert!(schema["properties"].get("Operation").is_none());
         assert!(schema["properties"].get("DefinitionFile").is_none());
-        let operation_tags = schema["properties"]["operations"]["items"]["oneOf"]
+        let operation_tags = metadata_operation_schema_for_kind(&schema, MetadataKind::Catalog)
+            ["oneOf"]
             .as_array()
             .expect("closed operation union")
             .iter()
+            .map(|variant| resolve_metadata_schema_reference(&schema, variant))
             .map(|variant| variant["properties"]["op"]["enum"][0].clone())
             .collect::<Vec<_>>();
         assert_eq!(

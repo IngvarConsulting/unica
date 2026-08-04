@@ -535,6 +535,17 @@ fn canonical_kind(raw: &str) -> Result<&'static str, SourceTargetError> {
     )))
 }
 
+pub(crate) fn metadata_address_kind_spellings(canonical: &str) -> Option<Vec<&'static str>> {
+    ADDRESS_KINDS
+        .iter()
+        .find(|kind| kind.canonical == canonical)
+        .map(|kind| {
+            std::iter::once(kind.canonical)
+                .chain(kind.russian_aliases.iter().copied())
+                .collect()
+        })
+}
+
 fn canonical_kind_or_collection(raw: &str) -> Result<&'static str, SourceTargetError> {
     ADDRESS_KINDS
         .iter()
