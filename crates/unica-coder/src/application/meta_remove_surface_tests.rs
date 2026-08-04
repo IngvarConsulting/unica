@@ -109,6 +109,17 @@ fn meta_remove_private_coordinator_preview_and_apply_publish_events_cache_and_fi
         preview.data.as_ref().unwrap()["validation"]["status"],
         "passed"
     );
+    let expected_effects = serde_json::json!([{
+        "operation": "removeObject",
+        "target": "Catalog.Removable",
+        "before": {
+            "metadataPath": "Catalog.Removable",
+            "kind": "Catalog",
+            "name": "Removable"
+        },
+        "after": null
+    }]);
+    assert_eq!(preview.data.as_ref().unwrap()["effects"], expected_effects);
     assert_eq!(preview.cache.mode, "dry-run");
     assert_eq!(preview.cache.events, ["MetadataChanged"]);
     assert_eq!(std::fs::read(&descriptor).unwrap(), descriptor_before);
@@ -125,6 +136,7 @@ fn meta_remove_private_coordinator_preview_and_apply_publish_events_cache_and_fi
         applied.data.as_ref().unwrap()["validation"]["status"],
         "passed"
     );
+    assert_eq!(applied.data.as_ref().unwrap()["effects"], expected_effects);
     assert_eq!(applied.cache.mode, "applied");
     assert_eq!(applied.cache.events, ["MetadataChanged"]);
     assert!(applied
@@ -139,4 +151,31 @@ fn meta_remove_private_coordinator_preview_and_apply_publish_events_cache_and_fi
     assert!(!std::fs::read_to_string(owner)
         .unwrap()
         .contains("<Catalog>Removable</Catalog>"));
+}
+
+#[test]
+fn meta_remove_rejects_descriptor_identity_mismatch_before_effect_projection() {
+    let workspace = create_remove_workspace("identity-mismatch");
+    let descriptor = workspace.path().join("src/Catalogs/Removable.xml");
+    let xml = std::fs::read_to_string(&descriptor).unwrap();
+    let mismatched = xml.replacen("<Name>Removable</Name>", "<Name>Different</Name>", 1);
+    assert_ne!(mismatched, xml, "fixture must expose descriptor identity");
+    std::fs::write(&descriptor, mismatched).unwrap();
+
+    let result = call_remove(workspace.path(), true);
+
+    assert!(!result.ok);
+    assert!(result.data.is_none());
+    assert!(
+        result
+            .diagnostics
+            .as_ref()
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "target_not_found"),
+        "{:?}",
+        result.diagnostics
+    );
 }

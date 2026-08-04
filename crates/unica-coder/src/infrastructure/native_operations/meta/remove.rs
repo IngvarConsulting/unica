@@ -7,8 +7,8 @@ use crate::application::{AdapterOutcome, SupportGuardRequirement};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::metadata::{
     MetaDiagnostic, MetaDiagnosticCode, MetaDiagnosticSeverity, MetaMutationData,
-    MetaPublicationAction, MetaPublicationPlanEntry, MetaPublicationResource, MetaValidationData,
-    MetaValidationStatus, MetadataKind,
+    MetaMutationEffect, MetaPublicationAction, MetaPublicationPlanEntry, MetaPublicationResource,
+    MetaValidationData, MetaValidationStatus, MetadataKind,
 };
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::domain::workspace::WorkspaceContext;
@@ -567,7 +567,8 @@ pub(crate) fn plan_typed_remove(
         ));
     }
 
-    let segments = target.segments().collect::<Vec<_>>();
+    let resolved_target = &resolved.metadata_path;
+    let segments = resolved_target.segments().collect::<Vec<_>>();
     let [object_kind, object_name] = segments.as_slice() else {
         return Err(typed_remove_failure(
             MetaDiagnosticCode::InvalidArguments,
@@ -916,10 +917,20 @@ pub(crate) fn plan_typed_remove(
     }
     Ok(TypedMetaRemovePlan {
         preview: MetaMutationData {
-            metadata_path: target.clone(),
+            metadata_path: resolved_target.clone(),
             changed: true,
             publication_plan,
-            effects: Vec::new(),
+            effects: vec![MetaMutationEffect {
+                operation_index: None,
+                operation: "removeObject".to_string(),
+                target: resolved_target.as_str().to_string(),
+                before: Some(serde_json::json!({
+                    "metadataPath": resolved_target.as_str(),
+                    "kind": kind.as_str(),
+                    "name": object_name,
+                })),
+                after: None,
+            }],
             validation: MetaValidationData {
                 status: MetaValidationStatus::Passed,
                 diagnostics: Vec::new(),

@@ -446,20 +446,17 @@ pub(crate) fn prepare_meta_add(
         context,
     )?;
     descriptor_file.bytes = descriptor;
-    let effects = if request.operations.is_empty() {
-        vec![MetaMutationEffect {
-            operation_index: None,
-            operation: "createTemplate".to_string(),
-            target: target.as_str().to_string(),
-            before: None,
-            after: Some(serde_json::json!({
-                "kind": request.kind.as_str(),
-                "name": request.name,
-            })),
-        }]
-    } else {
-        effects
-    };
+    let mut mutation_effects = vec![MetaMutationEffect {
+        operation_index: None,
+        operation: "createTemplate".to_string(),
+        target: target.as_str().to_string(),
+        before: None,
+        after: Some(serde_json::json!({
+            "kind": request.kind.as_str(),
+            "name": request.name,
+        })),
+    }];
+    mutation_effects.extend(effects);
 
     #[cfg(test)]
     run_meta_add_after_authorization_hook();
@@ -686,7 +683,7 @@ pub(crate) fn prepare_meta_add(
             metadata_path: target.clone(),
             changed: true,
             publication_plan,
-            effects,
+            effects: mutation_effects,
             validation: MetaValidationData {
                 status: MetaValidationStatus::Passed,
                 diagnostics: Vec::new(),

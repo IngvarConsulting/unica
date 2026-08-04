@@ -646,6 +646,7 @@ pub(super) fn meta_edit_remove_xml_node_range(
 
 pub(crate) struct ResolvedMetadataObject {
     pub(super) handle: ClosedPlatformXmlTarget,
+    pub(super) metadata_path: MetadataAddress,
     pub(super) descriptor_path: PathBuf,
     pub(super) descriptor_preimage: Vec<u8>,
     pub(super) source_root: PathBuf,
@@ -1747,6 +1748,16 @@ pub(crate) fn resolve_typed_metadata_object(
         .with_metadata_path(metadata_path.clone())
         .into());
     }
+    let resolved_metadata_path = resolution.resolved.metadata_path.clone().ok_or_else(|| {
+        MetaFailure::from(
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "resolved metadata object has no logical identity",
+                Some("metadataPath"),
+            )
+            .with_metadata_path(metadata_path.clone()),
+        )
+    })?;
     let evidence = platform_xml_resource_evidence(context, &resolution.handle)
         .map_err(|error| typed_resolution_failure(metadata_path, operation, error.code))?;
     let descriptor_preimage = fs::read(&evidence.target_path).map_err(|_| {
@@ -1794,6 +1805,7 @@ pub(crate) fn resolve_typed_metadata_object(
     }
     Ok(ResolvedMetadataObject {
         handle: resolution.handle,
+        metadata_path: resolved_metadata_path,
         descriptor_path: evidence.target_path,
         descriptor_preimage,
         source_root: evidence.source_root,
@@ -3695,7 +3707,11 @@ pub(super) fn parse_typed_fill_value(
                     })?,
             },
         ))),
-        "" if value.is_empty() => Ok(None),
+        "" if value.is_empty() => Err(typed_diagnostic(
+            MetaDiagnosticCode::ValidationFailed,
+            "existing fill value has no typed value or xsi:nil marker",
+            Some("fillValue"),
+        )),
         _ => Err(typed_diagnostic(
             MetaDiagnosticCode::ValidationFailed,
             "existing fill value type is unsupported by typed metadata edit",

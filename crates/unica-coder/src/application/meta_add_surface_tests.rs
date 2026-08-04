@@ -192,16 +192,24 @@ fn add_applies_operations_atomically() {
             .iter()
             .map(|effect| effect["operation"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        vec!["setProperties", "add"]
+        vec!["createTemplate", "setProperties", "add"]
     );
+    let effects = preview.data.as_ref().unwrap()["effects"]
+        .as_array()
+        .unwrap();
+    assert!(effects[0].get("operationIndex").is_none());
     assert_eq!(
-        preview.data.as_ref().unwrap()["effects"]
-            .as_array()
-            .unwrap()
+        effects[1..]
             .iter()
             .map(|effect| effect["operationIndex"].as_u64().unwrap())
             .collect::<Vec<_>>(),
         vec![0, 1]
+    );
+    assert_eq!(effects[0]["target"], "Catalog.Configured");
+    assert!(effects[0]["before"].is_null());
+    assert_eq!(
+        effects[0]["after"],
+        serde_json::json!({"kind": "Catalog", "name": "Configured"})
     );
     assert_eq!(
         tree_snapshot(&source),
@@ -214,6 +222,15 @@ fn add_applies_operations_atomically() {
     let applied = call_add_with_args(workspace.path(), &apply_args);
 
     assert!(applied.ok, "{:?}", applied.errors);
+    assert_eq!(
+        applied.data.as_ref().unwrap()["effects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|effect| effect["operation"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["createTemplate", "setProperties", "add"]
+    );
     let xml = std::fs::read_to_string(&descriptor).expect("configured descriptor");
     assert!(xml.contains("<Comment>Configured during creation</Comment>"));
     assert!(xml.contains("<Name>ExternalCode</Name>"));

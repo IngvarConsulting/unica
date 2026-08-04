@@ -513,6 +513,33 @@ fn info_marks_malformed_optional_field_incomplete_with_diagnostic() {
 }
 
 #[test]
+fn info_marks_bare_fill_value_incomplete_with_diagnostic() {
+    let workspace = create_info_workspace("malformed-optional-fill-value");
+    let descriptor = workspace.path().join("src/Catalogs/Inspectable.xml");
+    let xml = std::fs::read_to_string(&descriptor).unwrap();
+    let malformed = xml.replacen("<FillValue xsi:nil=\"true\"/>", "<FillValue/>", 1);
+    assert_ne!(
+        malformed, xml,
+        "fixture must contain an absent fill value marker"
+    );
+    std::fs::write(&descriptor, malformed).unwrap();
+
+    let result = call_info(workspace.path(), []);
+
+    assert!(!result.ok);
+    let data = result.data.as_ref().expect("partial typed info");
+    assert_eq!(data["collections"]["attributes"][0]["incomplete"], true);
+    assert!(result
+        .diagnostics
+        .as_ref()
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|diagnostic| diagnostic["field"] == "collections.attributes[0].fillValue"));
+}
+
+#[test]
 fn meta_info_private_coordinator_hard_fails_malformed_xml_but_keeps_semantic_failure_data() {
     let malformed = create_info_workspace("malformed");
     std::fs::write(
