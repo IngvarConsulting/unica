@@ -1370,15 +1370,41 @@ pub(crate) fn metadata_input_schema(operation: MetadataOperation) -> Value {
         "properties": properties,
         "required": required,
     });
-    if matches!(operation, MetadataOperation::Add | MetadataOperation::Edit) {
-        let schema = schema
-            .as_object_mut()
-            .expect("metadata input schema is always an object");
-        schema.insert(
-            "allOf".into(),
-            Value::Array(owner_operation_branches(operation)),
-        );
-        schema.insert("$defs".into(), Value::Object(metadata_schema_definitions()));
+    match operation {
+        MetadataOperation::Add | MetadataOperation::Edit => {
+            let schema = schema
+                .as_object_mut()
+                .expect("metadata input schema is always an object");
+            schema.insert(
+                "allOf".into(),
+                Value::Array(owner_operation_branches(operation)),
+            );
+            schema.insert("$defs".into(), Value::Object(metadata_schema_definitions()));
+        }
+        MetadataOperation::Remove => {
+            schema
+                .as_object_mut()
+                .expect("metadata input schema is always an object")
+                .insert(
+                    "oneOf".into(),
+                    json!([
+                        {
+                            "properties": {
+                                "force": {"const": false},
+                                "confirm": {"const": false},
+                            },
+                        },
+                        {
+                            "properties": {
+                                "force": {"const": true},
+                                "confirm": {"const": true},
+                            },
+                            "required": ["force", "confirm"],
+                        },
+                    ]),
+                );
+        }
+        MetadataOperation::Info => {}
     }
     schema
 }
@@ -1953,18 +1979,37 @@ fn type_variant_schema() -> Value {
         &["kind", "length", "allowedLength"],
     );
     require_positive_fixed_length(&mut binary_data);
+    let mut number = tagged_type_variant(
+        "number",
+        json!({
+            "digits": {"type": "integer", "minimum": 0, "maximum": 38, "description": "Total number of decimal digits."},
+            "fraction": {"type": "integer", "minimum": 0, "maximum": 38, "description": "Number of fractional decimal digits."},
+            "sign": {"type": "string", "enum": ["any", "nonNegative"], "description": "Whether negative values are allowed."},
+        }),
+        &["kind", "digits", "fraction", "sign"],
+    );
+    number
+        .as_object_mut()
+        .expect("number type variant schema is always an object")
+        .insert(
+            "anyOf".into(),
+            Value::Array(
+                (0..=38)
+                    .map(|digits| {
+                        json!({
+                            "properties": {
+                                "digits": {"const": digits},
+                                "fraction": {"maximum": digits},
+                            },
+                        })
+                    })
+                    .collect(),
+            ),
+        );
     json!({
         "oneOf": [
             string,
-            tagged_type_variant(
-                "number",
-                json!({
-                    "digits": {"type": "integer", "minimum": 0, "maximum": 38, "description": "Total number of decimal digits."},
-                    "fraction": {"type": "integer", "minimum": 0, "maximum": 38, "description": "Number of fractional decimal digits."},
-                    "sign": {"type": "string", "enum": ["any", "nonNegative"], "description": "Whether negative values are allowed."},
-                }),
-                &["kind", "digits", "fraction", "sign"],
-            ),
+            number,
             tagged_type_variant("boolean", json!({}), &["kind"]),
             tagged_type_variant(
                 "date",
@@ -2020,7 +2065,6 @@ fn tagged_type_variant(kind: &str, fields: Value, required: &[&str]) -> Value {
         json!({
             "type": "string",
             "enum": [kind],
-            "description": "Discriminator for this platform type variant.",
         }),
     );
     json!({
@@ -3296,6 +3340,59 @@ mod tests {
     }
 
     #[test]
+    fn number_fraction_schema_and_parser_enforce_every_digits_boundary() {
+        let schema = metadata_input_schema(MetadataOperation::Edit);
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let call = |digits: u64, fraction: u64| {
+            json!({
+                "sourceSet": "main",
+                "metadataPath": "Document.Order",
+                "operations": [{
+                    "op": "add",
+                    "collection": "attributes",
+                    "elements": [{
+                        "name": "Amount",
+                        "type": {"variants": [{
+                            "kind": "number",
+                            "digits": digits,
+                            "fraction": fraction,
+                            "sign": "any",
+                        }]},
+                    }],
+                }],
+            })
+        };
+        let assert_case = |digits, fraction, expected| {
+            let call = call(digits, fraction);
+            assert_eq!(
+                validator.is_valid(&call),
+                expected,
+                "published schema disagrees for digits={digits}, fraction={fraction}: {call}"
+            );
+            assert_eq!(
+                parse_metadata_request(MetadataOperation::Edit, call.as_object().unwrap()).is_ok(),
+                expected,
+                "parser disagrees for digits={digits}, fraction={fraction}: {call}"
+            );
+        };
+
+        for digits in 0_u64..=38 {
+            assert_case(digits, digits, true);
+            if digits < 38 {
+                assert_case(digits, digits + 1, false);
+            }
+        }
+        for (digits, fraction, expected) in [
+            (10, 2, true),
+            (38, 0, true),
+            (38, 39, false),
+            (39, 0, false),
+        ] {
+            assert_case(digits, fraction, expected);
+        }
+    }
+
+    #[test]
     fn parser_rejects_a_collection_outside_the_owner_kind_registry() {
         let call = json!({
             "sourceSet": "main",
@@ -4002,6 +4099,52 @@ mod tests {
         ] {
             let error = diagnostic(MetadataOperation::Remove, incomplete);
             assert_eq!(error.field.as_deref(), Some("force"), "{error:?}");
+        }
+    }
+
+    #[test]
+    fn remove_schema_and_parser_agree_on_every_force_confirm_state() {
+        let schema = metadata_input_schema(MetadataOperation::Remove);
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let cases: &[(Option<bool>, Option<bool>, bool)] = &[
+            (None, None, true),
+            (None, Some(false), true),
+            (None, Some(true), false),
+            (Some(false), None, true),
+            (Some(false), Some(false), true),
+            (Some(false), Some(true), false),
+            (Some(true), None, false),
+            (Some(true), Some(false), false),
+            (Some(true), Some(true), true),
+        ];
+
+        for (force, confirm, expected) in cases {
+            let mut call = json!({
+                "sourceSet": "main",
+                "metadataPath": "Catalog.Items",
+            })
+            .as_object()
+            .unwrap()
+            .clone();
+            if let Some(force) = force {
+                call.insert("force".into(), json!(force));
+            }
+            if let Some(confirm) = confirm {
+                call.insert("confirm".into(), json!(confirm));
+            }
+            let call = Value::Object(call);
+
+            assert_eq!(
+                validator.is_valid(&call),
+                *expected,
+                "published remove schema disagrees for force={force:?}, confirm={confirm:?}: {call}"
+            );
+            assert_eq!(
+                parse_metadata_request(MetadataOperation::Remove, call.as_object().unwrap())
+                    .is_ok(),
+                *expected,
+                "remove parser disagrees for force={force:?}, confirm={confirm:?}: {call}"
+            );
         }
     }
 }
