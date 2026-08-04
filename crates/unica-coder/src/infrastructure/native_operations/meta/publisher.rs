@@ -50,7 +50,7 @@ thread_local! {
 }
 
 #[cfg(test)]
-fn with_meta_add_after_authorization_hook<T>(
+pub(crate) fn with_meta_add_after_authorization_hook<T>(
     hook: impl FnOnce() + 'static,
     action: impl FnOnce() -> T,
 ) -> T {
@@ -408,21 +408,12 @@ pub(crate) fn prepare_meta_add(
         .into());
     }
     let source = resolve_metadata_add_source(context, &request.source_set)?;
-    let mut preparation_diagnostics = Vec::new();
     match evaluate_resolved_support_guard(
         &source.owner_path,
         SupportGuardRequirement::Editable,
         context,
     ) {
-        ResolvedSupportGuardCheck::Allow => {}
-        ResolvedSupportGuardCheck::Warn(_) => preparation_diagnostics.push(MetaDiagnostic {
-            code: MetaDiagnosticCode::SupportLocked,
-            severity: MetaDiagnosticSeverity::Warning,
-            message: "metadata source support policy permits creation with a warning".to_string(),
-            metadata_path: None,
-            operation_index: None,
-            field: None,
-        }),
+        ResolvedSupportGuardCheck::Allow | ResolvedSupportGuardCheck::Warn(_) => {}
         ResolvedSupportGuardCheck::Block(_) => {
             return Err(MetaDiagnostic::error(
                 MetaDiagnosticCode::SupportLocked,
@@ -467,6 +458,29 @@ pub(crate) fn prepare_meta_add(
             ))
         },
     )?;
+    let mut preparation_diagnostics = Vec::new();
+    match evaluate_resolved_support_guard(
+        &source.owner_path,
+        SupportGuardRequirement::Editable,
+        context,
+    ) {
+        ResolvedSupportGuardCheck::Allow => {}
+        ResolvedSupportGuardCheck::Warn(_) => preparation_diagnostics.push(MetaDiagnostic {
+            code: MetaDiagnosticCode::SupportLocked,
+            severity: MetaDiagnosticSeverity::Warning,
+            message: "metadata source support policy permits creation with a warning".to_string(),
+            metadata_path: None,
+            operation_index: None,
+            field: None,
+        }),
+        ResolvedSupportGuardCheck::Block(_) => {
+            return Err(MetaDiagnostic::error(
+                MetaDiagnosticCode::SupportLocked,
+                "metadata source support policy blocks object creation",
+            )
+            .into());
+        }
+    }
     let resource_root = source
         .source_root
         .join(metadata_layout(request.kind).directory)
@@ -812,7 +826,11 @@ pub(crate) fn fresh_metadata_uuid() -> String {
 mod typed_add_publication_tests {
     use super::*;
     use crate::application::metadata::MetaAddRequest;
-    use crate::domain::metadata::MetadataKind;
+    use crate::domain::metadata::{
+        MetaCollection, MetaEditOperation, MetaElementInput, MetaRelation, MetadataKind,
+        MetadataReference, RelationEditMode,
+    };
+    use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
     use crate::infrastructure::native_operations::cf::create_configuration_scaffold;
     use crate::infrastructure::native_operations::compile_transaction::{
         with_commit_failpoint, CommitFailpoint,
@@ -987,6 +1005,124 @@ mod typed_add_publication_tests {
             MetaDiagnosticCode::ProviderUnavailable
         );
         assert_eq!(fixture.source_snapshot(), before);
+    }
+
+    #[test]
+    fn meta_add_physical_form_footprint_commits_and_rolls_back_as_one_transaction() {
+        let fixture = Fixture::new("physical-form-footprint");
+        let cancellation = CancellationToken::new();
+        let with_form = |name: &str| MetaAddRequest {
+            operations: vec![MetaEditOperation::add(
+                MetaCollection::Forms,
+                None,
+                vec![MetaElementInput::named("Main")],
+            )
+            .unwrap()],
+            ..fixture.request(name)
+        };
+
+        let prepared =
+            prepare_meta_add(&with_form("WithForm"), &fixture.context, &cancellation).unwrap();
+        assert!(prepared
+            .validation_subject()
+            .resources
+            .iter()
+            .any(|resource| {
+                matches!(
+                    &resource.role,
+                    MetadataResourceRole::Form { owner, name }
+                        if owner.as_str() == "Catalog.WithForm" && name == "Main"
+                )
+            }));
+        prepared.publish(&cancellation).unwrap();
+
+        for relative in [
+            "Catalogs/WithForm.xml",
+            "Catalogs/WithForm/Ext/ObjectModule.bsl",
+            "Catalogs/WithForm/Forms/Main.xml",
+            "Catalogs/WithForm/Forms/Main/Ext/Form.xml",
+        ] {
+            assert!(
+                fixture.root.join("src").join(relative).is_file(),
+                "missing physical form footprint: {relative}"
+            );
+        }
+        assert!(
+            fs::read_to_string(fixture.root.join("src/Configuration.xml"))
+                .unwrap()
+                .contains("<Catalog>WithForm</Catalog>")
+        );
+
+        let before_rollback = fixture.source_snapshot();
+        let prepared = prepare_meta_add(
+            &with_form("RolledBackForm"),
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap();
+        let failure = match with_commit_failpoint(CommitFailpoint::AfterObjectFiles, || {
+            prepared.publish(&cancellation)
+        }) {
+            Ok(_) => panic!("physical form footprint unexpectedly survived commit failpoint"),
+            Err(failure) => failure,
+        };
+
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::ProviderUnavailable
+        );
+        assert_eq!(fixture.source_snapshot(), before_rollback);
+    }
+
+    #[test]
+    fn meta_add_relation_target_drift_aborts_without_partial_creation() {
+        let fixture = Fixture::new("relation-target-drift");
+        let cancellation = CancellationToken::new();
+        prepare_meta_add(&fixture.request("Parent"), &fixture.context, &cancellation)
+            .unwrap()
+            .publish(&cancellation)
+            .unwrap();
+        let parent_address =
+            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Parent").unwrap();
+        let request = MetaAddRequest {
+            operations: vec![MetaEditOperation::edit_relations(
+                MetaRelation::Owners,
+                RelationEditMode::Add,
+                vec![MetadataReference {
+                    metadata_path: parent_address.clone(),
+                }],
+            )
+            .unwrap()],
+            ..fixture.request("Dependent")
+        };
+        let prepared = prepare_meta_add(&request, &fixture.context, &cancellation).unwrap();
+        assert!(prepared.validation_subject().resources.iter().any(|resource| {
+            matches!(&resource.role, MetadataResourceRole::Dependency { target } if target == &parent_address)
+        }));
+        let owner_before = fs::read(fixture.root.join("src/Configuration.xml")).unwrap();
+        let parent_path = fixture.root.join("src/Catalogs/Parent.xml");
+        let mut external_image = fs::read(&parent_path).unwrap();
+        external_image.extend_from_slice(b"\n");
+        let mut expected = fixture.source_snapshot();
+        expected.insert(PathBuf::from("Catalogs/Parent.xml"), external_image.clone());
+        fs::write(&parent_path, &external_image).unwrap();
+
+        let failure = match prepared.publish(&cancellation) {
+            Ok(_) => panic!("relation-target drift unexpectedly published metadata"),
+            Err(failure) => failure,
+        };
+
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::ConcurrentModification
+        );
+        assert_eq!(fixture.source_snapshot(), expected);
+        assert_eq!(
+            fs::read(fixture.root.join("src/Configuration.xml")).unwrap(),
+            owner_before
+        );
+        assert!(!fixture.root.join("src/Catalogs/Dependent.xml").exists());
+        assert!(!fixture.root.join("src/Catalogs/Dependent").exists());
     }
 
     #[test]

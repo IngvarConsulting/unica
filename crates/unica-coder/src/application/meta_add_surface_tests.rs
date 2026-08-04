@@ -1,5 +1,6 @@
 use super::{OperationResult, UnicaApplication};
 use crate::domain::cancellation::CancellationToken;
+use crate::infrastructure::native_operations::meta::with_meta_add_after_authorization_hook;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -602,6 +603,52 @@ fn meta_add_apply_rejects_support_locked_configuration_without_writes() {
     assert!(!result.ok);
     assert_eq!(result.diagnostics.unwrap()[0]["code"], "support_locked");
     assert_eq!(tree_snapshot(&workspace.path().join("src")), before);
+}
+
+#[test]
+fn meta_add_reauthorizes_bound_support_state_before_transaction_mutations() {
+    let workspace = create_configuration_workspace("support-authorization-drift");
+    let source = workspace.path().join("src");
+    let owner = source.join("Configuration.xml");
+    let owner_before = std::fs::read(&owner).unwrap();
+    let support = source.join("Ext/ParentConfigurations.bin");
+    let support_bytes = concat!(
+        "\u{feff}{6,1,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,",
+        "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",",
+        "\"VendorConf\",0,0,0}"
+    )
+    .as_bytes()
+    .to_vec();
+    let support_for_hook = support.clone();
+    let support_bytes_for_hook = support_bytes.clone();
+    let mut expected = tree_snapshot(&source);
+    expected.insert(
+        PathBuf::from("Ext/ParentConfigurations.bin"),
+        support_bytes.clone(),
+    );
+
+    let result = with_meta_add_after_authorization_hook(
+        move || std::fs::write(support_for_hook, support_bytes_for_hook).unwrap(),
+        || call_add(workspace.path(), "Catalog", "AuthorizationDrift", false),
+    );
+
+    assert!(
+        !result.ok,
+        "stale authorization unexpectedly created metadata"
+    );
+    assert_eq!(
+        result.diagnostics.as_ref().unwrap()[0]["code"],
+        "support_locked"
+    );
+    assert!(result.cache.events.is_empty());
+    assert_eq!(std::fs::read(&owner).unwrap(), owner_before);
+    assert!(!source.join("Catalogs/AuthorizationDrift.xml").exists());
+    assert!(!source.join("Catalogs/AuthorizationDrift").exists());
+    assert!(!String::from_utf8(owner_before)
+        .unwrap()
+        .contains("<Catalog>AuthorizationDrift</Catalog>"));
+
+    assert_eq!(tree_snapshot(&source), expected);
 }
 
 fn assert_partial_is_stable(workspace: &TempWorkspace, kind: &str, name: &str) {
