@@ -8740,6 +8740,67 @@ mod tests {
     }
 
     #[test]
+    fn meta_edit_add_resource_uses_synonym_through_public_tool() {
+        let root = temp_meta_compile_workspace("unica-meta-edit-resource-synonym");
+        let workspace = root.join("workspace");
+        let fixtures = workspace.join("fixtures");
+        std::fs::create_dir_all(&fixtures).unwrap();
+
+        let register_definition = fixtures.join("sample-stock-register.json");
+        std::fs::write(
+            &register_definition,
+            r#"{
+  "type": "InformationRegister",
+  "name": "SampleStock",
+  "synonym": "Sample stock"
+}"#,
+        )
+        .unwrap();
+        let register_compile = call_meta_compile(&workspace, &register_definition);
+        assert!(register_compile.ok, "{:?}", register_compile.errors);
+        let register_path = workspace.join("src/InformationRegisters/SampleStock.xml");
+        let before = std::fs::read_to_string(&register_path).unwrap();
+
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(true));
+        args.insert(
+            "ObjectPath".to_string(),
+            Value::String("src/InformationRegisters/SampleStock.xml".to_string()),
+        );
+        args.insert(
+            "Operation".to_string(),
+            Value::String("add-resource".to_string()),
+        );
+        args.insert(
+            "Value".to_string(),
+            Value::String("СуммаЗакупокЗа30Дней: Число(15,2)".to_string()),
+        );
+        args.insert(
+            "synonym".to_string(),
+            Value::String("Сумма закупок за 30 дней".to_string()),
+        );
+
+        let edit = UnicaApplication::new()
+            .call_tool("unica.meta.edit", &args)
+            .unwrap();
+
+        assert!(edit.ok, "{:?}", edit.errors);
+        assert_eq!(std::fs::read_to_string(&register_path).unwrap(), before);
+        let diff = edit.data.as_ref().unwrap()["diff"].as_str().unwrap();
+        assert!(
+            diff.contains("<v8:content>Сумма закупок за 30 дней</v8:content>"),
+            "{diff}"
+        );
+        assert!(!diff.contains("Сумма закупок за30дней"), "{diff}");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn role_compile_registers_in_canonical_position_and_preserves_crlf() {
         let root =
             temp_scaffolded_configuration_workspace("unica-role-compile-canonical-registration");

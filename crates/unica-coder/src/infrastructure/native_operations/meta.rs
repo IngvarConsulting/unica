@@ -3434,6 +3434,37 @@ mod edit_tests {
     }
 
     #[test]
+    fn edit_meta_adds_tabular_attribute_with_top_level_synonym() {
+        let context = temp_context("add-tabular-section-attribute-synonym");
+        let object_path = context.cwd.join("Documents").join("SamplePackingList.xml");
+        let mut xml = sample_document_xml("<RegisterRecords/>");
+        xml = xml.replace(
+            "\t\t<ChildObjects/>",
+            "\t\t<ChildObjects>\n\t\t\t<TabularSection uuid=\"22222222-2222-4222-8222-222222222222\">\n\t\t\t\t<Properties>\n\t\t\t\t\t<Name>SampleItems</Name>\n\t\t\t\t\t<Synonym/>\n\t\t\t\t\t<Comment/>\n\t\t\t\t\t<ToolTip/>\n\t\t\t\t\t<FillChecking>DontCheck</FillChecking>\n\t\t\t\t</Properties>\n\t\t\t\t<ChildObjects/>\n\t\t\t</TabularSection>\n\t\t</ChildObjects>",
+        );
+        write_file(&object_path, &xml);
+        let mut args = meta_edit_args(
+            &object_path,
+            "add-ts-attribute",
+            "SampleItems.SampleSourceDocument: DocumentRef.SampleSale",
+        );
+        args.insert("synonym".to_string(), json!("Исходный документ"));
+
+        let outcome = edit_meta(&args, &context);
+
+        assert!(outcome.ok, "{:?}", outcome.errors);
+        let updated = fs::read_to_string(&object_path).unwrap();
+        assert!(updated.contains("<Name>SampleSourceDocument</Name>"));
+        assert!(
+            updated.contains("<v8:content>Исходный документ</v8:content>"),
+            "{updated}"
+        );
+        Document::parse(updated.trim_start_matches('\u{feff}')).unwrap();
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
     fn edit_meta_adds_attribute_to_non_empty_tabular_section() {
         let context = temp_context("add-non-empty-tabular-section-attribute");
         let object_path = context.cwd.join("Documents").join("SamplePackingList.xml");
@@ -4122,6 +4153,200 @@ mod edit_tests {
         Document::parse(updated.trim_start_matches('\u{feff}')).unwrap();
 
         let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn preview_meta_add_resource_uses_top_level_synonym() {
+        let context = temp_context("add-resource-top-level-synonym");
+        let object_path = context
+            .cwd
+            .join("InformationRegisters")
+            .join("SampleStock.xml");
+        let original = sample_register_xml("InformationRegister");
+        write_file(&object_path, &original);
+        let mut args = meta_edit_args(
+            &object_path,
+            "add-resource",
+            "СуммаЗакупокЗа30Дней: Число(15,2)",
+        );
+        args.insert("synonym".to_string(), json!("Сумма закупок за 30 дней"));
+
+        let execution = preview_meta_edit_with_data(&args, &context);
+
+        assert!(execution.outcome.ok, "{:?}", execution.outcome.errors);
+        assert_eq!(fs::read_to_string(&object_path).unwrap(), original);
+        let diff = execution
+            .data
+            .and_then(|data| data.diff)
+            .expect("projected diff");
+        assert!(
+            diff.contains("<v8:content>Сумма закупок за 30 дней</v8:content>"),
+            "{diff}"
+        );
+        assert!(!diff.contains("Сумма закупок за30дней"), "{diff}");
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn preview_meta_add_attribute_rejects_top_level_synonym() {
+        let context = temp_context("add-attribute-top-level-synonym");
+        let object_path = context.cwd.join("Catalogs").join("Items.xml");
+        write_file(&object_path, &sample_catalog_xml());
+        let mut args = meta_edit_args(&object_path, "add-attribute", "Code30Days: String(20)");
+        args.insert("synonym".to_string(), json!("Code 30 days"));
+
+        let preview = preview_meta_edit(&args, &context);
+
+        assert!(!preview.ok);
+        assert!(preview.errors.iter().any(|error| error.contains(
+            "add-attribute accepts top-level synonym only for add-resource, add-ts, or add-ts-attribute"
+        )));
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn preview_meta_add_resource_rejects_batch_with_top_level_synonym() {
+        let context = temp_context("add-resource-batch-synonym");
+        let object_path = context
+            .cwd
+            .join("InformationRegisters")
+            .join("SampleStock.xml");
+        let original = sample_register_xml("InformationRegister");
+        write_file(&object_path, &original);
+        let mut args = meta_edit_args(
+            &object_path,
+            "add-resource",
+            "SampleQty: Number(15,3) ;; SampleAmount: Number(15,2)",
+        );
+        args.insert("synonym".to_string(), json!("Количество"));
+
+        let execution = preview_meta_edit_with_data(&args, &context);
+
+        assert!(!execution.outcome.ok, "{:?}", execution.outcome.errors);
+        assert!(execution.outcome.errors.iter().any(|error| {
+            error.contains("add-resource") && error.contains("single Value item")
+        }));
+        assert_eq!(fs::read_to_string(&object_path).unwrap(), original);
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn edit_meta_add_resource_preserves_explicit_empty_synonym() {
+        let context = temp_context("add-resource-empty-synonym");
+        let object_path = context
+            .cwd
+            .join("InformationRegisters")
+            .join("SampleStock.xml");
+        write_file(&object_path, &sample_register_xml("InformationRegister"));
+        let mut args = meta_edit_args(
+            &object_path,
+            "add-resource",
+            "СуммаЗакупокЗа30Дней: Число(15,2)",
+        );
+        args.insert("synonym".to_string(), json!(""));
+
+        let outcome = edit_meta(&args, &context);
+
+        assert!(outcome.ok, "{:?}", outcome.errors);
+        let updated = fs::read_to_string(&object_path).unwrap();
+        let document = Document::parse(updated.trim_start_matches('\u{feff}')).unwrap();
+        let resource = document
+            .descendants()
+            .filter(|node| node.is_element() && node.tag_name().name() == "Resource")
+            .find(|node| {
+                meta_info_child(*node, "Properties")
+                    .and_then(|properties| meta_info_child_text(properties, "Name"))
+                    .as_deref()
+                    == Some("СуммаЗакупокЗа30Дней")
+            })
+            .expect("added resource");
+        let properties = meta_info_child(resource, "Properties").unwrap();
+        let synonym = meta_info_child(properties, "Synonym").unwrap();
+        assert!(
+            synonym.children().all(|node| !node.is_element()),
+            "{updated}"
+        );
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn preview_meta_add_tabular_section_uses_top_level_synonym() {
+        let context = temp_context("add-tabular-section-top-level-synonym");
+        let object_path = context.cwd.join("Documents").join("SamplePackingList.xml");
+        let original = sample_document_xml("<RegisterRecords/>");
+        write_file(&object_path, &original);
+        let mut args = meta_edit_args(&object_path, "add-ts", "SampleItems");
+        args.insert("Synonym".to_string(), json!("Товарный состав"));
+
+        let execution = preview_meta_edit_with_data(&args, &context);
+
+        assert!(execution.outcome.ok, "{:?}", execution.outcome.errors);
+        assert_eq!(fs::read_to_string(&object_path).unwrap(), original);
+        let diff = execution
+            .data
+            .and_then(|data| data.diff)
+            .expect("projected diff");
+        assert!(
+            diff.contains("<v8:content>Товарный состав</v8:content>"),
+            "{diff}"
+        );
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn preview_meta_add_tabular_section_uses_definition_synonym() {
+        let context = temp_context("add-tabular-section-definition-synonym");
+        let object_path = context.cwd.join("Documents").join("SamplePackingList.xml");
+        let original = sample_document_xml("<RegisterRecords/>");
+        write_file(&object_path, &original);
+        let definition_path = context.cwd.join("add-tabular-section.json");
+        fs::write(
+            &definition_path,
+            r#"{
+  "add": {
+    "tabularSections": [
+      {
+        "name": "SampleItems",
+        "synonym": "Товарный состав",
+        "attributes": ["SampleQuantity: Number(15,3)"]
+      }
+    ]
+  }
+}"#,
+        )
+        .unwrap();
+
+        let execution = preview_meta_edit_with_data(
+            &meta_edit_definition_args(&object_path, &definition_path),
+            &context,
+        );
+
+        assert!(execution.outcome.ok, "{:?}", execution.outcome.errors);
+        assert_eq!(fs::read_to_string(&object_path).unwrap(), original);
+        let diff = execution
+            .data
+            .and_then(|data| data.diff)
+            .expect("projected diff");
+        assert!(
+            diff.contains("<v8:content>Товарный состав</v8:content>"),
+            "{diff}"
+        );
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn meta_auto_synonym_splits_lower_digit_and_digit_letter_boundaries() {
+        assert_eq!(
+            meta_edit_auto_synonym("СуммаЗакупокЗа30Дней"),
+            "Сумма закупок за 30 дней"
+        );
+        assert_eq!(meta_edit_auto_synonym("НДС20"), "НДС20");
     }
 
     #[test]
@@ -16036,6 +16261,7 @@ pub(crate) struct MetaCompileAttr {
 
 pub(crate) struct MetaCompileTabularSection {
     pub(crate) name: String,
+    pub(crate) synonym: String,
     pub(crate) columns: Vec<MetaCompileAttr>,
 }
 
@@ -16077,8 +16303,14 @@ pub(crate) fn meta_compile_tabular_sections(
                 .and_then(Value::as_str)
                 .ok_or_else(|| "tabular section is missing name".to_string())?
                 .to_string();
+            let synonym = object
+                .get("synonym")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| split_meta_camel_case(&name));
             result.push(MetaCompileTabularSection {
                 name,
+                synonym,
                 columns: meta_compile_attributes(object.get("attributes")),
             });
         }
@@ -16086,6 +16318,7 @@ pub(crate) fn meta_compile_tabular_sections(
         for (name, columns) in object {
             result.push(MetaCompileTabularSection {
                 name: name.to_string(),
+                synonym: split_meta_camel_case(name),
                 columns: meta_compile_attributes(Some(columns)),
             });
         }
@@ -16356,12 +16589,7 @@ pub(crate) fn emit_meta_tabular_section<F>(
         "{indent}\t\t<Name>{}</Name>",
         escape_xml(&section.name)
     ));
-    emit_meta_mltext(
-        lines,
-        &format!("{indent}\t\t"),
-        "Synonym",
-        &split_meta_camel_case(&section.name),
-    );
+    emit_meta_mltext(lines, &format!("{indent}\t\t"), "Synonym", &section.synonym);
     lines.push(format!("{indent}\t\t<Comment/>"));
     lines.push(format!("{indent}\t\t<ToolTip/>"));
     lines.push(format!(
@@ -16808,6 +17036,54 @@ pub(crate) fn split_meta_camel_case(name: &str) -> String {
     }
 }
 
+pub(crate) fn meta_edit_auto_synonym(name: &str) -> String {
+    if name.is_empty() {
+        return String::new();
+    }
+    let mut result = String::new();
+    let mut previous: Option<char> = None;
+    for ch in name.chars() {
+        if matches!(
+            previous,
+            Some(previous)
+                if (previous.is_lowercase() && (ch.is_uppercase() || ch.is_ascii_digit()))
+                    || (previous.is_ascii_digit() && ch.is_alphabetic())
+        ) {
+            result.push(' ');
+        }
+        result.push(ch);
+        previous = Some(ch);
+    }
+    if !name.chars().any(char::is_lowercase) {
+        return result;
+    }
+    let mut chars = result.chars();
+    match chars.next() {
+        Some(first) => format!("{}{}", first, chars.as_str().to_lowercase()),
+        None => result,
+    }
+}
+
+pub(crate) fn meta_edit_parse_attr(value: &Value) -> MetaCompileAttr {
+    let mut attr = meta_compile_parse_attr(value);
+    let has_explicit_synonym = value
+        .as_object()
+        .is_some_and(|object| object.contains_key("synonym"));
+    if !has_explicit_synonym {
+        attr.synonym = meta_edit_auto_synonym(&attr.name);
+    }
+    attr
+}
+
+pub(crate) fn meta_edit_string_arg_preserve_empty<'a>(
+    args: &'a Map<String, Value>,
+    names: &[&str],
+) -> Option<&'a str> {
+    names
+        .iter()
+        .find_map(|name| args.get(*name).and_then(Value::as_str))
+}
+
 pub(crate) fn register_compiled_meta_in_configuration(
     output_dir: &Path,
     child_tag: &str,
@@ -17003,12 +17279,16 @@ fn edit_meta_with_mode(
                     provenance: None,
                 }
             };
+            let synonym = meta_edit_string_arg_preserve_empty(args, &["synonym", "Synonym"]);
             meta_edit_apply_inline_operation(
                 &mut xml_text,
                 &object_type,
                 &object_name,
-                operation,
-                value,
+                MetaEditInlineRequest {
+                    operation,
+                    value,
+                    synonym,
+                },
                 authorization.policy,
                 &mut counts,
             )?;
@@ -17443,15 +17723,45 @@ pub(crate) fn split_meta_edit_batch_items<'a>(
     Ok(items)
 }
 
+pub(crate) fn meta_edit_synonym_for_batch<'a>(
+    operation: &str,
+    item_count: usize,
+    synonym: Option<&'a str>,
+) -> Result<Option<&'a str>, String> {
+    if synonym.is_some() {
+        if !matches!(operation, "add-resource" | "add-ts" | "add-ts-attribute") {
+            return Err(format!(
+                "{operation} accepts top-level synonym only for add-resource, add-ts, or add-ts-attribute"
+            ));
+        }
+        if item_count != 1 {
+            return Err(format!(
+                "{operation} accepts top-level synonym only with a single Value item"
+            ));
+        }
+    }
+    Ok(synonym)
+}
+
+pub(crate) struct MetaEditInlineRequest<'a> {
+    pub(crate) operation: &'a str,
+    pub(crate) value: &'a str,
+    pub(crate) synonym: Option<&'a str>,
+}
+
 pub(crate) fn meta_edit_apply_inline_operation(
     xml_text: &mut String,
     object_type: &str,
     object_name: &str,
-    operation: &str,
-    value: &str,
+    request: MetaEditInlineRequest<'_>,
     line_number_length_policy: MetaEditLineNumberLengthPolicy,
     counts: &mut MetaEditCounts,
 ) -> Result<(), String> {
+    let MetaEditInlineRequest {
+        operation,
+        value,
+        synonym,
+    } = request;
     let (action, target) = operation
         .split_once('-')
         .ok_or_else(|| format!("Invalid meta-edit Operation: {operation}"))?;
@@ -17472,8 +17782,10 @@ pub(crate) fn meta_edit_apply_inline_operation(
     if target == "ts-attribute" {
         match action {
             "add" => {
-                for item in split_meta_edit_batch_items(value, operation)? {
-                    meta_edit_add_tabular_section_attribute(xml_text, item)?;
+                let items = split_meta_edit_batch_items(value, operation)?;
+                let child_synonym = meta_edit_synonym_for_batch(operation, items.len(), synonym)?;
+                for item in items {
+                    meta_edit_add_tabular_section_attribute(xml_text, item, child_synonym)?;
                     counts.added += 1;
                 }
             }
@@ -17502,7 +17814,9 @@ pub(crate) fn meta_edit_apply_inline_operation(
 
     match action {
         "add" => {
-            for item in split_meta_edit_batch_items(value, operation)? {
+            let items = split_meta_edit_batch_items(value, operation)?;
+            let child_synonym = meta_edit_synonym_for_batch(operation, items.len(), synonym)?;
+            for item in items {
                 let item_value = Value::String(item.to_string());
                 meta_edit_add_child_value(
                     xml_text,
@@ -17510,6 +17824,7 @@ pub(crate) fn meta_edit_apply_inline_operation(
                     object_name,
                     child_type,
                     &item_value,
+                    child_synonym,
                 )?;
                 counts.added += 1;
             }
@@ -17621,7 +17936,7 @@ pub(crate) fn meta_edit_apply_definition_add(
         let child_type = meta_edit_child_type_key(raw_child_type)
             .ok_or_else(|| format!("Unknown add child type: {raw_child_type}"))?;
         for item in meta_edit_definition_items(items) {
-            meta_edit_add_child_value(xml_text, object_type, object_name, child_type, &item)?;
+            meta_edit_add_child_value(xml_text, object_type, object_name, child_type, &item, None)?;
             counts.added += 1;
         }
     }
@@ -18029,11 +18344,13 @@ pub(crate) fn meta_edit_add_child_value(
     object_name: &str,
     child_type: &str,
     value: &Value,
+    synonym: Option<&str>,
 ) -> Result<(), String> {
     let (value, position) = meta_edit_extract_insert_position(value)?;
     match child_type {
         "attributes" => {
-            let attr = meta_compile_parse_attr(&value);
+            let mut attr = meta_edit_parse_attr(&value);
+            meta_edit_apply_child_synonym(&mut attr.synonym, synonym);
             if attr.name.is_empty() {
                 return Err("add-attribute requires Value like Name: Type".to_string());
             }
@@ -18051,7 +18368,8 @@ pub(crate) fn meta_edit_add_child_value(
             )
         }
         "tabularSections" => {
-            let section = meta_edit_tabular_section_from_value(&value)?;
+            let mut section = meta_edit_tabular_section_from_value(&value)?;
+            meta_edit_apply_child_synonym(&mut section.synonym, synonym);
             meta_edit_ensure_top_child_name_free(xml_text, "TabularSection", &section.name)?;
             let mut lines = Vec::new();
             let mut next_uuid = fresh_meta_compile_uuid;
@@ -18071,7 +18389,8 @@ pub(crate) fn meta_edit_add_child_value(
             )
         }
         "dimensions" | "resources" => {
-            let attr = meta_compile_parse_attr(&value);
+            let mut attr = meta_edit_parse_attr(&value);
+            meta_edit_apply_child_synonym(&mut attr.synonym, synonym);
             if attr.name.is_empty() {
                 return Err(format!("add-{child_type} requires Value like Name: Type"));
             }
@@ -18095,7 +18414,8 @@ pub(crate) fn meta_edit_add_child_value(
             meta_edit_insert_top_child_object_with_position(xml_text, tag, &position, &lines)
         }
         "enumValues" => {
-            let enum_value = meta_edit_enum_value_from_value(&value)?;
+            let mut enum_value = meta_edit_enum_value_from_value(&value)?;
+            meta_edit_apply_child_synonym(&mut enum_value.synonym, synonym);
             validate_meta_compile_name("meta.edit enum value", &enum_value.name)?;
             meta_edit_ensure_top_child_name_free(xml_text, "EnumValue", &enum_value.name)?;
             let mut lines = Vec::new();
@@ -18109,7 +18429,7 @@ pub(crate) fn meta_edit_add_child_value(
             )
         }
         "columns" => {
-            let column_value = meta_edit_column_value(&value);
+            let column_value = meta_edit_column_value_with_synonym(&value, synonym);
             let column_name = meta_edit_value_name(&column_value)
                 .ok_or_else(|| "add-column requires non-empty name".to_string())?;
             validate_meta_compile_name("meta.edit column", &column_name)?;
@@ -18131,10 +18451,16 @@ pub(crate) fn meta_edit_add_child_value(
             meta_edit_ensure_top_child_name_free(xml_text, tag, &name)?;
             let mut lines = Vec::new();
             let mut next_uuid = fresh_meta_compile_uuid;
-            emit_meta_simple_child(&mut lines, "\t\t\t", tag, &name, &mut next_uuid);
+            emit_meta_simple_child(&mut lines, "\t\t\t", tag, &name, synonym, &mut next_uuid);
             meta_edit_insert_top_child_object_with_position(xml_text, tag, &position, &lines)
         }
         other => Err(format!("Unsupported add child type: {other}")),
+    }
+}
+
+fn meta_edit_apply_child_synonym(target: &mut String, synonym: Option<&str>) {
+    if let Some(synonym) = synonym {
+        *target = synonym.to_string();
     }
 }
 
@@ -18199,6 +18525,7 @@ pub(crate) fn meta_edit_modify_tabular_sections_from_definition(
                             xml_text,
                             section_name,
                             &item,
+                            None,
                         )?;
                         counts.added += 1;
                     }
@@ -18688,6 +19015,11 @@ pub(crate) fn meta_edit_tabular_section_from_value(
         .or_else(|| object.get("реквизиты"));
     let section = MetaCompileTabularSection {
         name: name.to_string(),
+        synonym: object
+            .get("synonym")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| meta_edit_auto_synonym(name)),
         columns: meta_compile_attributes(columns_value),
     };
     validate_meta_compile_tabular_section_types(&section, "meta.edit tabular section")?;
@@ -18718,11 +19050,28 @@ pub(crate) fn meta_edit_column_value(value: &Value) -> Value {
     value.clone()
 }
 
+pub(crate) fn meta_edit_column_value_with_synonym(value: &Value, synonym: Option<&str>) -> Value {
+    let value = meta_edit_column_value(value);
+    let Some(synonym) = synonym else {
+        return value;
+    };
+    let mut object = value.as_object().cloned().unwrap_or_else(|| {
+        let mut object = Map::new();
+        if let Some(name) = value.as_str() {
+            object.insert("name".to_string(), Value::String(name.to_string()));
+        }
+        object
+    });
+    object.insert("synonym".to_string(), Value::String(synonym.to_string()));
+    Value::Object(object)
+}
+
 pub(crate) fn emit_meta_simple_child<F>(
     lines: &mut Vec<String>,
     indent: &str,
     tag: &str,
     name: &str,
+    synonym: Option<&str>,
     next_uuid: &mut F,
 ) where
     F: FnMut() -> String,
@@ -18730,12 +19079,10 @@ pub(crate) fn emit_meta_simple_child<F>(
     lines.push(format!("{indent}<{tag} uuid=\"{}\">", next_uuid()));
     lines.push(format!("{indent}\t<Properties>"));
     lines.push(format!("{indent}\t\t<Name>{}</Name>", escape_xml(name)));
-    emit_meta_mltext(
-        lines,
-        &format!("{indent}\t\t"),
-        "Synonym",
-        &split_meta_camel_case(name),
-    );
+    let synonym = synonym
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| split_meta_camel_case(name));
+    emit_meta_mltext(lines, &format!("{indent}\t\t"), "Synonym", &synonym);
     lines.push(format!("{indent}\t\t<Comment/>"));
     match tag {
         "Form" => {
@@ -18851,7 +19198,7 @@ pub(crate) fn meta_edit_add_attribute(
     object_type: &str,
     raw_value: &str,
 ) -> Result<(), String> {
-    let attr = meta_compile_parse_attr(&Value::String(raw_value.trim().to_string()));
+    let attr = meta_edit_parse_attr(&Value::String(raw_value.trim().to_string()));
     if attr.name.is_empty() {
         return Err("add-attribute requires Value like Name: Type".to_string());
     }
@@ -18896,6 +19243,7 @@ pub(crate) fn meta_edit_parse_tabular_section(
     let Some((name, raw_columns)) = value.split_once(':') else {
         let section = MetaCompileTabularSection {
             name: value.to_string(),
+            synonym: meta_edit_auto_synonym(value),
             columns: Vec::new(),
         };
         validate_meta_compile_tabular_section_types(&section, "meta.edit add-ts")?;
@@ -18910,6 +19258,7 @@ pub(crate) fn meta_edit_parse_tabular_section(
     let columns = meta_edit_parse_tabular_section_columns(raw_columns)?;
     let section = MetaCompileTabularSection {
         name: name.to_string(),
+        synonym: meta_edit_auto_synonym(name),
         columns,
     };
     validate_meta_compile_tabular_section_types(&section, "meta.edit add-ts")?;
@@ -18944,7 +19293,7 @@ pub(crate) fn meta_edit_parse_tabular_section_columns(
     column_defs
         .into_iter()
         .map(|column| {
-            let attr = meta_compile_parse_attr(&Value::String(column.clone()));
+            let attr = meta_edit_parse_attr(&Value::String(column.clone()));
             if attr.name.is_empty() || attr.type_name.is_empty() {
                 return Err(format!(
                     "add-ts column requires Value like Name: Type, got: {column}"
@@ -18986,6 +19335,7 @@ pub(crate) fn meta_edit_looks_like_attr_definition(value: &str) -> bool {
 pub(crate) fn meta_edit_add_tabular_section_attribute(
     xml_text: &mut String,
     raw_value: &str,
+    synonym: Option<&str>,
 ) -> Result<(), String> {
     let (section_name, attr_text) = raw_value.trim().split_once('.').ok_or_else(|| {
         "add-ts-attribute requires Value like Section.Attribute: Type".to_string()
@@ -18995,6 +19345,7 @@ pub(crate) fn meta_edit_add_tabular_section_attribute(
         xml_text,
         section_name,
         &Value::String(attr_text.trim().to_string()),
+        synonym,
     )
 }
 
@@ -19002,9 +19353,11 @@ pub(crate) fn meta_edit_add_tabular_section_attribute_value(
     xml_text: &mut String,
     section_name: &str,
     value: &Value,
+    synonym: Option<&str>,
 ) -> Result<(), String> {
     let (value, position) = meta_edit_extract_insert_position(value)?;
-    let attr = meta_compile_parse_attr(&value);
+    let mut attr = meta_edit_parse_attr(&value);
+    meta_edit_apply_child_synonym(&mut attr.synonym, synonym);
     if section_name.is_empty() || attr.name.is_empty() {
         return Err("add-ts-attribute requires Value like Section.Attribute: Type".to_string());
     }
