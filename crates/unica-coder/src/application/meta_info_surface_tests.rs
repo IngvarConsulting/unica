@@ -213,12 +213,12 @@ fn fixture_workspace(label: &str, fixture: &str, files: &[&str]) -> TempWorkspac
 }
 
 #[test]
-fn meta_info_private_coordinator_returns_local_structure_validation_and_default_related_sections() {
+fn info_without_sections_is_local_only() {
     let workspace = create_info_workspace("local");
 
     let result = call_info(
         workspace.path(),
-        [("limit".to_string(), Value::Number(1_u64.into()))],
+        [("limit".to_string(), Value::Number(50_u64.into()))],
     );
 
     assert!(result.ok, "{:?}", result.errors);
@@ -257,11 +257,7 @@ fn meta_info_private_coordinator_returns_local_structure_validation_and_default_
     ] {
         assert!(data["collections"][collection].is_array(), "{collection}");
     }
-    assert!(data["related"]["modules"].is_object());
-    assert!(data["related"]["roles"].is_object());
-    assert!(data["related"]["subscriptions"].is_object());
-    assert!(data["related"]["functionalOptions"].is_object());
-    assert!(data["related"].get("predefinedItems").is_none());
+    assert_eq!(data["related"], serde_json::json!({}));
     assert!(result.stdout.is_none());
 }
 

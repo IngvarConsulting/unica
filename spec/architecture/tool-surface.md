@@ -833,9 +833,9 @@ Inspect one metadata object with validation and related sections.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `limit` | integer | нет | Maximum related items returned for each requested section. |
+| `limit` | integer (`1..=50`) | нет | Maximum related items returned for each explicitly requested section. |
 | `metadataPath` | string | да | Logical metadata path of the object to inspect. |
-| `sections` | array | нет | Related metadata sections to include in the typed answer. |
+| `sections` | array | нет | Related metadata sections to include in the typed answer; omitted or `[]` keeps the inspection local-only. |
 | `sourceSet` | string | да | Exact Configuration source-set name from v8project.yaml. |
 
 **Результат сейчас:** `data`: логический адрес, локальная структура и валидация объекта, а также выбранные связанные секции из приватного RLM-провайдера (отвечают типизированным `data`)

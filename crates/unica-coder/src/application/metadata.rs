@@ -38,12 +38,6 @@ const INFO_SECTIONS: &[(&str, MetaInfoSection)] = &[
     ("functionalOptions", MetaInfoSection::FunctionalOptions),
     ("predefinedItems", MetaInfoSection::PredefinedItems),
 ];
-const DEFAULT_INFO_SECTIONS: &[(&str, MetaInfoSection)] = &[
-    ("modules", MetaInfoSection::Modules),
-    ("roles", MetaInfoSection::Roles),
-    ("subscriptions", MetaInfoSection::Subscriptions),
-    ("functionalOptions", MetaInfoSection::FunctionalOptions),
-];
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MetaInfoRequest {
     pub(crate) source_set: String,
@@ -132,7 +126,11 @@ fn invoke_info(
         Err(failure) => return Ok(metadata_failure("metadata read failed", failure, None)),
     };
     let validation = ports.validate_metadata_read(&read.validation_subject, context, cancellation);
-    let related = ports.read_metadata_related(request, &read.local, context, cancellation);
+    let related = if request.sections.is_empty() {
+        empty_related_sections()
+    } else {
+        ports.read_metadata_related(request, &read.local, context, cancellation)
+    };
     let failed = validation.status == MetaValidationStatus::Failed;
     let diagnostics = validation.diagnostics.clone();
     let data = serde_json::to_value(read.local.into_info(validation, related))
@@ -150,6 +148,16 @@ fn invoke_info(
         Vec::new(),
         Vec::new(),
     ))
+}
+
+fn empty_related_sections() -> crate::domain::metadata::MetaRelatedSections {
+    crate::domain::metadata::MetaRelatedSections {
+        modules: None,
+        roles: None,
+        subscriptions: None,
+        functional_options: None,
+        predefined_items: None,
+    }
 }
 
 fn invoke_mutation(
@@ -306,7 +314,7 @@ pub(crate) fn parse_metadata_request(
         MetadataOperation::Info => {
             let metadata_path = required_metadata_path(args, "metadataPath")?;
             let sections = parse_info_sections(args.get("sections"))?;
-            let limit = parse_positive_usize(args.get("limit"), "limit", 20)?;
+            let limit = parse_bounded_usize(args.get("limit"), "limit", 20, 50)?;
             Ok(MetadataRequest::Info(MetaInfoRequest {
                 source_set,
                 metadata_path,
@@ -395,10 +403,7 @@ fn reject_unknown_top_level(
 
 fn parse_info_sections(value: Option<&Value>) -> Result<Vec<MetaInfoSection>, MetaDiagnostic> {
     let Some(value) = value else {
-        return Ok(DEFAULT_INFO_SECTIONS
-            .iter()
-            .map(|(_, section)| *section)
-            .collect());
+        return Ok(Vec::new());
     };
     let values = value
         .as_array()
@@ -1133,10 +1138,11 @@ fn optional_bool_at(
         .transpose()
 }
 
-fn parse_positive_usize(
+fn parse_bounded_usize(
     value: Option<&Value>,
     field: &str,
     default: usize,
+    maximum: usize,
 ) -> Result<usize, MetaFailure> {
     let Some(value) = value else {
         return Ok(default);
@@ -1144,8 +1150,13 @@ fn parse_positive_usize(
     let value = value
         .as_u64()
         .and_then(|value| usize::try_from(value).ok())
-        .filter(|value| *value > 0)
-        .ok_or_else(|| invalid(field, format!("`{field}` must be a positive integer")))?;
+        .filter(|value| (1..=maximum).contains(value))
+        .ok_or_else(|| {
+            invalid(
+                field,
+                format!("`{field}` must be an integer between 1 and {maximum}"),
+            )
+        })?;
     Ok(value)
 }
 
@@ -1193,8 +1204,8 @@ pub(crate) fn metadata_input_schema(operation: MetadataOperation) -> Value {
                         "type": "string",
                         "enum": INFO_SECTIONS.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
                     },
-                    "default": DEFAULT_INFO_SECTIONS.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
-                    "description": "Related metadata sections to include in the typed answer.",
+                    "default": [],
+                    "description": "Related metadata sections to include in the typed answer; omit or pass [] for local-only inspection.",
                 }),
             );
             properties.insert(
@@ -1202,8 +1213,9 @@ pub(crate) fn metadata_input_schema(operation: MetadataOperation) -> Value {
                 json!({
                     "type": "integer",
                     "minimum": 1,
+                    "maximum": 50,
                     "default": 20,
-                    "description": "Maximum related items returned for each requested section."
+                    "description": "Maximum related items returned for each requested section (1 through 50)."
                 }),
             );
             vec!["sourceSet", "metadataPath"]
@@ -2114,6 +2126,35 @@ mod tests {
         )
     }
 
+    fn info_ports() -> (FakeMetadataPorts, Arc<Mutex<CoordinatorState>>) {
+        let state = Arc::new(Mutex::new(CoordinatorState::default()));
+        let subject = validation_subject();
+        (
+            FakeMetadataPorts {
+                state: Arc::clone(&state),
+                cache_events: Arc::new(Mutex::new(Vec::new())),
+                read: Mutex::new(Some(Ok(MetadataRead {
+                    local: MetaLocalInfo {
+                        metadata_path: subject.target.clone(),
+                        kind: MetadataKind::Document,
+                        name: "Order".to_string(),
+                        synonym: Some("Order".to_string()),
+                        support: MetaSupportStatus::Supported,
+                        properties: Vec::new(),
+                        owners: Vec::new(),
+                        collections: empty_collections(),
+                    },
+                    validation_subject: subject,
+                }))),
+                related: unavailable_related(),
+                validation: passed_validation(),
+                prepared: Mutex::new(None),
+                cancel_after_validation: None,
+            },
+            state,
+        )
+    }
+
     fn add_args(dry_run: bool) -> Map<String, Value> {
         object(json!({
             "sourceSet": "main",
@@ -2156,7 +2197,8 @@ mod tests {
             &object(json!({
                 "sourceSet": "main",
                 "metadataPath": "Document.Order",
-                "sections": ["modules", "roles", "subscriptions", "functionalOptions", "predefinedItems"]
+                "sections": ["modules", "roles", "subscriptions", "functionalOptions", "predefinedItems"],
+                "limit": 50,
             })),
             &coordinator_context(),
             &CancellationToken::new(),
@@ -2171,6 +2213,33 @@ mod tests {
             "unavailable"
         );
         assert_eq!(state.lock().unwrap().calls, ["read", "validate", "related"]);
+    }
+
+    #[test]
+    fn coordinator_info_with_no_selected_sections_skips_related_provider() {
+        for sections in [None, Some(json!([]))] {
+            let (ports, state) = info_ports();
+            let mut args = object(json!({
+                "sourceSet": "main",
+                "metadataPath": "Document.Order",
+            }));
+            if let Some(sections) = sections {
+                args.insert("sections".to_string(), sections);
+            }
+
+            let outcome = invoke(
+                MetadataOperation::Info,
+                &ports,
+                &args,
+                &coordinator_context(),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+            assert!(outcome.adapter.ok);
+            assert_eq!(outcome.data.as_ref().unwrap()["related"], json!({}));
+            assert_eq!(state.lock().unwrap().calls, ["read", "validate"]);
+        }
     }
 
     #[test]
@@ -2406,15 +2475,7 @@ mod tests {
         };
         assert_eq!(info.source_set, "main");
         assert_eq!(info.metadata_path.as_str(), "Document.Заказ");
-        assert_eq!(
-            info.sections,
-            vec![
-                MetaInfoSection::Modules,
-                MetaInfoSection::Roles,
-                MetaInfoSection::Subscriptions,
-                MetaInfoSection::FunctionalOptions,
-            ]
-        );
+        assert!(info.sections.is_empty());
         assert_eq!(info.limit, 20);
 
         for kind in MetadataKind::ALL {
@@ -2435,6 +2496,37 @@ mod tests {
         );
         assert_eq!(error.code, MetaDiagnosticCode::InvalidArguments);
         assert_eq!(error.field.as_deref(), Some("ObjectPath"));
+    }
+
+    #[test]
+    fn info_limit_is_bounded() {
+        let schema = metadata_input_schema(MetadataOperation::Info);
+        assert_eq!(schema["properties"]["sections"]["default"], json!([]));
+        assert_eq!(schema["properties"]["limit"]["maximum"], json!(50));
+
+        let MetadataRequest::Info(info) = parse_metadata_request(
+            MetadataOperation::Info,
+            &object(json!({
+                "sourceSet": "main",
+                "metadataPath": "Document.Order",
+                "limit": 50,
+            })),
+        )
+        .unwrap() else {
+            panic!("expected info request")
+        };
+        assert_eq!(info.limit, 50);
+
+        let error = diagnostic(
+            MetadataOperation::Info,
+            json!({
+                "sourceSet": "main",
+                "metadataPath": "Document.Order",
+                "limit": 51,
+            }),
+        );
+        assert_eq!(error.code, MetaDiagnosticCode::InvalidArguments);
+        assert_eq!(error.field.as_deref(), Some("limit"));
     }
 
     #[test]
