@@ -1,3 +1,9 @@
+<p align="center">
+  <a href="docs/visual-kit/index.html">
+    <img src="docs/visual-kit/logos/unica-logo-letter-transparent-blue.svg" alt="Unica" width="420">
+  </a>
+</p>
+
 # Unica
 
 Unica (Ю&#x301;ника) — публичный плагин [Codex](https://openai.com/codex/) и
