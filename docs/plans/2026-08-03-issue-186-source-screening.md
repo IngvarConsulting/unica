@@ -119,22 +119,49 @@ $issue186Repositories = @(
   'alonehobo/1c-trusted-gateway'
 )
 
-$snapshotRows = foreach ($issue186Repository in $issue186Repositories) {
-  $repositoryMetadata = gh api "repos/$issue186Repository" | ConvertFrom-Json
-  $defaultBranch = $repositoryMetadata.default_branch
-  $commitMetadata = gh api "repos/$issue186Repository/commits/$defaultBranch" | ConvertFrom-Json
-  [ordered]@{
-    repository = $issue186Repository
-    canonicalUrl = $repositoryMetadata.html_url
-    defaultBranch = $defaultBranch
-    commit = $commitMetadata.sha
-    snapshotDate = '2026-08-03'
-    archived = $repositoryMetadata.archived
-    githubLicense = $repositoryMetadata.license.spdx_id
-  } | ConvertTo-Json -Compress
+function Invoke-Issue186GhApiJson {
+  param([Parameter(Mandatory = $true)][string]$Endpoint)
+
+  $apiOutput = @(& gh api $Endpoint 2>&1)
+  $apiExitCode = $LASTEXITCODE
+  $apiText = ($apiOutput | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
+  if ($apiExitCode -ne 0) {
+    throw $apiText
+  }
+  $apiText | ConvertFrom-Json
 }
-$snapshotRows | Set-Content -Encoding UTF8 '.build\issue-186\snapshots.jsonl'
-Get-Content -Encoding UTF8 '.build\issue-186\snapshots.jsonl'
+
+$snapshotRows = foreach ($issue186Repository in $issue186Repositories) {
+  try {
+    $repositoryMetadata = Invoke-Issue186GhApiJson "repos/$issue186Repository"
+    $defaultBranch = $repositoryMetadata.default_branch
+    $commitMetadata = Invoke-Issue186GhApiJson "repos/$issue186Repository/commits/$defaultBranch"
+    [ordered]@{
+      repository = $issue186Repository
+      canonicalUrl = $repositoryMetadata.html_url
+      defaultBranch = $defaultBranch
+      commit = $commitMetadata.sha
+      snapshotDate = '2026-08-03'
+      archived = $repositoryMetadata.archived
+      githubLicense = $repositoryMetadata.license.spdx_id
+    } | ConvertTo-Json -Compress
+  }
+  catch {
+    [ordered]@{
+      repository = $issue186Repository
+      snapshotDate = '2026-08-03'
+      error = $_.Exception.Message
+    } | ConvertTo-Json -Compress
+  }
+}
+$snapshotPath = '.build\issue-186\snapshots.jsonl'
+$snapshotRows | Set-Content -Encoding UTF8 $snapshotPath
+$writtenSnapshotRows = @(Get-Content -Encoding UTF8 $snapshotPath)
+if ($writtenSnapshotRows.Count -ne $issue186Repositories.Count) {
+  throw "Snapshot inventory mismatch: expected $($issue186Repositories.Count), wrote $($writtenSnapshotRows.Count)"
+}
+$writtenSnapshotRows | ForEach-Object { $_ | ConvertFrom-Json } | Out-Null
+$writtenSnapshotRows
 ```
 
 Run GitHub network commands outside the sandbox as required by AGENTS.md. If a repository cannot be resolved, append a JSON line with its identifier, `snapshotDate`, and exact error instead of removing it from the inventory.

@@ -53,12 +53,77 @@ Run:
 ```powershell
 $source = Get-Content -Raw -Encoding UTF8 'docs/provenance/reviews/2026-08-03-issue-186-source-screening.md'
 $russian = Get-Content -Raw -Encoding UTF8 'docs/provenance/reviews/2026-08-03-issue-186-source-screening-ru.md'
-$repositories = [regex]::Matches($source, '^### `([^`]+/[^`]+)`$', 'Multiline') | ForEach-Object { $_.Groups[1].Value }
-$missing = $repositories | Where-Object { $russian -notmatch [regex]::Escape($_) }
-"sources=$($repositories.Count) missing=$($missing.Count)"
+$englishRows = [regex]::Matches(
+  $source,
+  '(?m)^\| \[([^\]]+/[^\]]+)\]\([^)]+\) \|.*\| `(deep-dive|defer|reject)` \|\r?$'
+)
+$russianRows = [regex]::Matches(
+  $russian,
+  '(?m)^\| `([^`]+/[^`]+)` \|.*\| `(deep-dive|defer|reject)` \|\r?$'
+)
+$englishDecisions = @{}
+foreach ($row in $englishRows) {
+  $englishDecisions[$row.Groups[1].Value] = $row.Groups[2].Value
+}
+$russianDecisions = @{}
+foreach ($row in $russianRows) {
+  $russianDecisions[$row.Groups[1].Value] = $row.Groups[2].Value
+}
+if ($englishRows.Count -ne 19 -or $englishDecisions.Count -ne 19) {
+  throw "English inventory must contain 19 unique summary rows"
+}
+if ($russianRows.Count -ne 19 -or $russianDecisions.Count -ne 19) {
+  throw "Russian inventory must contain 19 unique summary rows"
+}
+$missing = @($englishDecisions.Keys | Where-Object { -not $russianDecisions.ContainsKey($_) })
+$extra = @($russianDecisions.Keys | Where-Object { -not $englishDecisions.ContainsKey($_) })
+if ($missing.Count -or $extra.Count) {
+  throw "Repository set drift: missing=$($missing -join ', '); extra=$($extra -join ', ')"
+}
+$decisionMismatches = @(
+  $englishDecisions.Keys | Where-Object {
+    $englishDecisions[$_] -ne $russianDecisions[$_]
+  }
+)
+if ($decisionMismatches.Count) {
+  throw "Decision drift: $($decisionMismatches -join ', ')"
+}
+$englishDeepDives = @(
+  $englishDecisions.GetEnumerator() |
+    Where-Object { $_.Value -eq 'deep-dive' } |
+    ForEach-Object { $_.Key } |
+    Sort-Object
+)
+$russianDeepDives = @(
+  $russianDecisions.GetEnumerator() |
+    Where-Object { $_.Value -eq 'deep-dive' } |
+    ForEach-Object { $_.Key } |
+    Sort-Object
+)
+$deepDiveDrift = @(Compare-Object $englishDeepDives $russianDeepDives)
+if ($englishDeepDives.Count -ne 7 -or $deepDiveDrift.Count) {
+  throw "Deep-dive set drift: English count=$($englishDeepDives.Count); differences=$($deepDiveDrift -join ', ')"
+}
+$themePairs = @(
+  [pscustomobject]@{ English = '### Workflow, skills, and context management'; Russian = '### 1. Общая экспериментальная рамка: workflow/context' },
+  [pscustomobject]@{ English = '### Code intelligence'; Russian = '### 2. Code intelligence' },
+  [pscustomobject]@{ English = '### Live environments, data, and safety'; Russian = '### 3. Live data/safety' },
+  [pscustomobject]@{ English = '### Artifacts and documentation'; Russian = '### 4. Artifacts/documentation' },
+  [pscustomobject]@{ English = '### Benchmark and evaluation'; Russian = '### 5. Benchmark/evaluation' }
+)
+$russianThemeHeadings = [regex]::Matches($russian, '(?m)^### \d+\. .+\r?$')
+if ($russianThemeHeadings.Count -ne $themePairs.Count) {
+  throw "Russian theme count drift: expected $($themePairs.Count), found $($russianThemeHeadings.Count)"
+}
+foreach ($themePair in $themePairs) {
+  if (-not $source.Contains($themePair.English) -or -not $russian.Contains($themePair.Russian)) {
+    throw "Theme mapping drift: $($themePair.English) -> $($themePair.Russian)"
+  }
+}
+"sources=$($englishDecisions.Count) russian=$($russianDecisions.Count) decisions=$($englishDecisions.Count) deep-dives=$($englishDeepDives.Count) themes=$($themePairs.Count)"
 ```
 
-Expected: `sources=19 missing=0`.
+Expected: `sources=19 russian=19 decisions=19 deep-dives=7 themes=5`.
 
 - [ ] **Step 6: Commit**
 
@@ -93,10 +158,26 @@ Run:
 ```powershell
 git diff --check upstream/main...HEAD
 python -m pytest tests/ci/test_design_documents.py -q -p no:cacheprovider
-git diff --exit-code upstream/main...HEAD -- crates plugins spec tests scripts
+$allowedPaths = @(
+  'docs/design/2026-08-03-issue-186-research-slicing-design.md',
+  'docs/design/2026-08-04-issue-186-russian-screening-design.md',
+  'docs/plans/2026-08-03-issue-186-source-screening.md',
+  'docs/plans/2026-08-04-issue-186-russian-screening.md',
+  'docs/provenance/reviews/2026-08-03-issue-186-source-screening.md',
+  'docs/provenance/reviews/2026-08-03-issue-186-source-screening-ru.md'
+)
+$changedPaths = @(git diff --name-only upstream/main...HEAD)
+if ($LASTEXITCODE -ne 0) {
+  throw 'Unable to enumerate changed paths'
+}
+$unexpectedPaths = @($changedPaths | Where-Object { $_ -notin $allowedPaths })
+if ($unexpectedPaths.Count) {
+  throw "Unexpected changed paths: $($unexpectedPaths -join ', ')"
+}
+"changed=$($changedPaths.Count) unexpected=$($unexpectedPaths.Count)"
 ```
 
-Expected: `git diff --check` без вывода; `8 passed`; последний `git diff` без вывода.
+Expected: `git diff --check` без вывода; `8 passed`; `changed=6 unexpected=0`.
 
 - [ ] **Step 4: Опубликовать дополнение в существующий PR**
 
