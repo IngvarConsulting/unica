@@ -639,6 +639,16 @@ const REGISTER_RELATION_TARGETS: &[MetadataKind] = &[
     MetadataKind::AccountingRegister,
     MetadataKind::CalculationRegister,
 ];
+const BASED_ON_RELATION_TARGETS: &[MetadataKind] = &[
+    MetadataKind::Catalog,
+    MetadataKind::Document,
+    MetadataKind::ChartOfCharacteristicTypes,
+    MetadataKind::ChartOfAccounts,
+    MetadataKind::ChartOfCalculationTypes,
+    MetadataKind::ExchangePlan,
+    MetadataKind::BusinessProcess,
+    MetadataKind::Task,
+];
 const CATALOG_RELATION_SPECS: &[MetaRelationSpec] = &[
     MetaRelationSpec {
         relation: MetaRelation::Owners,
@@ -646,7 +656,7 @@ const CATALOG_RELATION_SPECS: &[MetaRelationSpec] = &[
     },
     MetaRelationSpec {
         relation: MetaRelation::BasedOn,
-        target_policy: MetaRelationTargetPolicy::SameOwnerKind,
+        target_policy: MetaRelationTargetPolicy::MetadataKinds(BASED_ON_RELATION_TARGETS),
     },
     MetaRelationSpec {
         relation: MetaRelation::InputByString,
@@ -660,7 +670,7 @@ const DOCUMENT_RELATION_SPECS: &[MetaRelationSpec] = &[
     },
     MetaRelationSpec {
         relation: MetaRelation::BasedOn,
-        target_policy: MetaRelationTargetPolicy::SameOwnerKind,
+        target_policy: MetaRelationTargetPolicy::MetadataKinds(BASED_ON_RELATION_TARGETS),
     },
     MetaRelationSpec {
         relation: MetaRelation::InputByString,
@@ -670,7 +680,7 @@ const DOCUMENT_RELATION_SPECS: &[MetaRelationSpec] = &[
 const BASED_ON_INPUT_RELATION_SPECS: &[MetaRelationSpec] = &[
     MetaRelationSpec {
         relation: MetaRelation::BasedOn,
-        target_policy: MetaRelationTargetPolicy::SameOwnerKind,
+        target_policy: MetaRelationTargetPolicy::MetadataKinds(BASED_ON_RELATION_TARGETS),
     },
     MetaRelationSpec {
         relation: MetaRelation::InputByString,
@@ -1446,7 +1456,16 @@ mod tests {
             metadata_relation_spec(Task, MetaRelation::BasedOn)
                 .unwrap()
                 .target_policy,
-            MetaRelationTargetPolicy::SameOwnerKind
+            MetaRelationTargetPolicy::MetadataKinds(&[
+                Catalog,
+                Document,
+                ChartOfCharacteristicTypes,
+                ChartOfAccounts,
+                ChartOfCalculationTypes,
+                ExchangePlan,
+                BusinessProcess,
+                Task,
+            ])
         );
         assert_eq!(
             metadata_relation_spec(Task, MetaRelation::InputByString)
@@ -1504,6 +1523,34 @@ mod tests {
             &document,
             MetaRelation::RegisterRecords,
             &object_target("Catalog.Items"),
+        )
+        .is_err());
+        for based_on in [
+            "Catalog.Items",
+            "Document.Quote",
+            "ChartOfCharacteristicTypes.Properties",
+            "ChartOfAccounts.Main",
+            "ChartOfCalculationTypes.Accruals",
+            "ExchangePlan.Distributed",
+            "BusinessProcess.Approval",
+            "Task.Review",
+        ] {
+            assert!(
+                validate_metadata_relation_target_profile(
+                    MetadataKind::Document,
+                    &document,
+                    MetaRelation::BasedOn,
+                    &object_target(based_on),
+                )
+                .is_ok(),
+                "{based_on}"
+            );
+        }
+        assert!(validate_metadata_relation_target_profile(
+            MetadataKind::Document,
+            &document,
+            MetaRelation::BasedOn,
+            &object_target("CommonModule.Utility"),
         )
         .is_err());
 
