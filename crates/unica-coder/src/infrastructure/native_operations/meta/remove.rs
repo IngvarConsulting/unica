@@ -21,6 +21,7 @@ use crate::infrastructure::support_guard::{
 use roxmltree::Document;
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::ffi::OsString;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -256,6 +257,126 @@ fn require_meta_remove_real_path(
     }
 }
 
+#[derive(Clone, Copy)]
+struct MetaRemoveDirectoryWalkPolicy {
+    label: &'static str,
+    allow_absent_root: bool,
+}
+
+type InspectedMetaRemoveDirectoryEntry = (PathBuf, OsString, DirectoryTopologyEntryKind);
+
+fn inspect_meta_remove_directory(
+    dir: &Path,
+    depth: usize,
+    limits: MetaRemoveTraversalLimits,
+    policy: MetaRemoveDirectoryWalkPolicy,
+    visited_directories: &mut HashSet<PathBuf>,
+    visited_entries: &mut usize,
+) -> Result<Option<Vec<InspectedMetaRemoveDirectoryEntry>>, String> {
+    if depth > limits.max_depth {
+        return Err(format!(
+            "{} traversal exceeded the maximum depth of {}: {}",
+            policy.label,
+            limits.max_depth,
+            dir.display()
+        ));
+    }
+    let metadata = match fs::symlink_metadata(dir) {
+        Ok(metadata) => metadata,
+        Err(error)
+            if policy.allow_absent_root && depth == 0 && error.kind() == ErrorKind::NotFound =>
+        {
+            return Ok(None);
+        }
+        Err(error) => {
+            return Err(format!(
+                "failed to inspect {} directory {}: {error}",
+                policy.label,
+                dir.display()
+            ));
+        }
+    };
+    require_meta_remove_real_path(dir, &metadata, &format!("{} directory", policy.label))?;
+    if !metadata.is_dir() {
+        return Err(format!(
+            "{} path is not a directory: {}",
+            policy.label,
+            dir.display()
+        ));
+    }
+    let directory_identity = fs::canonicalize(dir).map_err(|error| {
+        format!(
+            "failed to resolve {} directory identity {}: {error}",
+            policy.label,
+            dir.display()
+        )
+    })?;
+    if !visited_directories.insert(directory_identity) {
+        return Err(format!(
+            "{} traversal directory cycle or duplicate identity detected before traversal: {}",
+            policy.label,
+            dir.display()
+        ));
+    }
+
+    let directory_entries = fs::read_dir(dir).map_err(|error| {
+        format!(
+            "failed to read {} directory {}: {error}",
+            policy.label,
+            dir.display()
+        )
+    })?;
+    let mut entries = Vec::new();
+    for entry in directory_entries {
+        let entry = entry.map_err(|error| {
+            format!(
+                "failed to read an entry in {} directory {}: {error}",
+                policy.label,
+                dir.display()
+            )
+        })?;
+        if *visited_entries >= limits.max_entries {
+            return Err(format!(
+                "{} traversal exceeded the maximum of {} entries: {}",
+                policy.label,
+                limits.max_entries,
+                dir.display()
+            ));
+        }
+        *visited_entries += 1;
+        entries.push(entry);
+    }
+    entries.sort_by_key(|entry| entry.file_name());
+
+    entries
+        .into_iter()
+        .map(|entry| {
+            let path = entry.path();
+            let metadata = fs::symlink_metadata(&path).map_err(|error| {
+                format!(
+                    "failed to inspect {} entry {}: {error}",
+                    policy.label,
+                    path.display()
+                )
+            })?;
+            require_meta_remove_real_path(&path, &metadata, &format!("{} entry", policy.label))?;
+            let kind = if metadata.is_dir() {
+                DirectoryTopologyEntryKind::Directory
+            } else if metadata.is_file() {
+                DirectoryTopologyEntryKind::File
+            } else {
+                return Err(format!(
+                    "{} entry has an unsupported filesystem type: {}",
+                    policy.label,
+                    path.display()
+                ));
+            };
+            Ok((path, entry.file_name(), kind))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
+}
+
 pub(super) fn plan_meta_remove_subsystem_replacements(
     dir: &Path,
     qualified_object_name: &str,
@@ -290,74 +411,33 @@ pub(super) fn plan_meta_remove_subsystem_replacements_bounded(
     visited_directories: &mut HashSet<PathBuf>,
     visited_entries: &mut usize,
 ) -> Result<(), String> {
-    if depth > limits.max_depth {
+    let Some(entries) = inspect_meta_remove_directory(
+        dir,
+        depth,
+        limits,
+        MetaRemoveDirectoryWalkPolicy {
+            label: "subsystem",
+            allow_absent_root: false,
+        },
+        visited_directories,
+        visited_entries,
+    )?
+    else {
         return Err(format!(
-            "subsystem traversal exceeded the maximum depth of {}: {}",
-            limits.max_depth,
+            "subsystem directory disappeared before traversal: {}",
             dir.display()
         ));
-    }
-    let dir_metadata = fs::symlink_metadata(dir)
-        .map_err(|err| format!("failed to inspect {}: {err}", dir.display()))?;
-    require_meta_remove_real_path(dir, &dir_metadata, "subsystem directory")?;
-    if !dir_metadata.is_dir() {
-        return Err(format!(
-            "subsystem path is not a directory: {}",
-            dir.display()
-        ));
-    }
-
-    let directory_identity = fs::canonicalize(dir).map_err(|err| {
-        format!(
-            "failed to resolve subsystem directory identity {}: {err}",
-            dir.display()
-        )
-    })?;
-    if !visited_directories.insert(directory_identity) {
-        return Err(format!(
-            "subsystem traversal directory cycle or duplicate identity detected before traversal: {}",
-            dir.display()
-        ));
-    }
-
-    let directory_entries =
-        fs::read_dir(dir).map_err(|err| format!("failed to read {}: {err}", dir.display()))?;
-    let mut entries = Vec::new();
-    for entry in directory_entries {
-        let entry =
-            entry.map_err(|err| format!("failed to read an entry in {}: {err}", dir.display()))?;
-        if *visited_entries >= limits.max_entries {
-            return Err(format!(
-                "subsystem traversal exceeded the maximum of {} entries: {}",
-                limits.max_entries,
-                dir.display()
-            ));
-        }
-        *visited_entries += 1;
-        entries.push(entry);
-    }
-    entries.sort_by_key(|entry| entry.file_name());
-
-    let mut descriptors = Vec::new();
-    for entry in entries {
-        let path = entry.path();
-        let metadata = fs::symlink_metadata(&path)
-            .map_err(|err| format!("failed to inspect {}: {err}", path.display()))?;
-        require_meta_remove_real_path(&path, &metadata, "subsystem entry")?;
-        if !metadata.is_dir() && !metadata.is_file() {
-            return Err(format!(
-                "subsystem entry has an unsupported filesystem type: {}",
-                path.display()
-            ));
-        }
-        let is_xml = path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("xml"));
-        if is_xml && metadata.is_file() {
-            descriptors.push(path);
-        }
-    }
+    };
+    let descriptors = entries
+        .into_iter()
+        .filter_map(|(path, _, kind)| {
+            let is_xml = path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("xml"));
+            (is_xml && kind == DirectoryTopologyEntryKind::File).then_some(path)
+        })
+        .collect::<Vec<_>>();
 
     for path in descriptors {
         let snapshot = read_utf8_sig_snapshot(&path)?;
@@ -1447,77 +1527,78 @@ pub(crate) fn remove_metadata_object_with_data(
             stdout.push_str("[OK]    No files to delete\n");
         }
 
+        for read in reference_scan
+            .reads
+            .iter()
+            .chain(subsystem_descriptor_reads.iter())
+        {
+            transaction
+                .guard_or_verify_exact_preimage(&read.path, &read.raw)
+                .map_err(meta_remove_stdout_error)?;
+        }
+        let mut dependency_paths = vec![config_xml.clone()];
+        dependency_paths.extend(
+            reference_scan
+                .reads
+                .iter()
+                .filter(|read| {
+                    read.path
+                        .extension()
+                        .and_then(|extension| extension.to_str())
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+                })
+                .map(|read| read.path.clone()),
+        );
+        dependency_paths.extend(
+            subsystem_descriptor_reads
+                .iter()
+                .map(|read| read.path.clone()),
+        );
+        let subsystem_descriptors = subsystem_replacements
+            .iter()
+            .map(|replacement| replacement.path.as_path())
+            .collect::<Vec<_>>();
+        let subsystem_format_dependencies =
+            subsystem_validation_format_dependency_paths(&subsystem_descriptors);
+        dependency_paths.extend(subsystem_format_dependencies);
+        dependency_paths.sort();
+        dependency_paths.dedup();
+        let dependencies = dependency_paths
+            .iter()
+            .map(PathBuf::as_path)
+            .collect::<Vec<_>>();
+        let mut trees = Vec::new();
+        if has_xml {
+            trees.push(obj_xml.as_path());
+        }
+        if has_dir {
+            trees.push(obj_dir.as_path());
+        }
+        guard_active_format_dependencies_and_xml_trees(
+            &mut transaction,
+            &dependencies,
+            &trees,
+            context,
+        )
+        .map_err(meta_remove_stdout_error)?;
+        for directory_read in &reference_scan.directory_reads {
+            if removed_paths
+                .iter()
+                .any(|removed| directory_read.path.starts_with(removed))
+            {
+                continue;
+            }
+            transaction
+                .guard_or_verify_directory_topology(
+                    directory_read.path.clone(),
+                    DirectoryMembershipSnapshot::Present(directory_read.direct_entries.clone()),
+                )
+                .map_err(meta_remove_stdout_error)?;
+        }
+
         let warnings = if dry_run {
             Vec::new()
         } else {
-            for read in reference_scan
-                .reads
-                .iter()
-                .chain(subsystem_descriptor_reads.iter())
-            {
-                transaction
-                    .guard_or_verify_exact_preimage(&read.path, &read.raw)
-                    .map_err(meta_remove_stdout_error)?;
-            }
-            let mut dependency_paths = vec![config_xml.clone()];
-            dependency_paths.extend(
-                reference_scan
-                    .reads
-                    .iter()
-                    .filter(|read| {
-                        read.path
-                            .extension()
-                            .and_then(|extension| extension.to_str())
-                            .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
-                    })
-                    .map(|read| read.path.clone()),
-            );
-            dependency_paths.extend(
-                subsystem_descriptor_reads
-                    .iter()
-                    .map(|read| read.path.clone()),
-            );
-            let subsystem_descriptors = subsystem_replacements
-                .iter()
-                .map(|replacement| replacement.path.as_path())
-                .collect::<Vec<_>>();
-            let subsystem_format_dependencies =
-                subsystem_validation_format_dependency_paths(&subsystem_descriptors);
-            dependency_paths.extend(subsystem_format_dependencies);
-            dependency_paths.sort();
-            dependency_paths.dedup();
-            let dependencies = dependency_paths
-                .iter()
-                .map(PathBuf::as_path)
-                .collect::<Vec<_>>();
-            let mut trees = Vec::new();
-            if has_xml {
-                trees.push(obj_xml.as_path());
-            }
-            if has_dir {
-                trees.push(obj_dir.as_path());
-            }
-            guard_active_format_dependencies_and_xml_trees(
-                &mut transaction,
-                &dependencies,
-                &trees,
-                context,
-            )
-            .map_err(meta_remove_stdout_error)?;
-            for directory_read in &reference_scan.directory_reads {
-                if removed_paths
-                    .iter()
-                    .any(|removed| directory_read.path.starts_with(removed))
-                {
-                    continue;
-                }
-                transaction
-                    .guard_or_verify_directory_topology(
-                        directory_read.path.clone(),
-                        DirectoryMembershipSnapshot::Present(directory_read.direct_entries.clone()),
-                    )
-                    .map_err(meta_remove_stdout_error)?;
-            }
             let validation_config_xml = config_xml.clone();
             let validation_obj_type = obj_type.to_string();
             let validation_obj_name = obj_name.to_string();
@@ -1793,112 +1874,27 @@ pub(super) fn metadata_files_recursive_bounded(
     visited_directories: &mut HashSet<PathBuf>,
     visited_entries: &mut usize,
 ) -> Result<MetaRemoveTraversal, String> {
-    if depth > limits.max_depth {
-        return Err(format!(
-            "reference scan traversal exceeded the maximum depth of {}: {}",
-            limits.max_depth,
-            root.display()
-        ));
-    }
-    let root_metadata = match fs::symlink_metadata(root) {
-        Ok(metadata) => metadata,
-        // The format guard calls this helper before the operation can render
-        // its normal "Config directory not found" outcome. Preserve that
-        // public error path for an initially absent root, while retaining
-        // fail-closed traversal once a root or child has been observed.
-        Err(error) if depth == 0 && error.kind() == ErrorKind::NotFound => {
-            return Ok(MetaRemoveTraversal {
-                files: Vec::new(),
-                directories: Vec::new(),
-            });
-        }
-        Err(error) => {
-            return Err(format!(
-                "failed to inspect reference scan root {}: {error}",
-                root.display()
-            ));
-        }
+    // The format guard calls this helper before the operation can render its
+    // normal "Config directory not found" outcome. Preserve that public error
+    // path for an initially absent root, while retaining fail-closed traversal
+    // once a root or child has been observed.
+    let Some(inspected_entries) = inspect_meta_remove_directory(
+        root,
+        depth,
+        limits,
+        MetaRemoveDirectoryWalkPolicy {
+            label: "reference scan",
+            allow_absent_root: true,
+        },
+        visited_directories,
+        visited_entries,
+    )?
+    else {
+        return Ok(MetaRemoveTraversal {
+            files: Vec::new(),
+            directories: Vec::new(),
+        });
     };
-    if crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point(
-        &root_metadata,
-    ) {
-        return Err(format!(
-            "reference scan directory must not be a symbolic link or reparse point: {}",
-            root.display()
-        ));
-    }
-    if !root_metadata.is_dir() {
-        return Err(format!(
-            "reference scan root is not a directory: {}",
-            root.display()
-        ));
-    }
-    let directory_identity = fs::canonicalize(root).map_err(|error| {
-        format!(
-            "failed to resolve reference scan directory identity {}: {error}",
-            root.display()
-        )
-    })?;
-    if !visited_directories.insert(directory_identity) {
-        return Err(format!(
-            "reference scan directory cycle or duplicate identity detected before traversal: {}",
-            root.display()
-        ));
-    }
-
-    let directory_entries = fs::read_dir(root).map_err(|error| {
-        format!(
-            "failed to read reference scan directory {}: {error}",
-            root.display()
-        )
-    })?;
-    let mut entries = Vec::new();
-    for entry in directory_entries {
-        let entry = entry.map_err(|error| {
-            format!(
-                "failed to read an entry in reference scan directory {}: {error}",
-                root.display()
-            )
-        })?;
-        if *visited_entries >= limits.max_entries {
-            return Err(format!(
-                "reference scan traversal exceeded the maximum of {} entries: {}",
-                limits.max_entries,
-                root.display()
-            ));
-        }
-        *visited_entries += 1;
-        entries.push(entry);
-    }
-    entries.sort_by_key(|entry| entry.file_name());
-    let mut inspected_entries = Vec::with_capacity(entries.len());
-    for entry in entries {
-        let path = entry.path();
-        let metadata = fs::symlink_metadata(&path).map_err(|error| {
-            format!(
-                "failed to inspect reference scan entry {}: {error}",
-                path.display()
-            )
-        })?;
-        if crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point(&metadata)
-        {
-            return Err(format!(
-                "reference scan entry must not be a symbolic link or reparse point: {}",
-                path.display()
-            ));
-        }
-        let kind = if metadata.is_dir() {
-            DirectoryTopologyEntryKind::Directory
-        } else if metadata.is_file() {
-            DirectoryTopologyEntryKind::File
-        } else {
-            return Err(format!(
-                "reference scan entry has an unsupported filesystem type: {}",
-                path.display()
-            ));
-        };
-        inspected_entries.push((path, entry.file_name(), kind));
-    }
     let direct_entries = inspected_entries
         .iter()
         .map(|(_, name, kind)| DirectoryTopologyEntry {

@@ -18,6 +18,7 @@ pub(crate) enum MetaDiagnosticCode {
 }
 
 impl MetaDiagnosticCode {
+    #[cfg(test)]
     pub(crate) const ALL: &'static [Self] = &[
         Self::InvalidArguments,
         Self::UnsupportedKind,
@@ -38,7 +39,6 @@ impl MetaDiagnosticCode {
 pub(crate) enum MetaDiagnosticSeverity {
     Error,
     Warning,
-    Info,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

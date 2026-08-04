@@ -16,6 +16,7 @@ OPERATION_DESCRIPTORS = (
     REPO_ROOT / "crates/unica-coder/src/application/operation_descriptors.rs"
 )
 META_RUNTIME = REPO_ROOT / "crates/unica-coder/src/infrastructure/native_operations/meta"
+META_DOMAIN = REPO_ROOT / "crates/unica-coder/src/domain/metadata"
 FORMAT_GUARD = REPO_ROOT / "crates/unica-coder/src/infrastructure/format_guard.rs"
 CF_RUNTIME = REPO_ROOT / "crates/unica-coder/src/infrastructure/native_operations/cf.rs"
 TOOL_CONTEXT = REPO_ROOT / "crates/unica-coder/src/infrastructure/tool_context.rs"
@@ -240,9 +241,12 @@ class MetaSurfaceContractTests(unittest.TestCase):
 
     def test_live_meta_runtime_has_no_file_or_string_dsl_grammar(self) -> None:
         sources = sorted(
-            path
-            for path in META_RUNTIME.glob("*.rs")
-            if not path.name.endswith("_tests.rs")
+            [
+                path
+                for path in META_RUNTIME.glob("*.rs")
+                if not path.name.endswith("_tests.rs")
+            ]
+            + list(META_DOMAIN.glob("*.rs"))
         )
         retired_grammar = {
             "module-wide dead-or-unused suppression": re.compile(
@@ -332,6 +336,23 @@ class MetaSurfaceContractTests(unittest.TestCase):
         )
 
         violations: list[str] = []
+        text_suffixes = {
+            ".bsl",
+            ".js",
+            ".json",
+            ".md",
+            ".mjs",
+            ".ps1",
+            ".py",
+            ".rs",
+            ".sh",
+            ".toml",
+            ".ts",
+            ".txt",
+            ".xml",
+            ".yaml",
+            ".yml",
+        }
         for relative in tracked:
             if not relative or relative.startswith(excluded_prefixes):
                 continue
@@ -340,6 +361,8 @@ class MetaSurfaceContractTests(unittest.TestCase):
             path = REPO_ROOT / relative
             if relative in retired_files and path.exists():
                 violations.append(relative)
+                continue
+            if path.suffix.lower() not in text_suffixes:
                 continue
             if not path.exists():
                 continue
@@ -402,6 +425,8 @@ class MetaSurfaceContractTests(unittest.TestCase):
         capabilities = json.loads(META_CAPABILITY_LEDGER.read_text(encoding="utf-8"))
         supported = sum(entry["status"] == "supported" for entry in capabilities)
         removed = sum(entry["status"] == "removed" for entry in capabilities)
+        self.assertEqual(len(capabilities), 97)
+        self.assertIn(f"{len(capabilities)} ключей", compact_migration)
         self.assertIn(f"{supported} поддерживаемых", compact_migration)
         self.assertIn(f"{removed} намеренно снятая", compact_migration)
         self.assertIn(

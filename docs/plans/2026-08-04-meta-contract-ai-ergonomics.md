@@ -395,3 +395,13 @@ git diff --check
 - [ ] **Step 5: Review, commit, push, and update draft PR #309**
 
 Review `origin/main...HEAD` against every acceptance bullet, request an independent code review, fix Critical and Important findings, commit intentional slices, push `codex/meta-surface-contract-design`, and rewrite the PR body so it names the current contract, verified commands, capability removals, and remaining risks.
+
+## Release size assessment
+
+The completed four-tool contract serializes to **1,275,431 bytes** of compact
+JSON in the MCP `tools/list` result on 2026-08-04. The executable test ratchets
+the immediate ceiling from 1,300,000 to 1,285,000 bytes, leaving schema growth
+visible rather than silently consuming more model context. A follow-up schema
+optimization should target less than 1,200,000 bytes by reducing repeated
+per-kind branches and definitions while preserving the same four public tools;
+the ratchet should be lowered with every measured reduction.

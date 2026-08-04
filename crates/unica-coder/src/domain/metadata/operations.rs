@@ -110,6 +110,7 @@ pub(crate) struct MetaPosition {
 }
 
 impl MetaPosition {
+    #[cfg(test)]
     pub(crate) fn new(
         before: Option<String>,
         after: Option<String>,
@@ -311,7 +312,8 @@ pub(crate) fn metadata_decimal_shape(value: &str) -> Option<(bool, usize, usize)
 pub(crate) const METADATA_XS_DATETIME_PATTERN: &str = r"^[0-9]+-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]([.][0-9]+)?(Z|[+-]((0[0-9]|1[0-3]):[0-5][0-9]|14:00))?$";
 
 fn metadata_xs_timezone_offset_is_valid(timezone: &str) -> bool {
-    if timezone.len() != 6
+    if !timezone.is_ascii()
+        || timezone.len() != 6
         || !matches!(timezone.as_bytes().first(), Some(b'+') | Some(b'-'))
         || timezone.as_bytes().get(3) != Some(&b':')
         || !timezone[1..3].bytes().all(|byte| byte.is_ascii_digit())
@@ -326,6 +328,9 @@ fn metadata_xs_timezone_offset_is_valid(timezone: &str) -> bool {
 }
 
 pub(crate) fn metadata_xs_datetime_is_valid(value: &str) -> bool {
+    if !value.is_ascii() {
+        return false;
+    }
     let core = if let Some(core) = value.strip_suffix('Z') {
         core
     } else if value.len() >= 6 {
@@ -441,6 +446,7 @@ pub(crate) struct MetaElementInput {
 }
 
 impl MetaElementInput {
+    #[cfg(test)]
     pub(crate) fn named(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -666,6 +672,7 @@ pub(crate) fn validate_collection_scope(
 }
 
 impl MetaElementDefinition {
+    #[cfg(test)]
     pub(crate) fn convert(
         collection: MetaCollection,
         input: MetaElementInput,
@@ -721,13 +728,6 @@ impl MetaElementDefinition {
 }
 
 impl MetaElementUpdate {
-    fn convert(
-        collection: MetaCollection,
-        input: MetaElementUpdateInput,
-    ) -> Result<Self, MetaDiagnostic> {
-        Self::convert_at(collection, input, "elements")
-    }
-
     fn convert_at(
         collection: MetaCollection,
         input: MetaElementUpdateInput,
@@ -808,11 +808,40 @@ fn validate_element_fields(
 }
 
 fn validate_name(name: &str, field: &str) -> Result<(), MetaDiagnostic> {
-    if name.is_empty() {
-        Err(invalid_operation(field, "name must not be empty"))
+    if !metadata_identifier_is_valid(name) {
+        Err(invalid_operation(
+            field,
+            "name must be a valid 1C identifier",
+        ))
     } else {
         Ok(())
     }
+}
+
+pub(crate) fn metadata_identifier_is_valid(value: &str) -> bool {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    metadata_identifier_start_is_valid(first)
+        && chars.all(|ch| metadata_identifier_start_is_valid(ch) || ch.is_ascii_digit())
+}
+
+fn metadata_identifier_start_is_valid(ch: char) -> bool {
+    ch == '_'
+        || ch.is_ascii_alphabetic()
+        || ('А'..='Я').contains(&ch)
+        || ('а'..='я').contains(&ch)
+        || ch == 'Ё'
+        || ch == 'ё'
+}
+
+fn metadata_name_key(name: &str) -> String {
+    name.to_lowercase()
+}
+
+pub(crate) fn metadata_name_eq(left: &str, right: &str) -> bool {
+    metadata_name_key(left) == metadata_name_key(right)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1428,6 +1457,7 @@ impl MetaEditOperation {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn edit_relations(
         relation: MetaRelation,
         mode: RelationEditMode,
@@ -1461,14 +1491,19 @@ impl MetaEditOperation {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn validate_targets(
         &self,
         existing_names: &HashSet<String>,
     ) -> Result<(), MetaDiagnostic> {
+        let existing_keys = existing_names
+            .iter()
+            .map(|name| metadata_name_key(name))
+            .collect::<HashSet<_>>();
         match self {
             Self::Add { elements, .. } => {
                 for (index, element) in elements.iter().enumerate() {
-                    if existing_names.contains(&element.name) {
+                    if existing_keys.contains(&metadata_name_key(&element.name)) {
                         return Err(MetaDiagnostic::error(
                             MetaDiagnosticCode::AlreadyExists,
                             format!("element `{}` already exists", element.name),
@@ -1479,7 +1514,7 @@ impl MetaEditOperation {
             }
             Self::Update { elements, .. } => {
                 for (index, element) in elements.iter().enumerate() {
-                    if !existing_names.contains(&element.name) {
+                    if !existing_keys.contains(&metadata_name_key(&element.name)) {
                         return Err(missing_target(
                             &element.name,
                             format!("elements[{index}].name"),
@@ -1487,13 +1522,13 @@ impl MetaEditOperation {
                     }
                 }
 
-                let mut final_names = existing_names.clone();
+                let mut final_names = existing_keys;
                 for element in elements {
-                    final_names.remove(&element.name);
+                    final_names.remove(&metadata_name_key(&element.name));
                 }
                 for (index, element) in elements.iter().enumerate() {
                     let final_name = element.new_name.as_ref().unwrap_or(&element.name);
-                    if !final_names.insert(final_name.clone()) {
+                    if !final_names.insert(metadata_name_key(final_name)) {
                         return Err(MetaDiagnostic::error(
                             MetaDiagnosticCode::AlreadyExists,
                             format!("element `{final_name}` already exists after update"),
@@ -1504,7 +1539,7 @@ impl MetaEditOperation {
             }
             Self::Remove { names, .. } => {
                 for (index, name) in names.iter().enumerate() {
-                    if !existing_names.contains(name) {
+                    if !existing_keys.contains(&metadata_name_key(name)) {
                         return Err(missing_target(name, format!("names[{index}]")));
                     }
                 }
@@ -1521,7 +1556,7 @@ fn reject_duplicate_names<'a>(
 ) -> Result<(), MetaDiagnostic> {
     let mut seen = HashSet::new();
     for (index, name) in names.enumerate() {
-        if !seen.insert(name) {
+        if !seen.insert(metadata_name_key(name)) {
             return Err(invalid_operation(
                 format!("{field}[{index}].name"),
                 "element name is duplicated",
@@ -1537,7 +1572,7 @@ fn reject_duplicate_values<'a>(
 ) -> Result<(), MetaDiagnostic> {
     let mut seen = HashSet::new();
     for (index, value) in values.enumerate() {
-        if !seen.insert(value) {
+        if !seen.insert(metadata_name_key(value)) {
             return Err(invalid_operation(
                 format!("{field}[{index}]"),
                 "value is duplicated",
@@ -1547,6 +1582,7 @@ fn reject_duplicate_values<'a>(
     Ok(())
 }
 
+#[cfg(test)]
 fn missing_target(name: &str, field: impl Into<String>) -> MetaDiagnostic {
     MetaDiagnostic::error(
         MetaDiagnosticCode::TargetNotFound,
@@ -1990,6 +2026,11 @@ mod tests {
     }
 
     #[test]
+    fn xs_datetime_rejects_non_ascii_without_panicking() {
+        assert!(!metadata_xs_datetime_is_valid("2026-01-01T12:00:00Ω12345"));
+    }
+
+    #[test]
     fn position_requires_exactly_one_anchor() {
         assert!(MetaPosition::new(None, None).is_err());
         assert!(MetaPosition::new(Some("A".into()), Some("B".into())).is_err());
@@ -2063,6 +2104,38 @@ mod tests {
     }
 
     #[test]
+    fn element_names_must_be_valid_1c_identifiers_at_every_depth() {
+        let nested = MetaEditOperation::add(
+            MetaCollection::TabularSections,
+            None,
+            vec![MetaElementInput {
+                name: "Lines".into(),
+                attributes: Some(vec![MetaElementInput::named("Товар Цена")]),
+                ..MetaElementInput::default()
+            }],
+        )
+        .unwrap_err();
+        assert_eq!(nested.code, MetaDiagnosticCode::InvalidArguments);
+        assert_eq!(
+            nested.field.as_deref(),
+            Some("elements[0].attributes[0].name")
+        );
+
+        let rename = MetaEditOperation::update(
+            MetaCollection::Attributes,
+            None,
+            vec![MetaElementUpdateInput {
+                name: "Товар".into(),
+                new_name: Some("1Товар".into()),
+                ..MetaElementUpdateInput::default()
+            }],
+        )
+        .unwrap_err();
+        assert_eq!(rename.code, MetaDiagnosticCode::InvalidArguments);
+        assert_eq!(rename.field.as_deref(), Some("elements[0].newName"));
+    }
+
+    #[test]
     fn add_rejects_duplicates_while_update_and_remove_reject_missing_targets() {
         let existing = HashSet::from(["Existing".to_string()]);
         let add = MetaEditOperation::add(
@@ -2098,6 +2171,37 @@ mod tests {
             remove.validate_targets(&existing).unwrap_err().code,
             MetaDiagnosticCode::TargetNotFound
         );
+    }
+
+    #[test]
+    fn target_validation_matches_metadata_names_case_insensitively() {
+        let existing = HashSet::from(["Товар".to_string()]);
+        let duplicate = MetaEditOperation::add(
+            MetaCollection::Attributes,
+            None,
+            vec![MetaElementInput::named("товар")],
+        )
+        .unwrap()
+        .validate_targets(&existing)
+        .unwrap_err();
+        assert_eq!(duplicate.code, MetaDiagnosticCode::AlreadyExists);
+
+        let update = MetaEditOperation::update(
+            MetaCollection::Attributes,
+            None,
+            vec![MetaElementUpdateInput {
+                name: "тОвАр".into(),
+                comment: Some("changed".into()),
+                ..MetaElementUpdateInput::default()
+            }],
+        )
+        .unwrap();
+        assert!(update.validate_targets(&existing).is_ok());
+
+        let remove =
+            MetaEditOperation::remove(MetaCollection::Attributes, None, vec!["ТОВАР".into()])
+                .unwrap();
+        assert!(remove.validate_targets(&existing).is_ok());
     }
 
     #[test]

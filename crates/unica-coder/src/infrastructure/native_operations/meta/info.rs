@@ -300,7 +300,7 @@ pub(crate) fn read_typed_meta_info(
         .filter(|value| !value.is_empty());
 
     let mut diagnostics = Vec::new();
-    let local = MetaLocalInfo {
+    let mut local = MetaLocalInfo {
         metadata_path: target.clone(),
         kind,
         name,
@@ -412,14 +412,20 @@ pub(crate) fn read_typed_meta_info(
     let (registrar_resources, registrar_evidence) =
         typed_registrar_document_images(resolved, kind, properties, target, deadline, cancellation);
     validation_resources.extend(registrar_resources);
-    let child_resources = super::edit::plan_typed_child_resources(
+    let child_resources = match super::edit::plan_typed_child_resources(
         &resolved.descriptor_path,
         target,
         kind.as_str(),
         &local.name,
         &[],
         xml,
-    )?;
+    ) {
+        Ok(resources) => resources,
+        Err(failure) => {
+            local.diagnostics.extend(failure.diagnostics);
+            super::edit::TypedChildResourcePlan::default()
+        }
+    };
     validation_resources.extend(child_resources.validation_resources);
     let validation_subject = MetadataValidationSubject {
         target: target.clone(),

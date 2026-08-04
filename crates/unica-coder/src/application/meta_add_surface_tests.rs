@@ -3,8 +3,8 @@ use crate::composition::testing::{
     with_meta_add_after_authorization_hook, with_meta_edit_before_reauthorization_hook,
 };
 use crate::domain::cancellation::CancellationToken;
+use crate::test_support::{tree_snapshot, ProcessCwdGuard};
 use serde_json::{json, Map, Value};
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -120,12 +120,10 @@ fn add_args(workspace: &Path, kind: &str, name: &str, dry_run: bool) -> Map<Stri
 }
 
 fn call_add(workspace: &Path, kind: &str, name: &str, dry_run: bool) -> OperationResult {
-    let previous = std::env::current_dir().unwrap();
-    std::env::set_current_dir(workspace).unwrap();
-    let result = UnicaApplication::new()
-        .call_tool("unica.meta.add", &add_args(workspace, kind, name, dry_run));
-    std::env::set_current_dir(previous).unwrap();
-    result.expect("internal meta.add call")
+    let _cwd = ProcessCwdGuard::enter(workspace).unwrap();
+    UnicaApplication::new()
+        .call_tool("unica.meta.add", &add_args(workspace, kind, name, dry_run))
+        .expect("internal meta.add call")
 }
 
 fn configured_catalog_add_args(workspace: &Path, name: &str, dry_run: bool) -> Map<String, Value> {
@@ -165,11 +163,28 @@ fn call_add_with_args_result(
     workspace: &Path,
     args: &Map<String, Value>,
 ) -> Result<OperationResult, String> {
-    let previous = std::env::current_dir().unwrap();
-    std::env::set_current_dir(workspace).unwrap();
-    let result = UnicaApplication::new().call_tool("unica.meta.add", args);
-    std::env::set_current_dir(previous).unwrap();
-    result
+    let _cwd = ProcessCwdGuard::enter(workspace)?;
+    UnicaApplication::new().call_tool("unica.meta.add", args)
+}
+
+fn call_edit(
+    workspace: &Path,
+    metadata_path: &str,
+    operations: Value,
+    dry_run: bool,
+) -> OperationResult {
+    let _cwd = ProcessCwdGuard::enter(workspace).unwrap();
+    UnicaApplication::new()
+        .call_tool(
+            "unica.meta.edit",
+            &Map::from_iter([
+                ("sourceSet".to_string(), json!("main")),
+                ("metadataPath".to_string(), json!(metadata_path)),
+                ("operations".to_string(), operations),
+                ("dryRun".to_string(), json!(dry_run)),
+            ]),
+        )
+        .expect("internal meta.edit call")
 }
 
 #[test]
@@ -604,8 +619,7 @@ fn meta_add_apply_rejects_partial_descriptor_module_and_registration_without_wri
 fn meta_add_apply_honors_prepublication_cancellation_without_writes() {
     let workspace = create_configuration_workspace("cancelled");
     let before = tree_snapshot(&workspace.path().join("src"));
-    let previous = std::env::current_dir().unwrap();
-    std::env::set_current_dir(workspace.path()).unwrap();
+    let _cwd = ProcessCwdGuard::enter(workspace.path()).unwrap();
     let cancellation = CancellationToken::new();
     cancellation.cancel();
     let result = UnicaApplication::new()
@@ -615,7 +629,6 @@ fn meta_add_apply_honors_prepublication_cancellation_without_writes() {
             cancellation,
         )
         .unwrap();
-    std::env::set_current_dir(previous).unwrap();
     assert!(!result.ok);
     assert_eq!(tree_snapshot(&workspace.path().join("src")), before);
 }
@@ -711,22 +724,12 @@ fn meta_edit_reauthorizes_support_state_after_private_post_image_planning() {
     let result = with_meta_edit_before_reauthorization_hook(
         move || std::fs::write(support_for_hook, support_bytes_for_hook).unwrap(),
         || {
-            let previous = std::env::current_dir().unwrap();
-            std::env::set_current_dir(workspace.path()).unwrap();
-            let result = UnicaApplication::new().call_tool(
-                "unica.meta.edit",
-                &Map::from_iter([
-                    ("sourceSet".to_string(), json!("main")),
-                    ("metadataPath".to_string(), json!("Catalog.MetaAddSource")),
-                    (
-                        "operations".to_string(),
-                        json!([{"op": "setProperties", "values": {"Comment": "denied"}}]),
-                    ),
-                    ("dryRun".to_string(), json!(false)),
-                ]),
-            );
-            std::env::set_current_dir(previous).unwrap();
-            result.unwrap()
+            call_edit(
+                workspace.path(),
+                "Catalog.MetaAddSource",
+                json!([{"op": "setProperties", "values": {"Comment": "denied"}}]),
+                false,
+            )
         },
     );
 
@@ -765,22 +768,12 @@ fn meta_edit_warning_is_derived_from_late_support_authorization() {
             std::fs::write(project_for_hook, r#"{"editingAllowedCheck":"warn"}"#).unwrap();
         },
         || {
-            let previous = std::env::current_dir().unwrap();
-            std::env::set_current_dir(workspace.path()).unwrap();
-            let result = UnicaApplication::new().call_tool(
-                "unica.meta.edit",
-                &Map::from_iter([
-                    ("sourceSet".to_string(), json!("main")),
-                    ("metadataPath".to_string(), json!("Catalog.MetaAddSource")),
-                    (
-                        "operations".to_string(),
-                        json!([{"op": "setProperties", "values": {"Comment": "warned"}}]),
-                    ),
-                    ("dryRun".to_string(), json!(false)),
-                ]),
-            );
-            std::env::set_current_dir(previous).unwrap();
-            result.unwrap()
+            call_edit(
+                workspace.path(),
+                "Catalog.MetaAddSource",
+                json!([{"op": "setProperties", "values": {"Comment": "warned"}}]),
+                false,
+            )
         },
     );
 
@@ -806,29 +799,4 @@ fn assert_partial_is_stable(workspace: &TempWorkspace, kind: &str, name: &str) {
     assert!(!result.ok, "{kind}.{name} unexpectedly succeeded");
     assert_eq!(result.diagnostics.unwrap()[0]["code"], "already_exists");
     assert_eq!(tree_snapshot(&workspace.path().join("src")), before);
-}
-
-fn tree_snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
-    fn visit(root: &Path, current: &Path, output: &mut BTreeMap<PathBuf, Vec<u8>>) {
-        let mut entries = std::fs::read_dir(current)
-            .unwrap()
-            .map(|entry| entry.unwrap())
-            .collect::<Vec<_>>();
-        entries.sort_by_key(|entry| entry.file_name());
-        for entry in entries {
-            let path = entry.path();
-            let metadata = entry.metadata().unwrap();
-            if metadata.is_dir() {
-                visit(root, &path, output);
-            } else if metadata.is_file() {
-                output.insert(
-                    path.strip_prefix(root).unwrap().to_path_buf(),
-                    std::fs::read(path).unwrap(),
-                );
-            }
-        }
-    }
-    let mut output = BTreeMap::new();
-    visit(root, root, &mut output);
-    output
 }

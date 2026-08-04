@@ -177,8 +177,9 @@
   инвариантами `INV-SKILL-NO-SCRIPT-ROUTE` и `INV-APP-NO-SCRIPT-BACKEND` и проверяется тестами.
 - **Файловый Meta DSL снова становится публичным.** Закрыт: ADR-0025 заменил
   его четырьмя предметными операциями, исполнители и строковая грамматика
-  удалены, а `tests/ci/test_meta_surface_contract.py` проверяет каждый
-  production-модуль семейства Meta, запрещает модульное подавление
+  удалены, а `tests/ci/test_meta_surface_contract.py` проверяет production-модули
+  `domain/metadata/*.rs` и `infrastructure/native_operations/meta/*.rs`
+  (кроме `*_tests.rs`), запрещает модульное подавление
   `dead_code`/`unused`, физические селекторы, строковые парсеры, осиротевшие
   адаптеры совместимости, псевдонимы и возврат снятых маршрутов в живой Meta
   runtime.

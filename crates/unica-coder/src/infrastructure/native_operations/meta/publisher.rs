@@ -992,28 +992,8 @@ mod typed_add_publication_tests {
         }
 
         fn source_snapshot(&self) -> BTreeMap<PathBuf, Vec<u8>> {
-            fn visit(root: &Path, current: &Path, output: &mut BTreeMap<PathBuf, Vec<u8>>) {
-                let mut entries = fs::read_dir(current)
-                    .unwrap()
-                    .map(|entry| entry.unwrap())
-                    .collect::<Vec<_>>();
-                entries.sort_by_key(|entry| entry.file_name());
-                for entry in entries {
-                    let path = entry.path();
-                    if entry.file_type().unwrap().is_dir() {
-                        visit(root, &path, output);
-                    } else {
-                        output.insert(
-                            path.strip_prefix(root).unwrap().to_path_buf(),
-                            fs::read(path).unwrap(),
-                        );
-                    }
-                }
-            }
             let source = self.root.join("src");
-            let mut output = BTreeMap::new();
-            visit(&source, &source, &mut output);
-            output
+            crate::test_support::tree_snapshot(&source)
         }
     }
 

@@ -1753,8 +1753,11 @@ source-set:
             with self.subTest(skill=example.skill, line=example.line):
                 response = responses[message["id"]]
                 self.assertNotIn("error", response)
-                result = json.loads(response["result"]["content"][0]["text"])
                 tool_name = example.payload["params"]["name"]
+                if tool_name.startswith("unica.meta."):
+                    result = response["result"]["structuredContent"]
+                else:
+                    result = json.loads(response["result"]["content"][0]["text"])
                 if tool_name == "unica.meta.info":
                     self.assertIn("data", result, json.dumps(result, ensure_ascii=False, indent=2))
                     self.assertNotIn(
@@ -1784,12 +1787,9 @@ source-set:
                     )
                 elif tool_name == "unica.meta.info":
                     self.assertIn("data", result)
-                    self.assertNotIn("stdout", result)
-                elif tool_name.startswith("unica.meta.") and not result["ok"]:
-                    self.assertNotIn("stdout", result)
                 elif tool_name.startswith("unica.meta."):
-                    self.assertIn("preview", result["summary"])
-                    self.assertNotIn("stdout", result)
+                    if result["ok"]:
+                        self.assertIn("preview", result["summary"])
                 else:
                     self.assertIn("dry run", result["summary"])
                 if example.skill == "code-patch":

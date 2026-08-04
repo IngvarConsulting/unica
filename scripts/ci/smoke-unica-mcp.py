@@ -1130,13 +1130,16 @@ def _source_workspace(root: Path) -> None:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(fixture_path.read_bytes())
     configuration = root / "src/Configuration.xml"
-    configuration.write_text(
-        configuration.read_text(encoding="utf-8").replace(
-            "\t\t</ChildObjects>",
-            "\t\t\t<CommonModule>Shared</CommonModule>\n\t\t</ChildObjects>",
-        ),
-        encoding="utf-8",
+    original = configuration.read_text(encoding="utf-8")
+    registered = original.replace(
+        "\t\t</ChildObjects>",
+        "\t\t\t<CommonModule>Shared</CommonModule>\n\t\t</ChildObjects>",
     )
+    if registered == original:
+        raise SystemExit(
+            "meta fixture Configuration.xml has no ChildObjects anchor to register Shared"
+        )
+    configuration.write_text(registered, encoding="utf-8")
 
 
 def _assert_path_free(value: object) -> None:

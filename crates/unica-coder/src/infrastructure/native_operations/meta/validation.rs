@@ -251,6 +251,12 @@ impl MetadataValidator {
             }
         }
 
+        validate_html_template_page_registrations(
+            subject,
+            &registered_languages,
+            &language_images,
+            &mut diagnostics,
+        );
         validate_child_footprints(subject, &mut diagnostics);
 
         if diagnostics
@@ -779,6 +785,71 @@ fn validate_child_footprints(
     }
 }
 
+fn validate_html_template_page_registrations(
+    subject: &MetadataValidationSubject,
+    registered_languages: &[String],
+    language_images: &BTreeMap<String, String>,
+    diagnostics: &mut Vec<MetaDiagnostic>,
+) {
+    let html_descriptors = subject
+        .resources
+        .iter()
+        .enumerate()
+        .filter_map(|(index, resource)| match &resource.role {
+            MetadataResourceRole::ChildResource {
+                child,
+                kind:
+                    MetadataChildResourceKind::TemplateContent {
+                        template_type: MetadataTemplateType::HtmlDocument,
+                        part: MetadataTemplateResourcePart::Primary,
+                    },
+                ..
+            } => Some((index, child, &resource.bytes)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if html_descriptors.is_empty() || registered_languages.is_empty() {
+        return;
+    }
+    let mut configured_codes = HashSet::new();
+    let mut complete_evidence = true;
+    for language in registered_languages {
+        match language_images.get(language) {
+            Some(code) => {
+                configured_codes.insert(code.as_str());
+            }
+            None => {
+                complete_evidence = false;
+                diagnostics.push(
+                    MetaDiagnostic::error(
+                        MetaDiagnosticCode::ProviderUnavailable,
+                        format!("registered language image `{language}` is not available"),
+                    )
+                    .with_metadata_path(subject.target.clone())
+                    .with_field("resources"),
+                );
+            }
+        }
+    }
+    if !complete_evidence {
+        return;
+    }
+    for (index, child, bytes) in html_descriptors {
+        let Ok(pages) = html_template_page_names(bytes) else {
+            continue;
+        };
+        for page in pages {
+            if !configured_codes.contains(page.as_str()) {
+                diagnostics.push(child_resource_diagnostic(
+                    child,
+                    index,
+                    format!("HTML language page `{page}` is not registered in the owner image"),
+                ));
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ClosedChildDescriptor {
     child: MetadataAddress,
@@ -1220,13 +1291,33 @@ fn validate_one_child_footprint(
                 0,
             )];
             if template_type == MetadataTemplateType::HtmlDocument {
-                kinds.push((
-                    MetadataChildResourceKind::TemplateContent {
-                        template_type,
-                        part: MetadataTemplateResourcePart::HtmlPage,
-                    },
-                    1,
-                ));
+                let page_count = subject
+                    .resources
+                    .iter()
+                    .find_map(|resource| match &resource.role {
+                        MetadataResourceRole::ChildResource {
+                            child,
+                            kind:
+                                MetadataChildResourceKind::TemplateContent {
+                                    template_type: MetadataTemplateType::HtmlDocument,
+                                    part: MetadataTemplateResourcePart::Primary,
+                                },
+                            ..
+                        } if child == &expected.child => {
+                            html_template_page_names(&resource.bytes).ok()
+                        }
+                        _ => None,
+                    })
+                    .map_or(0, |pages| pages.len());
+                kinds.extend((0..page_count).map(|index| {
+                    (
+                        MetadataChildResourceKind::TemplateContent {
+                            template_type,
+                            part: MetadataTemplateResourcePart::HtmlPage,
+                        },
+                        index + 1,
+                    )
+                }));
             }
             kinds
         }
@@ -1275,30 +1366,7 @@ fn validate_template_resource(
         }
         (MetadataTemplateType::BinaryData, MetadataTemplateResourcePart::Primary) => Ok(()),
         (MetadataTemplateType::HtmlDocument, MetadataTemplateResourcePart::Primary) => {
-            validate_exact_version_xml(
-                bytes,
-                PlatformXmlRootExpectation::new("http://v8.1c.ru/8.3/xcf/extrnprops", "Help"),
-                "HTML template descriptor",
-            )?;
-            let (_, document) = parse_typed_payload_xml(bytes, "HTML template descriptor")?;
-            let root = document.root_element();
-            let pages = root
-                .children()
-                .filter(|node| {
-                    node.is_element()
-                        && node.tag_name().namespace() == Some("http://v8.1c.ru/8.3/xcf/extrnprops")
-                        && node.tag_name().name() == "Page"
-                })
-                .filter_map(|node| node.text())
-                .map(str::trim)
-                .collect::<Vec<_>>();
-            if pages.as_slice() != ["ru"] {
-                return Err(
-                    "HTML template descriptor must declare exactly the ru language page"
-                        .to_string(),
-                );
-            }
-            Ok(())
+            html_template_page_names(bytes).map(|_| ())
         }
         (MetadataTemplateType::HtmlDocument, MetadataTemplateResourcePart::HtmlPage) => {
             let text = std::str::from_utf8(bytes)
@@ -1315,6 +1383,40 @@ fn validate_template_resource(
         }
         _ => Err("template resource part does not match its TemplateType".to_string()),
     }
+}
+
+pub(super) fn html_template_page_names(bytes: &[u8]) -> Result<Vec<String>, String> {
+    const NAMESPACE: &str = "http://v8.1c.ru/8.3/xcf/extrnprops";
+    validate_exact_version_xml(
+        bytes,
+        PlatformXmlRootExpectation::new(NAMESPACE, "Help"),
+        "HTML template descriptor",
+    )?;
+    let (_, document) = parse_typed_payload_xml(bytes, "HTML template descriptor")?;
+    let mut pages = Vec::new();
+    let mut seen = HashSet::new();
+    for node in document.root_element().children().filter(|node| {
+        node.is_element()
+            && node.tag_name().namespace() == Some(NAMESPACE)
+            && node.tag_name().name() == "Page"
+    }) {
+        let page = node.text().map(str::trim).unwrap_or_default();
+        if page.is_empty()
+            || page
+                .chars()
+                .any(|ch| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'))
+        {
+            return Err("HTML template descriptor contains an invalid language page".to_string());
+        }
+        if !seen.insert(page.to_string()) {
+            return Err("HTML template descriptor contains a duplicate language page".to_string());
+        }
+        pages.push(page.to_string());
+    }
+    if pages.is_empty() {
+        return Err("HTML template descriptor must declare at least one language page".to_string());
+    }
+    Ok(pages)
 }
 
 fn validate_versionless_xml(
@@ -2946,11 +3048,26 @@ pub(super) fn meta_validate_check_method_reference(
         ));
         return;
     };
+    if !is_1c_identifier(module_name) || !is_1c_identifier(proc_name) {
+        report.error(format!(
+            "13. {md_type}.{property} = '{method_ref}': expected format 'CommonModule.ModuleName.ProcedureName'"
+        ));
+        return;
+    }
     if let Some(subject) = proof_subject {
         let module_reference = format!("CommonModule.{module_name}");
-        let module_target =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &module_reference)
-                .expect("validated CommonModule metadata address");
+        let module_target = match MetadataAddress::parse(
+            PLATFORM_XML_8_3_27_FORMAT_2_20,
+            &module_reference,
+        ) {
+            Ok(target) => target,
+            Err(_) => {
+                report.error(format!(
+                    "13. {md_type}.{property} = '{method_ref}': expected format 'CommonModule.ModuleName.ProcedureName'"
+                ));
+                return;
+            }
+        };
         let descriptor_found = subject.resources.iter().any(|resource| {
             matches!(
                 &resource.role,
@@ -4836,21 +4953,6 @@ mod tests {
                     br#"<html><body/></html>"#.to_vec(),
                 )],
             ),
-            (
-                "descriptor names a different page",
-                vec![
-                    (
-                        MetadataTemplateType::HtmlDocument,
-                        MetadataTemplateResourcePart::Primary,
-                        br#"<Help xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"><Page>de</Page></Help>"#.to_vec(),
-                    ),
-                    (
-                        MetadataTemplateType::HtmlDocument,
-                        MetadataTemplateResourcePart::HtmlPage,
-                        br#"<html><body/></html>"#.to_vec(),
-                    ),
-                ],
-            ),
         ] {
             let subject = template_subject("Catalog.Editable.Template.Html", resources);
 
@@ -4858,6 +4960,86 @@ mod tests {
 
             assert!(!diagnostics.is_empty(), "{label}");
         }
+    }
+
+    #[test]
+    fn html_template_accepts_every_declared_language_page() {
+        let subject = template_subject(
+            "Catalog.Editable.Template.Html",
+            vec![
+                (
+                    MetadataTemplateType::HtmlDocument,
+                    MetadataTemplateResourcePart::Primary,
+                    br#"<Help xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"><Page>ru</Page><Page>en</Page></Help>"#.to_vec(),
+                ),
+                (
+                    MetadataTemplateType::HtmlDocument,
+                    MetadataTemplateResourcePart::HtmlPage,
+                    br#"<html><body>ru</body></html>"#.to_vec(),
+                ),
+                (
+                    MetadataTemplateType::HtmlDocument,
+                    MetadataTemplateResourcePart::HtmlPage,
+                    br#"<html><body>en</body></html>"#.to_vec(),
+                ),
+            ],
+        );
+
+        let diagnostics = closed_child_diagnostics(&subject);
+
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    #[test]
+    fn html_template_pages_must_match_registered_language_codes() {
+        let subject = template_subject(
+            "Catalog.Editable.Template.Html",
+            vec![
+                (
+                    MetadataTemplateType::HtmlDocument,
+                    MetadataTemplateResourcePart::Primary,
+                    br#"<Help xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"><Page>ru</Page><Page>en</Page></Help>"#.to_vec(),
+                ),
+                (
+                    MetadataTemplateType::HtmlDocument,
+                    MetadataTemplateResourcePart::HtmlPage,
+                    br#"<html><body>ru</body></html>"#.to_vec(),
+                ),
+                (
+                    MetadataTemplateType::HtmlDocument,
+                    MetadataTemplateResourcePart::HtmlPage,
+                    br#"<html><body>en</body></html>"#.to_vec(),
+                ),
+            ],
+        );
+        let registered_languages = vec!["Русский".to_string(), "English".to_string()];
+        let language_images = BTreeMap::from([
+            ("Русский".to_string(), "ru".to_string()),
+            ("English".to_string(), "en".to_string()),
+        ]);
+        let mut diagnostics = Vec::new();
+
+        validate_html_template_page_registrations(
+            &subject,
+            &registered_languages,
+            &language_images,
+            &mut diagnostics,
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+
+        let language_images = BTreeMap::from([
+            ("Русский".to_string(), "ru".to_string()),
+            ("English".to_string(), "de".to_string()),
+        ]);
+        validate_html_template_page_registrations(
+            &subject,
+            &registered_languages,
+            &language_images,
+            &mut diagnostics,
+        );
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("`en` is not registered")));
     }
 
     #[test]
@@ -5181,6 +5363,27 @@ mod tests {
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.message.contains("CommonModule `Missing`")));
+    }
+
+    #[test]
+    fn internal_method_validation_reports_malformed_module_reference() {
+        let descriptor = scheduled_job("Nightly", "CommonModule..Run");
+        let registration = owner(&[("ScheduledJob", "Nightly")]);
+        let malformed = subject(
+            "ScheduledJob.Nightly",
+            Some(&descriptor),
+            &registration,
+            &[],
+        );
+
+        let result = MetadataValidator.validate(&malformed, &context());
+
+        assert_eq!(result.status, MetaValidationStatus::Failed);
+        assert!(result.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("expected format 'CommonModule.ModuleName.ProcedureName'")
+        }));
     }
 
     #[test]

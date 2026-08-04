@@ -988,12 +988,18 @@ fn parse_field_reference(value: &Value, field: &str) -> Result<MetadataFieldPath
 
 fn metadata_kind_for_address(address: &MetadataAddress) -> Result<MetadataKind, MetaDiagnostic> {
     let mut segments = address.segments();
-    let kind = segments
-        .next()
-        .expect("validated metadata address has a root kind");
-    let _name = segments
-        .next()
-        .expect("validated metadata address has an object name");
+    let Some(kind) = segments.next() else {
+        return Err(invalid(
+            "metadataPath",
+            "meta.edit requires a top-level metadata object path",
+        ));
+    };
+    let Some(_name) = segments.next() else {
+        return Err(invalid(
+            "metadataPath",
+            "meta.edit requires a top-level metadata object path",
+        ));
+    };
     if segments.next().is_some() {
         return Err(invalid(
             "metadataPath",
@@ -1477,8 +1483,7 @@ fn metadata_schema_definitions() -> Map<String, Value> {
         }
     }
     for kind in MetadataKind::ALL.iter().copied() {
-        if metadata_kind_collections(kind).is_empty() {
-        } else {
+        if !metadata_kind_collections(kind).is_empty() {
             for tag in [
                 MetaEditOperationTag::Add,
                 MetaEditOperationTag::Update,
@@ -2656,6 +2661,20 @@ mod tests {
             .as_object()
             .expect("test input must be an object")
             .clone()
+    }
+
+    #[test]
+    fn metadata_kind_rejects_one_segment_root_module_address() {
+        let address = MetadataAddress::parse(
+            crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+            "ManagedApplicationModule",
+        )
+        .unwrap();
+
+        let diagnostic = metadata_kind_for_address(&address).unwrap_err();
+
+        assert_eq!(diagnostic.code, MetaDiagnosticCode::InvalidArguments);
+        assert_eq!(diagnostic.field.as_deref(), Some("metadataPath"));
     }
 
     fn resolve_definition<'a>(root: &'a Value, schema: &'a Value) -> &'a Value {

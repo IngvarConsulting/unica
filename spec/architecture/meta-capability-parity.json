@@ -79,7 +79,7 @@
       "Task"
     ],
     "status": "removed",
-    "removalReason": "The legacy kind matrix includes ChartOfCalculationTypes, whose current typed template has no Autonumbering property; use setProperties for the other kinds only and configure that chart outside this migration."
+    "removalReason": "Typed support exists for BusinessProcess, Catalog, ChartOfCharacteristicTypes, Document, and Task; ChartOfCalculationTypes remains unsupported. Its current typed template has no Autonumbering property, so configure that chart outside this migration."
   },
   {
     "legacyKey": "basePeriod",
@@ -124,7 +124,7 @@
       "Task"
     ],
     "status": "removed",
-    "removalReason": "The legacy kind matrix includes ChartOfCalculationTypes, whose current typed template has no CheckUnique property; use setProperties for the other kinds only and configure that chart outside this migration."
+    "removalReason": "Typed support exists for BusinessProcess, Catalog, ChartOfCharacteristicTypes, Document, and Task; ChartOfCalculationTypes remains unsupported. Its current typed template has no CheckUnique property, so configure that chart outside this migration."
   },
   {
     "legacyKey": "choiceMode",
@@ -356,7 +356,7 @@
       "ChartOfCharacteristicTypes"
     ],
     "status": "removed",
-    "removalReason": "The legacy kind matrix includes ChartOfAccounts, while the current typed ChartOfAccounts template deliberately has no Hierarchical property; use setProperties only for Catalog and ChartOfCharacteristicTypes."
+    "removalReason": "Typed support exists for Catalog and ChartOfCharacteristicTypes; ChartOfAccounts remains unsupported. Its current typed template deliberately has no Hierarchical property, so configure that chart outside this migration."
   },
   {
     "legacyKey": "hierarchyType",

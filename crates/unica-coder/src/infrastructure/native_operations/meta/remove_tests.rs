@@ -263,7 +263,7 @@ fn meta_remove_post_write_failure_restores_all_owners_and_payloads() {
 }
 
 #[test]
-fn meta_remove_rejects_newer_xml_anywhere_in_removed_tree_without_mutation() {
+fn meta_remove_preview_rejects_newer_xml_anywhere_in_removed_tree_without_mutation() {
     let context = temp_context("newer-removed-tree");
     let config_dir = context.cwd.join("src");
     let init = create_configuration_scaffold(
@@ -301,8 +301,9 @@ fn meta_remove_rejects_newer_xml_anywhere_in_removed_tree_without_mutation() {
     let object_before = fs::read(&object_path).unwrap();
     let nested_before = fs::read(&nested_form).unwrap();
 
-    let outcome =
-        remove_metadata_object(&remove_args(&config_dir, "Catalog.Victim", true), &context);
+    let mut args = remove_args(&config_dir, "Catalog.Victim", true);
+    args.insert("DryRun".to_string(), Value::Bool(true));
+    let outcome = remove_metadata_object(&args, &context);
 
     assert!(!outcome.ok, "{outcome:?}");
     let diagnostics = outcome.errors.join("\n");

@@ -1,5 +1,7 @@
 use super::{MetaDiagnostic, MetaDiagnosticCode};
-use crate::domain::source_target::{MetadataAddress, SourceTargetError};
+use crate::domain::source_target::MetadataAddress;
+#[cfg(test)]
+use crate::domain::source_target::SourceTargetError;
 use serde::Serialize;
 use std::collections::HashSet;
 
@@ -157,6 +159,15 @@ fn invalid_type(field: impl Into<String>, message: impl Into<String>) -> MetaDia
 fn validate_variant(variant: &MetadataTypeVariant, index: usize) -> Result<(), MetaDiagnostic> {
     let field = || format!("type.variants[{index}]");
     match variant {
+        MetadataTypeVariant::Reference { metadata_path }
+        | MetadataTypeVariant::DefinedType { metadata_path }
+            if metadata_path.segments().count() != 2 =>
+        {
+            Err(invalid_type(
+                format!("{}.metadataPath", field()),
+                "reference-like type metadataPath must identify a top-level metadata object",
+            ))
+        }
         MetadataTypeVariant::String {
             length,
             allowed_length,
@@ -219,6 +230,7 @@ pub(crate) struct MetadataReference {
 }
 
 impl MetadataReference {
+    #[cfg(test)]
     pub(crate) fn parse(profile: &str, raw: &str) -> Result<Self, MetaDiagnostic> {
         MetadataAddress::parse(profile, raw)
             .map(|metadata_path| Self { metadata_path })
@@ -226,6 +238,7 @@ impl MetadataReference {
     }
 }
 
+#[cfg(test)]
 fn address_diagnostic(raw: &str, error: SourceTargetError) -> MetaDiagnostic {
     MetaDiagnostic::error(
         MetaDiagnosticCode::InvalidArguments,
@@ -279,6 +292,33 @@ mod tests {
             assert_eq!(
                 MetadataKind::parse(spelling).map(MetadataKind::as_str),
                 Ok(*spelling)
+            );
+        }
+    }
+
+    #[test]
+    fn reference_like_types_require_top_level_metadata_addresses() {
+        for variant in [
+            MetadataTypeVariant::Reference {
+                metadata_path: MetadataAddress::parse(
+                    PLATFORM_XML_8_3_27_FORMAT_2_20,
+                    "Catalog.Products.Form.Main",
+                )
+                .unwrap(),
+            },
+            MetadataTypeVariant::DefinedType {
+                metadata_path: MetadataAddress::parse(
+                    PLATFORM_XML_8_3_27_FORMAT_2_20,
+                    "DefinedType.Code.Form.Main",
+                )
+                .unwrap(),
+            },
+        ] {
+            let error = MetadataType::new(vec![variant]).unwrap_err();
+            assert_eq!(error.code, MetaDiagnosticCode::InvalidArguments);
+            assert_eq!(
+                error.field.as_deref(),
+                Some("type.variants[0].metadataPath")
             );
         }
     }

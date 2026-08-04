@@ -1,7 +1,7 @@
 use super::{OperationResult, UnicaApplication};
 use crate::composition::testing::with_meta_remove_before_reauthorization_hook;
+use crate::test_support::{tree_snapshot, ProcessCwdGuard};
 use serde_json::{Map, Value};
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -58,8 +58,7 @@ fn create_remove_workspace(label: &str) -> TempWorkspace {
     )
     .unwrap();
     for name in ["Removable", "Sibling"] {
-        let previous = std::env::current_dir().unwrap();
-        std::env::set_current_dir(workspace.path()).unwrap();
+        let _cwd = ProcessCwdGuard::enter(workspace.path()).unwrap();
         let added = UnicaApplication::new()
             .call_tool(
                 "unica.meta.add",
@@ -71,7 +70,6 @@ fn create_remove_workspace(label: &str) -> TempWorkspace {
                 ]),
             )
             .unwrap();
-        std::env::set_current_dir(previous).unwrap();
         assert!(added.ok, "Catalog.{name}: {:?}", added.errors);
     }
     workspace
@@ -89,37 +87,10 @@ fn remove_args(dry_run: bool) -> Map<String, Value> {
 }
 
 fn call_remove(workspace: &Path, dry_run: bool) -> OperationResult {
-    let previous = std::env::current_dir().unwrap();
-    std::env::set_current_dir(workspace).unwrap();
-    let result = UnicaApplication::new().call_tool("unica.meta.remove", &remove_args(dry_run));
-    std::env::set_current_dir(previous).unwrap();
-    result.expect("private typed meta.remove call")
-}
-
-fn tree_snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
-    fn visit(root: &Path, current: &Path, output: &mut BTreeMap<PathBuf, Vec<u8>>) {
-        let mut entries = std::fs::read_dir(current)
-            .unwrap()
-            .map(|entry| entry.unwrap())
-            .collect::<Vec<_>>();
-        entries.sort_by_key(|entry| entry.file_name());
-        for entry in entries {
-            let path = entry.path();
-            let metadata = entry.metadata().unwrap();
-            if metadata.is_dir() {
-                visit(root, &path, output);
-            } else if metadata.is_file() {
-                output.insert(
-                    path.strip_prefix(root).unwrap().to_path_buf(),
-                    std::fs::read(path).unwrap(),
-                );
-            }
-        }
-    }
-
-    let mut snapshot = BTreeMap::new();
-    visit(root, root, &mut snapshot);
-    snapshot
+    let _cwd = ProcessCwdGuard::enter(workspace).unwrap();
+    UnicaApplication::new()
+        .call_tool("unica.meta.remove", &remove_args(dry_run))
+        .expect("private typed meta.remove call")
 }
 
 #[test]

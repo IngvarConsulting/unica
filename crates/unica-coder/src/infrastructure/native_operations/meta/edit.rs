@@ -7,13 +7,14 @@ use crate::application::ports::{
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::format_profile::ACTIVE_FORMAT_PROFILE;
 use crate::domain::metadata::{
-    metadata_decimal_shape, metadata_xs_datetime_is_valid, validate_metadata_element_value_profile,
-    validate_metadata_operation_capabilities, validate_metadata_relation_target_profile,
-    DateFractions, MetaCollection, MetaDiagnostic, MetaDiagnosticCode, MetaEditOperation,
-    MetaElementDefinition, MetaElementUpdate, MetaFillValue, MetaMutationEffect, MetaPosition,
-    MetaPropertyKey, MetaPropertyValue, MetaPublicationAction, MetaPublicationPlanEntry,
-    MetaPublicationResource, MetaRelation, MetaValueProfileContext, MetadataKind, MetadataType,
-    MetadataTypeVariant, NumberSign, RelationEditMode, StringLengthMode, METADATA_PROPERTY_SPECS,
+    metadata_decimal_shape, metadata_name_eq, metadata_xs_datetime_is_valid,
+    validate_metadata_element_value_profile, validate_metadata_operation_capabilities,
+    validate_metadata_relation_target_profile, DateFractions, MetaCollection, MetaDiagnostic,
+    MetaDiagnosticCode, MetaEditOperation, MetaElementDefinition, MetaElementUpdate, MetaFillValue,
+    MetaMutationEffect, MetaPosition, MetaPropertyKey, MetaPropertyValue, MetaPublicationAction,
+    MetaPublicationPlanEntry, MetaPublicationResource, MetaRelation, MetaValueProfileContext,
+    MetadataKind, MetadataType, MetadataTypeVariant, NumberSign, RelationEditMode,
+    StringLengthMode, METADATA_PROPERTY_SPECS,
 };
 use crate::domain::source_target::{
     MetadataAddress, SourceTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
@@ -30,6 +31,7 @@ use roxmltree::Document;
 use serde_json::{Map as JsonMap, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use super::super::common::{absolutize, escape_xml, is_1c_identifier};
@@ -344,7 +346,9 @@ pub(super) fn meta_edit_ensure_top_child_name_free(
     let object = meta_edit_object_node(&doc)?;
     if let Some(child_objects) = meta_info_child(object, "ChildObjects") {
         for child in meta_info_children(child_objects, tag) {
-            if meta_edit_child_object_name(child).as_deref() == Some(name) {
+            if meta_edit_child_object_name(child)
+                .is_some_and(|candidate| metadata_name_eq(&candidate, name))
+            {
                 return Err(format!("{tag} '{name}' already exists"));
             }
         }
@@ -359,7 +363,10 @@ pub(super) fn meta_edit_find_tabular_section<'a, 'input>(
     let child_objects = meta_info_child(object, "ChildObjects")?;
     meta_info_children(child_objects, "TabularSection")
         .into_iter()
-        .find(|section| meta_edit_child_object_name(*section).as_deref() == Some(section_name))
+        .find(|section| {
+            meta_edit_child_object_name(*section)
+                .is_some_and(|candidate| metadata_name_eq(&candidate, section_name))
+        })
 }
 
 pub(super) fn meta_edit_ensure_tabular_child_name_free(
@@ -375,7 +382,9 @@ pub(super) fn meta_edit_ensure_tabular_child_name_free(
         .ok_or_else(|| format!("TabularSection '{section_name}' not found"))?;
     if let Some(child_objects) = meta_info_child(section, "ChildObjects") {
         for child in meta_info_children(child_objects, tag) {
-            if meta_edit_child_object_name(child).as_deref() == Some(name) {
+            if meta_edit_child_object_name(child)
+                .is_some_and(|candidate| metadata_name_eq(&candidate, name))
+            {
                 return Err(format!("{tag} '{section_name}.{name}' already exists"));
             }
         }
@@ -420,7 +429,10 @@ pub(super) fn meta_edit_insert_top_child_object_with_position(
         .ok_or_else(|| "Position target must be non-empty".to_string())?;
     let target = meta_info_children(child_objects, tag)
         .into_iter()
-        .find(|child| meta_edit_child_object_name(*child).as_deref() == Some(target_name))
+        .find(|child| {
+            meta_edit_child_object_name(*child)
+                .is_some_and(|candidate| metadata_name_eq(&candidate, target_name))
+        })
         .ok_or_else(|| format!("{tag} '{target_name}' not found for positional insert"))?;
     let range = target.range();
     drop(doc);
@@ -471,7 +483,10 @@ pub(super) fn meta_edit_insert_tabular_child_object_with_position(
         .ok_or_else(|| "Position target must be non-empty".to_string())?;
     let target = meta_info_children(child_objects, tag)
         .into_iter()
-        .find(|child| meta_edit_child_object_name(*child).as_deref() == Some(target_name))
+        .find(|child| {
+            meta_edit_child_object_name(*child)
+                .is_some_and(|candidate| metadata_name_eq(&candidate, target_name))
+        })
         .ok_or_else(|| {
             format!("{tag} '{section_name}.{target_name}' not found for positional insert")
         })?;
@@ -1278,7 +1293,7 @@ fn typed_child_footprint_profile(
             })?;
             let (required_files, required_directories) = match template_type {
                 MetadataTemplateType::HtmlDocument => (
-                    paths(&["Ext/Template.xml", "Ext/Template/ru.html"]),
+                    paths(&["Ext/Template.xml"]),
                     paths(&["", "Ext", "Ext/Template"]),
                 ),
                 MetadataTemplateType::TextDocument => {
@@ -1311,16 +1326,31 @@ fn validate_typed_child_footprint(
     directories: &[PathBuf],
 ) -> Result<MetadataChildFootprintEvidence, MetaFailure> {
     let profile = typed_child_footprint_profile(collection, template_type, child)?;
+    let mut required_files = profile.required_files.clone();
+    if template_type == Some(MetadataTemplateType::HtmlDocument) {
+        let descriptor = files
+            .iter()
+            .find(|(relative, _)| relative == Path::new("Ext/Template.xml"))
+            .ok_or_else(|| {
+                typed_child_resource_failure(child, "HTML template descriptor is unavailable")
+            })?;
+        let pages = super::validation::html_template_page_names(&descriptor.1)
+            .map_err(|message| typed_child_resource_failure(child, &message))?;
+        required_files.extend(
+            pages
+                .into_iter()
+                .map(|page| PathBuf::from(format!("Ext/Template/{page}.html"))),
+        );
+    }
     let observed_files = files
         .iter()
         .map(|(relative, _)| relative.clone())
         .collect::<BTreeSet<_>>();
-    let allowed_files = profile
-        .required_files
+    let allowed_files = required_files
         .union(&profile.optional_files)
         .cloned()
         .collect::<BTreeSet<_>>();
-    if !profile.required_files.is_subset(&observed_files)
+    if !required_files.is_subset(&observed_files)
         || !observed_files.is_subset(&allowed_files)
         || observed_files.len() != files.len()
     {
@@ -1437,7 +1467,9 @@ fn typed_child_payload_role(
                     MetadataTemplateResourcePart::Primary
                 }
                 (MetadataTemplateType::HtmlDocument, path)
-                    if path == Path::new("Ext/Template/ru.html") =>
+                    if path.parent() == Some(Path::new("Ext/Template"))
+                        && path.extension().and_then(|extension| extension.to_str())
+                            == Some("html") =>
                 {
                     MetadataTemplateResourcePart::HtmlPage
                 }
@@ -1625,16 +1657,38 @@ impl TypedChildTreeError {
 
 type TypedChildTree = (Vec<(PathBuf, Vec<u8>)>, Vec<PathBuf>);
 
+const TYPED_CHILD_TREE_MAX_DEPTH: usize = 64;
+const TYPED_CHILD_TREE_MAX_ENTRIES: usize = 20_000;
+const TYPED_CHILD_TREE_MAX_FILES: usize = 20_000;
+const TYPED_CHILD_TREE_MAX_BYTES: usize = 64 * 1024 * 1024;
+
+#[derive(Default)]
+struct TypedChildTreeBudget {
+    entries: usize,
+    files: usize,
+    bytes: usize,
+}
+
 fn read_typed_child_tree(root: &Path) -> Result<TypedChildTree, TypedChildTreeError> {
     fn visit(
         root: &Path,
         current: &Path,
+        depth: usize,
         files: &mut Vec<(PathBuf, Vec<u8>)>,
         directories: &mut Vec<PathBuf>,
+        budget: &mut TypedChildTreeBudget,
     ) -> Result<(), TypedChildTreeError> {
+        if depth > TYPED_CHILD_TREE_MAX_DEPTH {
+            return Err(TypedChildTreeError::Unavailable);
+        }
         let entries = fs::read_dir(current).map_err(|_| TypedChildTreeError::Unavailable)?;
         for entry in entries {
             let entry = entry.map_err(|_| TypedChildTreeError::Unavailable)?;
+            budget.entries = budget
+                .entries
+                .checked_add(1)
+                .filter(|count| *count <= TYPED_CHILD_TREE_MAX_ENTRIES)
+                .ok_or(TypedChildTreeError::Unavailable)?;
             let file_type = entry
                 .file_type()
                 .map_err(|_| TypedChildTreeError::Unavailable)?;
@@ -1643,10 +1697,27 @@ fn read_typed_child_tree(root: &Path) -> Result<TypedChildTree, TypedChildTreeEr
             }
             if file_type.is_dir() {
                 directories.push(entry.path().strip_prefix(root).unwrap().to_path_buf());
-                visit(root, &entry.path(), files, directories)?;
+                visit(root, &entry.path(), depth + 1, files, directories, budget)?;
             } else if file_type.is_file() {
+                budget.files = budget
+                    .files
+                    .checked_add(1)
+                    .filter(|count| *count <= TYPED_CHILD_TREE_MAX_FILES)
+                    .ok_or(TypedChildTreeError::Unavailable)?;
                 let path = entry.path();
-                let bytes = fs::read(&path).map_err(|_| TypedChildTreeError::Unavailable)?;
+                let remaining = TYPED_CHILD_TREE_MAX_BYTES
+                    .checked_sub(budget.bytes)
+                    .ok_or(TypedChildTreeError::Unavailable)?;
+                let mut bytes = Vec::new();
+                fs::File::open(&path)
+                    .map_err(|_| TypedChildTreeError::Unavailable)?
+                    .take((remaining as u64).saturating_add(1))
+                    .read_to_end(&mut bytes)
+                    .map_err(|_| TypedChildTreeError::Unavailable)?;
+                if bytes.len() > remaining {
+                    return Err(TypedChildTreeError::Unavailable);
+                }
+                budget.bytes += bytes.len();
                 files.push((path.strip_prefix(root).unwrap().to_path_buf(), bytes));
             } else {
                 return Err(TypedChildTreeError::UnsupportedNode);
@@ -1656,7 +1727,14 @@ fn read_typed_child_tree(root: &Path) -> Result<TypedChildTree, TypedChildTreeEr
     }
     let mut files = Vec::new();
     let mut directories = vec![PathBuf::new()];
-    visit(root, root, &mut files, &mut directories)?;
+    visit(
+        root,
+        root,
+        0,
+        &mut files,
+        &mut directories,
+        &mut TypedChildTreeBudget::default(),
+    )?;
     files.sort_by(|left, right| left.0.cmp(&right.0));
     directories.sort();
     Ok((files, directories))
@@ -2457,8 +2535,9 @@ fn typed_collection_effect_value<'a>(
             .into_iter()
             .flat_map(|node| meta_info_children(node, "TabularSection"))
             .find(|node| {
-                meta_edit_child_object_name(*node).as_deref()
-                    == Some(scope.tabular_section.as_str())
+                meta_edit_child_object_name(*node).is_some_and(|candidate| {
+                    metadata_name_eq(&candidate, scope.tabular_section.as_str())
+                })
             })
             .ok_or_else(|| {
                 typed_diagnostic(
@@ -2471,7 +2550,7 @@ fn typed_collection_effect_value<'a>(
     } else {
         top
     };
-    let requested = names.collect::<BTreeSet<_>>();
+    let requested = names.collect::<Vec<_>>();
     let mut diagnostics = Vec::new();
     let elements = super::info::typed_elements_with_diagnostics(
         xml,
@@ -2489,7 +2568,11 @@ fn typed_collection_effect_value<'a>(
     }
     let selected = elements
         .into_iter()
-        .filter(|element| requested.contains(element.name.as_str()))
+        .filter(|element| {
+            requested
+                .iter()
+                .any(|requested| metadata_name_eq(element.name.as_str(), requested))
+        })
         .collect::<Vec<_>>();
     if selected.len() != requested.len() {
         return Err(typed_diagnostic(
@@ -3125,7 +3208,10 @@ fn find_typed_element_range(
     })?;
     meta_info_children(parent, tag)
         .into_iter()
-        .find(|child| meta_edit_child_object_name(*child).as_deref() == Some(name))
+        .find(|child| {
+            meta_edit_child_object_name(*child)
+                .is_some_and(|candidate| metadata_name_eq(&candidate, name))
+        })
         .map(|node| node.range())
         .ok_or_else(|| {
             typed_diagnostic(
@@ -4304,6 +4390,81 @@ mod tests {
             apply_typed_operations(&mut xml, &operations).unwrap();
             assert!(!xml.contains(&format!("<{tag} uuid=")), "{collection:?}");
         }
+    }
+
+    #[test]
+    fn typed_collection_targets_are_case_insensitive() {
+        let mut xml = object_xml("Document", "Order", "<RegisterRecords/>");
+        apply_typed_operations(
+            &mut xml,
+            &[MetaEditOperation::add(
+                MetaCollection::Attributes,
+                None,
+                vec![MetaElementInput::named("Товар")],
+            )
+            .unwrap()],
+        )
+        .unwrap();
+
+        let duplicate = apply_typed_operations(
+            &mut xml,
+            &[MetaEditOperation::add(
+                MetaCollection::Attributes,
+                None,
+                vec![MetaElementInput::named("товар")],
+            )
+            .unwrap()],
+        )
+        .unwrap_err();
+        assert_eq!(
+            duplicate.diagnostics[0].code,
+            MetaDiagnosticCode::AlreadyExists
+        );
+
+        apply_typed_operations(
+            &mut xml,
+            &[MetaEditOperation::update(
+                MetaCollection::Attributes,
+                None,
+                vec![MetaElementUpdateInput {
+                    name: "тОвАр".into(),
+                    new_name: Some("Позиция".into()),
+                    ..MetaElementUpdateInput::default()
+                }],
+            )
+            .unwrap()],
+        )
+        .unwrap();
+        assert!(xml.contains("<Name>Позиция</Name>"));
+
+        apply_typed_operations(
+            &mut xml,
+            &[
+                MetaEditOperation::remove(MetaCollection::Attributes, None, vec!["пОзИцИя".into()])
+                    .unwrap(),
+            ],
+        )
+        .unwrap();
+        assert!(!xml.contains("<Attribute uuid="));
+    }
+
+    #[test]
+    fn typed_child_tree_rejects_excessive_depth_before_capture() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-meta-edit-child-depth-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let mut current = root.clone();
+        for depth in 0..65 {
+            current = current.join(format!("d{depth}"));
+        }
+        std::fs::create_dir_all(&current).unwrap();
+        std::fs::write(current.join("payload.bin"), b"payload").unwrap();
+
+        let result = read_typed_child_tree(&root);
+
+        assert!(matches!(result, Err(TypedChildTreeError::Unavailable)));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -5939,6 +6100,50 @@ mod tests {
 
         validate_typed_child_footprint(MetaCollection::Commands, None, &child, &[], &[])
             .expect("descriptor-only Command is a valid closed footprint");
+    }
+
+    #[test]
+    fn html_template_footprint_follows_all_declared_pages() {
+        let child = metadata_reference("Catalog.Editable.Template.Main").metadata_path;
+        let files = vec![
+            (
+                PathBuf::from("Ext/Template.xml"),
+                br#"<Help xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"><Page>ru</Page><Page>en</Page></Help>"#.to_vec(),
+            ),
+            (
+                PathBuf::from("Ext/Template/ru.html"),
+                b"<html><body>ru</body></html>".to_vec(),
+            ),
+            (
+                PathBuf::from("Ext/Template/en.html"),
+                b"<html><body>en</body></html>".to_vec(),
+            ),
+        ];
+        let directories = vec![
+            PathBuf::new(),
+            PathBuf::from("Ext"),
+            PathBuf::from("Ext/Template"),
+        ];
+
+        validate_typed_child_footprint(
+            MetaCollection::Templates,
+            Some(MetadataTemplateType::HtmlDocument),
+            &child,
+            &files,
+            &directories,
+        )
+        .unwrap();
+
+        let mut missing_page = files;
+        missing_page.pop();
+        assert!(validate_typed_child_footprint(
+            MetaCollection::Templates,
+            Some(MetadataTemplateType::HtmlDocument),
+            &child,
+            &missing_page,
+            &directories,
+        )
+        .is_err());
     }
 
     #[test]

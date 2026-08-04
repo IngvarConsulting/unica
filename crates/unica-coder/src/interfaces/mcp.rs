@@ -8,7 +8,7 @@
 
 use crate::application::{
     input_schema_for_tool, metadata_argument_failure_result, operation_result_output_schema,
-    OperationResult, ToolSpec, UnicaApplication,
+    OperationResult, ToolHandler, ToolSpec, UnicaApplication,
 };
 use crate::domain::cancellation::CancellationToken;
 use rmcp::model::{
@@ -19,6 +19,7 @@ use rmcp::model::{
 use rmcp::service::{RequestContext, ServerInitializeError};
 use rmcp::{RoleServer, ServerHandler, ServiceExt};
 use serde_json::{Map, Value};
+use std::collections::HashSet;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -94,6 +95,7 @@ fn drain_mcp_shutdown_with(
 pub struct UnicaServer {
     handler: Arc<ToolCallHandler>,
     in_flight: Arc<InFlightRegistry>,
+    structured_tools: HashSet<&'static str>,
 }
 
 impl UnicaServer {
@@ -101,6 +103,12 @@ impl UnicaServer {
         Self {
             handler,
             in_flight: Arc::new(InFlightRegistry::default()),
+            structured_tools: crate::application::tools()
+                .into_iter()
+                .filter_map(|spec| {
+                    matches!(spec.handler, ToolHandler::Metadata { .. }).then_some(spec.name)
+                })
+                .collect(),
         }
     }
 
@@ -157,7 +165,9 @@ impl ServerHandler for UnicaServer {
         drop(admission);
 
         match result {
-            Ok(Ok(result)) => render_tool_result(&name, result),
+            Ok(Ok(result)) => {
+                render_tool_result(self.structured_tools.contains(name.as_str()), result)
+            }
             Ok(Err((code, message))) => Err(ErrorData::new(ErrorCode(code), message, None)),
             Err(join_error) => Err(ErrorData::new(
                 ErrorCode::INTERNAL_ERROR,
@@ -180,7 +190,7 @@ pub fn tool_definitions(specs: &[ToolSpec]) -> Vec<Tool> {
                 }
             };
             let tool = Tool::new(spec.name, spec.description, schema);
-            if is_meta_tool(spec.name) {
+            if matches!(spec.handler, ToolHandler::Metadata { .. }) {
                 let output_schema = match operation_result_output_schema() {
                     Value::Object(schema) => schema,
                     other => unreachable!("OperationResult produced a non-object schema: {other}"),
@@ -193,17 +203,13 @@ pub fn tool_definitions(specs: &[ToolSpec]) -> Vec<Tool> {
         .collect()
 }
 
-fn is_meta_tool(name: &str) -> bool {
-    matches!(
-        name,
-        "unica.meta.info" | "unica.meta.add" | "unica.meta.edit" | "unica.meta.remove"
-    )
-}
-
-fn render_tool_result(name: &str, result: OperationResult) -> Result<CallToolResult, ErrorData> {
+fn render_tool_result(
+    structured: bool,
+    result: OperationResult,
+) -> Result<CallToolResult, ErrorData> {
     let value = serde_json::to_value(&result)
         .map_err(|error| ErrorData::new(ErrorCode::INTERNAL_ERROR, error.to_string(), None))?;
-    if is_meta_tool(name) {
+    if structured {
         return Ok(if result.ok {
             CallToolResult::structured(value)
         } else {
@@ -505,8 +511,13 @@ mod tests {
         // This is the actual SDK projection hosts place in model context, not
         // just the two largest source schemas measured in isolation.
         let compact_result_bytes = serde_json::to_vec(&response["result"]).unwrap().len();
+        eprintln!("tools/list compact JSON bytes: {compact_result_bytes}");
+        // Release baseline for the typed Meta surface (2026-08-04): 1,275,431
+        // bytes. Keep a narrow ratchet here; the follow-up reduction target is
+        // recorded in the implementation plan instead of silently spending
+        // more model-context budget.
         assert!(
-            compact_result_bytes < 1_300_000,
+            compact_result_bytes < 1_285_000,
             "tools/list result consumes {compact_result_bytes} compact JSON bytes"
         );
         client.shutdown().await;
@@ -561,8 +572,7 @@ mod tests {
             std::fs::write(path, bytes).unwrap();
         }
 
-        let previous_cwd = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&root).unwrap();
+        let cwd = crate::test_support::ProcessCwdGuard::enter(&root).unwrap();
         let (mut client, _) = spawn_server(application_handler());
         client.initialize().await;
         client
@@ -657,7 +667,7 @@ mod tests {
         assert_eq!(invalid_result["isError"], true);
 
         client.shutdown().await;
-        std::env::set_current_dir(previous_cwd).unwrap();
+        drop(cwd);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -704,6 +714,21 @@ mod tests {
             assert!(properties.contains_key(name), "missing {name}");
         }
         assert!(schema.get("oneOf").is_none());
+    }
+
+    #[test]
+    fn metadata_output_schema_follows_the_registered_handler_variant() {
+        let listed = tool_definitions(&[ToolSpec {
+            name: "unica.meta.future",
+            description: "Synthetic metadata registry entry.",
+            mutating: false,
+            cache_access: crate::domain::cache::CacheAccess::default(),
+            handler: crate::application::ToolHandler::Metadata {
+                operation: crate::application::metadata::MetadataOperation::Info,
+            },
+        }]);
+
+        assert!(listed[0].output_schema.is_some());
     }
 
     #[test]

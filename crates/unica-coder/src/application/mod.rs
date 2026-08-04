@@ -2108,17 +2108,8 @@ mod tests {
         name: &str,
         args: &Map<String, Value>,
     ) -> Result<OperationResult, String> {
-        static PROCESS_CWD_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
-            std::sync::OnceLock::new();
-        let _guard = PROCESS_CWD_LOCK
-            .get_or_init(|| std::sync::Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let previous = std::env::current_dir().map_err(|error| error.to_string())?;
-        std::env::set_current_dir(workspace).map_err(|error| error.to_string())?;
-        let result = UnicaApplication::new().call_tool(name, args);
-        std::env::set_current_dir(previous).map_err(|error| error.to_string())?;
-        result
+        let _cwd = crate::test_support::ProcessCwdGuard::enter(workspace)?;
+        UnicaApplication::new().call_tool(name, args)
     }
 
     fn path_text(path: &std::path::Path) -> String {
@@ -9323,9 +9314,8 @@ mod tests {
     }
 
     fn call_typed_meta_add(workspace: &std::path::Path, kind: &str, name: &str) -> OperationResult {
-        let previous = std::env::current_dir().unwrap();
-        std::env::set_current_dir(workspace).unwrap();
-        let result = UnicaApplication::new()
+        let _cwd = crate::test_support::ProcessCwdGuard::enter(workspace).unwrap();
+        UnicaApplication::new()
             .call_tool(
                 "unica.meta.add",
                 &Map::from_iter([
@@ -9335,9 +9325,7 @@ mod tests {
                     ("dryRun".to_string(), Value::Bool(false)),
                 ]),
             )
-            .unwrap();
-        std::env::set_current_dir(previous).unwrap();
-        result
+            .unwrap()
     }
 
     fn assert_valid_root_uuid(xml: &str, tag_name: &str) {

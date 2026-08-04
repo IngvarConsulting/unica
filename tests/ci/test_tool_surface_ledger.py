@@ -32,7 +32,8 @@ def load_generator():
 
 def resolve_schema_base(root, schema):
     """Resolve root-local definitions and the shared base of an allOf profile."""
-    while True:
+    resolution_limit = len(root.get("$defs", {})) + 2
+    for _ in range(resolution_limit):
         reference = schema.get("$ref")
         if reference is not None:
             assert reference.startswith("#/$defs/")
@@ -43,6 +44,9 @@ def resolve_schema_base(root, schema):
             schema = all_of[0]
             continue
         return schema
+    raise AssertionError(
+        f"schema base resolution exceeded {resolution_limit} local steps"
+    )
 
 
 class ToolSurfaceLedgerTests(unittest.TestCase):
@@ -75,6 +79,11 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
             with self.subTest(tool=name):
                 self.assertEqual(self.review[name]["scope"], "in")
                 self.assertEqual(self.review[name]["result"]["contract"], "typed")
+
+    def test_schema_base_resolution_is_bounded(self) -> None:
+        root = {"$defs": {"cycle": {"$ref": "#/$defs/cycle"}}}
+        with self.assertRaisesRegex(AssertionError, "resolution exceeded"):
+            resolve_schema_base(root, root["$defs"]["cycle"])
 
     def test_xdto_group_has_a_human_domain_title(self) -> None:
         self.assertEqual(self.module.GROUP_TITLES.get("xdto"), "xdto — пакеты XDTO")
@@ -121,9 +130,11 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
         for add_branch, edit_branch in zip(add_branches, edit_branches, strict=True):
             kind = add_branch["if"]["properties"]["kind"]["enum"]
             self.assertEqual(len(kind), 1)
-            self.assertIn(
-                kind[0],
-                edit_branch["if"]["properties"]["metadataPath"]["pattern"],
+            pattern = edit_branch["if"]["properties"]["metadataPath"]["pattern"]
+            self.assertTrue(
+                pattern.startswith(f"^({kind[0]}|")
+                or pattern.startswith(f"^({kind[0]})"),
+                f"edit branch pattern does not start with {kind[0]}: {pattern}",
             )
             add_items = add_branch["then"]["properties"]["operations"]["items"]
             edit_items = edit_branch["then"]["properties"]["operations"]["items"]

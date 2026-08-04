@@ -1,19 +1,12 @@
 use super::{OperationResult, UnicaApplication};
 use crate::composition::testing::{with_registrar_processing_hook, RegistrarProcessingPhase};
 use crate::domain::cancellation::CancellationToken;
+use crate::test_support::ProcessCwdGuard;
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
 use uuid::Uuid;
 
 struct TempWorkspace(PathBuf);
-
-fn process_cwd_lock() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
 
 impl TempWorkspace {
     fn new(label: &str) -> Self {
@@ -38,7 +31,6 @@ impl Drop for TempWorkspace {
 }
 
 fn create_info_workspace(label: &str) -> TempWorkspace {
-    let _cwd_lock = process_cwd_lock();
     let workspace = TempWorkspace::new(label);
     let initialized = UnicaApplication::new()
         .call_tool(
@@ -66,8 +58,7 @@ fn create_info_workspace(label: &str) -> TempWorkspace {
         ),
     )
     .unwrap();
-    let previous = std::env::current_dir().unwrap();
-    std::env::set_current_dir(workspace.path()).unwrap();
+    let _cwd = ProcessCwdGuard::enter(workspace.path()).unwrap();
     let added = UnicaApplication::new().call_tool(
         "unica.meta.add",
         &Map::from_iter([
@@ -103,7 +94,6 @@ fn create_info_workspace(label: &str) -> TempWorkspace {
                 ("dryRun".to_string(), Value::Bool(false)),
             ]),
         );
-    std::env::set_current_dir(previous).unwrap();
     let added = added.unwrap();
     assert!(added.ok, "{:?}", added.errors);
     let edited = edited.unwrap();
@@ -131,12 +121,10 @@ fn call_info_path(
         ),
     ]);
     args.extend(extra);
-    let _cwd_lock = process_cwd_lock();
-    let previous = std::env::current_dir().unwrap();
-    std::env::set_current_dir(workspace).unwrap();
-    let result = UnicaApplication::new().call_tool("unica.meta.info", &args);
-    std::env::set_current_dir(previous).unwrap();
-    result.expect("private typed meta.info call")
+    let _cwd = ProcessCwdGuard::enter(workspace).unwrap();
+    UnicaApplication::new()
+        .call_tool("unica.meta.info", &args)
+        .expect("private typed meta.info call")
 }
 
 fn call_info_path_cancellable(
@@ -153,22 +141,17 @@ fn call_info_path_cancellable(
         ),
     ]);
     args.extend(extra);
-    let _cwd_lock = process_cwd_lock();
-    let previous = std::env::current_dir().unwrap();
-    std::env::set_current_dir(workspace).unwrap();
-    let result =
-        UnicaApplication::new().call_tool_cancellable("unica.meta.info", &args, cancellation);
-    std::env::set_current_dir(previous).unwrap();
-    result.expect("private typed meta.info call")
+    let _cwd = ProcessCwdGuard::enter(workspace).unwrap();
+    UnicaApplication::new()
+        .call_tool_cancellable("unica.meta.info", &args, cancellation)
+        .expect("private typed meta.info call")
 }
 
 fn call_meta_tool(workspace: &Path, tool: &str, args: Map<String, Value>) -> OperationResult {
-    let _cwd_lock = process_cwd_lock();
-    let previous = std::env::current_dir().unwrap();
-    std::env::set_current_dir(workspace).unwrap();
-    let result = UnicaApplication::new().call_tool(tool, &args);
-    std::env::set_current_dir(previous).unwrap();
-    result.expect("private typed metadata call")
+    let _cwd = ProcessCwdGuard::enter(workspace).unwrap();
+    UnicaApplication::new()
+        .call_tool(tool, &args)
+        .expect("private typed metadata call")
 }
 
 fn add_catalog(
@@ -307,6 +290,39 @@ fn info_without_sections_is_local_only() {
     }
     assert_eq!(data["related"], serde_json::json!({}));
     assert!(result.stdout.is_none());
+}
+
+#[test]
+fn info_preserves_local_structure_when_child_resource_evidence_is_unavailable() {
+    let workspace = create_info_workspace("child-evidence-unavailable");
+    let edited = call_edit(
+        workspace.path(),
+        "Catalog.Inspectable",
+        serde_json::json!([{
+            "op": "add",
+            "collection": "forms",
+            "elements": [{"name": "Main"}]
+        }]),
+        false,
+    );
+    assert!(edited.ok, "{:?}", edited.errors);
+    std::fs::write(
+        workspace
+            .path()
+            .join("src/Catalogs/Inspectable/Forms/Main/unexpected.bin"),
+        b"unexpected",
+    )
+    .unwrap();
+
+    let result = call_info(workspace.path(), []);
+
+    assert!(!result.ok);
+    assert_eq!(result.data.as_ref().unwrap()["name"], "Inspectable");
+    assert_eq!(
+        result.data.as_ref().unwrap()["collections"]["forms"][0]["name"],
+        "Main"
+    );
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
 }
 
 #[test]
