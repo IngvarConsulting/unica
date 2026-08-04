@@ -188,6 +188,7 @@ Unica. Каждая запись формулирует одно нормати�
   `limit` допускается от одного до пятидесяти включительно.
 - **Decision:** ADR-0025
 - **Check:** `ci-test` — `tests/ci/test_meta_surface_contract.py`
+- **Check:** `ci-test` — `crates/unica-coder/src/application/metadata.rs`
 - **Scope:** source, packaged, runtime
 
 ### INV-MCP-XDTO-LOGICAL-TARGET — XDTO-пакет выбирается логическим адресом

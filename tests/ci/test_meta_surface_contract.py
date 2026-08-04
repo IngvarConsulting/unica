@@ -267,6 +267,26 @@ class MetaSurfaceContractTests(unittest.TestCase):
                 self.assertEqual(properties, expected_properties[operation])
                 self.assertIn(f"vec!{required}", arm)
 
+        info_start = schema.index("MetadataOperation::Info =>")
+        info_end = schema.index("MetadataOperation::Add =>", info_start)
+        info_arm = schema[info_start:info_end]
+        self.assertRegex(
+            info_arm,
+            re.compile(
+                r'"sections"\.into\(\),\s*json!\(\{.*?"default":\s*\[\],',
+                re.DOTALL,
+            ),
+        )
+        self.assertRegex(
+            info_arm,
+            re.compile(
+                r'"limit"\.into\(\),\s*json!\(\{\s*'
+                r'"type": "integer",\s*"minimum": 1,\s*'
+                r'"maximum": 50,\s*"default": 20,',
+                re.DOTALL,
+            ),
+        )
+
         edit_items = rust_function(metadata, "fn operation_schema()")
         self.assertIn('"oneOf"', edit_items)
         for composition in ("anyOf", "allOf"):
