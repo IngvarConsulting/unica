@@ -62,7 +62,10 @@ class VersionContractTests(unittest.TestCase):
         note = migration_note.read_text(encoding="utf-8")
         root_readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
         required_mapping = (
-            ("meta.compile", "meta.add, then meta.edit"),
+            (
+                "meta.compile",
+                "meta.add.operations[] only for ledger-supported capabilities",
+            ),
             ("meta.profile", "meta.info.related"),
             (
                 "meta.validate",

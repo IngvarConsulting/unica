@@ -2843,18 +2843,126 @@ def prepare_meta_edit_skill_example(
 
     register_meta_skill_object(source_root, kind, name)
 
+    for operation in arguments.get("operations", ()):
+        if operation["op"] not in {"update", "remove"}:
+            continue
+        if operation["collection"] != "attributes":
+            raise AssertionError(
+                "typed Meta skill fixture can materialize update/remove targets "
+                f"only for attributes, got {operation['collection']}"
+            )
+        scope = operation.get("scope", {}).get("tabularSection")
+        target_names = (
+            operation["names"]
+            if operation["op"] == "remove"
+            else [element["name"] for element in operation["elements"]]
+        )
+        for target_name in target_names:
+            ensure_meta_edit_skill_attribute(object_path, target_name, scope)
 
-def ensure_meta_edit_skill_attribute(object_path: Path, attribute_name: str) -> None:
-    """Clone a valid attribute so remove/modify examples have a real target."""
-    xml = object_path.read_text(encoding="utf-8")
-    if f"<Name>{attribute_name}</Name>" in xml:
-        return
-    match = re.search(
-        r"(?ms)^\t\t\t<Attribute\b.*?^\t\t\t</Attribute>",
-        xml,
+
+def stable_meta_skill_uuid(identity: str) -> str:
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
+    return (
+        f"{digest[:8]}-{digest[8:12]}-{digest[12:16]}-"
+        f"{digest[16:20]}-{digest[20:32]}"
     )
-    if match is None:
+
+
+def ensure_meta_edit_skill_tabular_section(
+    object_path: Path, section_name: str
+) -> None:
+    """Clone a valid section when a documented scoped operation needs it."""
+    xml = object_path.read_text(encoding="utf-8")
+    section_pattern = re.compile(
+        r"(?ms)^\t\t\t<TabularSection\b.*?^\t\t\t</TabularSection>"
+    )
+    sections = list(section_pattern.finditer(xml))
+    for match in sections:
+        name = re.search(r"<Name>([^<]+)</Name>", match.group(0))
+        if name is not None and name.group(1) == section_name:
+            return
+    if not sections:
+        raise AssertionError(f"no reusable TabularSection fixture in {object_path}")
+
+    section = sections[0].group(0)
+    source_name = re.search(r"<Name>([^<]+)</Name>", section)
+    if source_name is None:
+        raise AssertionError(f"reusable TabularSection has no Name in {object_path}")
+    section = section.replace(source_name.group(1), section_name)
+    uuid_index = 0
+
+    def replace_uuid(match: re.Match[str]) -> str:
+        nonlocal uuid_index
+        uuid_index += 1
+        return stable_meta_skill_uuid(
+            f"tabularSection:{section_name}:{uuid_index}:{match.group(0)}"
+        )
+
+    section = re.sub(
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+        r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+        replace_uuid,
+        section,
+    )
+    root_close = re.search(r"(?m)^\t\t</ChildObjects>\s*$", xml)
+    if root_close is None:
+        raise AssertionError(f"no root ChildObjects closing tag in {object_path}")
+    object_path.write_text(
+        f"{xml[:root_close.start()]}{section}\n{xml[root_close.start():]}",
+        encoding="utf-8",
+    )
+
+
+def ensure_meta_edit_skill_attribute(
+    object_path: Path, attribute_name: str, tabular_section: str | None = None
+) -> None:
+    """Clone a valid attribute so remove/modify examples have a real target."""
+    if tabular_section is not None:
+        ensure_meta_edit_skill_tabular_section(object_path, tabular_section)
+    xml = object_path.read_text(encoding="utf-8")
+    if tabular_section is None:
+        container_start = 0
+        container_end = len(xml)
+        close_pattern = r"(?m)^\t\t</ChildObjects>\s*$"
+        attribute_pattern = r"(?ms)^\t\t\t<Attribute\b.*?^\t\t\t</Attribute>"
+        indent = "\t\t\t"
+    else:
+        section_match = next(
+            (
+                match
+                for match in re.finditer(
+                    r"(?ms)^\t\t\t<TabularSection\b.*?^\t\t\t</TabularSection>",
+                    xml,
+                )
+                if (
+                    (name := re.search(r"<Name>([^<]+)</Name>", match.group(0)))
+                    is not None
+                    and name.group(1) == tabular_section
+                )
+            ),
+            None,
+        )
+        if section_match is None:
+            raise AssertionError(
+                f"cannot materialize TabularSection {tabular_section} in {object_path}"
+            )
+        container_start, container_end = section_match.span()
+        close_pattern = r"(?m)^\t\t\t\t</ChildObjects>\s*$"
+        attribute_pattern = (
+            r"(?ms)^\t\t\t\t\t<Attribute\b.*?^\t\t\t\t\t</Attribute>"
+        )
+        indent = "\t\t\t\t\t"
+
+    container = xml[container_start:container_end]
+    attributes = list(re.finditer(attribute_pattern, container))
+    for match in attributes:
+        name = re.search(r"<Name>([^<]+)</Name>", match.group(0))
+        if name is not None and name.group(1) == attribute_name:
+            return
+    if not attributes:
         raise AssertionError(f"no reusable Attribute fixture in {object_path}")
+    match = attributes[0]
     attribute = match.group(0)
     attribute = re.sub(
         r"(<Name>)[^<]+(</Name>)",
@@ -2862,10 +2970,8 @@ def ensure_meta_edit_skill_attribute(object_path: Path, attribute_name: str) -> 
         attribute,
         count=1,
     )
-    digest = hashlib.sha256(attribute_name.encode("utf-8")).hexdigest()[:32]
-    fixture_uuid = (
-        f"{digest[:8]}-{digest[8:12]}-{digest[12:16]}-"
-        f"{digest[16:20]}-{digest[20:32]}"
+    fixture_uuid = stable_meta_skill_uuid(
+        f"attribute:{tabular_section or '<root>'}:{attribute_name}"
     )
     attribute = re.sub(
         r'uuid="[^"]+"',
@@ -2873,10 +2979,13 @@ def ensure_meta_edit_skill_attribute(object_path: Path, attribute_name: str) -> 
         attribute,
         count=1,
     )
-    root_close = re.search(r"(?m)^\t\t</ChildObjects>\s*$", xml)
-    if root_close is None:
-        raise AssertionError(f"no root ChildObjects closing tag in {object_path}")
-    xml = f"{xml[:root_close.start()]}{attribute}\n{xml[root_close.start():]}"
+    close = re.search(close_pattern, container)
+    if close is None:
+        raise AssertionError(f"no target ChildObjects closing tag in {object_path}")
+    insert_at = container_start + close.start()
+    if not attribute.startswith(indent):
+        raise AssertionError(f"unexpected Attribute indentation in {object_path}")
+    xml = f"{xml[:insert_at]}{attribute}\n{xml[insert_at:]}"
     object_path.write_text(xml, encoding="utf-8")
 
 

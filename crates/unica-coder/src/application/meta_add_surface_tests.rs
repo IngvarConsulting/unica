@@ -1,6 +1,6 @@
 use super::{OperationResult, UnicaApplication};
+use crate::composition::testing::with_meta_add_after_authorization_hook;
 use crate::domain::cancellation::CancellationToken;
-use crate::infrastructure::native_operations::meta::with_meta_add_after_authorization_hook;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
