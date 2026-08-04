@@ -7,12 +7,13 @@ use crate::application::ports::{
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::format_profile::ACTIVE_FORMAT_PROFILE;
 use crate::domain::metadata::{
+    metadata_decimal_shape, metadata_xs_datetime_is_valid, validate_metadata_element_value_profile,
     validate_metadata_operation_capabilities, validate_metadata_relation_target_profile,
     DateFractions, MetaCollection, MetaDiagnostic, MetaDiagnosticCode, MetaEditOperation,
     MetaElementDefinition, MetaElementUpdate, MetaFillValue, MetaMutationEffect, MetaPosition,
     MetaPropertyKey, MetaPropertyValue, MetaPublicationAction, MetaPublicationPlanEntry,
-    MetaPublicationResource, MetaRelation, MetadataKind, MetadataType, MetadataTypeVariant,
-    NumberSign, RelationEditMode, StringLengthMode, METADATA_PROPERTY_SPECS,
+    MetaPublicationResource, MetaRelation, MetaValueProfileContext, MetadataKind, MetadataType,
+    MetadataTypeVariant, NumberSign, RelationEditMode, StringLengthMode, METADATA_PROPERTY_SPECS,
 };
 use crate::domain::source_target::{
     MetadataAddress, SourceTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
@@ -41,9 +42,8 @@ use super::format_contract::{
 use super::publisher::{fresh_metadata_uuid, PreparedMetaEdit};
 use super::template_catalog::{
     emit_meta_attribute, emit_meta_enum_value, emit_meta_register_field, emit_meta_tabular_section,
-    meta_attribute_context, metadata_generated_types_8_3_27, metadata_standard_attribute_names,
-    split_meta_camel_case, MetadataAttributeTemplate, MetadataEnumValueTemplate,
-    MetadataTabularSectionTemplate,
+    meta_attribute_context, metadata_standard_attribute_names, split_meta_camel_case,
+    MetadataAttributeTemplate, MetadataEnumValueTemplate, MetadataTabularSectionTemplate,
 };
 use super::xml_model::{
     emit_meta_mltext, emit_meta_typed_fill_value, emit_meta_typed_value_type, meta_info_child,
@@ -2861,7 +2861,6 @@ fn render_typed_element(
     collection: MetaCollection,
     element: &MetaElementDefinition,
 ) -> Result<Vec<String>, MetaDiagnostic> {
-    validate_typed_element_value_profile(element)?;
     let mut lines = Vec::new();
     let mut next_uuid = fresh_metadata_uuid;
     let attr = || MetadataAttributeTemplate {
@@ -3001,7 +3000,6 @@ fn apply_typed_nested_attribute_fields(
 ) -> Result<(), MetaDiagnostic> {
     const WRAPPER: &str = "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">";
     for attribute in attributes {
-        validate_typed_element_value_profile(attribute)?;
         let wrapped = format!("{WRAPPER}{xml}</MetaDataObject>");
         let document = Document::parse(&wrapped).map_err(|_| {
             typed_diagnostic(
@@ -3031,194 +3029,6 @@ fn apply_typed_nested_attribute_fields(
         xml.replace_range(range, &attribute_xml);
     }
     Ok(())
-}
-
-fn validate_typed_element_value_profile(
-    element: &MetaElementDefinition,
-) -> Result<(), MetaDiagnostic> {
-    let Some(metadata_type) = element.r#type.as_ref() else {
-        return if element.fill_value.is_some() {
-            Err(typed_diagnostic(
-                MetaDiagnosticCode::InvalidArguments,
-                "fillValue requires an explicit metadata type",
-                Some("fillValue"),
-            ))
-        } else {
-            Ok(())
-        };
-    };
-    for (index, variant) in metadata_type.variants.iter().enumerate() {
-        match variant {
-            MetadataTypeVariant::Reference { metadata_path } => {
-                let kind = metadata_path.segments().next().unwrap_or_default();
-                let supports_ref = metadata_generated_types_8_3_27(kind)
-                    .is_some_and(|types| types.iter().any(|(_, category)| *category == "Ref"));
-                if !supports_ref {
-                    return Err(typed_diagnostic(
-                        MetaDiagnosticCode::InvalidArguments,
-                        format!("metadata kind `{kind}` does not define a reference type"),
-                        Some(&format!("type.variants[{index}].metadataPath")),
-                    ));
-                }
-            }
-            MetadataTypeVariant::DefinedType { metadata_path }
-                if metadata_path.segments().next() != Some("DefinedType") =>
-            {
-                return Err(typed_diagnostic(
-                    MetaDiagnosticCode::InvalidArguments,
-                    "defined-type variant must target DefinedType",
-                    Some(&format!("type.variants[{index}].metadataPath")),
-                ));
-            }
-            _ => {}
-        }
-    }
-    let Some(fill_value) = element.fill_value.as_ref() else {
-        return Ok(());
-    };
-    let compatible = match fill_value {
-        MetaFillValue::String(value) => metadata_type.variants.iter().any(|variant| {
-            matches!(
-                variant,
-                MetadataTypeVariant::String { length, .. }
-                    if *length == 0 || value.chars().count() <= *length as usize
-            )
-        }),
-        MetaFillValue::Number(value) => metadata_type.variants.iter().any(|variant| {
-            let MetadataTypeVariant::Number {
-                digits,
-                fraction,
-                sign,
-            } = variant
-            else {
-                return false;
-            };
-            typed_decimal_shape(value).is_some_and(|(negative, integer_digits, fraction_digits)| {
-                (*sign == NumberSign::Any || !negative)
-                    && integer_digits + fraction_digits <= *digits as usize
-                    && fraction_digits <= *fraction as usize
-            })
-        }),
-        MetaFillValue::Boolean(_) => metadata_type
-            .variants
-            .iter()
-            .any(|variant| matches!(variant, MetadataTypeVariant::Boolean)),
-        MetaFillValue::DateTime(value) => {
-            typed_xs_datetime_is_valid(value)
-                && metadata_type
-                    .variants
-                    .iter()
-                    .any(|variant| matches!(variant, MetadataTypeVariant::Date { .. }))
-        }
-        MetaFillValue::Reference(reference) => metadata_type.variants.iter().any(|variant| {
-            matches!(
-                variant,
-                MetadataTypeVariant::Reference { metadata_path }
-                    if metadata_path == &reference.metadata_path
-            )
-        }),
-    };
-    if compatible {
-        Ok(())
-    } else {
-        Err(typed_diagnostic(
-            MetaDiagnosticCode::InvalidArguments,
-            "fillValue is not lexically valid and compatible with the metadata type",
-            Some("fillValue"),
-        ))
-    }
-}
-
-fn typed_decimal_shape(value: &str) -> Option<(bool, usize, usize)> {
-    let (negative, unsigned) = match value.as_bytes().first() {
-        Some(b'-') => (true, &value[1..]),
-        Some(b'+') => (false, &value[1..]),
-        _ => (false, value),
-    };
-    let (integer, fraction) = unsigned
-        .split_once('.')
-        .map_or((unsigned, ""), |parts| parts);
-    if integer.is_empty()
-        || !integer.bytes().all(|byte| byte.is_ascii_digit())
-        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
-        || (unsigned.contains('.') && fraction.is_empty())
-    {
-        return None;
-    }
-    Some((
-        negative,
-        integer.trim_start_matches('0').len().max(1),
-        fraction.len(),
-    ))
-}
-
-fn typed_xs_datetime_is_valid(value: &str) -> bool {
-    let core = if let Some(core) = value.strip_suffix('Z') {
-        core
-    } else if value.len() >= 6 {
-        let split = value.len() - 6;
-        let timezone = &value[split..];
-        if matches!(timezone.as_bytes().first(), Some(b'+') | Some(b'-'))
-            && timezone.as_bytes().get(3) == Some(&b':')
-            && timezone[1..3].bytes().all(|byte| byte.is_ascii_digit())
-            && timezone[4..].bytes().all(|byte| byte.is_ascii_digit())
-            && timezone[1..3].parse::<u8>().is_ok_and(|hour| hour <= 14)
-            && timezone[4..].parse::<u8>().is_ok_and(|minute| minute <= 59)
-        {
-            &value[..split]
-        } else {
-            value
-        }
-    } else {
-        value
-    };
-    let Some((date, time)) = core.split_once('T') else {
-        return false;
-    };
-    let mut date_parts = date.split('-');
-    let (Some(year), Some(month), Some(day), None) = (
-        date_parts.next(),
-        date_parts.next(),
-        date_parts.next(),
-        date_parts.next(),
-    ) else {
-        return false;
-    };
-    let (Ok(year), Ok(month), Ok(day)) =
-        (year.parse::<i32>(), month.parse::<u8>(), day.parse::<u8>())
-    else {
-        return false;
-    };
-    let max_day = match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if year % 400 == 0 || (year % 4 == 0 && year % 100 != 0) => 29,
-        2 => 28,
-        _ => return false,
-    };
-    if day == 0 || day > max_day {
-        return false;
-    }
-    let mut time_parts = time.split(':');
-    let (Some(hour), Some(minute), Some(second), None) = (
-        time_parts.next(),
-        time_parts.next(),
-        time_parts.next(),
-        time_parts.next(),
-    ) else {
-        return false;
-    };
-    let (second, fraction) = second
-        .split_once('.')
-        .map_or((second, None), |(second, fraction)| {
-            (second, Some(fraction))
-        });
-    hour.parse::<u8>().is_ok_and(|hour| hour <= 23)
-        && minute.parse::<u8>().is_ok_and(|minute| minute <= 59)
-        && second.parse::<u8>().is_ok_and(|second| second <= 59)
-        && fraction.is_none_or(|fraction| {
-            !fraction.is_empty() && fraction.bytes().all(|byte| byte.is_ascii_digit())
-        })
 }
 
 fn apply_typed_element_fields(xml: &mut String, element: &MetaElementDefinition) {
@@ -3355,20 +3165,12 @@ fn update_typed_element(
             Some(fill_value) => Some(fill_value.clone()),
             None => parse_typed_fill_value(&properties_text)?,
         };
-        let candidate = MetaElementDefinition {
-            name: update
-                .new_name
-                .clone()
-                .unwrap_or_else(|| update.name.clone()),
-            synonym: None,
-            comment: None,
-            r#type: Some(metadata_type.clone()),
-            required: None,
-            fill_value,
-            attributes: Vec::new(),
-            position: None,
-        };
-        validate_typed_element_value_profile(&candidate).map_err(|mut diagnostic| {
+        validate_metadata_element_value_profile(
+            Some(metadata_type),
+            fill_value.as_ref(),
+            MetaValueProfileContext::NewElement,
+        )
+        .map_err(|mut diagnostic| {
             if update.fill_value.is_none() && diagnostic.field.as_deref() == Some("fillValue") {
                 diagnostic.field = Some("type".to_string());
             }
@@ -3376,17 +3178,11 @@ fn update_typed_element(
         })?;
     } else if let Some(fill_value) = &update.fill_value {
         let metadata_type = parse_typed_metadata_type(&properties_text)?;
-        let candidate = MetaElementDefinition {
-            name: update.name.clone(),
-            synonym: None,
-            comment: None,
-            r#type: Some(metadata_type),
-            required: None,
-            fill_value: Some(fill_value.clone()),
-            attributes: Vec::new(),
-            position: None,
-        };
-        validate_typed_element_value_profile(&candidate)?;
+        validate_metadata_element_value_profile(
+            Some(&metadata_type),
+            Some(fill_value),
+            MetaValueProfileContext::NewElement,
+        )?;
     }
     let indent = meta_edit_property_child_indent(&properties_text);
     if let Some(new_name) = &update.new_name {
@@ -3551,7 +3347,7 @@ pub(super) fn parse_typed_fill_value(
         .unwrap_or_default();
     match value_type {
         "xs:string" => Ok(Some(MetaFillValue::String(value))),
-        "xs:decimal" if typed_decimal_shape(&value).is_some() => {
+        "xs:decimal" if metadata_decimal_shape(&value).is_some() => {
             Ok(Some(MetaFillValue::Number(value)))
         }
         "xs:decimal" => Err(typed_diagnostic(
@@ -3568,7 +3364,7 @@ pub(super) fn parse_typed_fill_value(
                 Some("fillValue"),
             )),
         },
-        "xs:dateTime" if typed_xs_datetime_is_valid(&value) => {
+        "xs:dateTime" if metadata_xs_datetime_is_valid(&value) => {
             Ok(Some(MetaFillValue::DateTime(value)))
         }
         "xs:dateTime" => Err(typed_diagnostic(

@@ -4,7 +4,7 @@ use crate::domain::cancellation::CancellationToken;
 use crate::domain::events::{DomainEvent, DomainEventKind};
 use crate::domain::metadata::{
     metadata_collection_spec, metadata_fill_value_is_allowed, metadata_kind_collections,
-    metadata_relation_specs, validate_metadata_kind_collection,
+    metadata_reference_type_kinds, metadata_relation_specs, validate_metadata_kind_collection,
     validate_metadata_operation_capabilities, DateFractions, MetaCollection, MetaDiagnostic,
     MetaDiagnosticCode, MetaEditOperation, MetaEditOperationTag, MetaElementInput,
     MetaElementScope, MetaElementUpdateInput, MetaFillValue, MetaPosition, MetaPropertyChanges,
@@ -1442,6 +1442,8 @@ fn metadata_schema_definitions() -> Map<String, Value> {
     definitions.insert("position".into(), position_schema());
     definitions.insert("metadataType".into(), metadata_type_schema());
     definitions.insert("fillValue".into(), fill_value_schema());
+    definitions.insert("valueProfile".into(), value_profile_schema());
+    definitions.insert("newValueProfile".into(), new_value_profile_schema());
     definitions.insert("relationOperation".into(), relation_operation_schema());
     definitions.insert(
         "metadataRelationTarget".into(),
@@ -1539,7 +1541,7 @@ fn schema_reference(definition: impl AsRef<str>) -> Value {
 }
 
 fn operation_definition_name(kind: MetadataKind) -> String {
-    format!("operationsFor{}", kind.as_str())
+    format!("o{}", metadata_kind_index(kind))
 }
 
 fn set_properties_definition_name(kind: MetadataKind) -> String {
@@ -1549,7 +1551,7 @@ fn set_properties_definition_name(kind: MetadataKind) -> String {
         .copied()
         .find(|candidate| property_values_schema(*candidate) == values)
         .expect("metadata property profile must have an owner");
-    format!("setPropertiesFor{}", profile_owner.as_str())
+    format!("p{}", metadata_kind_index(profile_owner))
 }
 
 fn add_element_definition_name(
@@ -1616,7 +1618,15 @@ fn collection_operation_definition_name(kind: MetadataKind, tag: MetaEditOperati
         .copied()
         .find(|candidate| same_collection_operation_profile(*candidate, kind, tag))
         .expect("metadata collection profile must have an owner");
-    format!("{}OperationFor{}", tag.as_str(), profile_owner.as_str())
+    let tag = match tag {
+        MetaEditOperationTag::Add => 'a',
+        MetaEditOperationTag::Update => 'u',
+        MetaEditOperationTag::Remove => 'd',
+        MetaEditOperationTag::SetProperties | MetaEditOperationTag::EditRelations => {
+            unreachable!("only collection operation tags have definitions")
+        }
+    };
+    format!("c{tag}{}", metadata_kind_index(profile_owner))
 }
 
 fn same_collection_operation_profile(
@@ -1660,7 +1670,7 @@ fn same_collection_operation_profile(
 }
 
 fn relation_operation_definition_name(kind: MetadataKind) -> String {
-    format!("relationsFor{}", kind.as_str())
+    format!("r{}", metadata_kind_index(kind))
 }
 
 fn relation_target_policy_definition_name(
@@ -2328,14 +2338,22 @@ fn type_variant_schema() -> Value {
             tagged_type_variant(
                 "reference",
                 json!({
-                    "metadataPath": {"type": "string", "minLength": 1, "description": "Logical metadata path of the referenced object."},
+                    "metadataPath": {
+                        "type": "string",
+                        "pattern": metadata_kinds_object_pattern(metadata_reference_type_kinds()),
+                        "description": "Logical metadata path of an object kind that exposes a platform reference type."
+                    },
                 }),
                 &["kind", "metadataPath"],
             ),
             tagged_type_variant(
                 "definedType",
                 json!({
-                    "metadataPath": {"type": "string", "minLength": 1, "description": "Logical metadata path of the defined type."},
+                    "metadataPath": {
+                        "type": "string",
+                        "pattern": metadata_kinds_object_pattern(&[MetadataKind::DefinedType]),
+                        "description": "Logical metadata path of the defined type."
+                    },
                 }),
                 &["kind", "metadataPath"],
             ),
@@ -2390,7 +2408,11 @@ fn fill_value_schema() -> Value {
             ),
             tagged_fill_value_variant(
                 "number",
-                json!({"value": {"type": "string", "description": "Platform-formatted numeric fill value."}}),
+                json!({"value": {
+                    "type": "string",
+                    "pattern": r"^[+-]?[0-9]+(\.[0-9]+)?$",
+                    "description": "Platform-formatted numeric fill value."
+                }}),
                 &["kind", "value"],
             ),
             tagged_fill_value_variant(
@@ -2400,7 +2422,11 @@ fn fill_value_schema() -> Value {
             ),
             tagged_fill_value_variant(
                 "dateTime",
-                json!({"value": {"type": "string", "description": "Platform-formatted date-time fill value."}}),
+                json!({"value": {
+                    "type": "string",
+                    "pattern": r"^[0-9]+-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]([.][0-9]+)?(Z|[+-](0[0-9]|1[0-4]):[0-5][0-9])?$",
+                    "description": "Platform-formatted date-time fill value."
+                }}),
                 &["kind", "value"],
             ),
             tagged_fill_value_variant(
@@ -2410,6 +2436,58 @@ fn fill_value_schema() -> Value {
             ),
         ],
         "description": "One closed fill-value variant.",
+    })
+}
+
+fn value_profile_schema() -> Value {
+    json!({
+        "allOf": [
+            value_kind_correlation("string", "string"),
+            value_kind_correlation("number", "number"),
+            value_kind_correlation("boolean", "boolean"),
+            value_kind_correlation("dateTime", "date"),
+            value_kind_correlation("reference", "reference"),
+        ],
+    })
+}
+
+fn value_kind_correlation(fill_kind: &str, type_kind: &str) -> Value {
+    json!({
+        "if": {
+            "properties": {
+                "fillValue": {
+                    "properties": {"kind": {"const": fill_kind}},
+                    "required": ["kind"],
+                },
+            },
+            "required": ["type", "fillValue"],
+        },
+        "then": {
+            "properties": {
+                "type": {
+                    "properties": {
+                        "variants": {
+                            "contains": {
+                                "properties": {"kind": {"const": type_kind}},
+                                "required": ["kind"],
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    })
+}
+
+fn new_value_profile_schema() -> Value {
+    json!({
+        "allOf": [
+            schema_reference("valueProfile"),
+            {
+                "if": {"required": ["fillValue"]},
+                "then": {"required": ["type"]},
+            },
+        ],
     })
 }
 
@@ -2483,13 +2561,20 @@ fn add_element_schema(
             }),
         );
     }
-    json!({
+    let mut schema = json!({
         "type": "object",
         "additionalProperties": false,
         "properties": properties,
         "required": ["name"],
         "description": "Definition of one metadata element to add.",
-    })
+    });
+    if properties.contains_key("type") && properties.contains_key("fillValue") {
+        schema
+            .as_object_mut()
+            .expect("add-element schema is always an object")
+            .insert("allOf".into(), json!([schema_reference("newValueProfile")]));
+    }
+    schema
 }
 
 fn update_element_schema(
@@ -2527,14 +2612,21 @@ fn update_element_schema(
         .filter(|name| name.as_str() != "name")
         .map(|name| json!({"required": [name]}))
         .collect::<Vec<_>>();
-    json!({
+    let mut schema = json!({
         "type": "object",
         "additionalProperties": false,
         "properties": properties,
         "required": ["name"],
         "anyOf": mutation_fields,
         "description": "Patch for one existing metadata element.",
-    })
+    });
+    if properties.contains_key("type") && properties.contains_key("fillValue") {
+        schema
+            .as_object_mut()
+            .expect("update-element schema is always an object")
+            .insert("allOf".into(), json!([schema_reference("valueProfile")]));
+    }
+    schema
 }
 
 #[cfg(test)]
@@ -4543,6 +4635,358 @@ mod tests {
         )
         .clone();
         assert_eq!(common_module["oneOf"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn schema_and_parser_reject_writer_static_type_fill_profiles() {
+        let cases = [
+            (
+                MetadataOperation::Add,
+                json!({
+                    "sourceSet": "main",
+                    "kind": "Catalog",
+                    "name": "Items",
+                    "operations": [{
+                        "op": "add",
+                        "collection": "attributes",
+                        "elements": [{
+                            "name": "Enabled",
+                            "fillValue": {"kind": "boolean", "value": true}
+                        }]
+                    }]
+                }),
+                "elements[0].fillValue",
+            ),
+            (
+                MetadataOperation::Edit,
+                json!({
+                    "sourceSet": "main",
+                    "metadataPath": "Document.Order",
+                    "operations": [{
+                        "op": "add",
+                        "collection": "attributes",
+                        "elements": [{
+                            "name": "Enabled",
+                            "type": {"variants": [{
+                                "kind": "string",
+                                "length": 10,
+                                "allowedLength": "variable"
+                            }]},
+                            "fillValue": {"kind": "boolean", "value": true}
+                        }]
+                    }]
+                }),
+                "elements[0].fillValue",
+            ),
+            (
+                MetadataOperation::Edit,
+                json!({
+                    "sourceSet": "main",
+                    "metadataPath": "Document.Order",
+                    "operations": [{
+                        "op": "update",
+                        "collection": "attributes",
+                        "elements": [{
+                            "name": "Amount",
+                            "fillValue": {"kind": "number", "value": "1e3"}
+                        }]
+                    }]
+                }),
+                "elements[0].fillValue",
+            ),
+            (
+                MetadataOperation::Edit,
+                json!({
+                    "sourceSet": "main",
+                    "metadataPath": "Document.Order",
+                    "operations": [{
+                        "op": "update",
+                        "collection": "attributes",
+                        "elements": [{
+                            "name": "Enabled",
+                            "type": {"variants": [{
+                                "kind": "string",
+                                "length": 10,
+                                "allowedLength": "variable"
+                            }]},
+                            "fillValue": {"kind": "boolean", "value": true}
+                        }]
+                    }]
+                }),
+                "elements[0].fillValue",
+            ),
+            (
+                MetadataOperation::Edit,
+                json!({
+                    "sourceSet": "main",
+                    "metadataPath": "Document.Order",
+                    "operations": [{
+                        "op": "add",
+                        "collection": "attributes",
+                        "elements": [{
+                            "name": "UnsupportedRef",
+                            "type": {"variants": [{
+                                "kind": "reference",
+                                "metadataPath": "Report.Sales"
+                            }]}
+                        }]
+                    }]
+                }),
+                "elements[0].type.variants[0].metadataPath",
+            ),
+            (
+                MetadataOperation::Edit,
+                json!({
+                    "sourceSet": "main",
+                    "metadataPath": "Document.Order",
+                    "operations": [{
+                        "op": "update",
+                        "collection": "attributes",
+                        "elements": [{
+                            "name": "Value",
+                            "type": {"variants": [{
+                                "kind": "definedType",
+                                "metadataPath": "Catalog.Items"
+                            }]}
+                        }]
+                    }]
+                }),
+                "elements[0].type.variants[0].metadataPath",
+            ),
+            (
+                MetadataOperation::Edit,
+                json!({
+                    "sourceSet": "main",
+                    "metadataPath": "Document.Order",
+                    "operations": [{
+                        "op": "add",
+                        "collection": "attributes",
+                        "elements": [{
+                            "name": "Amount",
+                            "type": {"variants": [{
+                                "kind": "number",
+                                "digits": 10,
+                                "fraction": 2,
+                                "sign": "any"
+                            }]},
+                            "fillValue": {"kind": "number", "value": "1e3"}
+                        }]
+                    }]
+                }),
+                "elements[0].fillValue",
+            ),
+            (
+                MetadataOperation::Edit,
+                json!({
+                    "sourceSet": "main",
+                    "metadataPath": "Report.Sales",
+                    "operations": [{
+                        "op": "add",
+                        "collection": "tabularSections",
+                        "elements": [{
+                            "name": "Lines",
+                            "attributes": [{
+                                "name": "When",
+                                "fillValue": {
+                                    "kind": "dateTime",
+                                    "value": "2026-02-30T25:61:00"
+                                }
+                            }]
+                        }]
+                    }]
+                }),
+                "elements[0].attributes[0].fillValue",
+            ),
+        ];
+
+        for (operation, call, expected_field) in cases {
+            let schema = metadata_input_schema(operation);
+            let validator = jsonschema::validator_for(&schema).unwrap();
+            assert!(!validator.is_valid(&call), "schema accepted {call}");
+            let error = diagnostic(operation, call);
+            assert_eq!(error.operation_index, Some(0), "{error:?}");
+            assert_eq!(error.field.as_deref(), Some(expected_field), "{error:?}");
+        }
+    }
+
+    #[test]
+    fn schema_and_parser_accept_the_complete_reference_type_registry() {
+        let variants = [
+            "Catalog",
+            "Document",
+            "Enum",
+            "ChartOfAccounts",
+            "ChartOfCharacteristicTypes",
+            "ChartOfCalculationTypes",
+            "BusinessProcess",
+            "Task",
+            "ExchangePlan",
+        ]
+        .into_iter()
+        .map(|kind| json!({"kind": "reference", "metadataPath": format!("{kind}.Target")}))
+        .chain(std::iter::once(json!({
+            "kind": "definedType",
+            "metadataPath": "DefinedType.Value"
+        })))
+        .collect::<Vec<_>>();
+        let call = json!({
+            "sourceSet": "main",
+            "metadataPath": "Document.Order",
+            "operations": [{
+                "op": "add",
+                "collection": "attributes",
+                "elements": [{
+                    "name": "Target",
+                    "type": {"variants": variants}
+                }]
+            }]
+        });
+
+        assert!(
+            validate_schema_and_parse(MetadataOperation::Edit, &call),
+            "registered reference type kind was rejected: {call}"
+        );
+    }
+
+    #[test]
+    fn parser_rejects_cross_value_constraints_schema_cannot_correlate() {
+        let calls = [
+            json!({
+                "sourceSet": "main",
+                "metadataPath": "Document.Order",
+                "operations": [{
+                    "op": "add",
+                    "collection": "attributes",
+                    "elements": [{
+                        "name": "Code",
+                        "type": {"variants": [{
+                            "kind": "string",
+                            "length": 3,
+                            "allowedLength": "variable"
+                        }]},
+                        "fillValue": {"kind": "string", "value": "LONG"}
+                    }]
+                }]
+            }),
+            json!({
+                "sourceSet": "main",
+                "metadataPath": "Document.Order",
+                "operations": [{
+                    "op": "update",
+                    "collection": "attributes",
+                    "elements": [{
+                        "name": "Customer",
+                        "type": {"variants": [{
+                            "kind": "reference",
+                            "metadataPath": "Catalog.Customers"
+                        }]},
+                        "fillValue": {
+                            "kind": "reference",
+                            "metadataPath": "Catalog.Counterparties"
+                        }
+                    }]
+                }]
+            }),
+        ];
+        let schema = metadata_input_schema(MetadataOperation::Edit);
+        let validator = jsonschema::validator_for(&schema).unwrap();
+
+        for call in calls {
+            assert!(
+                validator.is_valid(&call),
+                "standard JSON Schema cannot compare sibling qualifier/path values: {call}"
+            );
+            let error = diagnostic(MetadataOperation::Edit, call);
+            assert_eq!(error.operation_index, Some(0), "{error:?}");
+            assert_eq!(error.field.as_deref(), Some("elements[0].fillValue"));
+        }
+    }
+
+    #[test]
+    fn update_keeps_post_image_dependent_value_profiles_open() {
+        for element in [
+            json!({
+                "name": "Value",
+                "fillValue": {"kind": "boolean", "value": true}
+            }),
+            json!({
+                "name": "Value",
+                "type": {"variants": [{
+                    "kind": "string",
+                    "length": 20,
+                    "allowedLength": "variable"
+                }]}
+            }),
+        ] {
+            let call = json!({
+                "sourceSet": "main",
+                "metadataPath": "Document.Order",
+                "operations": [{
+                    "op": "update",
+                    "collection": "attributes",
+                    "elements": [element]
+                }]
+            });
+            assert!(
+                validate_schema_and_parse(MetadataOperation::Edit, &call),
+                "post-image-dependent update was rejected: {call}"
+            );
+        }
+    }
+
+    #[test]
+    fn schema_and_parser_share_the_timezone_optional_datetime_lexicon() {
+        let call = |value: &str| {
+            json!({
+                "sourceSet": "main",
+                "metadataPath": "Document.Order",
+                "operations": [{
+                    "op": "add",
+                    "collection": "attributes",
+                    "elements": [{
+                        "name": "When",
+                        "type": {"variants": [{
+                            "kind": "date",
+                            "fractions": "dateTime"
+                        }]},
+                        "fillValue": {"kind": "dateTime", "value": value}
+                    }]
+                }]
+            })
+        };
+        let schema = metadata_input_schema(MetadataOperation::Edit);
+        let validator = jsonschema::validator_for(&schema).unwrap();
+
+        for value in [
+            "2026-01-01T12:00:00",
+            "2026-01-01T12:00:00Z",
+            "2026-01-01T12:00:00.125+07:00",
+        ] {
+            let call = call(value);
+            assert!(validator.is_valid(&call), "schema rejected {value}");
+            assert!(
+                parse_metadata_request(MetadataOperation::Edit, call.as_object().unwrap()).is_ok(),
+                "parser rejected {value}"
+            );
+        }
+        for value in [
+            "2026-01-01 12:00:00",
+            "2026-01-01T25:00:00",
+            "2026-01-01T12:00:00+07",
+        ] {
+            let call = call(value);
+            assert!(!validator.is_valid(&call), "schema accepted {value}");
+            let error = diagnostic(MetadataOperation::Edit, call);
+            assert_eq!(error.field.as_deref(), Some("elements[0].fillValue"));
+        }
+
+        let invalid_calendar = call("2026-02-30T12:00:00");
+        assert!(
+            validator.is_valid(&invalid_calendar),
+            "calendar correlation intentionally remains a domain check"
+        );
+        let error = diagnostic(MetadataOperation::Edit, invalid_calendar);
+        assert_eq!(error.field.as_deref(), Some("elements[0].fillValue"));
     }
 
     #[test]

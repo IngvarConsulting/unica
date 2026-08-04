@@ -1,6 +1,6 @@
 use super::{
     MetaDiagnostic, MetaDiagnosticCode, MetaPropertyChanges, MetadataKind, MetadataReference,
-    MetadataType,
+    MetadataType, MetadataTypeVariant, NumberSign,
 };
 use crate::domain::source_target::MetadataAddress;
 use serde::ser::SerializeStruct;
@@ -145,6 +145,236 @@ pub(crate) enum MetaFillValue {
     Boolean(bool),
     DateTime(String),
     Reference(MetadataReference),
+}
+
+/// Metadata kinds that expose a platform `Ref` generated type in the active
+/// format profile. Type parsing, public schemas and XML emission consume this
+/// registry so they cannot drift into different reference-type domains.
+const METADATA_REFERENCE_TYPE_KINDS: &[MetadataKind] = &[
+    MetadataKind::Catalog,
+    MetadataKind::Document,
+    MetadataKind::Enum,
+    MetadataKind::ChartOfAccounts,
+    MetadataKind::ChartOfCharacteristicTypes,
+    MetadataKind::ChartOfCalculationTypes,
+    MetadataKind::BusinessProcess,
+    MetadataKind::Task,
+    MetadataKind::ExchangePlan,
+];
+
+pub(crate) fn metadata_reference_type_kinds() -> &'static [MetadataKind] {
+    METADATA_REFERENCE_TYPE_KINDS
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MetaValueProfileContext {
+    NewElement,
+    Patch,
+}
+
+/// Validate the part of a typed element value profile that is knowable from a
+/// request alone. A patch may supply only `type` or only `fillValue` because
+/// the missing half comes from the existing post-image; when both halves are
+/// present, they must already be compatible.
+pub(crate) fn validate_metadata_element_value_profile(
+    metadata_type: Option<&MetadataType>,
+    fill_value: Option<&MetaFillValue>,
+    context: MetaValueProfileContext,
+) -> Result<(), MetaDiagnostic> {
+    let Some(metadata_type) = metadata_type else {
+        if fill_value.is_some() && context == MetaValueProfileContext::NewElement {
+            return Err(invalid_operation(
+                "fillValue",
+                "fillValue requires an explicit metadata type",
+            ));
+        }
+        return match fill_value {
+            Some(MetaFillValue::Number(value)) if metadata_decimal_shape(value).is_none() => Err(
+                invalid_fill_value("numeric fillValue is not lexically valid"),
+            ),
+            Some(MetaFillValue::DateTime(value)) if !metadata_xs_datetime_is_valid(value) => Err(
+                invalid_fill_value("date-time fillValue is not lexically valid"),
+            ),
+            _ => Ok(()),
+        };
+    };
+
+    for (index, variant) in metadata_type.variants.iter().enumerate() {
+        match variant {
+            MetadataTypeVariant::Reference { metadata_path } => {
+                let kind = metadata_path
+                    .segments()
+                    .next()
+                    .and_then(|value| MetadataKind::parse(value).ok());
+                if !kind.is_some_and(|kind| metadata_reference_type_kinds().contains(&kind)) {
+                    return Err(invalid_operation(
+                        format!("type.variants[{index}].metadataPath"),
+                        "metadata kind does not define a reference type",
+                    ));
+                }
+            }
+            MetadataTypeVariant::DefinedType { metadata_path }
+                if metadata_path.segments().next() != Some(MetadataKind::DefinedType.as_str()) =>
+            {
+                return Err(invalid_operation(
+                    format!("type.variants[{index}].metadataPath"),
+                    "defined-type variant must target DefinedType",
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    let Some(fill_value) = fill_value else {
+        return Ok(());
+    };
+    let compatible = match fill_value {
+        MetaFillValue::String(value) => metadata_type.variants.iter().any(|variant| {
+            matches!(
+                variant,
+                MetadataTypeVariant::String { length, .. }
+                    if *length == 0 || value.chars().count() <= *length as usize
+            )
+        }),
+        MetaFillValue::Number(value) => metadata_type.variants.iter().any(|variant| {
+            let MetadataTypeVariant::Number {
+                digits,
+                fraction,
+                sign,
+            } = variant
+            else {
+                return false;
+            };
+            metadata_decimal_shape(value).is_some_and(
+                |(negative, integer_digits, fraction_digits)| {
+                    (*sign == NumberSign::Any || !negative)
+                        && integer_digits + fraction_digits <= *digits as usize
+                        && fraction_digits <= *fraction as usize
+                },
+            )
+        }),
+        MetaFillValue::Boolean(_) => metadata_type
+            .variants
+            .iter()
+            .any(|variant| matches!(variant, MetadataTypeVariant::Boolean)),
+        MetaFillValue::DateTime(value) => {
+            metadata_xs_datetime_is_valid(value)
+                && metadata_type
+                    .variants
+                    .iter()
+                    .any(|variant| matches!(variant, MetadataTypeVariant::Date { .. }))
+        }
+        MetaFillValue::Reference(reference) => metadata_type.variants.iter().any(|variant| {
+            matches!(
+                variant,
+                MetadataTypeVariant::Reference { metadata_path }
+                    if metadata_path == &reference.metadata_path
+            )
+        }),
+    };
+    if compatible {
+        Ok(())
+    } else {
+        Err(invalid_fill_value(
+            "fillValue is not lexically valid and compatible with the metadata type",
+        ))
+    }
+}
+
+fn invalid_fill_value(message: impl Into<String>) -> MetaDiagnostic {
+    invalid_operation("fillValue", message)
+}
+
+pub(crate) fn metadata_decimal_shape(value: &str) -> Option<(bool, usize, usize)> {
+    let (negative, unsigned) = match value.as_bytes().first() {
+        Some(b'-') => (true, &value[1..]),
+        Some(b'+') => (false, &value[1..]),
+        _ => (false, value),
+    };
+    let (integer, fraction) = unsigned
+        .split_once('.')
+        .map_or((unsigned, ""), |parts| parts);
+    if integer.is_empty()
+        || !integer.bytes().all(|byte| byte.is_ascii_digit())
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+        || (unsigned.contains('.') && fraction.is_empty())
+    {
+        return None;
+    }
+    Some((
+        negative,
+        integer.trim_start_matches('0').len().max(1),
+        fraction.len(),
+    ))
+}
+
+pub(crate) fn metadata_xs_datetime_is_valid(value: &str) -> bool {
+    let core = if let Some(core) = value.strip_suffix('Z') {
+        core
+    } else if value.len() >= 6 {
+        let split = value.len() - 6;
+        let timezone = &value[split..];
+        if matches!(timezone.as_bytes().first(), Some(b'+') | Some(b'-'))
+            && timezone.as_bytes().get(3) == Some(&b':')
+            && timezone[1..3].bytes().all(|byte| byte.is_ascii_digit())
+            && timezone[4..].bytes().all(|byte| byte.is_ascii_digit())
+            && timezone[1..3].parse::<u8>().is_ok_and(|hour| hour <= 14)
+            && timezone[4..].parse::<u8>().is_ok_and(|minute| minute <= 59)
+        {
+            &value[..split]
+        } else {
+            value
+        }
+    } else {
+        value
+    };
+    let Some((date, time)) = core.split_once('T') else {
+        return false;
+    };
+    let mut date_parts = date.split('-');
+    let (Some(year), Some(month), Some(day), None) = (
+        date_parts.next(),
+        date_parts.next(),
+        date_parts.next(),
+        date_parts.next(),
+    ) else {
+        return false;
+    };
+    let (Ok(year), Ok(month), Ok(day)) =
+        (year.parse::<i32>(), month.parse::<u8>(), day.parse::<u8>())
+    else {
+        return false;
+    };
+    let max_day = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if year % 400 == 0 || (year % 4 == 0 && year % 100 != 0) => 29,
+        2 => 28,
+        _ => return false,
+    };
+    if day == 0 || day > max_day {
+        return false;
+    }
+    let mut time_parts = time.split(':');
+    let (Some(hour), Some(minute), Some(second), None) = (
+        time_parts.next(),
+        time_parts.next(),
+        time_parts.next(),
+        time_parts.next(),
+    ) else {
+        return false;
+    };
+    let (second, fraction) = second
+        .split_once('.')
+        .map_or((second, None), |(second, fraction)| {
+            (second, Some(fraction))
+        });
+    hour.parse::<u8>().is_ok_and(|hour| hour <= 23)
+        && minute.parse::<u8>().is_ok_and(|minute| minute <= 59)
+        && second.parse::<u8>().is_ok_and(|second| second <= 59)
+        && fraction.is_none_or(|fraction| {
+            !fraction.is_empty() && fraction.bytes().all(|byte| byte.is_ascii_digit())
+        })
 }
 
 impl Serialize for MetaFillValue {
@@ -1018,6 +1248,14 @@ pub(crate) fn validate_metadata_operation_capabilities(
                         "fillValue is not available for this metadata field context",
                     ));
                 }
+                validate_metadata_element_value_profile(
+                    element.r#type.as_ref(),
+                    element.fill_value.as_ref(),
+                    MetaValueProfileContext::Patch,
+                )
+                .map_err(|diagnostic| {
+                    qualify_element_diagnostic(diagnostic, &format!("elements[{index}]"))
+                })?;
             }
             Ok(())
         }
@@ -1070,6 +1308,12 @@ fn validate_element_fill_value_capability(
             "fillValue is not available for this metadata field context",
         ));
     }
+    validate_metadata_element_value_profile(
+        element.r#type.as_ref(),
+        element.fill_value.as_ref(),
+        MetaValueProfileContext::NewElement,
+    )
+    .map_err(|diagnostic| qualify_element_diagnostic(diagnostic, field))?;
     if collection == MetaCollection::TabularSections {
         for (index, attribute) in element.attributes.iter().enumerate() {
             validate_element_fill_value_capability(
@@ -1082,6 +1326,14 @@ fn validate_element_fill_value_capability(
         }
     }
     Ok(())
+}
+
+fn qualify_element_diagnostic(mut diagnostic: MetaDiagnostic, field: &str) -> MetaDiagnostic {
+    diagnostic.field = Some(match diagnostic.field.take() {
+        Some(suffix) => format!("{field}.{suffix}"),
+        None => field.to_string(),
+    });
+    diagnostic
 }
 
 impl MetaEditOperation {
@@ -1621,6 +1873,92 @@ mod tests {
                 "{} resources",
                 kind.as_str()
             );
+        }
+    }
+
+    #[test]
+    fn typed_value_profile_registry_and_context_rules_are_closed() {
+        use MetadataKind::*;
+
+        assert_eq!(
+            metadata_reference_type_kinds(),
+            &[
+                Catalog,
+                Document,
+                Enum,
+                ChartOfAccounts,
+                ChartOfCharacteristicTypes,
+                ChartOfCalculationTypes,
+                BusinessProcess,
+                Task,
+                ExchangePlan,
+            ]
+        );
+
+        let fill = MetaFillValue::Boolean(true);
+        let error = validate_metadata_element_value_profile(
+            None,
+            Some(&fill),
+            MetaValueProfileContext::NewElement,
+        )
+        .unwrap_err();
+        assert_eq!(error.field.as_deref(), Some("fillValue"));
+        assert!(validate_metadata_element_value_profile(
+            None,
+            Some(&fill),
+            MetaValueProfileContext::Patch,
+        )
+        .is_ok());
+        let error = validate_metadata_element_value_profile(
+            None,
+            Some(&MetaFillValue::Number("1e3".into())),
+            MetaValueProfileContext::Patch,
+        )
+        .unwrap_err();
+        assert_eq!(error.field.as_deref(), Some("fillValue"));
+
+        let string_type = MetadataType::new(vec![MetadataTypeVariant::String {
+            length: 3,
+            allowed_length: crate::domain::metadata::StringLengthMode::Variable,
+        }])
+        .unwrap();
+        let error = validate_metadata_element_value_profile(
+            Some(&string_type),
+            Some(&MetaFillValue::String("LONG".into())),
+            MetaValueProfileContext::NewElement,
+        )
+        .unwrap_err();
+        assert_eq!(error.field.as_deref(), Some("fillValue"));
+
+        let address = |value| {
+            MetadataAddress::parse(
+                crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                value,
+            )
+            .unwrap()
+        };
+        for (variant, field) in [
+            (
+                MetadataTypeVariant::Reference {
+                    metadata_path: address("Report.Sales"),
+                },
+                "type.variants[0].metadataPath",
+            ),
+            (
+                MetadataTypeVariant::DefinedType {
+                    metadata_path: address("Catalog.Items"),
+                },
+                "type.variants[0].metadataPath",
+            ),
+        ] {
+            let metadata_type = MetadataType::new(vec![variant]).unwrap();
+            let error = validate_metadata_element_value_profile(
+                Some(&metadata_type),
+                None,
+                MetaValueProfileContext::Patch,
+            )
+            .unwrap_err();
+            assert_eq!(error.field.as_deref(), Some(field));
         }
     }
 
