@@ -600,7 +600,7 @@
         {
           "skill": "meta-add",
           "status": "ported-to-unica",
-          "notes": "The local adopted creation owner is meta-add. Historical donor .claude/skills/meta-compile, meta-compile cases, docs and pinned parity baseline remain evidence for the reviewed object-emission facts, but the donor file/string DSL is not executable or prompt-visible. Current creation uses only sourceSet, kind, name and optional dryRun to build a typed minimal template; further changes use meta-edit. Shared support guards and validation remain inside the native mutation pipeline.",
+          "notes": "The local adopted creation owner is meta-add. Historical donor .claude/skills/meta-compile, meta-compile cases, docs and pinned parity baseline remain evidence for the reviewed object-emission facts, but the donor file/string DSL is not executable or prompt-visible. Current creation uses sourceSet, kind, name, optional operations and optional dryRun to build and atomically configure a typed minimal template; later changes use meta-edit. Shared support guards and validation remain inside the native mutation pipeline.",
           "upstreamPaths": [
             ".claude/skills/meta-compile/**",
             "tests/skills/cases/meta-compile/**",

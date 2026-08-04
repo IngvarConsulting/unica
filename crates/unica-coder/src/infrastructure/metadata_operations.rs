@@ -16,6 +16,7 @@ use crate::infrastructure::native_operations::meta::{
     resolve_typed_edit_object, resolve_typed_metadata_object, MetadataValidator,
 };
 use crate::infrastructure::rlm_navigation::RlmNavigationAdapter;
+use crate::infrastructure::source_roots::NamedSourceSetErrorKind;
 
 pub(crate) struct MetadataOperations;
 
@@ -72,10 +73,7 @@ impl MetadataOperations {
             Err(error) => {
                 return selected_unavailable_sections(
                     request,
-                    &format!(
-                        "source set `{}` could not be resolved: {error}",
-                        request.source_set
-                    ),
+                    &logical_source_set_error(&request.source_set, error.kind),
                 )
             }
         };
@@ -146,6 +144,23 @@ impl MetadataOperations {
             MetadataRequest::Info(_) => Err(capability_unavailable(
                 "typed metadata mutation provider is not available yet",
             )),
+        }
+    }
+}
+
+fn logical_source_set_error(source_set: &str, kind: NamedSourceSetErrorKind) -> String {
+    match kind {
+        NamedSourceSetErrorKind::NotFound => {
+            format!("source set `{source_set}` was not found")
+        }
+        NamedSourceSetErrorKind::Ambiguous => {
+            format!("source set `{source_set}` is ambiguous")
+        }
+        NamedSourceSetErrorKind::Containment => {
+            format!("source set `{source_set}` violates the workspace containment boundary")
+        }
+        NamedSourceSetErrorKind::Discovery => {
+            format!("source set `{source_set}` could not be discovered")
         }
     }
 }
@@ -480,7 +495,7 @@ mod tests {
     }
 
     #[test]
-    fn related_source_resolution_failure_names_the_source_set_cause() {
+    fn related_source_resolution_failure_is_logical_and_path_independent() {
         let root = std::env::temp_dir().join(format!(
             "unica-meta-related-source-error-{}-{}",
             std::process::id(),
@@ -489,7 +504,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::write(
             root.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set: []\n",
+            "format: DESIGNER\nsource-set:\n  unsafe:\n    type: CONFIGURATION\n    path: ../outside\n",
         )
         .unwrap();
         let context = WorkspaceContext {
@@ -499,7 +514,7 @@ mod tests {
             workspace_epoch: 0,
         };
         let request = MetaInfoRequest {
-            source_set: "missing".into(),
+            source_set: "unsafe".into(),
             metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items")
                 .unwrap(),
             sections: vec![MetaInfoSection::Modules],
@@ -537,14 +552,15 @@ mod tests {
             &context,
             &CancellationToken::new(),
         );
-        let diagnostics = serde_json::to_string(&related.modules.unwrap().diagnostics).unwrap();
+        let diagnostics = related.modules.unwrap().diagnostics;
+        let message = &diagnostics[0].message;
         assert!(
-            diagnostics.contains("source set `missing`"),
-            "{diagnostics}"
+            message.contains("source set `unsafe`") && message.contains("containment boundary"),
+            "{message}"
         );
         assert!(
-            !diagnostics.contains("provider is not available yet"),
-            "{diagnostics}"
+            !message.contains(root.to_string_lossy().as_ref()),
+            "diagnostic leaked workspace root: {message}"
         );
         fs::remove_dir_all(root).unwrap();
     }
