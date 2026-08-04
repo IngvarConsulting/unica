@@ -1,5 +1,7 @@
 use super::{OperationResult, UnicaApplication};
+use crate::composition::testing::with_meta_remove_before_reauthorization_hook;
 use serde_json::{Map, Value};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -94,6 +96,32 @@ fn call_remove(workspace: &Path, dry_run: bool) -> OperationResult {
     result.expect("private typed meta.remove call")
 }
 
+fn tree_snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    fn visit(root: &Path, current: &Path, output: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        let mut entries = std::fs::read_dir(current)
+            .unwrap()
+            .map(|entry| entry.unwrap())
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            let metadata = entry.metadata().unwrap();
+            if metadata.is_dir() {
+                visit(root, &path, output);
+            } else if metadata.is_file() {
+                output.insert(
+                    path.strip_prefix(root).unwrap().to_path_buf(),
+                    std::fs::read(path).unwrap(),
+                );
+            }
+        }
+    }
+
+    let mut snapshot = BTreeMap::new();
+    visit(root, root, &mut snapshot);
+    snapshot
+}
+
 #[test]
 fn meta_remove_private_coordinator_preview_and_apply_publish_events_cache_and_files() {
     let preview_workspace = create_remove_workspace("preview");
@@ -151,6 +179,112 @@ fn meta_remove_private_coordinator_preview_and_apply_publish_events_cache_and_fi
     assert!(!std::fs::read_to_string(owner)
         .unwrap()
         .contains("<Catalog>Removable</Catalog>"));
+}
+
+#[test]
+fn meta_remove_reauthorizes_support_state_after_reference_and_subsystem_planning() {
+    let workspace = create_remove_workspace("support-authorization-drift");
+    let source = workspace.path().join("src");
+    let support = source.join("Ext/ParentConfigurations.bin");
+    let project = workspace.path().join(".v8-project.json");
+    let support_bytes = concat!(
+        "\u{feff}{6,1,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,",
+        "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",",
+        "\"VendorConf\",0,0,0}"
+    )
+    .as_bytes()
+    .to_vec();
+    std::fs::write(&support, support_bytes).unwrap();
+    std::fs::write(&project, r#"{"editingAllowedCheck":"off"}"#).unwrap();
+    let expected = tree_snapshot(&source);
+    let denied_project = br#"{"editingAllowedCheck":"deny"}"#.to_vec();
+    let project_for_hook = project.clone();
+    let denied_project_for_hook = denied_project.clone();
+
+    let result = with_meta_remove_before_reauthorization_hook(
+        move || std::fs::write(project_for_hook, denied_project_for_hook).unwrap(),
+        || call_remove(workspace.path(), false),
+    );
+
+    assert!(
+        !result.ok,
+        "stale remove authorization unexpectedly published"
+    );
+    assert_eq!(
+        result.diagnostics.as_ref().unwrap()[0]["code"],
+        "support_locked",
+        "{result:?}"
+    );
+    assert!(result.cache.events.is_empty());
+    assert!(result.cache.invalidated.is_empty());
+    assert!(result.cache.refreshed.is_empty());
+    assert_eq!(tree_snapshot(&source), expected);
+    assert_eq!(std::fs::read(project).unwrap(), denied_project);
+}
+
+#[test]
+fn meta_remove_reauthorizes_every_planned_subsystem_cleanup_before_mutations() {
+    let workspace = create_remove_workspace("subsystem-support-authorization-drift");
+    let source = workspace.path().join("src");
+    let subsystem = source.join("Subsystems/Main.xml");
+    std::fs::create_dir_all(subsystem.parent().unwrap()).unwrap();
+    std::fs::write(
+        &subsystem,
+        concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">\n",
+            "<Subsystem uuid=\"11111111-1111-1111-1111-111111111111\">\n",
+            "<Properties><Name>Main</Name></Properties>\n",
+            "<Content><Item>Catalog.Removable</Item></Content>\n",
+            "</Subsystem>\n",
+            "</MetaDataObject>"
+        ),
+    )
+    .unwrap();
+    let support = source.join("Ext/ParentConfigurations.bin");
+    std::fs::write(
+        &support,
+        concat!(
+            "\u{feff}{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,",
+            "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",",
+            "\"VendorConf\",0,0,0}"
+        ),
+    )
+    .unwrap();
+    let locked_support = concat!(
+        "\u{feff}{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,",
+        "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",",
+        "\"VendorConf\",1,0,0,11111111-1111-1111-1111-111111111111,",
+        "11111111-1111-1111-1111-111111111111}"
+    )
+    .as_bytes()
+    .to_vec();
+    let support_for_hook = support.clone();
+    let locked_support_for_hook = locked_support.clone();
+    let mut expected = tree_snapshot(&source);
+    expected.insert(
+        PathBuf::from("Ext/ParentConfigurations.bin"),
+        locked_support.clone(),
+    );
+
+    let result = with_meta_remove_before_reauthorization_hook(
+        move || std::fs::write(support_for_hook, locked_support_for_hook).unwrap(),
+        || call_remove(workspace.path(), false),
+    );
+
+    assert!(
+        !result.ok,
+        "locked subsystem cleanup unexpectedly published"
+    );
+    let diagnostic = &result.diagnostics.as_ref().unwrap()[0];
+    assert_eq!(diagnostic["code"], "support_locked", "{result:?}");
+    assert_eq!(diagnostic["field"], "dependencies");
+    assert!(diagnostic["message"]
+        .as_str()
+        .unwrap()
+        .contains("subsystem `Main`"));
+    assert!(result.cache.events.is_empty());
+    assert_eq!(tree_snapshot(&source), expected);
 }
 
 #[test]

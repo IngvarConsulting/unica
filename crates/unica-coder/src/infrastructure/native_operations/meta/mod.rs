@@ -91,9 +91,13 @@ pub(crate) use edit::{
 pub(crate) use info::{analyze_meta_info_with_data, read_typed_meta_info};
 #[cfg(test)]
 pub(crate) use info::{with_registrar_processing_hook, RegistrarProcessingPhase};
-#[cfg(test)]
-pub(crate) use publisher::with_meta_add_after_authorization_hook;
 pub(crate) use publisher::{fresh_metadata_uuid, prepare_meta_add, prepare_meta_remove};
+#[cfg(test)]
+pub(crate) use publisher::{
+    with_meta_add_after_authorization_hook, with_meta_edit_before_reauthorization_hook,
+};
+#[cfg(test)]
+pub(crate) use remove::with_meta_remove_before_reauthorization_hook;
 pub(crate) use remove::{
     meta_remove_reference_xml_dependency_paths, meta_remove_subsystem_dependency_paths,
     meta_remove_type_plural, remove_metadata_child_text_with_flag,

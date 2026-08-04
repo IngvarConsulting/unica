@@ -1,5 +1,7 @@
 use super::{OperationResult, UnicaApplication};
-use crate::composition::testing::with_meta_add_after_authorization_hook;
+use crate::composition::testing::{
+    with_meta_add_after_authorization_hook, with_meta_edit_before_reauthorization_hook,
+};
 use crate::domain::cancellation::CancellationToken;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
@@ -684,6 +686,118 @@ fn meta_add_reauthorizes_bound_support_state_before_transaction_mutations() {
         .contains("<Catalog>AuthorizationDrift</Catalog>"));
 
     assert_eq!(tree_snapshot(&source), expected);
+}
+
+#[test]
+fn meta_edit_reauthorizes_support_state_after_private_post_image_planning() {
+    let workspace = create_configuration_workspace("edit-support-authorization-drift");
+    let source = workspace.path().join("src");
+    let support = source.join("Ext/ParentConfigurations.bin");
+    let support_bytes = concat!(
+        "\u{feff}{6,1,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,",
+        "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",",
+        "\"VendorConf\",0,0,0}"
+    )
+    .as_bytes()
+    .to_vec();
+    let support_for_hook = support.clone();
+    let support_bytes_for_hook = support_bytes.clone();
+    let mut expected = tree_snapshot(&source);
+    expected.insert(
+        PathBuf::from("Ext/ParentConfigurations.bin"),
+        support_bytes.clone(),
+    );
+
+    let result = with_meta_edit_before_reauthorization_hook(
+        move || std::fs::write(support_for_hook, support_bytes_for_hook).unwrap(),
+        || {
+            let previous = std::env::current_dir().unwrap();
+            std::env::set_current_dir(workspace.path()).unwrap();
+            let result = UnicaApplication::new().call_tool(
+                "unica.meta.edit",
+                &Map::from_iter([
+                    ("sourceSet".to_string(), json!("main")),
+                    ("metadataPath".to_string(), json!("Catalog.MetaAddSource")),
+                    (
+                        "operations".to_string(),
+                        json!([{"op": "setProperties", "values": {"Comment": "denied"}}]),
+                    ),
+                    ("dryRun".to_string(), json!(false)),
+                ]),
+            );
+            std::env::set_current_dir(previous).unwrap();
+            result.unwrap()
+        },
+    );
+
+    assert!(
+        !result.ok,
+        "stale edit authorization unexpectedly published"
+    );
+    assert_eq!(
+        result.diagnostics.as_ref().unwrap()[0]["code"],
+        "support_locked"
+    );
+    assert!(result.cache.events.is_empty());
+    assert_eq!(tree_snapshot(&source), expected);
+}
+
+#[test]
+fn meta_edit_warning_is_derived_from_late_support_authorization() {
+    let workspace = create_configuration_workspace("edit-support-warning-drift");
+    let source = workspace.path().join("src");
+    let support = source.join("Ext/ParentConfigurations.bin");
+    let project = workspace.path().join(".v8-project.json");
+    let support_for_hook = support.clone();
+    let project_for_hook = project.clone();
+
+    let result = with_meta_edit_before_reauthorization_hook(
+        move || {
+            std::fs::write(
+                support_for_hook,
+                concat!(
+                    "\u{feff}{6,1,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,",
+                    "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",",
+                    "\"VendorConf\",0,0,0}"
+                ),
+            )
+            .unwrap();
+            std::fs::write(project_for_hook, r#"{"editingAllowedCheck":"warn"}"#).unwrap();
+        },
+        || {
+            let previous = std::env::current_dir().unwrap();
+            std::env::set_current_dir(workspace.path()).unwrap();
+            let result = UnicaApplication::new().call_tool(
+                "unica.meta.edit",
+                &Map::from_iter([
+                    ("sourceSet".to_string(), json!("main")),
+                    ("metadataPath".to_string(), json!("Catalog.MetaAddSource")),
+                    (
+                        "operations".to_string(),
+                        json!([{"op": "setProperties", "values": {"Comment": "warned"}}]),
+                    ),
+                    ("dryRun".to_string(), json!(false)),
+                ]),
+            );
+            std::env::set_current_dir(previous).unwrap();
+            result.unwrap()
+        },
+    );
+
+    assert!(
+        result.ok,
+        "late warn policy must permit editing: {:?}",
+        result.errors
+    );
+    assert_eq!(
+        result.data.as_ref().unwrap()["diagnostics"],
+        json!([{
+            "code": "support_locked",
+            "severity": "warning",
+            "message": "metadata source support policy permits editing with a warning",
+            "metadataPath": "Catalog.MetaAddSource"
+        }])
+    );
 }
 
 fn assert_partial_is_stable(workspace: &TempWorkspace, kind: &str, name: &str) {

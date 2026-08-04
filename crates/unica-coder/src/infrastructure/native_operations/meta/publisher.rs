@@ -47,6 +47,8 @@ use crate::infrastructure::support_guard::{
 thread_local! {
     static META_ADD_AFTER_AUTHORIZATION_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
+    static META_EDIT_BEFORE_REAUTHORIZATION_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -72,6 +74,35 @@ pub(crate) fn with_meta_add_after_authorization_hook<T>(
 #[cfg(test)]
 fn run_meta_add_after_authorization_hook() {
     META_ADD_AFTER_AUTHORIZATION_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn with_meta_edit_before_reauthorization_hook<T>(
+    hook: impl FnOnce() + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            META_EDIT_BEFORE_REAUTHORIZATION_HOOK.with(|slot| {
+                slot.borrow_mut().take();
+            });
+        }
+    }
+    META_EDIT_BEFORE_REAUTHORIZATION_HOOK.with(|slot| {
+        assert!(slot.borrow_mut().replace(Box::new(hook)).is_none());
+    });
+    let _reset = Reset;
+    action()
+}
+
+#[cfg(test)]
+fn run_meta_edit_before_reauthorization_hook() {
+    META_EDIT_BEFORE_REAUTHORIZATION_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
             hook();
         }
@@ -111,7 +142,7 @@ impl PreparedMetaEdit {
         resolved: ResolvedMetadataObject,
         context: &WorkspaceContext,
         post_image: Vec<u8>,
-        diagnostics: Vec<MetaDiagnostic>,
+        mut diagnostics: Vec<MetaDiagnostic>,
         child_resources: TypedChildResourcePlan,
         effects: Vec<MetaMutationEffect>,
     ) -> Result<Box<dyn PreparedMetadataMutation>, MetaFailure> {
@@ -126,7 +157,35 @@ impl PreparedMetaEdit {
                 "unchanged metadata preview cannot contain filesystem mutations".to_string(),
             ));
         }
+        #[cfg(test)]
+        run_meta_edit_before_reauthorization_hook();
         let mut transaction = CompileTransaction::new();
+        bind_resolved_support_guard_evidence(&mut transaction, &resolved.descriptor_path, context)
+            .map_err(|message| provider_failure(&target, message))?;
+        match evaluate_resolved_support_guard(
+            &resolved.descriptor_path,
+            SupportGuardRequirement::Editable,
+            context,
+        ) {
+            ResolvedSupportGuardCheck::Allow => {}
+            ResolvedSupportGuardCheck::Warn(_) => diagnostics.push(MetaDiagnostic {
+                code: MetaDiagnosticCode::SupportLocked,
+                severity: MetaDiagnosticSeverity::Warning,
+                message: "metadata source support policy permits editing with a warning"
+                    .to_string(),
+                metadata_path: Some(target.clone()),
+                operation_index: None,
+                field: None,
+            }),
+            ResolvedSupportGuardCheck::Block(_) => {
+                return Err(MetaDiagnostic::error(
+                    MetaDiagnosticCode::SupportLocked,
+                    "metadata source support policy blocks object editing",
+                )
+                .with_metadata_path(target)
+                .into());
+            }
+        }
         if changed {
             transaction
                 .replace_bytes(
@@ -152,9 +211,6 @@ impl PreparedMetaEdit {
             context,
         )
         .map_err(|message| provider_failure(&target, message))?;
-        bind_resolved_support_guard_evidence(&mut transaction, &resolved.descriptor_path, context)
-            .map_err(|message| provider_failure(&target, message))?;
-
         for (path, snapshot) in child_resources.directory_guards {
             transaction
                 .guard_or_verify_directory_topology(path, snapshot)

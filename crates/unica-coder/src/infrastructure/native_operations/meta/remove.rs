@@ -44,6 +44,41 @@ use super::validation::{
 };
 
 #[cfg(test)]
+thread_local! {
+    static META_REMOVE_BEFORE_REAUTHORIZATION_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn with_meta_remove_before_reauthorization_hook<T>(
+    hook: impl FnOnce() + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            META_REMOVE_BEFORE_REAUTHORIZATION_HOOK.with(|slot| {
+                slot.borrow_mut().take();
+            });
+        }
+    }
+    META_REMOVE_BEFORE_REAUTHORIZATION_HOOK.with(|slot| {
+        assert!(slot.borrow_mut().replace(Box::new(hook)).is_none());
+    });
+    let _reset = Reset;
+    action()
+}
+
+#[cfg(test)]
+fn run_meta_remove_before_reauthorization_hook() {
+    META_REMOVE_BEFORE_REAUTHORIZATION_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(test)]
 use super::{
     run_before_meta_remove_subsystem_child_inspection_hook, META_REMOVE_FORCED_REPARSE_PATHS,
 };
@@ -600,15 +635,7 @@ pub(crate) fn plan_typed_remove(
         SupportGuardRequirement::Removed,
         context,
     ) {
-        ResolvedSupportGuardCheck::Allow => {}
-        ResolvedSupportGuardCheck::Warn(_) => diagnostics.push(MetaDiagnostic {
-            code: MetaDiagnosticCode::SupportLocked,
-            severity: MetaDiagnosticSeverity::Warning,
-            message: "metadata support policy permits removal with a warning".to_string(),
-            metadata_path: Some(target.clone()),
-            operation_index: None,
-            field: None,
-        }),
+        ResolvedSupportGuardCheck::Allow | ResolvedSupportGuardCheck::Warn(_) => {}
         ResolvedSupportGuardCheck::Block(_) => {
             return Err(typed_remove_failure(
                 MetaDiagnosticCode::SupportLocked,
@@ -689,18 +716,7 @@ pub(crate) fn plan_typed_remove(
             SupportGuardRequirement::Editable,
             context,
         ) {
-            ResolvedSupportGuardCheck::Allow => {}
-            ResolvedSupportGuardCheck::Warn(_) => diagnostics.push(MetaDiagnostic {
-                code: MetaDiagnosticCode::SupportLocked,
-                severity: MetaDiagnosticSeverity::Warning,
-                message: format!(
-                    "subsystem `{}` support policy permits cleanup with a warning",
-                    replacement.subsystem_name
-                ),
-                metadata_path: Some(target.clone()),
-                operation_index: None,
-                field: Some("dependencies".to_string()),
-            }),
+            ResolvedSupportGuardCheck::Allow | ResolvedSupportGuardCheck::Warn(_) => {}
             ResolvedSupportGuardCheck::Block(_) => {
                 return Err(typed_remove_failure(
                     MetaDiagnosticCode::SupportLocked,
@@ -731,7 +747,78 @@ pub(crate) fn plan_typed_remove(
     let owner_post_image =
         meta_remove_preserved_utf8_image(&resolved.owner_preimage, owner_post_text);
 
+    #[cfg(test)]
+    run_meta_remove_before_reauthorization_hook();
+    if cancellation.is_cancelled() {
+        return Err(typed_remove_failure(
+            MetaDiagnosticCode::ProviderUnavailable,
+            target,
+            "metadata remove was cancelled before guarded transaction preparation",
+            None,
+        ));
+    }
+
     let mut transaction = CompileTransaction::new();
+    bind_resolved_support_guard_evidence(&mut transaction, &resolved.descriptor_path, context)
+        .map_err(|_| typed_remove_provider_failure(target))?;
+    for replacement in &subsystem_replacements {
+        bind_resolved_support_guard_evidence(&mut transaction, &replacement.path, context)
+            .map_err(|_| typed_remove_provider_failure(target))?;
+    }
+    match evaluate_resolved_support_guard(
+        &resolved.descriptor_path,
+        SupportGuardRequirement::Removed,
+        context,
+    ) {
+        ResolvedSupportGuardCheck::Allow => {}
+        ResolvedSupportGuardCheck::Warn(_) => diagnostics.push(MetaDiagnostic {
+            code: MetaDiagnosticCode::SupportLocked,
+            severity: MetaDiagnosticSeverity::Warning,
+            message: "metadata support policy permits removal with a warning".to_string(),
+            metadata_path: Some(target.clone()),
+            operation_index: None,
+            field: None,
+        }),
+        ResolvedSupportGuardCheck::Block(_) => {
+            return Err(typed_remove_failure(
+                MetaDiagnosticCode::SupportLocked,
+                target,
+                "metadata support policy blocks object removal",
+                None,
+            ));
+        }
+    }
+    for replacement in &subsystem_replacements {
+        match evaluate_resolved_support_guard(
+            &replacement.path,
+            SupportGuardRequirement::Editable,
+            context,
+        ) {
+            ResolvedSupportGuardCheck::Allow => {}
+            ResolvedSupportGuardCheck::Warn(_) => diagnostics.push(MetaDiagnostic {
+                code: MetaDiagnosticCode::SupportLocked,
+                severity: MetaDiagnosticSeverity::Warning,
+                message: format!(
+                    "subsystem `{}` support policy permits cleanup with a warning",
+                    replacement.subsystem_name
+                ),
+                metadata_path: Some(target.clone()),
+                operation_index: None,
+                field: Some("dependencies".to_string()),
+            }),
+            ResolvedSupportGuardCheck::Block(_) => {
+                return Err(typed_remove_failure(
+                    MetaDiagnosticCode::SupportLocked,
+                    target,
+                    format!(
+                        "subsystem `{}` support policy blocks reference cleanup",
+                        replacement.subsystem_name
+                    ),
+                    Some("dependencies"),
+                ));
+            }
+        }
+    }
     transaction
         .replace_bytes(
             &resolved.owner_path,
@@ -850,12 +937,6 @@ pub(crate) fn plan_typed_remove(
         context,
     )
     .map_err(|_| typed_remove_provider_failure(target))?;
-    bind_resolved_support_guard_evidence(&mut transaction, &resolved.descriptor_path, context)
-        .map_err(|_| typed_remove_provider_failure(target))?;
-    for replacement in &subsystem_replacements {
-        bind_resolved_support_guard_evidence(&mut transaction, &replacement.path, context)
-            .map_err(|_| typed_remove_provider_failure(target))?;
-    }
     let mut guarded_directories = BTreeSet::new();
     for directory_read in &reference_scan.directory_reads {
         if removed_paths

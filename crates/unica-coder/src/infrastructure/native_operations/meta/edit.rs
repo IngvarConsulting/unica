@@ -1854,21 +1854,13 @@ pub(crate) fn prepare_typed_edit(
     context: &WorkspaceContext,
 ) -> Result<Box<dyn PreparedMetadataMutation>, MetaFailure> {
     let target = request.metadata_path.clone();
-    let mut diagnostics = Vec::new();
+    let diagnostics = Vec::new();
     match evaluate_resolved_support_guard(
         &resolved.descriptor_path,
         crate::application::SupportGuardRequirement::Editable,
         context,
     ) {
-        ResolvedSupportGuardCheck::Allow => {}
-        ResolvedSupportGuardCheck::Warn(_) => diagnostics.push(MetaDiagnostic {
-            code: MetaDiagnosticCode::SupportLocked,
-            severity: crate::domain::metadata::MetaDiagnosticSeverity::Warning,
-            message: "metadata source support policy permits editing with a warning".to_string(),
-            metadata_path: Some(target.clone()),
-            operation_index: None,
-            field: None,
-        }),
+        ResolvedSupportGuardCheck::Allow | ResolvedSupportGuardCheck::Warn(_) => {}
         ResolvedSupportGuardCheck::Block(_) => {
             return Err(typed_diagnostic(
                 MetaDiagnosticCode::SupportLocked,
