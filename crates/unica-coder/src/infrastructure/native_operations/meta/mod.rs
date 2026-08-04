@@ -82,13 +82,10 @@ mod validation;
 mod validation_context;
 mod xml_model;
 
-// The split stays private. This is the exact pre-existing meta::* compatibility
-// surface required by native-operation callers outside this family.
 pub(crate) use edit::{
-    prepare_typed_edit, resolve_meta_edit_object_path, resolve_typed_edit_object,
-    resolve_typed_metadata_object,
+    prepare_typed_edit, resolve_typed_edit_object, resolve_typed_metadata_object,
 };
-pub(crate) use info::{analyze_meta_info_with_data, read_typed_meta_info};
+pub(crate) use info::read_typed_meta_info;
 #[cfg(test)]
 pub(crate) use info::{with_registrar_processing_hook, RegistrarProcessingPhase};
 pub(crate) use publisher::{fresh_metadata_uuid, prepare_meta_add, prepare_meta_remove};
@@ -96,13 +93,9 @@ pub(crate) use publisher::{fresh_metadata_uuid, prepare_meta_add, prepare_meta_r
 pub(crate) use publisher::{
     with_meta_add_after_authorization_hook, with_meta_edit_before_reauthorization_hook,
 };
+pub(crate) use remove::remove_metadata_child_text_with_flag;
 #[cfg(test)]
 pub(crate) use remove::with_meta_remove_before_reauthorization_hook;
-pub(crate) use remove::{
-    meta_remove_reference_xml_dependency_paths, meta_remove_subsystem_dependency_paths,
-    meta_remove_type_plural, remove_metadata_child_text_with_flag,
-    remove_metadata_object_with_data,
-};
 pub(crate) use template_catalog::metadata_generated_types_8_3_27;
 #[cfg(test)]
 pub(crate) use template_catalog::{emit_meta_internal_info, minimal_metadata_xml_for_tests};

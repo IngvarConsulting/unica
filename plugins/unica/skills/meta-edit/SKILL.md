@@ -7,7 +7,7 @@ allowed-tools:
   - Glob
 ---
 
-# /meta-edit — структурное редактирование метаданных
+# /unica:meta-edit — структурное редактирование метаданных
 
 ## MCP routing
 

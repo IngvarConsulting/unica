@@ -141,12 +141,12 @@ fn invoke_info(
     validation
         .diagnostics
         .extend(read.local.diagnostics.iter().cloned());
-    let related = if request.sections.is_empty() {
+    let failed = validation.status == MetaValidationStatus::Failed;
+    let related = if failed || request.sections.is_empty() {
         empty_related_sections()
     } else {
         ports.read_metadata_related(request, &read.local, context, cancellation)
     };
-    let failed = validation.status == MetaValidationStatus::Failed;
     let diagnostics = validation.diagnostics.clone();
     let data = serde_json::to_value(read.local.into_info(validation, related))
         .map_err(|error| format!("cannot serialize metadata info result: {error}"))?;
@@ -3273,6 +3273,35 @@ mod tests {
             assert_eq!(outcome.data.as_ref().unwrap()["related"], json!({}));
             assert_eq!(state.lock().unwrap().calls, ["read", "validate"]);
         }
+    }
+
+    #[test]
+    fn coordinator_info_validation_failure_skips_related_provider() {
+        let (mut ports, state) = info_ports();
+        ports.validation = MetaValidationData {
+            status: MetaValidationStatus::Failed,
+            diagnostics: vec![MetaDiagnostic::error(
+                MetaDiagnosticCode::ValidationFailed,
+                "local metadata validation failed",
+            )],
+        };
+
+        let outcome = invoke(
+            MetadataOperation::Info,
+            &ports,
+            &object(json!({
+                "sourceSet": "main",
+                "metadataPath": "Document.Order",
+                "sections": ["modules"],
+            })),
+            &coordinator_context(),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+
+        assert!(!outcome.adapter.ok);
+        assert_eq!(outcome.data.as_ref().unwrap()["related"], json!({}));
+        assert_eq!(state.lock().unwrap().calls, ["read", "validate"]);
     }
 
     #[test]

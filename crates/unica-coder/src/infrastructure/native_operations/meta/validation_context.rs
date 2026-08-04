@@ -1,5 +1,5 @@
 use super::super::common::read_utf8_sig;
-use super::validation::meta_validate_valid_types;
+use super::validation::{document_registers, meta_validate_valid_types};
 use super::xml_model::parse_metadata_image;
 use super::{meta_info_child, meta_info_inner_text};
 use std::fs;
@@ -151,7 +151,15 @@ pub(crate) fn meta_validate_registrar_document_scan(
 ) -> Result<(Vec<PathBuf>, bool), String> {
     let mut entries = fs::read_dir(documents_dir)
         .map_err(|error| format!("failed to read {}: {error}", documents_dir.display()))?;
-    let mut entries = entries.by_ref().filter_map(Result::ok).collect::<Vec<_>>();
+    let mut entries = entries
+        .by_ref()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            format!(
+                "failed to inspect a registrar candidate in {}: {error}",
+                documents_dir.display()
+            )
+        })?;
     entries.sort_by_key(|entry| entry.file_name());
     let mut dependencies = Vec::new();
     for entry in entries {
@@ -162,12 +170,67 @@ pub(crate) fn meta_validate_registrar_document_scan(
             continue;
         }
         dependencies.push(path.clone());
-        if read_utf8_sig(&path)
-            .map(|content| content.contains(register_reference))
-            .unwrap_or(false)
-        {
+        let content = read_utf8_sig(&path)?;
+        if document_registers(content.as_bytes(), register_reference) {
             return Ok((dependencies, true));
         }
     }
     Ok((dependencies, false))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_documents(label: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "unica-registrar-scan-{label}-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn registrar_scan_matches_only_register_records_items() {
+        let root = temp_documents("typed-path");
+        let reference = "InformationRegister.Ledger";
+        fs::write(
+            root.join("CommentOnly.xml"),
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Document><Properties><Name>CommentOnly</Name><Comment>{reference}</Comment><RegisterRecords/></Properties></Document></MetaDataObject>"#
+            ),
+        )
+        .unwrap();
+
+        let (_, found) = meta_validate_registrar_document_scan(&root, reference).unwrap();
+        assert!(
+            !found,
+            "an unrelated property must not count as registrar evidence"
+        );
+
+        fs::write(
+            root.join("Registrar.xml"),
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Document><Properties><Name>Registrar</Name><RegisterRecords><Item>{reference}</Item></RegisterRecords></Properties></Document></MetaDataObject>"#
+            ),
+        )
+        .unwrap();
+        let (_, found) = meta_validate_registrar_document_scan(&root, reference).unwrap();
+        assert!(found);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn registrar_scan_propagates_unreadable_document_evidence() {
+        let root = temp_documents("invalid-utf8");
+        fs::write(root.join("Broken.xml"), [0xff, 0xfe]).unwrap();
+
+        let error = meta_validate_registrar_document_scan(&root, "InformationRegister.Ledger")
+            .expect_err("unreadable registrar evidence must stay unavailable");
+
+        assert!(error.contains("UTF-8"), "{error}");
+        fs::remove_dir_all(root).unwrap();
+    }
 }

@@ -3,19 +3,16 @@ use crate::application::ports::{
     MetaLocalInfo, MetadataEvidenceAvailability, MetadataResourceImage, MetadataResourceRole,
     MetadataValidationSubject,
 };
-use crate::application::AdapterOutcome;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::metadata::{
-    MetaCollectionsData, MetaDiagnostic, MetaDiagnosticCode, MetaDiagnosticSeverity,
-    MetaElementData, MetaPropertyData, MetaPropertyValue, MetaRelationTargetData,
-    MetaRelationsData, MetaSupportStatus, MetadataKind, METADATA_PROPERTY_SPECS,
+    metadata_identifier_is_valid, MetaCollectionsData, MetaDiagnostic, MetaDiagnosticCode,
+    MetaDiagnosticSeverity, MetaElementData, MetaPropertyData, MetaPropertyValue,
+    MetaRelationTargetData, MetaRelationsData, MetaSupportStatus, MetadataKind,
+    METADATA_PROPERTY_SPECS,
 };
-use crate::domain::source_target::ResolvedTarget;
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
-use crate::domain::workspace::WorkspaceContext;
 use roxmltree::Document;
-use serde_json::{Map, Value};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -81,147 +78,12 @@ fn emit_registrar_processing_phase(phase: RegistrarProcessingPhase) {
     let _ = phase;
 }
 
-use super::super::common::{
-    object_support_state, read_utf8_sig, resolve_metadata_object_descriptor, ObjectSupportData,
-};
+use super::super::common::object_support_state;
 use super::edit::ResolvedMetadataObject;
 use super::xml_model::{
     meta_info_child, meta_info_child_text, meta_info_children, meta_info_inner_text,
     meta_info_ml_text, meta_info_normalize_cfg_prefix,
 };
-
-#[derive(Clone)]
-pub(super) struct MetaInfoAttr<'a, 'input> {
-    pub(crate) name: String,
-    pub(crate) type_name: String,
-    pub(crate) flags: String,
-    pub(crate) _marker: std::marker::PhantomData<roxmltree::Node<'a, 'input>>,
-}
-
-pub(super) struct MetaInfoTabularSection<'a, 'input> {
-    pub(crate) name: String,
-    pub(crate) columns: Vec<MetaInfoAttr<'a, 'input>>,
-}
-
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-/// Typed answer of `unica.meta.info` (ADR-0023). The report translated platform
-/// properties into Russian prose (`Номер: Строка(9), помесячно, авто`); the data
-/// carries the platform's own property names and values instead, so the twenty
-/// three metadata kinds need one shape rather than fifteen bespoke sections.
-pub(crate) struct MetaInfoData {
-    /// The logical address this call resolved. Flattened, because ADR-0021
-    /// fixed `sourceSet` and `metadataPath` at the top level of `data` and
-    /// `unica.source.locate` answers with the same shape.
-    #[serde(flatten)]
-    pub(crate) target: ResolvedTarget,
-    /// The platform's metadata kind: `Catalog`, `Document`, `CommonModule`, …
-    pub(crate) kind: String,
-    pub(crate) name: String,
-    /// The object's synonym; `null` when it declares none.
-    pub(crate) synonym: Option<String>,
-    pub(crate) support: ObjectSupportData,
-    /// Scalar properties under `Properties`, by their platform names.
-    pub(crate) properties: Vec<MetaInfoProperty>,
-    /// Owners of a subordinate catalog; empty for everything else.
-    pub(crate) owners: Vec<String>,
-    pub(crate) attributes: Vec<MetaInfoAttrData>,
-    /// Register dimensions; empty for every other kind.
-    pub(crate) dimensions: Vec<MetaInfoAttrData>,
-    /// Register resources; empty for every other kind.
-    pub(crate) resources: Vec<MetaInfoAttrData>,
-    pub(crate) tabular_sections: Vec<MetaInfoTabularSectionData>,
-    /// Enumeration values; empty for every other kind.
-    pub(crate) enum_values: Vec<String>,
-    pub(crate) forms: Vec<String>,
-    pub(crate) templates: Vec<String>,
-    pub(crate) commands: Vec<String>,
-}
-
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct MetaInfoProperty {
-    pub(crate) name: String,
-    pub(crate) value: String,
-}
-
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct MetaInfoAttrData {
-    pub(crate) name: String,
-    #[serde(rename = "type")]
-    pub(crate) type_name: Option<String>,
-    /// Platform flags the report rendered inline, one entry each.
-    pub(crate) flags: Vec<String>,
-}
-
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct MetaInfoTabularSectionData {
-    pub(crate) name: String,
-    pub(crate) columns: Vec<MetaInfoAttrData>,
-}
-
-fn meta_info_attr_data(attrs: Vec<MetaInfoAttr<'_, '_>>) -> Vec<MetaInfoAttrData> {
-    attrs
-        .into_iter()
-        .map(|attr| MetaInfoAttrData {
-            name: attr.name,
-            type_name: (!attr.type_name.is_empty()).then_some(attr.type_name),
-            // `meta_info_format_flags` renders `  [обязательный, индекс]`;
-            // splitting it raw left the brackets on the first and last flag.
-            flags: attr
-                .flags
-                .trim()
-                .trim_start_matches('[')
-                .trim_end_matches(']')
-                .split(',')
-                .map(str::trim)
-                .filter(|flag| !flag.is_empty())
-                .map(str::to_string)
-                .collect(),
-        })
-        .collect()
-}
-
-/// Scalar `Properties` children, by their platform names. Composite children
-/// (`Synonym`, `Type`, `Owners`, …) have their own typed places and are skipped
-/// here so the map stays flat.
-fn meta_info_properties(props: Option<roxmltree::Node<'_, '_>>) -> Vec<MetaInfoProperty> {
-    let Some(props) = props else {
-        return Vec::new();
-    };
-    props
-        .children()
-        .filter(|child| child.is_element())
-        .filter(|child| child.children().all(|node| !node.is_element()))
-        .filter_map(|child| {
-            let name = child.tag_name().name().to_string();
-            if matches!(name.as_str(), "Name") {
-                return None;
-            }
-            let value = child.text().unwrap_or("").trim().to_string();
-            (!value.is_empty()).then_some(MetaInfoProperty { name, value })
-        })
-        .collect()
-}
-
-fn meta_info_owner_names(props: Option<roxmltree::Node<'_, '_>>) -> Vec<String> {
-    let Some(owners_node) = props.and_then(|node| meta_info_child(node, "Owners")) else {
-        return Vec::new();
-    };
-    meta_info_children(owners_node, "Item")
-        .into_iter()
-        .map(meta_info_inner_text)
-        .map(|owner| owner.trim().to_string())
-        .filter(|owner| !owner.is_empty())
-        .collect()
-}
-
-pub(crate) struct MetaInfoExecution {
-    pub(crate) outcome: AdapterOutcome,
-    pub(crate) data: Option<MetaInfoData>,
-}
 
 /// Parse the descriptor image already acquired by the logical resolver. The
 /// same bytes are retained in the validation subject, so typed info never
@@ -614,10 +476,28 @@ fn typed_registered_language_images(
     let Ok(document) = Document::parse(owner.trim_start_matches('\u{feff}')) else {
         return Vec::new();
     };
-    document
-        .descendants()
-        .filter(|node| node.is_element() && node.tag_name().name() == "Language")
+    let configuration = document.root_element().children().find(|node| {
+        node.is_element()
+            && node.tag_name().namespace() == Some("http://v8.1c.ru/8.3/MDClasses")
+            && node.tag_name().name() == "Configuration"
+    });
+    let child_objects = configuration.and_then(|configuration| {
+        configuration.children().find(|node| {
+            node.is_element()
+                && node.tag_name().namespace() == Some("http://v8.1c.ru/8.3/MDClasses")
+                && node.tag_name().name() == "ChildObjects"
+        })
+    });
+    child_objects
+        .into_iter()
+        .flat_map(|node| node.children())
+        .filter(|node| {
+            node.is_element()
+                && node.tag_name().namespace() == Some("http://v8.1c.ru/8.3/MDClasses")
+                && node.tag_name().name() == "Language"
+        })
         .filter_map(|node| node.text().map(str::trim).filter(|name| !name.is_empty()))
+        .filter(|name| metadata_identifier_is_valid(name))
         .filter_map(|name| {
             let metadata_path = MetadataAddress::parse(
                 PLATFORM_XML_8_3_27_FORMAT_2_20,
@@ -915,120 +795,6 @@ pub(super) fn typed_elements(
     )
 }
 
-/// The resolved logical target rides in typed data rather than in the printed
-/// report: ADR-0021 asks every exact operation to name the source set it
-/// actually resolved, and a machine reader should not have to parse prose for
-/// it.
-pub(crate) fn analyze_meta_info_with_data(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-) -> MetaInfoExecution {
-    const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
-
-    let result = (|| -> Result<(MetaInfoData, PathBuf), String> {
-        let (resolved, object_path) = resolve_metadata_object_descriptor(args, context)?;
-        let text = read_utf8_sig(&object_path)?;
-        let doc = Document::parse(text.trim_start_matches('\u{feff}'))
-            .map_err(|err| format!("XML parse error in {}: {err}", object_path.display()))?;
-        let root = doc.root_element();
-        if root.tag_name().name() != "MetaDataObject" {
-            return Err("[ERROR] Not a valid 1C metadata XML file".to_string());
-        }
-
-        let Some(type_node) = root
-            .children()
-            .find(|child| child.is_element() && child.tag_name().namespace() == Some(MD_NS))
-        else {
-            return Err("[ERROR] Cannot detect metadata type".to_string());
-        };
-        let md_type = type_node.tag_name().name();
-        let props = meta_info_child(type_node, "Properties");
-        let child_objs = meta_info_child(type_node, "ChildObjects");
-        let obj_name = props
-            .and_then(|node| meta_info_child_text(node, "Name"))
-            .unwrap_or_default();
-        let synonym = props
-            .and_then(|node| meta_info_child(node, "Synonym"))
-            .map(meta_info_ml_text)
-            .unwrap_or_default();
-        // Mode and Name sliced one object into shorter reports. Data answers
-        // with the whole object once; a caller projects what it needs.
-        let is_register = md_type.ends_with("Register");
-        let data = MetaInfoData {
-            target: resolved,
-            kind: md_type.to_string(),
-            name: obj_name,
-            synonym: (!synonym.is_empty()).then_some(synonym),
-            support: object_support_state(&object_path),
-            properties: meta_info_properties(props),
-            owners: meta_info_owner_names(props),
-            attributes: if md_type == "Enum" {
-                Vec::new()
-            } else {
-                meta_info_attr_data(meta_info_attributes(child_objs, "Attribute", false))
-            },
-            dimensions: if is_register {
-                meta_info_attr_data(meta_info_attributes(child_objs, "Dimension", true))
-            } else {
-                Vec::new()
-            },
-            resources: if is_register {
-                meta_info_attr_data(meta_info_attributes(child_objs, "Resource", false))
-            } else {
-                Vec::new()
-            },
-            tabular_sections: meta_info_tabular_sections(child_objs)
-                .into_iter()
-                .map(|section| MetaInfoTabularSectionData {
-                    name: section.name,
-                    columns: meta_info_attr_data(section.columns),
-                })
-                .collect(),
-            enum_values: meta_info_enum_values(child_objs),
-            forms: meta_info_simple_children(child_objs, "Form"),
-            templates: meta_info_simple_children(child_objs, "Template"),
-            commands: meta_info_simple_children(child_objs, "Command"),
-        };
-        Ok((data, object_path))
-    })();
-
-    match result {
-        Ok((data, artifact)) => MetaInfoExecution {
-            outcome: AdapterOutcome {
-                ok: true,
-                summary: format!(
-                    "unica.meta.info described {} {} with {} attribute(s)",
-                    data.kind,
-                    data.name,
-                    data.attributes.len()
-                ),
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: Vec::new(),
-                artifacts: vec![artifact.display().to_string()],
-                stdout: None,
-                stderr: Some(String::new()),
-                command: None,
-            },
-            data: Some(data),
-        },
-        Err(error) => MetaInfoExecution {
-            outcome: AdapterOutcome {
-                ok: false,
-                summary: "unica.meta.info failed in native metadata analyzer".to_string(),
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: vec![error.clone()],
-                artifacts: Vec::new(),
-                stdout: None,
-                stderr: Some(format!("{error}\n")),
-                command: None,
-            },
-            data: None,
-        },
-    }
-}
-
 pub(crate) fn resolve_meta_info_path(mut object_path: PathBuf) -> Result<PathBuf, String> {
     if object_path.is_dir() {
         let dir_name = object_path
@@ -1091,217 +857,4 @@ pub(crate) fn resolve_meta_info_path(mut object_path: PathBuf) -> Result<PathBuf
         return Err(format!("[ERROR] File not found: {}", object_path.display()));
     }
     Ok(object_path)
-}
-
-pub(super) fn meta_info_attributes<'a, 'input>(
-    parent_node: Option<roxmltree::Node<'a, 'input>>,
-    child_tag: &str,
-    is_dimension: bool,
-) -> Vec<MetaInfoAttr<'a, 'input>> {
-    let Some(parent_node) = parent_node else {
-        return Vec::new();
-    };
-    meta_info_children(parent_node, child_tag)
-        .into_iter()
-        .filter_map(|attr| {
-            let props = meta_info_child(attr, "Properties")?;
-            let name = meta_info_child_text(props, "Name").unwrap_or_default();
-            let type_name = meta_info_child(props, "Type")
-                .map(meta_info_format_type)
-                .unwrap_or_default();
-            let flags = meta_info_format_flags(props, is_dimension);
-            Some(MetaInfoAttr {
-                name,
-                type_name,
-                flags,
-                _marker: std::marker::PhantomData,
-            })
-        })
-        .collect()
-}
-
-pub(super) fn meta_info_tabular_sections<'a, 'input>(
-    parent_node: Option<roxmltree::Node<'a, 'input>>,
-) -> Vec<MetaInfoTabularSection<'a, 'input>> {
-    let Some(parent_node) = parent_node else {
-        return Vec::new();
-    };
-    meta_info_children(parent_node, "TabularSection")
-        .into_iter()
-        .map(|section| {
-            let props = meta_info_child(section, "Properties");
-            let name = props
-                .and_then(|node| meta_info_child_text(node, "Name"))
-                .unwrap_or_default();
-            let columns =
-                meta_info_attributes(meta_info_child(section, "ChildObjects"), "Attribute", false);
-            MetaInfoTabularSection { name, columns }
-        })
-        .collect()
-}
-
-pub(super) fn meta_info_format_type(type_node: roxmltree::Node<'_, '_>) -> String {
-    let mut types = Vec::new();
-    for type_item in meta_info_children(type_node, "Type") {
-        types.push(meta_info_format_single_type(
-            meta_info_inner_text(type_item),
-            type_node,
-        ));
-    }
-    for type_set in meta_info_children(type_node, "TypeSet") {
-        let raw = meta_info_inner_text(type_set);
-        if let Some(name) = raw.strip_prefix("cfg:DefinedType.") {
-            types.push(format!("ОпределяемыйТип.{name}"));
-        } else if let Some(name) = raw.strip_prefix("cfg:Characteristic.") {
-            types.push(format!("Характеристика.{name}"));
-        } else {
-            types.push(raw);
-        }
-    }
-    types.join(" | ")
-}
-
-pub(super) fn meta_info_format_single_type(
-    raw: String,
-    parent_node: roxmltree::Node<'_, '_>,
-) -> String {
-    match raw.as_str() {
-        "xs:string" => {
-            let length = meta_info_child(parent_node, "StringQualifiers")
-                .and_then(|node| meta_info_child_text(node, "Length"))
-                .unwrap_or_default();
-            if length.is_empty() {
-                "Строка".to_string()
-            } else {
-                format!("Строка({length})")
-            }
-        }
-        "xs:decimal" => {
-            let qualifiers = meta_info_child(parent_node, "NumberQualifiers");
-            let digits = qualifiers
-                .and_then(|node| meta_info_child_text(node, "Digits"))
-                .unwrap_or_default();
-            let fraction = qualifiers
-                .and_then(|node| meta_info_child_text(node, "FractionDigits"))
-                .unwrap_or_else(|| "0".to_string());
-            if digits.is_empty() {
-                "Число".to_string()
-            } else {
-                format!("Число({digits},{fraction})")
-            }
-        }
-        "xs:boolean" => "Булево".to_string(),
-        "xs:dateTime" => {
-            let date_fraction = meta_info_child(parent_node, "DateQualifiers")
-                .and_then(|node| meta_info_child_text(node, "DateFractions"));
-            match date_fraction.as_deref() {
-                Some("Date") => "Дата".to_string(),
-                Some("Time") => "Время".to_string(),
-                Some("DateTime") => "ДатаВремя".to_string(),
-                Some(_) => "Дата".to_string(),
-                None => "ДатаВремя".to_string(),
-            }
-        }
-        "v8:ValueStorage" => "ХранилищеЗначения".to_string(),
-        "v8:UUID" => "УникальныйИдентификатор".to_string(),
-        "v8:Null" => "Null".to_string(),
-        _ => meta_info_format_cfg_type(&raw),
-    }
-}
-
-pub(super) fn meta_info_format_cfg_type(raw: &str) -> String {
-    let normalized = meta_info_normalize_cfg_prefix(raw);
-    if let Some(rest) = normalized.strip_prefix("cfg:") {
-        if let Some((prefix, name)) = rest.split_once('.') {
-            if let Some(ref_type) = meta_info_ref_type_ru(prefix) {
-                return format!("{ref_type}.{name}");
-            }
-            if prefix == "Characteristic" {
-                return format!("Характеристика.{name}");
-            }
-            if prefix == "DefinedType" {
-                return format!("ОпределяемыйТип.{name}");
-            }
-        }
-        return rest.to_string();
-    }
-    normalized
-}
-
-pub(super) fn meta_info_format_flags(props: roxmltree::Node<'_, '_>, is_dimension: bool) -> String {
-    let mut flags = Vec::new();
-    if meta_info_child_text(props, "FillChecking").as_deref() == Some("ShowError") {
-        flags.push("обязательный");
-    }
-    if let Some(indexing) = meta_info_child_text(props, "Indexing") {
-        match indexing.as_str() {
-            "Index" => flags.push("индекс"),
-            "IndexWithAdditionalOrder" => flags.push("индекс+доп"),
-            _ => {}
-        }
-    }
-    if is_dimension && meta_info_child_text(props, "Master").as_deref() == Some("true") {
-        flags.push("ведущее");
-    }
-    if meta_info_child_text(props, "MultiLine").as_deref() == Some("true") {
-        flags.push("многострочный");
-    }
-    if let Some(use_value) = meta_info_child_text(props, "Use") {
-        match use_value.as_str() {
-            "ForFolder" => flags.push("для папок"),
-            "ForFolderAndItem" => flags.push("для папок и элементов"),
-            _ => {}
-        }
-    }
-    if flags.is_empty() {
-        String::new()
-    } else {
-        format!("  [{}]", flags.join(", "))
-    }
-}
-
-pub(super) fn meta_info_simple_children(
-    parent_node: Option<roxmltree::Node<'_, '_>>,
-    tag: &str,
-) -> Vec<String> {
-    let Some(parent_node) = parent_node else {
-        return Vec::new();
-    };
-    meta_info_children(parent_node, tag)
-        .into_iter()
-        .map(meta_info_inner_text)
-        .collect()
-}
-
-pub(super) fn meta_info_enum_values(parent_node: Option<roxmltree::Node<'_, '_>>) -> Vec<String> {
-    let Some(parent_node) = parent_node else {
-        return Vec::new();
-    };
-    meta_info_children(parent_node, "EnumValue")
-        .into_iter()
-        .filter_map(|value| {
-            meta_info_child(value, "Properties")
-                .and_then(|props| meta_info_child_text(props, "Name"))
-        })
-        .collect()
-}
-
-pub(super) fn meta_info_ref_type_ru(prefix: &str) -> Option<&'static str> {
-    match prefix {
-        "CatalogRef" => Some("СправочникСсылка"),
-        "DocumentRef" => Some("ДокументСсылка"),
-        "EnumRef" => Some("ПеречислениеСсылка"),
-        "ChartOfAccountsRef" => Some("ПланСчетовСсылка"),
-        "ChartOfCharacteristicTypesRef" => Some("ПВХСсылка"),
-        "ChartOfCalculationTypesRef" => Some("ПВРСсылка"),
-        "ExchangePlanRef" => Some("ПланОбменаСсылка"),
-        "BusinessProcessRef" => Some("БизнесПроцессСсылка"),
-        "TaskRef" => Some("ЗадачаСсылка"),
-        _ => None,
-    }
-}
-
-pub(super) struct MetaRemoveError {
-    pub(crate) stderr: String,
-    pub(crate) message: String,
 }

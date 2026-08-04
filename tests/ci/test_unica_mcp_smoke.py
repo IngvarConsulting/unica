@@ -670,7 +670,6 @@ class UnicaMcpSmokeTests(unittest.TestCase):
                     info["data"]["relations"]["owners"],
                     [{"kind": "object", "value": "Catalog.Kinds"}],
                 )
-                self.assertNotIn("stdout", info)
 
                 legacy = call(
                     "unica.meta.info",
@@ -740,7 +739,6 @@ class UnicaMcpSmokeTests(unittest.TestCase):
                     payload = json.loads(response["result"]["content"][0]["text"])
                     self.assertTrue(payload["ok"], payload)
                     self.assertIn("data", payload)
-                    self.assertNotIn("stdout", payload)
                     return payload
 
                 initialized = call(

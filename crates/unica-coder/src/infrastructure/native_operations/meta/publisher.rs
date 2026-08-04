@@ -8,9 +8,9 @@ use crate::application::ports::{
 use crate::application::SupportGuardRequirement;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::metadata::{
-    MetaDiagnostic, MetaDiagnosticCode, MetaDiagnosticSeverity, MetaMutationData,
-    MetaMutationEffect, MetaPublicationAction, MetaPublicationPlanEntry, MetaPublicationResource,
-    MetaValidationData, MetaValidationStatus,
+    metadata_identifier_is_valid, MetaDiagnostic, MetaDiagnosticCode, MetaDiagnosticSeverity,
+    MetaMutationData, MetaMutationEffect, MetaPublicationAction, MetaPublicationPlanEntry,
+    MetaPublicationResource, MetaValidationData, MetaValidationStatus,
 };
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::metadata_kinds::metadata_layout;
@@ -23,7 +23,8 @@ use std::path::{Path, PathBuf};
 
 use super::super::common::guard_resolved_platform_xml_target_dependencies;
 use super::super::compile_transaction::{
-    CompileTransaction, DirectoryMembershipSnapshot, RegistrationStatus,
+    CommitFailure, CommitFailureKind, CompileTransaction, DirectoryMembershipSnapshot,
+    RegistrationStatus,
 };
 use super::edit::{
     build_typed_operation_post_image, resolve_typed_metadata_object, ResolvedMetadataObject,
@@ -42,6 +43,8 @@ use crate::infrastructure::support_guard::{
     bind_resolved_support_guard_evidence, evaluate_resolved_support_guard,
     ResolvedSupportGuardCheck,
 };
+
+const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
 #[cfg(test)]
 thread_local! {
@@ -349,17 +352,22 @@ impl PreparedMetadataMutation for PreparedMetaEdit {
         let handle = &self.resolved.handle;
         let context = &self.context;
         self.transaction
-            .commit_with_post_validation(|| {
-                let published = fs::read(&descriptor_path)
-                    .map_err(|_| "published metadata descriptor is unavailable".to_string())?;
+            .commit_with_classified_post_validation(|| {
+                let published = fs::read(&descriptor_path).map_err(|_| {
+                    CommitFailure::provider("published metadata descriptor is unavailable")
+                })?;
                 if published != expected {
-                    return Err("published metadata descriptor differs from its post-image".into());
+                    return Err(CommitFailure::provider(
+                        "published metadata descriptor differs from its post-image",
+                    ));
                 }
                 revalidate_platform_xml_target(context, handle)
                     .map(|_| ())
-                    .map_err(|_| "metadata target changed during publication".to_string())
+                    .map_err(|_| {
+                        CommitFailure::concurrent("metadata target changed during publication")
+                    })
             })
-            .map_err(|message| publication_failure(&target, message))?;
+            .map_err(|failure| publication_failure(&target, failure.kind()))?;
         Ok(MetaPublishReport { data: self.preview })
     }
 }
@@ -429,26 +437,35 @@ impl PreparedMetadataMutation for PreparedMetaRemove {
         let expected_post_images = self.expected_post_images.clone();
         let expected_absent = self.expected_absent.clone();
         self.transaction
-            .commit_with_post_validation(move || {
+            .commit_with_classified_post_validation(move || {
                 for (path, expected) in &expected_post_images {
-                    let actual = fs::read(path)
-                        .map_err(|_| "published metadata post-image is unavailable".to_string())?;
+                    let actual = fs::read(path).map_err(|_| {
+                        CommitFailure::provider("published metadata post-image is unavailable")
+                    })?;
                     if &actual != expected {
-                        return Err("published metadata post-image differs from its plan".into());
+                        return Err(CommitFailure::concurrent(
+                            "published metadata post-image differs from its plan",
+                        ));
                     }
                 }
                 for path in &expected_absent {
                     match fs::symlink_metadata(path) {
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                        Ok(_) => return Err("removed metadata resource is still present".into()),
+                        Ok(_) => {
+                            return Err(CommitFailure::concurrent(
+                                "removed metadata resource is still present",
+                            ))
+                        }
                         Err(_) => {
-                            return Err("removed metadata resource could not be inspected".into())
+                            return Err(CommitFailure::provider(
+                                "removed metadata resource could not be inspected",
+                            ))
                         }
                     }
                 }
                 Ok(())
             })
-            .map_err(|message| publication_failure(&target, message))?;
+            .map_err(|failure| publication_failure(&target, failure.kind()))?;
         Ok(MetaPublishReport { data: self.preview })
     }
 }
@@ -774,14 +791,36 @@ fn registered_language_images(
         .trim_start_matches('\u{feff}');
     let document =
         Document::parse(xml).map_err(|_| "metadata owner image is not valid XML".to_string())?;
+    let configuration = document.root_element().children().find(|node| {
+        node.is_element()
+            && node.tag_name().namespace() == Some(MD_CLASSES_NS)
+            && node.tag_name().name() == "Configuration"
+    });
+    let child_objects = configuration.and_then(|configuration| {
+        configuration.children().find(|node| {
+            node.is_element()
+                && node.tag_name().namespace() == Some(MD_CLASSES_NS)
+                && node.tag_name().name() == "ChildObjects"
+        })
+    });
     let mut images = Vec::new();
-    for node in document
-        .descendants()
-        .filter(|node| node.is_element() && node.tag_name().name() == "Language")
+    for node in child_objects
+        .into_iter()
+        .flat_map(|node| node.children())
+        .filter(|node| {
+            node.is_element()
+                && node.tag_name().namespace() == Some(MD_CLASSES_NS)
+                && node.tag_name().name() == "Language"
+        })
     {
         let Some(name) = node.text().map(str::trim).filter(|name| !name.is_empty()) else {
             continue;
         };
+        if !metadata_identifier_is_valid(name) {
+            return Err(format!(
+                "registered language `{name}` is not a valid 1C identifier"
+            ));
+        }
         let target = crate::domain::source_target::MetadataAddress::parse(
             crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
             &format!("Language.{name}"),
@@ -819,11 +858,11 @@ impl PreparedMetadataMutation for PreparedMetaAdd {
         revalidate_metadata_add_source(&self.context, &self.source)?;
         let target = self.preview.metadata_path.clone();
         self.transaction
-            .commit_with_post_validation(|| {
+            .commit_with_classified_post_validation(|| {
                 revalidate_metadata_add_source(&self.context, &self.source)
-                    .map_err(|failure| failure_message(&failure))
+                    .map_err(|failure| commit_failure_from_meta(&failure))
             })
-            .map_err(|message| publication_failure(&target, message))?;
+            .map_err(|failure| publication_failure(&target, failure.kind()))?;
         Ok(MetaPublishReport { data: self.preview })
     }
 }
@@ -851,19 +890,12 @@ fn provider_failure(
 
 fn publication_failure(
     target: &crate::domain::source_target::MetadataAddress,
-    internal: String,
+    kind: CommitFailureKind,
 ) -> MetaFailure {
-    let code = if internal.contains("rollback encountered") {
-        MetaDiagnosticCode::RollbackFailed
-    } else if internal.contains("changed")
-        || internal.contains("preimage")
-        || internal.contains("already exists")
-        || internal.contains("guard was violated")
-        || internal.contains("membership guard")
-    {
-        MetaDiagnosticCode::ConcurrentModification
-    } else {
-        MetaDiagnosticCode::ProviderUnavailable
+    let code = match kind {
+        CommitFailureKind::ConcurrentModification => MetaDiagnosticCode::ConcurrentModification,
+        CommitFailureKind::ProviderUnavailable => MetaDiagnosticCode::ProviderUnavailable,
+        CommitFailureKind::RollbackFailed => MetaDiagnosticCode::RollbackFailed,
     };
     MetaDiagnostic::error(
         code,
@@ -881,12 +913,22 @@ fn publication_failure(
     .into()
 }
 
-fn failure_message(failure: &MetaFailure) -> String {
-    failure
+fn commit_failure_from_meta(failure: &MetaFailure) -> CommitFailure {
+    let message = failure
         .diagnostics
         .first()
         .map(|diagnostic| diagnostic.message.clone())
-        .unwrap_or_else(|| "metadata source revalidation failed".to_string())
+        .unwrap_or_else(|| "metadata source revalidation failed".to_string());
+    if failure.diagnostics.iter().any(|diagnostic| {
+        matches!(
+            diagnostic.code,
+            MetaDiagnosticCode::ConcurrentModification | MetaDiagnosticCode::AlreadyExists
+        )
+    }) {
+        CommitFailure::concurrent(message)
+    } else {
+        CommitFailure::provider(message)
+    }
 }
 
 pub(crate) fn fresh_metadata_uuid() -> String {
@@ -908,6 +950,29 @@ mod typed_add_publication_tests {
     };
     use serde_json::json;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn publication_failure_code_is_selected_by_typed_commit_kind() {
+        let target =
+            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items").unwrap();
+        for (kind, expected) in [
+            (
+                CommitFailureKind::ConcurrentModification,
+                MetaDiagnosticCode::ConcurrentModification,
+            ),
+            (
+                CommitFailureKind::ProviderUnavailable,
+                MetaDiagnosticCode::ProviderUnavailable,
+            ),
+            (
+                CommitFailureKind::RollbackFailed,
+                MetaDiagnosticCode::RollbackFailed,
+            ),
+        ] {
+            let failure = publication_failure(&target, kind);
+            assert_eq!(failure.diagnostics[0].code, expected);
+        }
+    }
 
     struct Fixture {
         root: PathBuf,
@@ -1001,6 +1066,20 @@ mod typed_add_publication_tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn registered_language_images_use_only_valid_child_registrations() {
+        let fixture = Fixture::new("language-registration-scope");
+        let rogue = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Configuration><Properties><Language>Ghost</Language></Properties><ChildObjects/></Configuration></MetaDataObject>"#;
+        assert!(registered_language_images(&fixture.root.join("src"), rogue)
+            .unwrap()
+            .is_empty());
+
+        let invalid = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Configuration><ChildObjects><Language>/etc/passwd</Language></ChildObjects></Configuration></MetaDataObject>"#;
+        let error = registered_language_images(&fixture.root.join("src"), invalid)
+            .expect_err("a registered language must be a valid 1C identifier");
+        assert!(error.contains("valid 1C identifier"), "{error}");
     }
 
     #[test]

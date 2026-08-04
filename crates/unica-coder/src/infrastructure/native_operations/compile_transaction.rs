@@ -84,6 +84,56 @@ pub(crate) struct CommitReport {
     pub(crate) cleanup_warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CommitFailureKind {
+    ConcurrentModification,
+    ProviderUnavailable,
+    RollbackFailed,
+}
+
+#[derive(Debug)]
+pub(crate) struct CommitFailure {
+    kind: CommitFailureKind,
+    message: String,
+}
+
+impl CommitFailure {
+    pub(crate) fn concurrent(message: impl Into<String>) -> Self {
+        Self {
+            kind: CommitFailureKind::ConcurrentModification,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn provider(message: impl Into<String>) -> Self {
+        Self {
+            kind: CommitFailureKind::ProviderUnavailable,
+            message: message.into(),
+        }
+    }
+
+    fn rollback(message: impl Into<String>) -> Self {
+        Self {
+            kind: CommitFailureKind::RollbackFailed,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn kind(&self) -> CommitFailureKind {
+        self.kind
+    }
+
+    fn into_message(self) -> String {
+        self.message
+    }
+}
+
+impl From<String> for CommitFailure {
+    fn from(message: String) -> Self {
+        Self::provider(message)
+    }
+}
+
 #[derive(Debug)]
 struct PlannedCreate {
     path: PathBuf,
@@ -833,13 +883,29 @@ impl CompileTransaction {
     where
         F: FnOnce() -> Result<(), String>,
     {
+        self.commit_with_classified_post_validation(|| {
+            post_validation().map_err(CommitFailure::provider)
+        })
+        .map_err(CommitFailure::into_message)
+    }
+
+    pub(crate) fn commit_with_classified_post_validation<F>(
+        self,
+        post_validation: F,
+    ) -> Result<CommitReport, CommitFailure>
+    where
+        F: FnOnce() -> Result<(), CommitFailure>,
+    {
         let mut state = PublishState::default();
-        self.semantic_preflight()?;
+        self.semantic_preflight().map_err(CommitFailure::provider)?;
 
         for create in &self.creates {
             if let Err(error) = ensure_parent_directories(&create.path, &mut state.created_dirs) {
                 let cleanup_errors = cleanup_created_directories(&mut state.created_dirs);
-                return Err(with_cleanup_diagnostics(error, cleanup_errors));
+                return Err(with_cleanup_diagnostics(
+                    CommitFailure::provider(error),
+                    cleanup_errors,
+                ));
             }
         }
         for registration in self.registrations.values().filter(|item| item.changed()) {
@@ -847,7 +913,10 @@ impl CompileTransaction {
                 ensure_parent_directories(&registration.path, &mut state.created_dirs)
             {
                 let cleanup_errors = cleanup_created_directories(&mut state.created_dirs);
-                return Err(with_cleanup_diagnostics(error, cleanup_errors));
+                return Err(with_cleanup_diagnostics(
+                    CommitFailure::provider(error),
+                    cleanup_errors,
+                ));
             }
         }
 
@@ -896,9 +965,9 @@ impl CompileTransaction {
         lock: &'lock PublicationLockToken<'scope>,
         state: &mut PublishState,
         post_validation: &mut Option<F>,
-    ) -> Result<CommitReport, String>
+    ) -> Result<CommitReport, CommitFailure>
     where
-        F: FnOnce() -> Result<(), String>,
+        F: FnOnce() -> Result<(), CommitFailure>,
     {
         let mut prepared_creates: VecDeque<(
             &'request PlannedCreate,
@@ -911,17 +980,20 @@ impl CompileTransaction {
         let mut prepared_removals: VecDeque<(&'request PlannedRemoval, PendingRemovalRecovery)> =
             VecDeque::new();
 
-        let operation = (|| -> Result<CommitReport, String> {
-            self.recheck_exact_read_guards("before publication")?;
-            self.recheck_absence_guards("before publication")?;
+        let operation = (|| -> Result<CommitReport, CommitFailure> {
+            self.recheck_exact_read_guards("before publication")
+                .map_err(CommitFailure::concurrent)?;
+            self.recheck_absence_guards("before publication")
+                .map_err(CommitFailure::concurrent)?;
             self.recheck_directory_membership_guards(
                 false,
                 &state.created_dirs,
                 "before publication",
-            )?;
+            )
+            .map_err(CommitFailure::concurrent)?;
 
             for removal in &self.removals {
-                recheck_removal(removal)?;
+                recheck_removal(removal).map_err(CommitFailure::concurrent)?;
             }
 
             for create in &self.creates {
@@ -947,13 +1019,15 @@ impl CompileTransaction {
                         return Err(format!(
                             "create-only publication prepared an invalid state for {}",
                             create.path.display()
-                        ));
+                        )
+                        .into());
                     }
                     PreparedPublication::Unchanged => {
                         return Err(format!(
                             "create-only publication prepared an invalid state for {}",
                             create.path.display()
-                        ));
+                        )
+                        .into());
                     }
                 }
             }
@@ -983,21 +1057,24 @@ impl CompileTransaction {
                         return Err(format!(
                             "unchanged registration prepared a replacement for {}",
                             registration.path.display()
-                        ));
+                        )
+                        .into());
                     }
                     PreparedPublication::Create(prepared) => {
                         record_cleanup_warnings(state, prepared.discard());
                         return Err(format!(
                             "changed registration prepared an invalid state for {}",
                             registration.path.display()
-                        ));
+                        )
+                        .into());
                     }
                     PreparedPublication::Unchanged if !registration.changed() => {}
                     PreparedPublication::Unchanged => {
                         return Err(format!(
                             "changed registration prepared an invalid state for {}",
                             registration.path.display()
-                        ));
+                        )
+                        .into());
                     }
                 }
             }
@@ -1048,7 +1125,7 @@ impl CompileTransaction {
                     Ok(recovery) => recovery,
                     Err(error) => {
                         record_cleanup_warnings(state, prepared.discard());
-                        return Err(error);
+                        return Err(error.into());
                     }
                 };
                 if let Err(error) =
@@ -1065,7 +1142,7 @@ impl CompileTransaction {
                 if let Err(error) = failpoint_after_registration_backup() {
                     record_cleanup_warnings(state, prepared.discard());
                     record_cleanup_strings(state, recovery.cleanup());
-                    return Err(error);
+                    return Err(error.into());
                 }
 
                 let report = match prepared.commit() {
@@ -1087,7 +1164,7 @@ impl CompileTransaction {
             }
 
             while let Some((removal, recovery)) = prepared_removals.pop_front() {
-                recheck_removal(removal)?;
+                recheck_removal(removal).map_err(CommitFailure::concurrent)?;
                 rename_no_replace(&removal.path, &recovery.path).map_err(|error| {
                     format!(
                         "failed to move removal target {} to no-clobber recovery {}: {error}",
@@ -1104,10 +1181,10 @@ impl CompileTransaction {
                     .expect("published removal was just recorded");
                 let moved_snapshot = snapshot_removal_path(&published.recovery)?;
                 if moved_snapshot != removal.snapshot {
-                    return Err(format!(
+                    return Err(CommitFailure::concurrent(format!(
                         "removal target changed while moving to recovery: {}",
                         removal.path.display()
-                    ));
+                    )));
                 }
             }
 
@@ -1117,8 +1194,10 @@ impl CompileTransaction {
             })?;
             validate()?;
             failpoint_post_write_validation()?;
-            self.recheck_exact_read_guards("before successful completion")?;
-            self.recheck_absence_guards("before successful completion")?;
+            self.recheck_exact_read_guards("before successful completion")
+                .map_err(CommitFailure::concurrent)?;
+            self.recheck_absence_guards("before successful completion")
+                .map_err(CommitFailure::concurrent)?;
             let mut transient_directories = state.created_dirs.clone();
             transient_directories.extend(
                 state
@@ -1136,7 +1215,8 @@ impl CompileTransaction {
                 true,
                 &transient_directories,
                 "before successful completion",
-            )?;
+            )
+            .map_err(CommitFailure::concurrent)?;
 
             Ok(CommitReport {
                 created: self.planned_created_paths(),
@@ -2237,8 +2317,8 @@ enum PublicationRole {
     Transaction,
 }
 
-fn adapt_publish_error(error: &PublishError, role: PublicationRole) -> String {
-    match error.kind() {
+fn adapt_publish_error(error: &PublishError, role: PublicationRole) -> CommitFailure {
+    let message = match error.kind() {
         PublishErrorKind::StalePreimage { target } => match role {
             PublicationRole::Registration => format!(
                 "registration target changed after planning: {}",
@@ -2274,7 +2354,21 @@ fn adapt_publish_error(error: &PublishError, role: PublicationRole) -> String {
         | PublishErrorKind::MultipleHardLinks { .. }
         | PublishErrorKind::StageCollisionsExhausted { .. }
         | PublishErrorKind::Io { .. } => error.to_string(),
-    }
+    };
+    let kind = match error.kind() {
+        PublishErrorKind::AlreadyExists { .. }
+        | PublishErrorKind::MissingTarget { .. }
+        | PublishErrorKind::LinkOrReparsePoint { .. }
+        | PublishErrorKind::NonRegular { .. }
+        | PublishErrorKind::MultipleHardLinks { .. }
+        | PublishErrorKind::StalePreimage { .. }
+        | PublishErrorKind::MetadataChanged { .. } => CommitFailureKind::ConcurrentModification,
+        PublishErrorKind::InvalidTarget { .. }
+        | PublishErrorKind::ReadOnly { .. }
+        | PublishErrorKind::StageCollisionsExhausted { .. }
+        | PublishErrorKind::Io { .. } => CommitFailureKind::ProviderUnavailable,
+    };
+    CommitFailure { kind, message }
 }
 
 fn record_publish_error_cleanup(state: &mut PublishState, error: &PublishError) {
@@ -2356,22 +2450,28 @@ fn cleanup_created_directories(created_dirs: &mut Vec<PathBuf>) -> Vec<String> {
     errors
 }
 
-fn with_cleanup_diagnostics(primary: String, diagnostics: Vec<String>) -> String {
+fn with_cleanup_diagnostics(mut primary: CommitFailure, diagnostics: Vec<String>) -> CommitFailure {
     if diagnostics.is_empty() {
         primary
     } else {
-        format!("{primary}; cleanup encountered: {}", diagnostics.join("; "))
+        primary.message = format!(
+            "{}; cleanup encountered: {}",
+            primary.message,
+            diagnostics.join("; ")
+        );
+        primary
     }
 }
 
-fn with_rollback_diagnostics(primary: String, diagnostics: Vec<String>) -> String {
+fn with_rollback_diagnostics(primary: CommitFailure, diagnostics: Vec<String>) -> CommitFailure {
     if diagnostics.is_empty() {
         primary
     } else {
-        format!(
-            "{primary}; rollback encountered: {}",
+        CommitFailure::rollback(format!(
+            "{}; rollback encountered: {}",
+            primary.message,
             diagnostics.join("; ")
-        )
+        ))
     }
 }
 
@@ -3196,6 +3296,20 @@ mod tests {
     use std::sync::mpsc;
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn commit_failure_kind_does_not_depend_on_message_wording() {
+        let provider = CommitFailure::provider(
+            "changed preimage and rollback encountered are only words in this provider error",
+        );
+        assert_eq!(provider.kind(), CommitFailureKind::ProviderUnavailable);
+
+        let concurrent = CommitFailure::concurrent("opaque state mismatch");
+        assert_eq!(concurrent.kind(), CommitFailureKind::ConcurrentModification);
+
+        let rollback = with_rollback_diagnostics(provider, vec!["cleanup failed".into()]);
+        assert_eq!(rollback.kind(), CommitFailureKind::RollbackFailed);
+    }
 
     fn temp_root(name: &str) -> PathBuf {
         let nanos = SystemTime::now()

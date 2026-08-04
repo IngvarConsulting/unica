@@ -407,13 +407,14 @@ pub(crate) fn locate_platform_xml_source_path(
     }
     check_navigation_cancellation(cancellation)?;
 
-    // A nested Form or Command owns everything beneath its own directory.
+    // A nested Form, Template, or Command owns everything beneath its own directory.
     let nested = match parts.get(2).copied() {
-        Some(directory @ ("Forms" | "Commands")) => parts.get(3).map(|child| {
-            let child_kind = if directory == "Forms" {
-                "Form"
-            } else {
-                "Command"
+        Some(directory @ ("Forms" | "Templates" | "Commands")) => parts.get(3).map(|child| {
+            let child_kind = match directory {
+                "Forms" => "Form",
+                "Templates" => "Template",
+                "Commands" => "Command",
+                _ => unreachable!("nested metadata directory match is closed"),
             };
             // The same child appears twice under the collection: once as its
             // `<Name>.xml` descriptor and once as the `<Name>/` content tree.
@@ -583,14 +584,18 @@ fn resolve_prefix_by_scoped_scan(
                     &mut matches,
                 )?;
             }
-            // A nested Form or Command is addressable in its own right, so a
+            // A nested Form, Template, or Command is addressable in its own right, so a
             // prefix that can reach one must not be answered without it. The
             // descent is affordable only once a name prefix bounds the outer
             // loop; a bare-kind query says so instead of claiming completeness.
             if parts.len() < 2 {
                 continue;
             }
-            for (child_kind, child_directory) in [("Form", "Forms"), ("Command", "Commands")] {
+            for (child_kind, child_directory, module_terminal) in [
+                ("Form", "Forms", Some("FormModule")),
+                ("Template", "Templates", None),
+                ("Command", "Commands", Some("CommandModule")),
+            ] {
                 check_navigation_cancellation(cancellation)?;
                 if !supports_nested_form_or_command(kind.tag) {
                     break;
@@ -614,15 +619,16 @@ fn resolve_prefix_by_scoped_scan(
                             matches.push((address, TargetKind::MetadataObject, child.clone()));
                         }
                     }
-                    let terminal = format!("{child_kind}Module");
-                    push_module_candidate(
-                        context,
-                        &selected,
-                        &format!("{nested}.{terminal}"),
-                        &query,
-                        &terminal,
-                        &mut matches,
-                    )?;
+                    if let Some(terminal) = module_terminal {
+                        push_module_candidate(
+                            context,
+                            &selected,
+                            &format!("{nested}.{terminal}"),
+                            &query,
+                            terminal,
+                            &mut matches,
+                        )?;
+                    }
                 }
             }
         }
@@ -717,7 +723,7 @@ fn push_module_candidate(
     Ok(())
 }
 
-/// Reads one nested `Forms`/`Commands` collection of a proven owner and returns
+/// Reads one nested `Forms`/`Templates`/`Commands` collection of a proven owner and returns
 /// the child names whose own descriptor proves them.
 fn proven_child_names(
     source_root: &Path,
@@ -964,7 +970,7 @@ fn rendered_address_children(
     if let [kind, name] = parts.as_slice() {
         if let Some(kind) = metadata_kind(kind) {
             if supports_nested_form_or_command(kind.tag) {
-                for child_directory in ["Forms", "Commands"] {
+                for child_directory in ["Forms", "Templates", "Commands"] {
                     check_navigation_cancellation(cancellation)?;
                     let directory = selected
                         .path
@@ -1135,12 +1141,15 @@ fn object_descriptor_evidence(parts: &[&str]) -> Option<ObjectDescriptorEvidence
                 name: (*name).to_string(),
             })
         }
-        [kind, name, child_kind, child_name] if matches!(*child_kind, "Form" | "Command") => {
+        [kind, name, child_kind, child_name]
+            if matches!(*child_kind, "Form" | "Template" | "Command") =>
+        {
             let kind = metadata_kind(kind)?;
-            let child_directory = if *child_kind == "Form" {
-                "Forms"
-            } else {
-                "Commands"
+            let child_directory = match *child_kind {
+                "Form" => "Forms",
+                "Template" => "Templates",
+                "Command" => "Commands",
+                _ => unreachable!("nested metadata kind match is closed"),
             };
             Some(ObjectDescriptorEvidence {
                 path: PathBuf::from(kind.directory)
@@ -2364,7 +2373,8 @@ fn object_registration_evidence(
     let source_owner_version = source_owner_evidence.version().map(str::to_owned);
 
     let parts = address.segments().collect::<Vec<_>>();
-    let [owner_kind, owner_name, child_kind @ ("Form" | "Command"), child_name] = parts.as_slice()
+    let [owner_kind, owner_name, child_kind @ ("Form" | "Template" | "Command"), child_name] =
+        parts.as_slice()
     else {
         return match parts.as_slice() {
             [kind, name] if source_owner_evidence.registers(kind, name) => Ok(Some(
@@ -4654,6 +4664,12 @@ mod tests {
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form><Properties><Name>Order</Name></Properties></Form></MetaDataObject>"#,
         )
         .unwrap();
+        fs::create_dir_all(root.join("Catalogs/Items/Templates")).unwrap();
+        fs::write(
+            root.join("Catalogs/Items/Templates/Print.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Template><Properties><Name>Print</Name></Properties></Template></MetaDataObject>"#,
+        )
+        .unwrap();
         fs::write(
             root.join("Catalogs/Items/Forms/Order/Ext/Form/Module.bsl"),
             "Procedure Run()\nEndProcedure\n",
@@ -4683,6 +4699,7 @@ mod tests {
             .map(|candidate| candidate.metadata_path.as_str())
             .collect::<Vec<_>>();
         assert!(found.contains(&"Catalog.Items.Form.Order"), "{found:?}");
+        assert!(found.contains(&"Catalog.Items.Template.Print"), "{found:?}");
         assert!(
             found.contains(&"Catalog.Items.Form.Order.FormModule"),
             "{found:?}"
@@ -4700,6 +4717,16 @@ mod tests {
                 "Catalog.Items.Form.Order",
                 "Catalog.Items.Form.Order.FormModule"
             ]
+        );
+
+        let template = resolve("Catalog.Items.Template.Pr");
+        assert_eq!(
+            template
+                .candidates
+                .iter()
+                .map(|candidate| candidate.metadata_path.as_str())
+                .collect::<Vec<_>>(),
+            ["Catalog.Items.Template.Print"]
         );
 
         // A bare-kind prefix does not descend, and says so instead of claiming

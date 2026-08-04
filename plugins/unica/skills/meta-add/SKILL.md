@@ -7,7 +7,7 @@ allowed-tools:
   - Glob
 ---
 
-# /meta-add — создание объекта метаданных
+# /unica:meta-add — создание объекта метаданных
 
 ## MCP routing
 

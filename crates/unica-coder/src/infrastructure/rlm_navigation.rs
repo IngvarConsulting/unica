@@ -230,6 +230,7 @@ impl<'a> RlmNavigationAdapter<'a> {
         };
         let freshness = match before.state {
             RelatedReadinessState::Stale => MetaFreshness::Stale,
+            RelatedReadinessState::Ready if before.source.is_none() => MetaFreshness::Unknown,
             RelatedReadinessState::Ready => {
                 match related_readiness_proof(self.client, context, deadline, cancellation) {
                     Some(after)
@@ -367,7 +368,6 @@ fn related_readiness_proof(
     // deadline; starting this clock before the first probe makes a slow but
     // already-ready index look unavailable.
     let mut settle_until: Option<Instant> = None;
-    let mut ready_snapshot = None;
     loop {
         if cancellation.is_cancelled() || deadline.remaining().is_zero() {
             return None;
@@ -395,20 +395,26 @@ fn related_readiness_proof(
             .ok()?;
         match readiness {
             IndexReadiness::Ready { .. } => {
-                let source = related_source_content_snapshot(
+                let source = match related_source_content_snapshot(
                     &context.source_root.path,
                     deadline,
                     settle_until,
                     cancellation,
-                )
-                .ok()?;
-                if ready_snapshot == Some(source) {
-                    return Some(RelatedReadinessProof {
-                        state: RelatedReadinessState::Ready,
-                        source: Some(source),
-                    });
-                }
-                ready_snapshot = Some(source);
+                ) {
+                    Ok(source) => Some(source),
+                    Err(()) if cancellation.is_cancelled() || deadline.remaining().is_zero() => {
+                        return None
+                    }
+                    // A bounded source proof can be unavailable for a large or
+                    // partially unreadable tree while the index itself is
+                    // healthy. Keep the provider answer useful and mark its
+                    // freshness as unverified instead of blaming the index.
+                    Err(()) => None,
+                };
+                return Some(RelatedReadinessProof {
+                    state: RelatedReadinessState::Ready,
+                    source,
+                });
             }
             IndexReadiness::Stale { .. } => {
                 return Some(RelatedReadinessProof {
@@ -417,7 +423,6 @@ fn related_readiness_proof(
                 });
             }
             IndexReadiness::Building => {
-                ready_snapshot = None;
                 let settle_until = *settle_until.get_or_insert_with(|| {
                     Instant::now() + deadline.remaining().min(RELATED_READINESS_SETTLE_LIMIT)
                 });
@@ -666,7 +671,7 @@ fn typed_related_section(
         _ if !unique.is_empty() => MetaRelatedStatus::Partial,
         _ => MetaRelatedStatus::Unavailable,
     };
-    let diagnostics = if section.error.is_some() || status != MetaRelatedStatus::Ready {
+    let mut diagnostics = if section.error.is_some() || status != MetaRelatedStatus::Ready {
         vec![MetaDiagnostic::error(
             MetaDiagnosticCode::ProviderUnavailable,
             format!(
@@ -677,12 +682,24 @@ fn typed_related_section(
     } else {
         Vec::new()
     };
+    if freshness == MetaFreshness::Unknown && status != MetaRelatedStatus::Unavailable {
+        diagnostics.push(MetaDiagnostic::warning(
+            MetaDiagnosticCode::ProviderUnavailable,
+            format!(
+                "related metadata section `{}` freshness could not be verified from the bounded source snapshot",
+                section.name
+            ),
+        ));
+    }
     MetaRelatedSection {
         status,
         freshness,
         completeness: if status == MetaRelatedStatus::Unavailable {
             MetaCompleteness::Unknown
-        } else if status == MetaRelatedStatus::Partial || source_truncated {
+        } else if status == MetaRelatedStatus::Partial
+            || source_truncated
+            || freshness == MetaFreshness::Unknown
+        {
             MetaCompleteness::Partial
         } else {
             MetaCompleteness::Complete
@@ -705,6 +722,10 @@ fn sanitize_related_item(value: Value) -> Value {
                 "db_path",
                 "sourceDir",
                 "source_dir",
+                "uri",
+                "location",
+                "absolutePath",
+                "absolute_path",
             ] {
                 object.remove(key);
             }
@@ -1531,7 +1552,13 @@ mod tests {
                         "total": 4,
                         "returned": 4,
                         "items": [
-                            {"name": "ObjectModule", "path": "/must/not/leak"},
+                            {
+                                "name": "ObjectModule",
+                                "path": "/must/not/leak",
+                                "uri": "file:///must/not/leak",
+                                "location": "/must/not/leak",
+                                "absolutePath": "/must/not/leak"
+                            },
                             {"name": "ObjectModule"},
                             {"name": "ManagerModule"},
                             {"name": "Second"}
@@ -1592,6 +1619,13 @@ mod tests {
         assert!(related.subscriptions.is_none());
         assert!(related.functional_options.is_none());
         assert!(related.predefined_items.is_some());
+        assert_eq!(
+            super::sanitize_related_item(json!({
+                "name": "safe",
+                "nested": {"sourceDir": "/must/not/leak", "uri": "file:///must/not/leak"}
+            })),
+            json!({"name": "safe", "nested": {}})
+        );
     }
 
     #[test]
@@ -1950,11 +1984,22 @@ mod tests {
         let modules = result.modules.unwrap();
         assert_eq!(
             modules.status,
-            crate::domain::metadata::MetaRelatedStatus::Unavailable
+            crate::domain::metadata::MetaRelatedStatus::Ready
         );
         assert_eq!(
             modules.freshness,
             crate::domain::metadata::MetaFreshness::Unknown
+        );
+        assert_eq!(
+            modules.completeness,
+            crate::domain::metadata::MetaCompleteness::Partial
+        );
+        assert_eq!(modules.items, vec![json!({"name": "ObjectModule"})]);
+        let diagnostics = serde_json::to_string(&modules.diagnostics).unwrap();
+        assert!(diagnostics.contains("freshness"), "{diagnostics}");
+        assert!(
+            !diagnostics.contains("index is unavailable"),
+            "{diagnostics}"
         );
         let _ = std::fs::remove_dir_all(root);
     }
@@ -2091,7 +2136,7 @@ mod tests {
             modules.freshness,
             crate::domain::metadata::MetaFreshness::Current
         );
-        assert_eq!(*client.readiness_calls.lock().unwrap(), 4);
+        assert_eq!(*client.readiness_calls.lock().unwrap(), 2);
     }
 
     struct AlwaysBuildingClient;

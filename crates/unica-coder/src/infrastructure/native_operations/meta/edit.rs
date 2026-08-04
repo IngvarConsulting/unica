@@ -34,7 +34,7 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use super::super::common::{absolutize, escape_xml, is_1c_identifier};
+use super::super::common::{escape_xml, is_1c_identifier};
 use super::super::compile_transaction::{
     snapshot_directory_membership, DirectoryMembershipSelector, DirectoryMembershipSnapshot,
 };
@@ -105,56 +105,6 @@ fn meta_edit_preserve_source_format(text: &str, format: MetaEditSourceFormat) ->
     }
     bytes.extend_from_slice(serialized.as_bytes());
     bytes
-}
-
-pub(crate) fn resolve_meta_edit_object_path(raw: &Path, cwd: &Path) -> Result<PathBuf, String> {
-    let mut path = absolutize(raw.to_path_buf(), cwd);
-    if path.is_dir() {
-        let dir_name = path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or_default()
-            .to_string();
-        let candidate = path.join(format!("{dir_name}.xml"));
-        let sibling = path
-            .parent()
-            .map(|parent| parent.join(format!("{dir_name}.xml")));
-        if candidate.exists() {
-            path = candidate;
-        } else if let Some(sibling) = sibling.filter(|candidate| candidate.exists()) {
-            path = sibling;
-        } else {
-            return Err(format!(
-                "Directory given but no {dir_name}.xml found inside or as sibling"
-            ));
-        }
-    }
-
-    if !path.exists() {
-        let file_name = path
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .unwrap_or_default()
-            .to_string();
-        let parent_dir = path.parent();
-        let parent_dir_name = parent_dir
-            .and_then(|parent| parent.file_name())
-            .and_then(|value| value.to_str())
-            .unwrap_or_default();
-        if file_name == parent_dir_name {
-            if let Some(grandparent) = parent_dir.and_then(Path::parent) {
-                let candidate = grandparent.join(format!("{file_name}.xml"));
-                if candidate.exists() {
-                    path = candidate;
-                }
-            }
-        }
-    }
-
-    if !path.exists() {
-        return Err(format!("Object file not found: {}", raw.display()));
-    }
-    Ok(path)
 }
 
 pub(super) fn meta_edit_object_identity(xml_text: &str) -> Result<(String, String), String> {

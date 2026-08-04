@@ -1712,7 +1712,7 @@ fn configuration_tools() -> Vec<ToolSpec> {
             description: "Inspect one metadata object with validation and related sections.",
             mutating: false,
             cache_access: CacheAccess {
-                reads: &["bsl_index"],
+                reads: &["workspace_graph", "metadata_graph", "bsl_index"],
                 writes: &[],
             },
             handler: ToolHandler::Metadata {
@@ -3953,6 +3953,20 @@ mod tests {
                 _ => panic!("{} routes through unexpected handler", tool.name),
             }
         }
+    }
+
+    #[test]
+    fn meta_info_declares_local_graph_and_optional_index_reads() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.meta.info")
+            .unwrap();
+
+        assert_eq!(
+            tool.cache_access.reads,
+            &["workspace_graph", "metadata_graph", "bsl_index"]
+        );
+        assert!(tool.cache_access.writes.is_empty());
     }
 
     #[test]

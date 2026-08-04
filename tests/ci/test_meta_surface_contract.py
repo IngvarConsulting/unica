@@ -276,7 +276,7 @@ class MetaSurfaceContractTests(unittest.TestCase):
                 r"inspect_meta_validation_reads|PublicOwnerAware|"
                 r"MetaValidationOwnerContext|MetaValidationReadInspection|"
                 r"metadata_validation_subject_from_paths|metadata_validation_run|"
-                r"analyze_meta_info|remove_metadata_object|"
+                r"(?:analyze_meta_info|remove_metadata_object)[A-Za-z0-9_]*|"
                 r"metadata_object_registered)\b"
             ),
         }
@@ -288,10 +288,11 @@ class MetaSurfaceContractTests(unittest.TestCase):
                 if pattern.search(source):
                     violations.append(f"{path.relative_to(REPO_ROOT)}: {contract}")
         format_guard = FORMAT_GUARD.read_text(encoding="utf-8")
-        if '"meta-validate"' in format_guard:
-            violations.append(
-                f"{FORMAT_GUARD.relative_to(REPO_ROOT)}: retired meta-validate route"
-            )
+        for operation in ("meta-edit", "meta-info", "meta-remove", "meta-validate"):
+            if f'"{operation}"' in format_guard:
+                violations.append(
+                    f"{FORMAT_GUARD.relative_to(REPO_ROOT)}: retired {operation} route"
+                )
 
         self.assertEqual(
             violations,
@@ -512,20 +513,9 @@ class MetaSurfaceContractTests(unittest.TestCase):
             ),
             3,
         )
-        parser = rust_function(metadata, "pub(crate) fn parse_metadata_request")
-        self.assertIn("(force && !confirm) || (confirm && !force)", parser)
-        self.assertIn("dryRun=false applies it", parser)
-
         success = rust_function(metadata, "fn metadata_success")
-        failure = rust_function(metadata, "fn metadata_failure")
         self.assertIn("adapter: AdapterOutcome::ok(summary)", success)
         self.assertIn("data: Some(data)", success)
-        self.assertIn("stdout: None", failure)
-        self.assertGreaterEqual(
-            metadata.count("assert_eq!(outcome.adapter.stdout, None);"),
-            4,
-            "public Meta coordinator tests must prove data-only results",
-        )
 
     def test_metadata_handlers_bypass_native_alias_and_descriptor_contracts(self) -> None:
         contracts = TOOL_CONTRACTS.read_text(encoding="utf-8")

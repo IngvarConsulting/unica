@@ -1,5 +1,5 @@
 use super::{
-    cf, cfe, code, external, form, help, meta, mxl, registry, role, subsystem, template, xdto,
+    cf, cfe, code, external, form, help, mxl, registry, role, subsystem, template, xdto,
     NativeOperationAdapter,
 };
 use crate::{application::AdapterOutcome, domain::workspace::WorkspaceContext};
@@ -150,17 +150,6 @@ impl NativeOperationAdapter {
                             "cfe init",
                         );
                     }
-                    // `DryRun` is the tool's own argument and is reported
-                    // through `dryRun` in the data; the protocol dry run still
-                    // keeps its placeholder and performs nothing.
-                    "meta-remove" => {
-                        let execution = meta::remove_metadata_object_with_data(args, context);
-                        return typed_operation_result(
-                            execution.outcome,
-                            execution.data,
-                            "meta remove",
-                        );
-                    }
                     "form-remove" => {
                         let execution = form::remove_form_with_data(args, context);
                         return typed_operation_result(
@@ -193,10 +182,6 @@ impl NativeOperationAdapter {
         // perform it, even though these reads change nothing.
         if !dry_run {
             match operation {
-                "meta-info" => {
-                    let execution = meta::analyze_meta_info_with_data(args, context);
-                    return typed_operation_result(execution.outcome, execution.data, "meta info");
-                }
                 "cf-info" => {
                     let execution = cf::analyze_cf_info(args, context);
                     return typed_operation_result(execution.outcome, execution.data, "cf info");

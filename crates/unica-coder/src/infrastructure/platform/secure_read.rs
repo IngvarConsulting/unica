@@ -647,9 +647,13 @@ fn read_open_regular_file(
     checkpoint: &mut impl FnMut() -> io::Result<()>,
 ) -> io::Result<Vec<u8>> {
     let opened = file.metadata()?;
-    if !opened.is_file()
-        || usize::try_from(opened.len()).map_or(true, |length| length > maximum_bytes)
-    {
+    if !opened.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "secure-tree entry is not a regular file",
+        ));
+    }
+    if usize::try_from(opened.len()).map_or(true, |length| length > maximum_bytes) {
         return Err(io::Error::new(
             io::ErrorKind::FileTooLarge,
             "secure tree exceeds the captured-byte limit",
@@ -1191,7 +1195,10 @@ mod tests {
             || Ok(()),
         );
 
-        assert!(result.is_err(), "a selected FIFO must fail closed");
+        assert_eq!(
+            result.expect_err("a selected FIFO must fail closed").kind(),
+            io::ErrorKind::InvalidData
+        );
     }
 
     #[test]

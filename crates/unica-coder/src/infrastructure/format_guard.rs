@@ -18,8 +18,8 @@ use crate::infrastructure::native_operations::cfe::{
 use crate::infrastructure::native_operations::common::{
     find_support_config_dir, resolve_cf_edit_config_path, resolve_cf_read_config_path,
     resolve_cfe_validate_config_path, resolve_code_patch_guard_path, resolve_form_add_object_path,
-    resolve_form_info_path, resolve_metadata_object_descriptor, resolve_role_read_rights_path,
-    resolve_subsystem_edit_xml, support_uuid_dependency_paths,
+    resolve_form_info_path, resolve_role_read_rights_path, resolve_subsystem_edit_xml,
+    support_uuid_dependency_paths,
 };
 use crate::infrastructure::native_operations::dcs::{
     dcs_info_format_dependency_paths, resolve_dcs_validate_path,
@@ -32,10 +32,6 @@ use crate::infrastructure::native_operations::form::{
 use crate::infrastructure::native_operations::help::resolve_help_object_dir_for_format_guard;
 use crate::infrastructure::native_operations::interface::{
     interface_metadata_owner_path, resolve_interface_validate_path,
-};
-use crate::infrastructure::native_operations::meta::{
-    meta_remove_reference_xml_dependency_paths, meta_remove_subsystem_dependency_paths,
-    meta_remove_type_plural, resolve_meta_edit_object_path,
 };
 use crate::infrastructure::native_operations::mxl::resolve_mxl_validate_path;
 use crate::infrastructure::native_operations::role::role_read_format_dependency_paths;
@@ -393,7 +389,6 @@ fn add_operation_format_dependencies(
             add_cfe_read_format_dependencies(operation, args, context, paths)
         }
         "cfe-init" => add_cfe_init_format_dependencies(args, context, paths),
-        "meta-remove" => add_meta_remove_format_dependencies(args, context, paths)?,
         "help-add" => add_help_format_dependencies(args, context, paths)?,
         "form-add" => add_form_add_format_dependencies(args, paths)?,
         "form-remove" => {
@@ -483,57 +478,6 @@ fn add_cfe_init_format_dependencies(
     if let Some(base_dir) = base_config.parent() {
         paths.push(base_dir.join("Languages").join("Русский.xml"));
     }
-}
-
-fn add_meta_remove_format_dependencies(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-    paths: &mut Vec<PathBuf>,
-) -> Result<(), String> {
-    let Some(config_dir) = ["configDir", "ConfigDir"]
-        .iter()
-        .find_map(|name| args.get(*name).and_then(Value::as_str))
-        .map(|raw| absolutize(raw, &context.cwd))
-    else {
-        return Ok(());
-    };
-    paths.push(config_dir.join("Configuration.xml"));
-    let Some(object) = ["object", "Object"]
-        .iter()
-        .find_map(|name| args.get(*name).and_then(Value::as_str))
-    else {
-        return Ok(());
-    };
-    let Some((object_type, object_name)) = object.split_once('.') else {
-        return Ok(());
-    };
-    if !is_safe_single_path_component(object_name) {
-        return Ok(());
-    }
-    let Some(type_dir) = meta_remove_type_plural(object_type) else {
-        return Ok(());
-    };
-    let object_base = config_dir.join(type_dir).join(object_name);
-    let object_xml = object_base.with_extension("xml");
-    let has_xml = object_xml.is_file();
-    let has_dir = object_base.is_dir();
-    paths.push(object_xml.clone());
-    collect_existing_xml_tree(&object_base, paths)?;
-    paths.extend(meta_remove_reference_xml_dependency_paths(
-        &config_dir,
-        &object_xml,
-        &object_base,
-        has_xml,
-        has_dir,
-    )?);
-    let subsystem_dir = config_dir.join("Subsystems");
-    if subsystem_dir.is_dir() {
-        paths.extend(meta_remove_subsystem_dependency_paths(
-            &subsystem_dir,
-            object,
-        )?);
-    }
-    Ok(())
 }
 
 fn add_help_format_dependencies(
@@ -984,32 +928,27 @@ fn handler_resolved_format_paths(
         .iter()
         .find_map(|name| args.get(*name).and_then(Value::as_str));
     let fallback = raw.map(|path| absolutize(path, &context.cwd));
-    let resolved =
-        match descriptor.operation {
-            "xdto-info" | "xdto-edit" => Some(resolve_xdto_guard_path(args, context)?),
-            "code-patch" => resolve_code_patch_guard_path(args, context).ok(),
-            "cf-edit" => resolve_cf_edit_config_path(args, context).ok(),
-            "cf-info" | "cf-validate" => resolve_cf_read_config_path(args, context).ok(),
-            "cfe-validate" => resolve_cfe_validate_config_path(args, context).ok(),
-            "meta-edit" => raw
-                .and_then(|path| resolve_meta_edit_object_path(Path::new(path), &context.cwd).ok()),
-            "meta-info" => resolve_metadata_object_descriptor(args, context)
-                .ok()
-                .map(|(_, path)| path),
-            "form-add" => raw
-                .and_then(|path| resolve_form_add_object_path(absolutize(path, &context.cwd)).ok()),
-            "form-info" | "form-validate" => {
-                raw.map(|path| resolve_form_info_path(absolutize(path, &context.cwd)))
-            }
-            "interface-validate" => resolve_interface_validate_path(args, context).ok(),
-            "subsystem-edit" => {
-                raw.and_then(|path| resolve_subsystem_edit_xml(absolutize(path, &context.cwd)).ok())
-            }
-            "dcs-edit" | "dcs-validate" => resolve_dcs_validate_path(args, context).ok(),
-            "mxl-validate" => resolve_mxl_validate_path(args, context).ok(),
-            "role-info" | "role-validate" => resolve_role_read_rights_path(args, context).ok(),
-            _ => None,
-        };
+    let resolved = match descriptor.operation {
+        "xdto-info" | "xdto-edit" => Some(resolve_xdto_guard_path(args, context)?),
+        "code-patch" => resolve_code_patch_guard_path(args, context).ok(),
+        "cf-edit" => resolve_cf_edit_config_path(args, context).ok(),
+        "cf-info" | "cf-validate" => resolve_cf_read_config_path(args, context).ok(),
+        "cfe-validate" => resolve_cfe_validate_config_path(args, context).ok(),
+        "form-add" => {
+            raw.and_then(|path| resolve_form_add_object_path(absolutize(path, &context.cwd)).ok())
+        }
+        "form-info" | "form-validate" => {
+            raw.map(|path| resolve_form_info_path(absolutize(path, &context.cwd)))
+        }
+        "interface-validate" => resolve_interface_validate_path(args, context).ok(),
+        "subsystem-edit" => {
+            raw.and_then(|path| resolve_subsystem_edit_xml(absolutize(path, &context.cwd)).ok())
+        }
+        "dcs-edit" | "dcs-validate" => resolve_dcs_validate_path(args, context).ok(),
+        "mxl-validate" => resolve_mxl_validate_path(args, context).ok(),
+        "role-info" | "role-validate" => resolve_role_read_rights_path(args, context).ok(),
+        _ => None,
+    };
     let paths = resolved.or(fallback).into_iter().collect::<Vec<_>>();
     if matches!(descriptor.operation, "xdto-info" | "xdto-edit") && paths.is_empty() {
         return Err(FormatGuardError::internal(

@@ -280,6 +280,11 @@ impl AddressProfile {
                 let terminal = match child_kind {
                     "Form" => "FormModule",
                     "Command" => "CommandModule",
+                    "Template" => {
+                        return Err(SourceTargetError::invalid(
+                            "nested Template metadata has no module terminal",
+                        ))
+                    }
                     _ => unreachable!("nested kind parser is closed"),
                 };
                 if !terminal.starts_with(parts[4]) {
@@ -581,7 +586,7 @@ fn is_alias_prefix(raw: &str) -> bool {
 
 fn canonical_nested_kind(raw: &str) -> Result<&'static str, SourceTargetError> {
     let canonical = canonical_kind_or_collection(raw)?;
-    if matches!(canonical, "Form" | "Command") {
+    if matches!(canonical, "Form" | "Template" | "Command") {
         Ok(canonical)
     } else {
         Err(SourceTargetError::invalid(format!(
@@ -724,6 +729,10 @@ mod tests {
             ("Справочники.Items.Man", "Catalog.Items.Man"),
             ("Catalog.Items.Forms.Ord", "Catalog.Items.Form.Ord"),
             (
+                "Catalog.Items.Templates.Print",
+                "Catalog.Items.Template.Print",
+            ),
+            (
                 "Catalog.Items.Form.Order.FormM",
                 "Catalog.Items.Form.Order.FormM",
             ),
@@ -745,6 +754,7 @@ mod tests {
             "Catalog.Items.Form.Order.Unknown",
             "Catalog.Items.ManagerModule.Extra",
             "Catalog.Items.Command.Print.FormM",
+            "Catalog.Items.Template.Print.FormModule",
         ] {
             let error =
                 MetadataAddressPrefix::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw).unwrap_err();

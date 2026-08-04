@@ -622,7 +622,7 @@
           ],
           "decision": "ignored-with-reason",
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
-          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required.",
+          "decisionReason": "The local meta-add owner is a prompt-visible typed redesign: it creates one minimal object from sourceSet, kind and name, optionally applies the shared operations union before atomic publication, and deliberately retires the donor file/string DSL instead of exposing it.",
           "parityBaselineCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e"
         },
         {

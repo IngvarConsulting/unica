@@ -337,9 +337,12 @@ fn add_document_register_record(bytes: &[u8], register: &str) -> Result<Vec<u8>,
         .trim_start_matches('\u{feff}');
     let escaped = escape_xml(register);
     let item = format!("<xr:Item xsi:type=\"xr:MDObjectRef\">{escaped}</xr:Item>");
-    let updated = if source.contains("<RegisterRecords/>") {
+    let empty = ["<RegisterRecords/>", "<RegisterRecords />"]
+        .into_iter()
+        .find(|tag| source.contains(tag));
+    let updated = if let Some(tag) = empty {
         source.replacen(
-            "<RegisterRecords/>",
+            tag,
             &format!("<RegisterRecords>{item}</RegisterRecords>"),
             1,
         )
@@ -2962,6 +2965,20 @@ mod typed_template_tests {
             event_source: Some("CatalogRef.MetaAddSource".to_string()),
             event_handler: Some("CommonModule.MetaAddHandlers.Handle".to_string()),
             dependencies: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn document_register_record_accepts_both_self_closing_spellings() {
+        for empty in ["<RegisterRecords/>", "<RegisterRecords />"] {
+            let source = format!("<Properties>{empty}</Properties>");
+            let updated =
+                add_document_register_record(source.as_bytes(), "AccountingRegister.Ledger")
+                    .expect("both platform self-closing spellings must be accepted");
+            let updated = String::from_utf8(updated).unwrap();
+            assert!(updated.contains(
+                "<RegisterRecords><xr:Item xsi:type=\"xr:MDObjectRef\">AccountingRegister.Ledger</xr:Item></RegisterRecords>"
+            ));
         }
     }
 

@@ -43,20 +43,6 @@ use super::xml_model::{
 
 const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
-pub(super) fn require_meta_configuration_owner_validation(
-    config_path: &Path,
-    context: &WorkspaceContext,
-    operation: &str,
-) -> Result<(), String> {
-    validate_cf_owner_path(config_path, context).map_err(|detail| {
-        format!(
-            "{operation} Configuration owner validation failed for {}: {}",
-            config_path.display(),
-            detail.trim()
-        )
-    })
-}
-
 pub(crate) fn validate_metadata_owner_shape_8_3_27(
     object_path: &Path,
     workspace: &WorkspaceContext,

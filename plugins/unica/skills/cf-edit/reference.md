@@ -35,7 +35,7 @@
 
 Формат: `Type.Name` — XML-тип и имя объекта через точку.
 
-**Важно про `add-childObject`**: регистрирует в `<ChildObjects>` объект, **файл которого уже существует на диске**. Если файла нет — exit 1. Для создания нового объекта используй профильный навык — `/meta-add` (Catalog, Document, Enum, Report, регистры и т.д.), `/role-compile` (Role), `/subsystem-compile` (Subsystem). Они создают файл И регистрируют его за один вызов.
+**Важно про `add-childObject`**: регистрирует в `<ChildObjects>` объект, **файл которого уже существует на диске**. Если файла нет — exit 1. Для создания нового объекта используй профильный навык — `/unica:meta-add` (Catalog, Document, Enum, Report, регистры и т.д.), `/unica:role-compile` (Role), `/unica:subsystem-compile` (Subsystem). Они создают файл И регистрируют его за один вызов.
 
 Batch: `"Catalog.Товары ;; Document.Заказ ;; Enum.ВидыОплат"`
 

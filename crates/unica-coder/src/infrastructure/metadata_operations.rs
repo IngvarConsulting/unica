@@ -69,7 +69,15 @@ impl MetadataOperations {
             &request.source_set,
         ) {
             Ok(source) => source,
-            Err(_) => return selected_unavailable_sections(request),
+            Err(error) => {
+                return selected_unavailable_sections(
+                    request,
+                    &format!(
+                        "source set `{}` could not be resolved: {error}",
+                        request.source_set
+                    ),
+                )
+            }
         };
         let provider_context = CodeIntelligenceContext::new(
             context.clone(),
@@ -142,7 +150,7 @@ impl MetadataOperations {
     }
 }
 
-fn unavailable_section() -> MetaRelatedSection<serde_json::Value> {
+fn unavailable_section(message: &str) -> MetaRelatedSection<serde_json::Value> {
     MetaRelatedSection {
         status: MetaRelatedStatus::Unavailable,
         freshness: MetaFreshness::Unknown,
@@ -151,33 +159,32 @@ fn unavailable_section() -> MetaRelatedSection<serde_json::Value> {
         returned: 0,
         truncated: false,
         items: Vec::new(),
-        diagnostics: capability_unavailable("typed related metadata provider is not available yet")
-            .diagnostics,
+        diagnostics: capability_unavailable(message).diagnostics,
     }
 }
 
-fn selected_unavailable_sections(request: &MetaInfoRequest) -> MetaRelatedSections {
+fn selected_unavailable_sections(request: &MetaInfoRequest, message: &str) -> MetaRelatedSections {
     MetaRelatedSections {
         modules: request
             .sections
             .contains(&crate::application::metadata::MetaInfoSection::Modules)
-            .then(unavailable_section),
+            .then(|| unavailable_section(message)),
         roles: request
             .sections
             .contains(&crate::application::metadata::MetaInfoSection::Roles)
-            .then(unavailable_section),
+            .then(|| unavailable_section(message)),
         subscriptions: request
             .sections
             .contains(&crate::application::metadata::MetaInfoSection::Subscriptions)
-            .then(unavailable_section),
+            .then(|| unavailable_section(message)),
         functional_options: request
             .sections
             .contains(&crate::application::metadata::MetaInfoSection::FunctionalOptions)
-            .then(unavailable_section),
+            .then(|| unavailable_section(message)),
         predefined_items: request
             .sections
             .contains(&crate::application::metadata::MetaInfoSection::PredefinedItems)
-            .then(unavailable_section),
+            .then(|| unavailable_section(message)),
     }
 }
 
@@ -188,7 +195,9 @@ fn capability_unavailable(message: &str) -> MetaFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::metadata::{MetaAddRequest, MetaEditRequest, MetaRemoveRequest};
+    use crate::application::metadata::{
+        MetaAddRequest, MetaEditRequest, MetaInfoRequest, MetaInfoSection, MetaRemoveRequest,
+    };
     use crate::application::ports::{
         ApplicationPorts, FormatGuardCheck, FormatGuardError, HandlerOutcome,
         MetadataChildDirectoryKind, MetadataChildProfile, MetadataChildResourceKind,
@@ -468,6 +477,76 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn related_source_resolution_failure_names_the_source_set_cause() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-meta-related-source-error-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set: []\n",
+        )
+        .unwrap();
+        let context = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 0,
+        };
+        let request = MetaInfoRequest {
+            source_set: "missing".into(),
+            metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items")
+                .unwrap(),
+            sections: vec![MetaInfoSection::Modules],
+            limit: 20,
+        };
+
+        let related = MetadataOperations::read_related(
+            &request,
+            &crate::application::ports::MetaLocalInfo {
+                metadata_path: request.metadata_path.clone(),
+                kind: MetadataKind::Catalog,
+                name: "Items".into(),
+                synonym: None,
+                support: crate::domain::metadata::MetaSupportStatus::Supported,
+                properties: Vec::new(),
+                relations: crate::domain::metadata::MetaRelationsData {
+                    owners: Vec::new(),
+                    register_records: Vec::new(),
+                    based_on: Vec::new(),
+                    input_by_string: Vec::new(),
+                },
+                collections: crate::domain::metadata::MetaCollectionsData {
+                    attributes: Vec::new(),
+                    columns: Vec::new(),
+                    tabular_sections: Vec::new(),
+                    dimensions: Vec::new(),
+                    resources: Vec::new(),
+                    enum_values: Vec::new(),
+                    forms: Vec::new(),
+                    templates: Vec::new(),
+                    commands: Vec::new(),
+                },
+                diagnostics: Vec::new(),
+            },
+            &context,
+            &CancellationToken::new(),
+        );
+        let diagnostics = serde_json::to_string(&related.modules.unwrap().diagnostics).unwrap();
+        assert!(
+            diagnostics.contains("source set `missing`"),
+            "{diagnostics}"
+        );
+        assert!(
+            !diagnostics.contains("provider is not available yet"),
+            "{diagnostics}"
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -529,6 +529,7 @@ impl Fixture {
         fs::create_dir_all(workspace.join("src/cf/Configuration")).unwrap();
         fs::create_dir_all(workspace.join("src/cf/CommonModules/Test/Ext")).unwrap();
         fs::create_dir_all(workspace.join("src/cf/Catalogs")).unwrap();
+        fs::create_dir_all(workspace.join("src/cf/Languages")).unwrap();
         fs::create_dir_all(workspace.join("exts/TESTS/Configuration")).unwrap();
         fs::create_dir_all(plugin_root.join("skills")).unwrap();
         fs::create_dir_all(plugin_root.join("third-party")).unwrap();
@@ -537,7 +538,12 @@ impl Fixture {
         fs::write(workspace.join("v8project.yaml"), "format: DESIGNER\nsource-set:\n  main:\n    type: CONFIGURATION\n    path: src/cf\n  TESTS:\n    type: CONFIGURATION\n    path: exts/TESTS\n").unwrap();
         fs::write(
             workspace.join("src/cf/Configuration.xml"),
-            r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><InternalInfo/><Properties><Name>Issue89</Name><DefaultLanguage/></Properties><ChildObjects><Catalog>Test</Catalog><Catalog>LogicalError</Catalog><CommonModule>Test</CommonModule></ChildObjects></Configuration></MetaDataObject>"#,
+            r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><InternalInfo/><Properties><Name>Issue89</Name><DefaultLanguage>Russian</DefaultLanguage></Properties><ChildObjects><Language>Russian</Language><Catalog>Test</Catalog><Catalog>LogicalError</Catalog><CommonModule>Test</CommonModule></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            workspace.join("src/cf/Languages/Russian.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Language uuid="dddddddd-dddd-4ddd-8ddd-dddddddddddd"><Properties><Name>Russian</Name><Synonym/><Comment/><LanguageCode>ru</LanguageCode></Properties></Language></MetaDataObject>"#,
         )
         .unwrap();
         fs::write(

@@ -67,6 +67,17 @@ impl MetaDiagnostic {
         }
     }
 
+    pub(crate) fn warning(code: MetaDiagnosticCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            severity: MetaDiagnosticSeverity::Warning,
+            message: message.into(),
+            metadata_path: None,
+            operation_index: None,
+            field: None,
+        }
+    }
+
     pub(crate) fn with_field(mut self, field: impl Into<String>) -> Self {
         self.field = Some(field.into());
         self
