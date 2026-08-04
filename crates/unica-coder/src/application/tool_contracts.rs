@@ -3469,25 +3469,6 @@ mod tests {
         names
     }
 
-    fn assert_no_composition(value: &Value) {
-        match value {
-            Value::Object(object) => {
-                for keyword in ["oneOf", "anyOf", "allOf"] {
-                    assert!(!object.contains_key(keyword), "found {keyword} in {value}");
-                }
-                for nested in object.values() {
-                    assert_no_composition(nested);
-                }
-            }
-            Value::Array(items) => {
-                for item in items {
-                    assert_no_composition(item);
-                }
-            }
-            _ => {}
-        }
-    }
-
     fn collect_schema_property_names<'a>(value: &'a Value, names: &mut Vec<&'a str>) {
         match value {
             Value::Object(object) => {
@@ -3541,11 +3522,9 @@ mod tests {
         }
 
         let info = input_schema_for_tool(&metadata_tool(MetadataOperation::Info));
-        assert_eq!(
-            info["properties"]["sections"]["default"],
-            json!(["modules", "roles", "subscriptions", "functionalOptions"])
-        );
+        assert_eq!(info["properties"]["sections"]["default"], json!([]));
         assert_eq!(info["properties"]["limit"]["default"], 20);
+        assert_eq!(info["properties"]["limit"]["maximum"], 50);
         assert_eq!(
             info["properties"]["sections"]["items"]["enum"],
             json!([
@@ -3598,28 +3577,48 @@ mod tests {
 
         let edit = input_schema_for_tool(&metadata_tool(MetadataOperation::Edit));
         let item = &edit["properties"]["operations"]["items"];
-        assert_eq!(item["additionalProperties"], false);
-        assert_eq!(item["required"], json!(["op"]));
+        let variants = item["oneOf"].as_array().expect("closed operation union");
+        assert_eq!(variants.len(), 5);
+        for (variant, tag, required, properties) in [
+            (
+                &variants[0],
+                "setProperties",
+                json!(["op", "values"]),
+                vec!["op", "values"],
+            ),
+            (
+                &variants[1],
+                "add",
+                json!(["op", "collection", "elements"]),
+                vec!["collection", "elements", "op", "scope"],
+            ),
+            (
+                &variants[2],
+                "update",
+                json!(["op", "collection", "elements"]),
+                vec!["collection", "elements", "op", "scope"],
+            ),
+            (
+                &variants[3],
+                "remove",
+                json!(["op", "collection", "names"]),
+                vec!["collection", "names", "op", "scope"],
+            ),
+            (
+                &variants[4],
+                "editRelations",
+                json!(["op", "relation", "mode", "targets"]),
+                vec!["mode", "op", "relation", "targets"],
+            ),
+        ] {
+            assert_eq!(variant["type"], "object", "{tag}");
+            assert_eq!(variant["additionalProperties"], false, "{tag}");
+            assert_eq!(variant["required"], required, "{tag}");
+            assert_eq!(sorted_property_names(variant), properties, "{tag}");
+            assert_eq!(variant["properties"]["op"]["enum"], json!([tag]));
+        }
         assert_eq!(
-            sorted_property_names(item),
-            vec![
-                "collection",
-                "elements",
-                "mode",
-                "names",
-                "op",
-                "relation",
-                "scope",
-                "targets",
-                "values"
-            ]
-        );
-        assert_eq!(
-            item["properties"]["op"]["enum"],
-            json!(["setProperties", "add", "update", "remove", "editRelations"])
-        );
-        assert_eq!(
-            item["properties"]["collection"]["enum"],
+            variants[1]["properties"]["collection"]["enum"],
             json!([
                 "attributes",
                 "tabularSections",
@@ -3633,14 +3632,13 @@ mod tests {
             ])
         );
         assert_eq!(
-            item["properties"]["relation"]["enum"],
+            variants[4]["properties"]["relation"]["enum"],
             json!(["owners", "registerRecords", "basedOn", "inputByString"])
         );
         assert_eq!(
-            item["properties"]["mode"]["enum"],
+            variants[4]["properties"]["mode"]["enum"],
             json!(["add", "remove", "replace"])
         );
-        assert_no_composition(item);
 
         let schemas = [
             info,
@@ -5059,8 +5057,14 @@ mod tests {
         let schema = input_schema_for_tool(&tool);
         assert!(schema["properties"].get("Operation").is_none());
         assert!(schema["properties"].get("DefinitionFile").is_none());
+        let operation_tags = schema["properties"]["operations"]["items"]["oneOf"]
+            .as_array()
+            .expect("closed operation union")
+            .iter()
+            .map(|variant| variant["properties"]["op"]["enum"][0].clone())
+            .collect::<Vec<_>>();
         assert_eq!(
-            schema["properties"]["operations"]["items"]["properties"]["op"]["enum"],
+            Value::Array(operation_tags),
             json!(["setProperties", "add", "update", "remove", "editRelations"])
         );
 
