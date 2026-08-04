@@ -11,7 +11,7 @@ use crate::domain::metadata::{
     MetaPropertyInput, MetaPropertyValue, MetaPropertyValueKind, MetaRelation, MetaRelationTarget,
     MetaRelationTargetPolicy, MetaScope, MetaValidationStatus, MetadataFieldPath, MetadataKind,
     MetadataReference, MetadataType, MetadataTypeVariant, NumberSign, RelationEditMode,
-    StringLengthMode, METADATA_PROPERTY_SPECS,
+    StringLengthMode, METADATA_PROPERTY_SPECS, METADATA_XS_DATETIME_PATTERN,
 };
 use crate::domain::source_target::{
     metadata_address_kind_spellings, MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20,
@@ -2424,7 +2424,7 @@ fn fill_value_schema() -> Value {
                 "dateTime",
                 json!({"value": {
                     "type": "string",
-                    "pattern": r"^[0-9]+-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]([.][0-9]+)?(Z|[+-](0[0-9]|1[0-4]):[0-5][0-9])?$",
+                    "pattern": METADATA_XS_DATETIME_PATTERN,
                     "description": "Platform-formatted date-time fill value."
                 }}),
                 &["kind", "value"],
@@ -4961,6 +4961,10 @@ mod tests {
             "2026-01-01T12:00:00",
             "2026-01-01T12:00:00Z",
             "2026-01-01T12:00:00.125+07:00",
+            "2026-01-01T12:00:00+13:59",
+            "2026-01-01T12:00:00-13:59",
+            "2026-01-01T12:00:00+14:00",
+            "2026-01-01T12:00:00-14:00",
         ] {
             let call = call(value);
             assert!(validator.is_valid(&call), "schema rejected {value}");
@@ -4973,6 +4977,10 @@ mod tests {
             "2026-01-01 12:00:00",
             "2026-01-01T25:00:00",
             "2026-01-01T12:00:00+07",
+            "2026-01-01T12:00:00+14:01",
+            "2026-01-01T12:00:00-14:01",
+            "2026-01-01T12:00:00+14:59",
+            "2026-01-01T12:00:00-14:59",
         ] {
             let call = call(value);
             assert!(!validator.is_valid(&call), "schema accepted {value}");

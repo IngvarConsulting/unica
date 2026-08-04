@@ -308,19 +308,30 @@ pub(crate) fn metadata_decimal_shape(value: &str) -> Option<(bool, usize, usize)
     ))
 }
 
+pub(crate) const METADATA_XS_DATETIME_PATTERN: &str = r"^[0-9]+-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]([.][0-9]+)?(Z|[+-]((0[0-9]|1[0-3]):[0-5][0-9]|14:00))?$";
+
+fn metadata_xs_timezone_offset_is_valid(timezone: &str) -> bool {
+    if timezone.len() != 6
+        || !matches!(timezone.as_bytes().first(), Some(b'+') | Some(b'-'))
+        || timezone.as_bytes().get(3) != Some(&b':')
+        || !timezone[1..3].bytes().all(|byte| byte.is_ascii_digit())
+        || !timezone[4..].bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return false;
+    }
+    let (Ok(hour), Ok(minute)) = (timezone[1..3].parse::<u8>(), timezone[4..].parse::<u8>()) else {
+        return false;
+    };
+    (hour < 14 && minute <= 59) || (hour == 14 && minute == 0)
+}
+
 pub(crate) fn metadata_xs_datetime_is_valid(value: &str) -> bool {
     let core = if let Some(core) = value.strip_suffix('Z') {
         core
     } else if value.len() >= 6 {
         let split = value.len() - 6;
         let timezone = &value[split..];
-        if matches!(timezone.as_bytes().first(), Some(b'+') | Some(b'-'))
-            && timezone.as_bytes().get(3) == Some(&b':')
-            && timezone[1..3].bytes().all(|byte| byte.is_ascii_digit())
-            && timezone[4..].bytes().all(|byte| byte.is_ascii_digit())
-            && timezone[1..3].parse::<u8>().is_ok_and(|hour| hour <= 14)
-            && timezone[4..].parse::<u8>().is_ok_and(|minute| minute <= 59)
-        {
+        if metadata_xs_timezone_offset_is_valid(timezone) {
             &value[..split]
         } else {
             value
@@ -1959,6 +1970,22 @@ mod tests {
             )
             .unwrap_err();
             assert_eq!(error.field.as_deref(), Some(field));
+        }
+    }
+
+    #[test]
+    fn xs_datetime_timezone_stops_at_exactly_fourteen_hours() {
+        for timezone in ["+13:59", "-13:59", "+14:00", "-14:00"] {
+            assert!(
+                metadata_xs_datetime_is_valid(&format!("2026-01-01T12:00:00{timezone}")),
+                "valid XSD timezone was rejected: {timezone}"
+            );
+        }
+        for timezone in ["+14:01", "-14:01", "+14:59", "-14:59"] {
+            assert!(
+                !metadata_xs_datetime_is_valid(&format!("2026-01-01T12:00:00{timezone}")),
+                "timezone beyond the XSD boundary was accepted: {timezone}"
+            );
         }
     }
 

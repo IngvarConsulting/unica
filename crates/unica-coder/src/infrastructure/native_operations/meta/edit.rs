@@ -3748,6 +3748,30 @@ mod tests {
     }
 
     #[test]
+    fn typed_fill_parser_uses_the_exact_xsd_timezone_boundary() {
+        for (timezone, valid) in [
+            ("+13:59", true),
+            ("-13:59", true),
+            ("+14:00", true),
+            ("-14:00", true),
+            ("+14:01", false),
+            ("-14:01", false),
+            ("+14:59", false),
+            ("-14:59", false),
+        ] {
+            let properties = format!(
+                r#"<FillValue xsi:type="xs:dateTime">2026-01-01T12:00:00{timezone}</FillValue>"#
+            );
+            let result = parse_typed_fill_value(&properties);
+            assert_eq!(
+                result.is_ok(),
+                valid,
+                "writer fill parser disagrees at timezone {timezone}: {result:?}"
+            );
+        }
+    }
+
+    #[test]
     fn typed_set_properties_and_relations_apply_without_legacy_dsl() {
         let mut xml = object_xml(
             "Document",
