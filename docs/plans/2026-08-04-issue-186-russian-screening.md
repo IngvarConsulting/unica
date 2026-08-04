@@ -163,12 +163,42 @@ $russianThemeBlock = [regex]::Match(
 if (-not $englishThemeBlock.Success -or -not $russianThemeBlock.Success) {
   throw 'English or Russian thematic block is missing'
 }
+function Remove-MarkdownFencedBlocks {
+  param([Parameter(Mandatory = $true)][string]$Text)
+
+  $insideFence = $false
+  $fenceCharacter = $null
+  $visibleLines = foreach ($line in ($Text -split '\r?\n')) {
+    if (-not $insideFence) {
+      $openingFence = [regex]::Match($line, '^\s*(?<fence>`{3,}|~{3,})')
+      if ($openingFence.Success) {
+        $insideFence = $true
+        $fenceCharacter = $openingFence.Groups['fence'].Value.Substring(0, 1)
+        continue
+      }
+      $line
+      continue
+    }
+
+    $closingPattern = '^\s*{0}{{3,}}\s*$' -f [regex]::Escape($fenceCharacter)
+    if ([regex]::IsMatch($line, $closingPattern)) {
+      $insideFence = $false
+      $fenceCharacter = $null
+    }
+  }
+  if ($insideFence) {
+    throw 'Unclosed Markdown fence in thematic block'
+  }
+  $visibleLines -join [Environment]::NewLine
+}
+$englishThemeBody = Remove-MarkdownFencedBlocks $englishThemeBlock.Groups['body'].Value
+$russianThemeBody = Remove-MarkdownFencedBlocks $russianThemeBlock.Groups['body'].Value
 $englishThemeHeadings = @(
-  [regex]::Matches($englishThemeBlock.Groups['body'].Value, '(?m)^### .+\r?$') |
+  [regex]::Matches($englishThemeBody, '(?m)^### .+\r?$') |
     ForEach-Object { $_.Value.TrimEnd("`r") }
 )
 $russianThemeHeadings = @(
-  [regex]::Matches($russianThemeBlock.Groups['body'].Value, '(?m)^### .+\r?$') |
+  [regex]::Matches($russianThemeBody, '(?m)^### .+\r?$') |
     ForEach-Object { $_.Value.TrimEnd("`r") }
 )
 if (
