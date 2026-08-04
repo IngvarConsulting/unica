@@ -502,6 +502,13 @@ mod tests {
         assert!(listed
             .iter()
             .any(|tool| tool["name"] == "unica.project.status"));
+        // This is the actual SDK projection hosts place in model context, not
+        // just the two largest source schemas measured in isolation.
+        let compact_result_bytes = serde_json::to_vec(&response["result"]).unwrap().len();
+        assert!(
+            compact_result_bytes < 1_300_000,
+            "tools/list result consumes {compact_result_bytes} compact JSON bytes"
+        );
         client.shutdown().await;
     }
 
