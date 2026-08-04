@@ -104,6 +104,47 @@ $deepDiveDrift = @(Compare-Object $englishDeepDives $russianDeepDives)
 if ($englishDeepDives.Count -ne 7 -or $deepDiveDrift.Count) {
   throw "Deep-dive set drift: English count=$($englishDeepDives.Count); differences=$($deepDiveDrift -join ', ')"
 }
+$russianDeepDiveBlock = [regex]::Match(
+  $russian,
+  '(?ms)^## Кандидаты `deep-dive`\r?\n(?<body>.*?)(?=^## |\z)'
+)
+if (-not $russianDeepDiveBlock.Success) {
+  throw 'Russian deep-dive detail block is missing'
+}
+$russianDetailSections = [regex]::Matches(
+  $russianDeepDiveBlock.Groups['body'].Value,
+  '(?ms)^### `(?<repository>[^`]+/[^`]+)`\r?\n(?<body>.*?)(?=^### |\z)'
+)
+$detailCandidates = @(
+  $russianDetailSections |
+    ForEach-Object { $_.Groups['repository'].Value } |
+    Sort-Object
+)
+$uniqueDetailCandidates = @($detailCandidates | Sort-Object -Unique)
+$detailDrift = @(Compare-Object $russianDeepDives $detailCandidates)
+if (
+  $russianDetailSections.Count -ne 7 -or
+  $uniqueDetailCandidates.Count -ne 7 -or
+  $detailDrift.Count
+) {
+  throw "Russian deep-dive detail drift: sections=$($russianDetailSections.Count); unique=$($uniqueDetailCandidates.Count); differences=$($detailDrift -join ', ')"
+}
+$requiredDetailFields = @(
+  'Что доказано',
+  'Что проверить в Unica',
+  'Минимальный bounded experiment'
+)
+foreach ($detailSection in $russianDetailSections) {
+  $repository = $detailSection.Groups['repository'].Value
+  $detailBody = $detailSection.Groups['body'].Value
+  foreach ($requiredField in $requiredDetailFields) {
+    $fieldPattern = '(?m)^- \*\*{0}:\*\* .+\r?$' -f [regex]::Escape($requiredField)
+    $fieldCount = [regex]::Matches($detailBody, $fieldPattern).Count
+    if ($fieldCount -ne 1) {
+      throw "Deep-dive detail field drift: repository=$repository; field=$requiredField; count=$fieldCount"
+    }
+  }
+}
 $themePairs = @(
   [pscustomobject]@{ English = '### Workflow, skills, and context management'; Russian = '### 1. Общая экспериментальная рамка: workflow/context' },
   [pscustomobject]@{ English = '### Code intelligence'; Russian = '### 2. Code intelligence' },
@@ -111,13 +152,38 @@ $themePairs = @(
   [pscustomobject]@{ English = '### Artifacts and documentation'; Russian = '### 4. Artifacts/documentation' },
   [pscustomobject]@{ English = '### Benchmark and evaluation'; Russian = '### 5. Benchmark/evaluation' }
 )
-$russianThemeHeadings = [regex]::Matches($russian, '(?m)^### \d+\. .+\r?$')
-if ($russianThemeHeadings.Count -ne $themePairs.Count) {
-  throw "Russian theme count drift: expected $($themePairs.Count), found $($russianThemeHeadings.Count)"
+$englishThemeBlock = [regex]::Match(
+  $source,
+  '(?ms)^## Thematic shortlist\r?\n(?<body>.*?)(?=^## |\z)'
+)
+$russianThemeBlock = [regex]::Match(
+  $russian,
+  '(?ms)^## Пять направлений исследования\r?\n(?<body>.*?)(?=^## |\z)'
+)
+if (-not $englishThemeBlock.Success -or -not $russianThemeBlock.Success) {
+  throw 'English or Russian thematic block is missing'
 }
-foreach ($themePair in $themePairs) {
-  if (-not $source.Contains($themePair.English) -or -not $russian.Contains($themePair.Russian)) {
-    throw "Theme mapping drift: $($themePair.English) -> $($themePair.Russian)"
+$englishThemeHeadings = @(
+  [regex]::Matches($englishThemeBlock.Groups['body'].Value, '(?m)^### .+\r?$') |
+    ForEach-Object { $_.Value.TrimEnd("`r") }
+)
+$russianThemeHeadings = @(
+  [regex]::Matches($russianThemeBlock.Groups['body'].Value, '(?m)^### .+\r?$') |
+    ForEach-Object { $_.Value.TrimEnd("`r") }
+)
+if (
+  $englishThemeHeadings.Count -ne $themePairs.Count -or
+  $russianThemeHeadings.Count -ne $themePairs.Count
+) {
+  throw "Theme count drift: English=$($englishThemeHeadings.Count); Russian=$($russianThemeHeadings.Count)"
+}
+for ($themeIndex = 0; $themeIndex -lt $themePairs.Count; $themeIndex++) {
+  $themePair = $themePairs[$themeIndex]
+  if (
+    $englishThemeHeadings[$themeIndex] -ne $themePair.English -or
+    $russianThemeHeadings[$themeIndex] -ne $themePair.Russian
+  ) {
+    throw "Theme heading drift at index $themeIndex`: expected $($themePair.English) -> $($themePair.Russian); found $($englishThemeHeadings[$themeIndex]) -> $($russianThemeHeadings[$themeIndex])"
   }
 }
 "sources=$($englishDecisions.Count) russian=$($russianDecisions.Count) decisions=$($englishDecisions.Count) deep-dives=$($englishDeepDives.Count) themes=$($themePairs.Count)"
@@ -166,10 +232,27 @@ $allowedPaths = @(
   'docs/provenance/reviews/2026-08-03-issue-186-source-screening.md',
   'docs/provenance/reviews/2026-08-03-issue-186-source-screening-ru.md'
 )
-$changedPaths = @(git diff --name-only upstream/main...HEAD)
+$committedPaths = @(git diff --name-only upstream/main...HEAD)
 if ($LASTEXITCODE -ne 0) {
   throw 'Unable to enumerate changed paths'
 }
+$unstagedPaths = @(git diff --name-only)
+if ($LASTEXITCODE -ne 0) {
+  throw 'Unable to enumerate unstaged paths'
+}
+$stagedPaths = @(git diff --cached --name-only)
+if ($LASTEXITCODE -ne 0) {
+  throw 'Unable to enumerate staged paths'
+}
+$untrackedPaths = @(git ls-files --others --exclude-standard)
+if ($LASTEXITCODE -ne 0) {
+  throw 'Unable to enumerate untracked paths'
+}
+$changedPaths = @(
+  $committedPaths + $unstagedPaths + $stagedPaths + $untrackedPaths |
+    Where-Object { $_ } |
+    Sort-Object -Unique
+)
 $unexpectedPaths = @($changedPaths | Where-Object { $_ -notin $allowedPaths })
 if ($unexpectedPaths.Count) {
   throw "Unexpected changed paths: $($unexpectedPaths -join ', ')"
