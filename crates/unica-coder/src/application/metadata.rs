@@ -1299,46 +1299,130 @@ pub(crate) fn metadata_input_schema(operation: MetadataOperation) -> Value {
 }
 
 fn operation_schema() -> Value {
+    let mut set_properties = Map::new();
+    set_properties.insert("values".into(), property_values_schema());
+
+    let add = collection_operation_properties(add_element_schema(true));
+    let update = collection_operation_properties(update_element_schema());
+    let mut remove = Map::new();
+    remove.insert("collection".into(), collection_schema());
+    remove.insert("scope".into(), scope_schema());
+    remove.insert(
+        "names".into(),
+        json!({
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "description": "Names of existing elements to remove.",
+            "items": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Name of one existing metadata element.",
+            },
+        }),
+    );
+
+    let mut edit_relations = Map::new();
+    edit_relations.insert(
+        "relation".into(),
+        json!({
+            "type": "string",
+            "enum": MetaRelation::ALL.iter().copied().map(MetaRelation::as_str).collect::<Vec<_>>(),
+            "description": "Metadata relation to edit.",
+        }),
+    );
+    edit_relations.insert(
+        "mode".into(),
+        json!({
+            "type": "string",
+            "enum": RelationEditMode::ALL.iter().copied().map(RelationEditMode::as_str).collect::<Vec<_>>(),
+            "description": "Whether relation targets are added, removed, or replaced.",
+        }),
+    );
+    edit_relations.insert(
+        "targets".into(),
+        json!({
+            "type": "array",
+            "minItems": 1,
+            "description": "Target metadata objects or field paths for the relation.",
+            "items": relation_target_schema(),
+        }),
+    );
+
+    json!({
+        "oneOf": [
+            tagged_operation_variant(
+                MetaEditOperationTag::SetProperties,
+                set_properties,
+                &["op", "values"],
+            ),
+            tagged_operation_variant(
+                MetaEditOperationTag::Add,
+                add,
+                &["op", "collection", "elements"],
+            ),
+            tagged_operation_variant(
+                MetaEditOperationTag::Update,
+                update,
+                &["op", "collection", "elements"],
+            ),
+            tagged_operation_variant(
+                MetaEditOperationTag::Remove,
+                remove,
+                &["op", "collection", "names"],
+            ),
+            tagged_operation_variant(
+                MetaEditOperationTag::EditRelations,
+                edit_relations,
+                &["op", "relation", "mode", "targets"],
+            ),
+        ],
+        "description": "Exactly one typed metadata edit operation.",
+    })
+}
+
+fn tagged_operation_variant(
+    tag: MetaEditOperationTag,
+    mut properties: Map<String, Value>,
+    required: &[&str],
+) -> Value {
+    properties.insert(
+        "op".into(),
+        json!({
+            "type": "string",
+            "enum": [tag.as_str()],
+            "description": "Discriminator for this metadata edit operation.",
+        }),
+    );
     json!({
         "type": "object",
         "additionalProperties": false,
-        "properties": {
-            "op": {
-                "type": "string",
-                "enum": MetaEditOperationTag::ALL.iter().copied().map(MetaEditOperationTag::as_str).collect::<Vec<_>>(),
-            },
-            "values": property_values_schema(),
-            "collection": {
-                "type": "string",
-                "enum": MetaCollection::ALL.iter().copied().map(MetaCollection::as_str).collect::<Vec<_>>(),
-            },
-            "scope": scope_schema(),
-            "elements": {
-                "type": "array",
-                "minItems": 1,
-                "items": element_schema(),
-            },
-            "names": {
-                "type": "array",
-                "minItems": 1,
-                "uniqueItems": true,
-                "items": {"type": "string", "minLength": 1},
-            },
-            "relation": {
-                "type": "string",
-                "enum": MetaRelation::ALL.iter().copied().map(MetaRelation::as_str).collect::<Vec<_>>(),
-            },
-            "mode": {
-                "type": "string",
-                "enum": RelationEditMode::ALL.iter().copied().map(RelationEditMode::as_str).collect::<Vec<_>>(),
-            },
-            "targets": {
-                "type": "array",
-                "minItems": 1,
-                "items": relation_target_schema(),
-            },
-        },
-        "required": ["op"],
+        "properties": properties,
+        "required": required,
+    })
+}
+
+fn collection_operation_properties(element_schema: Value) -> Map<String, Value> {
+    let mut properties = Map::new();
+    properties.insert("collection".into(), collection_schema());
+    properties.insert("scope".into(), scope_schema());
+    properties.insert(
+        "elements".into(),
+        json!({
+            "type": "array",
+            "minItems": 1,
+            "description": "Elements to add or update in the selected collection.",
+            "items": element_schema,
+        }),
+    );
+    properties
+}
+
+fn collection_schema() -> Value {
+    json!({
+        "type": "string",
+        "enum": MetaCollection::ALL.iter().copied().map(MetaCollection::as_str).collect::<Vec<_>>(),
+        "description": "Metadata child collection to change.",
     })
 }
 
@@ -1347,10 +1431,21 @@ fn property_values_schema() -> Value {
         .iter()
         .map(|spec| {
             let schema = match spec.value_kind {
-                MetaPropertyValueKind::String => json!({"type": "string"}),
-                MetaPropertyValueKind::Boolean => json!({"type": "boolean"}),
+                MetaPropertyValueKind::String => json!({
+                    "type": "string",
+                    "description": format!("New value for metadata property {}.", spec.public_name),
+                }),
+                MetaPropertyValueKind::Boolean => json!({
+                    "type": "boolean",
+                    "description": format!("New value for metadata property {}.", spec.public_name),
+                }),
                 MetaPropertyValueKind::UnsignedInteger => {
-                    json!({"type": "integer", "minimum": 0, "maximum": u32::MAX})
+                    json!({
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": u32::MAX,
+                        "description": format!("New value for metadata property {}.", spec.public_name),
+                    })
                 }
             };
             (spec.public_name.to_string(), schema)
@@ -1361,6 +1456,7 @@ fn property_values_schema() -> Value {
         "additionalProperties": false,
         "properties": properties,
         "minProperties": 1,
+        "description": "One or more supported metadata property values to set.",
     })
 }
 
@@ -1368,32 +1464,79 @@ fn scope_schema() -> Value {
     json!({
         "type": "object",
         "additionalProperties": false,
-        "properties": {"tabularSection": {"type": "string", "minLength": 1}},
+        "properties": {
+            "tabularSection": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Tabular section that owns the selected collection.",
+            },
+        },
         "required": ["tabularSection"],
+        "description": "Optional scope for a collection owned by a tabular section.",
     })
 }
 
 fn relation_target_schema() -> Value {
     json!({
-        "type": "object",
-        "additionalProperties": false,
-        "minProperties": 1,
-        "maxProperties": 1,
-        "properties": {
-            "metadataPath": {"type": "string", "minLength": 1},
-            "fieldPath": {"type": "string", "minLength": 1},
-        },
+        "oneOf": [
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "metadataPath": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Logical metadata path of the related object.",
+                    },
+                },
+                "required": ["metadataPath"],
+            },
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "fieldPath": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Logical field path used by an input-by-string relation.",
+                    },
+                },
+                "required": ["fieldPath"],
+            },
+        ],
+        "description": "One relation target, expressed as an object or field reference.",
     })
 }
 
 fn position_schema() -> Value {
     json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-            "before": {"type": "string", "minLength": 1},
-            "after": {"type": "string", "minLength": 1},
-        },
+        "oneOf": [
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "before": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Name of the existing element that follows this element.",
+                    },
+                },
+                "required": ["before"],
+            },
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "after": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Name of the existing element that precedes this element.",
+                    },
+                },
+                "required": ["after"],
+            },
+        ],
+        "description": "Exact insertion or movement anchor.",
     })
 }
 
@@ -1405,76 +1548,203 @@ fn metadata_type_schema() -> Value {
             "variants": {
                 "type": "array",
                 "minItems": 1,
-                "items": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "kind": {
-                            "type": "string",
-                            "enum": ["string", "number", "boolean", "date", "binaryData", "valueStorage", "reference", "definedType"],
-                        },
-                        "length": {"type": "integer", "minimum": 0, "maximum": 1024},
-                        "allowedLength": {"type": "string", "enum": ["variable", "fixed"]},
-                        "digits": {"type": "integer", "minimum": 0, "maximum": 38},
-                        "fraction": {"type": "integer", "minimum": 0, "maximum": 38},
-                        "sign": {"type": "string", "enum": ["any", "nonNegative"]},
-                        "fractions": {"type": "string", "enum": ["date", "time", "dateTime"]},
-                        "metadataPath": {"type": "string", "minLength": 1},
-                    },
-                    "required": ["kind"],
-                },
+                "description": "One or more platform type variants.",
+                "items": type_variant_schema(),
             },
         },
         "required": ["variants"],
+        "description": "Structured 1C metadata type.",
+    })
+}
+
+fn type_variant_schema() -> Value {
+    json!({
+        "oneOf": [
+            tagged_type_variant(
+                "string",
+                json!({
+                    "length": {"type": "integer", "minimum": 0, "maximum": 1024, "description": "Maximum string length."},
+                    "allowedLength": {"type": "string", "enum": ["variable", "fixed"], "description": "Whether the string length is variable or fixed."},
+                }),
+                &["kind", "length", "allowedLength"],
+            ),
+            tagged_type_variant(
+                "number",
+                json!({
+                    "digits": {"type": "integer", "minimum": 0, "maximum": 38, "description": "Total number of decimal digits."},
+                    "fraction": {"type": "integer", "minimum": 0, "maximum": 38, "description": "Number of fractional decimal digits."},
+                    "sign": {"type": "string", "enum": ["any", "nonNegative"], "description": "Whether negative values are allowed."},
+                }),
+                &["kind", "digits", "fraction", "sign"],
+            ),
+            tagged_type_variant("boolean", json!({}), &["kind"]),
+            tagged_type_variant(
+                "date",
+                json!({
+                    "fractions": {"type": "string", "enum": ["date", "time", "dateTime"], "description": "Date and time fractions stored by the value."},
+                }),
+                &["kind", "fractions"],
+            ),
+            tagged_type_variant(
+                "binaryData",
+                json!({
+                    "length": {"type": "integer", "minimum": 0, "maximum": 1024, "description": "Maximum binary data length."},
+                    "allowedLength": {"type": "string", "enum": ["variable", "fixed"], "description": "Whether the binary data length is variable or fixed."},
+                }),
+                &["kind", "length", "allowedLength"],
+            ),
+            tagged_type_variant("valueStorage", json!({}), &["kind"]),
+            tagged_type_variant(
+                "reference",
+                json!({
+                    "metadataPath": {"type": "string", "minLength": 1, "description": "Logical metadata path of the referenced object."},
+                }),
+                &["kind", "metadataPath"],
+            ),
+            tagged_type_variant(
+                "definedType",
+                json!({
+                    "metadataPath": {"type": "string", "minLength": 1, "description": "Logical metadata path of the defined type."},
+                }),
+                &["kind", "metadataPath"],
+            ),
+        ],
+        "description": "One closed platform type variant.",
+    })
+}
+
+fn tagged_type_variant(kind: &str, fields: Value, required: &[&str]) -> Value {
+    let mut properties = fields
+        .as_object()
+        .expect("type variant fields are always an object")
+        .clone();
+    properties.insert(
+        "kind".into(),
+        json!({
+            "type": "string",
+            "enum": [kind],
+            "description": "Discriminator for this platform type variant.",
+        }),
+    );
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": properties,
+        "required": required,
     })
 }
 
 fn fill_value_schema() -> Value {
     json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-            "kind": {"type": "string", "enum": ["string", "number", "boolean", "dateTime", "reference"]},
-            "value": {},
-            "metadataPath": {"type": "string", "minLength": 1},
-        },
-        "required": ["kind"],
+        "oneOf": [
+            tagged_fill_value_variant(
+                "string",
+                json!({"value": {"type": "string", "description": "String fill value."}}),
+                &["kind", "value"],
+            ),
+            tagged_fill_value_variant(
+                "number",
+                json!({"value": {"type": "string", "description": "Platform-formatted numeric fill value."}}),
+                &["kind", "value"],
+            ),
+            tagged_fill_value_variant(
+                "boolean",
+                json!({"value": {"type": "boolean", "description": "Boolean fill value."}}),
+                &["kind", "value"],
+            ),
+            tagged_fill_value_variant(
+                "dateTime",
+                json!({"value": {"type": "string", "description": "Platform-formatted date-time fill value."}}),
+                &["kind", "value"],
+            ),
+            tagged_fill_value_variant(
+                "reference",
+                json!({"metadataPath": {"type": "string", "minLength": 1, "description": "Logical metadata path of the reference fill value."}}),
+                &["kind", "metadataPath"],
+            ),
+        ],
+        "description": "One closed fill-value variant.",
     })
 }
 
-fn element_schema() -> Value {
+fn tagged_fill_value_variant(kind: &str, fields: Value, required: &[&str]) -> Value {
+    let mut properties = fields
+        .as_object()
+        .expect("fill-value variant fields are always an object")
+        .clone();
+    properties.insert(
+        "kind".into(),
+        json!({
+            "type": "string",
+            "enum": [kind],
+            "description": "Discriminator for this fill-value variant.",
+        }),
+    );
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": properties,
+        "required": required,
+    })
+}
+
+fn add_element_schema(allows_attributes: bool) -> Value {
+    let mut properties = Map::new();
+    properties.insert(
+        "name".into(),
+        json!({"type": "string", "minLength": 1, "description": "Name of the new metadata element."}),
+    );
+    properties.insert(
+        "synonym".into(),
+        json!({"type": "string", "description": "Optional display synonym for the new element."}),
+    );
+    properties.insert(
+        "comment".into(),
+        json!({"type": "string", "description": "Optional comment for the new element."}),
+    );
+    properties.insert("type".into(), metadata_type_schema());
+    properties.insert(
+        "required".into(),
+        json!({"type": "boolean", "description": "Whether the new element is required."}),
+    );
+    properties.insert("fillValue".into(), fill_value_schema());
+    properties.insert("position".into(), position_schema());
+    if allows_attributes {
+        properties.insert(
+            "attributes".into(),
+            json!({
+                "type": "array",
+                "minItems": 1,
+                "description": "Attributes nested under a new tabular section.",
+                "items": add_element_schema(false),
+            }),
+        );
+    }
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": properties,
+        "required": ["name"],
+        "description": "Definition of one metadata element to add.",
+    })
+}
+
+fn update_element_schema() -> Value {
     json!({
         "type": "object",
         "additionalProperties": false,
         "properties": {
-            "name": {"type": "string", "minLength": 1},
-            "newName": {"type": "string", "minLength": 1},
-            "synonym": {"type": "string"},
-            "comment": {"type": "string"},
+            "name": {"type": "string", "minLength": 1, "description": "Name of the existing metadata element to update."},
+            "newName": {"type": "string", "minLength": 1, "description": "Optional replacement name for the existing element."},
+            "synonym": {"type": "string", "description": "Optional replacement display synonym."},
+            "comment": {"type": "string", "description": "Optional replacement comment."},
             "type": metadata_type_schema(),
-            "required": {"type": "boolean"},
+            "required": {"type": "boolean", "description": "Optional replacement required flag."},
             "fillValue": fill_value_schema(),
-            "attributes": {
-                "type": "array",
-                "minItems": 1,
-                "items": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "name": {"type": "string", "minLength": 1},
-                        "synonym": {"type": "string"},
-                        "comment": {"type": "string"},
-                        "type": metadata_type_schema(),
-                        "required": {"type": "boolean"},
-                        "fillValue": fill_value_schema(),
-                        "position": position_schema(),
-                    },
-                    "required": ["name"],
-                },
-            },
             "position": position_schema(),
         },
         "required": ["name"],
+        "description": "Patch for one existing metadata element.",
     })
 }
 
@@ -2119,6 +2389,32 @@ mod tests {
         );
         assert_eq!(error.code, MetaDiagnosticCode::InvalidArguments);
         assert_eq!(error.field.as_deref(), Some("ObjectPath"));
+    }
+
+    #[test]
+    fn edit_schema() {
+        let schema = metadata_input_schema(MetadataOperation::Edit);
+        let variants = schema["properties"]["operations"]["items"]["oneOf"]
+            .as_array()
+            .expect("metadata edit operations must publish a oneOf union");
+        let expected = [
+            ("setProperties", &["op", "values"][..]),
+            ("add", &["op", "collection", "elements"][..]),
+            ("update", &["op", "collection", "elements"][..]),
+            ("remove", &["op", "collection", "names"][..]),
+            ("editRelations", &["op", "relation", "mode", "targets"][..]),
+        ];
+
+        assert_eq!(variants.len(), expected.len());
+        for (op, required) in expected {
+            let variant = variants
+                .iter()
+                .find(|variant| variant["properties"]["op"]["enum"] == json!([op]))
+                .unwrap_or_else(|| panic!("missing {op} operation schema variant"));
+            assert_eq!(variant["type"], json!("object"));
+            assert_eq!(variant["additionalProperties"], json!(false));
+            assert_eq!(variant["required"], json!(required));
+        }
     }
 
     #[test]

@@ -234,7 +234,7 @@ class MetaSurfaceContractTests(unittest.TestCase):
         )
         self.assertNotIn("CodeIntelligenceOperation::ObjectProfile", tools_body)
 
-    def test_schema_path_has_exact_lower_camel_arguments_and_shallow_edit_items(self) -> None:
+    def test_schema_path_has_exact_lower_camel_arguments_and_typed_edit_items(self) -> None:
         metadata = METADATA.read_text(encoding="utf-8")
         schema = rust_function(metadata, "pub(crate) fn metadata_input_schema")
         expected_required = {
@@ -268,21 +268,8 @@ class MetaSurfaceContractTests(unittest.TestCase):
                 self.assertIn(f"vec!{required}", arm)
 
         edit_items = rust_function(metadata, "fn operation_schema()")
-        self.assertEqual(
-            set(re.findall(r'^ {12}"([a-zA-Z]+)":', edit_items, re.MULTILINE)),
-            {
-                "op",
-                "values",
-                "collection",
-                "scope",
-                "elements",
-                "names",
-                "relation",
-                "mode",
-                "targets",
-            },
-        )
-        for composition in ("oneOf", "anyOf", "allOf"):
+        self.assertIn('"oneOf"', edit_items)
+        for composition in ("anyOf", "allOf"):
             self.assertNotIn(composition, edit_items)
         for forbidden in (
             "JsonPath",
