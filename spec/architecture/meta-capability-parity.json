@@ -1,0 +1,838 @@
+[
+  {
+    "legacyKey": "accountingFlags",
+    "legacyKinds": [
+      "ChartOfAccounts"
+    ],
+    "status": "removed",
+    "removalReason": "Creating ChartOfAccounts AccountingFlag child objects has no typed collection; create the chart without these flags and add them in Designer before relying on accounting behavior."
+  },
+  {
+    "legacyKey": "actionPeriod",
+    "legacyKinds": [
+      "CalculationRegister"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.ActionPeriod"
+  },
+  {
+    "legacyKey": "actionPeriodUse",
+    "legacyKinds": [
+      "ChartOfCalculationTypes"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.ActionPeriodUse"
+  },
+  {
+    "legacyKey": "addressing",
+    "legacyKinds": [
+      "Task"
+    ],
+    "status": "removed",
+    "removalReason": "A Task addressing-register reference has no typed reference property; the task can be created, but its addressing register must be configured in Designer."
+  },
+  {
+    "legacyKey": "addressingAttributes",
+    "legacyKinds": [
+      "Task"
+    ],
+    "status": "removed",
+    "removalReason": "Task AddressingAttribute children and their addressingDimension links have no typed collection; create the task first and add its addressing attributes in Designer."
+  },
+  {
+    "legacyKey": "attributes",
+    "legacyKinds": [
+      "AccountingRegister",
+      "AccumulationRegister",
+      "BusinessProcess",
+      "CalculationRegister",
+      "Catalog",
+      "ChartOfAccounts",
+      "ChartOfCalculationTypes",
+      "ChartOfCharacteristicTypes",
+      "DataProcessor",
+      "Document",
+      "ExchangePlan",
+      "InformationRegister",
+      "Report",
+      "Task"
+    ],
+    "status": "removed",
+    "removalReason": "Legacy attribute shorthand carried index, indexAdditional, and nonneg child flags that typed add(attributes) cannot represent; migrate only flag-free fields structurally and configure the missing flags in Designer."
+  },
+  {
+    "legacyKey": "autoOrderByCode",
+    "legacyKinds": [
+      "ChartOfAccounts"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.AutoOrderByCode"
+  },
+  {
+    "legacyKey": "autonumbering",
+    "legacyKinds": [
+      "BusinessProcess",
+      "Catalog",
+      "ChartOfCalculationTypes",
+      "ChartOfCharacteristicTypes",
+      "Document",
+      "Task"
+    ],
+    "status": "removed",
+    "removalReason": "The legacy kind matrix includes ChartOfCalculationTypes, whose current typed template has no Autonumbering property; use setProperties for the other kinds only and configure that chart outside this migration."
+  },
+  {
+    "legacyKey": "basePeriod",
+    "legacyKinds": [
+      "CalculationRegister"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.BasePeriod"
+  },
+  {
+    "legacyKey": "characteristicExtValues",
+    "legacyKinds": [
+      "ChartOfCharacteristicTypes"
+    ],
+    "status": "removed",
+    "removalReason": "CharacteristicExtValues is a metadata-object reference with no typed property target; create the chart first and set the referenced catalog in Designer."
+  },
+  {
+    "legacyKey": "chartOfAccounts",
+    "legacyKinds": [
+      "AccountingRegister"
+    ],
+    "status": "removed",
+    "removalReason": "The AccountingRegister chart reference is dependency-sensitive and has no typed setProperties value; add chooses an existing chart for a new register, while later reassignment requires Designer."
+  },
+  {
+    "legacyKey": "chartOfCalculationTypes",
+    "legacyKinds": [
+      "CalculationRegister"
+    ],
+    "status": "removed",
+    "removalReason": "The CalculationRegister chart reference is dependency-sensitive and has no typed setProperties value; add chooses an existing chart for a new register, while later reassignment requires Designer."
+  },
+  {
+    "legacyKey": "checkUnique",
+    "legacyKinds": [
+      "BusinessProcess",
+      "Catalog",
+      "ChartOfCalculationTypes",
+      "ChartOfCharacteristicTypes",
+      "Document",
+      "Task"
+    ],
+    "status": "removed",
+    "removalReason": "The legacy kind matrix includes ChartOfCalculationTypes, whose current typed template has no CheckUnique property; use setProperties for the other kinds only and configure that chart outside this migration."
+  },
+  {
+    "legacyKey": "choiceMode",
+    "legacyKinds": [
+      "Catalog"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.ChoiceMode"
+  },
+  {
+    "legacyKey": "clientManagedApplication",
+    "legacyKinds": [
+      "CommonModule"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.ClientManagedApplication"
+  },
+  {
+    "legacyKey": "codeAllowedLength",
+    "legacyKinds": [
+      "Catalog"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.CodeAllowedLength"
+  },
+  {
+    "legacyKey": "codeLength",
+    "legacyKinds": [
+      "Catalog",
+      "ChartOfAccounts",
+      "ChartOfCalculationTypes",
+      "ChartOfCharacteristicTypes",
+      "ExchangePlan"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.CodeLength"
+  },
+  {
+    "legacyKey": "codeMask",
+    "legacyKinds": [
+      "ChartOfAccounts"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.CodeMask"
+  },
+  {
+    "legacyKey": "codeSeries",
+    "legacyKinds": [
+      "Catalog",
+      "ChartOfAccounts"
+    ],
+    "status": "removed",
+    "removalReason": "Alternate CodeSeries values conflict between the current validator, format specification, and donor evidence; only template defaults are proven, so legacy overrides must wait for a resolved platform enum domain."
+  },
+  {
+    "legacyKey": "codeType",
+    "legacyKinds": [
+      "Catalog"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.CodeType"
+  },
+  {
+    "legacyKey": "columns",
+    "legacyKinds": [
+      "DocumentJournal"
+    ],
+    "status": "removed",
+    "removalReason": "Legacy journal columns include indexing and document-attribute references that typed add(columns) cannot represent; add the journal first and define referenced columns in Designer."
+  },
+  {
+    "legacyKey": "context",
+    "legacyKinds": [
+      "CommonModule"
+    ],
+    "status": "removed",
+    "removalReason": "The CommonModule context shortcut expands one string into several execution flags and has no typed atomic shortcut; replace it with explicit Server, ServerCall, and ClientManagedApplication property values."
+  },
+  {
+    "legacyKey": "correspondence",
+    "legacyKinds": [
+      "AccountingRegister"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.Correspondence"
+  },
+  {
+    "legacyKey": "currentPerformer",
+    "legacyKinds": [
+      "Task"
+    ],
+    "status": "removed",
+    "removalReason": "CurrentPerformer is a Task performer reference with no typed reference property; configure the session parameter or performer target in Designer."
+  },
+  {
+    "legacyKey": "defaultPresentation",
+    "legacyKinds": [
+      "Catalog"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.DefaultPresentation"
+  },
+  {
+    "legacyKey": "dependenceOnCalculationTypes",
+    "legacyKinds": [
+      "ChartOfCalculationTypes"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.DependenceOnCalculationTypes"
+  },
+  {
+    "legacyKey": "description",
+    "legacyKinds": [
+      "ScheduledJob"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.Description"
+  },
+  {
+    "legacyKey": "descriptionLength",
+    "legacyKinds": [
+      "Catalog",
+      "ChartOfAccounts",
+      "ChartOfCalculationTypes",
+      "ChartOfCharacteristicTypes",
+      "ExchangePlan",
+      "Task"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.DescriptionLength"
+  },
+  {
+    "legacyKey": "dimensions",
+    "legacyKinds": [
+      "AccountingRegister",
+      "AccumulationRegister",
+      "CalculationRegister",
+      "InformationRegister"
+    ],
+    "status": "removed",
+    "removalReason": "Legacy dimensions include master, mainFilter, denyIncomplete, and useInTotals flags that typed add(dimensions) cannot represent; create only flag-free dimensions structurally and finish them in Designer."
+  },
+  {
+    "legacyKey": "direction",
+    "legacyKinds": [
+      "WebService"
+    ],
+    "status": "removed",
+    "removalReason": "WebService parameter direction belongs to a nested Parameter child that has no typed writer; define the operation parameter and its direction in Designer."
+  },
+  {
+    "legacyKey": "distributedInfoBase",
+    "legacyKinds": [
+      "ExchangePlan"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.DistributedInfoBase"
+  },
+  {
+    "legacyKey": "enableTotalsSplitting",
+    "legacyKinds": [
+      "AccumulationRegister"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.EnableTotalsSplitting"
+  },
+  {
+    "legacyKey": "event",
+    "legacyKinds": [
+      "EventSubscription"
+    ],
+    "status": "removed",
+    "removalReason": "EventSubscription event values have no closed current platform enum domain in the validator; selecting an unproved legacy event would bypass typed validation, so configure it in Designer."
+  },
+  {
+    "legacyKey": "extDimensionAccountingFlags",
+    "legacyKinds": [
+      "ChartOfAccounts"
+    ],
+    "status": "removed",
+    "removalReason": "ExtDimensionAccountingFlag child objects have no typed collection; create the chart first and add these Boolean flags in Designer."
+  },
+  {
+    "legacyKey": "extDimensionTypes",
+    "legacyKinds": [
+      "ChartOfAccounts"
+    ],
+    "status": "removed",
+    "removalReason": "ExtDimensionTypes is a ChartOfCharacteristicTypes reference with no typed property target; configure the extra-dimension type chart in Designer."
+  },
+  {
+    "legacyKey": "externalConnection",
+    "legacyKinds": [
+      "CommonModule"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.ExternalConnection"
+  },
+  {
+    "legacyKey": "foldersOnTop",
+    "legacyKinds": [
+      "Catalog"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.FoldersOnTop"
+  },
+  {
+    "legacyKey": "global",
+    "legacyKinds": [
+      "CommonModule"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.Global"
+  },
+  {
+    "legacyKey": "handler",
+    "legacyKinds": [
+      "EventSubscription",
+      "WebService"
+    ],
+    "status": "removed",
+    "removalReason": "EventSubscription handlers are dependency references and WebService handlers belong to nested operations; neither scenario has a typed property or child writer, so bind handlers in Designer."
+  },
+  {
+    "legacyKey": "hierarchical",
+    "legacyKinds": [
+      "Catalog",
+      "ChartOfAccounts",
+      "ChartOfCharacteristicTypes"
+    ],
+    "status": "removed",
+    "removalReason": "The legacy kind matrix includes ChartOfAccounts, while the current typed ChartOfAccounts template deliberately has no Hierarchical property; use setProperties only for Catalog and ChartOfCharacteristicTypes."
+  },
+  {
+    "legacyKey": "hierarchyType",
+    "legacyKinds": [
+      "Catalog"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.HierarchyType"
+  },
+  {
+    "legacyKey": "levelCount",
+    "legacyKinds": [
+      "Catalog"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.LevelCount"
+  },
+  {
+    "legacyKey": "limitLevelCount",
+    "legacyKinds": [
+      "Catalog"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.LimitLevelCount"
+  },
+  {
+    "legacyKey": "mainAddressingAttribute",
+    "legacyKinds": [
+      "Task"
+    ],
+    "status": "removed",
+    "removalReason": "MainAddressingAttribute is a field reference into a Task addressing child and has no typed field-reference property; configure it after creating the addressing attributes in Designer."
+  },
+  {
+    "legacyKey": "mainFilterOnPeriod",
+    "legacyKinds": [
+      "InformationRegister"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.MainFilterOnPeriod"
+  },
+  {
+    "legacyKey": "maxExtDimensionCount",
+    "legacyKinds": [
+      "ChartOfAccounts"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.MaxExtDimensionCount"
+  },
+  {
+    "legacyKey": "methodName",
+    "legacyKinds": [
+      "ScheduledJob"
+    ],
+    "status": "removed",
+    "removalReason": "ScheduledJob MethodName must resolve to an exported common-module procedure and has no typed reference property; add may choose a proven method, but reassignment requires Designer."
+  },
+  {
+    "legacyKey": "methods",
+    "legacyKinds": [
+      "HTTPService"
+    ],
+    "status": "removed",
+    "removalReason": "HTTP methods are nested under URLTemplate and have no typed child algebra; create the service first and add methods in Designer."
+  },
+  {
+    "legacyKey": "namespace",
+    "legacyKinds": [
+      "WebService"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.Namespace"
+  },
+  {
+    "legacyKey": "nillable",
+    "legacyKinds": [
+      "WebService"
+    ],
+    "status": "removed",
+    "removalReason": "WebService nillable flags belong to nested Operation or Parameter children with no typed writer; configure those flags in Designer."
+  },
+  {
+    "legacyKey": "numberAllowedLength",
+    "legacyKinds": [
+      "Document"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.NumberAllowedLength"
+  },
+  {
+    "legacyKey": "numberLength",
+    "legacyKinds": [
+      "BusinessProcess",
+      "Document",
+      "Task"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.NumberLength"
+  },
+  {
+    "legacyKey": "numberPeriodicity",
+    "legacyKinds": [
+      "Document"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.NumberPeriodicity"
+  },
+  {
+    "legacyKey": "numberType",
+    "legacyKinds": [
+      "BusinessProcess",
+      "Document",
+      "Task"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.NumberType"
+  },
+  {
+    "legacyKey": "operations",
+    "legacyKinds": [
+      "WebService"
+    ],
+    "status": "removed",
+    "removalReason": "WebService Operation children and their handlers, return types, and parameters have no typed collection; create the service shell and define operations in Designer."
+  },
+  {
+    "legacyKey": "orderLength",
+    "legacyKinds": [
+      "ChartOfAccounts"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.OrderLength"
+  },
+  {
+    "legacyKey": "owners",
+    "legacyKinds": [
+      "Catalog"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.editRelations.owners"
+  },
+  {
+    "legacyKey": "parameters",
+    "legacyKinds": [
+      "WebService"
+    ],
+    "status": "removed",
+    "removalReason": "WebService Parameter children have no typed collection; define parameter types, directions, and nillability in Designer."
+  },
+  {
+    "legacyKey": "periodAdjustmentLength",
+    "legacyKinds": [
+      "AccountingRegister"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.PeriodAdjustmentLength"
+  },
+  {
+    "legacyKey": "periodicity",
+    "legacyKinds": [
+      "CalculationRegister",
+      "InformationRegister"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.Periodicity"
+  },
+  {
+    "legacyKey": "postInPrivilegedMode",
+    "legacyKinds": [
+      "Document"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.PostInPrivilegedMode"
+  },
+  {
+    "legacyKey": "posting",
+    "legacyKinds": [
+      "Document"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.Posting"
+  },
+  {
+    "legacyKey": "predefined",
+    "legacyKinds": [
+      "ScheduledJob"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.Predefined"
+  },
+  {
+    "legacyKey": "privileged",
+    "legacyKinds": [
+      "CommonModule"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.Privileged"
+  },
+  {
+    "legacyKey": "quickChoice",
+    "legacyKinds": [
+      "Catalog"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.QuickChoice"
+  },
+  {
+    "legacyKey": "realTimePosting",
+    "legacyKinds": [
+      "Document"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.RealTimePosting"
+  },
+  {
+    "legacyKey": "registerRecords",
+    "legacyKinds": [
+      "Document"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.editRelations.registerRecords"
+  },
+  {
+    "legacyKey": "registerRecordsDeletion",
+    "legacyKinds": [
+      "Document"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.RegisterRecordsDeletion"
+  },
+  {
+    "legacyKey": "registerRecordsWritingOnPost",
+    "legacyKinds": [
+      "Document"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.RegisterRecordsWritingOnPost"
+  },
+  {
+    "legacyKey": "registerType",
+    "legacyKinds": [
+      "AccumulationRegister"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.RegisterType"
+  },
+  {
+    "legacyKey": "registeredDocuments",
+    "legacyKinds": [
+      "DocumentJournal"
+    ],
+    "status": "removed",
+    "removalReason": "DocumentJournal registered-document references are absent from the typed relation registry; create the journal first and register its documents in Designer."
+  },
+  {
+    "legacyKey": "resources",
+    "legacyKinds": [
+      "AccountingRegister",
+      "AccumulationRegister",
+      "CalculationRegister",
+      "InformationRegister"
+    ],
+    "status": "removed",
+    "removalReason": "Legacy resource shorthand may carry index, nonneg, and other child flags that typed add(resources) cannot represent; migrate only simple resources structurally and finish their flags in Designer."
+  },
+  {
+    "legacyKey": "restartCountOnFailure",
+    "legacyKinds": [
+      "ScheduledJob"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.RestartCountOnFailure"
+  },
+  {
+    "legacyKey": "restartIntervalOnFailure",
+    "legacyKinds": [
+      "ScheduledJob"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.RestartIntervalOnFailure"
+  },
+  {
+    "legacyKey": "returnType",
+    "legacyKinds": [
+      "WebService"
+    ],
+    "status": "removed",
+    "removalReason": "A WebService return type belongs to a nested Operation and has no typed XDTO-type writer; define it with the operation in Designer."
+  },
+  {
+    "legacyKey": "returnValuesReuse",
+    "legacyKinds": [
+      "CommonModule"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.ReturnValuesReuse"
+  },
+  {
+    "legacyKey": "reuseSessions",
+    "legacyKinds": [
+      "HTTPService",
+      "WebService"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.ReuseSessions"
+  },
+  {
+    "legacyKey": "rootURL",
+    "legacyKinds": [
+      "HTTPService"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.RootURL"
+  },
+  {
+    "legacyKey": "schedule",
+    "legacyKinds": [
+      "CalculationRegister"
+    ],
+    "status": "removed",
+    "removalReason": "CalculationRegister schedule links and schedule definitions have no typed reference writer; create the register without a schedule and configure the schedule fields in Designer."
+  },
+  {
+    "legacyKey": "server",
+    "legacyKinds": [
+      "CommonModule"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.Server"
+  },
+  {
+    "legacyKey": "serverCall",
+    "legacyKinds": [
+      "CommonModule"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.ServerCall"
+  },
+  {
+    "legacyKey": "sessionMaxAge",
+    "legacyKinds": [
+      "HTTPService",
+      "WebService"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.SessionMaxAge"
+  },
+  {
+    "legacyKey": "source",
+    "legacyKinds": [
+      "EventSubscription"
+    ],
+    "status": "removed",
+    "removalReason": "EventSubscription Source is a composite set of object types with no typed relation or property representation; select event sources in Designer."
+  },
+  {
+    "legacyKey": "subordinationUse",
+    "legacyKinds": [
+      "Catalog"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.SubordinationUse"
+  },
+  {
+    "legacyKey": "tabularSections",
+    "legacyKinds": [
+      "BusinessProcess",
+      "Catalog",
+      "ChartOfAccounts",
+      "ChartOfCalculationTypes",
+      "ChartOfCharacteristicTypes",
+      "DataProcessor",
+      "Document",
+      "ExchangePlan",
+      "Report",
+      "Task"
+    ],
+    "status": "removed",
+    "removalReason": "Legacy tabular sections embed attribute shorthand and unsupported index/nonneg flags; typed add(tabularSections) cannot preserve the full definition, so finish flagged columns in Designer."
+  },
+  {
+    "legacyKey": "task",
+    "legacyKinds": [
+      "BusinessProcess"
+    ],
+    "status": "removed",
+    "removalReason": "BusinessProcess Task is a dependency reference with no typed property target; create the objects separately and bind the task in Designer."
+  },
+  {
+    "legacyKey": "template",
+    "legacyKinds": [
+      "HTTPService"
+    ],
+    "status": "removed",
+    "removalReason": "An HTTP URL template is a nested URLTemplate child, not a scalar service property; create the service shell and define routes in Designer."
+  },
+  {
+    "legacyKey": "transactioned",
+    "legacyKinds": [
+      "WebService"
+    ],
+    "status": "removed",
+    "removalReason": "WebService transactioned is a nested Operation flag with no typed writer; configure transaction behavior in Designer."
+  },
+  {
+    "legacyKey": "type",
+    "legacyKinds": [
+      "WebService"
+    ],
+    "status": "removed",
+    "removalReason": "WebService parameter type is a nested XDTO type, not the typed metadata field algebra; define it on the Parameter child in Designer."
+  },
+  {
+    "legacyKey": "unpostInPrivilegedMode",
+    "legacyKinds": [
+      "Document"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.UnpostInPrivilegedMode"
+  },
+  {
+    "legacyKey": "urlTemplates",
+    "legacyKinds": [
+      "HTTPService"
+    ],
+    "status": "removed",
+    "removalReason": "HTTP URLTemplate children, methods, verbs, and generated handlers have no typed collection; create the service shell and define routes in Designer."
+  },
+  {
+    "legacyKey": "use",
+    "legacyKinds": [
+      "ScheduledJob"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.Use"
+  },
+  {
+    "legacyKey": "valueType",
+    "legacyKinds": [
+      "Constant",
+      "DefinedType"
+    ],
+    "status": "removed",
+    "removalReason": "Constant and DefinedType root Type nodes are compound metadata types with no setProperties representation; create the object with its template type and change it in Designer."
+  },
+  {
+    "legacyKey": "valueTypes",
+    "legacyKinds": [
+      "ChartOfCharacteristicTypes",
+      "DefinedType"
+    ],
+    "status": "removed",
+    "removalReason": "DefinedType and ChartOfCharacteristicTypes valueTypes are compound Type nodes with no root typed operation; configure the type set in Designer."
+  },
+  {
+    "legacyKey": "values",
+    "legacyKinds": [
+      "Enum"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.add.enumValues"
+  },
+  {
+    "legacyKey": "writeMode",
+    "legacyKinds": [
+      "InformationRegister"
+    ],
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.setProperties.WriteMode"
+  },
+  {
+    "legacyKey": "xdtoPackages",
+    "legacyKinds": [
+      "WebService"
+    ],
+    "status": "removed",
+    "removalReason": "WebService XDTOPackages is a package-reference set with no typed service representation; bind XDTO packages in Designer."
+  }
+]

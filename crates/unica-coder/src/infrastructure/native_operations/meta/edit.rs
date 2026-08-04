@@ -10,8 +10,8 @@ use crate::domain::metadata::{
     DateFractions, MetaCollection, MetaDiagnostic, MetaDiagnosticCode, MetaEditOperation,
     MetaElementDefinition, MetaElementUpdate, MetaFillValue, MetaMutationEffect, MetaPosition,
     MetaPropertyKey, MetaPropertyValue, MetaPublicationAction, MetaPublicationPlanEntry,
-    MetaPublicationResource, MetaRelation, MetadataType, MetadataTypeVariant, NumberSign,
-    RelationEditMode, StringLengthMode,
+    MetaPublicationResource, MetaRelation, MetadataKind, MetadataType, MetadataTypeVariant,
+    NumberSign, RelationEditMode, StringLengthMode, METADATA_PROPERTY_SPECS,
 };
 use crate::domain::source_target::{
     MetadataAddress, SourceTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
@@ -2750,22 +2750,29 @@ fn apply_typed_properties(
             None,
         )
     })?;
+    let kind = MetadataKind::parse(object.tag_name().name()).map_err(|_| {
+        typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata descriptor kind is unavailable",
+            None,
+        )
+    })?;
     let range = properties.range();
     drop(doc);
     let mut text = xml_text[range.clone()].to_string();
     let indent = meta_edit_property_child_indent(&text);
     for (key, value) in changes.entries() {
-        let tag = match key {
-            MetaPropertyKey::Synonym => "Synonym",
-            MetaPropertyKey::Comment => "Comment",
-            MetaPropertyKey::NumberLength => "NumberLength",
-            MetaPropertyKey::CheckUnique => "CheckUnique",
-            MetaPropertyKey::CodeLength => "CodeLength",
-            MetaPropertyKey::DescriptionLength => "DescriptionLength",
-            MetaPropertyKey::Hierarchical => "Hierarchical",
-            MetaPropertyKey::Autonumbering => "Autonumbering",
-            MetaPropertyKey::UseStandardCommands => "UseStandardCommands",
-        };
+        let tag = METADATA_PROPERTY_SPECS
+            .iter()
+            .find(|spec| spec.key == *key && spec.allowed_kinds.contains(&kind))
+            .map(|spec| spec.xml_name)
+            .ok_or_else(|| {
+                typed_diagnostic(
+                    MetaDiagnosticCode::ProviderUnavailable,
+                    "metadata property registry is unavailable for this kind",
+                    Some("values"),
+                )
+            })?;
         if meta_edit_xml_element_range(&text, tag)
             .map_err(|_| {
                 typed_diagnostic(
@@ -4138,6 +4145,425 @@ mod tests {
         ));
         assert!(xml.contains("<xr:Item xsi:type=\"xr:MDObjectRef\">Document.Quote</xr:Item>"));
         assert!(xml.contains("<xr:Field>Document.Order.StandardAttribute.Number</xr:Field>"));
+    }
+
+    #[test]
+    fn retired_dsl_scalar_typed_properties_round_trip_through_template_writer_and_info() {
+        use crate::domain::metadata::MetadataKind::*;
+
+        let cases: &[(
+            &str,
+            &str,
+            MetaPropertyValue,
+            &[crate::domain::metadata::MetadataKind],
+        )] = &[
+            (
+                "ActionPeriod",
+                "ActionPeriod",
+                MetaPropertyValue::Boolean(true),
+                &[CalculationRegister],
+            ),
+            (
+                "ActionPeriodUse",
+                "ActionPeriodUse",
+                MetaPropertyValue::Boolean(true),
+                &[ChartOfCalculationTypes],
+            ),
+            (
+                "AutoOrderByCode",
+                "AutoOrderByCode",
+                MetaPropertyValue::Boolean(false),
+                &[ChartOfAccounts],
+            ),
+            (
+                "BasePeriod",
+                "BasePeriod",
+                MetaPropertyValue::Boolean(true),
+                &[CalculationRegister],
+            ),
+            (
+                "ChoiceMode",
+                "ChoiceMode",
+                MetaPropertyValue::String("FromForm".into()),
+                &[Catalog],
+            ),
+            (
+                "ClientManagedApplication",
+                "ClientManagedApplication",
+                MetaPropertyValue::Boolean(true),
+                &[CommonModule],
+            ),
+            (
+                "CodeAllowedLength",
+                "CodeAllowedLength",
+                MetaPropertyValue::String("Fixed".into()),
+                &[Catalog],
+            ),
+            (
+                "CodeLength",
+                "CodeLength",
+                MetaPropertyValue::UnsignedInteger(12),
+                &[
+                    Catalog,
+                    ChartOfAccounts,
+                    ChartOfCharacteristicTypes,
+                    ChartOfCalculationTypes,
+                    ExchangePlan,
+                ],
+            ),
+            (
+                "CodeMask",
+                "CodeMask",
+                MetaPropertyValue::String("@@@.@@".into()),
+                &[ChartOfAccounts],
+            ),
+            (
+                "CodeType",
+                "CodeType",
+                MetaPropertyValue::String("Number".into()),
+                &[Catalog],
+            ),
+            (
+                "Correspondence",
+                "Correspondence",
+                MetaPropertyValue::Boolean(true),
+                &[AccountingRegister],
+            ),
+            (
+                "DefaultPresentation",
+                "DefaultPresentation",
+                MetaPropertyValue::String("AsCode".into()),
+                &[Catalog],
+            ),
+            (
+                "DependenceOnCalculationTypes",
+                "DependenceOnCalculationTypes",
+                MetaPropertyValue::String("OnActionPeriod".into()),
+                &[ChartOfCalculationTypes],
+            ),
+            (
+                "Description",
+                "Description",
+                MetaPropertyValue::String("Night import".into()),
+                &[ScheduledJob],
+            ),
+            (
+                "DescriptionLength",
+                "DescriptionLength",
+                MetaPropertyValue::UnsignedInteger(120),
+                &[
+                    Catalog,
+                    ChartOfAccounts,
+                    ChartOfCharacteristicTypes,
+                    ChartOfCalculationTypes,
+                    Task,
+                    ExchangePlan,
+                ],
+            ),
+            (
+                "DistributedInfoBase",
+                "DistributedInfoBase",
+                MetaPropertyValue::Boolean(true),
+                &[ExchangePlan],
+            ),
+            (
+                "EnableTotalsSplitting",
+                "EnableTotalsSplitting",
+                MetaPropertyValue::Boolean(false),
+                &[AccumulationRegister],
+            ),
+            (
+                "ExternalConnection",
+                "ExternalConnection",
+                MetaPropertyValue::Boolean(true),
+                &[CommonModule],
+            ),
+            (
+                "FoldersOnTop",
+                "FoldersOnTop",
+                MetaPropertyValue::Boolean(false),
+                &[Catalog],
+            ),
+            (
+                "Global",
+                "Global",
+                MetaPropertyValue::Boolean(true),
+                &[CommonModule],
+            ),
+            (
+                "HierarchyType",
+                "HierarchyType",
+                MetaPropertyValue::String("HierarchyOfItems".into()),
+                &[Catalog],
+            ),
+            (
+                "LevelCount",
+                "LevelCount",
+                MetaPropertyValue::UnsignedInteger(4),
+                &[Catalog],
+            ),
+            (
+                "LimitLevelCount",
+                "LimitLevelCount",
+                MetaPropertyValue::Boolean(true),
+                &[Catalog],
+            ),
+            (
+                "MainFilterOnPeriod",
+                "MainFilterOnPeriod",
+                MetaPropertyValue::Boolean(true),
+                &[InformationRegister],
+            ),
+            (
+                "MaxExtDimensionCount",
+                "MaxExtDimensionCount",
+                MetaPropertyValue::UnsignedInteger(4),
+                &[ChartOfAccounts],
+            ),
+            (
+                "Namespace",
+                "Namespace",
+                MetaPropertyValue::String("urn:unica:test".into()),
+                &[WebService],
+            ),
+            (
+                "NumberAllowedLength",
+                "NumberAllowedLength",
+                MetaPropertyValue::String("Fixed".into()),
+                &[Document],
+            ),
+            (
+                "NumberLength",
+                "NumberLength",
+                MetaPropertyValue::UnsignedInteger(15),
+                &[Document, BusinessProcess, Task],
+            ),
+            (
+                "NumberPeriodicity",
+                "NumberPeriodicity",
+                MetaPropertyValue::String("Month".into()),
+                &[Document],
+            ),
+            (
+                "NumberType",
+                "NumberType",
+                MetaPropertyValue::String("Number".into()),
+                &[Document, BusinessProcess, Task],
+            ),
+            (
+                "OrderLength",
+                "OrderLength",
+                MetaPropertyValue::UnsignedInteger(6),
+                &[ChartOfAccounts],
+            ),
+            (
+                "PeriodAdjustmentLength",
+                "PeriodAdjustmentLength",
+                MetaPropertyValue::UnsignedInteger(2),
+                &[AccountingRegister],
+            ),
+            (
+                "Periodicity",
+                "InformationRegisterPeriodicity",
+                MetaPropertyValue::String("Quarter".into()),
+                &[InformationRegister],
+            ),
+            (
+                "Periodicity",
+                "Periodicity",
+                MetaPropertyValue::String("Quarter".into()),
+                &[CalculationRegister],
+            ),
+            (
+                "PostInPrivilegedMode",
+                "PostInPrivilegedMode",
+                MetaPropertyValue::Boolean(false),
+                &[Document],
+            ),
+            (
+                "Posting",
+                "Posting",
+                MetaPropertyValue::String("Deny".into()),
+                &[Document],
+            ),
+            (
+                "Predefined",
+                "Predefined",
+                MetaPropertyValue::Boolean(true),
+                &[ScheduledJob],
+            ),
+            (
+                "Privileged",
+                "Privileged",
+                MetaPropertyValue::Boolean(true),
+                &[CommonModule],
+            ),
+            (
+                "QuickChoice",
+                "QuickChoice",
+                MetaPropertyValue::Boolean(true),
+                &[Catalog],
+            ),
+            (
+                "RealTimePosting",
+                "RealTimePosting",
+                MetaPropertyValue::String("Allow".into()),
+                &[Document],
+            ),
+            (
+                "RegisterRecordsDeletion",
+                "RegisterRecordsDeletion",
+                MetaPropertyValue::String("AutoDeleteOff".into()),
+                &[Document],
+            ),
+            (
+                "RegisterRecordsWritingOnPost",
+                "RegisterRecordsWritingOnPost",
+                MetaPropertyValue::String("WriteAll".into()),
+                &[Document],
+            ),
+            (
+                "RegisterType",
+                "RegisterType",
+                MetaPropertyValue::String("Turnovers".into()),
+                &[AccumulationRegister],
+            ),
+            (
+                "RestartCountOnFailure",
+                "RestartCountOnFailure",
+                MetaPropertyValue::UnsignedInteger(5),
+                &[ScheduledJob],
+            ),
+            (
+                "RestartIntervalOnFailure",
+                "RestartIntervalOnFailure",
+                MetaPropertyValue::UnsignedInteger(30),
+                &[ScheduledJob],
+            ),
+            (
+                "ReturnValuesReuse",
+                "ReturnValuesReuse",
+                MetaPropertyValue::String("DuringRequest".into()),
+                &[CommonModule],
+            ),
+            (
+                "ReuseSessions",
+                "ReuseSessions",
+                MetaPropertyValue::String("AutoUse".into()),
+                &[HTTPService, WebService],
+            ),
+            (
+                "RootURL",
+                "RootURL",
+                MetaPropertyValue::String("v2".into()),
+                &[HTTPService],
+            ),
+            (
+                "Server",
+                "Server",
+                MetaPropertyValue::Boolean(false),
+                &[CommonModule],
+            ),
+            (
+                "ServerCall",
+                "ServerCall",
+                MetaPropertyValue::Boolean(true),
+                &[CommonModule],
+            ),
+            (
+                "SessionMaxAge",
+                "SessionMaxAge",
+                MetaPropertyValue::UnsignedInteger(45),
+                &[HTTPService, WebService],
+            ),
+            (
+                "SubordinationUse",
+                "SubordinationUse",
+                MetaPropertyValue::String("ToFoldersAndItems".into()),
+                &[Catalog],
+            ),
+            (
+                "UnpostInPrivilegedMode",
+                "UnpostInPrivilegedMode",
+                MetaPropertyValue::Boolean(false),
+                &[Document],
+            ),
+            (
+                "Use",
+                "Use",
+                MetaPropertyValue::Boolean(true),
+                &[ScheduledJob],
+            ),
+            (
+                "WriteMode",
+                "WriteMode",
+                MetaPropertyValue::String("RecorderSubordinate".into()),
+                &[InformationRegister],
+            ),
+        ];
+
+        for (public_name, xml_tag, value, kinds) in cases {
+            for kind in *kinds {
+                let (mut xml, _) = super::super::template_catalog::minimal_metadata_xml_for_tests(
+                    *kind, "Evidence",
+                )
+                .unwrap();
+                let changes = MetaPropertyChanges::convert(
+                    *kind,
+                    vec![MetaPropertyInput::new(*public_name, value.clone())],
+                )
+                .unwrap_or_else(|diagnostic| {
+                    panic!("{public_name} for {}: {diagnostic:?}", kind.as_str())
+                });
+
+                apply_typed_operations(
+                    &mut xml,
+                    &[MetaEditOperation::SetProperties { values: changes }],
+                )
+                .unwrap_or_else(|failure| {
+                    panic!("{public_name} for {}: {failure:?}", kind.as_str())
+                });
+
+                let expected_xml = match value {
+                    MetaPropertyValue::String(value) => {
+                        format!("<{xml_tag}>{}</{xml_tag}>", escape_xml(value))
+                    }
+                    MetaPropertyValue::Boolean(value) => {
+                        format!("<{xml_tag}>{value}</{xml_tag}>")
+                    }
+                    MetaPropertyValue::UnsignedInteger(value) => {
+                        format!("<{xml_tag}>{value}</{xml_tag}>")
+                    }
+                };
+                assert!(
+                    xml.contains(&expected_xml),
+                    "{public_name} for {}: {xml}",
+                    kind.as_str()
+                );
+
+                let document = roxmltree::Document::parse(&xml).unwrap();
+                let object = meta_edit_object_node(&document).unwrap();
+                let properties = meta_info_child(object, "Properties");
+                let observed = super::super::info::typed_properties(properties, *kind);
+                let observed = observed
+                    .iter()
+                    .find(|property| {
+                        serde_json::to_value(property.key)
+                            .ok()
+                            .and_then(|value| value.as_str().map(|name| name == *public_name))
+                            == Some(true)
+                    })
+                    .unwrap_or_else(|| {
+                        panic!("{public_name} missing from info for {}", kind.as_str())
+                    });
+                assert_eq!(
+                    &observed.value,
+                    value,
+                    "{public_name} for {}",
+                    kind.as_str()
+                );
+            }
+        }
     }
 
     #[test]

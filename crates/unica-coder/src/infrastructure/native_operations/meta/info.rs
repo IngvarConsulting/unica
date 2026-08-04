@@ -654,10 +654,10 @@ pub(super) fn typed_properties(
         .iter()
         .filter(|spec| spec.allowed_kinds.contains(&kind))
         .filter_map(|spec| {
-            let node = meta_info_child(properties, spec.public_name)?;
+            let node = meta_info_child(properties, spec.xml_name)?;
             let value = match spec.value_kind {
                 crate::domain::metadata::MetaPropertyValueKind::String => {
-                    let value = if spec.public_name == "Synonym" {
+                    let value = if spec.key == crate::domain::metadata::MetaPropertyKey::Synonym {
                         meta_info_ml_text(node)
                     } else {
                         node.text().unwrap_or_default().to_string()

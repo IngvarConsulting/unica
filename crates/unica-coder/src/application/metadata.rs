@@ -1517,30 +1517,47 @@ fn edit_relations_schema() -> Value {
 }
 
 fn property_values_schema() -> Value {
-    let properties = METADATA_PROPERTY_SPECS
-        .iter()
-        .map(|spec| {
-            let schema = match spec.value_kind {
-                MetaPropertyValueKind::String => json!({
-                    "type": "string",
+    let mut properties = Map::new();
+    for spec in METADATA_PROPERTY_SPECS {
+        if properties.contains_key(spec.public_name) {
+            continue;
+        }
+        let mut schema = match spec.value_kind {
+            MetaPropertyValueKind::String => json!({
+                "type": "string",
+                "description": format!("New value for metadata property {}.", spec.public_name),
+            }),
+            MetaPropertyValueKind::Boolean => json!({
+                "type": "boolean",
+                "description": format!("New value for metadata property {}.", spec.public_name),
+            }),
+            MetaPropertyValueKind::UnsignedInteger => {
+                json!({
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": u32::MAX,
                     "description": format!("New value for metadata property {}.", spec.public_name),
-                }),
-                MetaPropertyValueKind::Boolean => json!({
-                    "type": "boolean",
-                    "description": format!("New value for metadata property {}.", spec.public_name),
-                }),
-                MetaPropertyValueKind::UnsignedInteger => {
-                    json!({
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": u32::MAX,
-                        "description": format!("New value for metadata property {}.", spec.public_name),
-                    })
-                }
-            };
-            (spec.public_name.to_string(), schema)
-        })
-        .collect::<Map<_, _>>();
+                })
+            }
+        };
+        let mut enum_values = Vec::new();
+        for value in METADATA_PROPERTY_SPECS
+            .iter()
+            .filter(|candidate| candidate.public_name == spec.public_name)
+            .flat_map(|candidate| candidate.enum_values.iter().copied())
+        {
+            if !enum_values.contains(&value) {
+                enum_values.push(value);
+            }
+        }
+        if !enum_values.is_empty() {
+            schema
+                .as_object_mut()
+                .expect("property schema is always an object")
+                .insert("enum".into(), json!(enum_values));
+        }
+        properties.insert(spec.public_name.to_string(), schema);
+    }
     json!({
         "type": "object",
         "additionalProperties": false,
@@ -2697,6 +2714,52 @@ mod tests {
             assert_eq!(variant["additionalProperties"], json!(false));
             assert_eq!(variant["required"], json!(required));
         }
+    }
+
+    #[test]
+    fn property_schema_publishes_closed_enum_domains_for_retired_scalars() {
+        let schema = property_values_schema();
+        let properties = schema["properties"].as_object().unwrap();
+
+        assert_eq!(
+            properties["HierarchyType"]["enum"],
+            json!(["HierarchyFoldersAndItems", "HierarchyOfItems"]),
+        );
+        assert_eq!(
+            properties["RegisterRecordsDeletion"]["enum"],
+            json!(["AutoDelete", "AutoDeleteOnUnpost", "AutoDeleteOff"]),
+        );
+        assert_eq!(
+            properties["Periodicity"]["enum"],
+            json!([
+                "Nonperiodical",
+                "Second",
+                "Day",
+                "Month",
+                "Quarter",
+                "Year",
+                "RecorderPosition",
+            ]),
+        );
+    }
+
+    #[test]
+    fn property_parser_rejects_an_enum_outside_the_exact_kind_domain() {
+        let error = diagnostic(
+            MetadataOperation::Edit,
+            json!({
+                "sourceSet": "main",
+                "metadataPath": "CalculationRegister.Payroll",
+                "operations": [{
+                    "op": "setProperties",
+                    "values": {"Periodicity": "Nonperiodical"},
+                }],
+            }),
+        );
+
+        assert_eq!(error.code, MetaDiagnosticCode::InvalidArguments);
+        assert_eq!(error.field.as_deref(), Some("values.Periodicity"));
+        assert!(error.message.contains("expected one of"), "{error:?}");
     }
 
     #[test]

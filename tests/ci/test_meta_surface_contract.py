@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import unittest
+from collections import defaultdict
 from pathlib import Path
 
 
@@ -17,6 +19,70 @@ META_RUNTIME = REPO_ROOT / "crates/unica-coder/src/infrastructure/native_operati
 FORMAT_GUARD = REPO_ROOT / "crates/unica-coder/src/infrastructure/format_guard.rs"
 CF_RUNTIME = REPO_ROOT / "crates/unica-coder/src/infrastructure/native_operations/cf.rs"
 TOOL_CONTEXT = REPO_ROOT / "crates/unica-coder/src/infrastructure/tool_context.rs"
+META_PROPERTY_REGISTRY = (
+    REPO_ROOT / "crates/unica-coder/src/domain/metadata/properties.rs"
+)
+META_OPERATION_REGISTRY = (
+    REPO_ROOT / "crates/unica-coder/src/domain/metadata/operations.rs"
+)
+META_CAPABILITY_LEDGER = REPO_ROOT / "spec/architecture/meta-capability-parity.json"
+RETIRED_META_TYPE_REFERENCE = (
+    REPO_ROOT
+    / "tests/fixtures/provenance/retired_meta_dsl/meta-compile/reference"
+)
+
+DONOR_METADATA_KINDS = {
+    "Catalog",
+    "Document",
+    "Enum",
+    "Constant",
+    "DefinedType",
+    "Report",
+    "DataProcessor",
+    "BusinessProcess",
+    "Task",
+    "ExchangePlan",
+    "CommonModule",
+    "ScheduledJob",
+    "EventSubscription",
+    "DocumentJournal",
+    "InformationRegister",
+    "AccumulationRegister",
+    "AccountingRegister",
+    "CalculationRegister",
+    "ChartOfAccounts",
+    "ChartOfCharacteristicTypes",
+    "ChartOfCalculationTypes",
+    "HTTPService",
+    "WebService",
+}
+
+
+def retired_meta_table_capabilities() -> dict[str, set[str]]:
+    capabilities: dict[str, set[str]] = defaultdict(set)
+    for path in sorted(RETIRED_META_TYPE_REFERENCE.glob("types-*.md")):
+        current_kind: str | None = None
+        in_table = False
+        for line in path.read_text(encoding="utf-8").splitlines():
+            heading = re.fullmatch(r"##\s+([A-Za-z][A-Za-z0-9]+)\s*", line)
+            if heading:
+                candidate = heading.group(1)
+                current_kind = candidate if candidate in DONOR_METADATA_KINDS else None
+                in_table = False
+                continue
+            if not line.startswith("|"):
+                in_table = False
+                continue
+            cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+            if not in_table:
+                in_table = True
+                continue
+            if not current_kind or not cells or re.fullmatch(r"[-: ]+", cells[0]):
+                continue
+            key = re.fullmatch(r"`([A-Za-z][A-Za-z0-9]*)`", cells[0])
+            if key:
+                capabilities[key.group(1)].add(current_kind)
+    return dict(capabilities)
 
 
 def rust_function(source: str, signature: str) -> str:
@@ -63,6 +129,77 @@ def registered_tool_blocks() -> dict[str, str]:
 
 
 class MetaSurfaceContractTests(unittest.TestCase):
+    def test_retired_dsl_capabilities_are_accounted_for(self) -> None:
+        donor = retired_meta_table_capabilities()
+        self.assertTrue(donor, "retired Meta DSL type tables yielded no capabilities")
+        self.assertTrue(
+            META_CAPABILITY_LEDGER.exists(),
+            "spec/architecture/meta-capability-parity.json is missing",
+        )
+        ledger = json.loads(META_CAPABILITY_LEDGER.read_text(encoding="utf-8"))
+        self.assertIsInstance(ledger, list, "Meta capability ledger must be a JSON array")
+
+        entries: dict[str, dict[str, object]] = {}
+        for index, entry in enumerate(ledger):
+            self.assertIsInstance(entry, dict, f"ledger entry {index} must be an object")
+            legacy_key = entry.get("legacyKey")
+            self.assertIsInstance(
+                legacy_key, str, f"ledger entry {index} has no string legacyKey"
+            )
+            self.assertNotIn(legacy_key, entries, f"duplicate legacyKey: {legacy_key}")
+            entries[legacy_key] = entry
+
+        self.assertEqual(
+            set(entries),
+            set(donor),
+            "ledger keys differ from the retired types-*.md capability tables",
+        )
+
+        registry = set(
+            re.findall(
+                r'(?:public_name:\s*|(?:property|enum_property)\(\s*)'
+                r'"([A-Za-z][A-Za-z0-9]*)"',
+                META_PROPERTY_REGISTRY.read_text(encoding="utf-8"),
+            )
+        )
+        operation_registry = META_OPERATION_REGISTRY.read_text(encoding="utf-8")
+        for legacy_key, legacy_kinds in sorted(donor.items()):
+            entry = entries[legacy_key]
+            with self.subTest(legacy_key=legacy_key):
+                status = entry.get("status")
+                self.assertIn(status, {"supported", "removed"})
+                contract_field = (
+                    "typedOperation" if status == "supported" else "removalReason"
+                )
+                other_field = (
+                    "removalReason" if status == "supported" else "typedOperation"
+                )
+                self.assertEqual(
+                    set(entry),
+                    {"legacyKey", "legacyKinds", "status", contract_field},
+                )
+                self.assertNotIn(other_field, entry)
+                self.assertEqual(entry.get("legacyKinds"), sorted(legacy_kinds))
+                contract = entry.get(contract_field)
+                self.assertIsInstance(contract, str)
+                self.assertTrue(contract.strip())
+                if status == "supported":
+                    prefix = "unica.meta.edit.setProperties."
+                    if contract.startswith(prefix):
+                        self.assertIn(contract.removeprefix(prefix), registry)
+                    else:
+                        operation_evidence = {
+                            "unica.meta.edit.add.enumValues": 'Self::EnumValues => "enumValues"',
+                            "unica.meta.edit.editRelations.owners": 'Self::Owners => "owners"',
+                            "unica.meta.edit.editRelations.registerRecords": (
+                                'Self::RegisterRecords => "registerRecords"'
+                            ),
+                        }
+                        self.assertIn(contract, operation_evidence)
+                        self.assertIn(operation_evidence[contract], operation_registry)
+                else:
+                    self.assertNotRegex(contract, r"(?i)^\s*(?:the )?dsl (?:was )?removed")
+
     def test_live_rust_guidance_never_advertises_retired_meta_routes(self) -> None:
         retired_route = re.compile(
             r"(?<![A-Za-z0-9_])meta-(?:compile|validate|profile)\b|"
