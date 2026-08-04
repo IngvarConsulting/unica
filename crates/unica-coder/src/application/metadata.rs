@@ -1947,7 +1947,7 @@ fn type_variant_schema() -> Value {
     let mut binary_data = tagged_type_variant(
         "binaryData",
         json!({
-            "length": {"type": "integer", "minimum": 0, "description": "Maximum binary data length."},
+            "length": {"type": "integer", "minimum": 0, "maximum": u32::MAX, "description": "Maximum binary data length."},
             "allowedLength": {"type": "string", "enum": ["variable", "fixed"], "description": "Whether the binary data length is variable or fixed."},
         }),
         &["kind", "length", "allowedLength"],
@@ -3263,13 +3263,26 @@ mod tests {
             })
         };
 
-        let valid = call(2_000);
+        for length in [2_000_u64, u64::from(u32::MAX)] {
+            let valid = call(length);
+            assert!(
+                validator.is_valid(&valid),
+                "schema rejected runtime-valid binaryData length: {valid}"
+            );
+            parse_metadata_request(MetadataOperation::Edit, valid.as_object().unwrap())
+                .unwrap_or_else(|error| panic!("parser rejected {valid}: {error:?}"));
+        }
+
+        let too_large = call(u64::from(u32::MAX) + 1);
         assert!(
-            validator.is_valid(&valid),
-            "schema rejected runtime-valid binaryData length: {valid}"
+            !validator.is_valid(&too_large),
+            "schema accepted binaryData length above u32: {too_large}"
         );
-        parse_metadata_request(MetadataOperation::Edit, valid.as_object().unwrap())
-            .unwrap_or_else(|error| panic!("parser rejected {valid}: {error:?}"));
+        assert!(
+            parse_metadata_request(MetadataOperation::Edit, too_large.as_object().unwrap())
+                .is_err(),
+            "parser accepted binaryData length above u32: {too_large}"
+        );
 
         let invalid = call(0);
         assert!(
