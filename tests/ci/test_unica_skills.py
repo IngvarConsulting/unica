@@ -783,9 +783,20 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             )
 
         info = documents["meta-info"]
-        for token in ("`validation`", "status", "freshness", "total", "limit", "truncated"):
+        for token in (
+            "`validation`",
+            "status",
+            "freshness",
+            "completeness",
+            "total",
+            "returned",
+            "truncated",
+            "items",
+            "diagnostics",
+        ):
             with self.subTest(info_token=token):
                 self.assertIn(token, info)
+        self.assertNotIn("`total`, `limit`", info)
         self.assertIn("soft-fail", info)
         self.assertTrue(
             any("sections" not in call["params"]["arguments"] for call in calls["meta-info"])

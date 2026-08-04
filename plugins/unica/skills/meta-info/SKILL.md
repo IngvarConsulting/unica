@@ -49,7 +49,8 @@ allowed-tools:
 мутацией.
 
 Каждая явно запрошенная `data.related.<section>` имеет собственные `status`,
-`freshness`, `total`, `limit` и `truncated`. Недоступность одной индексной секции
+`freshness`, `completeness`, `total`, `returned`, `truncated`, `items` и
+`diagnostics`. Недоступность одной индексной секции
 — это `soft-fail`: она получает самостоятельный статус и диагностику, но не
 обесценивает локальную структуру и остальные секции. Без `sections` или с
 `sections: []` `data.related` пуст; все связанные секции, включая
