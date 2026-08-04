@@ -30,6 +30,21 @@ def load_generator():
     return module
 
 
+def resolve_schema_base(root, schema):
+    """Resolve root-local definitions and the shared base of an allOf profile."""
+    while True:
+        reference = schema.get("$ref")
+        if reference is not None:
+            assert reference.startswith("#/$defs/")
+            schema = root["$defs"][reference.removeprefix("#/$defs/")]
+            continue
+        all_of = schema.get("allOf")
+        if all_of:
+            schema = all_of[0]
+            continue
+        return schema
+
+
 class ToolSurfaceLedgerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -118,9 +133,7 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
             definition = reference.removeprefix("#/$defs/")
             variants = add_root["$defs"][definition]["oneOf"]
             variants = [
-                add_root["$defs"][variant["$ref"].removeprefix("#/$defs/")]
-                if "$ref" in variant
-                else variant
+                resolve_schema_base(add_root, variant)
                 for variant in variants
             ]
             published_tags.update(
