@@ -168,22 +168,30 @@ function Remove-MarkdownFencedBlocks {
 
   $insideFence = $false
   $fenceCharacter = $null
+  $fenceLength = 0
   $visibleLines = foreach ($line in ($Text -split '\r?\n')) {
     if (-not $insideFence) {
       $openingFence = [regex]::Match($line, '^\s*(?<fence>`{3,}|~{3,})')
       if ($openingFence.Success) {
         $insideFence = $true
-        $fenceCharacter = $openingFence.Groups['fence'].Value.Substring(0, 1)
+        $openingMarker = $openingFence.Groups['fence'].Value
+        $fenceCharacter = $openingMarker.Substring(0, 1)
+        $fenceLength = $openingMarker.Length
         continue
       }
       $line
       continue
     }
 
-    $closingPattern = '^\s*{0}{{3,}}\s*$' -f [regex]::Escape($fenceCharacter)
-    if ([regex]::IsMatch($line, $closingPattern)) {
+    $closingFence = [regex]::Match($line, '^\s*(?<fence>`{3,}|~{3,})\s*$')
+    if (
+      $closingFence.Success -and
+      $closingFence.Groups['fence'].Value.Substring(0, 1) -eq $fenceCharacter -and
+      $closingFence.Groups['fence'].Value.Length -ge $fenceLength
+    ) {
       $insideFence = $false
       $fenceCharacter = $null
+      $fenceLength = 0
     }
   }
   if ($insideFence) {
