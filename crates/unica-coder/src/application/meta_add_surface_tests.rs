@@ -1,6 +1,6 @@
 use super::{OperationResult, UnicaApplication};
 use crate::domain::cancellation::CancellationToken;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -123,6 +123,158 @@ fn call_add(workspace: &Path, kind: &str, name: &str, dry_run: bool) -> Operatio
         .call_tool("unica.meta.add", &add_args(workspace, kind, name, dry_run));
     std::env::set_current_dir(previous).unwrap();
     result.expect("internal meta.add call")
+}
+
+fn configured_catalog_add_args(workspace: &Path, name: &str, dry_run: bool) -> Map<String, Value> {
+    let mut args = add_args(workspace, "Catalog", name, dry_run);
+    args.insert(
+        "operations".to_string(),
+        json!([
+            {
+                "op": "setProperties",
+                "values": {"Comment": "Configured during creation"}
+            },
+            {
+                "op": "add",
+                "collection": "attributes",
+                "elements": [{
+                    "name": "ExternalCode",
+                    "comment": "Created in the same transaction",
+                    "type": {
+                        "variants": [{
+                            "kind": "string",
+                            "length": 24,
+                            "allowedLength": "variable"
+                        }]
+                    }
+                }]
+            }
+        ]),
+    );
+    args
+}
+
+fn call_add_with_args(workspace: &Path, args: &Map<String, Value>) -> OperationResult {
+    call_add_with_args_result(workspace, args).expect("internal meta.add call")
+}
+
+fn call_add_with_args_result(
+    workspace: &Path,
+    args: &Map<String, Value>,
+) -> Result<OperationResult, String> {
+    let previous = std::env::current_dir().unwrap();
+    std::env::set_current_dir(workspace).unwrap();
+    let result = UnicaApplication::new().call_tool("unica.meta.add", args);
+    std::env::set_current_dir(previous).unwrap();
+    result
+}
+
+#[test]
+fn add_applies_operations_atomically() {
+    let workspace = create_configuration_workspace("configured-create");
+    let source = workspace.path().join("src");
+    let descriptor = source.join("Catalogs/Configured.xml");
+    let before = tree_snapshot(&source);
+
+    let preview_args = configured_catalog_add_args(workspace.path(), "Configured", true);
+    let preview = call_add_with_args(workspace.path(), &preview_args);
+
+    assert!(preview.ok, "{:?}", preview.errors);
+    assert_eq!(
+        preview.data.as_ref().unwrap()["metadataPath"],
+        "Catalog.Configured"
+    );
+    assert_eq!(
+        tree_snapshot(&source),
+        before,
+        "preview changed source bytes"
+    );
+    assert!(!descriptor.exists());
+
+    let apply_args = configured_catalog_add_args(workspace.path(), "Configured", false);
+    let applied = call_add_with_args(workspace.path(), &apply_args);
+
+    assert!(applied.ok, "{:?}", applied.errors);
+    let xml = std::fs::read_to_string(&descriptor).expect("configured descriptor");
+    assert!(xml.contains("<Comment>Configured during creation</Comment>"));
+    assert!(xml.contains("<Name>ExternalCode</Name>"));
+    assert!(xml.contains("<v8:StringQualifiers>"));
+    assert!(xml.contains("<v8:Length>24</v8:Length>"));
+    let owner = std::fs::read_to_string(source.join("Configuration.xml")).unwrap();
+    assert!(owner.contains("<Catalog>Configured</Catalog>"));
+}
+
+#[test]
+fn failed_add_operation_leaves_no_object() {
+    let workspace = create_configuration_workspace("failed-configured-create");
+    let source = workspace.path().join("src");
+    let before = tree_snapshot(&source);
+    let mut args = configured_catalog_add_args(workspace.path(), "Rejected", false);
+    args.insert(
+        "operations".to_string(),
+        json!([
+            {
+                "op": "setProperties",
+                "values": {"Comment": "Must remain private"}
+            },
+            {
+                "op": "remove",
+                "collection": "attributes",
+                "names": ["MissingAttribute"]
+            }
+        ]),
+    );
+
+    let result = call_add_with_args(workspace.path(), &args);
+
+    assert!(
+        !result.ok,
+        "invalid operation sequence unexpectedly succeeded"
+    );
+    let diagnostic = &result.diagnostics.as_ref().unwrap()[0];
+    assert_eq!(diagnostic["operationIndex"], 1);
+    assert_eq!(tree_snapshot(&source), before);
+    assert!(!source.join("Catalogs/Rejected.xml").exists());
+    assert!(!std::fs::read_to_string(source.join("Configuration.xml"))
+        .unwrap()
+        .contains("<Catalog>Rejected</Catalog>"));
+}
+
+#[test]
+fn add_rejects_explicit_empty_operations_without_writes() {
+    let workspace = create_configuration_workspace("empty-create-operations");
+    let source = workspace.path().join("src");
+    let before = tree_snapshot(&source);
+    let mut args = add_args(workspace.path(), "Catalog", "RejectedEmpty", false);
+    args.insert("operations".to_string(), json!([]));
+
+    let error = call_add_with_args_result(workspace.path(), &args).unwrap_err();
+
+    assert!(error.contains("operations must not be empty"), "{error}");
+    assert_eq!(tree_snapshot(&source), before);
+}
+
+#[test]
+fn add_rejects_kind_incompatible_property_without_writes() {
+    let workspace = create_configuration_workspace("incompatible-create-property");
+    let source = workspace.path().join("src");
+    let before = tree_snapshot(&source);
+    let mut args = add_args(workspace.path(), "Catalog", "RejectedProperty", false);
+    args.insert(
+        "operations".to_string(),
+        json!([{
+            "op": "setProperties",
+            "values": {"NumberLength": 12}
+        }]),
+    );
+
+    let error = call_add_with_args_result(workspace.path(), &args).unwrap_err();
+
+    assert!(
+        error.contains("property `NumberLength` is not supported for Catalog"),
+        "{error}"
+    );
+    assert_eq!(tree_snapshot(&source), before);
 }
 
 #[test]

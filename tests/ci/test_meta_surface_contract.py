@@ -245,7 +245,7 @@ class MetaSurfaceContractTests(unittest.TestCase):
         }
         expected_properties = {
             "Info": {"sourceSet", "metadataPath", "sections", "limit"},
-            "Add": {"sourceSet", "kind", "name", "dryRun"},
+            "Add": {"sourceSet", "kind", "name", "operations", "dryRun"},
             "Edit": {"sourceSet", "metadataPath", "operations", "dryRun"},
             "Remove": {"sourceSet", "metadataPath", "dryRun", "force", "confirm"},
         }

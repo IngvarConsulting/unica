@@ -677,6 +677,72 @@ pub(super) struct TypedRelationDependency {
     pub(super) target: MetadataAddress,
 }
 
+pub(super) struct TypedOperationPostImage {
+    pub(super) descriptor: Vec<u8>,
+    pub(super) child_resources: TypedChildResourcePlan,
+}
+
+/// Build the complete descriptor and child-resource plan privately. No
+/// transaction mutation is registered until this function returns success.
+pub(super) fn build_typed_operation_post_image(
+    source_set: &str,
+    descriptor_path: &Path,
+    target: &MetadataAddress,
+    descriptor_preimage: &[u8],
+    operations: &[MetaEditOperation],
+    context: &WorkspaceContext,
+) -> Result<TypedOperationPostImage, MetaFailure> {
+    let mut xml = String::from_utf8(descriptor_preimage.to_vec()).map_err(|_| {
+        MetaFailure::from(
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata descriptor image is not UTF-8",
+                None,
+            )
+            .with_metadata_path(target.clone()),
+        )
+    })?;
+    let source_format = MetaEditSourceFormat {
+        has_bom: descriptor_preimage.starts_with(b"\xef\xbb\xbf"),
+        eol: meta_edit_source_eol(&xml),
+    };
+    if xml.starts_with('\u{feff}') {
+        xml = xml.trim_start_matches('\u{feff}').to_string();
+    }
+    let normalized_preimage = xml.clone();
+    apply_typed_operations(&mut xml, operations).map_err(|mut failure| {
+        for diagnostic in &mut failure.diagnostics {
+            diagnostic.metadata_path = Some(target.clone());
+        }
+        failure
+    })?;
+    restore_initial_empty_top_child_objects(&normalized_preimage, &mut xml);
+    let (object_kind, object_name) = meta_edit_object_identity(&xml).map_err(|_| {
+        MetaFailure::from(
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "typed metadata post-image identity is unavailable",
+                None,
+            )
+            .with_metadata_path(target.clone()),
+        )
+    })?;
+    let mut child_resources = plan_typed_child_resources(
+        descriptor_path,
+        target,
+        &object_kind,
+        &object_name,
+        operations,
+        &xml,
+    )?;
+    child_resources.relation_dependencies =
+        resolve_typed_relation_dependencies(source_set, target, operations, context, &xml)?;
+    Ok(TypedOperationPostImage {
+        descriptor: meta_edit_preserve_source_format(&xml, source_format),
+        child_resources,
+    })
+}
+
 pub(super) fn plan_typed_child_resources(
     descriptor_path: &Path,
     owner: &MetadataAddress,
@@ -1797,53 +1863,17 @@ pub(crate) fn prepare_typed_edit(
             .into())
         }
     }
-    let mut xml = String::from_utf8(resolved.descriptor_preimage.clone()).map_err(|_| {
-        MetaFailure::from(
-            typed_diagnostic(
-                MetaDiagnosticCode::ProviderUnavailable,
-                "metadata descriptor image is not UTF-8",
-                None,
-            )
-            .with_metadata_path(request.metadata_path.clone()),
-        )
-    })?;
-    let source_format = MetaEditSourceFormat {
-        has_bom: resolved.descriptor_preimage.starts_with(b"\xef\xbb\xbf"),
-        eol: meta_edit_source_eol(&xml),
-    };
-    if xml.starts_with('\u{feff}') {
-        xml = xml.trim_start_matches('\u{feff}').to_string();
-    }
-    let normalized_preimage = xml.clone();
-    apply_typed_operations(&mut xml, &request.operations).map_err(|mut failure| {
-        for diagnostic in &mut failure.diagnostics {
-            diagnostic.metadata_path = Some(request.metadata_path.clone());
-        }
-        failure
-    })?;
-    restore_initial_empty_top_child_objects(&normalized_preimage, &mut xml);
-    let (object_kind, object_name) = meta_edit_object_identity(&xml).map_err(|_| {
-        MetaFailure::from(
-            typed_diagnostic(
-                MetaDiagnosticCode::ProviderUnavailable,
-                "typed metadata post-image identity is unavailable",
-                None,
-            )
-            .with_metadata_path(request.metadata_path.clone()),
-        )
-    })?;
-    let child_resources = plan_typed_child_resources(
+    let TypedOperationPostImage {
+        descriptor: post_image,
+        child_resources,
+    } = build_typed_operation_post_image(
+        &request.source_set,
         &resolved.descriptor_path,
         &request.metadata_path,
-        &object_kind,
-        &object_name,
+        &resolved.descriptor_preimage,
         &request.operations,
-        &xml,
+        context,
     )?;
-    let mut child_resources = child_resources;
-    child_resources.relation_dependencies =
-        resolve_typed_relation_dependencies(request, context, &xml)?;
-    let post_image = meta_edit_preserve_source_format(&xml, source_format);
     PreparedMetaEdit::prepare(
         request,
         resolved,
@@ -1888,14 +1918,16 @@ fn restore_initial_empty_top_child_objects(pre_image: &str, post_image: &mut Str
 }
 
 fn resolve_typed_relation_dependencies(
-    request: &MetaEditRequest,
+    source_set: &str,
+    metadata_path: &MetadataAddress,
+    operations: &[MetaEditOperation],
     context: &WorkspaceContext,
     owner_post_image: &str,
 ) -> Result<Vec<TypedRelationDependency>, MetaFailure> {
     let mut dependencies = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let mut request_origins = BTreeMap::new();
-    for (operation_index, operation) in request.operations.iter().enumerate() {
+    for (operation_index, operation) in operations.iter().enumerate() {
         let MetaEditOperation::EditRelations {
             relation, targets, ..
         } = operation
@@ -1910,7 +1942,7 @@ fn resolve_typed_relation_dependencies(
         }
     }
     for (relation, relation_index, target) in
-        parse_typed_final_relation_graph(owner_post_image, &request.metadata_path)?
+        parse_typed_final_relation_graph(owner_post_image, metadata_path)?
     {
         let origin = request_origins
             .get(&(relation.as_str(), target.wire_value().to_string()))
@@ -1922,18 +1954,18 @@ fn resolve_typed_relation_dependencies(
                 format!("operations[{operation_index}].targets[{target_index}]")
             },
         );
-        validate_typed_relation_target(&request.metadata_path, owner_post_image, relation, &target)
+        validate_typed_relation_target(metadata_path, owner_post_image, relation, &target)
             .map_err(|mut diagnostic| {
                 diagnostic.operation_index = origin.map(|(operation_index, _)| operation_index);
                 diagnostic.field = Some(diagnostic_field.clone());
-                MetaFailure::from(diagnostic.with_metadata_path(request.metadata_path.clone()))
+                MetaFailure::from(diagnostic.with_metadata_path(metadata_path.clone()))
             })?;
         let dependency = target.dependency();
-        if dependency == &request.metadata_path || !seen.insert(dependency.clone()) {
+        if dependency == metadata_path || !seen.insert(dependency.clone()) {
             continue;
         }
         let source_target = SourceTarget {
-            source_set: request.source_set.clone(),
+            source_set: source_set.to_string(),
             metadata_path: Some(dependency.clone()),
         };
         let resolution =
@@ -1945,7 +1977,7 @@ fn resolve_typed_relation_dependencies(
                         Some(&diagnostic_field),
                     );
                     diagnostic.operation_index = origin.map(|(index, _)| index);
-                    MetaFailure::from(diagnostic.with_metadata_path(request.metadata_path.clone()))
+                    MetaFailure::from(diagnostic.with_metadata_path(metadata_path.clone()))
                 },
             )?;
         if resolution.resolved.target_kind != TargetKind::MetadataObject {
@@ -1956,7 +1988,7 @@ fn resolve_typed_relation_dependencies(
             );
             diagnostic.operation_index = origin.map(|(index, _)| index);
             return Err(MetaFailure::from(
-                diagnostic.with_metadata_path(request.metadata_path.clone()),
+                diagnostic.with_metadata_path(metadata_path.clone()),
             ));
         }
         let evidence =
@@ -1967,7 +1999,7 @@ fn resolve_typed_relation_dependencies(
                     Some(&diagnostic_field),
                 );
                 diagnostic.operation_index = origin.map(|(index, _)| index);
-                MetaFailure::from(diagnostic.with_metadata_path(request.metadata_path.clone()))
+                MetaFailure::from(diagnostic.with_metadata_path(metadata_path.clone()))
             })?;
         let bytes = fs::read(&evidence.target_path).map_err(|_| {
             let mut diagnostic = typed_diagnostic(
@@ -1976,7 +2008,7 @@ fn resolve_typed_relation_dependencies(
                 Some(&diagnostic_field),
             );
             diagnostic.operation_index = origin.map(|(index, _)| index);
-            MetaFailure::from(diagnostic.with_metadata_path(request.metadata_path.clone()))
+            MetaFailure::from(diagnostic.with_metadata_path(metadata_path.clone()))
         })?;
         dependencies.push(TypedRelationDependency {
             handle: resolution.handle,

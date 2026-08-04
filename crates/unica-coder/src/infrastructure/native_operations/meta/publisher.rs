@@ -25,7 +25,10 @@ use super::super::common::guard_resolved_platform_xml_target_dependencies;
 use super::super::compile_transaction::{
     CompileTransaction, DirectoryMembershipSnapshot, RegistrationStatus,
 };
-use super::edit::{resolve_typed_metadata_object, ResolvedMetadataObject, TypedChildResourcePlan};
+use super::edit::{
+    build_typed_operation_post_image, resolve_typed_metadata_object, ResolvedMetadataObject,
+    TypedChildResourcePlan, TypedOperationPostImage,
+};
 use super::remove::{plan_typed_remove, TypedMetaRemovePlan};
 use super::template_catalog::{
     MetadataTemplateCatalog, MetadataTemplateFileMode, MetadataTemplateFileRole,
@@ -405,15 +408,6 @@ pub(crate) fn prepare_meta_add(
         .into());
     }
     let source = resolve_metadata_add_source(context, &request.source_set)?;
-    let mut transaction = CompileTransaction::new();
-    bind_resolved_support_guard_evidence(&mut transaction, &source.owner_path, context).map_err(
-        |_| {
-            MetaFailure::from(MetaDiagnostic::error(
-                MetaDiagnosticCode::ProviderUnavailable,
-                "metadata support-policy evidence could not be bound",
-            ))
-        },
-    )?;
     let mut preparation_diagnostics = Vec::new();
     match evaluate_resolved_support_guard(
         &source.owner_path,
@@ -437,11 +431,42 @@ pub(crate) fn prepare_meta_add(
             .into());
         }
     }
-    let post_image =
+    let mut post_image =
         PlatformMetadataTemplateCatalog.minimal_object(&source, request.kind, &request.name)?;
+    let target = post_image.metadata_path.clone();
+    let descriptor_file = post_image
+        .files
+        .iter_mut()
+        .find(|file| file.role == MetadataTemplateFileRole::Descriptor)
+        .expect("every metadata template has one descriptor");
+    let descriptor_path = source.source_root.join(&descriptor_file.relative_path);
+    let TypedOperationPostImage {
+        descriptor,
+        child_resources,
+    } = build_typed_operation_post_image(
+        &request.source_set,
+        &descriptor_path,
+        &target,
+        &descriptor_file.bytes,
+        &request.operations,
+        context,
+    )?;
+    descriptor_file.bytes = descriptor;
+
     #[cfg(test)]
     run_meta_add_after_authorization_hook();
-    let target = post_image.metadata_path.clone();
+
+    // The transaction starts only after template operations and every derived
+    // child/dependency plan have built one complete private post-image.
+    let mut transaction = CompileTransaction::new();
+    bind_resolved_support_guard_evidence(&mut transaction, &source.owner_path, context).map_err(
+        |_| {
+            MetaFailure::from(MetaDiagnostic::error(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata support-policy evidence could not be bound",
+            ))
+        },
+    )?;
     let resource_root = source
         .source_root
         .join(metadata_layout(request.kind).directory)
@@ -465,6 +490,17 @@ pub(crate) fn prepare_meta_add(
             .map_err(|_| already_exists(&target))?;
     }
 
+    for (path, snapshot) in child_resources.directory_guards {
+        transaction
+            .guard_or_verify_directory_topology(path, snapshot)
+            .map_err(|message| provider_failure(&target, message))?;
+    }
+    for (path, bytes) in child_resources.exact_file_guards {
+        transaction
+            .guard_or_verify_exact_preimage(path, &bytes)
+            .map_err(|message| provider_failure(&target, message))?;
+    }
+
     for file in &post_image.files {
         let path = source.source_root.join(&file.relative_path);
         match file.mode {
@@ -486,6 +522,20 @@ pub(crate) fn prepare_meta_add(
                 .map_err(|message| provider_failure(&target, message))?,
         }
     }
+    for mutation in child_resources.file_mutations {
+        match (mutation.pre_image, mutation.post_image) {
+            (None, Some(post_image)) => transaction
+                .create_bytes(mutation.path, post_image)
+                .map_err(|message| provider_failure(&target, message))?,
+            (Some(pre_image), Some(post_image)) => transaction
+                .replace_bytes(mutation.path, pre_image, post_image)
+                .map_err(|message| provider_failure(&target, message))?,
+            (Some(_), None) => transaction
+                .remove_path(mutation.path)
+                .map_err(|message| provider_failure(&target, message))?,
+            (None, None) => {}
+        }
+    }
     let registration = transaction
         .register_canonical_child(&source.owner_path, request.kind.as_str(), &request.name)
         .map_err(|message| provider_failure(&target, message))?;
@@ -502,8 +552,8 @@ pub(crate) fn prepare_meta_add(
             )
         })?;
 
-    let mut validation_resources = Vec::new();
-    let mut publication_plan = Vec::new();
+    let mut validation_resources = child_resources.validation_resources;
+    let mut publication_plan = child_resources.publication_plan;
     for file in post_image.files {
         let (validation_role, publication_resource, publication_target) = match file.role {
             MetadataTemplateFileRole::Descriptor => (
@@ -565,6 +615,23 @@ pub(crate) fn prepare_meta_add(
         role: MetadataResourceRole::Registration,
         bytes: registration_image,
     });
+    for dependency in child_resources.relation_dependencies {
+        transaction
+            .guard_or_verify_exact_preimage(&dependency.path, &dependency.bytes)
+            .map_err(|message| provider_failure(&target, message))?;
+        guard_resolved_platform_xml_target_dependencies(
+            &mut transaction,
+            &dependency.handle,
+            context,
+        )
+        .map_err(|message| provider_failure(&target, message))?;
+        validation_resources.push(MetadataResourceImage {
+            role: MetadataResourceRole::Dependency {
+                target: dependency.target,
+            },
+            bytes: dependency.bytes,
+        });
+    }
     for (dependency_path, target, bytes) in
         registered_language_images(&source.source_root, &source.owner_preimage)
             .map_err(|message| provider_failure(&target, message))?
@@ -597,7 +664,7 @@ pub(crate) fn prepare_meta_add(
         validation_subject: MetadataValidationSubject {
             target,
             resources: validation_resources,
-            child_footprints: Vec::new(),
+            child_footprints: child_resources.validation_footprints,
             registrar_evidence: Default::default(),
         },
         transaction,
@@ -797,6 +864,7 @@ mod typed_add_publication_tests {
                 source_set: "main".to_string(),
                 kind: MetadataKind::Catalog,
                 name: name.to_string(),
+                operations: Vec::new(),
                 dry_run: false,
             }
         }
@@ -965,6 +1033,7 @@ mod typed_add_publication_tests {
                 source_set: "main".to_string(),
                 kind: MetadataKind::ScheduledJob,
                 name: "Nightly".to_string(),
+                operations: Vec::new(),
                 dry_run: true,
             },
             &fixture.context,
@@ -1148,6 +1217,7 @@ mod typed_add_publication_tests {
                 source_set: "main".to_string(),
                 kind: MetadataKind::ExchangePlan,
                 name: "Sync".to_string(),
+                operations: Vec::new(),
                 dry_run: true,
             },
             &fixture.context,
@@ -1177,6 +1247,7 @@ mod typed_add_publication_tests {
                 source_set: "main".to_string(),
                 kind: MetadataKind::ScheduledJob,
                 name: "Nightly".to_string(),
+                operations: Vec::new(),
                 dry_run: true,
             },
             &fixture.context,

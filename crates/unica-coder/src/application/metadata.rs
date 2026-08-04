@@ -51,6 +51,7 @@ pub(crate) struct MetaAddRequest {
     pub(crate) source_set: String,
     pub(crate) kind: MetadataKind,
     pub(crate) name: String,
+    pub(crate) operations: Vec<MetaEditOperation>,
     pub(crate) dry_run: bool,
 }
 
@@ -326,26 +327,20 @@ pub(crate) fn parse_metadata_request(
             let raw_kind = required_string(args, "kind")?;
             let kind = MetadataKind::parse(&raw_kind)?;
             let name = required_string(args, "name")?;
+            let operations = parse_operations(args.get("operations"), false, kind)?;
             let dry_run = optional_bool(args, "dryRun", true)?;
             Ok(MetadataRequest::Add(MetaAddRequest {
                 source_set,
                 kind,
                 name,
+                operations,
                 dry_run,
             }))
         }
         MetadataOperation::Edit => {
             let metadata_path = required_metadata_path(args, "metadataPath")?;
-            let raw_operations = required_array(args, "operations")?;
-            if raw_operations.is_empty() {
-                return Err(invalid("operations", "operations must not be empty").into());
-            }
-            let mut operations = Vec::with_capacity(raw_operations.len());
-            for (index, raw_operation) in raw_operations.iter().enumerate() {
-                let converted = parse_edit_operation(raw_operation, &metadata_path)
-                    .map_err(|diagnostic| diagnostic.with_operation_index(index))?;
-                operations.push(converted);
-            }
+            let kind = metadata_kind_for_address(&metadata_path)?;
+            let operations = parse_operations(args.get("operations"), true, kind)?;
             let dry_run = optional_bool(args, "dryRun", true)?;
             Ok(MetadataRequest::Edit(MetaEditRequest {
                 source_set,
@@ -375,6 +370,34 @@ pub(crate) fn parse_metadata_request(
             }))
         }
     }
+}
+
+fn parse_operations(
+    value: Option<&Value>,
+    required: bool,
+    kind: MetadataKind,
+) -> Result<Vec<MetaEditOperation>, MetaFailure> {
+    let Some(value) = value else {
+        return if required {
+            Err(invalid("operations", "`operations` is required").into())
+        } else {
+            Ok(Vec::new())
+        };
+    };
+    let raw_operations = value
+        .as_array()
+        .ok_or_else(|| invalid("operations", "`operations` must be an array"))?;
+    if raw_operations.is_empty() {
+        return Err(invalid("operations", "operations must not be empty").into());
+    }
+    raw_operations
+        .iter()
+        .enumerate()
+        .map(|(index, raw_operation)| {
+            parse_edit_operation(raw_operation, kind)
+                .map_err(|diagnostic| MetaFailure::from(diagnostic.with_operation_index(index)))
+        })
+        .collect()
 }
 
 fn reject_unknown_top_level(
@@ -428,7 +451,7 @@ fn parse_info_sections(value: Option<&Value>) -> Result<Vec<MetaInfoSection>, Me
 
 fn parse_edit_operation(
     value: &Value,
-    metadata_path: &MetadataAddress,
+    kind: MetadataKind,
 ) -> Result<MetaEditOperation, MetaDiagnostic> {
     let object = value
         .as_object()
@@ -450,7 +473,6 @@ fn parse_edit_operation(
                     "targets",
                 ],
             )?;
-            let kind = metadata_kind_for_address(metadata_path)?;
             let values = parse_property_changes(required_object(object, "values")?, kind)?;
             Ok(MetaEditOperation::SetProperties { values })
         }
@@ -1235,6 +1257,15 @@ pub(crate) fn metadata_input_schema(operation: MetadataOperation) -> Value {
             properties.insert(
                 "name".into(),
                 string("Metadata object name using a valid 1C identifier."),
+            );
+            properties.insert(
+                "operations".into(),
+                json!({
+                    "type": "array",
+                    "minItems": 1,
+                    "items": operation_schema(),
+                    "description": "Optional ordered typed operations applied to the private creation image before one atomic publication.",
+                }),
             );
             properties.insert(
                 "dryRun".into(),

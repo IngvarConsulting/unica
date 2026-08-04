@@ -722,7 +722,19 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             arguments = call["params"]["arguments"]
             self.assertEqual(call["params"]["name"], "unica.meta.add")
             self.assertTrue({"sourceSet", "kind", "name"}.issubset(arguments))
-            self.assertLessEqual(set(arguments), {"sourceSet", "kind", "name", "dryRun"})
+            self.assertLessEqual(
+                set(arguments),
+                {"sourceSet", "kind", "name", "operations", "dryRun"},
+            )
+            if "operations" in arguments:
+                self.assertIsInstance(arguments["operations"], list)
+                self.assertTrue(arguments["operations"])
+                self.assertTrue(
+                    all(
+                        isinstance(operation, dict)
+                        for operation in arguments["operations"]
+                    )
+                )
 
         self.assertTrue(calls["meta-edit"])
         for call in calls["meta-edit"]:

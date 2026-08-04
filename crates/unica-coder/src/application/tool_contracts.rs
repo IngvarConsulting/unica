@@ -3498,7 +3498,7 @@ mod tests {
             ),
             (
                 MetadataOperation::Add,
-                vec!["dryRun", "kind", "name", "sourceSet"],
+                vec!["dryRun", "kind", "name", "operations", "sourceSet"],
                 json!(["sourceSet", "kind", "name"]),
             ),
             (
@@ -3576,6 +3576,11 @@ mod tests {
         );
 
         let edit = input_schema_for_tool(&metadata_tool(MetadataOperation::Edit));
+        assert_eq!(
+            add["properties"]["operations"]["items"], edit["properties"]["operations"]["items"],
+            "meta.add and meta.edit must publish one operation schema"
+        );
+        assert_eq!(add["properties"]["operations"]["minItems"], 1);
         let item = &edit["properties"]["operations"]["items"];
         let variants = item["oneOf"].as_array().expect("closed operation union");
         assert_eq!(variants.len(), 5);
