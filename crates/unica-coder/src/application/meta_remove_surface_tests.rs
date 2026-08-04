@@ -223,6 +223,68 @@ fn meta_remove_reauthorizes_support_state_after_reference_and_subsystem_planning
 }
 
 #[test]
+fn meta_remove_warning_is_derived_from_late_support_authorization_for_preview_and_apply() {
+    for dry_run in [true, false] {
+        let workspace = create_remove_workspace(if dry_run {
+            "support-warning-drift-preview"
+        } else {
+            "support-warning-drift-apply"
+        });
+        let source = workspace.path().join("src");
+        let descriptor = source.join("Catalogs/Removable.xml");
+        let owner = source.join("Configuration.xml");
+        let support = source.join("Ext/ParentConfigurations.bin");
+        let project = workspace.path().join(".v8-project.json");
+        std::fs::write(
+            &support,
+            concat!(
+                "\u{feff}{6,1,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,",
+                "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",",
+                "\"VendorConf\",0,0,0}"
+            ),
+        )
+        .unwrap();
+        std::fs::write(&project, r#"{"editingAllowedCheck":"off"}"#).unwrap();
+        let source_before = tree_snapshot(&source);
+        let project_for_hook = project.clone();
+
+        let result = with_meta_remove_before_reauthorization_hook(
+            move || std::fs::write(project_for_hook, r#"{"editingAllowedCheck":"warn"}"#).unwrap(),
+            || call_remove(workspace.path(), dry_run),
+        );
+
+        assert!(result.ok, "dryRun={dry_run}: {result:?}");
+        assert_eq!(
+            result.data.as_ref().unwrap()["diagnostics"],
+            serde_json::json!([{
+                "code": "support_locked",
+                "severity": "warning",
+                "message": "metadata support policy permits removal with a warning",
+                "metadataPath": "Catalog.Removable"
+            }]),
+            "dryRun={dry_run}"
+        );
+        assert_eq!(
+            result.cache.mode,
+            if dry_run { "dry-run" } else { "applied" }
+        );
+        assert_eq!(result.cache.events, ["MetadataChanged"]);
+        assert_eq!(
+            std::fs::read_to_string(&project).unwrap(),
+            r#"{"editingAllowedCheck":"warn"}"#
+        );
+        if dry_run {
+            assert_eq!(tree_snapshot(&source), source_before);
+        } else {
+            assert!(!descriptor.exists());
+            assert!(!std::fs::read_to_string(owner)
+                .unwrap()
+                .contains("<Catalog>Removable</Catalog>"));
+        }
+    }
+}
+
+#[test]
 fn meta_remove_reauthorizes_every_planned_subsystem_cleanup_before_mutations() {
     let workspace = create_remove_workspace("subsystem-support-authorization-drift");
     let source = workspace.path().join("src");
