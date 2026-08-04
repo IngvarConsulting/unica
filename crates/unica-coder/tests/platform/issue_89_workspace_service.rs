@@ -261,9 +261,10 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
 fn issue_89_fixture_cleanup_is_bounded_during_assertion_unwind() {
     let tracked = Arc::new(Mutex::new(Vec::<ToolRecord>::new()));
     let fixture_root = Arc::new(Mutex::new(None::<PathBuf>));
+    let cleanup_started = Arc::new(Mutex::new(None::<Instant>));
     let tracked_inside = Arc::clone(&tracked);
     let root_inside = Arc::clone(&fixture_root);
-    let started = Instant::now();
+    let cleanup_started_inside = Arc::clone(&cleanup_started);
     let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
         let fixture = Fixture::new();
         *root_inside.lock().unwrap() = Some(fixture.root.clone());
@@ -278,11 +279,20 @@ fn issue_89_fixture_cleanup_is_bounded_during_assertion_unwind() {
         ));
         fixture.wait_for_log("rlm|", RESPONSE_DEADLINE);
         *tracked_inside.lock().unwrap() = fixture.log_records();
+        *cleanup_started_inside.lock().unwrap() = Some(Instant::now());
         panic!("intentional assertion unwind exercises RAII cleanup");
     }));
 
     assert!(unwind.is_err());
-    assert!(started.elapsed() < Duration::from_secs(8));
+    let cleanup_elapsed = cleanup_started
+        .lock()
+        .unwrap()
+        .expect("cleanup timer must start before intentional unwind")
+        .elapsed();
+    assert!(
+        cleanup_elapsed < Duration::from_secs(8),
+        "RAII cleanup exceeded its deadline: {cleanup_elapsed:?}"
+    );
     verify_records_dead(&tracked.lock().unwrap(), Duration::from_secs(3)).unwrap();
     let root = fixture_root.lock().unwrap().clone().unwrap();
     assert!(
