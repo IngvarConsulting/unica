@@ -7,6 +7,7 @@ use crate::application::ports::{
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::format_profile::ACTIVE_FORMAT_PROFILE;
 use crate::domain::metadata::{
+    validate_metadata_operation_capabilities, validate_metadata_relation_target_profile,
     DateFractions, MetaCollection, MetaDiagnostic, MetaDiagnosticCode, MetaEditOperation,
     MetaElementDefinition, MetaElementUpdate, MetaFillValue, MetaMutationEffect, MetaPosition,
     MetaPropertyKey, MetaPropertyValue, MetaPublicationAction, MetaPublicationPlanEntry,
@@ -2126,85 +2127,48 @@ fn validate_typed_relation_target(
     relation: MetaRelation,
     target: &crate::domain::metadata::MetaRelationTarget,
 ) -> Result<(), MetaDiagnostic> {
-    let target_kind = target.dependency().segments().next().unwrap_or_default();
-    match relation {
-        MetaRelation::Owners => {
-            if owner.segments().next() != Some("Catalog") || target_kind != "Catalog" {
-                return Err(typed_diagnostic(
-                    MetaDiagnosticCode::InvalidArguments,
-                    "owners requires Catalog owner and Catalog targets",
+    let owner_kind = owner
+        .segments()
+        .next()
+        .and_then(|kind| MetadataKind::parse(kind).ok())
+        .ok_or_else(|| {
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata owner kind is unavailable",
+                Some("targets"),
+            )
+        })?;
+    validate_metadata_relation_target_profile(owner_kind, owner, relation, target)?;
+    if relation == MetaRelation::InputByString {
+        let crate::domain::metadata::MetaRelationTarget::Field(field) = target else {
+            unreachable!("domain relation profile rejects non-field inputByString targets")
+        };
+        let target_kind = owner_kind.as_str();
+        if field.kind == crate::domain::metadata::MetadataFieldKind::Attribute {
+            let document = Document::parse(owner_post_image).map_err(|_| {
+                typed_diagnostic(
+                    MetaDiagnosticCode::ProviderUnavailable,
+                    "owner post-image is not valid XML",
                     Some("targets"),
-                ));
-            }
-        }
-        MetaRelation::RegisterRecords => {
-            if owner.segments().next() != Some("Document")
-                || !matches!(
-                    target_kind,
-                    "InformationRegister"
-                        | "AccumulationRegister"
-                        | "AccountingRegister"
-                        | "CalculationRegister"
                 )
-            {
-                return Err(typed_diagnostic(
-                    MetaDiagnosticCode::InvalidArguments,
-                    "registerRecords requires Document owner and register targets",
-                    Some("targets"),
-                ));
-            }
-        }
-        MetaRelation::BasedOn => {
-            if owner.segments().next() != Some(target_kind) {
-                return Err(typed_diagnostic(
-                    MetaDiagnosticCode::InvalidArguments,
-                    "basedOn target kind must match the edited object kind",
-                    Some("targets"),
-                ));
-            }
-        }
-        MetaRelation::InputByString => {
-            let crate::domain::metadata::MetaRelationTarget::Field(field) = target else {
-                return Err(typed_diagnostic(
-                    MetaDiagnosticCode::InvalidArguments,
-                    "inputByString requires typed field paths",
-                    Some("targets"),
-                ));
-            };
-            if &field.owner != owner {
-                return Err(typed_diagnostic(
-                    MetaDiagnosticCode::InvalidArguments,
-                    "inputByString field must belong to the edited object",
-                    Some("targets"),
-                ));
-            }
-            if field.kind == crate::domain::metadata::MetadataFieldKind::Attribute {
-                let document = Document::parse(owner_post_image).map_err(|_| {
-                    typed_diagnostic(
-                        MetaDiagnosticCode::ProviderUnavailable,
-                        "owner post-image is not valid XML",
-                        Some("targets"),
-                    )
-                })?;
-                let found = document
-                    .descendants()
-                    .filter(|node| node.is_element() && node.tag_name().name() == "Attribute")
-                    .any(|node| meta_edit_child_object_name(node).as_deref() == Some(&field.name));
-                if !found {
-                    return Err(typed_diagnostic(
-                        MetaDiagnosticCode::TargetNotFound,
-                        "inputByString attribute does not exist in the owner post-image",
-                        Some("targets"),
-                    ));
-                }
-            } else if !metadata_standard_attribute_names(target_kind).contains(&field.name.as_str())
-            {
+            })?;
+            let found = document
+                .descendants()
+                .filter(|node| node.is_element() && node.tag_name().name() == "Attribute")
+                .any(|node| meta_edit_child_object_name(node).as_deref() == Some(&field.name));
+            if !found {
                 return Err(typed_diagnostic(
                     MetaDiagnosticCode::TargetNotFound,
-                    "inputByString standard attribute does not exist for the owner kind",
+                    "inputByString attribute does not exist in the owner post-image",
                     Some("targets"),
                 ));
             }
+        } else if !metadata_standard_attribute_names(target_kind).contains(&field.name.as_str()) {
+            return Err(typed_diagnostic(
+                MetaDiagnosticCode::TargetNotFound,
+                "inputByString standard attribute does not exist for the owner kind",
+                Some("targets"),
+            ));
         }
     }
     Ok(())
@@ -2555,6 +2519,25 @@ fn apply_typed_operation(
             None,
         )
     })?;
+    let owner_kind = MetadataKind::parse(&object_kind).map_err(|_| {
+        typed_diagnostic(
+            MetaDiagnosticCode::UnsupportedKind,
+            format!("metadata kind `{object_kind}` has no typed operation profile"),
+            None,
+        )
+    })?;
+    let owner = MetadataAddress::parse(
+        PLATFORM_XML_8_3_27_FORMAT_2_20,
+        &format!("{object_kind}.{object_name}"),
+    )
+    .map_err(|_| {
+        typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata descriptor identity is not a canonical logical address",
+            None,
+        )
+    })?;
+    validate_metadata_operation_capabilities(owner_kind, &owner, operation)?;
     match operation {
         MetaEditOperation::SetProperties { values } => {
             apply_typed_properties(xml_text, values)?;
@@ -2565,7 +2548,6 @@ fn apply_typed_operation(
             scope,
             elements,
         } => {
-            ensure_typed_collection_allowed(&object_kind, *collection)?;
             ensure_typed_scope_exists(
                 xml_text,
                 scope.as_ref().map(|scope| scope.tabular_section.as_str()),
@@ -2588,7 +2570,6 @@ fn apply_typed_operation(
             scope,
             elements,
         } => {
-            ensure_typed_collection_allowed(&object_kind, *collection)?;
             ensure_typed_scope_exists(
                 xml_text,
                 scope.as_ref().map(|scope| scope.tabular_section.as_str()),
@@ -2596,7 +2577,6 @@ fn apply_typed_operation(
             for (index, element) in elements.iter().enumerate() {
                 update_typed_element(
                     xml_text,
-                    &object_kind,
                     *collection,
                     scope.as_ref().map(|scope| scope.tabular_section.as_str()),
                     element,
@@ -2610,7 +2590,6 @@ fn apply_typed_operation(
             scope,
             names,
         } => {
-            ensure_typed_collection_allowed(&object_kind, *collection)?;
             ensure_typed_scope_exists(
                 xml_text,
                 scope.as_ref().map(|scope| scope.tabular_section.as_str()),
@@ -2634,7 +2613,7 @@ fn apply_typed_operation(
             mode,
             targets,
         } => {
-            apply_typed_relations(xml_text, &object_kind, *relation, *mode, targets)?;
+            apply_typed_relations(xml_text, *relation, *mode, targets)?;
             counts.modified += 1;
         }
     }
@@ -2688,32 +2667,6 @@ fn typed_diagnostic(
     match field {
         Some(field) => diagnostic.with_field(field),
         None => diagnostic,
-    }
-}
-
-fn ensure_typed_collection_allowed(
-    object_kind: &str,
-    collection: MetaCollection,
-) -> Result<(), MetaDiagnostic> {
-    let kind = crate::domain::metadata::MetadataKind::parse(object_kind).map_err(|_| {
-        typed_diagnostic(
-            MetaDiagnosticCode::UnsupportedKind,
-            format!("metadata kind `{object_kind}` has no typed collection profile"),
-            Some("collection"),
-        )
-    })?;
-    let allowed = crate::domain::metadata::metadata_kind_collections(kind).contains(&collection);
-    if allowed {
-        Ok(())
-    } else {
-        Err(typed_diagnostic(
-            MetaDiagnosticCode::UnsupportedKind,
-            format!(
-                "collection `{}` is not supported for {object_kind}",
-                collection.as_str()
-            ),
-            Some("collection"),
-        ))
     }
 }
 
@@ -2836,7 +2789,6 @@ fn add_typed_element(
     scope: Option<&str>,
     element: &MetaElementDefinition,
 ) -> Result<(), MetaDiagnostic> {
-    validate_typed_fill_value_context(object_kind, collection, scope.is_some(), element)?;
     if !is_1c_identifier(&element.name) {
         return Err(typed_diagnostic(
             MetaDiagnosticCode::InvalidArguments,
@@ -2868,66 +2820,6 @@ fn add_typed_element(
             Some(field),
         )
     })
-}
-
-fn validate_typed_fill_value_context(
-    object_kind: &str,
-    collection: MetaCollection,
-    scoped: bool,
-    element: &MetaElementDefinition,
-) -> Result<(), MetaDiagnostic> {
-    if element.fill_value.is_some() && !typed_fill_value_is_allowed(object_kind, collection, scoped)
-    {
-        return Err(typed_diagnostic(
-            MetaDiagnosticCode::InvalidArguments,
-            "fillValue is not available for this metadata field context",
-            Some("fillValue"),
-        ));
-    }
-    if collection == MetaCollection::TabularSections {
-        for (index, attribute) in element.attributes.iter().enumerate() {
-            validate_typed_fill_value_context(
-                object_kind,
-                MetaCollection::Attributes,
-                true,
-                attribute,
-            )
-            .map_err(|mut diagnostic| {
-                diagnostic.field = Some(match diagnostic.field.take() {
-                    Some(field) => format!("attributes[{index}].{field}"),
-                    None => format!("attributes[{index}]"),
-                });
-                diagnostic
-            })?;
-        }
-    }
-    Ok(())
-}
-
-fn typed_fill_value_is_allowed(
-    object_kind: &str,
-    collection: MetaCollection,
-    scoped: bool,
-) -> bool {
-    match collection {
-        MetaCollection::Attributes if scoped => matches!(
-            object_kind,
-            "Report" | "DataProcessor" | "ExternalReport" | "ExternalDataProcessor"
-        ),
-        MetaCollection::Attributes => !matches!(
-            meta_attribute_context(object_kind),
-            "processor" | "chart" | "register-other" | "tabular"
-        ),
-        MetaCollection::Dimensions | MetaCollection::Resources => {
-            object_kind == "InformationRegister"
-        }
-        MetaCollection::TabularSections
-        | MetaCollection::EnumValues
-        | MetaCollection::Columns
-        | MetaCollection::Forms
-        | MetaCollection::Templates
-        | MetaCollection::Commands => false,
-    }
 }
 
 fn typed_insert_position(position: Option<&MetaPosition>) -> MetaEditInsertPosition {
@@ -3436,20 +3328,10 @@ fn find_typed_element_range(
 
 fn update_typed_element(
     xml_text: &mut String,
-    object_kind: &str,
     collection: MetaCollection,
     scope: Option<&str>,
     update: &MetaElementUpdate,
 ) -> Result<(), MetaDiagnostic> {
-    if update.fill_value.is_some()
-        && !typed_fill_value_is_allowed(object_kind, collection, scope.is_some())
-    {
-        return Err(typed_diagnostic(
-            MetaDiagnosticCode::InvalidArguments,
-            "fillValue is not available for this metadata field context",
-            Some("fillValue"),
-        ));
-    }
     let tag = collection_tag(collection);
     let range = find_typed_element_range(xml_text, tag, scope, &update.name)?;
     if let Some(new_name) = update
@@ -3890,18 +3772,10 @@ fn remove_typed_element(
 
 fn apply_typed_relations(
     xml_text: &mut String,
-    object_kind: &str,
     relation: MetaRelation,
     mode: RelationEditMode,
     targets: &[crate::domain::metadata::MetaRelationTarget],
 ) -> Result<(), MetaDiagnostic> {
-    if relation == MetaRelation::RegisterRecords && object_kind != "Document" {
-        return Err(typed_diagnostic(
-            MetaDiagnosticCode::UnsupportedKind,
-            "registerRecords is supported for Document only",
-            Some("relation"),
-        ));
-    }
     let tag = match relation {
         MetaRelation::Owners => "Owners",
         MetaRelation::RegisterRecords => "RegisterRecords",
@@ -4854,6 +4728,198 @@ mod tests {
         assert!(document.contains("<RegisterRecords/>"));
         assert!(document.contains("<BasedOn/>"));
         assert!(document.contains("<InputByString/>"));
+    }
+
+    #[test]
+    fn typed_relation_registry_matches_template_nodes_and_guards_private_images() {
+        use crate::domain::metadata::{
+            metadata_relation_spec, MetaRelationTarget, MetaRelationTargetPolicy,
+        };
+
+        for kind in MetadataKind::ALL {
+            for relation in MetaRelation::ALL {
+                let (template, _) =
+                    super::super::template_catalog::minimal_metadata_xml_for_tests(*kind, "Owner")
+                        .unwrap();
+                let tag = match relation {
+                    MetaRelation::Owners => "Owners",
+                    MetaRelation::RegisterRecords => "RegisterRecords",
+                    MetaRelation::BasedOn => "BasedOn",
+                    MetaRelation::InputByString => "InputByString",
+                };
+                let document = Document::parse(&template).unwrap();
+                let has_node = document.descendants().any(|node| {
+                    node.is_element()
+                        && node.tag_name().name() == tag
+                        && node.parent().is_some_and(|parent| {
+                            parent.is_element() && parent.tag_name().name() == "Properties"
+                        })
+                });
+                let spec = metadata_relation_spec(*kind, *relation);
+                assert_eq!(has_node, spec.is_some(), "{} {tag}", kind.as_str());
+
+                let owner = format!("{}.Owner", kind.as_str());
+                let target = match spec.map(|spec| spec.target_policy) {
+                    Some(MetaRelationTargetPolicy::MetadataKinds(kinds)) => {
+                        MetaRelationTarget::Object(metadata_reference(&format!(
+                            "{}.Target",
+                            kinds[0].as_str()
+                        )))
+                    }
+                    Some(MetaRelationTargetPolicy::SameOwnerKind) => MetaRelationTarget::Object(
+                        metadata_reference(&format!("{}.Target", kind.as_str())),
+                    ),
+                    Some(MetaRelationTargetPolicy::SameOwnerField) => {
+                        let field = metadata_standard_attribute_names(kind.as_str())
+                            .first()
+                            .copied()
+                            .expect("every inputByString owner has a standard field");
+                        MetaRelationTarget::Field(
+                            crate::domain::metadata::MetadataFieldPath::parse(&format!(
+                                "{owner}.StandardAttribute.{field}"
+                            ))
+                            .unwrap(),
+                        )
+                    }
+                    None => match relation {
+                        MetaRelation::InputByString => MetaRelationTarget::Field(
+                            crate::domain::metadata::MetadataFieldPath::parse(&format!(
+                                "{owner}.StandardAttribute.Name"
+                            ))
+                            .unwrap(),
+                        ),
+                        MetaRelation::Owners => {
+                            MetaRelationTarget::Object(metadata_reference("Catalog.Target"))
+                        }
+                        MetaRelation::RegisterRecords => MetaRelationTarget::Object(
+                            metadata_reference("InformationRegister.Target"),
+                        ),
+                        MetaRelation::BasedOn => MetaRelationTarget::Object(metadata_reference(
+                            &format!("{}.Target", kind.as_str()),
+                        )),
+                    },
+                };
+                let operation = MetaEditOperation::edit_relation_targets(
+                    *relation,
+                    RelationEditMode::Replace,
+                    vec![target],
+                )
+                .unwrap();
+                let mut working = template.clone();
+                let result = apply_typed_operations(&mut working, &[operation]);
+                if spec.is_some() {
+                    result.unwrap_or_else(|failure| {
+                        panic!("{} {tag}: {:?}", kind.as_str(), failure.diagnostics)
+                    });
+                    assert_ne!(working, template, "{} {tag}", kind.as_str());
+                } else {
+                    let failure = result.expect_err(&format!("{} {tag}", kind.as_str()));
+                    assert_eq!(
+                        failure.diagnostics[0].field.as_deref(),
+                        Some("operations[0].relation")
+                    );
+                    assert_eq!(working, template, "{} {tag}", kind.as_str());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn typed_fill_value_registry_guards_every_public_field_context_before_mutation() {
+        use crate::domain::metadata::{metadata_fill_value_is_allowed, MetaElementScope};
+
+        let filled = |name: &str| MetaElementInput {
+            name: name.into(),
+            r#type: Some(
+                MetadataType::new(vec![MetadataTypeVariant::String {
+                    length: 20,
+                    allowed_length: StringLengthMode::Variable,
+                }])
+                .unwrap(),
+            ),
+            fill_value: Some(MetaFillValue::String("value".into())),
+            ..MetaElementInput::default()
+        };
+
+        for kind in MetadataKind::ALL {
+            for collection in [
+                MetaCollection::Attributes,
+                MetaCollection::Dimensions,
+                MetaCollection::Resources,
+            ] {
+                if !crate::domain::metadata::metadata_kind_collections(*kind).contains(&collection)
+                {
+                    continue;
+                }
+                let (template, _) =
+                    super::super::template_catalog::minimal_metadata_xml_for_tests(*kind, "Owner")
+                        .unwrap();
+                let operation =
+                    MetaEditOperation::add(collection, None, vec![filled("Filled")]).unwrap();
+                let mut working = template.clone();
+                let result = apply_typed_operations(&mut working, &[operation]);
+                let allowed =
+                    metadata_fill_value_is_allowed(*kind, collection, MetaElementScope::TopLevel);
+                if allowed {
+                    result.unwrap_or_else(|failure| {
+                        panic!(
+                            "{} {}: {:?}",
+                            kind.as_str(),
+                            collection.as_str(),
+                            failure.diagnostics
+                        )
+                    });
+                    assert!(working.contains("<FillValue xsi:type=\"xs:string\">value</FillValue>"));
+                } else {
+                    let failure =
+                        result.expect_err(&format!("{} {}", kind.as_str(), collection.as_str()));
+                    assert_eq!(
+                        failure.diagnostics[0].field.as_deref(),
+                        Some("operations[0].elements[0].fillValue")
+                    );
+                    assert_eq!(working, template);
+                }
+            }
+
+            if !crate::domain::metadata::metadata_kind_collections(*kind)
+                .contains(&MetaCollection::TabularSections)
+            {
+                continue;
+            }
+            let (template, _) =
+                super::super::template_catalog::minimal_metadata_xml_for_tests(*kind, "Owner")
+                    .unwrap();
+            let operation = MetaEditOperation::add(
+                MetaCollection::TabularSections,
+                None,
+                vec![MetaElementInput {
+                    name: "Lines".into(),
+                    attributes: Some(vec![filled("Filled")]),
+                    ..MetaElementInput::default()
+                }],
+            )
+            .unwrap();
+            let mut working = template.clone();
+            let result = apply_typed_operations(&mut working, &[operation]);
+            let allowed = metadata_fill_value_is_allowed(
+                *kind,
+                MetaCollection::Attributes,
+                MetaElementScope::TabularSection,
+            );
+            if allowed {
+                result.unwrap_or_else(|failure| {
+                    panic!("{} scoped: {:?}", kind.as_str(), failure.diagnostics)
+                });
+                assert!(working.contains("<FillValue xsi:type=\"xs:string\">value</FillValue>"));
+            } else {
+                let failure = result.expect_err(&format!("{} scoped", kind.as_str()));
+                assert_eq!(
+                    failure.diagnostics[0].field.as_deref(),
+                    Some("operations[0].elements[0].attributes[0].fillValue")
+                );
+                assert_eq!(working, template);
+            }
+        }
     }
 
     #[test]

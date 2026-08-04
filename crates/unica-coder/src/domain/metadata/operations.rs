@@ -1,5 +1,6 @@
 use super::{
-    MetaDiagnostic, MetaDiagnosticCode, MetaPropertyChanges, MetadataReference, MetadataType,
+    MetaDiagnostic, MetaDiagnosticCode, MetaPropertyChanges, MetadataKind, MetadataReference,
+    MetadataType,
 };
 use crate::domain::source_target::MetadataAddress;
 use serde::ser::SerializeStruct;
@@ -297,6 +298,92 @@ pub(crate) fn metadata_collection_spec(collection: MetaCollection) -> &'static M
         .expect("closed collection registry must be exhaustive")
 }
 
+/// Location of a metadata element relative to its owning metadata object.
+///
+/// The distinction is part of the public capability contract because the
+/// Platform XML profiles for an owner attribute and a tabular-section
+/// attribute are not interchangeable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum MetaElementScope {
+    TopLevel,
+    TabularSection,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MetaFillValueContextSpec {
+    pub(crate) collection: MetaCollection,
+    pub(crate) scope: MetaElementScope,
+}
+
+const TOP_LEVEL_ATTRIBUTE_FILL: MetaFillValueContextSpec = MetaFillValueContextSpec {
+    collection: MetaCollection::Attributes,
+    scope: MetaElementScope::TopLevel,
+};
+const TABULAR_ATTRIBUTE_FILL: MetaFillValueContextSpec = MetaFillValueContextSpec {
+    collection: MetaCollection::Attributes,
+    scope: MetaElementScope::TabularSection,
+};
+const TOP_LEVEL_DIMENSION_FILL: MetaFillValueContextSpec = MetaFillValueContextSpec {
+    collection: MetaCollection::Dimensions,
+    scope: MetaElementScope::TopLevel,
+};
+const TOP_LEVEL_RESOURCE_FILL: MetaFillValueContextSpec = MetaFillValueContextSpec {
+    collection: MetaCollection::Resources,
+    scope: MetaElementScope::TopLevel,
+};
+
+const ATTRIBUTE_FILL_CONTEXTS: &[MetaFillValueContextSpec] = &[TOP_LEVEL_ATTRIBUTE_FILL];
+const TABULAR_FILL_CONTEXTS: &[MetaFillValueContextSpec] = &[TABULAR_ATTRIBUTE_FILL];
+const INFORMATION_REGISTER_FILL_CONTEXTS: &[MetaFillValueContextSpec] = &[
+    TOP_LEVEL_ATTRIBUTE_FILL,
+    TOP_LEVEL_DIMENSION_FILL,
+    TOP_LEVEL_RESOURCE_FILL,
+];
+
+/// Closed FillValue capability registry for every public metadata owner kind.
+///
+/// This mirrors the exact nodes emitted by the Platform XML writer, but lives
+/// in the domain so request parsing, JSON Schema generation and the writer can
+/// consume one decision source.
+pub(crate) fn metadata_fill_value_contexts(
+    kind: MetadataKind,
+) -> &'static [MetaFillValueContextSpec] {
+    match kind {
+        MetadataKind::Catalog
+        | MetadataKind::Document
+        | MetadataKind::BusinessProcess
+        | MetadataKind::Task
+        | MetadataKind::ExchangePlan => ATTRIBUTE_FILL_CONTEXTS,
+        MetadataKind::InformationRegister => INFORMATION_REGISTER_FILL_CONTEXTS,
+        MetadataKind::Report | MetadataKind::DataProcessor => TABULAR_FILL_CONTEXTS,
+        MetadataKind::Enum
+        | MetadataKind::Constant
+        | MetadataKind::AccumulationRegister
+        | MetadataKind::AccountingRegister
+        | MetadataKind::CalculationRegister
+        | MetadataKind::ChartOfAccounts
+        | MetadataKind::ChartOfCharacteristicTypes
+        | MetadataKind::ChartOfCalculationTypes
+        | MetadataKind::DocumentJournal
+        | MetadataKind::CommonModule
+        | MetadataKind::ScheduledJob
+        | MetadataKind::EventSubscription
+        | MetadataKind::HTTPService
+        | MetadataKind::WebService
+        | MetadataKind::DefinedType => &[],
+    }
+}
+
+pub(crate) fn metadata_fill_value_is_allowed(
+    kind: MetadataKind,
+    collection: MetaCollection,
+    scope: MetaElementScope,
+) -> bool {
+    metadata_fill_value_contexts(kind)
+        .iter()
+        .any(|candidate| candidate.collection == collection && candidate.scope == scope)
+}
+
 pub(crate) fn validate_metadata_kind_collection(
     kind: super::MetadataKind,
     collection: MetaCollection,
@@ -527,6 +614,110 @@ impl MetaRelation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MetaRelationTargetPolicy {
+    /// The target must be a metadata object whose kind belongs to this closed
+    /// list.
+    MetadataKinds(&'static [MetadataKind]),
+    /// The target must be a metadata object of the exact owner kind.
+    SameOwnerKind,
+    /// The target must be a field path belonging to the exact owner object.
+    /// Field existence remains a post-image validation because earlier
+    /// operations in the same request may create or rename the field.
+    SameOwnerField,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MetaRelationSpec {
+    pub(crate) relation: MetaRelation,
+    pub(crate) target_policy: MetaRelationTargetPolicy,
+}
+
+const CATALOG_RELATION_TARGETS: &[MetadataKind] = &[MetadataKind::Catalog];
+const REGISTER_RELATION_TARGETS: &[MetadataKind] = &[
+    MetadataKind::InformationRegister,
+    MetadataKind::AccumulationRegister,
+    MetadataKind::AccountingRegister,
+    MetadataKind::CalculationRegister,
+];
+const CATALOG_RELATION_SPECS: &[MetaRelationSpec] = &[
+    MetaRelationSpec {
+        relation: MetaRelation::Owners,
+        target_policy: MetaRelationTargetPolicy::MetadataKinds(CATALOG_RELATION_TARGETS),
+    },
+    MetaRelationSpec {
+        relation: MetaRelation::BasedOn,
+        target_policy: MetaRelationTargetPolicy::SameOwnerKind,
+    },
+    MetaRelationSpec {
+        relation: MetaRelation::InputByString,
+        target_policy: MetaRelationTargetPolicy::SameOwnerField,
+    },
+];
+const DOCUMENT_RELATION_SPECS: &[MetaRelationSpec] = &[
+    MetaRelationSpec {
+        relation: MetaRelation::RegisterRecords,
+        target_policy: MetaRelationTargetPolicy::MetadataKinds(REGISTER_RELATION_TARGETS),
+    },
+    MetaRelationSpec {
+        relation: MetaRelation::BasedOn,
+        target_policy: MetaRelationTargetPolicy::SameOwnerKind,
+    },
+    MetaRelationSpec {
+        relation: MetaRelation::InputByString,
+        target_policy: MetaRelationTargetPolicy::SameOwnerField,
+    },
+];
+const BASED_ON_INPUT_RELATION_SPECS: &[MetaRelationSpec] = &[
+    MetaRelationSpec {
+        relation: MetaRelation::BasedOn,
+        target_policy: MetaRelationTargetPolicy::SameOwnerKind,
+    },
+    MetaRelationSpec {
+        relation: MetaRelation::InputByString,
+        target_policy: MetaRelationTargetPolicy::SameOwnerField,
+    },
+];
+
+/// Relations physically present in the minimal Platform XML template for an
+/// owner kind, together with the target policy enforced by typed mutation.
+pub(crate) fn metadata_relation_specs(kind: MetadataKind) -> &'static [MetaRelationSpec] {
+    match kind {
+        MetadataKind::Catalog => CATALOG_RELATION_SPECS,
+        MetadataKind::Document => DOCUMENT_RELATION_SPECS,
+        MetadataKind::ChartOfAccounts
+        | MetadataKind::ChartOfCharacteristicTypes
+        | MetadataKind::ChartOfCalculationTypes
+        | MetadataKind::BusinessProcess
+        | MetadataKind::Task
+        | MetadataKind::ExchangePlan => BASED_ON_INPUT_RELATION_SPECS,
+        MetadataKind::Enum
+        | MetadataKind::Constant
+        | MetadataKind::InformationRegister
+        | MetadataKind::AccumulationRegister
+        | MetadataKind::AccountingRegister
+        | MetadataKind::CalculationRegister
+        | MetadataKind::DocumentJournal
+        | MetadataKind::Report
+        | MetadataKind::DataProcessor
+        | MetadataKind::CommonModule
+        | MetadataKind::ScheduledJob
+        | MetadataKind::EventSubscription
+        | MetadataKind::HTTPService
+        | MetadataKind::WebService
+        | MetadataKind::DefinedType => &[],
+    }
+}
+
+pub(crate) fn metadata_relation_spec(
+    kind: MetadataKind,
+    relation: MetaRelation,
+) -> Option<&'static MetaRelationSpec> {
+    metadata_relation_specs(kind)
+        .iter()
+        .find(|spec| spec.relation == relation)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RelationEditMode {
     Add,
     Remove,
@@ -692,6 +883,208 @@ impl MetadataFieldPath {
             value: value.to_string(),
         })
     }
+}
+
+/// Validate the static relation profile. Dynamic field existence is
+/// intentionally not checked here: earlier operations in one atomic request
+/// may create or rename an inputByString field, so that check belongs to the
+/// final private post-image.
+pub(crate) fn validate_metadata_relation_target_profile(
+    owner_kind: MetadataKind,
+    owner: &MetadataAddress,
+    relation: MetaRelation,
+    target: &MetaRelationTarget,
+) -> Result<(), MetaDiagnostic> {
+    if owner.segments().next() != Some(owner_kind.as_str()) {
+        return Err(invalid_operation(
+            "metadataPath",
+            "metadata owner kind does not match its logical address",
+        ));
+    }
+    let spec = metadata_relation_spec(owner_kind, relation).ok_or_else(|| {
+        MetaDiagnostic::error(
+            MetaDiagnosticCode::UnsupportedKind,
+            format!(
+                "relation `{}` is not supported for {}",
+                relation.as_str(),
+                owner_kind.as_str()
+            ),
+        )
+        .with_field("relation")
+    })?;
+
+    match (spec.target_policy, target) {
+        (
+            MetaRelationTargetPolicy::MetadataKinds(allowed),
+            MetaRelationTarget::Object(reference),
+        ) => {
+            let target_kind = reference
+                .metadata_path
+                .segments()
+                .next()
+                .and_then(|name| MetadataKind::parse(name).ok());
+            if target_kind.is_some_and(|kind| allowed.contains(&kind)) {
+                Ok(())
+            } else {
+                Err(invalid_operation(
+                    "targets",
+                    format!(
+                        "relation `{}` target kind is not allowed for {}",
+                        relation.as_str(),
+                        owner_kind.as_str()
+                    ),
+                ))
+            }
+        }
+        (MetaRelationTargetPolicy::SameOwnerKind, MetaRelationTarget::Object(reference)) => {
+            if reference.metadata_path.segments().next() == Some(owner_kind.as_str()) {
+                Ok(())
+            } else {
+                Err(invalid_operation(
+                    "targets",
+                    "basedOn target kind must match the edited object kind",
+                ))
+            }
+        }
+        (MetaRelationTargetPolicy::SameOwnerField, MetaRelationTarget::Field(field)) => {
+            if &field.owner == owner {
+                Ok(())
+            } else {
+                Err(invalid_operation(
+                    "targets",
+                    "inputByString field must belong to the edited object",
+                ))
+            }
+        }
+        (MetaRelationTargetPolicy::SameOwnerField, MetaRelationTarget::Object(_)) => Err(
+            invalid_operation("targets", "inputByString requires typed field paths"),
+        ),
+        (
+            MetaRelationTargetPolicy::MetadataKinds(_) | MetaRelationTargetPolicy::SameOwnerKind,
+            MetaRelationTarget::Field(_),
+        ) => Err(invalid_operation(
+            "targets",
+            "metadata object relation requires metadata object targets",
+        )),
+    }
+}
+
+/// Validate every owner-dependent part of one already parsed typed operation.
+/// This is the shared bridge for the public parser, schema and provider: it
+/// rejects the complete operation before the provider mutates its private
+/// working image.
+pub(crate) fn validate_metadata_operation_capabilities(
+    owner_kind: MetadataKind,
+    owner: &MetadataAddress,
+    operation: &MetaEditOperation,
+) -> Result<(), MetaDiagnostic> {
+    match operation {
+        MetaEditOperation::SetProperties { .. } => Ok(()),
+        MetaEditOperation::Add {
+            collection,
+            scope,
+            elements,
+        } => {
+            validate_metadata_kind_collection(owner_kind, *collection)?;
+            for (index, element) in elements.iter().enumerate() {
+                validate_element_fill_value_capability(
+                    owner_kind,
+                    *collection,
+                    if scope.is_some() {
+                        MetaElementScope::TabularSection
+                    } else {
+                        MetaElementScope::TopLevel
+                    },
+                    element,
+                    &format!("elements[{index}]"),
+                )?;
+            }
+            Ok(())
+        }
+        MetaEditOperation::Update {
+            collection,
+            scope,
+            elements,
+        } => {
+            validate_metadata_kind_collection(owner_kind, *collection)?;
+            let context = if scope.is_some() {
+                MetaElementScope::TabularSection
+            } else {
+                MetaElementScope::TopLevel
+            };
+            for (index, element) in elements.iter().enumerate() {
+                if element.fill_value.is_some()
+                    && !metadata_fill_value_is_allowed(owner_kind, *collection, context)
+                {
+                    return Err(invalid_operation(
+                        format!("elements[{index}].fillValue"),
+                        "fillValue is not available for this metadata field context",
+                    ));
+                }
+            }
+            Ok(())
+        }
+        MetaEditOperation::Remove { collection, .. } => {
+            validate_metadata_kind_collection(owner_kind, *collection)
+        }
+        MetaEditOperation::EditRelations {
+            relation, targets, ..
+        } => {
+            // Validate availability even before inspecting targets so an empty
+            // or forged operation cannot turn an absent Platform XML node into
+            // a provider concern.
+            if metadata_relation_spec(owner_kind, *relation).is_none() {
+                return Err(MetaDiagnostic::error(
+                    MetaDiagnosticCode::UnsupportedKind,
+                    format!(
+                        "relation `{}` is not supported for {}",
+                        relation.as_str(),
+                        owner_kind.as_str()
+                    ),
+                )
+                .with_field("relation"));
+            }
+            for (index, target) in targets.iter().enumerate() {
+                validate_metadata_relation_target_profile(owner_kind, owner, *relation, target)
+                    .map_err(|mut diagnostic| {
+                        if diagnostic.field.as_deref() == Some("targets") {
+                            diagnostic.field = Some(format!("targets[{index}]"));
+                        }
+                        diagnostic
+                    })?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn validate_element_fill_value_capability(
+    owner_kind: MetadataKind,
+    collection: MetaCollection,
+    scope: MetaElementScope,
+    element: &MetaElementDefinition,
+    field: &str,
+) -> Result<(), MetaDiagnostic> {
+    if element.fill_value.is_some()
+        && !metadata_fill_value_is_allowed(owner_kind, collection, scope)
+    {
+        return Err(invalid_operation(
+            format!("{field}.fillValue"),
+            "fillValue is not available for this metadata field context",
+        ));
+    }
+    if collection == MetaCollection::TabularSections {
+        for (index, attribute) in element.attributes.iter().enumerate() {
+            validate_element_fill_value_capability(
+                owner_kind,
+                MetaCollection::Attributes,
+                MetaElementScope::TabularSection,
+                attribute,
+                &format!("{field}.attributes[{index}]"),
+            )?;
+        }
+    }
+    Ok(())
 }
 
 impl MetaEditOperation {
@@ -977,6 +1370,223 @@ mod tests {
             MetaEditOperationTag::parse("patch").unwrap_err(),
         ] {
             assert_eq!(diagnostic.code, MetaDiagnosticCode::InvalidArguments);
+        }
+    }
+
+    #[test]
+    fn relation_capability_registry_correlates_owner_and_target_profiles() {
+        use MetadataKind::*;
+
+        let relation_names = |kind| {
+            metadata_relation_specs(kind)
+                .iter()
+                .map(|spec| spec.relation.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            relation_names(Catalog),
+            ["owners", "basedOn", "inputByString"]
+        );
+        assert_eq!(
+            relation_names(Document),
+            ["registerRecords", "basedOn", "inputByString"]
+        );
+        for kind in [
+            ChartOfAccounts,
+            ChartOfCharacteristicTypes,
+            ChartOfCalculationTypes,
+            BusinessProcess,
+            Task,
+            ExchangePlan,
+        ] {
+            assert_eq!(relation_names(kind), ["basedOn", "inputByString"]);
+        }
+        for kind in [
+            Enum,
+            Constant,
+            InformationRegister,
+            AccumulationRegister,
+            AccountingRegister,
+            CalculationRegister,
+            DocumentJournal,
+            Report,
+            DataProcessor,
+            CommonModule,
+            ScheduledJob,
+            EventSubscription,
+            HTTPService,
+            WebService,
+            DefinedType,
+        ] {
+            assert!(
+                metadata_relation_specs(kind).is_empty(),
+                "{}",
+                kind.as_str()
+            );
+        }
+
+        assert_eq!(
+            metadata_relation_spec(Catalog, MetaRelation::Owners)
+                .unwrap()
+                .target_policy,
+            MetaRelationTargetPolicy::MetadataKinds(&[Catalog])
+        );
+        assert_eq!(
+            metadata_relation_spec(Document, MetaRelation::RegisterRecords)
+                .unwrap()
+                .target_policy,
+            MetaRelationTargetPolicy::MetadataKinds(&[
+                InformationRegister,
+                AccumulationRegister,
+                AccountingRegister,
+                CalculationRegister,
+            ])
+        );
+        assert_eq!(
+            metadata_relation_spec(Task, MetaRelation::BasedOn)
+                .unwrap()
+                .target_policy,
+            MetaRelationTargetPolicy::SameOwnerKind
+        );
+        assert_eq!(
+            metadata_relation_spec(Task, MetaRelation::InputByString)
+                .unwrap()
+                .target_policy,
+            MetaRelationTargetPolicy::SameOwnerField
+        );
+    }
+
+    #[test]
+    fn relation_capability_validation_rejects_cross_kind_and_cross_owner_targets() {
+        let catalog = MetadataAddress::parse(
+            crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+            "Catalog.Items",
+        )
+        .unwrap();
+        let document = MetadataAddress::parse(
+            crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+            "Document.Order",
+        )
+        .unwrap();
+        let object_target = |path: &str| {
+            MetaRelationTarget::Object(MetadataReference {
+                metadata_path: MetadataAddress::parse(
+                    crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                    path,
+                )
+                .unwrap(),
+            })
+        };
+
+        assert!(validate_metadata_relation_target_profile(
+            MetadataKind::Catalog,
+            &catalog,
+            MetaRelation::Owners,
+            &object_target("Catalog.Parent"),
+        )
+        .is_ok());
+        assert!(validate_metadata_relation_target_profile(
+            MetadataKind::Catalog,
+            &catalog,
+            MetaRelation::Owners,
+            &object_target("Document.Parent"),
+        )
+        .is_err());
+        assert!(validate_metadata_relation_target_profile(
+            MetadataKind::Document,
+            &document,
+            MetaRelation::RegisterRecords,
+            &object_target("InformationRegister.Facts"),
+        )
+        .is_ok());
+        assert!(validate_metadata_relation_target_profile(
+            MetadataKind::Document,
+            &document,
+            MetaRelation::RegisterRecords,
+            &object_target("Catalog.Items"),
+        )
+        .is_err());
+
+        let own_field = MetaRelationTarget::Field(
+            MetadataFieldPath::parse("Document.Order.StandardAttribute.Number").unwrap(),
+        );
+        let foreign_field = MetaRelationTarget::Field(
+            MetadataFieldPath::parse("Document.Quote.StandardAttribute.Number").unwrap(),
+        );
+        assert!(validate_metadata_relation_target_profile(
+            MetadataKind::Document,
+            &document,
+            MetaRelation::InputByString,
+            &own_field,
+        )
+        .is_ok());
+        assert!(validate_metadata_relation_target_profile(
+            MetadataKind::Document,
+            &document,
+            MetaRelation::InputByString,
+            &foreign_field,
+        )
+        .is_err());
+        assert!(validate_metadata_relation_target_profile(
+            MetadataKind::Enum,
+            &MetadataAddress::parse(
+                crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                "Enum.State",
+            )
+            .unwrap(),
+            MetaRelation::BasedOn,
+            &object_target("Enum.Other"),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn fill_value_capability_registry_is_owner_collection_and_scope_specific() {
+        use MetaCollection::*;
+        use MetaElementScope::*;
+        use MetadataKind::*;
+
+        for kind in [
+            Catalog,
+            Document,
+            InformationRegister,
+            BusinessProcess,
+            Task,
+            ExchangePlan,
+        ] {
+            assert!(metadata_fill_value_is_allowed(kind, Attributes, TopLevel));
+        }
+        for kind in [
+            ChartOfAccounts,
+            ChartOfCharacteristicTypes,
+            ChartOfCalculationTypes,
+            AccumulationRegister,
+            AccountingRegister,
+            CalculationRegister,
+            Report,
+            DataProcessor,
+        ] {
+            assert!(!metadata_fill_value_is_allowed(kind, Attributes, TopLevel));
+        }
+        for kind in MetadataKind::ALL {
+            assert_eq!(
+                metadata_fill_value_is_allowed(*kind, Attributes, TabularSection),
+                matches!(kind, Report | DataProcessor),
+                "{}",
+                kind.as_str()
+            );
+            assert_eq!(
+                metadata_fill_value_is_allowed(*kind, Dimensions, TopLevel),
+                *kind == InformationRegister,
+                "{} dimensions",
+                kind.as_str()
+            );
+            assert_eq!(
+                metadata_fill_value_is_allowed(*kind, Resources, TopLevel),
+                *kind == InformationRegister,
+                "{} resources",
+                kind.as_str()
+            );
         }
     }
 
