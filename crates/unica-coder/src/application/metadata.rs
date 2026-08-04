@@ -1322,32 +1322,7 @@ fn operation_schema() -> Value {
         }),
     );
 
-    let mut edit_relations = Map::new();
-    edit_relations.insert(
-        "relation".into(),
-        json!({
-            "type": "string",
-            "enum": MetaRelation::ALL.iter().copied().map(MetaRelation::as_str).collect::<Vec<_>>(),
-            "description": "Metadata relation to edit.",
-        }),
-    );
-    edit_relations.insert(
-        "mode".into(),
-        json!({
-            "type": "string",
-            "enum": RelationEditMode::ALL.iter().copied().map(RelationEditMode::as_str).collect::<Vec<_>>(),
-            "description": "Whether relation targets are added, removed, or replaced.",
-        }),
-    );
-    edit_relations.insert(
-        "targets".into(),
-        json!({
-            "type": "array",
-            "minItems": 1,
-            "description": "Target metadata objects or field paths for the relation.",
-            "items": relation_target_schema(),
-        }),
-    );
+    let edit_relations = edit_relations_schema();
 
     json!({
         "oneOf": [
@@ -1371,11 +1346,7 @@ fn operation_schema() -> Value {
                 remove,
                 &["op", "collection", "names"],
             ),
-            tagged_operation_variant(
-                MetaEditOperationTag::EditRelations,
-                edit_relations,
-                &["op", "relation", "mode", "targets"],
-            ),
+            edit_relations,
         ],
         "description": "Exactly one typed metadata edit operation.",
     })
@@ -1424,6 +1395,73 @@ fn collection_schema() -> Value {
         "enum": MetaCollection::ALL.iter().copied().map(MetaCollection::as_str).collect::<Vec<_>>(),
         "description": "Metadata child collection to change.",
     })
+}
+
+fn edit_relations_schema() -> Value {
+    let mut properties = Map::new();
+    properties.insert(
+        "relation".into(),
+        json!({
+            "type": "string",
+            "enum": MetaRelation::ALL.iter().copied().map(MetaRelation::as_str).collect::<Vec<_>>(),
+            "description": "Metadata relation to edit.",
+        }),
+    );
+    properties.insert(
+        "mode".into(),
+        json!({
+            "type": "string",
+            "enum": RelationEditMode::ALL.iter().copied().map(RelationEditMode::as_str).collect::<Vec<_>>(),
+            "description": "Whether relation targets are added, removed, or replaced.",
+        }),
+    );
+    properties.insert(
+        "targets".into(),
+        json!({
+            "type": "array",
+            "minItems": 1,
+            "description": "Target metadata objects or field paths for the relation.",
+            "items": relation_target_schema(),
+        }),
+    );
+    let mut schema = tagged_operation_variant(
+        MetaEditOperationTag::EditRelations,
+        properties,
+        &["op", "relation", "mode", "targets"],
+    );
+    schema
+        .as_object_mut()
+        .expect("edit relation operation schema is always an object")
+        .insert(
+            "oneOf".into(),
+            json!([
+                {
+                    "properties": {
+                        "relation": {
+                            "type": "string",
+                            "enum": ["owners", "registerRecords", "basedOn"],
+                        },
+                        "targets": {
+                            "type": "array",
+                            "items": metadata_relation_target_schema(),
+                        },
+                    },
+                },
+                {
+                    "properties": {
+                        "relation": {
+                            "type": "string",
+                            "enum": ["inputByString"],
+                        },
+                        "targets": {
+                            "type": "array",
+                            "items": field_relation_target_schema(),
+                        },
+                    },
+                },
+            ]),
+        );
+    schema
 }
 
 fn property_values_schema() -> Value {
@@ -1479,32 +1517,40 @@ fn scope_schema() -> Value {
 fn relation_target_schema() -> Value {
     json!({
         "oneOf": [
-            {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                    "metadataPath": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "Logical metadata path of the related object.",
-                    },
-                },
-                "required": ["metadataPath"],
-            },
-            {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                    "fieldPath": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "Logical field path used by an input-by-string relation.",
-                    },
-                },
-                "required": ["fieldPath"],
-            },
+            metadata_relation_target_schema(),
+            field_relation_target_schema(),
         ],
         "description": "One relation target, expressed as an object or field reference.",
+    })
+}
+
+fn metadata_relation_target_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "metadataPath": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Logical metadata path of the related object.",
+            },
+        },
+        "required": ["metadataPath"],
+    })
+}
+
+fn field_relation_target_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "fieldPath": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Logical field path used by an input-by-string relation.",
+            },
+        },
+        "required": ["fieldPath"],
     })
 }
 
@@ -2415,6 +2461,41 @@ mod tests {
             assert_eq!(variant["additionalProperties"], json!(false));
             assert_eq!(variant["required"], json!(required));
         }
+    }
+
+    #[test]
+    fn edit_schema_rejects_relation_target_cross_products() {
+        let schema = metadata_input_schema(MetadataOperation::Edit);
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let invalid_owners_target = json!({
+            "sourceSet": "main",
+            "metadataPath": "Document.Order",
+            "operations": [{
+                "op": "editRelations",
+                "relation": "owners",
+                "mode": "add",
+                "targets": [{"fieldPath": "Catalog.Items.StandardAttribute.Code"}],
+            }],
+        });
+        let invalid_input_by_string_target = json!({
+            "sourceSet": "main",
+            "metadataPath": "Document.Order",
+            "operations": [{
+                "op": "editRelations",
+                "relation": "inputByString",
+                "mode": "add",
+                "targets": [{"metadataPath": "Catalog.Items"}],
+            }],
+        });
+
+        assert!(
+            !validator.is_valid(&invalid_owners_target),
+            "owners must reject fieldPath targets"
+        );
+        assert!(
+            !validator.is_valid(&invalid_input_by_string_target),
+            "inputByString must reject metadataPath targets"
+        );
     }
 
     #[test]
