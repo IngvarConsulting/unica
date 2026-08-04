@@ -1947,7 +1947,7 @@ fn type_variant_schema() -> Value {
     let mut binary_data = tagged_type_variant(
         "binaryData",
         json!({
-            "length": {"type": "integer", "minimum": 0, "maximum": 1024, "description": "Maximum binary data length."},
+            "length": {"type": "integer", "minimum": 0, "description": "Maximum binary data length."},
             "allowedLength": {"type": "string", "enum": ["variable", "fixed"], "description": "Whether the binary data length is variable or fixed."},
         }),
         &["kind", "length", "allowedLength"],
@@ -3241,6 +3241,48 @@ mod tests {
     }
 
     #[test]
+    fn binary_data_length_schema_and_parser_follow_the_closed_domain_bounds() {
+        let schema = metadata_input_schema(MetadataOperation::Edit);
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let call = |length| {
+            json!({
+                "sourceSet": "main",
+                "metadataPath": "Document.Order",
+                "operations": [{
+                    "op": "add",
+                    "collection": "attributes",
+                    "elements": [{
+                        "name": "Payload",
+                        "type": {"variants": [{
+                            "kind": "binaryData",
+                            "length": length,
+                            "allowedLength": "fixed",
+                        }]},
+                    }],
+                }],
+            })
+        };
+
+        let valid = call(2_000);
+        assert!(
+            validator.is_valid(&valid),
+            "schema rejected runtime-valid binaryData length: {valid}"
+        );
+        parse_metadata_request(MetadataOperation::Edit, valid.as_object().unwrap())
+            .unwrap_or_else(|error| panic!("parser rejected {valid}: {error:?}"));
+
+        let invalid = call(0);
+        assert!(
+            !validator.is_valid(&invalid),
+            "schema accepted zero-length fixed binaryData: {invalid}"
+        );
+        assert!(
+            parse_metadata_request(MetadataOperation::Edit, invalid.as_object().unwrap()).is_err(),
+            "parser accepted zero-length fixed binaryData: {invalid}"
+        );
+    }
+
+    #[test]
     fn parser_rejects_a_collection_outside_the_owner_kind_registry() {
         let call = json!({
             "sourceSet": "main",
@@ -3372,52 +3414,11 @@ mod tests {
             Value::Object(element)
         }
 
-        fn assert_published_branch(root: &Value, schema: &Value, operation: &Value) {
-            let tag = operation["op"].as_str().unwrap();
-            let variant = schema["oneOf"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|variant| resolve_definition(root, variant))
-                .find(|variant| variant["properties"]["op"]["enum"] == json!([tag]))
-                .unwrap_or_else(|| panic!("missing schema branch for {tag}: {operation}"));
-            if let Some(collection) = operation.get("collection").and_then(Value::as_str) {
-                let _collection_branch = variant["oneOf"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .find(|branch| {
-                        branch["properties"]["collection"]["enum"] == json!([collection])
-                    })
-                    .unwrap_or_else(|| {
-                        panic!("missing {tag}/{collection} schema branch: {operation}")
-                    });
-                if let Some(element) = operation
-                    .get("elements")
-                    .and_then(Value::as_array)
-                    .and_then(|elements| elements.first())
-                    .and_then(Value::as_object)
-                {
-                    let parsed_collection = MetaCollection::parse(collection).unwrap();
-                    let element_schema = if tag == "add" {
-                        add_element_schema(parsed_collection)
-                    } else {
-                        update_element_schema(parsed_collection)
-                    };
-                    let published = element_schema["properties"].as_object().unwrap();
-                    for field in element.keys() {
-                        assert!(
-                            published.contains_key(field),
-                            "{tag}/{collection} schema omitted legal field {field}"
-                        );
-                    }
-                }
-            }
-        }
-
-        let root = metadata_input_schema(MetadataOperation::Edit);
+        let add_schema = metadata_input_schema(MetadataOperation::Add);
+        let add_validator = jsonschema::validator_for(&add_schema).unwrap();
+        let edit_schema = metadata_input_schema(MetadataOperation::Edit);
+        let edit_validator = jsonschema::validator_for(&edit_schema).unwrap();
         for kind in MetadataKind::ALL {
-            let schema = operation_schema_for_kind(&root, *kind);
             let common_operations = [
                 json!({"op": "setProperties", "values": {"Comment": "typed"}}),
                 json!({
@@ -3451,13 +3452,16 @@ mod tests {
                 });
 
             for operation in common_operations.into_iter().chain(collection_operations) {
-                assert_published_branch(&root, schema, &operation);
                 let add_call = json!({
                     "sourceSet": "main",
                     "kind": kind.as_str(),
                     "name": "Object",
                     "operations": [operation.clone()],
                 });
+                assert!(
+                    add_validator.is_valid(&add_call),
+                    "published add schema rejected {add_call}"
+                );
                 parse_metadata_request(MetadataOperation::Add, add_call.as_object().unwrap())
                     .unwrap_or_else(|error| panic!("conversion rejected {add_call}: {error:?}"));
 
@@ -3466,6 +3470,10 @@ mod tests {
                     "metadataPath": format!("{}.Object", kind.as_str()),
                     "operations": [operation],
                 });
+                assert!(
+                    edit_validator.is_valid(&edit_call),
+                    "published edit schema rejected {edit_call}"
+                );
                 parse_metadata_request(MetadataOperation::Edit, edit_call.as_object().unwrap())
                     .unwrap_or_else(|error| panic!("conversion rejected {edit_call}: {error:?}"));
             }
@@ -3493,12 +3501,15 @@ mod tests {
                         "names": ["Nested"],
                     }),
                 ] {
-                    assert_published_branch(&root, schema, &operation);
                     let call = json!({
                         "sourceSet": "main",
                         "metadataPath": format!("{}.Object", kind.as_str()),
                         "operations": [operation],
                     });
+                    assert!(
+                        edit_validator.is_valid(&call),
+                        "published edit schema rejected scoped operation {call}"
+                    );
                     parse_metadata_request(MetadataOperation::Edit, call.as_object().unwrap())
                         .unwrap_or_else(|error| panic!("conversion rejected {call}: {error:?}"));
                 }
