@@ -289,6 +289,92 @@ class UnicaMcpSmokeTests(unittest.TestCase):
         self.assertIn("unica.runtime.execute", tools)
         self.assertIn("unica.standards.explain", tools)
 
+    def test_meta_calls_publish_structured_results(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            (root / "src").mkdir(parents=True)
+            (root / "v8project.yaml").write_text(
+                "format: DESIGNER\nsource-set:\n"
+                "  - name: main\n    type: CONFIGURATION\n    path: src\n",
+                encoding="utf-8",
+            )
+            fixture = (
+                self.repo_root()
+                / "tests/fixtures/unica_mcp_script_parity/meta-validate-language-aware"
+            )
+            for source in fixture.rglob("*"):
+                if source.is_file():
+                    target = root / "src" / source.relative_to(fixture)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(source.read_bytes())
+            with self.mcp_session(
+                cache_dir=Path(tmp) / "cache", workdir=root
+            ) as request:
+                listed = request(
+                    {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
+                )
+                tools = {tool["name"]: tool for tool in listed["result"]["tools"]}
+                schemas = [tools[name]["outputSchema"] for name in sorted(source_smoke_oracle().META_TOOL_NAMES)]
+                self.assertTrue(all(schema == schemas[0] for schema in schemas[1:]))
+                self.assertEqual(
+                    schemas[0], source_smoke_oracle().EXPECTED_META_OUTPUT_SCHEMA
+                )
+                self.assertEqual(schemas[0]["type"], "object")
+                self.assertFalse(schemas[0]["additionalProperties"])
+                self.assertEqual(
+                    schemas[0]["required"],
+                    ["ok", "summary", "changes", "warnings", "errors", "artifacts", "cache"],
+                )
+                self.assertNotIn("outputSchema", tools["unica.project.status"])
+
+                success = request(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 3,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "unica.meta.add",
+                            "arguments": {
+                                "sourceSet": "main",
+                                "kind": "Catalog",
+                                "name": "Items",
+                            },
+                        },
+                    }
+                )
+                self.assertNotIn("error", success, success)
+                success_result = success["result"]
+                self.assertEqual(
+                    json.loads(success_result["content"][0]["text"]),
+                    success_result["structuredContent"],
+                )
+                self.assertTrue(success_result["structuredContent"]["ok"])
+                self.assertFalse(success_result["isError"])
+
+                invalid = request(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 4,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "unica.meta.info",
+                            "arguments": {},
+                        },
+                    }
+                )
+                self.assertNotIn("error", invalid, invalid)
+                invalid_result = invalid["result"]
+                self.assertEqual(
+                    json.loads(invalid_result["content"][0]["text"]),
+                    invalid_result["structuredContent"],
+                )
+                self.assertFalse(invalid_result["structuredContent"]["ok"])
+                self.assertEqual(
+                    invalid_result["structuredContent"]["diagnostics"][0]["code"],
+                    "invalid_arguments",
+                )
+                self.assertTrue(invalid_result["isError"])
+
     def test_source_resources_cover_configuration_and_extension_through_one_jsonrpc_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             temp = Path(tmp)
@@ -581,8 +667,8 @@ class UnicaMcpSmokeTests(unittest.TestCase):
                 self.assertEqual(info["data"]["metadataPath"], address)
                 # The owners used to be a printed line; ADR-0023 makes them data.
                 self.assertEqual(
-                    info["data"]["owners"],
-                    [{"metadataPath": "Catalog.Kinds"}],
+                    info["data"]["relations"]["owners"],
+                    [{"kind": "object", "value": "Catalog.Kinds"}],
                 )
                 self.assertNotIn("stdout", info)
 
@@ -590,13 +676,21 @@ class UnicaMcpSmokeTests(unittest.TestCase):
                     "unica.meta.info",
                     {"ObjectPath": "src/Catalogs/Goods.xml"},
                 )
-                self.assertEqual(legacy["error"]["code"], -32000)
+                self.assertNotIn("error", legacy, legacy)
+                legacy_result = legacy["result"]
+                legacy_payload = json.loads(legacy_result["content"][0]["text"])
+                self.assertEqual(legacy_result["structuredContent"], legacy_payload)
+                self.assertTrue(legacy_result["isError"])
+                self.assertFalse(legacy_payload["ok"])
+                self.assertEqual(
+                    legacy_payload["diagnostics"][0]["code"], "invalid_arguments"
+                )
                 self.assertIn(
                     "does not accept argument `ObjectPath`",
-                    legacy["error"]["message"],
+                    legacy_payload["diagnostics"][0]["message"],
                 )
-                self.assertIn("sourceSet", legacy["error"]["message"])
-                self.assertIn("metadataPath", legacy["error"]["message"])
+                self.assertIn("sourceSet", legacy_payload["diagnostics"][0]["message"])
+                self.assertIn("metadataPath", legacy_payload["diagnostics"][0]["message"])
 
                 missing = call(
                     "unica.source.resources",

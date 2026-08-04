@@ -115,6 +115,69 @@ pub struct OperationResult {
     pub job: Option<Value>,
 }
 
+/// Closed MCP envelope shared by the four typed Meta operations.
+///
+/// Operation-specific payloads deliberately remain unconstrained JSON values;
+/// the stable envelope and cache report stay machine-checkable.
+pub fn operation_result_output_schema() -> Value {
+    let string_array = || json!({"type": "array", "items": {"type": "string"}});
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "ok": {"type": "boolean"},
+            "summary": {"type": "string"},
+            "changes": string_array(),
+            "warnings": string_array(),
+            "errors": string_array(),
+            "artifacts": string_array(),
+            "cache": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "mode": {"type": "string"},
+                    "root": {"type": "string"},
+                    "workspace_epoch": {"type": "integer", "minimum": 0},
+                    "events": string_array(),
+                    "invalidated": string_array(),
+                    "refreshed": string_array(),
+                    "lazy_rebuilt": string_array(),
+                    "stale": string_array(),
+                    "fresh": string_array()
+                },
+                "required": [
+                    "mode", "root", "workspace_epoch", "events", "invalidated",
+                    "refreshed", "lazy_rebuilt", "stale", "fresh"
+                ]
+            },
+            "stdout": {"type": "string"},
+            "stderr": {"type": "string"},
+            "command": string_array(),
+            "diagnostics": {},
+            "data": {},
+            "job": {}
+        },
+        "required": [
+            "ok", "summary", "changes", "warnings", "errors", "artifacts", "cache"
+        ]
+    })
+}
+
+/// Project invalid Meta arguments into the stable operation envelope for an
+/// MCP adapter without changing the direct application-call error contract.
+pub fn metadata_argument_failure_result(
+    name: &str,
+    args: &Map<String, Value>,
+) -> Option<OperationResult> {
+    let spec = tools().into_iter().find(|tool| tool.name == name)?;
+    let ToolHandler::Metadata { operation } = spec.handler else {
+        return None;
+    };
+    metadata::parse_metadata_request(operation, args)
+        .err()
+        .map(invalid_metadata_arguments_result)
+}
+
 /// Public application entry point.
 pub struct UnicaApplication {
     ports: Arc<dyn ApplicationPorts + Send + Sync>,
@@ -719,6 +782,42 @@ fn call_tool(
         data: handler_outcome.data,
         job: handler_outcome.job,
     })
+}
+
+fn invalid_metadata_arguments_result(failure: metadata::MetaFailure) -> OperationResult {
+    let errors = failure
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.message.clone())
+        .collect();
+    let diagnostics = serde_json::to_value(&failure.diagnostics)
+        .expect("metadata diagnostics are always serializable");
+    OperationResult {
+        ok: false,
+        summary: "metadata arguments are invalid".to_string(),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors,
+        artifacts: Vec::new(),
+        cache: CacheReport {
+            mode: "read".to_string(),
+            root: String::new(),
+            workspace_epoch: 0,
+            events: Vec::new(),
+            invalidated: Vec::new(),
+            refreshed: Vec::new(),
+            lazy_rebuilt: Vec::new(),
+            stale: Vec::new(),
+            fresh: Vec::new(),
+            publication_warnings: Vec::new(),
+        },
+        stdout: None,
+        stderr: None,
+        command: None,
+        diagnostics: Some(diagnostics),
+        data: None,
+        job: None,
+    }
 }
 
 #[derive(Clone, Debug)]

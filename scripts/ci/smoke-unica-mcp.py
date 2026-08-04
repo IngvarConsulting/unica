@@ -30,6 +30,59 @@ META_TOOL_NAMES = {
     "unica.meta.edit",
     "unica.meta.remove",
 }
+EXPECTED_META_OUTPUT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "ok": {"type": "boolean"},
+        "summary": {"type": "string"},
+        "changes": {"type": "array", "items": {"type": "string"}},
+        "warnings": {"type": "array", "items": {"type": "string"}},
+        "errors": {"type": "array", "items": {"type": "string"}},
+        "artifacts": {"type": "array", "items": {"type": "string"}},
+        "cache": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "mode": {"type": "string"},
+                "root": {"type": "string"},
+                "workspace_epoch": {"type": "integer", "minimum": 0},
+                "events": {"type": "array", "items": {"type": "string"}},
+                "invalidated": {"type": "array", "items": {"type": "string"}},
+                "refreshed": {"type": "array", "items": {"type": "string"}},
+                "lazy_rebuilt": {"type": "array", "items": {"type": "string"}},
+                "stale": {"type": "array", "items": {"type": "string"}},
+                "fresh": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": [
+                "mode",
+                "root",
+                "workspace_epoch",
+                "events",
+                "invalidated",
+                "refreshed",
+                "lazy_rebuilt",
+                "stale",
+                "fresh",
+            ],
+        },
+        "stdout": {"type": "string"},
+        "stderr": {"type": "string"},
+        "command": {"type": "array", "items": {"type": "string"}},
+        "diagnostics": {},
+        "data": {},
+        "job": {},
+    },
+    "required": [
+        "ok",
+        "summary",
+        "changes",
+        "warnings",
+        "errors",
+        "artifacts",
+        "cache",
+    ],
+}
 
 
 def _valid_unica_tool_name(value: object) -> bool:
@@ -1067,6 +1120,23 @@ def _source_workspace(root: Path) -> None:
         (root / source_set / "CommonModules/Shared/Ext/Module.bsl").write_bytes(
             ("\ufeffProcedure " + module + "()\r\nEndProcedure\r\n").encode("utf-8")
         )
+    meta_fixture = (
+        Path(__file__).resolve().parents[2]
+        / "tests/fixtures/unica_mcp_script_parity/meta-validate-language-aware"
+    )
+    for fixture_path in meta_fixture.rglob("*"):
+        if fixture_path.is_file():
+            target = root / "src" / fixture_path.relative_to(meta_fixture)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(fixture_path.read_bytes())
+    configuration = root / "src/Configuration.xml"
+    configuration.write_text(
+        configuration.read_text(encoding="utf-8").replace(
+            "\t\t</ChildObjects>",
+            "\t\t\t<CommonModule>Shared</CommonModule>\n\t\t</ChildObjects>",
+        ),
+        encoding="utf-8",
+    )
 
 
 def _assert_path_free(value: object) -> None:
@@ -1141,7 +1211,14 @@ def expected_source_flow_projection(source_set: str) -> dict:
 
 
 class McpSession:
-    def __init__(self, command: list[str], environment: dict[str, str], timeout_seconds: float) -> None:
+    def __init__(
+        self,
+        command: list[str],
+        environment: dict[str, str],
+        timeout_seconds: float,
+        *,
+        cwd: Path,
+    ) -> None:
         self.process = subprocess.Popen(
             command,
             stdin=subprocess.PIPE,
@@ -1150,6 +1227,7 @@ class McpSession:
             text=True,
             encoding="utf-8",
             env=environment,
+            cwd=cwd,
         )
         assert self.process.stdin is not None
         assert self.process.stdout is not None
@@ -1229,14 +1307,38 @@ class McpSession:
 def _tool_payload(response: dict) -> dict:
     if "error" in response:
         raise SystemExit(f"Unica MCP tools/call failed: {response['error']}")
+    result = response.get("result")
+    if not isinstance(result, dict) or "structuredContent" in result:
+        raise SystemExit(
+            f"non-Meta Unica MCP call unexpectedly changed wire representation: {response}"
+        )
     try:
-        payload = json.loads(response["result"]["content"][0]["text"])
+        payload = json.loads(result["content"][0]["text"])
     except (KeyError, IndexError, TypeError, json.JSONDecodeError) as error:
         raise SystemExit(f"Unica MCP tools/call has no JSON payload: {response}") from error
     if not payload.get("ok"):
         raise SystemExit(f"Unica MCP tools/call rejected source flow: {payload}")
     _assert_path_free(payload)
     return payload
+
+
+def _meta_payload(response: dict, *, expected_ok: bool) -> dict:
+    if "error" in response:
+        raise SystemExit(f"Unica MCP Meta call failed as JSON-RPC: {response['error']}")
+    try:
+        result = response["result"]
+        structured = result["structuredContent"]
+        text = json.loads(result["content"][0]["text"])
+        is_error = result["isError"]
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as error:
+        raise SystemExit(
+            f"Unica MCP Meta call has no structured result: {response}"
+        ) from error
+    if structured != text:
+        raise SystemExit("Unica MCP Meta text and structuredContent diverged")
+    if structured.get("ok") is not expected_ok or is_error is not (not expected_ok):
+        raise SystemExit(f"Unica MCP Meta call has inconsistent success state: {response}")
+    return structured
 
 
 def _call(session: McpSession, request_id: int, name: str, arguments: dict) -> dict:
@@ -1324,6 +1426,12 @@ def _stable_tool_contract(tools: list[object], expected_names: set[str]) -> None
         xdto_projected[name] = schema
     if xdto_projected != EXPECTED_XDTO_INPUT_SCHEMAS:
         raise SystemExit("Unica MCP XDTO input schema projection drifted")
+    for name, tool in by_name.items():
+        if name in META_TOOL_NAMES:
+            if tool.get("outputSchema") != EXPECTED_META_OUTPUT_SCHEMA:
+                raise SystemExit(f"Unica MCP Meta output schema drifted for {name}")
+        elif "outputSchema" in tool:
+            raise SystemExit(f"non-Meta tool unexpectedly publishes outputSchema: {name}")
 
 
 def _exercise_source_set(
@@ -1390,7 +1498,10 @@ def smoke(command: list[str], plugin_root: Path, timeout_seconds: float) -> None
         environment["UNICA_CACHE_DIR"] = str(root / "cache")
         _source_workspace(workspace)
         before = _workspace_snapshot(workspace)
-        session = McpSession(command, environment, timeout_seconds)
+        executable = Path(command[0])
+        if executable.exists():
+            command = [str(executable.resolve()), *command[1:]]
+        session = McpSession(command, environment, timeout_seconds, cwd=workspace)
         try:
             initialize = session.request({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
                 "protocolVersion": "2025-06-18", "capabilities": {},
@@ -1408,9 +1519,42 @@ def smoke(command: list[str], plugin_root: Path, timeout_seconds: float) -> None
             next_id, _ = _exercise_source_set(
                 session, 3, workspace, cache_root, "main"
             )
-            _, _ = _exercise_source_set(
+            next_id, _ = _exercise_source_set(
                 session, next_id, workspace, cache_root, "extension"
             )
+            success = _meta_payload(
+                session.request(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": next_id,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "unica.meta.info",
+                            "arguments": {
+                                "sourceSet": "main",
+                                "metadataPath": "Enum.LanguageAware",
+                            },
+                        },
+                    }
+                ),
+                expected_ok=True,
+            )
+            invalid = _meta_payload(
+                session.request(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": next_id + 1,
+                        "method": "tools/call",
+                        "params": {"name": "unica.meta.info", "arguments": {}},
+                    }
+                ),
+                expected_ok=False,
+            )
+            diagnostics = invalid.get("diagnostics")
+            if not isinstance(diagnostics, list) or not diagnostics:
+                raise SystemExit(f"invalid Meta smoke returned no diagnostics: {invalid}")
+            if diagnostics[0].get("code") != "invalid_arguments":
+                raise SystemExit(f"invalid Meta smoke returned unstable diagnostics: {invalid}")
         finally:
             session.close()
         after = _workspace_snapshot(workspace)
