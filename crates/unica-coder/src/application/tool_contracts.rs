@@ -5170,7 +5170,7 @@ mod tests {
             .as_array()
             .expect("closed operation union")
             .iter()
-            .map(|variant| resolve_metadata_schema_reference(&schema, variant))
+            .map(|variant| resolve_metadata_schema_base(&schema, variant))
             .map(|variant| variant["properties"]["op"]["enum"][0].clone())
             .collect::<Vec<_>>();
         assert_eq!(
