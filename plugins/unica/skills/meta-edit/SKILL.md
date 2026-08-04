@@ -17,8 +17,12 @@ allowed-tools:
   вызова видят результат предыдущих и публикуются одной транзакцией.
 - Вызов по умолчанию строит preview. Передавайте `dryRun: false` только когда
   пользователь явно попросил применить изменение.
-- Проверяйте `data.validation` и вложенные `data.validation.diagnostics`;
-  успешный результат не дублируется текстовым выводом.
+- Успешный и предметно неуспешный `tools/call` возвращает `structuredContent`;
+  `isError == !structuredContent.ok`. Проверяйте
+  `structuredContent.data.validation` и вложенные диагностики;
+  `content[0].text` не является вторым контрактом результата.
+- Preview возвращает нормализованные семантические
+  `structuredContent.data.effects` по `operationIndex`, а не полный XML.
 - Vendor support guard выполняется внутри `unica`. Для закрытого объекта
   используйте CFE/release-support flow, а не прямую правку служебных файлов.
 
@@ -94,6 +98,46 @@ PascalCase-именем и с enum-значением, опубликованн�
               }
             }
           ]
+        }
+      ],
+      "dryRun": true
+    }
+  }
+}
+```
+
+### Изменить и удалить реквизиты табличной части
+
+`scope.tabularSection` ограничивает обе операции реквизитами существующей
+табличной части, а не корневыми реквизитами документа.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.meta.edit",
+    "arguments": {
+      "sourceSet": "main",
+      "metadataPath": "Document.ЗаказПокупателя",
+      "operations": [
+        {
+          "op": "update",
+          "collection": "attributes",
+          "scope": {"tabularSection": "Товары"},
+          "elements": [
+            {
+              "name": "Количество",
+              "synonym": "Количество товара",
+              "required": true
+            }
+          ]
+        },
+        {
+          "op": "remove",
+          "collection": "attributes",
+          "scope": {"tabularSection": "Товары"},
+          "names": ["УстаревшийРеквизит"]
         }
       ],
       "dryRun": true

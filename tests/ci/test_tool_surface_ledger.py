@@ -85,17 +85,27 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
                 self.assertEqual(self.review[name]["scope"], "in")
                 self.assertEqual(self.review[name]["result"]["contract"], "typed")
 
-        operations = published["unica.meta.edit"]["inputSchema"]["properties"][
-            "operations"
-        ]
-        self.assertEqual(operations["type"], "array")
-        self.assertEqual(operations["minItems"], 1)
-        self.assertEqual(operations["items"]["type"], "object")
-        self.assertFalse(operations["items"]["additionalProperties"])
+        operation_schemas = {
+            name: published[name]["inputSchema"]["properties"]["operations"]
+            for name in ("unica.meta.add", "unica.meta.edit")
+        }
         self.assertEqual(
-            operations["items"]["properties"]["op"]["enum"],
-            ["setProperties", "add", "update", "remove", "editRelations"],
+            operation_schemas["unica.meta.add"]["items"],
+            operation_schemas["unica.meta.edit"]["items"],
         )
+        for name, operations in operation_schemas.items():
+            with self.subTest(tool=name, field="operations"):
+                self.assertEqual(operations["type"], "array")
+                self.assertEqual(operations["minItems"], 1)
+                variants = operations["items"]["oneOf"]
+                self.assertEqual(
+                    [variant["properties"]["op"]["enum"][0] for variant in variants],
+                    ["setProperties", "add", "update", "remove", "editRelations"],
+                )
+                for variant in variants:
+                    self.assertEqual(variant["type"], "object")
+                    self.assertFalse(variant["additionalProperties"])
+                    self.assertIn("op", variant["required"])
 
     def test_every_review_entry_states_a_contract_and_scenarios(self) -> None:
         for name, entry in sorted(self.review.items()):

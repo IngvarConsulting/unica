@@ -789,22 +789,24 @@ Validate CommandInterface.xml.
 
 ### `unica.meta.add`
 
-Create one minimal metadata object from a typed internal template.
+Create one metadata object from a typed internal template and optionally configure it atomically with ordered operations.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
 | `dryRun` | boolean | нет | Preview the mutation without writing workspace files. |
 | `kind` | string | да | Supported metadata object kind for the minimal template. |
 | `name` | string | да | Metadata object name using a valid 1C identifier. |
+| `operations` | array | нет | Optional ordered typed operations applied to the private creation image before one atomic publication. |
 | `sourceSet` | string | да | Exact Configuration source-set name from v8project.yaml. |
 
-**Результат сейчас:** `data`: логический адрес, признак изменения, валидация и план атомарной публикации минимального объекта одного из 23 видов (отвечают типизированным `data`)
+**Результат сейчас:** `structuredContent.data`: логический адрес, валидация, семантические `effects` и план атомарной публикации одного объекта из типизированного шаблона с необязательными ordered operations (отвечают типизированным `data`)
 
 **Целевой контракт:** достигнут
 
 **Сценарии:**
 
 - Создать минимальный справочник по логическому sourceSet
+- Одним вызовом создать и настроить объект через общий типизированный `operations` union
 - Предварительно проверить план создания объекта без записи файлов
 
 ### `unica.meta.edit`
@@ -818,7 +820,7 @@ Apply ordered typed metadata edit operations atomically.
 | `operations` | array | да | Ordered typed edit operations applied as one atomic change. |
 | `sourceSet` | string | да | Exact Configuration source-set name from v8project.yaml. |
 
-**Результат сейчас:** `data`: логический адрес, признак изменения, валидация, упорядоченный diff и план атомарной публикации typed-операций (отвечают типизированным `data`)
+**Результат сейчас:** `structuredContent.data`: логический адрес, валидация, семантические `effects` по `operationIndex` и план атомарной публикации пяти вариантов typed-операций (отвечают типизированным `data`)
 
 **Целевой контракт:** достигнут
 
@@ -833,12 +835,12 @@ Inspect one metadata object with validation and related sections.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `limit` | integer (`1..=50`) | нет | Maximum related items returned for each explicitly requested section. |
+| `limit` | integer | нет | Maximum related items returned for each requested section (1 through 50). |
 | `metadataPath` | string | да | Logical metadata path of the object to inspect. |
-| `sections` | array | нет | Related metadata sections to include in the typed answer; omitted or `[]` keeps the inspection local-only. |
+| `sections` | array | нет | Related metadata sections to include in the typed answer; omit or pass [] for local-only inspection. |
 | `sourceSet` | string | да | Exact Configuration source-set name from v8project.yaml. |
 
-**Результат сейчас:** `data`: логический адрес, локальная структура и валидация объекта, а также выбранные связанные секции из приватного RLM-провайдера (отвечают типизированным `data`)
+**Результат сейчас:** `structuredContent.data`: локальная структура и валидация объекта без RLM по умолчанию; только явно выбранные bounded-секции `related` обращаются к приватному RLM-провайдеру (отвечают типизированным `data`)
 
 **Целевой контракт:** достигнут
 
@@ -860,7 +862,7 @@ Remove one metadata object through a logical guarded target.
 | `metadataPath` | string | да | Logical metadata path of the object to remove. |
 | `sourceSet` | string | да | Exact Configuration source-set name from v8project.yaml. |
 
-**Результат сейчас:** `data`: логический адрес, признак изменения, ссылки, валидация и план атомарного удаления (отвечают типизированным `data`)
+**Результат сейчас:** `structuredContent.data`: логический адрес, ссылки, валидация, семантический `removeObject` effect и план атомарного удаления (отвечают типизированным `data`)
 
 **Целевой контракт:** достигнут
 

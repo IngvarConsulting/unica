@@ -20,8 +20,12 @@ allowed-tools:
   того же закрытого типизированного контракта, что у `unica.meta.edit`. Шаблон,
   операции, дочерние ресурсы и регистрация публикуются одной транзакцией.
 - Для изменений уже существующего объекта используйте `unica.meta.edit`.
-- Результат и обязательная внутренняя проверка находятся в типизированном
-  `data.validation`.
+- Успешный и предметно неуспешный `tools/call` возвращает `structuredContent`;
+  `isError == !structuredContent.ok`. Читайте проверку из
+  `structuredContent.data.validation`; `content[0].text` не является вторым
+  контрактом результата.
+- Preview описывает изменение семантическими
+  `structuredContent.data.effects`, а не возвращает полный XML объекта.
 
 ```json
 {
@@ -41,7 +45,17 @@ allowed-tools:
         {
           "op": "add",
           "collection": "attributes",
-          "elements": [{"name": "ВнешнийКод"}]
+          "elements": [
+            {
+              "name": "ВнешнийКод",
+              "type": {
+                "variants": [
+                  {"kind": "string", "length": 36, "allowedLength": "variable"}
+                ]
+              },
+              "required": true
+            }
+          ]
         }
       ],
       "dryRun": true

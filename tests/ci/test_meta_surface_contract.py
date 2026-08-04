@@ -26,6 +26,7 @@ META_OPERATION_REGISTRY = (
     REPO_ROOT / "crates/unica-coder/src/domain/metadata/operations.rs"
 )
 META_CAPABILITY_LEDGER = REPO_ROOT / "spec/architecture/meta-capability-parity.json"
+META_MIGRATION = REPO_ROOT / "docs/migrations/0.12.0-meta-surface.md"
 RETIRED_META_TYPE_REFERENCE = (
     REPO_ROOT
     / "tests/fixtures/provenance/retired_meta_dsl/meta-compile/reference"
@@ -383,6 +384,29 @@ class MetaSurfaceContractTests(unittest.TestCase):
             source, "fn configuration_tools()"
         )
         self.assertNotIn("CodeIntelligenceOperation::ObjectProfile", tools_body)
+
+        add_description = meta["unica.meta.add"]
+        self.assertNotIn("Create one minimal metadata object", add_description)
+        self.assertIn("typed internal template", add_description)
+        self.assertIn("configure it atomically", add_description)
+        self.assertIn("ordered operations", add_description)
+
+    def test_meta_migration_publishes_protocol_and_capability_boundaries(self) -> None:
+        migration = META_MIGRATION.read_text(encoding="utf-8")
+        compact_migration = " ".join(migration.split())
+
+        self.assertIn("structuredContent", migration)
+        self.assertIn("isError == !structuredContent.ok", compact_migration)
+        self.assertIn("data.effects", migration)
+        self.assertIn("полный XML", migration)
+        capabilities = json.loads(META_CAPABILITY_LEDGER.read_text(encoding="utf-8"))
+        supported = sum(entry["status"] == "supported" for entry in capabilities)
+        removed = sum(entry["status"] == "removed" for entry in capabilities)
+        self.assertIn(f"{supported} поддерживаемых", compact_migration)
+        self.assertIn(f"{removed} намеренно снятая", compact_migration)
+        self.assertIn(
+            "../../spec/architecture/meta-capability-parity.json", migration
+        )
 
     def test_schema_path_has_exact_lower_camel_arguments_and_typed_edit_items(self) -> None:
         metadata = METADATA.read_text(encoding="utf-8")

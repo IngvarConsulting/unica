@@ -1721,7 +1721,7 @@ fn configuration_tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "unica.meta.add",
-            description: "Create one minimal metadata object from a typed internal template.",
+            description: "Create one metadata object from a typed internal template and optionally configure it atomically with ordered operations.",
             mutating: true,
             cache_access: CacheAccess {
                 reads: &[],

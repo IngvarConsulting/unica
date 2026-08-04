@@ -19,6 +19,12 @@ allowed-tools:
 - Обычное применение требует `dryRun: false`. Принудительное применение при
   найденных ссылках разрешено только тройным подтверждением
   `force: true`, `confirm: true`, `dryRun: false`.
+- Успешный и предметно неуспешный `tools/call` возвращает `structuredContent`;
+  `isError == !structuredContent.ok`. Читайте ссылки, validation и доступные
+  частичные данные из `structuredContent.data`; `content[0].text` не является
+  вторым контрактом результата.
+- Preview возвращает один семантический `removeObject` effect в
+  `structuredContent.data.effects`, а не полный XML удаляемого объекта.
 - Vendor support guard выполняется до публикации; закрытый объект не обходится
   прямым редактированием служебных файлов.
 

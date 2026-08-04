@@ -737,6 +737,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 )
 
         self.assertTrue(calls["meta-edit"])
+        edit_operations = []
         for call in calls["meta-edit"]:
             arguments = call["params"]["arguments"]
             self.assertEqual(call["params"]["name"], "unica.meta.edit")
@@ -749,12 +750,68 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             self.assertTrue(
                 all(isinstance(operation, dict) for operation in arguments["operations"])
             )
+            edit_operations.extend(arguments["operations"])
+
+        self.assertEqual(
+            {operation.get("op") for operation in edit_operations},
+            {"setProperties", "add", "update", "remove", "editRelations"},
+        )
+        for operation in edit_operations:
+            with self.subTest(edit_operation=operation.get("op")):
+                allowed_fields = {
+                    "setProperties": {"op", "values"},
+                    "add": {"op", "collection", "scope", "elements"},
+                    "update": {"op", "collection", "scope", "elements"},
+                    "remove": {"op", "collection", "scope", "names"},
+                    "editRelations": {"op", "relation", "mode", "targets"},
+                }[operation["op"]]
+                self.assertLessEqual(set(operation), allowed_fields)
+
+        for scoped_operation in ("update", "remove"):
+            matching = [
+                operation
+                for operation in edit_operations
+                if operation.get("op") == scoped_operation
+            ]
+            self.assertTrue(matching)
+            self.assertTrue(
+                any(
+                    set(operation.get("scope", {})) == {"tabularSection"}
+                    and bool(operation["scope"]["tabularSection"])
+                    for operation in matching
+                )
+            )
 
         info = documents["meta-info"]
         for token in ("`validation`", "status", "freshness", "total", "limit", "truncated"):
             with self.subTest(info_token=token):
                 self.assertIn(token, info)
         self.assertIn("soft-fail", info)
+        self.assertTrue(
+            any("sections" not in call["params"]["arguments"] for call in calls["meta-info"])
+        )
+        self.assertTrue(
+            any(
+                call["params"]["arguments"].get("sections")
+                and 1 <= call["params"]["arguments"].get("limit", 0) <= 50
+                for call in calls["meta-info"]
+            )
+        )
+
+        for skill in ("meta-add", "meta-edit", "meta-info", "meta-remove"):
+            with self.subTest(skill=skill, contract="structured result"):
+                text = documents[skill]
+                self.assertIn("structuredContent", text)
+                self.assertIn("isError == !structuredContent.ok", text)
+                self.assertIn(
+                    "не является вторым контрактом", " ".join(text.split())
+                )
+
+        for skill in ("meta-add", "meta-edit", "meta-remove"):
+            with self.subTest(skill=skill, contract="preview effects"):
+                text = documents[skill]
+                self.assertIn("data.effects", text)
+                self.assertIn("полный XML", text)
 
         remove = documents["meta-remove"]
         self.assertIn("`sourceSet + metadataPath`", remove)

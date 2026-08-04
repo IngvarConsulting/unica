@@ -19,6 +19,10 @@ allowed-tools:
 - Без `sections` вызов остаётся локальным: он читает структуру и validation, но
   не обращается к связанному RLM-провайдеру. Для связанных данных явно укажите
   только нужные `sections` и ограничьте каждую секцию `limit` (`1..=50`).
+- Успешный и предметно неуспешный `tools/call` возвращает `structuredContent`;
+  `isError == !structuredContent.ok`. Читайте локальную структуру, validation и
+  доступные частичные данные из `structuredContent.data`; `content[0].text` не
+  является вторым контрактом результата.
 - Не вызывайте внутренние MCP/CLI-адаптеры и skill-local scripts.
 
 ```json
