@@ -3288,6 +3288,12 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
     if tool.name == "unica.meta.edit" && matches!(name, "Operation" | "operation") {
         return json!({ "type": "string", "enum": META_EDIT_OPERATIONS });
     }
+    if tool.name == "unica.meta.edit" && matches!(name, "Synonym" | "synonym") {
+        return json!({
+            "type": "string",
+            "description": "unica.meta.edit only: human-readable synonym for one inline Operation add-resource Value item; rejected with DefinitionFile, batched Value separated by `;;`, or any other Operation. When omitted, the resource synonym is generated from the resource name with letter/digit splitting."
+        });
+    }
     if tool.name == "unica.cfe.patch_method" {
         return match name {
             "Context" | "context" => {
@@ -4984,6 +4990,37 @@ mod tests {
         args.insert("Operation".to_string(), json!("add-unknown"));
         let error = validate_tool_arguments(tool, &args, false).unwrap_err();
         assert!(error.contains("unsupported Operation"));
+    }
+
+    #[test]
+    fn meta_edit_synonym_description_documents_add_resource_scope() {
+        let tools = tools();
+        let meta_edit = tools
+            .iter()
+            .find(|tool| tool.name == "unica.meta.edit")
+            .unwrap();
+        let template_add = tools
+            .iter()
+            .find(|tool| tool.name == "unica.template.add")
+            .unwrap();
+
+        let schema = input_schema_for_tool(meta_edit);
+        for name in ["Synonym", "synonym"] {
+            let description = schema["properties"][name]["description"].as_str().unwrap();
+            assert!(
+                description.contains("Operation add-resource"),
+                "{description}"
+            );
+            assert!(description.contains("DefinitionFile"), "{description}");
+            assert!(description.contains("batched Value"), "{description}");
+            assert!(!description.contains("templateName"), "{description}");
+        }
+
+        let template_schema = input_schema_for_tool(template_add);
+        let description = template_schema["properties"]["Synonym"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(description.contains("templateName"), "{description}");
     }
 
     #[test]

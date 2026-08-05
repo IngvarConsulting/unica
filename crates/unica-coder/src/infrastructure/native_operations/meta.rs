@@ -4284,6 +4284,39 @@ mod edit_tests {
         );
         assert_eq!(fs::read_to_string(&object_path).unwrap(), original);
 
+        let mut args = meta_edit_args(&object_path, "add-resource", "Amount: Number(15,2)");
+        args.insert("synonym".to_string(), json!("Amount"));
+        args.insert("Synonym".to_string(), json!("Amount"));
+
+        let outcome = preview_meta_edit(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("both synonym and Synonym")),
+            "{:?}",
+            outcome.errors
+        );
+        assert_eq!(fs::read_to_string(&object_path).unwrap(), original);
+
+        let mut args = meta_edit_args(&object_path, "add-resource", "Amount: Number(15,2)");
+        args.insert("synonym".to_string(), json!(true));
+
+        let outcome = preview_meta_edit(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("synonym must be a string")),
+            "{:?}",
+            outcome.errors
+        );
+        assert_eq!(fs::read_to_string(&object_path).unwrap(), original);
+
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
