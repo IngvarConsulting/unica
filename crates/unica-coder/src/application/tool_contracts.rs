@@ -1504,6 +1504,7 @@ fn validate_meta_edit_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Re
 
     validate_unique_alias_group(tool.name, args, &["Operation", "operation"])?;
     validate_unique_alias_group(tool.name, args, &["DefinitionFile", "definitionFile"])?;
+    validate_unique_alias_group(tool.name, args, &["Synonym", "synonym"])?;
 
     if contains_any(args, &["Operation", "operation"])
         && contains_any(args, &["DefinitionFile", "definitionFile"])
@@ -1526,6 +1527,42 @@ fn validate_meta_edit_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Re
                 "{} unsupported Operation `{operation}`; supported: {}",
                 tool.name,
                 META_EDIT_OPERATIONS.join(", ")
+            ));
+        }
+    }
+
+    if let Some(synonym_name) = ["Synonym", "synonym"]
+        .into_iter()
+        .find(|name| args.contains_key(*name))
+    {
+        if contains_any(args, &["DefinitionFile", "definitionFile"]) {
+            return Err(format!(
+                "{} argument `{synonym_name}` is supported only with Operation add-resource, not DefinitionFile",
+                tool.name
+            ));
+        }
+        let operation = ["Operation", "operation"]
+            .into_iter()
+            .find_map(|name| args.get(name).and_then(Value::as_str))
+            .unwrap_or_default();
+        if operation != "add-resource" {
+            return Err(format!(
+                "{} argument `{synonym_name}` is supported only with Operation add-resource",
+                tool.name
+            ));
+        }
+        let value_items = ["Value", "value"]
+            .into_iter()
+            .find_map(|name| args.get(name).and_then(Value::as_str))
+            .unwrap_or_default()
+            .split(";;")
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .count();
+        if value_items != 1 {
+            return Err(format!(
+                "{} argument `{synonym_name}` supports only a single Value item for Operation add-resource",
+                tool.name
             ));
         }
     }
@@ -5021,6 +5058,67 @@ mod tests {
             .as_str()
             .unwrap();
         assert!(description.contains("templateName"), "{description}");
+    }
+
+    #[test]
+    fn meta_edit_synonym_contract_rejects_out_of_scope_arguments() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.meta.edit")
+            .unwrap();
+        let mut valid = Map::new();
+        valid.insert(
+            "ObjectPath".to_string(),
+            json!("src/InformationRegisters/SampleStock.xml"),
+        );
+        valid.insert("Operation".to_string(), json!("add-resource"));
+        valid.insert("Value".to_string(), json!("Amount: Number(15,2)"));
+        valid.insert("Synonym".to_string(), json!(""));
+        validate_tool_arguments(tool, &valid, false).unwrap();
+
+        let mut args = valid.clone();
+        args.insert("synonym".to_string(), json!("Amount"));
+        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
+        assert!(error.contains("conflicting aliases"));
+        assert!(error.contains("Synonym"));
+        assert!(error.contains("synonym"));
+
+        let mut args = Map::new();
+        args.insert(
+            "ObjectPath".to_string(),
+            json!("src/InformationRegisters/SampleStock.xml"),
+        );
+        args.insert("DefinitionFile".to_string(), json!("edit.json"));
+        args.insert("Synonym".to_string(), json!("Amount"));
+        let error = validate_tool_arguments(tool, &args, false).unwrap_err();
+        assert!(error.contains("Operation add-resource"));
+        assert!(error.contains("DefinitionFile"));
+
+        for (operation, value, expected) in [
+            ("add-ts", "Items", "Operation add-resource"),
+            (
+                "modify-resource",
+                "Amount: synonym=Total",
+                "Operation add-resource",
+            ),
+            (
+                "add-resource",
+                "Amount: Number(15,2) ;; Qty: Number(15,3)",
+                "single Value item",
+            ),
+        ] {
+            let mut args = Map::new();
+            args.insert(
+                "ObjectPath".to_string(),
+                json!("src/InformationRegisters/SampleStock.xml"),
+            );
+            args.insert("Operation".to_string(), json!(operation));
+            args.insert("Value".to_string(), json!(value));
+            args.insert("synonym".to_string(), json!("Amount"));
+
+            let error = validate_tool_arguments(tool, &args, false).unwrap_err();
+            assert!(error.contains(expected), "{operation}: {error}");
+        }
     }
 
     #[test]
