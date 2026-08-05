@@ -43,7 +43,7 @@
 -Operation add-column -Value "Тип: EnumRef.ТипыДокументов"
 ```
 
-`add-resource` для регистра сведений создаёт ресурс с
+`add-resource` для регистра сведений по умолчанию создаёт ресурс с
 `Indexing=DontIndex`, `FullTextSearch=DontUse` и `DataHistory=DontUse`.
 При вставке сохраняются BOM, единый LF/CRLF и наличие завершающего перевода
 строки исходного XML; литеральная сущность `&#13;` между соседними элементами
