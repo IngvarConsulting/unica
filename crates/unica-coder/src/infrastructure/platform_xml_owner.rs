@@ -1004,6 +1004,7 @@ fn is_supported_metadata_artifact(tag: &str) -> bool {
         )
 }
 
+/// Returns whether the qualified root is supported as a standalone Platform XML owner.
 fn known_standalone_root(qname: (Option<&str>, &str)) -> bool {
     matches!(
         qname,
