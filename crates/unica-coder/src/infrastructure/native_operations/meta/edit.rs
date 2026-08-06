@@ -4507,20 +4507,24 @@ mod tests {
 
     #[test]
     fn typed_child_append_uses_a_newline_instead_of_a_carriage_return_entity() {
-        let mut xml = information_register_xml_with_data_cr();
+        let first_resource = rendered_resource("First");
+        let mut xml = information_register_xml_with_data_cr().replace(
+            "<ChildObjects/>",
+            &format!("<ChildObjects>\n{first_resource}\n\t\t</ChildObjects>"),
+        );
         let operation = MetaEditOperation::add(
             MetaCollection::Resources,
             None,
-            vec![
-                MetaElementInput::named("First"),
-                MetaElementInput::named("Second"),
-            ],
+            vec![MetaElementInput::named("Second")],
         )
         .unwrap();
 
         apply_typed_operations(&mut xml, &[operation]).unwrap();
 
         assert_structural_resource_separators(&xml, 1);
+        let first = xml.find("<Name>First</Name>").unwrap();
+        let second = xml.find("<Name>Second</Name>").unwrap();
+        assert!(first < second, "{xml}");
     }
 
     #[test]
