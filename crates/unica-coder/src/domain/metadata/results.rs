@@ -56,19 +56,50 @@ pub(crate) struct MetaRelatedSection<T> {
     pub(crate) diagnostics: Vec<MetaDiagnostic>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// Index-backed sections of a metadata read.
+///
+/// Only what genuinely needs a code index lives here, and only here do
+/// `status`, `freshness` and `completeness` carry information: the index can
+/// lag the sources or be unavailable. Sections read from the source tree report
+/// none of that, because they are read from the same snapshot as the rest of
+/// the answer and cannot disagree with it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MetaRelatedSections {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) modules: Option<MetaRelatedSection<Value>>,
+}
+
+/// Who uses this object, read straight from the source tree.
+///
+/// Roles, event subscriptions and functional options are ordinary XML in the
+/// configuration, so each list is exact and complete. They carry no index
+/// metadata and no continuation: on a real vendor-class configuration the
+/// largest of them is a few dozen entries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MetaUsageData {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) roles: Option<MetaRelatedSection<Value>>,
+    pub(crate) roles: Option<Vec<Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) subscriptions: Option<MetaRelatedSection<Value>>,
+    pub(crate) subscriptions: Option<Vec<Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) functional_options: Option<MetaRelatedSection<Value>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) predefined_items: Option<MetaRelatedSection<Value>>,
+    pub(crate) functional_options: Option<Vec<Value>>,
+}
+
+/// Predefined items of the object itself.
+///
+/// This is the object's own content, read from its `Ext/Predefined.xml`, so it
+/// sits beside `collections` rather than among the things that reference the
+/// object. It keeps counters because it is the one list that genuinely runs
+/// long: a BSP identifier catalog reaches hundreds of entries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MetaPredefinedItemsData {
+    pub(crate) total: usize,
+    pub(crate) returned: usize,
+    pub(crate) truncated: bool,
+    pub(crate) items: Vec<Value>,
 }
 
 /// Transitional typed profile answer owned by the metadata domain. The legacy
@@ -173,6 +204,9 @@ pub(crate) struct MetaInfoData {
     pub(crate) properties: Vec<MetaPropertyData>,
     pub(crate) relations: MetaRelationsData,
     pub(crate) collections: MetaCollectionsData,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) predefined_items: Option<MetaPredefinedItemsData>,
+    pub(crate) usage: MetaUsageData,
     pub(crate) validation: MetaValidationData,
     pub(crate) related: MetaRelatedSections,
 }

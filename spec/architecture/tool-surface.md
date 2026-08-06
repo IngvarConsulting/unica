@@ -835,9 +835,9 @@ Inspect one metadata object with validation and related sections.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `limit` | integer | нет | Maximum related items returned for each requested section (1 through 50). |
+| `limit` | integer | нет | Maximum `predefinedItems` returned, and maximum items per index section (1 through 50). Source-tree usage lists are exact and complete, so the limit does not apply to them. |
 | `metadataPath` | string | да | Logical metadata path of the object to inspect. |
-| `sections` | array | нет | Related metadata sections to include in the typed answer; omit or pass [] for local-only inspection. |
+| `sections` | array | нет | Extra sections to compute. `roles`, `subscriptions`, `functionalOptions` and `predefinedItems` are read from the source tree and land in `usage` and `predefinedItems`; only `modules` consults the code index and lands in `related`. Omit or pass [] to inspect the object alone. |
 | `sourceSet` | string | да | Exact Configuration source-set name from v8project.yaml. |
 
 **Результат сейчас:** `structuredContent.data`: локальная структура и валидация объекта без RLM по умолчанию; только явно выбранные bounded-секции `related` обращаются к приватному RLM-провайдеру (отвечают типизированным `data`)

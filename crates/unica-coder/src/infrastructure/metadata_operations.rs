@@ -1,6 +1,6 @@
 use crate::application::metadata::{MetaFailure, MetaInfoRequest, MetadataRequest};
 use crate::application::ports::{
-    MetaLocalInfo, MetaRelatedData, MetadataRead, MetadataValidationResult,
+    MetaEnrichment, MetaLocalInfo, MetaRelatedData, MetadataRead, MetadataValidationResult,
     MetadataValidationSubject, PreparedMetadataMutation,
 };
 use crate::domain::cancellation::CancellationToken;
@@ -13,7 +13,8 @@ use crate::domain::source_roots::ResolvedSourceRoot;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::meta::{
     prepare_meta_add, prepare_meta_remove, prepare_typed_edit, read_typed_meta_info,
-    resolve_typed_edit_object, resolve_typed_metadata_object, MetadataValidator,
+    resolve_typed_edit_object, resolve_typed_metadata_object, scan_local_enrichment,
+    LocalEnrichment, LocalSection, MetadataValidator,
 };
 use crate::infrastructure::rlm_navigation::RlmNavigationAdapter;
 use crate::infrastructure::source_roots::NamedSourceSetErrorKind;
@@ -45,26 +46,21 @@ impl MetadataOperations {
         })
     }
 
+    /// Enrich a metadata read from the two sources that can answer.
+    ///
+    /// Roles, subscriptions, functional options and predefined items are read
+    /// from the source tree, so they are exact and cannot disagree with the
+    /// descriptor beside them. Only "which modules mention this object" needs a
+    /// code index, and only it can therefore be stale or unavailable — which is
+    /// why it is the one section that still reports index metadata.
     pub(crate) fn read_related(
         request: &MetaInfoRequest,
-        _local: &MetaLocalInfo,
+        local: &MetaLocalInfo,
         context: &WorkspaceContext,
         cancellation: &CancellationToken,
     ) -> MetaRelatedData {
-        let names = request
-            .sections
-            .iter()
-            .map(|section| match section {
-                crate::application::metadata::MetaInfoSection::Modules => "modules",
-                crate::application::metadata::MetaInfoSection::Roles => "roles",
-                crate::application::metadata::MetaInfoSection::Subscriptions => "subscriptions",
-                crate::application::metadata::MetaInfoSection::FunctionalOptions => {
-                    "functionalOptions"
-                }
-                crate::application::metadata::MetaInfoSection::PredefinedItems => "predefinedItems",
-            })
-            .map(str::to_string)
-            .collect::<Vec<_>>();
+        use crate::application::metadata::MetaInfoSection;
+
         let source = match crate::infrastructure::source_roots::resolve_named_source_set(
             context,
             &request.source_set,
@@ -77,21 +73,61 @@ impl MetadataOperations {
                 )
             }
         };
-        let provider_context = CodeIntelligenceContext::new(
-            context.clone(),
-            ResolvedSourceRoot {
-                source_set: Some(source.source_set.name),
-                path: source.path,
-            },
-        );
-        RlmNavigationAdapter::new().metadata_related(
-            request.metadata_path.as_str(),
-            &names,
-            request.limit,
-            &provider_context,
-            ProviderDeadline::new(std::time::Instant::now() + std::time::Duration::from_secs(5)),
-            cancellation,
-        )
+
+        let local_sections = request
+            .sections
+            .iter()
+            .filter_map(|section| match section {
+                MetaInfoSection::Roles => Some(LocalSection::Roles),
+                MetaInfoSection::Subscriptions => Some(LocalSection::Subscriptions),
+                MetaInfoSection::FunctionalOptions => Some(LocalSection::FunctionalOptions),
+                MetaInfoSection::PredefinedItems => Some(LocalSection::PredefinedItems),
+                MetaInfoSection::Modules => None,
+            })
+            .collect::<Vec<_>>();
+        let LocalEnrichment {
+            usage,
+            predefined_items,
+        } = if local_sections.is_empty() {
+            LocalEnrichment::default()
+        } else {
+            scan_local_enrichment(
+                &source.path,
+                local.kind,
+                &local.name,
+                &local_sections,
+                request.limit,
+                cancellation,
+            )
+        };
+
+        let related = if request.sections.contains(&MetaInfoSection::Modules) {
+            let provider_context = CodeIntelligenceContext::new(
+                context.clone(),
+                ResolvedSourceRoot {
+                    source_set: Some(source.source_set.name),
+                    path: source.path,
+                },
+            );
+            RlmNavigationAdapter::new().metadata_related(
+                request.metadata_path.as_str(),
+                &["modules".to_string()],
+                request.limit,
+                &provider_context,
+                ProviderDeadline::new(
+                    std::time::Instant::now() + std::time::Duration::from_secs(5),
+                ),
+                cancellation,
+            )
+        } else {
+            MetaRelatedSections::default()
+        };
+
+        MetaEnrichment {
+            predefined_items,
+            usage,
+            related,
+        }
     }
 
     pub(crate) fn validate(
@@ -178,28 +214,21 @@ fn unavailable_section(message: &str) -> MetaRelatedSection<serde_json::Value> {
     }
 }
 
-fn selected_unavailable_sections(request: &MetaInfoRequest, message: &str) -> MetaRelatedSections {
-    MetaRelatedSections {
-        modules: request
-            .sections
-            .contains(&crate::application::metadata::MetaInfoSection::Modules)
-            .then(|| unavailable_section(message)),
-        roles: request
-            .sections
-            .contains(&crate::application::metadata::MetaInfoSection::Roles)
-            .then(|| unavailable_section(message)),
-        subscriptions: request
-            .sections
-            .contains(&crate::application::metadata::MetaInfoSection::Subscriptions)
-            .then(|| unavailable_section(message)),
-        functional_options: request
-            .sections
-            .contains(&crate::application::metadata::MetaInfoSection::FunctionalOptions)
-            .then(|| unavailable_section(message)),
-        predefined_items: request
-            .sections
-            .contains(&crate::application::metadata::MetaInfoSection::PredefinedItems)
-            .then(|| unavailable_section(message)),
+/// The answer when the source set itself cannot be resolved.
+///
+/// Nothing can be read: not the tree, not the index. The usage lists stay
+/// absent rather than empty — an empty list would claim the object is used
+/// nowhere — and the index section, if it was asked for, says so explicitly.
+fn selected_unavailable_sections(request: &MetaInfoRequest, message: &str) -> MetaEnrichment {
+    MetaEnrichment {
+        predefined_items: None,
+        usage: crate::domain::metadata::MetaUsageData::default(),
+        related: MetaRelatedSections {
+            modules: request
+                .sections
+                .contains(&crate::application::metadata::MetaInfoSection::Modules)
+                .then(|| unavailable_section(message)),
+        },
     }
 }
 
@@ -552,7 +581,7 @@ mod tests {
             &context,
             &CancellationToken::new(),
         );
-        let diagnostics = related.modules.unwrap().diagnostics;
+        let diagnostics = related.related.modules.unwrap().diagnostics;
         let message = &diagnostics[0].message;
         assert!(
             message.contains("source set `unsafe`") && message.contains("containment boundary"),

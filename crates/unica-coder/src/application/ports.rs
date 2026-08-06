@@ -13,8 +13,9 @@ use crate::domain::code_intelligence::{
 use crate::domain::events::DomainEvent;
 use crate::domain::metadata::{
     MetaCollectionsData, MetaDiagnostic, MetaDiagnosticCode, MetaInfoData, MetaMutationData,
-    MetaPropertyData, MetaRelatedSection, MetaRelatedSections, MetaRelatedStatus,
-    MetaRelationsData, MetaSupportStatus, MetaValidationData, MetaValidationStatus, MetadataKind,
+    MetaPredefinedItemsData, MetaPropertyData, MetaRelatedSection, MetaRelatedSections,
+    MetaRelatedStatus, MetaRelationsData, MetaSupportStatus, MetaUsageData, MetaValidationData,
+    MetaValidationStatus, MetadataKind,
 };
 use crate::domain::source_resources::{
     ResourceManifestPage, SourceReadResult, SourceResourceError,
@@ -233,7 +234,7 @@ impl MetaLocalInfo {
     pub(crate) fn into_info(
         self,
         validation: MetaValidationData,
-        related: MetaRelatedSections,
+        enrichment: MetaEnrichment,
     ) -> MetaInfoData {
         MetaInfoData {
             metadata_path: self.metadata_path,
@@ -244,8 +245,10 @@ impl MetaLocalInfo {
             properties: self.properties,
             relations: self.relations,
             collections: self.collections,
+            predefined_items: enrichment.predefined_items,
+            usage: enrichment.usage,
             validation,
-            related,
+            related: enrichment.related,
         }
     }
 }
@@ -255,7 +258,20 @@ pub(crate) struct MetadataRead {
     pub(crate) validation_subject: MetadataValidationSubject,
 }
 
-pub(crate) type MetaRelatedData = MetaRelatedSections;
+/// Everything a metadata read adds on top of the object's own descriptor.
+///
+/// The three parts have different natures and are kept apart on purpose:
+/// `predefined_items` is the object's own content, `usage` is what the source
+/// tree says references it, and `related` is what the code index says. Only the
+/// last can be stale or missing, so only it carries index metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct MetaEnrichment {
+    pub(crate) predefined_items: Option<MetaPredefinedItemsData>,
+    pub(crate) usage: MetaUsageData,
+    pub(crate) related: MetaRelatedSections,
+}
+
+pub(crate) type MetaRelatedData = MetaEnrichment;
 pub(crate) type MetadataValidationResult = MetaValidationData;
 
 pub(crate) struct MetaPublishReport {
@@ -417,12 +433,11 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         _context: &WorkspaceContext,
         _cancellation: &CancellationToken,
     ) -> MetaRelatedData {
-        MetaRelatedSections {
-            modules: Some(unavailable_related_section()),
-            roles: Some(unavailable_related_section()),
-            subscriptions: Some(unavailable_related_section()),
-            functional_options: Some(unavailable_related_section()),
-            predefined_items: Some(unavailable_related_section()),
+        MetaEnrichment {
+            related: MetaRelatedSections {
+                modules: Some(unavailable_related_section()),
+            },
+            ..Default::default()
         }
     }
 

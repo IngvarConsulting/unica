@@ -78,6 +78,7 @@ mod info;
 mod publisher;
 mod remove;
 mod template_catalog;
+mod usage_scan;
 mod validation;
 mod validation_context;
 mod xml_model;
@@ -99,6 +100,7 @@ pub(crate) use remove::with_meta_remove_before_reauthorization_hook;
 pub(crate) use template_catalog::metadata_generated_types_8_3_27;
 #[cfg(test)]
 pub(crate) use template_catalog::{emit_meta_internal_info, minimal_metadata_xml_for_tests};
+pub(crate) use usage_scan::{scan_local_enrichment, LocalEnrichment, LocalSection};
 pub(crate) use validation::{validate_metadata_owner_shape_8_3_27, MetadataValidator};
 pub(crate) use xml_model::{
     meta_info_child, meta_info_child_text, meta_info_children, meta_info_inner_text,
@@ -110,3 +112,5 @@ mod info_tests;
 mod remove_tests;
 #[cfg(test)]
 mod template_catalog_tests;
+#[cfg(test)]
+mod usage_scan_tests;

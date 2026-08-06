@@ -141,13 +141,13 @@ fn invoke_info(
         .diagnostics
         .extend(read.local.diagnostics.iter().cloned());
     let failed = validation.status == MetaValidationStatus::Failed;
-    let related = if failed || request.sections.is_empty() {
-        empty_related_sections()
+    let enrichment = if failed || request.sections.is_empty() {
+        Default::default()
     } else {
         ports.read_metadata_related(request, &read.local, context, cancellation)
     };
     let diagnostics = validation.diagnostics.clone();
-    let data = serde_json::to_value(read.local.into_info(validation, related))
+    let data = serde_json::to_value(read.local.into_info(validation, enrichment))
         .map_err(|error| format!("cannot serialize metadata info result: {error}"))?;
     if failed {
         return Ok(metadata_failure(
@@ -162,16 +162,6 @@ fn invoke_info(
         Vec::new(),
         Vec::new(),
     ))
-}
-
-fn empty_related_sections() -> crate::domain::metadata::MetaRelatedSections {
-    crate::domain::metadata::MetaRelatedSections {
-        modules: None,
-        roles: None,
-        subscriptions: None,
-        functional_options: None,
-        predefined_items: None,
-    }
 }
 
 fn invoke_mutation(
@@ -1282,7 +1272,7 @@ pub(crate) fn metadata_input_schema(operation: MetadataOperation) -> Value {
                         "enum": INFO_SECTIONS.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
                     },
                     "default": [],
-                    "description": "Related metadata sections to include in the typed answer; omit or pass [] for local-only inspection.",
+                    "description": "Extra sections to compute. `roles`, `subscriptions`, `functionalOptions` and `predefinedItems` are read from the source tree and land in `usage` and `predefinedItems`; only `modules` consults the code index and lands in `related`. Omit or pass [] to inspect the object alone.",
                 }),
             );
             properties.insert(
@@ -1292,7 +1282,7 @@ pub(crate) fn metadata_input_schema(operation: MetadataOperation) -> Value {
                     "minimum": 1,
                     "maximum": 50,
                     "default": 20,
-                    "description": "Maximum related items returned for each requested section (1 through 50)."
+                    "description": "Maximum `predefinedItems` returned, and maximum items per index section (1 through 50). Source-tree usage lists are exact and complete, so the limit does not apply to them."
                 }),
             );
             vec!["sourceSet", "metadataPath"]
@@ -2128,9 +2118,12 @@ mod tests {
             _local: &MetaLocalInfo,
             _context: &WorkspaceContext,
             _cancellation: &CancellationToken,
-        ) -> MetaRelatedSections {
+        ) -> crate::application::ports::MetaEnrichment {
             self.state.lock().unwrap().calls.push("related");
-            self.related.clone()
+            crate::application::ports::MetaEnrichment {
+                related: self.related.clone(),
+                ..Default::default()
+            }
         }
 
         fn validate_metadata(
@@ -2243,10 +2236,6 @@ mod tests {
     fn unavailable_related() -> MetaRelatedSections {
         MetaRelatedSections {
             modules: Some(unavailable_section()),
-            roles: Some(unavailable_section()),
-            subscriptions: Some(unavailable_section()),
-            functional_options: Some(unavailable_section()),
-            predefined_items: Some(unavailable_section()),
         }
     }
 

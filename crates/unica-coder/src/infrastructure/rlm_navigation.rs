@@ -594,10 +594,6 @@ fn unavailable_related_sections(
     };
     MetaRelatedSections {
         modules: requested(sections, "modules").then(section),
-        roles: requested(sections, "roles").then(section),
-        subscriptions: requested(sections, "subscriptions").then(section),
-        functional_options: requested(sections, "functionalOptions").then(section),
-        predefined_items: requested(sections, "predefinedItems").then(section),
     }
 }
 
@@ -629,11 +625,6 @@ fn related_sections_from_profile(
     };
     MetaRelatedSections {
         modules: requested(sections, "modules").then(|| find("modules")),
-        roles: requested(sections, "roles").then(|| find("roles")),
-        subscriptions: requested(sections, "subscriptions").then(|| find("subscriptions")),
-        functional_options: requested(sections, "functionalOptions")
-            .then(|| find("functionalOptions")),
-        predefined_items: requested(sections, "predefinedItems").then(|| find("predefinedItems")),
     }
 }
 
@@ -1610,15 +1601,9 @@ mod tests {
         );
         assert_eq!(modules.items[0], json!({"name": "ObjectModule"}));
         assert_eq!(modules.items[1], json!({"name": "ManagerModule"}));
-        let roles = related.roles.unwrap();
-        assert_eq!(
-            roles.status,
-            crate::domain::metadata::MetaRelatedStatus::Partial
-        );
-        assert_eq!(roles.diagnostics.len(), 1);
-        assert!(related.subscriptions.is_none());
-        assert!(related.functional_options.is_none());
-        assert!(related.predefined_items.is_some());
+        // The index serves one section. Roles, subscriptions, functional
+        // options and predefined items are read from the source tree, so asking
+        // the index for them would be asking the wrong provider.
         assert_eq!(
             super::sanitize_related_item(json!({
                 "name": "safe",
@@ -2202,10 +2187,6 @@ mod tests {
     ) -> &'a crate::domain::metadata::MetaRelatedSection<serde_json::Value> {
         match name {
             "modules" => related.modules.as_ref(),
-            "roles" => related.roles.as_ref(),
-            "subscriptions" => related.subscriptions.as_ref(),
-            "functionalOptions" => related.functional_options.as_ref(),
-            "predefinedItems" => related.predefined_items.as_ref(),
             _ => None,
         }
         .unwrap_or_else(|| panic!("missing selected section {name}"))
@@ -2215,13 +2196,10 @@ mod tests {
     fn metadata_related_maps_every_section_through_the_complete_status_matrix() {
         use crate::domain::metadata::{MetaFreshness, MetaRelatedStatus};
 
-        let section_names = [
-            ("modules", "modules"),
-            ("roles", "roles"),
-            ("subscriptions", "subscriptions"),
-            ("functionalOptions", "functional_options"),
-            ("predefinedItems", "predefined_items"),
-        ];
+        // The index answers one section. The rest are read from the source
+        // tree, where the whole status matrix collapses: a local list cannot be
+        // stale against the descriptor it was read beside.
+        let section_names = [("modules", "modules")];
         for (public_name, upstream_name) in section_names {
             for scenario in ["ready", "partial", "stale", "unavailable"] {
                 let (readiness, section, want_status, want_freshness, want_counts) = match scenario
@@ -2320,19 +2298,6 @@ mod tests {
                     assert!(!serde_json::to_string(section).unwrap().contains("/private"));
                 }
                 assert_eq!(related.modules.is_some(), public_name == "modules");
-                assert_eq!(related.roles.is_some(), public_name == "roles");
-                assert_eq!(
-                    related.subscriptions.is_some(),
-                    public_name == "subscriptions"
-                );
-                assert_eq!(
-                    related.functional_options.is_some(),
-                    public_name == "functionalOptions"
-                );
-                assert_eq!(
-                    related.predefined_items.is_some(),
-                    public_name == "predefinedItems"
-                );
             }
         }
     }
