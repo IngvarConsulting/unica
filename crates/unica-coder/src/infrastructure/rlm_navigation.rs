@@ -2,7 +2,7 @@ use crate::application::AdapterOutcome;
 use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
 use crate::domain::code_intelligence::{
     CodeDefinition, CodeDefinitionResult, CodeIntelligenceContext, CodeIntelligenceReadData,
-    CodeIntelligenceReadRequest, MetaProfileResult, MetaProfileSection, ProviderDeadline,
+    CodeIntelligenceReadRequest, ProviderDeadline,
 };
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::workspace_index::IndexReadiness;
@@ -90,7 +90,6 @@ impl<'a> RlmNavigationAdapter<'a> {
     fn with_client(client: &'a (dyn RlmNavigationClient + Send + Sync)) -> Self {
         Self { client }
     }
-
     pub(crate) fn invoke_resolved_cancellable(
         &self,
         request: &CodeIntelligenceReadRequest,
@@ -98,17 +97,17 @@ impl<'a> RlmNavigationAdapter<'a> {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<RlmNavigationOutcome, String> {
-        let tool_name = request.tool_name();
+        let operation_name = request.operation_name();
         let operation = operation_for_request(request)?;
         if cancellation.is_cancelled() {
             return Ok(RlmNavigationOutcome::plain(AdapterOutcome::cancelled(
-                format!("{tool_name} cancelled before provider work"),
+                format!("{operation_name} cancelled before provider work"),
             )));
         }
         let readiness_timeout = deadline.remaining().min(RLM_NAVIGATION_TIMEOUT);
         if readiness_timeout.is_zero() {
             return Err(format!(
-                "{tool_name} provider deadline exceeded before readiness check"
+                "{operation_name} provider deadline exceeded before readiness check"
             ));
         }
         let readiness = match self.client.readiness(
@@ -120,7 +119,8 @@ impl<'a> RlmNavigationAdapter<'a> {
             Ok(readiness) => readiness,
             Err(error) if error.starts_with(CANCELLED_PREFIX) => {
                 return Ok(RlmNavigationOutcome::plain(cancelled_client_outcome(
-                    tool_name, &error,
+                    operation_name,
+                    &error,
                 )));
             }
             Err(error) => return Err(error),
@@ -135,7 +135,7 @@ impl<'a> RlmNavigationAdapter<'a> {
         };
         let timeout = deadline.remaining().min(RLM_NAVIGATION_TIMEOUT);
         if timeout.is_zero() {
-            return Err(format!("{tool_name} provider deadline exceeded"));
+            return Err(format!("{operation_name} provider deadline exceeded"));
         }
         let output = match self.client.call(
             &context.workspace,
@@ -147,49 +147,44 @@ impl<'a> RlmNavigationAdapter<'a> {
             Ok(output) => output,
             Err(error) if error.starts_with(CANCELLED_PREFIX) => {
                 return Ok(RlmNavigationOutcome::plain(cancelled_client_outcome(
-                    tool_name, &error,
+                    operation_name,
+                    &error,
                 )));
             }
             Err(error) => return Err(error),
         };
-        let value: Value = serde_json::from_str(output.result_text.trim())
-            .map_err(|error| format!("{tool_name} received invalid RLM helper JSON: {error}"))?;
+        let value: Value = serde_json::from_str(output.result_text.trim()).map_err(|error| {
+            format!("{operation_name} received invalid index helper JSON: {error}")
+        })?;
         if let Some(error) = value
             .get("error")
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
         {
-            return Err(format!("{tool_name} RLM helper failed: {error}"));
+            return Err(format!("{operation_name} index helper failed: {error}"));
         }
         let mut outcome = AdapterOutcome::ok(format!(
-            "{tool_name} completed through the persistent RLM MCP API"
+            "{operation_name} completed through the persistent RLM MCP API"
         ));
         let data;
-        match tool_name {
+        match request {
             // ADR-0023: the index already answers with structure, so the tool
             // publishes it instead of rendering it into a line grammar.
-            "unica.code.definition" => {
+            CodeIntelligenceReadRequest::Definition { .. } => {
                 let (result, warnings) = definition_result(&value)?;
                 // The transport phrase stays: the issue-89 service test proves
                 // reuse of the persistent RLM process through this summary.
                 outcome.summary = format!(
-                    "{tool_name} found {} definition(s) for {} through the persistent RLM MCP API",
+                    "{operation_name} found {} definition(s) for {} through the persistent RLM MCP API",
                     result.definitions.len(),
                     result.name
                 );
                 outcome.warnings.extend(warnings);
                 data = Some(CodeIntelligenceReadData::Definition(result));
             }
-            "unica.meta.profile" => {
-                let result = profile_result(&value)?;
-                outcome.summary = format!(
-                    "{tool_name} described {} across {} section(s) through the persistent RLM MCP API",
-                    result.object_name,
-                    result.sections.len()
-                );
-                data = Some(CodeIntelligenceReadData::ObjectProfile(result));
+            CodeIntelligenceReadRequest::Outline { .. } => {
+                return Err("code outline is not an index navigation capability".to_string())
             }
-            _ => return Err(format!("unsupported RLM navigation tool: {tool_name}")),
         }
         outcome.artifacts = vec![
             context.source_root.path.display().to_string(),
@@ -204,7 +199,6 @@ impl<'a> RlmNavigationAdapter<'a> {
         Ok(RlmNavigationOutcome { outcome, data })
     }
 }
-
 /// A navigation answer plus the typed payload the tool publishes, when its
 /// contract has one.
 #[derive(Debug)]
@@ -222,9 +216,9 @@ impl RlmNavigationOutcome {
     }
 }
 
-/// ADR-0020: the index serves definition and object profile. The outline is
-/// built from the current BSL file, so it has no RLM operation at all and asking
-/// for one is a routing defect rather than a runtime condition.
+/// ADR-0020: the index serves definition. The outline is built from the current
+/// BSL file, so it has no RLM operation at all and asking for one is a routing
+/// defect rather than a runtime condition.
 fn operation_for_request(
     request: &CodeIntelligenceReadRequest,
 ) -> Result<WorkspaceRlmOperation, String> {
@@ -238,19 +232,10 @@ fn operation_for_request(
             module_hint: module_hint.clone(),
             limit: *limit,
         },
-        CodeIntelligenceReadRequest::ObjectProfile {
-            name,
-            sections,
-            limit,
-        } => WorkspaceRlmOperation::ObjectProfile {
-            name: name.clone(),
-            sections: sections.clone(),
-            limit: *limit,
-        },
         CodeIntelligenceReadRequest::Outline { .. } => {
             return Err(format!(
                 "{} is built from the current BSL source and has no RLM operation",
-                request.tool_name()
+                request.operation_name()
             ))
         }
     })
@@ -329,86 +314,11 @@ fn definition_result(value: &Value) -> Result<(CodeDefinitionResult, Vec<String>
         warnings,
     ))
 }
-
-/// Reads the object profile as data. Section items keep the shape the index
-/// gave them instead of being flattened to one line each.
-fn profile_result(value: &Value) -> Result<MetaProfileResult, String> {
-    let object_name = required_value_string(value, "object_name", "RLM object profile")?;
-    let category = value
-        .get("category")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-    let sections = value
-        .get("sections")
-        .and_then(Value::as_object)
-        .ok_or_else(|| "RLM object profile response is missing sections".to_string())?;
-    Ok(MetaProfileResult {
-        object_name: object_name.to_string(),
-        category,
-        sections: sections
-            .iter()
-            .map(|(name, section)| MetaProfileSection {
-                name: public_profile_section_name(name).to_string(),
-                status: section
-                    .get("status")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown")
-                    .to_string(),
-                total: section
-                    .get("total")
-                    .and_then(Value::as_u64)
-                    .unwrap_or_default(),
-                // Upstream counts `total` before applying its item limit, so
-                // only a section that cannot count marks the value as a floor.
-                total_is_lower_bound: section
-                    .pointer("/_meta/total_is_lower_bound")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
-                returned: section
-                    .get("returned")
-                    .and_then(Value::as_u64)
-                    .unwrap_or_default(),
-                items: section
-                    .get("items")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default(),
-                error: section
-                    .pointer("/_meta/error")
-                    .and_then(Value::as_str)
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_string),
-            })
-            .collect(),
-    })
-}
-
-fn public_profile_section_name(name: &str) -> &str {
-    match name {
-        "functional_options" => "functionalOptions",
-        "predefined_items" => "predefinedItems",
-        other => other,
-    }
-}
-
-fn required_value_string<'a>(
-    value: &'a Value,
-    key: &str,
-    description: &str,
-) -> Result<&'a str, String> {
-    value
-        .get(key)
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| format!("{description} response is missing {key}"))
-}
-
 fn index_unavailable_outcome(
     request: &CodeIntelligenceReadRequest,
     readiness: IndexReadiness,
 ) -> AdapterOutcome {
-    let tool_name = request.tool_name();
+    let tool_name = request.operation_name();
     let warning = readiness_warning(readiness);
     if warning.starts_with(CANCELLED_PREFIX) {
         return AdapterOutcome::cancelled(
@@ -455,7 +365,7 @@ fn readiness_warning(readiness: IndexReadiness) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{operation_for_request, profile_result, RlmNavigationAdapter, RlmNavigationClient};
+    use super::{operation_for_request, RlmNavigationAdapter, RlmNavigationClient};
     use crate::application::AdapterOutcome;
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::CodeIntelligenceReadData;
@@ -472,6 +382,16 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
+
+    fn secure_temp_root(label: &str) -> PathBuf {
+        std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!(
+                "{label}-{}-{}",
+                std::process::id(),
+                uuid::Uuid::new_v4()
+            ))
+    }
 
     #[test]
     fn a_definition_keeps_every_field_the_helper_reported() {
@@ -518,145 +438,8 @@ mod tests {
         assert!(warnings[0].contains("missing file"), "{warnings:?}");
     }
 
-    #[test]
-    fn a_profile_maps_upstream_section_names_to_public_names() {
-        let result = profile_result(&json!({
-            "object_name": "Заказ",
-            "category": "Document",
-            "sections": {
-                "functional_options": {
-                    "status": "ok",
-                    "items": [{"name": "ИспользоватьЗаказы"}],
-                    "total": 1,
-                    "returned": 1
-                },
-                "predefined_items": {
-                    "status": "empty",
-                    "items": [],
-                    "total": 0,
-                    "returned": 0
-                }
-            }
-        }))
-        .unwrap();
-
-        assert_eq!(result.object_name, "Заказ");
-        assert_eq!(result.category.as_deref(), Some("Document"));
-        let names = result
-            .sections
-            .iter()
-            .map(|section| section.name.as_str())
-            .collect::<Vec<_>>();
-        assert!(names.contains(&"functionalOptions"), "{names:?}");
-        assert!(names.contains(&"predefinedItems"), "{names:?}");
-        // Items keep their own shape rather than one line of rendered JSON.
-        let options = result
-            .sections
-            .iter()
-            .find(|section| section.name == "functionalOptions")
-            .unwrap();
-        assert_eq!(options.items[0]["name"], "ИспользоватьЗаказы");
-    }
-
-    #[test]
-    fn a_section_that_cannot_count_marks_its_total_as_a_lower_bound() {
-        let result = profile_result(&json!({
-            "object_name": "Заказ",
-            "category": "Document",
-            "sections": {
-                "predefined_items": {
-                    "status": "ok",
-                    "items": [{"name": "Основной"}],
-                    "total": 1,
-                    "returned": 1,
-                    "has_more": true,
-                    "_meta": {
-                        "source": "index",
-                        "truncated": true,
-                        "total_is_lower_bound": true
-                    }
-                }
-            }
-        }))
-        .unwrap();
-
-        assert!(result.sections[0].total_is_lower_bound);
-        assert_eq!(result.sections[0].total, 1);
-    }
-
     /// Upstream counts before applying its item limit, so a limited section
     /// still reports an exact total.
-    #[test]
-    fn a_limited_section_keeps_its_exact_total() {
-        let result = profile_result(&json!({
-            "object_name": "Заказ",
-            "category": "Document",
-            "sections": {
-                "structure": {
-                    "status": "ok",
-                    "items": [{"name": "Реквизит1"}],
-                    "total": 100,
-                    "returned": 20,
-                    "has_more": true
-                }
-            }
-        }))
-        .unwrap();
-
-        assert_eq!(result.sections[0].total, 100);
-        assert_eq!(result.sections[0].returned, 20);
-        assert!(!result.sections[0].total_is_lower_bound);
-    }
-
-    #[test]
-    fn an_untruncated_section_keeps_its_exact_total() {
-        let result = profile_result(&json!({
-            "object_name": "Заказ",
-            "category": "Document",
-            "sections": {
-                "predefined_items": {
-                    "status": "ok",
-                    "items": [{"name": "Основной"}],
-                    "total": 1,
-                    "returned": 1,
-                    "has_more": false,
-                    "_meta": {"source": "index", "truncated": false}
-                }
-            }
-        }))
-        .unwrap();
-
-        assert_eq!(result.sections[0].total, 1);
-        assert!(!result.sections[0].total_is_lower_bound);
-    }
-
-    #[test]
-    fn object_profile_operation_keeps_predefined_items_request() {
-        let request = CodeIntelligenceReadRequest::ObjectProfile {
-            name: "Document.Заказ".to_string(),
-            sections: Some(vec![
-                "structure".to_string(),
-                "functionalOptions".to_string(),
-                "predefinedItems".to_string(),
-            ]),
-            limit: 11,
-        };
-        let operation = operation_for_request(&request).unwrap();
-
-        assert_eq!(
-            operation,
-            WorkspaceRlmOperation::ObjectProfile {
-                name: "Document.Заказ".to_string(),
-                sections: Some(vec![
-                    "structure".to_string(),
-                    "functionalOptions".to_string(),
-                    "predefinedItems".to_string()
-                ]),
-                limit: 11
-            }
-        );
-    }
-
     struct RecordingClient {
         operations: Mutex<Vec<WorkspaceRlmOperation>>,
     }
@@ -810,6 +593,8 @@ mod tests {
     }
 
     fn unready_index_context() -> CodeIntelligenceContext {
+        let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/unica_mcp_script_parity/meta-validate-language-aware");
         CodeIntelligenceContext::new(
             WorkspaceContext {
                 cwd: PathBuf::from("/workspace"),
@@ -819,7 +604,7 @@ mod tests {
             },
             ResolvedSourceRoot {
                 source_set: Some("main".to_string()),
-                path: PathBuf::from("/workspace/src"),
+                path: source_root,
             },
         )
     }
@@ -840,28 +625,20 @@ mod tests {
     }
 
     #[test]
-    fn definition_and_profile_keep_the_warning_only_contract_for_an_unready_index() {
-        for request in [
-            CodeIntelligenceReadRequest::Definition {
-                name: "Найти".to_string(),
-                module_hint: String::new(),
-                limit: 50,
-            },
-            CodeIntelligenceReadRequest::ObjectProfile {
-                name: "Справочники.Номенклатура".to_string(),
-                sections: None,
-                limit: 20,
-            },
-        ] {
-            let outcome = unready_index_outcome(&request, IndexReadiness::Missing);
+    fn definition_keeps_the_warning_only_contract_for_an_unready_index() {
+        let request = CodeIntelligenceReadRequest::Definition {
+            name: "Найти".to_string(),
+            module_hint: String::new(),
+            limit: 50,
+        };
+        let outcome = unready_index_outcome(&request, IndexReadiness::Missing);
 
-            assert!(outcome.ok, "{}", request.tool_name());
-            assert!(outcome.errors.is_empty(), "{}", request.tool_name());
-            assert_eq!(
-                outcome.warnings,
-                vec!["rlm index unavailable: index is missing".to_string()]
-            );
-        }
+        assert!(outcome.ok, "{}", request.operation_name());
+        assert!(outcome.errors.is_empty(), "{}", request.operation_name());
+        assert_eq!(
+            outcome.warnings,
+            vec!["rlm index unavailable: index is missing".to_string()]
+        );
     }
 
     #[test]
@@ -941,11 +718,7 @@ mod tests {
 
     #[test]
     fn adapter_routes_definition_through_rlm_client() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-rlm-navigation-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
+        let root = secure_temp_root("unica-rlm-navigation");
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(
             root.join("v8project.yaml"),

@@ -4,6 +4,7 @@ use crate::application::AdapterOutcome;
 use crate::domain::format_profile::{
     classify_root_version, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
 };
+use crate::domain::metadata::MetadataKind;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::metadata_kinds::{
     metadata_kind, metadata_kind_by_directory, metadata_kind_index, METADATA_KIND_TAGS,
@@ -2210,23 +2211,32 @@ pub(crate) fn edit_cf_with_data(
                             .join(type_dir)
                             .join(format!("{obj_name_val}.xml"));
                         if !object_file.exists() {
-                            if type_name == "Bot" {
-                                return Err(format!(
-                                    "Object file not found: {type_dir}/{obj_name_val}.xml\n\
-                                     cf-edit add-childObject only references objects that already exist on disk.\n\
-                                     meta-compile does not support Bot; create the Bot metadata with platform tooling, then retry."
-                                ));
-                            }
-                            let hint_skill = match type_name {
-                                "Subsystem" => "subsystem-compile",
-                                "Role" => "role-compile",
-                                _ => "meta-compile",
+                            let creation_hint = match type_name {
+                                "Subsystem" => format!(
+                                    "To create a new Subsystem, call MCP unica.subsystem.compile \
+                                     (or /unica:subsystem-compile) with:\n  \
+                                     {{\"Value\":\"{{\\\"name\\\":\\\"{obj_name_val}\\\"}}\",\"OutputDir\":\"<configuration directory>\",\"dryRun\":true}}"
+                                ),
+                                "Role" => (
+                                    "To create a new Role, call MCP unica.role.compile \
+                                     (or /unica:role-compile) with:\n  \
+                                     {\"JsonPath\":\"<role definition.json>\",\"OutputDir\":\"<configuration directory>\",\"dryRun\":true}"
+                                )
+                                    .to_string(),
+                                _ if MetadataKind::parse(type_name).is_ok() => format!(
+                                    "To create a new {type_name}, call MCP unica.meta.add \
+                                     (or /unica:meta-add) with:\n  \
+                                     {{\"sourceSet\":\"<sourceSet>\",\"kind\":\"{type_name}\",\"name\":\"{obj_name_val}\",\"dryRun\":true}}"
+                                ),
+                                _ => format!(
+                                    "Unica has no typed creation operation for {type_name}; \
+                                     create the {type_name} metadata with platform tooling, then retry."
+                                ),
                             };
                             return Err(format!(
                                 "Object file not found: {type_dir}/{obj_name_val}.xml\n\
                                  cf-edit add-childObject only references objects that already exist on disk.\n\
-                                 To create a new {type_name}, use {hint_skill} (auto-registers in Configuration.xml):\n\
-                                   /{hint_skill} with {{\"type\":\"{type_name}\",\"name\":\"{obj_name_val}\"}}"
+                                 {creation_hint}"
                             ));
                         }
                         if cf_edit_add_child_object_text(&mut text, type_name, obj_name_val)? {
@@ -3139,6 +3149,68 @@ mod cf_edit_transaction_tests {
             cf_edit_parse_child_object("Catalog.Товары").unwrap(),
             ("Catalog", "Товары")
         );
+    }
+
+    #[test]
+    fn cf_edit_missing_child_routes_to_current_creation_contracts() {
+        let fixture = BooleanEditFixture::new("missing-child-routing");
+        let cases = [
+            (
+                "Catalog",
+                "MissingCatalog",
+                &[
+                    "unica.meta.add",
+                    "/unica:meta-add",
+                    "\"sourceSet\":\"<sourceSet>\"",
+                    "\"kind\":\"Catalog\"",
+                    "\"name\":\"MissingCatalog\"",
+                    "\"dryRun\":true",
+                ][..],
+            ),
+            (
+                "Subsystem",
+                "MissingSubsystem",
+                &[
+                    "unica.subsystem.compile",
+                    "/unica:subsystem-compile",
+                    "\"Value\":\"{\\\"name\\\":\\\"MissingSubsystem\\\"}\"",
+                    "\"OutputDir\":\"<configuration directory>\"",
+                    "\"dryRun\":true",
+                ][..],
+            ),
+            (
+                "Role",
+                "MissingRole",
+                &[
+                    "unica.role.compile",
+                    "/unica:role-compile",
+                    "\"JsonPath\":\"<role definition.json>\"",
+                    "\"OutputDir\":\"<configuration directory>\"",
+                    "\"dryRun\":true",
+                ][..],
+            ),
+            ("Bot", "MissingBot", &["platform tooling"][..]),
+            ("Language", "MissingLanguage", &["platform tooling"][..]),
+        ];
+
+        for (kind, name, expected) in cases {
+            let outcome = edit_cf(
+                &Map::from_iter([
+                    ("ConfigPath".to_string(), json!("src")),
+                    ("Operation".to_string(), json!("add-childObject")),
+                    ("Value".to_string(), json!(format!("{kind}.{name}"))),
+                    ("NoValidate".to_string(), json!(true)),
+                ]),
+                &fixture.context,
+            );
+            assert!(!outcome.ok, "{kind}: {outcome:?}");
+            let error = outcome.errors.join("\n");
+            for token in expected {
+                assert!(error.contains(token), "{kind}: missing {token:?}: {error}");
+            }
+            assert!(!error.contains("meta-compile"), "{kind}: {error}");
+            assert!(!error.contains("\"type\":"), "{kind}: {error}");
+        }
     }
 }
 

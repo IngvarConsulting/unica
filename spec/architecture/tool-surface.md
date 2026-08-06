@@ -6,17 +6,17 @@
 
 ## Итог
 
-- Инструментов: **73**
+- Инструментов: **71**
 - Отвечают типизированным `data`: **45**
 - Типизированы частично: часть результата всё ещё текст: **1**
 - Отвечают снимком задания в `job`: **6**
-- Отвечают прозой в `stdout`: **21**
+- Отвечают прозой в `stdout`: **19**
 
 - В границах типизации: **45**
-- Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`): **16**
+- Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`): **14**
 - Вне границ: семейство runtime и build изучается отдельно: **12**
 - Осталось перевести на типизированный `data` в границах работы: **0**
-- Публикуют больше 20 аргументов из общего списка: **35**
+- Публикуют больше 20 аргументов из общего списка: **31**
 
 ## build — сборка и запуск платформы
 
@@ -38,7 +38,7 @@ Dump source set through the internal build/runtime adapter.
 | `mode` | string | нет | Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full\|incremental\|partial for dump, load\|merge for load, designer-config\|designer-modules\|edt for syntax, and the client kind for an mcp or mcp-va launch, while every other tool defines its own values (for example analyze\|status\|catalog\|file\|workspace on unica.code.diagnostics) — always use the enum published in that tool's own schema. |
 | `password` | string | нет | String forwarded to unica.build.* as --password and redacted in reported commands; undocumented in the skills, and credentials belong in v8project.local.yaml, not tool arguments |
 | `path` | string | нет | Workspace-relative file path whose meaning is tool-scoped: the required .cf or .cfe artifact for unica.runtime.execute operation load (.epf and .erf are rejected there), a module-relative file for the path-based unica.code.* tools — on unica.code.diagnostics only mode `file` reads one file, so every other mode rejects `path` instead of ignoring it — the canonical alias of the object/config path argument on the native XML tools, and a plain --path passthrough on unica.build.*. |
-| `sourceDir` | string | нет | Workspace-relative source root to work in: on the path-based unica.code.* tools and unica.meta.profile it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
+| `sourceDir` | string | нет | Workspace-relative source root to work in: on path-based unica.code.* tools it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
 | `sourceSet` | string | нет | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 | `target` | string | нет | String forwarded to unica.build.* as --target; the skills document no behaviour for it beyond the flag name |
 | `user` | string | нет | String forwarded to unica.build.* as --user; the skills document no behaviour for it beyond the flag name |
@@ -70,7 +70,7 @@ Load/build XML source set through the internal build/runtime adapter.
 | `mode` | string | нет | Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full\|incremental\|partial for dump, load\|merge for load, designer-config\|designer-modules\|edt for syntax, and the client kind for an mcp or mcp-va launch, while every other tool defines its own values (for example analyze\|status\|catalog\|file\|workspace on unica.code.diagnostics) — always use the enum published in that tool's own schema. |
 | `password` | string | нет | String forwarded to unica.build.* as --password and redacted in reported commands; undocumented in the skills, and credentials belong in v8project.local.yaml, not tool arguments |
 | `path` | string | нет | Workspace-relative file path whose meaning is tool-scoped: the required .cf or .cfe artifact for unica.runtime.execute operation load (.epf and .erf are rejected there), a module-relative file for the path-based unica.code.* tools — on unica.code.diagnostics only mode `file` reads one file, so every other mode rejects `path` instead of ignoring it — the canonical alias of the object/config path argument on the native XML tools, and a plain --path passthrough on unica.build.*. |
-| `sourceDir` | string | нет | Workspace-relative source root to work in: on the path-based unica.code.* tools and unica.meta.profile it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
+| `sourceDir` | string | нет | Workspace-relative source root to work in: on path-based unica.code.* tools it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
 | `sourceSet` | string | нет | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 | `target` | string | нет | String forwarded to unica.build.* as --target; the skills document no behaviour for it beyond the flag name |
 | `user` | string | нет | String forwarded to unica.build.* as --user; the skills document no behaviour for it beyond the flag name |
@@ -102,7 +102,7 @@ Create CF/CFE artifact through the internal build/runtime adapter.
 | `mode` | string | нет | Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full\|incremental\|partial for dump, load\|merge for load, designer-config\|designer-modules\|edt for syntax, and the client kind for an mcp or mcp-va launch, while every other tool defines its own values (for example analyze\|status\|catalog\|file\|workspace on unica.code.diagnostics) — always use the enum published in that tool's own schema. |
 | `password` | string | нет | String forwarded to unica.build.* as --password and redacted in reported commands; undocumented in the skills, and credentials belong in v8project.local.yaml, not tool arguments |
 | `path` | string | нет | Workspace-relative file path whose meaning is tool-scoped: the required .cf or .cfe artifact for unica.runtime.execute operation load (.epf and .erf are rejected there), a module-relative file for the path-based unica.code.* tools — on unica.code.diagnostics only mode `file` reads one file, so every other mode rejects `path` instead of ignoring it — the canonical alias of the object/config path argument on the native XML tools, and a plain --path passthrough on unica.build.*. |
-| `sourceDir` | string | нет | Workspace-relative source root to work in: on the path-based unica.code.* tools and unica.meta.profile it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
+| `sourceDir` | string | нет | Workspace-relative source root to work in: on path-based unica.code.* tools it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
 | `sourceSet` | string | нет | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 | `target` | string | нет | String forwarded to unica.build.* as --target; the skills document no behaviour for it beyond the flag name |
 | `user` | string | нет | String forwarded to unica.build.* as --user; the skills document no behaviour for it beyond the flag name |
@@ -134,7 +134,7 @@ Launch 1C runtime or Designer through the internal build/runtime adapter.
 | `mode` | string | нет | Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full\|incremental\|partial for dump, load\|merge for load, designer-config\|designer-modules\|edt for syntax, and the client kind for an mcp or mcp-va launch, while every other tool defines its own values (for example analyze\|status\|catalog\|file\|workspace on unica.code.diagnostics) — always use the enum published in that tool's own schema. |
 | `password` | string | нет | String forwarded to unica.build.* as --password and redacted in reported commands; undocumented in the skills, and credentials belong in v8project.local.yaml, not tool arguments |
 | `path` | string | нет | Workspace-relative file path whose meaning is tool-scoped: the required .cf or .cfe artifact for unica.runtime.execute operation load (.epf and .erf are rejected there), a module-relative file for the path-based unica.code.* tools — on unica.code.diagnostics only mode `file` reads one file, so every other mode rejects `path` instead of ignoring it — the canonical alias of the object/config path argument on the native XML tools, and a plain --path passthrough on unica.build.*. |
-| `sourceDir` | string | нет | Workspace-relative source root to work in: on the path-based unica.code.* tools and unica.meta.profile it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
+| `sourceDir` | string | нет | Workspace-relative source root to work in: on path-based unica.code.* tools it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
 | `sourceSet` | string | нет | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 | `target` | string | нет | String forwarded to unica.build.* as --target; the skills document no behaviour for it beyond the flag name |
 | `user` | string | нет | String forwarded to unica.build.* as --user; the skills document no behaviour for it beyond the flag name |
@@ -166,7 +166,7 @@ Apply built configuration changes through the internal build/runtime adapter.
 | `mode` | string | нет | Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full\|incremental\|partial for dump, load\|merge for load, designer-config\|designer-modules\|edt for syntax, and the client kind for an mcp or mcp-va launch, while every other tool defines its own values (for example analyze\|status\|catalog\|file\|workspace on unica.code.diagnostics) — always use the enum published in that tool's own schema. |
 | `password` | string | нет | String forwarded to unica.build.* as --password and redacted in reported commands; undocumented in the skills, and credentials belong in v8project.local.yaml, not tool arguments |
 | `path` | string | нет | Workspace-relative file path whose meaning is tool-scoped: the required .cf or .cfe artifact for unica.runtime.execute operation load (.epf and .erf are rejected there), a module-relative file for the path-based unica.code.* tools — on unica.code.diagnostics only mode `file` reads one file, so every other mode rejects `path` instead of ignoring it — the canonical alias of the object/config path argument on the native XML tools, and a plain --path passthrough on unica.build.*. |
-| `sourceDir` | string | нет | Workspace-relative source root to work in: on the path-based unica.code.* tools and unica.meta.profile it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
+| `sourceDir` | string | нет | Workspace-relative source root to work in: on path-based unica.code.* tools it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
 | `sourceSet` | string | нет | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 | `target` | string | нет | String forwarded to unica.build.* as --target; the skills document no behaviour for it beyond the flag name |
 | `user` | string | нет | String forwarded to unica.build.* as --user; the skills document no behaviour for it beyond the flag name |
@@ -357,10 +357,10 @@ Find BSL method definitions through the typed Unica code index boundary.
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
 | `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
-| `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, meta.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, meta.profile 20, code.graph nodes, code.diagnostics findings, standards results). |
+| `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results). |
 | `moduleHint` | string | нет | Substring of a module path or object name that narrows unica.code.definition when the same method name exists in several modules; matched case-insensitively |
-| `name` | string | да | Name of the object being created (`cf.init`, `cfe.init`, `epf.init`, `erf.init`), or the drill-down target for `meta.info`, `subsystem.info` and `dcs.info`; on `cf.info` it is an alias of `section` |
-| `sourceDir` | string | нет | Workspace-relative source root to work in: on the path-based unica.code.* tools and unica.meta.profile it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
+| `name` | string | да | Name of the object being created (`cf.init`, `cfe.init`, `epf.init`, `erf.init`), or the drill-down target for `subsystem.info` and `dcs.info`; on `cf.info` it is an alias of `section` |
+| `sourceDir` | string | нет | Workspace-relative source root to work in: on path-based unica.code.* tools it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
 
 **Результат сейчас:** `data`: определения с файлом, строкой, видом, параметрами и признаком экспорта (ADR-0023) (отвечают типизированным `data`)
 
@@ -384,14 +384,14 @@ Run BSL diagnostics through the internal code analysis adapter.
 | `detail` | string | нет | How much detail to return, with a per-tool enum: names, signatures or bodies for unica.code.graph; concise or detailed for unica.code.diagnostics |
 | `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 | `format` | string | нет | On unica.runtime.execute this is the source format (designer or edt) recorded by config-init and no other runtime operation accepts it; on unica.code.* and the native XML tools `format` selects the report/output format instead (for example text, json or jsonl), and on unica.build.* it is an undocumented --format passthrough. |
-| `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, meta.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, meta.profile 20, code.graph nodes, code.diagnostics findings, standards results). |
+| `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results). |
 | `maxFiles` | integer | нет | Integer cap on how many files one unica.code.diagnostics read covers, forwarded to the analyzer as max_files |
 | `minSeverity` | string | нет | Lowest diagnostic severity unica.code.diagnostics should report: error, warning, info, or hint |
 | `mode` | string | нет | Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full\|incremental\|partial for dump, load\|merge for load, designer-config\|designer-modules\|edt for syntax, and the client kind for an mcp or mcp-va launch, while every other tool defines its own values (for example analyze\|status\|catalog\|file\|workspace on unica.code.diagnostics) — always use the enum published in that tool's own schema. |
 | `path` | string | нет | Workspace-relative file path whose meaning is tool-scoped: the required .cf or .cfe artifact for unica.runtime.execute operation load (.epf and .erf are rejected there), a module-relative file for the path-based unica.code.* tools — on unica.code.diagnostics only mode `file` reads one file, so every other mode rejects `path` instead of ignoring it — the canonical alias of the object/config path argument on the native XML tools, and a plain --path passthrough on unica.build.*. |
 | `rangeEnd` | integer | нет | Integer end of the source line range for unica.code.diagnostics, forwarded as range_end; pair it with rangeStart to scope a mode=file read |
 | `rangeStart` | integer | нет | Integer start of the source line range for unica.code.diagnostics, forwarded as range_start; pair it with rangeEnd to scope a mode=file read |
-| `sourceDir` | string | нет | Workspace-relative source root to work in: on the path-based unica.code.* tools and unica.meta.profile it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
+| `sourceDir` | string | нет | Workspace-relative source root to work in: on path-based unica.code.* tools it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
 | `timeoutSeconds` | integer | нет | Only supported for mode analyze. Defaults to 120 seconds. |
 
 **Результат сейчас:** `data`: ответ MCP анализатора как есть, тем же путём, что `code.graph`. `analyze` — имя инструмента анализатора, а не внешний процесс 1С, поэтому исключение ADR-0023 §4 на него не распространяется (отвечают типизированным `data`)
@@ -417,12 +417,12 @@ Inspect BSL call graph through the typed Unica code analysis boundary.
 | `edgeKinds` | array | нет | Array of graph edge-kind names, forwarded to the analyzer as edge_kinds; unica.code.graph only, and the Unica contract does not enumerate the accepted values |
 | `id` | string | нет | Standard id, alias or URL for standards.explain (lower-precedence alias of idOrAliasOrUrl), but a graph node id such as method:CommonModule.Sales.OnPost for code.graph; standards.search ignores it. |
 | `ids` | array | нет | Array of code-graph node ids for unica.code.graph, forwarded as ids alongside the single-node id argument; use it when one request targets several nodes |
-| `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, meta.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, meta.profile 20, code.graph nodes, code.diagnostics findings, standards results). |
+| `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results). |
 | `maxOutputTokens` | integer | нет | Integer output budget for unica.code.graph, forwarded as max_output_tokens; use it to keep a large graph answer within context |
 | `mode` | string | да | Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full\|incremental\|partial for dump, load\|merge for load, designer-config\|designer-modules\|edt for syntax, and the client kind for an mcp or mcp-va launch, while every other tool defines its own values (for example analyze\|status\|catalog\|file\|workspace on unica.code.diagnostics) — always use the enum published in that tool's own schema. |
 | `provenance` | array | нет | Array of provenance filter values forwarded to the analyzer as provenance; unica.code.graph only, and the Unica contract does not enumerate the accepted values |
 | `query` | string | нет | Search text: provider-neutral query for unica.code.search, node-lookup text for unica.code.graph mode=resolve, the required unica.standards.search string, and explain's last-resort fallback |
-| `sourceDir` | string | нет | Workspace-relative source root to work in: on the path-based unica.code.* tools and unica.meta.profile it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
+| `sourceDir` | string | нет | Workspace-relative source root to work in: on path-based unica.code.* tools it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
 
 **Результат сейчас:** `data`: ответ анализатора с узлами и рёбрами графа как есть (ADR-0023) (отвечают типизированным `data`)
 
@@ -444,7 +444,7 @@ Read compact BSL module outline from the current source file.
 | `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 | `includeMethods` | boolean | нет | Boolean for unica.code.outline controlling whether method entries appear in the outline; defaults to true |
 | `path` | string | да | Workspace-relative file path whose meaning is tool-scoped: the required .cf or .cfe artifact for unica.runtime.execute operation load (.epf and .erf are rejected there), a module-relative file for the path-based unica.code.* tools — on unica.code.diagnostics only mode `file` reads one file, so every other mode rejects `path` instead of ignoring it — the canonical alias of the object/config path argument on the native XML tools, and a plain --path passthrough on unica.build.*. |
-| `sourceDir` | string | нет | Workspace-relative source root to work in: on the path-based unica.code.* tools and unica.meta.profile it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
+| `sourceDir` | string | нет | Workspace-relative source root to work in: on path-based unica.code.* tools it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
 
 **Результат сейчас:** типизированный `data` (отвечают типизированным `data`)
 
@@ -466,7 +466,7 @@ Insert content into one logically addressed existing Platform XML Configuration 
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
 | `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 | `metadataPath` | string | да | Canonical logical module address inside sourceSet, for example CommonModule.Service.Module or Catalog.Items.ObjectModule. |
-| `operation` | string | да | Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; the metadata edit verbs for unica.meta.edit; `add-value-type`, `add-object-type`, `add-property`, `remove-type` or `remove-property` for `unica.xdto.edit` — read the enum published in the tool's own schema. |
+| `operation` | string | да | Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; `add-value-type`, `add-object-type`, `add-property`, `remove-type` or `remove-property` for `unica.xdto.edit` — read the enum published in the tool's own schema. |
 | `position` | string | нет | Where unica.code.patch places the content relative to the selector: before or after |
 | `selector` | object | да | Object naming the unica.code.patch insertion point: exactly one of {"method": "Name"} for a whole procedure or function, or {"anchor": "text"} for a fragment that occurs once inside one method |
 | `sourceSet` | string | да | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
@@ -489,9 +489,9 @@ Search code concurrently through provider-local RLM, bsl-analyzer, and literal g
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
 | `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
-| `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, meta.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, meta.profile 20, code.graph nodes, code.diagnostics findings, standards results). |
+| `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results). |
 | `query` | string | да | Search text: provider-neutral query for unica.code.search, node-lookup text for unica.code.graph mode=resolve, the required unica.standards.search string, and explain's last-resort fallback |
-| `sourceDir` | string | нет | Workspace-relative source root to work in: on the path-based unica.code.* tools and unica.meta.profile it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
+| `sourceDir` | string | нет | Workspace-relative source root to work in: on path-based unica.code.* tools it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
 
 **Результат сейчас:** `data`: три секции поставщиков с попаданиями, диагностикой и статусом (ADR-0023) (отвечают типизированным `data`)
 
@@ -583,8 +583,8 @@ Create a make-ready external data processor scaffold in a Designer/platform-XML 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
 | `FormName` | string | нет | Name of the managed form as a 1C identifier: the form to create in `unica.form.add`, `epf.init` and `erf.init`, or the form to delete in `unica.form.remove` |
-| `Name` | string | да | Name of the object being created (`cf.init`, `cfe.init`, `epf.init`, `erf.init`), or the drill-down target for `meta.info`, `subsystem.info` and `dcs.info`; on `cf.info` it is an alias of `section` |
-| `OutputDir` | string | да | Destination root directory relative to `cwd`: the new dump for `cf.init`/`cfe.init`/`epf.init`/`erf.init`, or the existing dump root holding `Configuration.xml` for `meta.compile`/`role.compile`/`subsystem.compile` |
+| `Name` | string | да | Name of the object being created (`cf.init`, `cfe.init`, `epf.init`, `erf.init`), or the drill-down target for `subsystem.info` and `dcs.info`; on `cf.info` it is an alias of `section` |
+| `OutputDir` | string | да | Destination root directory relative to `cwd`: the new dump for `cf.init`/`cfe.init`/`epf.init`/`erf.init`, or the existing dump root holding `Configuration.xml` for `role.compile`/`subsystem.compile` |
 | `Synonym` | string | нет | Human-readable synonym written into the generated XML; it defaults to the matching `name`, `formName` or `templateName` when omitted |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
@@ -607,8 +607,8 @@ Create a make-ready external report scaffold in a Designer/platform-XML external
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
 | `FormName` | string | нет | Name of the managed form as a 1C identifier: the form to create in `unica.form.add`, `epf.init` and `erf.init`, or the form to delete in `unica.form.remove` |
-| `Name` | string | да | Name of the object being created (`cf.init`, `cfe.init`, `epf.init`, `erf.init`), or the drill-down target for `meta.info`, `subsystem.info` and `dcs.info`; on `cf.info` it is an alias of `section` |
-| `OutputDir` | string | да | Destination root directory relative to `cwd`: the new dump for `cf.init`/`cfe.init`/`epf.init`/`erf.init`, or the existing dump root holding `Configuration.xml` for `meta.compile`/`role.compile`/`subsystem.compile` |
+| `Name` | string | да | Name of the object being created (`cf.init`, `cfe.init`, `epf.init`, `erf.init`), or the drill-down target for `subsystem.info` and `dcs.info`; on `cf.info` it is an alias of `section` |
+| `OutputDir` | string | да | Destination root directory relative to `cwd`: the new dump for `cf.init`/`cfe.init`/`epf.init`/`erf.init`, or the existing dump root holding `Configuration.xml` for `role.compile`/`subsystem.compile` |
 | `Synonym` | string | нет | Human-readable synonym written into the generated XML; it defaults to the matching `name`, `formName` or `templateName` when omitted |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
@@ -787,37 +787,40 @@ Validate CommandInterface.xml.
 
 ## meta — объекты метаданных
 
-### `unica.meta.compile`
+### `unica.meta.add`
 
-Compile metadata object XML from JSON DSL.
+Create one metadata object from a typed internal template and optionally configure it atomically with ordered operations.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `JsonPath` | string | да | Path to the JSON DSL file, relative to `cwd`, for `unica.form.compile`, `unica.form.edit`, `unica.meta.compile`, `unica.mxl.compile` and `unica.role.compile` |
-| `OutputDir` | string | да | Destination root directory relative to `cwd`: the new dump for `cf.init`/`cfe.init`/`epf.init`/`erf.init`, or the existing dump root holding `Configuration.xml` for `meta.compile`/`role.compile`/`subsystem.compile` |
+| `dryRun` | boolean | нет | Preview the mutation without writing workspace files. |
+| `kind` | string | да | Supported metadata object kind for the minimal template. |
+| `name` | string | да | Metadata object name using a valid 1C identifier. |
+| `operations` | array | нет | Optional ordered typed operations applied to the private creation image before one atomic publication. |
+| `sourceSet` | string | да | Exact Configuration source-set name from v8project.yaml. |
 
-Публикует **161** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+**Результат сейчас:** `structuredContent.data`: логический адрес, валидация, семантические `effects` и план атомарной публикации одного объекта из типизированного шаблона с необязательными ordered operations (отвечают типизированным `data`)
 
-**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
-
-**Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`).**
+**Целевой контракт:** достигнут
 
 **Сценарии:**
 
-- Создать справочник из JSON-описания
-- Сгенерировать регистр сведений с измерениями и ресурсами
+- Создать минимальный справочник по логическому sourceSet
+- Одним вызовом создать и настроить объект через общий типизированный `operations` union
+- Предварительно проверить план создания объекта без записи файлов
 
 ### `unica.meta.edit`
 
-Edit metadata object XML.
+Apply ordered typed metadata edit operations atomically.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `ObjectPath` | string | да | Path to an object's metadata XML — a directory resolves to `<name>/<name>.xml` — for `unica.meta.edit`/`validate` and `unica.form.add`, relative to `cwd`; `meta.validate` accepts several joined by `\|`. `unica.meta.info` takes `sourceSet` + `metadataPath` instead |
+| `dryRun` | boolean | нет | Preview the mutation without writing workspace files. |
+| `metadataPath` | string | да | Logical metadata path of the object to edit. |
+| `operations` | array | да | Ordered typed edit operations applied as one atomic change. |
+| `sourceSet` | string | да | Exact Configuration source-set name from v8project.yaml. |
 
-Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
-
-**Результат сейчас:** `data`: объект, признак изменения, счётчики добавленного/удалённого/изменённого и проектируемый diff (ADR-0023) (отвечают типизированным `data`)
+**Результат сейчас:** `structuredContent.data`: логический адрес, валидация, семантические `effects` по `operationIndex` и план атомарной публикации пяти вариантов typed-операций (отвечают типизированным `data`)
 
 **Целевой контракт:** достигнут
 
@@ -828,17 +831,16 @@ Edit metadata object XML.
 
 ### `unica.meta.info`
 
-Inspect metadata object XML.
+Inspect one metadata object with validation and source-tree usage.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
-| `metadataPath` | string | да | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
-| `sourceSet` | string | да | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
+| `limit` | integer | нет | Maximum `predefinedItems` returned (1 through 50). Usage lists are read from the source tree, so they are exact and complete and the limit does not apply to them. |
+| `metadataPath` | string | да | Logical metadata path of the object to inspect. |
+| `sections` | array | нет | Extra sections to compute, all read from the source tree: `roles`, `subscriptions` and `functionalOptions` land in `usage`, `predefinedItems` in its own field. Omit or pass [] to inspect the object alone. |
+| `sourceSet` | string | да | Exact Configuration source-set name from v8project.yaml. |
 
-**Результат сейчас:** `data`: адрес, вид, имя, синоним, пообъектная поддержка, свойства именами платформы, владельцы, реквизиты/измерения/ресурсы, ТЧ, значения перечисления, формы, макеты, команды (отвечают типизированным `data`)
+**Результат сейчас:** `structuredContent.data`: локальная структура и валидация объекта; явно выбранные секции читаются из дерева исходников в `usage` и `predefinedItems`, обращения к RLM нет ни при каких аргументах (отвечают типизированным `data`)
 
 **Целевой контракт:** достигнут
 
@@ -848,36 +850,19 @@ Inspect metadata object XML.
 - Сравнить два объекта по подчинению и составу реквизитов
 - Уточнить длину кода и основное представление перед генерацией формы
 
-### `unica.meta.profile`
+### `unica.meta.remove`
 
-Read compact metadata object profile from the internal RLM index.
+Remove one metadata object through a logical guarded target.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
-| `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, meta.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, meta.profile 20, code.graph nodes, code.diagnostics findings, standards results). |
-| `name` | string | да | Name of the object being created (`cf.init`, `cfe.init`, `epf.init`, `erf.init`), or the drill-down target for `meta.info`, `subsystem.info` and `dcs.info`; on `cf.info` it is an alias of `section` |
-| `sections` | array | нет | Array of profile sections unica.meta.profile returns, from structure, modules, roles, subscriptions, functionalOptions, predefinedItems; omit it for all sections except predefinedItems, which must be listed explicitly |
-| `sourceDir` | string | нет | Workspace-relative source root to work in: on the path-based unica.code.* tools and unica.meta.profile it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
+| `confirm` | boolean | нет | Explicitly confirm a forced metadata object removal. |
+| `dryRun` | boolean | нет | Preview the mutation without writing workspace files. |
+| `force` | boolean | нет | Allow removal despite discovered references when confirmed. |
+| `metadataPath` | string | да | Logical metadata path of the object to remove. |
+| `sourceSet` | string | да | Exact Configuration source-set name from v8project.yaml. |
 
-**Результат сейчас:** `data`: секции профиля со статусом, счётчиками и элементами в их собственной форме (ADR-0023) (отвечают типизированным `data`)
-
-**Целевой контракт:** достигнут
-
-**Сценарии:**
-
-- Быстро получить сводку объекта из индекса RLM без чтения XML
-- Узнать, какие подписки и функциональные опции связаны с объектом
-
-### `unica.meta.remove`
-
-Remove metadata object XML and registration.
-
-Публикует **162** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
-
-**Результат сейчас:** `data`: вид и имя объекта, признак пробного прогона, вычищенные подсистемы и удалённые пути (отвечают типизированным `data`)
+**Результат сейчас:** `structuredContent.data`: логический адрес, ссылки, валидация, семантический `removeObject` effect и план атомарного удаления (отвечают типизированным `data`)
 
 **Целевой контракт:** достигнут
 
@@ -885,25 +870,6 @@ Remove metadata object XML and registration.
 
 - Удалить устаревший объект вместе с регистрацией в Configuration.xml
 - Проверить предпросмотром, что ещё ссылается на объект
-
-### `unica.meta.validate`
-
-Validate metadata object XML.
-
-| Аргумент | Тип | Обяз. | Описание |
-| --- | --- | --- | --- |
-| `ObjectPath` | string | да | Path to an object's metadata XML — a directory resolves to `<name>/<name>.xml` — for `unica.meta.edit`/`validate` and `unica.form.add`, relative to `cwd`; `meta.validate` accepts several joined by `\|`. `unica.meta.info` takes `sourceSet` + `metadataPath` instead |
-
-Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
-
-**Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
-
-**Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`).**
-
-**Сценарии:**
-
-- Проверить объект после ручной правки XML
-- Прогнать пакетную проверку набора объектов перед сборкой
 
 ## mxl — табличные макеты
 
@@ -913,7 +879,7 @@ Compile spreadsheet Template.xml from JSON DSL.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `JsonPath` | string | да | Path to the JSON DSL file, relative to `cwd`, for `unica.form.compile`, `unica.form.edit`, `unica.meta.compile`, `unica.mxl.compile` and `unica.role.compile` |
+| `JsonPath` | string | да | Path to the JSON DSL file, relative to `cwd`, for `unica.form.compile`, `unica.form.edit`, `unica.mxl.compile` and `unica.role.compile` |
 | `OutputPath` | string | да | Path of the single file to generate: the `Form.xml` for `unica.form.compile` or the `Template.xml` for `unica.dcs.compile` and `unica.mxl.compile` |
 
 Публикует **161** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
@@ -1035,8 +1001,8 @@ Compile role metadata and Rights.xml from JSON DSL.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `JsonPath` | string | да | Path to the JSON DSL file, relative to `cwd`, for `unica.form.compile`, `unica.form.edit`, `unica.meta.compile`, `unica.mxl.compile` and `unica.role.compile` |
-| `OutputDir` | string | да | Destination root directory relative to `cwd`: the new dump for `cf.init`/`cfe.init`/`epf.init`/`erf.init`, or the existing dump root holding `Configuration.xml` for `meta.compile`/`role.compile`/`subsystem.compile` |
+| `JsonPath` | string | да | Path to the JSON DSL file, relative to `cwd`, for `unica.form.compile`, `unica.form.edit`, `unica.mxl.compile` and `unica.role.compile` |
+| `OutputDir` | string | да | Destination root directory relative to `cwd`: the new dump for `cf.init`/`cfe.init`/`epf.init`/`erf.init`, or the existing dump root holding `Configuration.xml` for `role.compile`/`subsystem.compile` |
 
 Публикует **161** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -1094,7 +1060,7 @@ Execute typed v8-runner runtime workflows through the single Unica MCP boundary.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `operation` | string | да | Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; the metadata edit verbs for unica.meta.edit; `add-value-type`, `add-object-type`, `add-property`, `remove-type` or `remove-property` for `unica.xdto.edit` — read the enum published in the tool's own schema. |
+| `operation` | string | да | Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; `add-value-type`, `add-object-type`, `add-property`, `remove-type` or `remove-property` for `unica.xdto.edit` — read the enum published in the tool's own schema. |
 
 Публикует **64** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -1170,7 +1136,7 @@ Start a durable typed v8-runner runtime job without changing runtime.execute.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `operation` | string | да | Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; the metadata edit verbs for unica.meta.edit; `add-value-type`, `add-object-type`, `add-property`, `remove-type` or `remove-property` for `unica.xdto.edit` — read the enum published in the tool's own schema. |
+| `operation` | string | да | Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; `add-value-type`, `add-object-type`, `add-property`, `remove-type` or `remove-property` for `unica.xdto.edit` — read the enum published in the tool's own schema. |
 
 Публикует **61** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -1233,7 +1199,7 @@ List exactly one level below a logical source-set root or metadata address.
 | `cursor` | string | нет | Opaque continuation token returned by the same source navigation request or source.resources snapshot page; do not inspect or reuse it with another request or snapshot |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
 | `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
-| `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, meta.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, meta.profile 20, code.graph nodes, code.diagnostics findings, standards results). |
+| `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results). |
 | `metadataPath` | string | нет | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
 | `sourceSet` | string | да | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 
@@ -1276,7 +1242,7 @@ Read one bounded byte range from a resource in an issued immutable snapshot.
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
 | `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
-| `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, meta.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, meta.profile 20, code.graph nodes, code.diagnostics findings, standards results). |
+| `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results). |
 | `offset` | integer | нет | Zero-based byte offset inside the immutable resource snapshot |
 | `resourceId` | string | да | Opaque resource identifier returned inside one source.resources snapshot; valid only together with the snapshotId that issued it |
 | `snapshotId` | string | да | Opaque application-instance and workspace-bound identifier returned by source.resources; expires after five minutes |
@@ -1300,7 +1266,7 @@ Resolve an exact or prefix logical metadata query inside one named source set.
 | `cursor` | string | нет | Opaque continuation token returned by the same source navigation request or source.resources snapshot page; do not inspect or reuse it with another request or snapshot |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
 | `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
-| `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, meta.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, meta.profile 20, code.graph nodes, code.diagnostics findings, standards results). |
+| `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results). |
 | `mode` | string | нет | Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full\|incremental\|partial for dump, load\|merge for load, designer-config\|designer-modules\|edt for syntax, and the client kind for an mcp or mcp-va launch, while every other tool defines its own values (for example analyze\|status\|catalog\|file\|workspace on unica.code.diagnostics) — always use the enum published in that tool's own schema. |
 | `query` | string | да | Search text: provider-neutral query for unica.code.search, node-lookup text for unica.code.graph mode=resolve, the required unica.standards.search string, and explain's last-resort fallback |
 | `sourceSet` | string | да | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
@@ -1326,7 +1292,7 @@ Open or page an immutable bounded manifest for one logical source target.
 | `cursor` | string | нет | Opaque continuation token returned by the same source navigation request or source.resources snapshot page; do not inspect or reuse it with another request or snapshot |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
 | `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
-| `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, meta.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, meta.profile 20, code.graph nodes, code.diagnostics findings, standards results). |
+| `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results). |
 | `metadataPath` | string | нет | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
 | `scope` | string | нет | Bounded source.resources manifest scope: self, aggregate, or registrations |
 | `snapshotId` | string | нет | Opaque application-instance and workspace-bound identifier returned by source.resources; expires after five minutes |
@@ -1358,7 +1324,7 @@ Explain 1C diagnostics or standards through the internal standards adapter.
 | `id` | string | нет | Standard id, alias or URL for standards.explain (lower-precedence alias of idOrAliasOrUrl), but a graph node id such as method:CommonModule.Sales.OnPost for code.graph; standards.search ignores it. |
 | `idOrAliasOrUrl` | string | нет | Standard number, alias or full URL (e.g. "644") that puts standards.explain in page-fetch mode; prefer it over id, which it overrides when both are passed, and standards.search ignores it. |
 | `language` | string | нет | Alias of `lang` for `unica.help.add`; on `unica.standards.explain` the same key instead names the language of the `snippet` being explained |
-| `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, meta.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, meta.profile 20, code.graph nodes, code.diagnostics findings, standards results). |
+| `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results). |
 | `mode` | string | нет | Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full\|incremental\|partial for dump, load\|merge for load, designer-config\|designer-modules\|edt for syntax, and the client kind for an mcp or mcp-va launch, while every other tool defines its own values (for example analyze\|status\|catalog\|file\|workspace on unica.code.diagnostics) — always use the enum published in that tool's own schema. |
 | `query` | string | нет | Search text: provider-neutral query for unica.code.search, node-lookup text for unica.code.graph mode=resolve, the required unica.standards.search string, and explain's last-resort fallback |
 | `snippet` | string | нет | Literal BSL source text for standards.explain to explain against standards, sent with language and limit; codes outranks it when both are passed, and standards.search ignores it. |
@@ -1388,7 +1354,7 @@ Search 1C standards through the internal standards adapter.
 | `id` | string | нет | Standard id, alias or URL for standards.explain (lower-precedence alias of idOrAliasOrUrl), but a graph node id such as method:CommonModule.Sales.OnPost for code.graph; standards.search ignores it. |
 | `idOrAliasOrUrl` | string | нет | Standard number, alias or full URL (e.g. "644") that puts standards.explain in page-fetch mode; prefer it over id, which it overrides when both are passed, and standards.search ignores it. |
 | `language` | string | нет | Alias of `lang` for `unica.help.add`; on `unica.standards.explain` the same key instead names the language of the `snippet` being explained |
-| `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, meta.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, meta.profile 20, code.graph nodes, code.diagnostics findings, standards results). |
+| `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results). |
 | `mode` | string | нет | Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full\|incremental\|partial for dump, load\|merge for load, designer-config\|designer-modules\|edt for syntax, and the client kind for an mcp or mcp-va launch, while every other tool defines its own values (for example analyze\|status\|catalog\|file\|workspace on unica.code.diagnostics) — always use the enum published in that tool's own schema. |
 | `query` | string | да | Search text: provider-neutral query for unica.code.search, node-lookup text for unica.code.graph mode=resolve, the required unica.standards.search string, and explain's last-resort fallback |
 | `snippet` | string | нет | Literal BSL source text for standards.explain to explain against standards, sent with language and limit; codes outranks it when both are passed, and standards.search ignores it. |
@@ -1411,7 +1377,7 @@ Compile subsystem XML from JSON DSL.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `OutputDir` | string | да | Destination root directory relative to `cwd`: the new dump for `cf.init`/`cfe.init`/`epf.init`/`erf.init`, or the existing dump root holding `Configuration.xml` for `meta.compile`/`role.compile`/`subsystem.compile` |
+| `OutputDir` | string | да | Destination root directory relative to `cwd`: the new dump for `cf.init`/`cfe.init`/`epf.init`/`erf.init`, or the existing dump root holding `Configuration.xml` for `role.compile`/`subsystem.compile` |
 
 Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -1540,8 +1506,8 @@ Preview or apply a safe targeted mutation to one logically addressed 1C XDTO pac
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
 | `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 | `metadataPath` | string | да | Logical address of an XDTO package in the form `XDTOPackage.<name>`; the physical `Package.bin` path is rejected. |
-| `name` | string | нет | Name of the object being created (`cf.init`, `cfe.init`, `epf.init`, `erf.init`), or the drill-down target for `meta.info`, `subsystem.info` and `dcs.info`; on `cf.info` it is an alias of `section` |
-| `operation` | string | да | Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; the metadata edit verbs for unica.meta.edit; `add-value-type`, `add-object-type`, `add-property`, `remove-type` or `remove-property` for `unica.xdto.edit` — read the enum published in the tool's own schema. |
+| `name` | string | нет | Name of the object being created (`cf.init`, `cfe.init`, `epf.init`, `erf.init`), or the drill-down target for `subsystem.info` and `dcs.info`; on `cf.info` it is an alias of `section` |
+| `operation` | string | да | Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; `add-value-type`, `add-object-type`, `add-property`, `remove-type` or `remove-property` for `unica.xdto.edit` — read the enum published in the tool's own schema. |
 | `property` | object | нет | New XDTO property object for `unica.xdto.edit`: `name` must be an XML NCName and `type` a prefixed lexical QName; `minOccurs` is optional and must be 0 or 1. |
 | `propertyPath` | string | нет | Property path to a nested XDTO `typeDef`: an unescaped dot separates segments and `\.` denotes a literal dot inside one NCName, for example `A\.B.Child`. |
 | `sourceSet` | string | да | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
@@ -1567,7 +1533,7 @@ Inspect one logically addressed 1C XDTO package schema.
 | `cursor` | string | нет | Opaque continuation token returned by the same source navigation request or source.resources snapshot page; do not inspect or reuse it with another request or snapshot |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
 | `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
-| `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, meta.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, meta.profile 20, code.graph nodes, code.diagnostics findings, standards results). |
+| `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results). |
 | `metadataPath` | string | да | Logical address of an XDTO package in the form `XDTOPackage.<name>`; the physical `Package.bin` path is rejected. |
 | `sourceSet` | string | да | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 | `typeName` | string | нет | Name of the XDTO valueType or objectType, or of the target objectType for a property operation. |

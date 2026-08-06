@@ -45,6 +45,11 @@ identity on the wire (INV-MCP-SERVER-NAME), the public tool namespace (INV-MCP-N
 overridable volatile cache root (INV-CACHE-WORKSPACE-ROOT), and dry-run reporting without
 written state (INV-CACHE-WRITE-FREE-PREVIEW):
 
+The automated JSON-RPC smoke additionally executes the four Meta operations on
+a real Platform XML fixture and rejects the three retired names as unknown
+tools. This is the runtime acceptance for `INV-MCP-META-SURFACE`; the exact
+registry and schema projection is owned by its named contract test.
+
 ```sh
 python3.12 - <<'PY'
 import json, os, subprocess, tempfile
@@ -189,7 +194,7 @@ Claude Code: uninstall `unica@unica`, remove the marketplace, and delete the
 runtime cache under `${CLAUDE_PLUGIN_DATA}/runtimes` — it deliberately survives
 a plugin update (INV-CACHE-RUNTIME-ROOT-ORDER). Then add the same marketplace, run
 `claude plugin install unica@unica`, and start a new session or reload plugins.
-Skills appear under the plugin prefix, for example `/unica:meta-validate`, and
+Skills appear under the plugin prefix, for example `/unica:meta-info`, and
 public tools appear as `mcp__plugin_unica_unica__<tool>` with every character
 outside `A-Za-z0-9_-` replaced by `_`.
 

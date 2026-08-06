@@ -153,7 +153,7 @@ class SkillProvenanceTests(unittest.TestCase):
         upstream = next(
             item for item in data["upstreams"] if item["id"] == "templates-new-object-1c"
         )
-        entry = next(item for item in upstream["entries"] if item["skill"] == "meta-validate")
+        entry = next(item for item in upstream["entries"] if item["skill"] == "meta-add")
         notes = entry["notes"].lower()
 
         for phrase in (
@@ -172,7 +172,7 @@ class SkillProvenanceTests(unittest.TestCase):
         upstream = next(
             item for item in data["upstreams"] if item["id"] == "templates-new-object-1c"
         )
-        entry = next(item for item in upstream["entries"] if item["skill"] == "meta-validate")
+        entry = next(item for item in upstream["entries"] if item["skill"] == "meta-add")
         notes = entry["notes"].lower()
 
         self.assertIn("1c:accounting", notes)
@@ -198,6 +198,100 @@ class SkillProvenanceTests(unittest.TestCase):
             self.assertIn("общие проектные соглашения Unica", text)
             self.assertIn("не требования платформы", text)
 
+    def test_retired_meta_donors_have_typed_or_internal_local_owners(self) -> None:
+        data = self.load_provenance()
+        cc = next(item for item in data["upstreams"] if item["id"] == "cc-1c-skills")
+        creation = next(item for item in cc["entries"] if item["skill"] == "meta-add")
+        info_entries = [item for item in cc["entries"] if item["skill"] == "meta-info"]
+
+        self.assertIn(".claude/skills/meta-compile/**", creation["upstreamPaths"])
+        self.assertIn("tests/skills/cases/meta-compile/**", creation["upstreamPaths"])
+        self.assertNotIn("donorScope", creation)
+        self.assertEqual(len(info_entries), 1)
+        info = info_entries[0]
+        self.assertNotIn("componentOwner", info)
+        self.assertNotIn("donorScope", info)
+        self.assertIn(".claude/skills/meta-info/**", info["upstreamPaths"])
+        self.assertIn(".claude/skills/meta-validate/**", info["upstreamPaths"])
+        self.assertIn(
+            "crates/unica-coder/src/infrastructure/native_operations/meta/validation.rs",
+            info["localPaths"],
+        )
+
+        baseline = json.loads(
+            (
+                self.repo_root()
+                / "tests"
+                / "fixtures"
+                / "unica_mcp_script_parity"
+                / "donor-baseline.json"
+            ).read_text(encoding="utf-8")
+        )
+        validation_scope = baseline["scopes"]["meta-validate"]
+        self.assertEqual(validation_scope["ownerSkill"], "meta-info")
+        self.assertEqual(
+            info["parityBaselineCommit"],
+            validation_scope["acceptedCommit"],
+        )
+
+        archived = self.repo_root() / "tests" / "fixtures" / "provenance" / "retired_meta_dsl"
+        self.assertTrue((archived / "meta-compile").is_dir())
+        self.assertTrue((archived / "meta-edit").is_dir())
+        self.assertTrue((archived / "meta-validate").is_dir())
+        active_models = (
+            self.repo_root()
+            / "tests"
+            / "fixtures"
+            / "unica_mcp_script_parity"
+            / "unica_reference_models"
+        )
+        for retired in ("meta-compile", "meta-edit", "meta-validate"):
+            self.assertFalse((active_models / retired).exists())
+
+    def test_checker_rejects_duplicate_skill_entries_within_one_upstream(self) -> None:
+        module = load_upstream_module()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            index_path = root / "skill-upstreams.json"
+            index_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "upstreams": [
+                            {
+                                "id": "donor",
+                                "repository": "https://example.invalid/donor.git",
+                                "trackingRef": "main",
+                                "role": "guidance",
+                                "baselineCommit": "1" * 40,
+                                "entries": [
+                                    {
+                                        "skill": "meta-info",
+                                        "status": "adapted",
+                                        "notes": "typed reader",
+                                        "localPaths": [],
+                                    },
+                                    {
+                                        "skill": "meta-info",
+                                        "status": "adapted",
+                                        "notes": "internal validator",
+                                        "localPaths": [],
+                                    },
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            report = module.validate_index(root, index_path)
+
+        self.assertTrue(
+            any("duplicate skill entry" in error and "meta-info" in error for error in report.errors),
+            report.errors,
+        )
+
     def test_general_and_parity_baselines_are_independent_concrete_commits(self) -> None:
         data = self.load_provenance()
         upstreams = {item["id"]: item for item in data["upstreams"]}
@@ -220,8 +314,9 @@ class SkillProvenanceTests(unittest.TestCase):
             with self.subTest(scope=scope):
                 commit = scope_data["acceptedCommit"]
                 self.assertRegex(commit, r"^[0-9a-f]{40}$")
-                self.assertEqual(entries[scope]["parityBaselineCommit"], commit)
-                self.assertNotEqual(entries[scope]["baselineCommit"], commit)
+                owner = scope_data["ownerSkill"]
+                self.assertEqual(entries[owner]["parityBaselineCommit"], commit)
+                self.assertNotEqual(entries[owner]["baselineCommit"], commit)
                 review = json.loads(
                     (
                         self.reviews_dir()
@@ -635,6 +730,7 @@ class SkillProvenanceTests(unittest.TestCase):
         source_comment_paths = []
         roots = [
             self.repo_root() / "tests" / "fixtures" / "unica_mcp_script_parity" / "unica_reference_models",
+            self.repo_root() / "tests" / "fixtures" / "provenance" / "retired_meta_dsl",
             self.repo_root() / "plugins" / "unica" / "skills" / "help-add" / "scripts",
         ]
         for root in roots:
@@ -665,7 +761,7 @@ class SkillProvenanceTests(unittest.TestCase):
                 "tests/skills/cases/form-compile/**",
                 "tests/skills/cases/form-compile-from-object/**",
             ],
-            "meta-compile": ["tests/skills/cases/meta-compile/**"],
+            "meta-add": ["tests/skills/cases/meta-compile/**"],
         }
         for skill, paths in expected.items():
             with self.subTest(skill=skill):

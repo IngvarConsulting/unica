@@ -7,9 +7,12 @@ description: "Поиск и исследование BSL-кода и точек 
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.code.definition`, `unica.code.outline`, `unica.code.graph`, `unica.meta.profile`, and `unica.project.map`.
+- Preferred path: use MCP `unica` tools `unica.code.search`, `unica.code.definition`, `unica.code.outline`, `unica.code.graph`, `unica.meta.info`, and `unica.project.map`.
 - Use object-specific `unica.*.info` tools when code behavior depends on metadata, forms, DCS, roles, or HTTP service structure.
 - Do not call internal code-index, analyzer, or package adapters directly. They are hidden behind MCP `unica`.
+- `sourceSet` — это имя набора исходников из `v8project.yaml`, а не
+  константа. Получите его через `unica.project.map`; `"main"` в примерах
+  ниже — иллюстрация, а не значение по умолчанию.
 
 ## Tool choice
 
@@ -22,12 +25,12 @@ description: "Поиск и исследование BSL-кода и точек 
 - Use `unica.code.search` for arbitrary text, XML, query fragments, string literals, captions, and non-method tokens; its `git-grep` section is the literal fallback.
 - `unica.code.search.limit` is the per-provider result cap: `1..50`, default `20`.
 - Use `unica.code.graph` for callers, callees, neighbors, graph overview, and impact analysis when a method or metadata node id is known or can be resolved.
-- Use `unica.meta.profile` for a compact metadata object profile: structure, modules, roles, event subscriptions, functional options, and predefined items.
+- Use `unica.meta.info` for a compact metadata object profile: structure, modules, roles, event subscriptions, functional options, and predefined items.
 
 ## Workflow
 
 1. Map the workspace with `unica.project.map` when the active source-set or source format is unclear.
-2. For an exact metadata object name, call `unica.meta.profile` before broad search to identify related modules, rights, subscriptions, and functional options.
+2. For an exact metadata object name, call `unica.meta.info` before broad search to identify related modules, rights, subscriptions, and functional options.
 3. Resolve exact method names with `unica.code.definition`; inspect large candidate modules with `unica.code.outline`.
 4. For flow questions, resolve the node and ask `unica.code.graph` for callers, callees, or neighbors before treating lexical hits as execution flow.
 5. Search exact identifiers next: object names, module names, event handlers, exported procedures, command names, URL templates.
@@ -95,11 +98,11 @@ description: "Поиск и исследование BSL-кода и точек 
   "jsonrpc": "2.0",
   "method": "tools/call",
   "params": {
-    "name": "unica.meta.profile",
+    "name": "unica.meta.info",
     "arguments": {
-      "cwd": "<workspace>",
-      "name": "Document.SalesOrder",
-      "sections": ["structure", "modules", "roles", "subscriptions", "functionalOptions"],
+      "sourceSet": "main",
+      "metadataPath": "Document.SalesOrder",
+      "sections": ["roles", "subscriptions", "functionalOptions"],
       "limit": 20
     }
   }

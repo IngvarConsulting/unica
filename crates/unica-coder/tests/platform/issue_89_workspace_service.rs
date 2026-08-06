@@ -60,11 +60,11 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
 
     mcp.send(tool_call(
         3,
-        "unica.meta.profile",
+        "unica.meta.info",
         json!({
-            "cwd": fixture.workspace,
-            "name": "Catalog.Test",
-            "sections": []
+            "sourceSet": "main",
+            "metadataPath": "Catalog.Test",
+            "sections": ["roles"]
         }),
     ));
     let first_rlm = fixture.wait_for_rlm_starts(1, RESPONSE_DEADLINE)[0].clone();
@@ -81,6 +81,26 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
         first_rlm.descendant_pid,
         Duration::from_secs(2)
     ));
+
+    // The SDK drops the response of a cancelled request (MCP spec, ADR-0013);
+    // cancellation itself is proven by the RLM process-tree death above.
+    let (responses, response_times) =
+        mcp.receive_ids_timed(&[3, 4], RESPONSE_DEADLINE, ping_started);
+    assert!(response_times[&4] < Duration::from_secs(2));
+    assert_meta_info_data(&responses[&3]);
+
+    // meta.info is best-effort: it may return local metadata while the related
+    // RLM section is unavailable, so it cannot prove that a persistent RLM
+    // process restarted after cancellation. A direct code.search call invokes
+    // that provider and therefore drives the recovery assertion below.
+    mcp.send(tool_call(
+        11,
+        "unica.code.search",
+        json!({
+            "cwd": fixture.workspace,
+            "query": "Procedure"
+        }),
+    ));
     let restarted_rlm = fixture.wait_for_rlm_starts(2, RESPONSE_DEADLINE);
     assert_ne!(restarted_rlm[0].pid, restarted_rlm[1].pid);
     assert_eq!(
@@ -90,15 +110,10 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
             .collect::<Vec<_>>(),
         vec![1, 2]
     );
-
-    // The SDK drops the response of a cancelled request (MCP spec, ADR-0013);
-    // cancellation itself is proven by the RLM process-tree death above.
-    let (responses, response_times) =
-        mcp.receive_ids_timed(&[3, 4], RESPONSE_DEADLINE, ping_started);
-    assert!(response_times[&4] < Duration::from_secs(2));
+    let recovery_search = mcp.receive_ids(&[11], RESPONSE_DEADLINE);
     assert_tool_ok(
-        &responses[&3],
-        "persistent RLM MCP API",
+        &recovery_search[&11],
+        "provider-neutral code intelligence",
     );
     let session_records = fixture.log_records();
     assert_eq!(
@@ -128,46 +143,35 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
     ));
     mcp.send(tool_call(
         6,
-        "unica.meta.profile",
+        "unica.meta.info",
         json!({
-            "cwd": fixture.workspace,
-            "name": "Catalog.Test",
-            "sections": []
+            "sourceSet": "main",
+            "metadataPath": "Catalog.Test",
+            "sections": ["roles"]
         }),
     ));
     let final_responses = mcp.receive_ids(&[5, 6], RESPONSE_DEADLINE);
     assert_tool_ok(&final_responses[&5], "typed bsl-analyzer MCP adapter");
-    assert_tool_ok(
-        &final_responses[&6],
-        "persistent RLM MCP API",
-    );
+    assert_meta_info_data(&final_responses[&6]);
     mcp.send(tool_call(
         8,
-        "unica.meta.profile",
+        "unica.meta.info",
         json!({
-            "cwd": fixture.workspace,
-            "name": "Catalog.LogicalError",
-            "sections": []
+            "sourceSet": "main",
+            "metadataPath": "Catalog.LogicalError",
+            "sections": ["roles"]
         }),
     ));
     let logical_error = mcp.receive_ids(&[8], RESPONSE_DEADLINE);
-    assert!(logical_error[&8]["error"]["message"]
-        .as_str()
-        .is_some_and(|message| message.contains("invalid logical request")));
-    mcp.send(tool_call(
-        9,
-        "unica.meta.profile",
-        json!({
-            "cwd": fixture.workspace,
-            "name": "Catalog.Test",
-            "sections": []
-        }),
-    ));
-    let after_logical_error = mcp.receive_ids(&[9], RESPONSE_DEADLINE);
-    assert_tool_ok(
-        &after_logical_error[&9],
-        "persistent RLM MCP API",
-    );
+    let logical_error = tool_operation(&logical_error[&8]);
+    assert_eq!(logical_error["data"]["metadataPath"], "Catalog.LogicalError");
+    assert!(logical_error.get("stdout").is_none(), "{logical_error:#}");
+    // Nothing here can be unavailable any more: `meta.info` reads the source
+    // tree and never asks a provider that could be down.
+    assert!(logical_error["data"].get("related").is_none());
+    // meta.info is a best-effort observer and does not promise to recover an
+    // unavailable RLM provider. Drive recovery through the direct provider
+    // contract before asking meta.info to observe the recovered session.
     mcp.send(tool_call(
         7,
         "unica.code.search",
@@ -179,14 +183,41 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
     let search_response = mcp.receive_ids(&[7], RESPONSE_DEADLINE);
     let search = tool_operation(&search_response[&7]);
     assert_eq!(search["ok"], true, "{search:#}");
+    let search_sections = search["data"]["sections"].as_array().unwrap();
     assert_eq!(
-        search["data"]["sections"]
-            .as_array()
-            .unwrap()
+        search_sections
             .iter()
             .map(|section| section["provider"].as_str().unwrap())
             .collect::<Vec<_>>(),
         vec!["rlm", "bsl-analyzer", "git-grep"]
+    );
+    let rlm_status = search_sections
+        .iter()
+        .find(|section| section["provider"] == "rlm")
+        .and_then(|section| section["status"].as_str());
+    assert!(
+        matches!(rlm_status, Some("ok" | "empty")),
+        "the direct recovery probe did not recover RLM: response={search:#}, records={:#?}",
+        fixture.log_records()
+    );
+    mcp.send(tool_call(
+        9,
+        "unica.meta.info",
+        json!({
+            "sourceSet": "main",
+            "metadataPath": "Catalog.Test",
+            "sections": ["roles"]
+        }),
+    ));
+    let after_logical_error = mcp.receive_ids(&[9], RESPONSE_DEADLINE);
+    assert_meta_info_data(&after_logical_error[&9]);
+    // `meta.info` no longer observes the index session at all, so recovery is
+    // proven through the direct provider probe below rather than through it.
+    assert!(
+        tool_operation(&after_logical_error[&9])["data"]["usage"]["roles"].is_array(),
+        "usage was not read after the logical error: response={:#}, records={:#?}",
+        tool_operation(&after_logical_error[&9]),
+        fixture.log_records()
     );
 
     let expected_root = canonical_display(&fixture.workspace.join("src/cf"));
@@ -230,9 +261,10 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
 fn issue_89_fixture_cleanup_is_bounded_during_assertion_unwind() {
     let tracked = Arc::new(Mutex::new(Vec::<ToolRecord>::new()));
     let fixture_root = Arc::new(Mutex::new(None::<PathBuf>));
+    let cleanup_started = Arc::new(Mutex::new(None::<Instant>));
     let tracked_inside = Arc::clone(&tracked);
     let root_inside = Arc::clone(&fixture_root);
-    let started = Instant::now();
+    let cleanup_started_inside = Arc::clone(&cleanup_started);
     let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
         let fixture = Fixture::new();
         *root_inside.lock().unwrap() = Some(fixture.root.clone());
@@ -247,11 +279,20 @@ fn issue_89_fixture_cleanup_is_bounded_during_assertion_unwind() {
         ));
         fixture.wait_for_log("rlm|", RESPONSE_DEADLINE);
         *tracked_inside.lock().unwrap() = fixture.log_records();
+        *cleanup_started_inside.lock().unwrap() = Some(Instant::now());
         panic!("intentional assertion unwind exercises RAII cleanup");
     }));
 
     assert!(unwind.is_err());
-    assert!(started.elapsed() < Duration::from_secs(8));
+    let cleanup_elapsed = cleanup_started
+        .lock()
+        .unwrap()
+        .expect("cleanup timer must start before intentional unwind")
+        .elapsed();
+    assert!(
+        cleanup_elapsed < Duration::from_secs(8),
+        "RAII cleanup exceeded its deadline: {cleanup_elapsed:?}"
+    );
     verify_records_dead(&tracked.lock().unwrap(), Duration::from_secs(3)).unwrap();
     let root = fixture_root.lock().unwrap().clone().unwrap();
     assert!(
@@ -322,6 +363,16 @@ fn assert_tool_ok(response: &Value, summary: &str) {
             .is_some_and(|value| value.contains(summary)),
         "{operation:#}"
     );
+}
+
+fn assert_meta_info_data(response: &Value) {
+    let operation = tool_operation(response);
+    assert_eq!(operation["data"]["metadataPath"], "Catalog.Test", "{operation:#}");
+    // `meta.info` is local now: the object's own structure is the whole answer
+    // unless usage sections are asked for, and no section consults the index.
+    assert!(operation["data"].get("related").is_none(), "{operation:#}");
+    assert!(operation["data"]["usage"].is_object(), "{operation:#}");
+    assert!(operation.get("stdout").is_none(), "{operation:#}");
 }
 
 fn tool_operation(response: &Value) -> Value {
@@ -490,13 +541,34 @@ impl Fixture {
         let rlm_state = root.join("rlm-state");
         fs::create_dir_all(workspace.join("src/cf/Configuration")).unwrap();
         fs::create_dir_all(workspace.join("src/cf/CommonModules/Test/Ext")).unwrap();
+        fs::create_dir_all(workspace.join("src/cf/Catalogs")).unwrap();
+        fs::create_dir_all(workspace.join("src/cf/Languages")).unwrap();
         fs::create_dir_all(workspace.join("exts/TESTS/Configuration")).unwrap();
         fs::create_dir_all(plugin_root.join("skills")).unwrap();
         fs::create_dir_all(plugin_root.join("third-party")).unwrap();
         fs::create_dir_all(&cache).unwrap();
         fs::create_dir_all(&rlm_state).unwrap();
         fs::write(workspace.join("v8project.yaml"), "format: DESIGNER\nsource-set:\n  main:\n    type: CONFIGURATION\n    path: src/cf\n  TESTS:\n    type: CONFIGURATION\n    path: exts/TESTS\n").unwrap();
-        fs::write(workspace.join("src/cf/Configuration.xml"), "<?xml version=\"1.0\" encoding=\"UTF-8\"?><MetaDataObject><Configuration/></MetaDataObject>").unwrap();
+        fs::write(
+            workspace.join("src/cf/Configuration.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><InternalInfo/><Properties><Name>Issue89</Name><DefaultLanguage>Russian</DefaultLanguage></Properties><ChildObjects><Language>Russian</Language><Catalog>Test</Catalog><Catalog>LogicalError</Catalog><CommonModule>Test</CommonModule></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            workspace.join("src/cf/Languages/Russian.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Language uuid="dddddddd-dddd-4ddd-8ddd-dddddddddddd"><Properties><Name>Russian</Name><Synonym/><Comment/><LanguageCode>ru</LanguageCode></Properties></Language></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            workspace.join("src/cf/Catalogs/Test.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"><InternalInfo/><Properties><Name>Test</Name><Synonym/><Comment/></Properties><ChildObjects/></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            workspace.join("src/cf/Catalogs/LogicalError.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="cccccccc-cccc-4ccc-8ccc-cccccccccccc"><InternalInfo/><Properties><Name>LogicalError</Name><Synonym/><Comment/></Properties><ChildObjects/></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
         fs::write(
             workspace.join("src/cf/CommonModules/Test/Ext/Module.bsl"),
             "Procedure Test() Export\nEndProcedure\n",
@@ -1028,6 +1100,12 @@ fn rlm_mcp() {
                 loop { thread::sleep(Duration::from_secs(60)); }
             }
             execute_count += 1;
+            let operation_kind = if line.contains("get_object_profile") {
+                "rlm-execute-profile"
+            } else {
+                "rlm-execute-search"
+            };
+            record(operation_kind, sequence, descendant.id(), &root);
             if line.contains("LogicalError") {
                 respond(id, "{\"error\":\"invalid logical request\"}");
                 continue;
@@ -1037,7 +1115,7 @@ fn rlm_mcp() {
                 continue;
             }
             let helper = if line.contains("get_object_profile") {
-                "{\"object_name\":\"Test\",\"category\":\"Catalog\",\"sections\":{}}"
+                "{\"object_name\":\"Test\",\"category\":\"Catalog\",\"sections\":{\"modules\":{\"status\":\"ok\",\"items\":[],\"total\":0,\"returned\":0}}}"
             } else {
                 "[]"
             };

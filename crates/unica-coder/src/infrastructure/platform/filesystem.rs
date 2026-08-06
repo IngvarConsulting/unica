@@ -170,6 +170,167 @@ pub(crate) fn file_identity(_file: &fs::File) -> io::Result<FileIdentity> {
     ))
 }
 
+#[cfg(unix)]
+fn open_unix_child(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+    flags: libc::c_int,
+) -> io::Result<fs::File> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Component;
+
+    let mut components = Path::new(name).components();
+    if !matches!(components.next(), Some(Component::Normal(component)) if component == name)
+        || components.next().is_some()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "child name must be exactly one normal relative component",
+        ));
+    }
+    let name = CString::new(name.as_bytes())?;
+    // SAFETY: parent owns a live descriptor, name is a NUL-terminated single component, and a
+    // successful openat result transfers one newly owned descriptor to this function.
+    let descriptor = unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), flags) };
+    if descriptor < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        // SAFETY: descriptor is a newly owned successful openat result.
+        Ok(unsafe { fs::File::from_raw_fd(descriptor) })
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn open_directory_nofollow(path: &Path) -> io::Result<fs::File> {
+    use std::ffi::CString;
+    use std::os::fd::FromRawFd;
+    use std::os::unix::ffi::OsStrExt;
+
+    let path = CString::new(path.as_os_str().as_bytes())?;
+    // This ambient entry point is used only for a filesystem namespace root. Callers which open
+    // an arbitrary absolute path walk its components with open_directory_child_nofollow.
+    let descriptor = unsafe {
+        libc::open(
+            path.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if descriptor < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        // SAFETY: descriptor is a newly owned successful open result.
+        Ok(unsafe { fs::File::from_raw_fd(descriptor) })
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn open_directory_child_nofollow(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    open_unix_child(
+        parent,
+        name,
+        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+    )
+}
+
+#[cfg(unix)]
+pub(crate) fn open_regular_child_nofollow(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    let file = open_unix_child(
+        parent,
+        name,
+        libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+    )?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "entry is not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OpenedChildKind {
+    Directory,
+    RegularFile,
+    #[allow(
+        dead_code,
+        reason = "Unix rejects links at open; Windows classifies reparse handles"
+    )]
+    ReparsePoint,
+    Unsupported,
+}
+
+#[cfg(unix)]
+pub(crate) fn opened_child_kind(file: &fs::File) -> io::Result<OpenedChildKind> {
+    let file_type = file.metadata()?.file_type();
+    if file_type.is_dir() {
+        Ok(OpenedChildKind::Directory)
+    } else if file_type.is_file() {
+        Ok(OpenedChildKind::RegularFile)
+    } else {
+        Ok(OpenedChildKind::Unsupported)
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn open_any_child_nofollow(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<(fs::File, OpenedChildKind)> {
+    let file = open_unix_child(
+        parent,
+        name,
+        libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+    )?;
+    let kind = opened_child_kind(&file)?;
+    Ok((file, kind))
+}
+
+#[cfg(unix)]
+pub(crate) fn open_child_for_secure_tree_use(
+    _parent: &fs::File,
+    _name: &std::ffi::OsStr,
+    classification_anchor: fs::File,
+    _kind: OpenedChildKind,
+) -> io::Result<fs::File> {
+    Ok(classification_anchor)
+}
+
+#[cfg(unix)]
+pub(crate) fn read_directory_names_bounded(
+    directory: &fs::File,
+    maximum_entries: usize,
+    mut checkpoint: impl FnMut() -> io::Result<()>,
+) -> io::Result<Vec<std::ffi::OsString>> {
+    let mut entries = cap_primitives::fs::read_base_dir(directory)?;
+    let mut names = Vec::new();
+    loop {
+        checkpoint()?;
+        let Some(entry) = entries.next() else {
+            break;
+        };
+        let name = entry?.file_name();
+        if names.len() >= maximum_entries {
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "directory exceeds the retained enumeration entry limit",
+            ));
+        }
+        names.push(name);
+    }
+    names.sort();
+    Ok(names)
+}
+
 #[cfg(any(test, windows))]
 fn windows_api_path_from_utf16(mut path: Vec<u16>, absolute: bool) -> Vec<u16> {
     const BACKSLASH: u16 = b'\\' as u16;
@@ -1359,6 +1520,32 @@ pub(crate) fn open_any_child_nofollow(
 }
 
 #[cfg(windows)]
+pub(crate) fn open_child_for_secure_tree_use(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+    classification_anchor: fs::File,
+    kind: OpenedChildKind,
+) -> io::Result<fs::File> {
+    let anchor_identity = file_identity(&classification_anchor)?;
+    let typed = match kind {
+        OpenedChildKind::Directory => open_directory_child_nofollow(parent, name)?,
+        OpenedChildKind::RegularFile => open_regular_child_nofollow(parent, name)?,
+        OpenedChildKind::ReparsePoint | OpenedChildKind::Unsupported => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "secure tree cannot use an untyped child handle",
+            ))
+        }
+    };
+    if file_identity(&typed)? != anchor_identity || opened_child_kind(&typed)? != kind {
+        return Err(io::Error::other(
+            "typed child identity differs from its classification anchor",
+        ));
+    }
+    Ok(typed)
+}
+
+#[cfg(windows)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OpenedChildKind {
     Directory,
@@ -1427,6 +1614,16 @@ fn parse_directory_information_buffer(
     buffer: &[u8],
     names: &mut Vec<std::ffi::OsString>,
 ) -> io::Result<()> {
+    parse_directory_information_buffer_bounded(buffer, names, usize::MAX, &mut || Ok(()))
+}
+
+#[cfg(windows)]
+fn parse_directory_information_buffer_bounded(
+    buffer: &[u8],
+    names: &mut Vec<std::ffi::OsString>,
+    maximum_entries: usize,
+    checkpoint: &mut impl FnMut() -> io::Result<()>,
+) -> io::Result<()> {
     use std::mem::{offset_of, size_of};
     use std::os::windows::ffi::OsStringExt;
     use windows_sys::Win32::Storage::FileSystem::FILE_ID_BOTH_DIR_INFO;
@@ -1486,7 +1683,14 @@ fn parse_directory_information_buffer(
             });
         }
         let name = std::ffi::OsString::from_wide(&name);
+        checkpoint()?;
         if name != "." && name != ".." {
+            if names.len() >= maximum_entries {
+                return Err(io::Error::new(
+                    io::ErrorKind::FileTooLarge,
+                    "directory exceeds the retained enumeration entry limit",
+                ));
+            }
             names.push(name);
         }
 
@@ -1528,6 +1732,15 @@ fn parse_directory_information_buffer(
     reason = "the following Windows full-dump tree-inspection task consumes retained enumeration"
 )]
 pub(crate) fn read_directory_names(directory: &fs::File) -> io::Result<Vec<std::ffi::OsString>> {
+    read_directory_names_bounded(directory, usize::MAX, || Ok(()))
+}
+
+#[cfg(windows)]
+pub(crate) fn read_directory_names_bounded(
+    directory: &fs::File,
+    maximum_entries: usize,
+    mut checkpoint: impl FnMut() -> io::Result<()>,
+) -> io::Result<Vec<std::ffi::OsString>> {
     use std::mem::size_of;
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
@@ -1572,7 +1785,12 @@ pub(crate) fn read_directory_names(directory: &fs::File) -> io::Result<Vec<std::
         // complete structure, name, and next-record bounds checks before reading each field.
         let buffer =
             unsafe { std::slice::from_raw_parts(storage.as_ptr().cast::<u8>(), buffer_bytes) };
-        parse_directory_information_buffer(buffer, &mut names)?;
+        parse_directory_information_buffer_bounded(
+            buffer,
+            &mut names,
+            maximum_entries,
+            &mut checkpoint,
+        )?;
     }
     names.sort();
     Ok(names)
@@ -3240,6 +3458,88 @@ mod tests {
         assert_eq!(staged_metadata.permissions().mode() & 0o7777, 0o600);
 
         drop(staged_file);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn retained_directory_enumeration_applies_cap_and_checkpoint_incrementally() {
+        use super::{open_directory_nofollow, read_directory_names_bounded};
+
+        let root = unique_temp_root("bounded-retained-enumeration");
+        fs::create_dir_all(&root).unwrap();
+        for index in 0..64 {
+            fs::write(root.join(format!("{index:02}.xml")), b"x").unwrap();
+        }
+        let directory = open_directory_nofollow(&root).unwrap();
+
+        let capped = read_directory_names_bounded(&directory, 3, || Ok(()));
+        assert_eq!(capped.unwrap_err().kind(), io::ErrorKind::FileTooLarge);
+
+        let checkpoints = std::cell::Cell::new(0usize);
+        let cancelled = read_directory_names_bounded(&directory, 64, || {
+            let next = checkpoints.get() + 1;
+            checkpoints.set(next);
+            if next == 5 {
+                Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"))
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(cancelled.unwrap_err().kind(), io::ErrorKind::Interrupted);
+        assert_eq!(checkpoints.get(), 5);
+
+        drop(directory);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn secure_tree_typed_reopen_provides_directory_listing_and_file_bytes() {
+        use super::{
+            open_any_child_nofollow, open_child_for_secure_tree_use, open_directory_nofollow,
+            read_directory_names_bounded, OpenedChildKind,
+        };
+        use std::io::Read;
+
+        let root = unique_temp_root("secure-tree-typed-reopen");
+        fs::create_dir_all(root.join("nested")).unwrap();
+        fs::write(root.join("nested/inside.xml"), b"inside").unwrap();
+        fs::write(root.join("payload.xml"), b"payload").unwrap();
+        let directory = open_directory_nofollow(&root).unwrap();
+
+        let (nested_anchor, nested_kind) =
+            open_any_child_nofollow(&directory, std::ffi::OsStr::new("nested")).unwrap();
+        assert_eq!(nested_kind, OpenedChildKind::Directory);
+        let nested = open_child_for_secure_tree_use(
+            &directory,
+            std::ffi::OsStr::new("nested"),
+            nested_anchor,
+            nested_kind,
+        )
+        .unwrap();
+        assert_eq!(
+            read_directory_names_bounded(&nested, 2, || Ok(())).unwrap(),
+            [std::ffi::OsString::from("inside.xml")]
+        );
+
+        let (file_anchor, file_kind) =
+            open_any_child_nofollow(&directory, std::ffi::OsStr::new("payload.xml")).unwrap();
+        assert_eq!(file_kind, OpenedChildKind::RegularFile);
+        let mut file = open_child_for_secure_tree_use(
+            &directory,
+            std::ffi::OsStr::new("payload.xml"),
+            file_anchor,
+            file_kind,
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"payload");
+
+        drop(file);
+        drop(nested);
+        drop(directory);
         fs::remove_dir_all(root).unwrap();
     }
 

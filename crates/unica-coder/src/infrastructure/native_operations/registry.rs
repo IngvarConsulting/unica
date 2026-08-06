@@ -4,8 +4,7 @@ use serde_json::{Map, Value};
 use std::path::PathBuf;
 
 use super::{
-    cf, cfe, dcs, external, form, help, interface, meta, mxl, role, subsystem, support, template,
-    xdto,
+    cf, cfe, dcs, external, form, help, interface, mxl, role, subsystem, support, template, xdto,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,7 +53,7 @@ pub(crate) fn native_mutation_file_input_contract(
     operation: &str,
 ) -> Option<NativeMutationFileInputContract> {
     let contract = match operation {
-        "cf-edit" | "interface-edit" | "meta-edit" | "subsystem-edit" | "subsystem-compile" => {
+        "cf-edit" | "interface-edit" | "subsystem-edit" | "subsystem-compile" => {
             NativeMutationFileInputContract {
                 top_level: TopLevelJsonInput::OptionalDefinitionFile,
                 secondary_at_query_files: false,
@@ -76,7 +75,7 @@ pub(crate) fn native_mutation_file_input_contract(
             secondary_at_query_files: false,
             secondary_from_object_platform_xml: false,
         },
-        "meta-compile" | "mxl-compile" | "role-compile" => NativeMutationFileInputContract {
+        "mxl-compile" | "role-compile" => NativeMutationFileInputContract {
             top_level: TopLevelJsonInput::RequiredJsonPath,
             secondary_at_query_files: false,
             secondary_from_object_platform_xml: false,
@@ -87,8 +86,8 @@ pub(crate) fn native_mutation_file_input_contract(
             secondary_from_object_platform_xml: false,
         },
         "code-patch" | "xdto-edit" | "cf-init" | "support-edit" | "cfe-borrow" | "cfe-init"
-        | "epf-init" | "erf-init" | "cfe-patch-method" | "meta-remove" | "help-add"
-        | "form-add" | "form-remove" | "template-add" | "template-remove" => NO_FILE_INPUT,
+        | "epf-init" | "erf-init" | "cfe-patch-method" | "help-add" | "form-add"
+        | "form-remove" | "template-add" | "template-remove" => NO_FILE_INPUT,
         _ => return None,
     };
     Some(contract)
@@ -111,7 +110,6 @@ pub(crate) fn invoke_read(
 ) -> Option<Result<AdapterOutcome, String>> {
     cf::invoke_read(operation, tool_name, args, context)
         .or_else(|| cfe::invoke_read(operation, tool_name, args, context))
-        .or_else(|| meta::invoke_read(operation, tool_name, args, context))
         .or_else(|| form::invoke_read(operation, tool_name, args, context))
         .or_else(|| interface::invoke_read(operation, tool_name, args, context))
         .or_else(|| subsystem::invoke_read(operation, tool_name, args, context))
@@ -137,7 +135,7 @@ pub(crate) fn invoke_preview(
     }
     if !matches!(
         operation,
-        "form-compile" | "meta-compile" | "role-compile" | "subsystem-compile"
+        "form-compile" | "role-compile" | "subsystem-compile"
     ) {
         return None;
     }
@@ -146,7 +144,6 @@ pub(crate) fn invoke_preview(
     }
     let planned = match operation {
         "form-compile" => form::preview_form_compile(args, context),
-        "meta-compile" => meta::preview_meta_compile(args, context),
         "role-compile" => role::preview_role_compile(args, context),
         "subsystem-compile" => subsystem::preview_subsystem_compile(args, context),
         _ => unreachable!("compile preview operations were checked above"),
@@ -167,7 +164,7 @@ fn compile_preview_unavailable(
     }
 
     match operation {
-        "meta-compile" | "role-compile" => {
+        "role-compile" => {
             let Some(json_path) = string_arg(args, &["JsonPath", "jsonPath"]) else {
                 return Some("missing required JsonPath argument".to_string());
             };
@@ -228,7 +225,6 @@ pub(crate) fn invoke_mutation(
     cf::invoke_mutation(operation, tool_name, args, context)
         .or_else(|| cfe::invoke_mutation(operation, tool_name, args, context))
         .or_else(|| external::apply(operation, tool_name, args, context))
-        .or_else(|| meta::invoke_mutation(operation, tool_name, args, context))
         .or_else(|| match operation {
             "help-add" => Some(help::add_help(args, context)),
             _ => None,
@@ -300,14 +296,6 @@ mod tests {
                 (TopLevelJsonInput::OptionalDefinitionFile, false, false),
             ),
             (
-                "meta-compile",
-                (TopLevelJsonInput::RequiredJsonPath, false, false),
-            ),
-            (
-                "meta-edit",
-                (TopLevelJsonInput::OptionalDefinitionFile, false, false),
-            ),
-            (
                 "mxl-compile",
                 (TopLevelJsonInput::RequiredJsonPath, false, false),
             ),
@@ -352,7 +340,7 @@ mod tests {
         }
 
         assert_eq!(actual_file_backed, expected_file_backed);
-        assert_eq!(actual_file_backed.len(), 12);
+        assert_eq!(actual_file_backed.len(), 10);
         assert_eq!(
             actual_file_backed
                 .values()
@@ -362,7 +350,7 @@ mod tests {
                         + usize::from(*from_object_platform_xml)
                 })
                 .sum::<usize>(),
-            14
+            12
         );
         assert_eq!(native_mutation_file_input_contract("unknown-mutator"), None);
         assert_eq!(

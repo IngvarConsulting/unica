@@ -115,7 +115,7 @@ fn validates_compile_preview_like_apply(tool: ToolSpec) -> bool {
     matches!(
         tool.handler,
         ToolHandler::NativeOperation {
-            operation: "form-compile" | "meta-compile" | "role-compile" | "subsystem-compile",
+            operation: "form-compile" | "role-compile" | "subsystem-compile",
             ..
         }
     )
@@ -353,12 +353,10 @@ fn initializer_source_set_kind(tool: ToolSpec) -> Option<SourceSetKind> {
 mod tests {
     use super::*;
     use crate::application::tools;
-    use crate::domain::cache::CacheAccess;
     use crate::infrastructure::platform::testing::{
         create_file_link_fixture_for_test, FileLinkFixtureOutcome,
     };
     use serde_json::json;
-    use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn fixture(label: &str) -> (PathBuf, WorkspaceContext) {
@@ -439,128 +437,5 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(root);
-    }
-
-    fn temp_context(name: &str) -> WorkspaceContext {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock must follow epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "unica-tool-context-{name}-{}-{nanos}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&root).expect("temporary workspace must be created");
-        WorkspaceContext {
-            cwd: root.clone(),
-            workspace_root: root.clone(),
-            cache_root: root.join(".build/unica"),
-            workspace_epoch: 1,
-        }
-    }
-
-    fn mutating_meta_edit_tool() -> ToolSpec {
-        ToolSpec {
-            name: "unica.meta.edit",
-            description: "test tool",
-            mutating: true,
-            cache_access: CacheAccess::default(),
-            handler: ToolHandler::NativeOperation {
-                operation: "meta-edit",
-                event: None,
-            },
-        }
-    }
-
-    fn meta_edit_args(path: &str) -> Map<String, Value> {
-        Map::from_iter([("ObjectPath".to_string(), Value::String(path.to_string()))])
-    }
-
-    #[test]
-    fn mutating_tool_context_defers_equal_depth_owner_ambiguity_to_format_guard() {
-        let context = temp_context("ambiguous-same-root");
-        fs::write(
-            context.cwd.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: external\n    type: EXTERNAL_DATA_PROCESSORS\n    path: src\n  - name: configuration\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        fs::create_dir_all(context.cwd.join("src/Demo/Ext")).unwrap();
-        fs::write(
-            context.cwd.join("src/Configuration.xml"),
-            br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration/></MetaDataObject>"#,
-        )
-        .unwrap();
-        fs::write(
-            context.cwd.join("src/Demo.xml"),
-            br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><ExternalDataProcessor/></MetaDataObject>"#,
-        )
-        .unwrap();
-
-        validate_tool_context(
-            mutating_meta_edit_tool(),
-            &meta_edit_args("src/Demo/Ext/ObjectModule.bsl"),
-            false,
-            &context,
-        )
-        .expect("ownership ambiguity belongs to the structured format guard");
-        let _ = fs::remove_dir_all(&context.cwd);
-    }
-
-    #[test]
-    fn mutating_tool_context_keeps_source_format_guard_for_equal_depth_matches() {
-        let context = temp_context("ambiguous-same-root-edt");
-        fs::write(
-            context.cwd.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: external\n    type: EXTERNAL_DATA_PROCESSORS\n    path: src\n  - name: configuration\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        fs::create_dir_all(context.cwd.join("src/Demo/Ext")).unwrap();
-        fs::write(context.cwd.join("src/.project"), "<projectDescription/>").unwrap();
-        fs::write(
-            context.cwd.join("src/Demo.xml"),
-            br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><ExternalDataProcessor/></MetaDataObject>"#,
-        )
-        .unwrap();
-
-        let error = validate_tool_context(
-            mutating_meta_edit_tool(),
-            &meta_edit_args("src/Demo/Ext/ObjectModule.bsl"),
-            false,
-            &context,
-        )
-        .expect_err("ownership deferral must not bypass EDT/invalid source-format guards");
-
-        assert!(
-            error.contains("sourceFormat=edt") || error.contains("invalid/ambiguous format"),
-            "{error}"
-        );
-        let _ = fs::remove_dir_all(&context.cwd);
-    }
-
-    #[test]
-    fn mutating_tool_context_keeps_the_unique_deepest_nested_source_set() {
-        let context = temp_context("unique-deepest");
-        fs::write(
-            context.cwd.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: outer\n    type: CONFIGURATION\n    path: src\n  - name: nested\n    type: CONFIGURATION\n    path: src/nested\n",
-        )
-        .unwrap();
-        fs::create_dir_all(context.cwd.join("src/nested/Catalogs")).unwrap();
-        fs::write(context.cwd.join("src/.project"), "<projectDescription/>").unwrap();
-        fs::write(
-            context.cwd.join("src/nested/Configuration.xml"),
-            br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration/></MetaDataObject>"#,
-        )
-        .unwrap();
-
-        validate_tool_context(
-            mutating_meta_edit_tool(),
-            &meta_edit_args("src/nested/Catalogs/Items.xml"),
-            false,
-            &context,
-        )
-        .expect("unique deepest platform XML source-set must remain valid");
-
-        let _ = fs::remove_dir_all(&context.cwd);
     }
 }

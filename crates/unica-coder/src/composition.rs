@@ -17,6 +17,11 @@ impl Default for UnicaApplication {
 #[cfg(test)]
 pub(crate) mod testing {
     pub(crate) use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
+    pub(crate) use crate::infrastructure::native_operations::meta::{
+        with_meta_add_after_authorization_hook, with_meta_edit_before_reauthorization_hook,
+        with_meta_remove_before_reauthorization_hook, with_registrar_processing_hook,
+        RegistrarProcessingPhase,
+    };
     pub(crate) use crate::infrastructure::native_operations::single_file_publisher::{
         with_publication_lock_contention_signal, with_publication_lock_pause,
     };

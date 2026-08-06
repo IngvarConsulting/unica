@@ -37,7 +37,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
 
     def test_skill_only_change_stays_in_source_contour(self) -> None:
         self.assert_classification(
-            ["plugins/unica/skills/meta-compile/SKILL.md"],
+            ["plugins/unica/skills/meta-add/SKILL.md"],
             plugin_content_changed=True,
         )
 
@@ -136,7 +136,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
     def test_mixed_changes_union_their_contours(self) -> None:
         self.assert_classification(
             [
-                "plugins/unica/skills/meta-compile/SKILL.md",
+                "plugins/unica/skills/meta-add/SKILL.md",
                 "crates/unica-coder/src/infrastructure/platform/process.rs",
                 "plugins/unica/.codex-plugin/plugin.json",
             ],
@@ -157,7 +157,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
     def test_cli_prints_github_outputs_from_stdin_paths(self) -> None:
         module = load_classifier_module()
         with tempfile.TemporaryFile("w+", encoding="utf-8") as stdin:
-            stdin.write("plugins/unica/skills/meta-compile/SKILL.md\ncrates/unica-bootstrap/src/main.rs\n")
+            stdin.write("plugins/unica/skills/meta-add/SKILL.md\ncrates/unica-bootstrap/src/main.rs\n")
             stdin.seek(0)
 
             output = module.classify_stdin(stdin)

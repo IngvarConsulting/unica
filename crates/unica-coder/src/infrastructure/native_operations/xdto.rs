@@ -1493,7 +1493,7 @@ mod tests {
         .unwrap();
         fs::write(
             root.join("src/Configuration.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"><Properties><Name>Main</Name></Properties></Configuration></MetaDataObject>"#,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"><Properties><Name>Main</Name></Properties><ChildObjects><XDTOPackage>Sample</XDTOPackage></ChildObjects></Configuration></MetaDataObject>"#,
         )
         .unwrap();
         fs::write(

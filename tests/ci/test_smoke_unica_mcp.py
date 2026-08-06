@@ -131,6 +131,11 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                         "additionalProperties": False,
                     },
                 ),
+                **(
+                    {"outputSchema": module.EXPECTED_META_OUTPUT_SCHEMA}
+                    if name in module.META_TOOL_NAMES
+                    else {}
+                ),
             }
             for name in sorted(selected_names)
         ]
@@ -212,6 +217,22 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                         ).write_bytes(b"a read must never write")
                 return payload
 
+            def operation_result(ok, summary, diagnostics=None):
+                return {
+                    "ok": ok,
+                    "summary": summary,
+                    "changes": [],
+                    "warnings": [],
+                    "errors": [] if ok else [summary],
+                    "artifacts": [],
+                    "cache": {
+                        "mode": "read", "root": "", "workspace_epoch": 0,
+                        "events": [], "invalidated": [], "refreshed": [],
+                        "lazy_rebuilt": [], "stale": [], "fresh": [],
+                    },
+                    **({"diagnostics": diagnostics} if diagnostics is not None else {}),
+                }
+
             for line in sys.stdin:
                 message = json.loads(line)
                 request_id = message.get("id")
@@ -222,8 +243,20 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                 elif message.get("method") == "tools/call":
                     name = message["params"]["name"]
                     args = message["params"]["arguments"]
-                    payload = source_payload(name, args)
-                    print(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": {"content": [{"type": "text", "text": json.dumps(payload)}]}}), flush=True)
+                    if name == "unica.meta.info":
+                        if args:
+                            payload = operation_result(True, "metadata information inspected")
+                        else:
+                            payload = operation_result(False, "metadata arguments are invalid", [{"code": "invalid_arguments"}])
+                        result = {
+                            "content": [{"type": "text", "text": json.dumps(payload)}],
+                            "structuredContent": payload,
+                            "isError": not payload["ok"],
+                        }
+                    else:
+                        payload = source_payload(name, args)
+                        result = {"content": [{"type": "text", "text": json.dumps(payload)}]}
+                    print(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": result}), flush=True)
         """)
         server_source = (
             server_source.replace(
@@ -333,6 +366,36 @@ class SmokeUnicaMcpTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("schema", result.stderr)
+
+    def test_rejects_missing_meta_output_schema(self) -> None:
+        entries = self.tool_entries()
+        meta_info = next(
+            entry
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("name") == "unica.meta.info"
+        )
+        meta_info.pop("outputSchema")
+
+        result = self.run_smoke(entries)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Meta output schema", result.stderr)
+        self.assertIn("unica.meta.info", result.stderr)
+
+    def test_rejects_output_schema_on_non_meta_tool(self) -> None:
+        entries = self.tool_entries()
+        project_status = next(
+            entry
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("name") == "unica.project.status"
+        )
+        project_status["outputSchema"] = load_module().EXPECTED_META_OUTPUT_SCHEMA
+
+        result = self.run_smoke(entries)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("non-Meta tool", result.stderr)
+        self.assertIn("unica.project.status", result.stderr)
 
     def test_rejects_xdto_info_schema_missing_required_target(self) -> None:
         entries = self.tool_entries()

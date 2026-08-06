@@ -7,7 +7,7 @@ description: "Производительность БД и запросов 1С.
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.project.map`, `unica.code.search`, `unica.code.outline`, `unica.code.graph`, `unica.meta.info`, `unica.meta.profile`, `unica.dcs.info`, `unica.code.diagnostics`, `unica.standards.search`, `unica.standards.explain`, and `unica.runtime.execute`.
+- Preferred path: use MCP `unica` tools `unica.project.map`, `unica.code.search`, `unica.code.outline`, `unica.code.graph`, `unica.meta.info`, `unica.dcs.info`, `unica.code.diagnostics`, `unica.standards.search`, `unica.standards.explain`, and `unica.runtime.execute`.
 - Use `unica.role.info` when performance behavior depends on rights filters, RLS, or tenant boundaries.
 - Do not call internal analyzer, runtime, standards, or package adapters directly. They are hidden behind MCP `unica`.
 
@@ -21,7 +21,7 @@ description: "Производительность БД и запросов 1С.
 1. Name the slow scenario first: user action, API call, report, background job, exchange step, or posting.
 2. Extract exact query/DCS text with `unica.code.search` or `unica.dcs.info`; inspect large candidate modules with `unica.code.outline` before reading full bodies.
 3. Use `unica.code.graph` for callers/callees when the performance issue depends on execution path, query-in-loop risk, or impact of moving logic.
-4. Inspect metadata with `unica.meta.profile` for the affected object when roles, subscriptions, functional options, predefined items, or object modules can change the performance path. Use `unica.meta.info` when XML-level object structure is needed.
+4. Inspect `unica.meta.info` for both the local object structure and related modules, roles, subscriptions, functional options, or predefined items that can change the performance path.
 5. Gather evidence: row counts, generated SQL, query plan, managed locks, lock order, lock/deadlock participants, long transaction boundaries, temp storage, TEMPDB or WAL pressure, and table/index names.
 6. Separate causes: inefficient platform query, missing or harmful index, broad virtual table read, query-in-loop, lock contention, DBMS maintenance, or data growth.
 7. Propose one measurable change at a time and verify with `unica.runtime.execute` for syntax/tests plus the same timing/DBMS evidence after the change.

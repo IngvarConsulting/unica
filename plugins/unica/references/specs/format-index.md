@@ -168,7 +168,6 @@
 
 | DSL | Описание | Спецификация |
 |-----|----------|--------------|
-| Meta DSL | JSON-формат для создания/редактирования объектов | [meta-dsl-spec.md](meta-dsl-spec.md) |
 | Form DSL | JSON-формат для компиляции форм | [form-dsl-spec.md](form-dsl-spec.md) |
 | DCS DSL | JSON-формат для компиляции СКД | [dcs-dsl-spec.md](dcs-dsl-spec.md) |
 | MXL DSL | JSON-формат для компиляции табличных документов | [mxl-dsl-spec.md](mxl-dsl-spec.md) |

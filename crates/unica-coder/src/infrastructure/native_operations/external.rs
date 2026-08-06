@@ -7,7 +7,7 @@ use super::compile_transaction::CompileTransaction;
 use super::form::{
     form_add_content_xml, form_add_metadata_xml, form_add_module_bsl, validate_form,
 };
-use super::meta::validate_meta;
+use super::meta::validate_metadata_owner_shape_8_3_27;
 use crate::application::AdapterOutcome;
 use crate::domain::format_profile::ACTIVE_FORMAT_PROFILE;
 use crate::domain::workspace::WorkspaceContext;
@@ -342,14 +342,7 @@ fn validate_published_scaffold(
     plan: &ScaffoldPlan,
     context: &WorkspaceContext,
 ) -> Result<(), String> {
-    let descriptor_args = Map::from_iter([(
-        "ObjectPath".to_string(),
-        Value::String(plan.descriptor.display().to_string()),
-    )]);
-    require_validation(
-        "external descriptor",
-        validate_meta(&descriptor_args, context),
-    )?;
+    validate_metadata_owner_shape_8_3_27(&plan.descriptor, context, "external.init")?;
 
     if let Some(form_name) = plan.form_name.as_deref() {
         let form_path = plan

@@ -30,6 +30,25 @@ def load_generator():
     return module
 
 
+def resolve_schema_base(root, schema):
+    """Resolve root-local definitions and the shared base of an allOf profile."""
+    resolution_limit = len(root.get("$defs", {})) + 2
+    for _ in range(resolution_limit):
+        reference = schema.get("$ref")
+        if reference is not None:
+            assert reference.startswith("#/$defs/")
+            schema = root["$defs"][reference.removeprefix("#/$defs/")]
+            continue
+        all_of = schema.get("allOf")
+        if all_of:
+            schema = all_of[0]
+            continue
+        return schema
+    raise AssertionError(
+        f"schema base resolution exceeded {resolution_limit} local steps"
+    )
+
+
 class ToolSurfaceLedgerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -61,8 +80,94 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
                 self.assertEqual(self.review[name]["scope"], "in")
                 self.assertEqual(self.review[name]["result"]["contract"], "typed")
 
+    def test_schema_base_resolution_is_bounded(self) -> None:
+        root = {"$defs": {"cycle": {"$ref": "#/$defs/cycle"}}}
+        with self.assertRaisesRegex(AssertionError, "resolution exceeded"):
+            resolve_schema_base(root, root["$defs"]["cycle"])
+
     def test_xdto_group_has_a_human_domain_title(self) -> None:
         self.assertEqual(self.module.GROUP_TITLES.get("xdto"), "xdto — пакеты XDTO")
+
+    def test_meta_surface_is_exactly_four_typed_operation_contracts(self) -> None:
+        expected = {
+            "unica.meta.info",
+            "unica.meta.add",
+            "unica.meta.edit",
+            "unica.meta.remove",
+        }
+        published = {
+            tool["name"]: tool
+            for tool in self.tools
+            if tool["name"].startswith("unica.meta.")
+        }
+        reviewed = {name for name in self.review if name.startswith("unica.meta.")}
+
+        self.assertEqual(set(published), expected)
+        self.assertEqual(reviewed, expected)
+        for name in sorted(expected):
+            with self.subTest(tool=name):
+                self.assertEqual(self.review[name]["scope"], "in")
+                self.assertEqual(self.review[name]["result"]["contract"], "typed")
+
+        operation_schemas = {
+            name: published[name]["inputSchema"]["properties"]["operations"]
+            for name in ("unica.meta.add", "unica.meta.edit")
+        }
+        for name, operations in operation_schemas.items():
+            with self.subTest(tool=name, field="operations"):
+                self.assertEqual(operations["type"], "array")
+                self.assertEqual(operations["minItems"], 1)
+                # A host that renders only `properties` never evaluates a
+                # conditional and may not resolve `$ref`. Without a direct
+                # `items` such a host offers the model an untyped array, so the
+                # kind-agnostic union ships inline (ADR-0025).
+                items = operations["items"]
+                branches = items["oneOf"]
+                self.assertEqual(
+                    {branch["properties"]["op"]["enum"][0] for branch in branches},
+                    {"setProperties", "add", "update", "remove", "editRelations"},
+                )
+                for branch in branches:
+                    self.assertNotIn("$ref", branch)
+                    self.assertIn("op", branch["required"])
+
+        add_root = published["unica.meta.add"]["inputSchema"]
+        edit_root = published["unica.meta.edit"]["inputSchema"]
+        # ADR-0025: the union is the whole published contract. No conditional
+        # branches remain, and both mutations publish the same union and the
+        # same shared definitions.
+        self.assertNotIn("allOf", add_root)
+        self.assertNotIn("allOf", edit_root)
+        self.assertEqual(add_root["$defs"], edit_root["$defs"])
+        self.assertEqual(
+            sorted(add_root["$defs"]),
+            ["fillValue", "metadataType", "position", "scope"],
+        )
+        self.assertEqual(
+            add_root["properties"]["operations"]["items"],
+            edit_root["properties"]["operations"]["items"],
+        )
+        variants = edit_root["properties"]["operations"]["items"]["oneOf"]
+        for variant in variants:
+            self.assertEqual(variant["type"], "object")
+            self.assertFalse(variant["additionalProperties"])
+            self.assertIn("op", variant["required"])
+        self.assertEqual(
+            {variant["properties"]["op"]["enum"][0] for variant in variants},
+            {"setProperties", "add", "update", "remove", "editRelations"},
+        )
+        # The union publishes closed domains, not a bare name list: a model that
+        # reads only the schema must learn the legal values too.
+        values = next(
+            variant
+            for variant in variants
+            if variant["properties"]["op"]["enum"][0] == "setProperties"
+        )["properties"]["values"]
+        self.assertFalse(values["additionalProperties"])
+        self.assertEqual(
+            values["properties"]["HierarchyType"]["enum"],
+            ["HierarchyFoldersAndItems", "HierarchyOfItems"],
+        )
 
     def test_every_review_entry_states_a_contract_and_scenarios(self) -> None:
         for name, entry in sorted(self.review.items()):

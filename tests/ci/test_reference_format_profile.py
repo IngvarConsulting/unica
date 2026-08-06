@@ -19,7 +19,6 @@ ROOT = Path(__file__).resolve().parents[2]
 UNICA_REFERENCE_MODELS = ROOT / "tests/fixtures/unica_mcp_script_parity/unica_reference_models"
 SUBSYSTEM_EDIT = UNICA_REFERENCE_MODELS / "subsystem-edit/scripts/subsystem-edit.py"
 TEMPLATE_ADD = UNICA_REFERENCE_MODELS / "template-add/scripts/add-template.py"
-META_VALIDATE = UNICA_REFERENCE_MODELS / "meta-validate/scripts/meta-validate.py"
 MXL_COMPILE = UNICA_REFERENCE_MODELS / "mxl-compile/scripts/mxl-compile.py"
 DCS_COMPILE = UNICA_REFERENCE_MODELS / "dcs-compile/scripts/dcs-compile.py"
 VALIDATOR_SCRIPTS = tuple(
@@ -28,7 +27,6 @@ VALIDATOR_SCRIPTS = tuple(
         "cf-validate/scripts/cf-validate.py",
         "cfe-validate/scripts/cfe-validate.py",
         "form-validate/scripts/form-validate.py",
-        "meta-validate/scripts/meta-validate.py",
         "subsystem-validate/scripts/subsystem-validate.py",
     )
 )
@@ -566,28 +564,6 @@ class ReferenceFormatProfileTests(unittest.TestCase):
                 source = script.read_text(encoding="utf-8")
                 self.assertIn("re.fullmatch", source)
                 self.assertRegex(source, r"actual == ['\"]2\.20['\"]")
-
-        for version in ("-1.0", "+2.20", "2.20.0"):
-            with self.subTest(version=version), tempfile.TemporaryDirectory() as temp:
-                root = Path(temp)
-                owner = root / "Catalog.xml"
-                owner.write_text(
-                    '<?xml version="1.0" encoding="UTF-8"?>\n'
-                    f'<MetaDataObject xmlns="{MD_NS}" version="{version}">'
-                    "<Catalog><Properties><Name>Item</Name></Properties></Catalog>"
-                    "</MetaDataObject>\n",
-                    encoding="utf-8",
-                )
-
-                result = run_script(
-                    META_VALIDATE,
-                    "-ObjectPath",
-                    str(owner),
-                    cwd=root,
-                )
-
-                self.assertNotEqual(result.returncode, 0, result.stdout)
-                self.assertIn(f"invalid export format version '{version}'", result.stdout)
 
     def test_reference_mxl_writer_uses_span_for_implicit_next_column(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
