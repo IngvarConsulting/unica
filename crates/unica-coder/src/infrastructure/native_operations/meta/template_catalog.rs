@@ -2936,19 +2936,32 @@ pub(super) fn split_meta_camel_case(name: &str) -> String {
         return String::new();
     }
     let mut result = String::new();
-    let mut previous_lower = false;
+    let mut previous: Option<char> = None;
     for ch in name.chars() {
-        if previous_lower && ch.is_uppercase() {
+        if previous.is_some_and(|previous| meta_synonym_word_boundary(previous, ch)) {
             result.push(' ');
         }
         result.push(ch);
-        previous_lower = ch.is_lowercase();
+        previous = Some(ch);
     }
     let mut chars = result.chars();
     match chars.next() {
         Some(first) => format!("{}{}", first, chars.as_str().to_lowercase()),
         None => result,
     }
+}
+
+/// A generated synonym breaks a word where the platform name itself changes
+/// class: after a lowercase letter before an uppercase one, and on both sides of
+/// a digit run. A digit is neither uppercase nor lowercase, so without the
+/// second rule `SumFor30Days` would keep its digits glued to the words around
+/// them once the tail is lowercased.
+fn meta_synonym_word_boundary(previous: char, current: char) -> bool {
+    if previous.is_lowercase() && current.is_uppercase() {
+        return true;
+    }
+    (previous.is_alphabetic() && current.is_ascii_digit())
+        || (previous.is_ascii_digit() && current.is_alphabetic())
 }
 
 #[cfg(test)]
