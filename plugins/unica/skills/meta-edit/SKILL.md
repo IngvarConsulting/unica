@@ -25,6 +25,9 @@ allowed-tools:
   `structuredContent.data.effects` по `operationIndex`, а не полный XML.
 - Vendor support guard выполняется внутри `unica`. Для закрытого объекта
   используйте CFE/release-support flow, а не прямую правку служебных файлов.
+- `sourceSet` — это имя набора исходников из `v8project.yaml`, а не
+  константа. Получите его через `unica.project.map`; `"main"` в примерах
+  ниже — иллюстрация, а не значение по умолчанию.
 
 Поддерживаются пять значений `op`: `setProperties`, `add`, `update`, `remove`
 и `editRelations`. Для коллекционных операций задаются `collection` и

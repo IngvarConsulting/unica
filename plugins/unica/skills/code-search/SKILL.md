@@ -10,6 +10,9 @@ description: "Поиск и исследование BSL-кода и точек 
 - Preferred path: use MCP `unica` tools `unica.code.search`, `unica.code.definition`, `unica.code.outline`, `unica.code.graph`, `unica.meta.info`, and `unica.project.map`.
 - Use object-specific `unica.*.info` tools when code behavior depends on metadata, forms, DCS, roles, or HTTP service structure.
 - Do not call internal code-index, analyzer, or package adapters directly. They are hidden behind MCP `unica`.
+- `sourceSet` — это имя набора исходников из `v8project.yaml`, а не
+  константа. Получите его через `unica.project.map`; `"main"` в примерах
+  ниже — иллюстрация, а не значение по умолчанию.
 
 ## Tool choice
 

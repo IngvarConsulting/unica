@@ -24,6 +24,9 @@ allowed-tools:
   доступные частичные данные из `structuredContent.data`; `content[0].text` не
   является вторым контрактом результата.
 - Не вызывайте внутренние MCP/CLI-адаптеры и skill-local scripts.
+- `sourceSet` — это имя набора исходников из `v8project.yaml`, а не
+  константа. Получите его через `unica.project.map`; `"main"` в примерах
+  ниже — иллюстрация, а не значение по умолчанию.
 
 ```json
 {
