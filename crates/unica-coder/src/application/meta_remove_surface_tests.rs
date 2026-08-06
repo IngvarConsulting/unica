@@ -321,6 +321,37 @@ fn meta_remove_reauthorizes_every_planned_subsystem_cleanup_before_mutations() {
 }
 
 #[test]
+fn meta_remove_reads_an_unrelated_predefined_data_document_without_blocking() {
+    let workspace = create_remove_workspace("unrelated-predefined-data");
+    // The reference scan reads every neighboring descriptor, so a sibling's
+    // predefined data joins the removal's format dependency set. That document
+    // carries its own export format version, but it is not the owner from which
+    // the configuration format is inferred, and it must not block the removal.
+    let predefined = workspace
+        .path()
+        .join("src/Catalogs/Sibling/Ext/Predefined.xml");
+    std::fs::create_dir_all(predefined.parent().unwrap()).unwrap();
+    std::fs::write(
+        &predefined,
+        concat!(
+            r#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" "#,
+            r#"xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" "#,
+            "xsi:type=\"CatalogPredefinedItems\" version=\"2.20\"/>",
+        ),
+    )
+    .unwrap();
+
+    let preview = call_remove(workspace.path(), true);
+
+    assert!(preview.ok, "{:?}", preview.errors);
+    assert_eq!(
+        preview.data.as_ref().unwrap()["validation"]["status"],
+        "passed"
+    );
+    assert!(preview.diagnostics.is_none(), "{:?}", preview.diagnostics);
+}
+
+#[test]
 fn meta_remove_rejects_descriptor_identity_mismatch_before_effect_projection() {
     let workspace = create_remove_workspace("identity-mismatch");
     let descriptor = workspace.path().join("src/Catalogs/Removable.xml");
