@@ -25,6 +25,10 @@ concurrency:
 
 jobs:
   advance:
+    # The release crosses IngvarConsulting repositories and needs the shared
+    # marketplace credential, which forks do not hold. Guarding the job keeps a
+    # fork's scheduled run green (skipped) instead of failing every 20 minutes.
+    if: github.repository == 'IngvarConsulting/unica'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
