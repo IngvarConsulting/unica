@@ -1609,6 +1609,9 @@ Use `.claude/commands/xdto.md` as the execution route.
         v8project = (self.reference_root() / "tooling" / "v8project.md").read_text(
             encoding="utf-8"
         )
+        runtime_build = (
+            self.reference_root() / "tooling" / "runtime-build.md"
+        ).read_text(encoding="utf-8")
         v8_runner_docs = "\n".join(
             path.read_text(encoding="utf-8")
             for path in [
@@ -1634,6 +1637,11 @@ Use `.claude/commands/xdto.md` as the execution route.
         self.assertIn("features", v8_runner_docs)
         self.assertNotRegex(v8project, r"(?m)^connection:")
         self.assertNotIn("mode=load|merge|update", v8project)
+        self.assertIn("tools.platform.version", runtime_build)
+        self.assertIn("tools.platform.path", runtime_build)
+        self.assertIn("v8project.local.yaml", runtime_build)
+        self.assertNotIn("V8_PATH", runtime_build)
+        self.assertNotIn("V8_BASE", runtime_build)
 
     def test_verified_applied_full_dump_documents_supported_hosts_and_verified_publication(
         self,
