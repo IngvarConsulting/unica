@@ -835,12 +835,6 @@ mod imp {
                 ));
             }
         }
-        if bytes.len() > maximum_bytes {
-            return Err(io::Error::new(
-                io::ErrorKind::FileTooLarge,
-                "resource exceeds the snapshot byte limit",
-            ));
-        }
         let after = file.metadata()?;
         if opened.len() != after.len() || opened.modified().ok() != after.modified().ok() {
             return Err(io::Error::other("resource changed while reading"));
@@ -1766,12 +1760,6 @@ mod imp {
                     "resource exceeds the snapshot byte limit",
                 ));
             }
-        }
-        if bytes.len() > maximum_bytes {
-            return Err(io::Error::new(
-                io::ErrorKind::FileTooLarge,
-                "resource exceeds the snapshot byte limit",
-            ));
         }
         let after = file.metadata()?;
         if opened.len() != after.len() || opened.modified().ok() != after.modified().ok() {

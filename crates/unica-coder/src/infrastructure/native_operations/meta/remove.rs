@@ -13,6 +13,8 @@ use crate::domain::metadata::{
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::metadata_kinds::metadata_layout;
+use crate::infrastructure::native_operations::common::Utf8TextSnapshot;
+use crate::infrastructure::platform::secure_read::read_root_relative_regular_file;
 use crate::infrastructure::platform_xml_source_targets::locate_platform_xml_source_path;
 use crate::infrastructure::support_guard::{
     bind_resolved_support_guard_evidence, evaluate_resolved_support_guard,
@@ -1097,6 +1099,37 @@ pub(super) struct MetaRemoveReference {
     pub(crate) file: String,
 }
 
+/// Largest single source file the reference scan will read.
+///
+/// The scan decides whether an object may be removed, so it reads every XML and
+/// BSL file under the source root. Without a per-file bound one oversized file
+/// would size the whole operation, and the traversal limits above only bound
+/// how many entries are visited, not how big each one is.
+pub(super) const META_REMOVE_REFERENCE_FILE_MAX_BYTES: usize = 16 * 1024 * 1024;
+
+/// Read one reference-scan file bound to the source root.
+///
+/// The scan runs against a tree another writer may be touching, and its verdict
+/// gates a destructive publication. Reading through a directory-relative
+/// no-follow handle keeps a symlink swapped in mid-scan from redirecting the
+/// read outside the root, which a plain path read would follow.
+pub(super) fn read_reference_scan_snapshot(
+    root: &Path,
+    path: &Path,
+) -> Result<Utf8TextSnapshot, String> {
+    let read =
+        read_root_relative_regular_file(root, path, META_REMOVE_REFERENCE_FILE_MAX_BYTES, |_| {})
+            .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+    let text = std::str::from_utf8(&read.bytes)
+        .map_err(|error| format!("{} is not valid UTF-8: {error}", path.display()))?
+        .trim_start_matches('\u{feff}')
+        .to_string();
+    Ok(Utf8TextSnapshot {
+        raw: read.bytes,
+        text,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn meta_remove_reference_scan(
     config_dir: &Path,
@@ -1123,7 +1156,7 @@ fn meta_remove_reference_scan(
         if meta_remove_should_skip_file(file, config_dir, obj_xml, obj_dir, has_xml, has_dir) {
             continue;
         }
-        let snapshot = read_utf8_sig_snapshot(file)?;
+        let snapshot = read_reference_scan_snapshot(config_dir, file)?;
         let content = snapshot.text.clone();
         reads.push(MetaRemoveTextRead {
             path: file.clone(),

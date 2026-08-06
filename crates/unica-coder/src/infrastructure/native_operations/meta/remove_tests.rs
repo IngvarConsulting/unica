@@ -1,7 +1,8 @@
 use super::remove::{
     meta_remove_should_skip_file, metadata_files_recursive_bounded,
     metadata_files_recursive_with_limits, plan_meta_remove_subsystem_replacements,
-    plan_meta_remove_subsystem_replacements_bounded, MetaRemoveTraversalLimits,
+    plan_meta_remove_subsystem_replacements_bounded, read_reference_scan_snapshot,
+    MetaRemoveTraversalLimits, META_REMOVE_REFERENCE_FILE_MAX_BYTES,
 };
 use super::{
     force_meta_remove_reparse_path, with_before_meta_remove_subsystem_child_inspection_hook,
@@ -314,4 +315,60 @@ fn subsystem_planner_stops_before_retaining_entries_beyond_meta_remove_budget() 
         "the subsystem planner must stop before retaining or inspecting entries beyond the budget"
     );
     let _ = fs::remove_dir_all(&context.cwd);
+}
+
+#[test]
+fn reference_scan_refuses_a_file_larger_than_the_per_file_budget() {
+    // The scan reads every XML and BSL file under the root to decide whether a
+    // removal is safe. The traversal budget bounds how many entries it visits,
+    // not how large one of them is, so a single oversized file would otherwise
+    // size the whole operation.
+    let context = temp_context("reference-file-budget");
+    // The secure reader opens every path component no-follow, and the macOS
+    // temp directory sits behind the `/var` -> `/private/var` link, so the test
+    // root has to be the resolved one. Production callers of this reader carry
+    // the same requirement.
+    let root = context.cwd.canonicalize().unwrap().join("scan");
+    fs::create_dir_all(&root).unwrap();
+    let oversized = root.join("Huge.xml");
+    fs::File::create(&oversized)
+        .unwrap()
+        .set_len(META_REMOVE_REFERENCE_FILE_MAX_BYTES as u64 + 1)
+        .unwrap();
+
+    let error = match read_reference_scan_snapshot(&root, &oversized) {
+        Ok(_) => panic!("an oversized reference file must not be read whole"),
+        Err(error) => error,
+    };
+
+    assert!(error.contains("Huge.xml"), "{error}");
+    let ok = root.join("Small.xml");
+    fs::write(&ok, "\u{feff}<Root/>".as_bytes()).unwrap();
+    let read = read_reference_scan_snapshot(&root, &ok);
+    assert!(
+        read.is_ok(),
+        "ordinary file must still be readable: {:?}",
+        read.err()
+    );
+}
+
+#[test]
+fn reference_scan_refuses_a_path_outside_the_source_root() {
+    // The scan's verdict gates a destructive publication, so every read is
+    // bound to the root the caller proved. No-follow traversal itself belongs
+    // to the platform facade and is proven there; what this asserts is that the
+    // scan goes through that reader instead of opening a bare path.
+    let context = temp_context("reference-root-bound");
+    let resolved = context.cwd.canonicalize().unwrap();
+    let root = resolved.join("scan");
+    fs::create_dir_all(&root).unwrap();
+    let outside = resolved.join("outside.xml");
+    fs::write(&outside, b"<Secret/>").unwrap();
+
+    let error = match read_reference_scan_snapshot(&root, &outside) {
+        Ok(read) => panic!("the scan read outside its root: {}", read.text),
+        Err(error) => error,
+    };
+
+    assert!(error.contains("outside.xml"), "{error}");
 }

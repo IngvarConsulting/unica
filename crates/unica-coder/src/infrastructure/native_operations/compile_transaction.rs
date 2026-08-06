@@ -1166,11 +1166,22 @@ impl CompileTransaction {
             while let Some((removal, recovery)) = prepared_removals.pop_front() {
                 recheck_removal(removal).map_err(CommitFailure::concurrent)?;
                 rename_no_replace(&removal.path, &recovery.path).map_err(|error| {
-                    format!(
+                    // `AlreadyExists` here means another writer took the
+                    // recovery name between the preflight and this rename, and
+                    // `NotFound` that the removal target itself disappeared.
+                    // Both are races, and collapsing them into a provider
+                    // failure would tell the caller to retry the wrong thing.
+                    let message = format!(
                         "failed to move removal target {} to no-clobber recovery {}: {error}",
                         removal.path.display(),
                         recovery.path.display()
-                    )
+                    );
+                    match error.kind() {
+                        ErrorKind::AlreadyExists | ErrorKind::NotFound => {
+                            CommitFailure::concurrent(message)
+                        }
+                        _ => CommitFailure::provider(message),
+                    }
                 })?;
                 state
                     .published_removals
