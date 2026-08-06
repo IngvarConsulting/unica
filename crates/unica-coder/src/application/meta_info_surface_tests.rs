@@ -288,7 +288,10 @@ fn info_without_sections_is_local_only() {
     ] {
         assert!(data["collections"][collection].is_array(), "{collection}");
     }
-    assert_eq!(data["related"], serde_json::json!({}));
+    // `meta.info` no longer consults a code index at all, so there is no
+    // section left that could be absent for provider reasons.
+    assert!(data.get("related").is_none());
+    assert_eq!(data["usage"], serde_json::json!({}));
     assert!(result.stdout.is_none());
 }
 

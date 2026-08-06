@@ -1709,10 +1709,10 @@ fn configuration_tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "unica.meta.info",
-            description: "Inspect one metadata object with validation and related sections.",
+            description: "Inspect one metadata object with validation and source-tree usage.",
             mutating: false,
             cache_access: CacheAccess {
-                reads: &["workspace_graph", "metadata_graph", "bsl_index"],
+                reads: &["workspace_graph", "metadata_graph"],
                 writes: &[],
             },
             handler: ToolHandler::Metadata {
@@ -3956,15 +3956,18 @@ mod tests {
     }
 
     #[test]
-    fn meta_info_declares_local_graph_and_optional_index_reads() {
+    fn meta_info_declares_only_the_local_graphs_it_reads() {
         let tool = tools()
             .into_iter()
             .find(|tool| tool.name == "unica.meta.info")
             .unwrap();
 
+        // Nothing in a metadata read consults the code index any more, so
+        // declaring `bsl_index` would report a dependency the tool does not
+        // have and make its cache status answer for a provider it never calls.
         assert_eq!(
             tool.cache_access.reads,
-            &["workspace_graph", "metadata_graph", "bsl_index"]
+            &["workspace_graph", "metadata_graph"]
         );
         assert!(tool.cache_access.writes.is_empty());
     }

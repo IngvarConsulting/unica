@@ -831,16 +831,16 @@ Apply ordered typed metadata edit operations atomically.
 
 ### `unica.meta.info`
 
-Inspect one metadata object with validation and related sections.
+Inspect one metadata object with validation and source-tree usage.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `limit` | integer | нет | Maximum `predefinedItems` returned, and maximum items per index section (1 through 50). Source-tree usage lists are exact and complete, so the limit does not apply to them. |
+| `limit` | integer | нет | Maximum `predefinedItems` returned (1 through 50). Usage lists are read from the source tree, so they are exact and complete and the limit does not apply to them. |
 | `metadataPath` | string | да | Logical metadata path of the object to inspect. |
-| `sections` | array | нет | Extra sections to compute. `roles`, `subscriptions`, `functionalOptions` and `predefinedItems` are read from the source tree and land in `usage` and `predefinedItems`; only `modules` consults the code index and lands in `related`. Omit or pass [] to inspect the object alone. |
+| `sections` | array | нет | Extra sections to compute, all read from the source tree: `roles`, `subscriptions` and `functionalOptions` land in `usage`, `predefinedItems` in its own field. Omit or pass [] to inspect the object alone. |
 | `sourceSet` | string | да | Exact Configuration source-set name from v8project.yaml. |
 
-**Результат сейчас:** `structuredContent.data`: локальная структура и валидация объекта без RLM по умолчанию; только явно выбранные bounded-секции `related` обращаются к приватному RLM-провайдеру (отвечают типизированным `data`)
+**Результат сейчас:** `structuredContent.data`: локальная структура и валидация объекта; явно выбранные секции читаются из дерева исходников в `usage` и `predefinedItems`, обращения к RLM нет ни при каких аргументах (отвечают типизированным `data`)
 
 **Целевой контракт:** достигнут
 

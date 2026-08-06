@@ -66,7 +66,7 @@ class VersionContractTests(unittest.TestCase):
                 "meta.compile",
                 "meta.add.operations[] only for ledger-supported capabilities",
             ),
-            ("meta.profile", "meta.info.related"),
+            ("meta.profile", "meta.info.usage / meta.info.predefinedItems"),
             (
                 "meta.validate",
                 "meta.info.validation / automatic mutation validation",

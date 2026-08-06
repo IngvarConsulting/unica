@@ -783,21 +783,16 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             )
 
         info = documents["meta-info"]
-        for token in (
-            "`validation`",
-            "status",
-            "freshness",
-            "completeness",
-            "total",
-            "returned",
-            "truncated",
-            "items",
-            "diagnostics",
-        ):
+        # `meta.info` no longer consults an index, so the fields that only made
+        # sense for a possibly-stale provider are gone from the answer and must
+        # not be promised by the prose either.
+        for token in ("`validation`", "status", "diagnostics", "usage", "predefinedItems"):
             with self.subTest(info_token=token):
                 self.assertIn(token, info)
+        for retired in ("freshness", "completeness", "soft-fail", "related"):
+            with self.subTest(info_retired=retired):
+                self.assertNotIn(retired, info)
         self.assertNotIn("`total`, `limit`", info)
-        self.assertIn("soft-fail", info)
         self.assertTrue(
             any("sections" not in call["params"]["arguments"] for call in calls["meta-info"])
         )

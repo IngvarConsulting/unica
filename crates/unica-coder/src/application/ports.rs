@@ -13,9 +13,8 @@ use crate::domain::code_intelligence::{
 use crate::domain::events::DomainEvent;
 use crate::domain::metadata::{
     MetaCollectionsData, MetaDiagnostic, MetaDiagnosticCode, MetaInfoData, MetaMutationData,
-    MetaPredefinedItemsData, MetaPropertyData, MetaRelatedSection, MetaRelatedSections,
-    MetaRelatedStatus, MetaRelationsData, MetaSupportStatus, MetaUsageData, MetaValidationData,
-    MetaValidationStatus, MetadataKind,
+    MetaPredefinedItemsData, MetaPropertyData, MetaRelationsData, MetaSupportStatus, MetaUsageData,
+    MetaValidationData, MetaValidationStatus, MetadataKind,
 };
 use crate::domain::source_resources::{
     ResourceManifestPage, SourceReadResult, SourceResourceError,
@@ -248,7 +247,6 @@ impl MetaLocalInfo {
             predefined_items: enrichment.predefined_items,
             usage: enrichment.usage,
             validation,
-            related: enrichment.related,
         }
     }
 }
@@ -268,7 +266,6 @@ pub(crate) struct MetadataRead {
 pub(crate) struct MetaEnrichment {
     pub(crate) predefined_items: Option<MetaPredefinedItemsData>,
     pub(crate) usage: MetaUsageData,
-    pub(crate) related: MetaRelatedSections,
 }
 
 pub(crate) type MetaRelatedData = MetaEnrichment;
@@ -291,21 +288,6 @@ pub(crate) trait PreparedMetadataMutation: Send {
 
 fn unavailable_metadata_diagnostic(message: impl Into<String>) -> MetaDiagnostic {
     MetaDiagnostic::error(MetaDiagnosticCode::CapabilityUnavailable, message)
-}
-
-fn unavailable_related_section() -> MetaRelatedSection<Value> {
-    MetaRelatedSection {
-        status: MetaRelatedStatus::Unavailable,
-        freshness: crate::domain::metadata::MetaFreshness::Unknown,
-        completeness: crate::domain::metadata::MetaCompleteness::Unknown,
-        total: 0,
-        returned: 0,
-        truncated: false,
-        items: Vec::new(),
-        diagnostics: vec![unavailable_metadata_diagnostic(
-            "related metadata provider is not configured",
-        )],
-    }
 }
 
 pub(crate) enum SupportGuardCheck {
@@ -433,12 +415,7 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         _context: &WorkspaceContext,
         _cancellation: &CancellationToken,
     ) -> MetaRelatedData {
-        MetaEnrichment {
-            related: MetaRelatedSections {
-                modules: Some(unavailable_related_section()),
-            },
-            ..Default::default()
-        }
+        MetaEnrichment::default()
     }
 
     fn validate_metadata(

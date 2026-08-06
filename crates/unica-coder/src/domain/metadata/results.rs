@@ -19,57 +19,6 @@ pub(crate) struct MetaValidationData {
     pub(crate) diagnostics: Vec<MetaDiagnostic>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum MetaCompleteness {
-    Complete,
-    Partial,
-    Unknown,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum MetaFreshness {
-    Current,
-    Stale,
-    Unknown,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum MetaRelatedStatus {
-    Ready,
-    Partial,
-    Unavailable,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct MetaRelatedSection<T> {
-    pub(crate) status: MetaRelatedStatus,
-    pub(crate) freshness: MetaFreshness,
-    pub(crate) completeness: MetaCompleteness,
-    pub(crate) total: usize,
-    pub(crate) returned: usize,
-    pub(crate) truncated: bool,
-    pub(crate) items: Vec<T>,
-    pub(crate) diagnostics: Vec<MetaDiagnostic>,
-}
-
-/// Index-backed sections of a metadata read.
-///
-/// Only what genuinely needs a code index lives here, and only here do
-/// `status`, `freshness` and `completeness` carry information: the index can
-/// lag the sources or be unavailable. Sections read from the source tree report
-/// none of that, because they are read from the same snapshot as the rest of
-/// the answer and cannot disagree with it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct MetaRelatedSections {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) modules: Option<MetaRelatedSection<Value>>,
-}
-
 /// Who uses this object, read straight from the source tree.
 ///
 /// Roles, event subscriptions and functional options are ordinary XML in the
@@ -100,28 +49,6 @@ pub(crate) struct MetaPredefinedItemsData {
     pub(crate) returned: usize,
     pub(crate) truncated: bool,
     pub(crate) items: Vec<Value>,
-}
-
-/// Transitional typed profile answer owned by the metadata domain. The legacy
-/// application compatibility bridge reuses it until the atomic surface switch.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MetaProfileResult {
-    pub object_name: String,
-    pub category: Option<String>,
-    pub sections: Vec<MetaProfileSection>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MetaProfileSection {
-    pub name: String,
-    pub status: String,
-    pub total: u64,
-    pub total_is_lower_bound: bool,
-    pub returned: u64,
-    pub items: Vec<Value>,
-    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -208,7 +135,6 @@ pub(crate) struct MetaInfoData {
     pub(crate) predefined_items: Option<MetaPredefinedItemsData>,
     pub(crate) usage: MetaUsageData,
     pub(crate) validation: MetaValidationData,
-    pub(crate) related: MetaRelatedSections,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -260,31 +186,4 @@ pub(crate) struct MetaMutationEffect {
     pub(crate) target: String,
     pub(crate) before: Option<Value>,
     pub(crate) after: Option<Value>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn related_section_serialization_keeps_completeness_and_freshness_explicit() {
-        let section = MetaRelatedSection::<String> {
-            status: MetaRelatedStatus::Partial,
-            freshness: MetaFreshness::Stale,
-            completeness: MetaCompleteness::Partial,
-            total: 3,
-            returned: 1,
-            truncated: true,
-            items: vec!["one".into()],
-            diagnostics: vec![],
-        };
-
-        let value = serde_json::to_value(section).unwrap();
-        assert_eq!(value["status"], "partial");
-        assert_eq!(value["freshness"], "stale");
-        assert_eq!(value["completeness"], "partial");
-        assert_eq!(value["total"], 3);
-        assert_eq!(value["returned"], 1);
-        assert_eq!(value["truncated"], true);
-    }
 }

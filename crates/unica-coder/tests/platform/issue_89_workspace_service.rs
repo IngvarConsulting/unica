@@ -64,7 +64,7 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
         json!({
             "sourceSet": "main",
             "metadataPath": "Catalog.Test",
-            "sections": ["modules"]
+            "sections": ["roles"]
         }),
     ));
     let first_rlm = fixture.wait_for_rlm_starts(1, RESPONSE_DEADLINE)[0].clone();
@@ -147,7 +147,7 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
         json!({
             "sourceSet": "main",
             "metadataPath": "Catalog.Test",
-            "sections": ["modules"]
+            "sections": ["roles"]
         }),
     ));
     let final_responses = mcp.receive_ids(&[5, 6], RESPONSE_DEADLINE);
@@ -159,17 +159,16 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
         json!({
             "sourceSet": "main",
             "metadataPath": "Catalog.LogicalError",
-            "sections": ["modules"]
+            "sections": ["roles"]
         }),
     ));
     let logical_error = mcp.receive_ids(&[8], RESPONSE_DEADLINE);
     let logical_error = tool_operation(&logical_error[&8]);
     assert_eq!(logical_error["data"]["metadataPath"], "Catalog.LogicalError");
     assert!(logical_error.get("stdout").is_none(), "{logical_error:#}");
-    assert_eq!(
-        logical_error["data"]["related"]["modules"]["status"],
-        "unavailable"
-    );
+    // Nothing here can be unavailable any more: `meta.info` reads the source
+    // tree and never asks a provider that could be down.
+    assert!(logical_error["data"].get("related").is_none());
     // meta.info is a best-effort observer and does not promise to recover an
     // unavailable RLM provider. Drive recovery through the direct provider
     // contract before asking meta.info to observe the recovered session.
@@ -207,15 +206,16 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
         json!({
             "sourceSet": "main",
             "metadataPath": "Catalog.Test",
-            "sections": ["modules"]
+            "sections": ["roles"]
         }),
     ));
     let after_logical_error = mcp.receive_ids(&[9], RESPONSE_DEADLINE);
     assert_meta_info_data(&after_logical_error[&9]);
-    assert_eq!(
-        tool_operation(&after_logical_error[&9])["data"]["related"]["modules"]["status"],
-        "ready",
-        "the recovered RLM session was not observable through meta.info: response={:#}, records={:#?}",
+    // `meta.info` no longer observes the index session at all, so recovery is
+    // proven through the direct provider probe below rather than through it.
+    assert!(
+        tool_operation(&after_logical_error[&9])["data"]["usage"]["roles"].is_array(),
+        "usage was not read after the logical error: response={:#}, records={:#?}",
         tool_operation(&after_logical_error[&9]),
         fixture.log_records()
     );
@@ -368,7 +368,10 @@ fn assert_tool_ok(response: &Value, summary: &str) {
 fn assert_meta_info_data(response: &Value) {
     let operation = tool_operation(response);
     assert_eq!(operation["data"]["metadataPath"], "Catalog.Test", "{operation:#}");
-    assert!(operation["data"]["related"]["modules"].is_object(), "{operation:#}");
+    // `meta.info` is local now: the object's own structure is the whole answer
+    // unless usage sections are asked for, and no section consults the index.
+    assert!(operation["data"].get("related").is_none(), "{operation:#}");
+    assert!(operation["data"]["usage"].is_object(), "{operation:#}");
     assert!(operation.get("stdout").is_none(), "{operation:#}");
 }
 

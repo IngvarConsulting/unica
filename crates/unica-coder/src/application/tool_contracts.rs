@@ -3537,7 +3537,6 @@ mod tests {
         assert_eq!(
             info["properties"]["sections"]["items"]["enum"],
             json!([
-                "modules",
                 "roles",
                 "subscriptions",
                 "functionalOptions",
@@ -4608,7 +4607,7 @@ mod tests {
         args.insert("sourceSet".to_string(), json!("main"));
         args.insert("metadataPath".to_string(), json!("Catalog.Items"));
         args.insert("limit".to_string(), json!(10));
-        args.insert("sections".to_string(), json!(["modules", "roles"]));
+        args.insert("sections".to_string(), json!(["roles", "subscriptions"]));
         validate_tool_arguments(tool, &args, false).unwrap();
 
         // Physical paths and report-formatting controls belong to the retired

@@ -28,7 +28,6 @@ pub(crate) enum MetadataOperation {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MetaInfoSection {
-    Modules,
     Roles,
     Subscriptions,
     FunctionalOptions,
@@ -36,7 +35,6 @@ pub(crate) enum MetaInfoSection {
 }
 
 const INFO_SECTIONS: &[(&str, MetaInfoSection)] = &[
-    ("modules", MetaInfoSection::Modules),
     ("roles", MetaInfoSection::Roles),
     ("subscriptions", MetaInfoSection::Subscriptions),
     ("functionalOptions", MetaInfoSection::FunctionalOptions),
@@ -1272,7 +1270,7 @@ pub(crate) fn metadata_input_schema(operation: MetadataOperation) -> Value {
                         "enum": INFO_SECTIONS.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
                     },
                     "default": [],
-                    "description": "Extra sections to compute. `roles`, `subscriptions`, `functionalOptions` and `predefinedItems` are read from the source tree and land in `usage` and `predefinedItems`; only `modules` consults the code index and lands in `related`. Omit or pass [] to inspect the object alone.",
+                    "description": "Extra sections to compute, all read from the source tree: `roles`, `subscriptions` and `functionalOptions` land in `usage`, `predefinedItems` in its own field. Omit or pass [] to inspect the object alone.",
                 }),
             );
             properties.insert(
@@ -1282,7 +1280,7 @@ pub(crate) fn metadata_input_schema(operation: MetadataOperation) -> Value {
                     "minimum": 1,
                     "maximum": 50,
                     "default": 20,
-                    "description": "Maximum `predefinedItems` returned, and maximum items per index section (1 through 50). Source-tree usage lists are exact and complete, so the limit does not apply to them."
+                    "description": "Maximum `predefinedItems` returned (1 through 50). Usage lists are read from the source tree, so they are exact and complete and the limit does not apply to them."
                 }),
             );
             vec!["sourceSet", "metadataPath"]
@@ -1923,8 +1921,7 @@ mod tests {
     use crate::domain::events::{DomainEvent, DomainEventKind};
     use crate::domain::metadata::{
         metadata_fill_value_is_allowed, metadata_relation_specs, MetaCollectionsData,
-        MetaCompleteness, MetaDiagnosticCode, MetaEditOperation, MetaElementScope, MetaFreshness,
-        MetaMutationData, MetaRelatedSection, MetaRelatedSections, MetaRelatedStatus,
+        MetaDiagnosticCode, MetaEditOperation, MetaElementScope, MetaMutationData,
         MetaRelationTargetPolicy, MetaSupportStatus, MetaValidationData, MetaValidationStatus,
         MetadataKind,
     };
@@ -2074,7 +2071,7 @@ mod tests {
         state: Arc<Mutex<CoordinatorState>>,
         cache_events: Arc<Mutex<Vec<DomainEvent>>>,
         read: Mutex<Option<Result<MetadataRead, MetaFailure>>>,
-        related: MetaRelatedSections,
+        related: crate::application::ports::MetaEnrichment,
         validation: MetaValidationData,
         prepared: Mutex<Option<Result<Box<dyn PreparedMetadataMutation>, MetaFailure>>>,
         cancel_after_validation: Option<CancellationToken>,
@@ -2120,10 +2117,7 @@ mod tests {
             _cancellation: &CancellationToken,
         ) -> crate::application::ports::MetaEnrichment {
             self.state.lock().unwrap().calls.push("related");
-            crate::application::ports::MetaEnrichment {
-                related: self.related.clone(),
-                ..Default::default()
-            }
+            self.related.clone()
         }
 
         fn validate_metadata(
@@ -2217,28 +2211,6 @@ mod tests {
         }
     }
 
-    fn unavailable_section() -> MetaRelatedSection<Value> {
-        MetaRelatedSection {
-            status: MetaRelatedStatus::Unavailable,
-            freshness: MetaFreshness::Unknown,
-            completeness: MetaCompleteness::Unknown,
-            total: 0,
-            returned: 0,
-            truncated: false,
-            items: Vec::new(),
-            diagnostics: vec![MetaDiagnostic::error(
-                MetaDiagnosticCode::CapabilityUnavailable,
-                "related metadata is unavailable",
-            )],
-        }
-    }
-
-    fn unavailable_related() -> MetaRelatedSections {
-        MetaRelatedSections {
-            modules: Some(unavailable_section()),
-        }
-    }
-
     fn empty_collections() -> MetaCollectionsData {
         MetaCollectionsData {
             attributes: Vec::new(),
@@ -2302,7 +2274,7 @@ mod tests {
                 state: Arc::clone(&state),
                 cache_events: Arc::new(Mutex::new(Vec::new())),
                 read: Mutex::new(None),
-                related: unavailable_related(),
+                related: crate::application::ports::MetaEnrichment::default(),
                 validation,
                 prepared: Mutex::new(Some(Ok(Box::new(plan)))),
                 cancel_after_validation: None,
@@ -2332,7 +2304,7 @@ mod tests {
                     },
                     validation_subject: subject,
                 }))),
-                related: unavailable_related(),
+                related: crate::application::ports::MetaEnrichment::default(),
                 validation: passed_validation(),
                 prepared: Mutex::new(None),
                 cancel_after_validation: None,
@@ -2497,8 +2469,7 @@ mod tests {
     }
 
     #[test]
-    fn coordinator_info_reads_validates_then_enriches_and_keeps_local_data_when_related_is_unavailable(
-    ) {
+    fn coordinator_info_reads_validates_then_enriches_and_keeps_local_data() {
         let state = Arc::new(Mutex::new(CoordinatorState::default()));
         let subject = validation_subject();
         let ports = FakeMetadataPorts {
@@ -2518,7 +2489,7 @@ mod tests {
                 },
                 validation_subject: subject,
             }))),
-            related: unavailable_related(),
+            related: crate::application::ports::MetaEnrichment::default(),
             validation: passed_validation(),
             prepared: Mutex::new(None),
             cancel_after_validation: None,
@@ -2530,7 +2501,7 @@ mod tests {
             &object(json!({
                 "sourceSet": "main",
                 "metadataPath": "Document.Order",
-                "sections": ["modules", "roles", "subscriptions", "functionalOptions", "predefinedItems"],
+                "sections": ["roles", "subscriptions", "functionalOptions", "predefinedItems"],
                 "limit": 50,
             })),
             &coordinator_context(),
@@ -2541,15 +2512,12 @@ mod tests {
         assert!(outcome.adapter.ok);
         assert_eq!(outcome.adapter.stdout, None);
         assert_eq!(outcome.data.as_ref().unwrap()["name"], "Order");
-        assert_eq!(
-            outcome.data.as_ref().unwrap()["related"]["modules"]["status"],
-            "unavailable"
-        );
+        assert!(outcome.data.as_ref().unwrap().get("related").is_none());
         assert_eq!(state.lock().unwrap().calls, ["read", "validate", "related"]);
     }
 
     #[test]
-    fn coordinator_info_with_no_selected_sections_skips_related_provider() {
+    fn coordinator_info_with_no_selected_sections_skips_enrichment() {
         for sections in [None, Some(json!([]))] {
             let (ports, state) = info_ports();
             let mut args = object(json!({
@@ -2570,13 +2538,13 @@ mod tests {
             .unwrap();
 
             assert!(outcome.adapter.ok);
-            assert_eq!(outcome.data.as_ref().unwrap()["related"], json!({}));
+            assert!(outcome.data.as_ref().unwrap().get("related").is_none());
             assert_eq!(state.lock().unwrap().calls, ["read", "validate"]);
         }
     }
 
     #[test]
-    fn coordinator_info_validation_failure_skips_related_provider() {
+    fn coordinator_info_validation_failure_skips_enrichment() {
         let (mut ports, state) = info_ports();
         ports.validation = MetaValidationData {
             status: MetaValidationStatus::Failed,
@@ -2592,7 +2560,7 @@ mod tests {
             &object(json!({
                 "sourceSet": "main",
                 "metadataPath": "Document.Order",
-                "sections": ["modules"],
+                "sections": ["roles"],
             })),
             &coordinator_context(),
             &CancellationToken::new(),
@@ -2600,7 +2568,7 @@ mod tests {
         .unwrap();
 
         assert!(!outcome.adapter.ok);
-        assert_eq!(outcome.data.as_ref().unwrap()["related"], json!({}));
+        assert!(outcome.data.as_ref().unwrap().get("related").is_none());
         assert_eq!(state.lock().unwrap().calls, ["read", "validate"]);
     }
 

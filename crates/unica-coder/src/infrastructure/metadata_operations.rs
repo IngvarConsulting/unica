@@ -4,19 +4,14 @@ use crate::application::ports::{
     MetadataValidationSubject, PreparedMetadataMutation,
 };
 use crate::domain::cancellation::CancellationToken;
-use crate::domain::code_intelligence::{CodeIntelligenceContext, ProviderDeadline};
-use crate::domain::metadata::{
-    MetaCompleteness, MetaDiagnostic, MetaDiagnosticCode, MetaFreshness, MetaRelatedSection,
-    MetaRelatedSections, MetaRelatedStatus,
-};
-use crate::domain::source_roots::ResolvedSourceRoot;
+use crate::domain::code_intelligence::ProviderDeadline;
+use crate::domain::metadata::{MetaDiagnostic, MetaDiagnosticCode};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::meta::{
     prepare_meta_add, prepare_meta_remove, prepare_typed_edit, read_typed_meta_info,
     resolve_typed_edit_object, resolve_typed_metadata_object, scan_local_enrichment,
     LocalEnrichment, LocalSection, MetadataValidator,
 };
-use crate::infrastructure::rlm_navigation::RlmNavigationAdapter;
 use crate::infrastructure::source_roots::NamedSourceSetErrorKind;
 
 pub(crate) struct MetadataOperations;
@@ -77,12 +72,11 @@ impl MetadataOperations {
         let local_sections = request
             .sections
             .iter()
-            .filter_map(|section| match section {
-                MetaInfoSection::Roles => Some(LocalSection::Roles),
-                MetaInfoSection::Subscriptions => Some(LocalSection::Subscriptions),
-                MetaInfoSection::FunctionalOptions => Some(LocalSection::FunctionalOptions),
-                MetaInfoSection::PredefinedItems => Some(LocalSection::PredefinedItems),
-                MetaInfoSection::Modules => None,
+            .map(|section| match section {
+                MetaInfoSection::Roles => LocalSection::Roles,
+                MetaInfoSection::Subscriptions => LocalSection::Subscriptions,
+                MetaInfoSection::FunctionalOptions => LocalSection::FunctionalOptions,
+                MetaInfoSection::PredefinedItems => LocalSection::PredefinedItems,
             })
             .collect::<Vec<_>>();
         let LocalEnrichment {
@@ -101,32 +95,9 @@ impl MetadataOperations {
             )
         };
 
-        let related = if request.sections.contains(&MetaInfoSection::Modules) {
-            let provider_context = CodeIntelligenceContext::new(
-                context.clone(),
-                ResolvedSourceRoot {
-                    source_set: Some(source.source_set.name),
-                    path: source.path,
-                },
-            );
-            RlmNavigationAdapter::new().metadata_related(
-                request.metadata_path.as_str(),
-                &["modules".to_string()],
-                request.limit,
-                &provider_context,
-                ProviderDeadline::new(
-                    std::time::Instant::now() + std::time::Duration::from_secs(5),
-                ),
-                cancellation,
-            )
-        } else {
-            MetaRelatedSections::default()
-        };
-
         MetaEnrichment {
             predefined_items,
             usage,
-            related,
         }
     }
 
@@ -201,35 +172,13 @@ fn logical_source_set_error(source_set: &str, kind: NamedSourceSetErrorKind) -> 
     }
 }
 
-fn unavailable_section(message: &str) -> MetaRelatedSection<serde_json::Value> {
-    MetaRelatedSection {
-        status: MetaRelatedStatus::Unavailable,
-        freshness: MetaFreshness::Unknown,
-        completeness: MetaCompleteness::Unknown,
-        total: 0,
-        returned: 0,
-        truncated: false,
-        items: Vec::new(),
-        diagnostics: capability_unavailable(message).diagnostics,
-    }
-}
-
 /// The answer when the source set itself cannot be resolved.
 ///
-/// Nothing can be read: not the tree, not the index. The usage lists stay
-/// absent rather than empty — an empty list would claim the object is used
-/// nowhere — and the index section, if it was asked for, says so explicitly.
-fn selected_unavailable_sections(request: &MetaInfoRequest, message: &str) -> MetaEnrichment {
-    MetaEnrichment {
-        predefined_items: None,
-        usage: crate::domain::metadata::MetaUsageData::default(),
-        related: MetaRelatedSections {
-            modules: request
-                .sections
-                .contains(&crate::application::metadata::MetaInfoSection::Modules)
-                .then(|| unavailable_section(message)),
-        },
-    }
+/// Nothing can be read, and an empty usage list would claim the object is used
+/// nowhere. The sections stay absent instead, and the failure is reported by
+/// the read that owns it.
+fn selected_unavailable_sections(_request: &MetaInfoRequest, _message: &str) -> MetaEnrichment {
+    MetaEnrichment::default()
 }
 
 fn capability_unavailable(message: &str) -> MetaFailure {
@@ -546,7 +495,7 @@ mod tests {
             source_set: "unsafe".into(),
             metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items")
                 .unwrap(),
-            sections: vec![MetaInfoSection::Modules],
+            sections: vec![MetaInfoSection::Roles],
             limit: 20,
         };
 
@@ -581,15 +530,18 @@ mod tests {
             &context,
             &CancellationToken::new(),
         );
-        let diagnostics = related.related.modules.unwrap().diagnostics;
-        let message = &diagnostics[0].message;
+        // Enrichment reads a source set the local read already resolved, so an
+        // unresolvable one leaves every section absent rather than empty: an
+        // empty list would claim the object is used nowhere. Nothing is
+        // rendered from the failure, so nothing can leak the workspace root.
+        assert!(related.usage.roles.is_none());
+        assert!(related.usage.subscriptions.is_none());
+        assert!(related.usage.functional_options.is_none());
+        assert!(related.predefined_items.is_none());
+        let rendered = serde_json::to_string(&related.usage).unwrap();
         assert!(
-            message.contains("source set `unsafe`") && message.contains("containment boundary"),
-            "{message}"
-        );
-        assert!(
-            !message.contains(root.to_string_lossy().as_ref()),
-            "diagnostic leaked workspace root: {message}"
+            !rendered.contains(root.to_string_lossy().as_ref()),
+            "enrichment leaked workspace root: {rendered}"
         );
         fs::remove_dir_all(root).unwrap();
     }

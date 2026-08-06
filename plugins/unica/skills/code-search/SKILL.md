@@ -102,7 +102,7 @@ description: "Поиск и исследование BSL-кода и точек 
     "arguments": {
       "sourceSet": "main",
       "metadataPath": "Document.SalesOrder",
-      "sections": ["modules", "roles", "subscriptions", "functionalOptions"],
+      "sections": ["roles", "subscriptions", "functionalOptions"],
       "limit": 20
     }
   }
