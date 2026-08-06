@@ -3442,7 +3442,6 @@ mod tests {
     use super::*;
     use crate::application::metadata::MetadataOperation;
     use crate::application::tools;
-    use crate::domain::metadata::MetadataKind;
 
     fn metadata_tool(operation: MetadataOperation) -> ToolSpec {
         ToolSpec {
@@ -3459,48 +3458,13 @@ mod tests {
         }
     }
 
-    fn metadata_operation_schema_for_kind(schema: &Value, kind: MetadataKind) -> &Value {
-        let branch = schema["allOf"]
-            .as_array()
-            .expect("metadata mutation schema must publish owner branches")
-            .iter()
-            .find(|branch| {
-                branch["if"]["properties"]["kind"]["enum"] == json!([kind.as_str()])
-                    || branch["if"]["properties"]["metadataPath"]["pattern"]
-                        .as_str()
-                        .is_some_and(|pattern| {
-                            pattern.starts_with(&format!("^({}|", kind.as_str()))
-                        })
-            })
-            .unwrap_or_else(|| panic!("missing metadata owner branch for {}", kind.as_str()));
-        let items = &branch["then"]["properties"]["operations"]["items"];
-        let definition = items["$ref"]
-            .as_str()
-            .and_then(|reference| reference.strip_prefix("#/$defs/"))
-            .expect("metadata operation items must reference one shared definition");
-        &schema["$defs"][definition]
-    }
-
-    fn resolve_metadata_schema_reference<'a>(root: &'a Value, schema: &'a Value) -> &'a Value {
-        match schema.get("$ref").and_then(Value::as_str) {
-            Some(reference) => {
-                let definition = reference
-                    .strip_prefix("#/$defs/")
-                    .expect("metadata schema reference must target root definitions");
-                &root["$defs"][definition]
-            }
-            None => schema,
-        }
-    }
-
-    fn resolve_metadata_schema_base<'a>(root: &'a Value, schema: &'a Value) -> &'a Value {
-        let resolved = resolve_metadata_schema_reference(root, schema);
-        resolved
-            .get("allOf")
-            .and_then(Value::as_array)
-            .and_then(|schemas| schemas.first())
-            .map(|schema| resolve_metadata_schema_reference(root, schema))
-            .unwrap_or(resolved)
+    /// The published, host-visible operation union.
+    ///
+    /// ADR-0025 keeps the union kind-agnostic so it survives a host that renders
+    /// `properties` alone; per-kind legality is the writer's, which answers
+    /// `unsupported_kind` naming the exact field.
+    fn metadata_operation_union(schema: &Value) -> &Value {
+        &schema["properties"]["operations"]["items"]
     }
 
     fn sorted_property_names(value: &Value) -> Vec<&str> {
@@ -3622,31 +3586,16 @@ mod tests {
 
         let edit = input_schema_for_tool(&metadata_tool(MetadataOperation::Edit));
         assert_eq!(add["properties"]["operations"]["minItems"], 1);
-        let add_branches = add["allOf"].as_array().expect("add owner branches");
-        let edit_branches = edit["allOf"].as_array().expect("edit owner branches");
-        assert_eq!(add_branches.len(), MetadataKind::ALL.len());
-        assert_eq!(edit_branches.len(), MetadataKind::ALL.len());
-        for ((kind, add_branch), edit_branch) in MetadataKind::ALL
-            .iter()
-            .zip(add_branches)
-            .zip(edit_branches)
-        {
-            assert_eq!(
-                add_branch["if"]["properties"]["kind"]["enum"],
-                json!([kind.as_str()])
-            );
-            assert!(edit_branch["if"]["properties"]["metadataPath"]["pattern"]
-                .as_str()
-                .unwrap()
-                .contains(kind.as_str()));
-            assert_eq!(
-                add_branch["then"]["properties"]["operations"]["items"],
-                edit_branch["then"]["properties"]["operations"]["items"],
-                "meta.add and meta.edit must publish one operation schema for {}",
-                kind.as_str()
-            );
-        }
-        let item = metadata_operation_schema_for_kind(&edit, MetadataKind::Document);
+        // No conditional branches: the union is the whole published contract,
+        // and both mutations publish the same one.
+        assert!(add.get("allOf").is_none());
+        assert!(edit.get("allOf").is_none());
+        assert_eq!(
+            metadata_operation_union(&add),
+            metadata_operation_union(&edit),
+            "meta.add and meta.edit must publish one operation union"
+        );
+        let item = metadata_operation_union(&edit);
         let variants = item["oneOf"].as_array().expect("closed operation union");
         assert_eq!(variants.len(), 5);
         for (variant, tag, required, properties) in [
@@ -3681,52 +3630,52 @@ mod tests {
                 vec!["mode", "op", "relation", "targets"],
             ),
         ] {
-            let variant = resolve_metadata_schema_base(&edit, variant);
+            assert!(
+                variant.get("$ref").is_none(),
+                "{tag}: a host that cannot resolve $ref must still see the variant"
+            );
             assert_eq!(variant["type"], "object", "{tag}");
             assert_eq!(variant["additionalProperties"], false, "{tag}");
             assert_eq!(variant["required"], required, "{tag}");
             assert_eq!(sorted_property_names(variant), properties, "{tag}");
             assert_eq!(variant["properties"]["op"]["enum"], json!([tag]));
         }
-        let add_profile = resolve_metadata_schema_reference(&edit, &variants[1]);
-        let mut add_collections = add_profile["allOf"][1]["oneOf"]
+        // The union publishes the closed domains themselves: every collection
+        // and relation the writer knows, not the subset one kind allows.
+        let mut add_collections = variants[1]["properties"]["collection"]["enum"]
             .as_array()
-            .unwrap()
+            .expect("the add branch publishes a closed collection domain")
             .iter()
-            .map(|branch| {
-                resolve_metadata_schema_reference(&edit, branch)["properties"]["collection"]["enum"]
-                    [0]
-                .as_str()
-                .unwrap()
-            })
+            .map(|value| value.as_str().unwrap())
             .collect::<Vec<_>>();
         add_collections.sort_unstable();
-        add_collections.dedup();
         assert_eq!(
             add_collections,
             vec![
                 "attributes",
+                "columns",
                 "commands",
+                "dimensions",
+                "enumValues",
                 "forms",
+                "resources",
                 "tabularSections",
                 "templates",
             ]
         );
-        let relations_profile = resolve_metadata_schema_reference(&edit, &variants[4]);
-        let mut relations = relations_profile["allOf"][1]["oneOf"]
+        let mut relations = variants[4]["properties"]["relation"]["enum"]
             .as_array()
-            .unwrap()
+            .expect("the relation branch publishes a closed relation domain")
             .iter()
-            .map(|branch| branch["properties"]["relation"]["const"].as_str().unwrap())
+            .map(|value| value.as_str().unwrap())
             .collect::<Vec<_>>();
         relations.sort_unstable();
         assert_eq!(
             relations,
-            vec!["basedOn", "inputByString", "registerRecords"]
+            vec!["basedOn", "inputByString", "owners", "registerRecords"]
         );
-        let relations_variant = resolve_metadata_schema_base(&edit, &variants[4]);
         assert_eq!(
-            relations_variant["properties"]["mode"]["enum"],
+            variants[4]["properties"]["mode"]["enum"],
             json!(["add", "remove", "replace"])
         );
 
@@ -5165,12 +5114,10 @@ mod tests {
         let schema = input_schema_for_tool(&tool);
         assert!(schema["properties"].get("Operation").is_none());
         assert!(schema["properties"].get("DefinitionFile").is_none());
-        let operation_tags = metadata_operation_schema_for_kind(&schema, MetadataKind::Catalog)
-            ["oneOf"]
+        let operation_tags = metadata_operation_union(&schema)["oneOf"]
             .as_array()
             .expect("closed operation union")
             .iter()
-            .map(|variant| resolve_metadata_schema_base(&schema, variant))
             .map(|variant| variant["properties"]["op"]["enum"][0].clone())
             .collect::<Vec<_>>();
         assert_eq!(

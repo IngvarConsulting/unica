@@ -487,10 +487,17 @@ class MetaSurfaceContractTests(unittest.TestCase):
             ),
         )
 
-        edit_items = rust_function(metadata, "fn operation_schema(kind: MetadataKind)")
+        # ADR-0025: the operation union is published directly as
+        # `properties.operations.items`, so a host that renders only
+        # `properties` still sees the discriminated variants. It carries no
+        # conditional composition and no owner-kind branching.
+        edit_items = rust_function(metadata, "fn host_visible_operation_schema()")
         self.assertIn('"oneOf"', edit_items)
-        for composition in ("anyOf", "allOf"):
+        for composition in ("anyOf", "allOf", '"if"', '"then"'):
             self.assertNotIn(composition, edit_items)
+        schema_fn = rust_function(metadata, "pub(crate) fn metadata_input_schema")
+        self.assertIn('"items": host_visible_operation_schema()', schema_fn)
+        self.assertNotIn('"allOf"', schema_fn)
         for forbidden in (
             "JsonPath",
             "DefinitionFile",

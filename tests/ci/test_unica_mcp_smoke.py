@@ -289,6 +289,49 @@ class UnicaMcpSmokeTests(unittest.TestCase):
         self.assertIn("unica.runtime.execute", tools)
         self.assertIn("unica.standards.explain", tools)
 
+    def test_meta_operations_stay_typed_without_conditional_evaluation(self) -> None:
+        """The operation type must survive a host that renders only `properties`.
+
+        `allOf`/`if`/`then` narrows `operations` per kind, but a client that does
+        not evaluate conditionals or resolve `$ref` sees only
+        `properties.operations`. Without a direct `items` there, the model is
+        offered an untyped array and the whole typed contract is lost between the
+        server and the caller, so this asserts the host-visible signature rather
+        than the schema the validator eventually assembles.
+        """
+        responses = self.call_mcp(
+            [
+                {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": MCP_INITIALIZE_PARAMS},
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+            ]
+        )
+        tools = {tool["name"]: tool for tool in responses[1]["result"]["tools"]}
+
+        for name in ("unica.meta.add", "unica.meta.edit"):
+            with self.subTest(tool=name):
+                operations = tools[name]["inputSchema"]["properties"]["operations"]
+                items = operations.get("items")
+                self.assertIsNotNone(
+                    items, f"{name}: operations publishes no direct items"
+                )
+                branches = items.get("oneOf")
+                self.assertIsNotNone(
+                    branches, f"{name}: operation items publish no discriminated union"
+                )
+                discriminators = set()
+                for branch in branches:
+                    self.assertNotIn(
+                        "$ref", branch, f"{name}: a host that cannot resolve $ref sees nothing"
+                    )
+                    enum = branch["properties"]["op"]["enum"]
+                    self.assertEqual(len(enum), 1)
+                    discriminators.add(enum[0])
+                    self.assertIn("op", branch["required"])
+                self.assertEqual(
+                    discriminators,
+                    {"setProperties", "add", "update", "remove", "editRelations"},
+                )
+
     def test_meta_calls_publish_structured_results(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "workspace"

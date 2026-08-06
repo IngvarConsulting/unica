@@ -117,47 +117,56 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
             with self.subTest(tool=name, field="operations"):
                 self.assertEqual(operations["type"], "array")
                 self.assertEqual(operations["minItems"], 1)
-                self.assertNotIn("items", operations)
+                # A host that renders only `properties` never evaluates a
+                # conditional and may not resolve `$ref`. Without a direct
+                # `items` such a host offers the model an untyped array, so the
+                # kind-agnostic union ships inline (ADR-0025).
+                items = operations["items"]
+                branches = items["oneOf"]
+                self.assertEqual(
+                    {branch["properties"]["op"]["enum"][0] for branch in branches},
+                    {"setProperties", "add", "update", "remove", "editRelations"},
+                )
+                for branch in branches:
+                    self.assertNotIn("$ref", branch)
+                    self.assertIn("op", branch["required"])
 
-        add_branches = published["unica.meta.add"]["inputSchema"]["allOf"]
-        edit_branches = published["unica.meta.edit"]["inputSchema"]["allOf"]
         add_root = published["unica.meta.add"]["inputSchema"]
         edit_root = published["unica.meta.edit"]["inputSchema"]
+        # ADR-0025: the union is the whole published contract. No conditional
+        # branches remain, and both mutations publish the same union and the
+        # same shared definitions.
+        self.assertNotIn("allOf", add_root)
+        self.assertNotIn("allOf", edit_root)
         self.assertEqual(add_root["$defs"], edit_root["$defs"])
-        self.assertEqual(len(add_branches), 23)
-        self.assertEqual(len(edit_branches), 23)
-        published_tags: set[str] = set()
-        for add_branch, edit_branch in zip(add_branches, edit_branches, strict=True):
-            kind = add_branch["if"]["properties"]["kind"]["enum"]
-            self.assertEqual(len(kind), 1)
-            pattern = edit_branch["if"]["properties"]["metadataPath"]["pattern"]
-            self.assertTrue(
-                pattern.startswith(f"^({kind[0]}|")
-                or pattern.startswith(f"^({kind[0]})"),
-                f"edit branch pattern does not start with {kind[0]}: {pattern}",
-            )
-            add_items = add_branch["then"]["properties"]["operations"]["items"]
-            edit_items = edit_branch["then"]["properties"]["operations"]["items"]
-            self.assertEqual(add_items, edit_items)
-            reference = add_items["$ref"]
-            self.assertTrue(reference.startswith("#/$defs/"))
-            definition = reference.removeprefix("#/$defs/")
-            variants = add_root["$defs"][definition]["oneOf"]
-            variants = [
-                resolve_schema_base(add_root, variant)
-                for variant in variants
-            ]
-            published_tags.update(
-                variant["properties"]["op"]["enum"][0] for variant in variants
-            )
-            for variant in variants:
-                self.assertEqual(variant["type"], "object")
-                self.assertFalse(variant["additionalProperties"])
-                self.assertIn("op", variant["required"])
-
         self.assertEqual(
-            published_tags,
+            sorted(add_root["$defs"]),
+            ["fillValue", "metadataType", "position", "scope"],
+        )
+        self.assertEqual(
+            add_root["properties"]["operations"]["items"],
+            edit_root["properties"]["operations"]["items"],
+        )
+        variants = edit_root["properties"]["operations"]["items"]["oneOf"]
+        for variant in variants:
+            self.assertEqual(variant["type"], "object")
+            self.assertFalse(variant["additionalProperties"])
+            self.assertIn("op", variant["required"])
+        self.assertEqual(
+            {variant["properties"]["op"]["enum"][0] for variant in variants},
             {"setProperties", "add", "update", "remove", "editRelations"},
+        )
+        # The union publishes closed domains, not a bare name list: a model that
+        # reads only the schema must learn the legal values too.
+        values = next(
+            variant
+            for variant in variants
+            if variant["properties"]["op"]["enum"][0] == "setProperties"
+        )["properties"]["values"]
+        self.assertFalse(values["additionalProperties"])
+        self.assertEqual(
+            values["properties"]["HierarchyType"]["enum"],
+            ["HierarchyFoldersAndItems", "HierarchyOfItems"],
         )
 
     def test_every_review_entry_states_a_contract_and_scenarios(self) -> None:

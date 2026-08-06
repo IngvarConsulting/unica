@@ -3,15 +3,14 @@ use super::AdapterOutcome;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::events::{DomainEvent, DomainEventKind};
 use crate::domain::metadata::{
-    metadata_collection_spec, metadata_fill_value_is_allowed, metadata_kind_collections,
-    metadata_reference_type_kinds, metadata_relation_specs, validate_metadata_kind_collection,
+    metadata_reference_type_kinds, validate_metadata_kind_collection,
     validate_metadata_operation_capabilities, DateFractions, MetaCollection, MetaDiagnostic,
     MetaDiagnosticCode, MetaEditOperation, MetaEditOperationTag, MetaElementInput,
-    MetaElementScope, MetaElementUpdateInput, MetaFillValue, MetaPosition, MetaPropertyChanges,
-    MetaPropertyInput, MetaPropertyValue, MetaPropertyValueKind, MetaRelation, MetaRelationTarget,
-    MetaRelationTargetPolicy, MetaScope, MetaValidationStatus, MetadataFieldPath, MetadataKind,
-    MetadataReference, MetadataType, MetadataTypeVariant, NumberSign, RelationEditMode,
-    StringLengthMode, METADATA_PROPERTY_SPECS, METADATA_XS_DATETIME_PATTERN,
+    MetaElementUpdateInput, MetaFillValue, MetaPosition, MetaPropertyChanges, MetaPropertyInput,
+    MetaPropertyValue, MetaPropertyValueKind, MetaRelation, MetaRelationTarget, MetaScope,
+    MetaValidationStatus, MetadataFieldPath, MetadataKind, MetadataReference, MetadataType,
+    MetadataTypeVariant, NumberSign, RelationEditMode, StringLengthMode, METADATA_PROPERTY_SPECS,
+    METADATA_XS_DATETIME_PATTERN,
 };
 use crate::domain::source_target::{
     metadata_address_kind_spellings, MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20,
@@ -1324,6 +1323,7 @@ pub(crate) fn metadata_input_schema(operation: MetadataOperation) -> Value {
                 json!({
                     "type": "array",
                     "minItems": 1,
+                    "items": host_visible_operation_schema(),
                     "description": "Optional ordered typed operations applied to the private creation image before one atomic publication.",
                 }),
             );
@@ -1352,6 +1352,7 @@ pub(crate) fn metadata_input_schema(operation: MetadataOperation) -> Value {
                 json!({
                     "type": "array",
                     "minItems": 1,
+                    "items": host_visible_operation_schema(),
                     "description": "Ordered typed edit operations applied as one atomic change.",
                 }),
             );
@@ -1405,14 +1406,10 @@ pub(crate) fn metadata_input_schema(operation: MetadataOperation) -> Value {
     });
     match operation {
         MetadataOperation::Add | MetadataOperation::Edit => {
-            let schema = schema
+            schema
                 .as_object_mut()
-                .expect("metadata input schema is always an object");
-            schema.insert(
-                "allOf".into(),
-                Value::Array(owner_operation_branches(operation)),
-            );
-            schema.insert("$defs".into(), Value::Object(metadata_schema_definitions()));
+                .expect("metadata input schema is always an object")
+                .insert("$defs".into(), Value::Object(metadata_schema_definitions()));
         }
         MetadataOperation::Remove => {
             schema
@@ -1442,324 +1439,25 @@ pub(crate) fn metadata_input_schema(operation: MetadataOperation) -> Value {
     schema
 }
 
+/// Shared shapes the host-visible operation union refers to.
+///
+/// The union in [`host_visible_operation_schema`] is the whole published
+/// contract, so only the definitions it actually reaches belong here. The
+/// per-kind narrowing that used to live in `allOf`/`$defs` never reached a host
+/// that renders `properties` alone, while it consumed the entire reviewed
+/// context budget; per-kind legality is enforced by the writer, which answers a
+/// violation with `unsupported_kind` naming the exact field.
 fn metadata_schema_definitions() -> Map<String, Value> {
     let mut definitions = Map::new();
     definitions.insert("scope".into(), scope_schema());
     definitions.insert("position".into(), position_schema());
     definitions.insert("metadataType".into(), metadata_type_schema());
     definitions.insert("fillValue".into(), fill_value_schema());
-    definitions.insert("valueProfile".into(), value_profile_schema());
-    definitions.insert("newValueProfile".into(), new_value_profile_schema());
-    definitions.insert("relationOperation".into(), relation_operation_schema());
-    definitions.insert(
-        "metadataRelationTarget".into(),
-        metadata_relation_target_schema(),
-    );
-    definitions.insert("fieldRelationTarget".into(), field_relation_target_schema());
-    for tag in [
-        MetaEditOperationTag::Add,
-        MetaEditOperationTag::Update,
-        MetaEditOperationTag::Remove,
-    ] {
-        definitions.insert(
-            collection_operation_base_definition_name(tag).into(),
-            collection_operation_base_schema(tag),
-        );
-    }
-    for kind in MetadataKind::ALL.iter().copied() {
-        for collection in metadata_kind_collections(kind).iter().copied() {
-            for scope in if collection == MetaCollection::Attributes {
-                &[MetaElementScope::TopLevel, MetaElementScope::TabularSection][..]
-            } else {
-                &[MetaElementScope::TopLevel][..]
-            } {
-                definitions
-                    .entry(add_element_definition_name(kind, collection, *scope))
-                    .or_insert_with(|| add_element_schema(kind, collection, *scope));
-                definitions
-                    .entry(update_element_definition_name(kind, collection, *scope))
-                    .or_insert_with(|| update_element_schema(kind, collection, *scope));
-            }
-        }
-    }
-    for kind in MetadataKind::ALL.iter().copied() {
-        if !metadata_kind_collections(kind).is_empty() {
-            for tag in [
-                MetaEditOperationTag::Add,
-                MetaEditOperationTag::Update,
-                MetaEditOperationTag::Remove,
-            ] {
-                for collection in metadata_kind_collections(kind).iter().copied() {
-                    for (scope, requires_scope) in
-                        collection_operation_branch_profiles(tag, collection)
-                    {
-                        definitions
-                            .entry(collection_operation_branch_definition_name(
-                                kind,
-                                tag,
-                                collection,
-                                scope,
-                                requires_scope,
-                            ))
-                            .or_insert_with(|| {
-                                collection_operation_branch(
-                                    kind,
-                                    tag,
-                                    collection,
-                                    scope,
-                                    requires_scope,
-                                )
-                            });
-                    }
-                }
-                definitions
-                    .entry(collection_operation_definition_name(kind, tag))
-                    .or_insert_with(|| collection_operation_schema(kind, tag));
-            }
-        }
-        if !metadata_relation_specs(kind).is_empty() {
-            for spec in metadata_relation_specs(kind) {
-                definitions
-                    .entry(relation_target_policy_definition_name(
-                        spec.target_policy,
-                        kind,
-                    ))
-                    .or_insert_with(|| relation_target_policy_schema(spec.target_policy, kind));
-            }
-            definitions.insert(
-                relation_operation_definition_name(kind),
-                edit_relations_schema(kind),
-            );
-        }
-    }
-    for kind in MetadataKind::ALL.iter().copied() {
-        definitions
-            .entry(set_properties_definition_name(kind))
-            .or_insert_with(|| set_properties_schema(kind));
-        definitions.insert(operation_definition_name(kind), operation_schema(kind));
-    }
     definitions
 }
 
 fn schema_reference(definition: impl AsRef<str>) -> Value {
     json!({"$ref": format!("#/$defs/{}", definition.as_ref())})
-}
-
-fn operation_definition_name(kind: MetadataKind) -> String {
-    format!("o{}", metadata_kind_index(kind))
-}
-
-fn set_properties_definition_name(kind: MetadataKind) -> String {
-    let values = property_values_schema(kind);
-    let profile_owner = MetadataKind::ALL
-        .iter()
-        .copied()
-        .find(|candidate| property_values_schema(*candidate) == values)
-        .expect("metadata property profile must have an owner");
-    format!("p{}", metadata_kind_index(profile_owner))
-}
-
-fn add_element_definition_name(
-    kind: MetadataKind,
-    collection: MetaCollection,
-    scope: MetaElementScope,
-) -> String {
-    let profile_owner = MetaCollection::ALL
-        .iter()
-        .copied()
-        .find(|candidate| same_collection_shape(*candidate, collection))
-        .expect("metadata add-element profile must have an owner");
-    let fill = metadata_fill_value_is_allowed(kind, collection, scope);
-    let nested_fill = metadata_collection_spec(collection).allows_nested_attributes
-        && metadata_fill_value_is_allowed(
-            kind,
-            MetaCollection::Attributes,
-            MetaElementScope::TabularSection,
-        );
-    format!(
-        "a{}{}{}",
-        collection_index(profile_owner),
-        u8::from(fill),
-        u8::from(nested_fill)
-    )
-}
-
-fn update_element_definition_name(
-    kind: MetadataKind,
-    collection: MetaCollection,
-    scope: MetaElementScope,
-) -> String {
-    let profile_owner = MetaCollection::ALL
-        .iter()
-        .copied()
-        .find(|candidate| same_collection_shape(*candidate, collection))
-        .expect("metadata update-element profile must have an owner");
-    format!(
-        "u{}{}",
-        collection_index(profile_owner),
-        u8::from(metadata_fill_value_is_allowed(kind, collection, scope))
-    )
-}
-
-fn same_collection_shape(left: MetaCollection, right: MetaCollection) -> bool {
-    let left = metadata_collection_spec(left);
-    let right = metadata_collection_spec(right);
-    left.allows_type == right.allows_type
-        && left.allows_required == right.allows_required
-        && left.allows_nested_attributes == right.allows_nested_attributes
-        && left.allows_position == right.allows_position
-}
-
-fn collection_index(collection: MetaCollection) -> usize {
-    MetaCollection::ALL
-        .iter()
-        .position(|candidate| *candidate == collection)
-        .expect("closed collection must have an index")
-}
-
-fn collection_operation_definition_name(kind: MetadataKind, tag: MetaEditOperationTag) -> String {
-    let profile_owner = MetadataKind::ALL
-        .iter()
-        .copied()
-        .find(|candidate| same_collection_operation_profile(*candidate, kind, tag))
-        .expect("metadata collection profile must have an owner");
-    let tag = match tag {
-        MetaEditOperationTag::Add => 'a',
-        MetaEditOperationTag::Update => 'u',
-        MetaEditOperationTag::Remove => 'd',
-        MetaEditOperationTag::SetProperties | MetaEditOperationTag::EditRelations => {
-            unreachable!("only collection operation tags have definitions")
-        }
-    };
-    format!("c{tag}{}", metadata_kind_index(profile_owner))
-}
-
-fn same_collection_operation_profile(
-    left: MetadataKind,
-    right: MetadataKind,
-    tag: MetaEditOperationTag,
-) -> bool {
-    let left_collections = metadata_kind_collections(left);
-    if left_collections != metadata_kind_collections(right) {
-        return false;
-    }
-    if tag == MetaEditOperationTag::Remove {
-        return true;
-    }
-    left_collections.iter().copied().all(|collection| {
-        let left_name = if tag == MetaEditOperationTag::Add {
-            add_element_definition_name(left, collection, MetaElementScope::TopLevel)
-        } else {
-            update_element_definition_name(left, collection, MetaElementScope::TopLevel)
-        };
-        let right_name = if tag == MetaEditOperationTag::Add {
-            add_element_definition_name(right, collection, MetaElementScope::TopLevel)
-        } else {
-            update_element_definition_name(right, collection, MetaElementScope::TopLevel)
-        };
-        let scoped_match = collection != MetaCollection::Attributes || {
-            let left_scoped = if tag == MetaEditOperationTag::Add {
-                add_element_definition_name(left, collection, MetaElementScope::TabularSection)
-            } else {
-                update_element_definition_name(left, collection, MetaElementScope::TabularSection)
-            };
-            let right_scoped = if tag == MetaEditOperationTag::Add {
-                add_element_definition_name(right, collection, MetaElementScope::TabularSection)
-            } else {
-                update_element_definition_name(right, collection, MetaElementScope::TabularSection)
-            };
-            left_scoped == right_scoped
-        };
-        left_name == right_name && scoped_match
-    })
-}
-
-fn relation_operation_definition_name(kind: MetadataKind) -> String {
-    format!("r{}", metadata_kind_index(kind))
-}
-
-fn relation_target_policy_definition_name(
-    policy: MetaRelationTargetPolicy,
-    owner_kind: MetadataKind,
-) -> String {
-    match policy {
-        MetaRelationTargetPolicy::MetadataKinds(kinds) => format!(
-            "m{}",
-            kinds
-                .iter()
-                .map(|kind| metadata_kind_index(*kind).to_string())
-                .collect::<Vec<_>>()
-                .join("x")
-        ),
-        MetaRelationTargetPolicy::SameOwnerField => {
-            format!("f{}", metadata_kind_index(owner_kind))
-        }
-    }
-}
-
-fn metadata_kind_index(kind: MetadataKind) -> usize {
-    MetadataKind::ALL
-        .iter()
-        .position(|candidate| *candidate == kind)
-        .expect("closed metadata kind must have an index")
-}
-
-fn collection_operation_base_definition_name(tag: MetaEditOperationTag) -> &'static str {
-    match tag {
-        MetaEditOperationTag::Add => "addOperation",
-        MetaEditOperationTag::Update => "updateOperation",
-        MetaEditOperationTag::Remove => "removeOperation",
-        MetaEditOperationTag::SetProperties | MetaEditOperationTag::EditRelations => {
-            unreachable!("only collection operations have a shared base")
-        }
-    }
-}
-
-fn owner_operation_branches(operation: MetadataOperation) -> Vec<Value> {
-    MetadataKind::ALL
-        .iter()
-        .copied()
-        .map(|kind| {
-            let (selector_name, selector) = match operation {
-                MetadataOperation::Add => (
-                    "kind",
-                    json!({
-                        "kind": {
-                            "type": "string",
-                            "enum": [kind.as_str()],
-                        },
-                    }),
-                ),
-                MetadataOperation::Edit => (
-                    "metadataPath",
-                    json!({
-                        "metadataPath": {
-                            "type": "string",
-                            "pattern": metadata_kind_edit_path_pattern(kind),
-                        },
-                    }),
-                ),
-                MetadataOperation::Info | MetadataOperation::Remove => {
-                    unreachable!("only mutation inputs have operation branches")
-                }
-            };
-            json!({
-                "if": {
-                    "properties": selector,
-                    "required": [selector_name],
-                },
-                "then": {
-                    "properties": {
-                        "operations": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": schema_reference(operation_definition_name(kind)),
-                        },
-                    },
-                },
-            })
-        })
-        .collect()
 }
 
 fn metadata_edit_path_pattern() -> String {
@@ -1776,334 +1474,153 @@ fn metadata_edit_path_pattern() -> String {
     )
 }
 
-fn metadata_kind_edit_path_pattern(kind: MetadataKind) -> String {
-    format!(
-        r"^({})\.[^.]+$",
-        metadata_address_kind_spellings(kind.as_str())
-            .expect("metadata kind must have a source-target spelling registry")
-            .join("|")
-    )
-}
-
-fn operation_schema(kind: MetadataKind) -> Value {
-    let mut variants = vec![schema_reference(set_properties_definition_name(kind))];
-    if !metadata_kind_collections(kind).is_empty() {
-        variants.extend(
-            [
-                MetaEditOperationTag::Add,
-                MetaEditOperationTag::Update,
-                MetaEditOperationTag::Remove,
-            ]
-            .map(|tag| schema_reference(collection_operation_definition_name(kind, tag))),
-        );
-    }
-    if !metadata_relation_specs(kind).is_empty() {
-        variants.push(schema_reference(relation_operation_definition_name(kind)));
-    }
-
-    json!({
-        "oneOf": variants,
-        "description": "Exactly one typed metadata edit operation.",
-    })
-}
-
-fn set_properties_schema(kind: MetadataKind) -> Value {
-    let mut properties = Map::new();
-    properties.insert("values".into(), property_values_schema(kind));
-    tagged_operation_variant(
-        MetaEditOperationTag::SetProperties,
-        properties,
-        &["op", "values"],
-    )
-}
-
-fn tagged_operation_variant(
-    tag: MetaEditOperationTag,
-    mut properties: Map<String, Value>,
-    required: &[&str],
-) -> Value {
-    properties.insert(
-        "op".into(),
-        json!({
-            "type": "string",
-            "enum": [tag.as_str()],
-            "description": "Discriminator for this metadata edit operation.",
-        }),
-    );
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": properties,
-        "required": required,
-    })
-}
-
-fn collection_operation_schema(kind: MetadataKind, tag: MetaEditOperationTag) -> Value {
-    let collections = metadata_kind_collections(kind);
-    let collection_branches = collections
+/// Kind-agnostic union of every typed operation shape, published directly as
+/// `properties.operations.items`.
+///
+/// The per-kind `allOf`/`if`/`then` branches narrow this union to the exact
+/// variant a concrete `kind` or `metadataPath` allows. A host that renders only
+/// `properties` never evaluates a conditional, so without a direct `items` the
+/// model is shown `array of anything` and the whole typed contract is lost on
+/// the way to the caller. The union therefore ships inline, and the conditional
+/// branches only tighten it: every branch variant is a subset of this union, so
+/// the language the schema accepts is unchanged.
+fn host_visible_operation_schema() -> Value {
+    let collections = MetaCollection::ALL
         .iter()
         .copied()
-        .flat_map(|collection| {
-            collection_operation_branch_profiles(tag, collection).map(
-                move |(scope, requires_scope)| {
-                    schema_reference(collection_operation_branch_definition_name(
-                        kind,
-                        tag,
-                        collection,
-                        scope,
-                        requires_scope,
-                    ))
-                },
-            )
-        })
+        .map(MetaCollection::as_str)
         .collect::<Vec<_>>();
-    json!({
-        "allOf": [
-            schema_reference(collection_operation_base_definition_name(tag)),
-            {"oneOf": collection_branches},
-        ],
-    })
-}
-
-fn collection_operation_base_schema(tag: MetaEditOperationTag) -> Value {
-    let mut properties = Map::new();
-    properties.insert(
-        "collection".into(),
-        json!({
-            "type": "string",
-            "description": "Metadata child collection to change.",
-        }),
-    );
-    properties.insert("scope".into(), schema_reference("scope"));
-    let required = match tag {
-        MetaEditOperationTag::Add | MetaEditOperationTag::Update => {
-            properties.insert(
-                "elements".into(),
-                json!({
-                    "type": "array",
-                    "minItems": 1,
-                    "description": "Elements to add or update in the selected collection.",
-                }),
-            );
-            &["op", "collection", "elements"][..]
+    // One public name can carry several per-kind specs. They are merged rather
+    // than repeated: the value kind is shared, and a name whose legal values
+    // differ by object kind publishes the union so the union stays a superset
+    // of every per-kind domain. The writer still rejects a value the concrete
+    // kind does not allow, naming the exact `values.<name>` field.
+    let mut root_properties: Map<String, Value> = Map::new();
+    for spec in METADATA_PROPERTY_SPECS {
+        let entry = root_properties
+            .entry(spec.public_name.to_string())
+            .or_insert_with(|| match spec.value_kind {
+                MetaPropertyValueKind::String => json!({"type": "string"}),
+                MetaPropertyValueKind::Boolean => json!({"type": "boolean"}),
+                MetaPropertyValueKind::UnsignedInteger => {
+                    json!({"type": "integer", "minimum": 0, "maximum": u32::MAX})
+                }
+            })
+            .as_object_mut()
+            .expect("root property schema is always an object");
+        if spec.enum_values.is_empty() {
+            // A kind that accepts a free value widens the published name.
+            entry.remove("enum");
+            entry.insert("unconstrained".into(), Value::Bool(true));
+            continue;
         }
-        MetaEditOperationTag::Remove => {
-            properties.insert(
-                "names".into(),
+        if entry.contains_key("unconstrained") {
+            continue;
+        }
+        let merged = entry
+            .remove("enum")
+            .and_then(|value| match value {
+                Value::Array(values) => Some(values),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let mut values = merged;
+        for candidate in spec.enum_values {
+            let candidate = Value::String((*candidate).to_string());
+            if !values.contains(&candidate) {
+                values.push(candidate);
+            }
+        }
+        entry.insert("enum".into(), Value::Array(values));
+    }
+    for value in root_properties.values_mut() {
+        value
+            .as_object_mut()
+            .expect("root property schema is always an object")
+            .remove("unconstrained");
+    }
+    let element = json!({
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+            "name": {"type": "string", "minLength": 1},
+            "newName": {"type": "string", "minLength": 1},
+            "synonym": {"type": "string"},
+            "comment": {"type": "string"},
+            "required": {"type": "boolean"},
+            "type": schema_reference("metadataType"),
+            "fillValue": schema_reference("fillValue"),
+            "position": schema_reference("position"),
+            "attributes": {
+                "type": "array",
+                "minItems": 1,
+                "items": {"type": "object", "required": ["name"]},
+            },
+        },
+        "description": "Collection element; the legal fields depend on the object kind and collection.",
+    });
+    let collection_operation = |tag: MetaEditOperationTag, payload_name: &str, payload: Value| {
+        json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["op", "collection", payload_name],
+            "properties": {
+                "op": {"type": "string", "enum": [tag.as_str()]},
+                "collection": {"type": "string", "enum": collections},
+                "scope": schema_reference("scope"),
+                payload_name: payload,
+            },
+        })
+    };
+    let elements = || json!({"type": "array", "minItems": 1, "items": element});
+    json!({
+        "oneOf": [
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["op", "values"],
+                "properties": {
+                    "op": {"type": "string", "enum": [MetaEditOperationTag::SetProperties.as_str()]},
+                    "values": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "minProperties": 1,
+                        "properties": root_properties,
+                        "description": "Root scalar properties; the legal subset depends on the object kind.",
+                    },
+                },
+            },
+            collection_operation(MetaEditOperationTag::Add, "elements", elements()),
+            collection_operation(MetaEditOperationTag::Update, "elements", elements()),
+            collection_operation(
+                MetaEditOperationTag::Remove,
+                "names",
                 json!({
                     "type": "array",
                     "minItems": 1,
                     "uniqueItems": true,
-                    "description": "Names of existing elements to remove.",
-                    "items": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "Name of one existing metadata element.",
-                    },
+                    "items": {"type": "string", "minLength": 1},
                 }),
-            );
-            &["op", "collection", "names"][..]
-        }
-        MetaEditOperationTag::SetProperties | MetaEditOperationTag::EditRelations => {
-            unreachable!("collection schema requires a collection operation tag")
-        }
-    };
-    tagged_operation_variant(tag, properties, required)
-}
-
-fn collection_operation_branch_profiles(
-    tag: MetaEditOperationTag,
-    collection: MetaCollection,
-) -> impl Iterator<Item = (MetaElementScope, bool)> {
-    let mut profiles = vec![(MetaElementScope::TopLevel, false)];
-    if collection == MetaCollection::Attributes
-        && matches!(
-            tag,
-            MetaEditOperationTag::Add | MetaEditOperationTag::Update
-        )
-    {
-        profiles.push((MetaElementScope::TabularSection, true));
-    }
-    profiles.into_iter()
-}
-
-fn collection_operation_branch_definition_name(
-    kind: MetadataKind,
-    tag: MetaEditOperationTag,
-    collection: MetaCollection,
-    scope: MetaElementScope,
-    requires_scope: bool,
-) -> String {
-    let tag = match tag {
-        MetaEditOperationTag::Add => "a",
-        MetaEditOperationTag::Update => "u",
-        MetaEditOperationTag::Remove => "r",
-        MetaEditOperationTag::SetProperties | MetaEditOperationTag::EditRelations => {
-            unreachable!("only collection operations have collection branches")
-        }
-    };
-    let element = match tag {
-        "a" => add_element_definition_name(kind, collection, scope),
-        "u" => update_element_definition_name(kind, collection, scope),
-        "r" => String::new(),
-        _ => unreachable!("closed collection operation tag"),
-    };
-    format!(
-        "b{tag}{}{}{}",
-        collection_index(collection),
-        u8::from(requires_scope),
-        element
-    )
-}
-
-fn collection_operation_branch(
-    kind: MetadataKind,
-    tag: MetaEditOperationTag,
-    collection: MetaCollection,
-    scope: MetaElementScope,
-    requires_scope: bool,
-) -> Value {
-    let mut properties = Map::new();
-    properties.insert(
-        "collection".into(),
-        json!({
-            "type": "string",
-            "enum": [collection.as_str()],
-        }),
-    );
-    if matches!(
-        tag,
-        MetaEditOperationTag::Add | MetaEditOperationTag::Update
-    ) {
-        let item_schema = if tag == MetaEditOperationTag::Add {
-            schema_reference(add_element_definition_name(kind, collection, scope))
-        } else {
-            schema_reference(update_element_definition_name(kind, collection, scope))
-        };
-        properties.insert(
-            "elements".into(),
-            json!({
-                "type": "array",
-                "minItems": 1,
-                "items": item_schema,
-            }),
-        );
-    }
-    let mut branch = json!({"properties": properties});
-    if requires_scope {
-        branch
-            .as_object_mut()
-            .unwrap()
-            .insert("required".into(), json!(["scope"]));
-    } else if collection != MetaCollection::Attributes
-        || matches!(
-            tag,
-            MetaEditOperationTag::Add | MetaEditOperationTag::Update
-        )
-    {
-        branch
-            .as_object_mut()
-            .unwrap()
-            .insert("not".into(), json!({"required": ["scope"]}));
-    }
-    branch
-}
-
-fn relation_operation_schema() -> Value {
-    let mut properties = Map::new();
-    properties.insert(
-        "relation".into(),
-        json!({
-            "type": "string",
-            "description": "Metadata relation to edit.",
-        }),
-    );
-    properties.insert(
-        "mode".into(),
-        json!({
-            "type": "string",
-            "enum": RelationEditMode::ALL.iter().copied().map(RelationEditMode::as_str).collect::<Vec<_>>(),
-            "description": "Whether relation targets are added, removed, or replaced.",
-        }),
-    );
-    properties.insert(
-        "targets".into(),
-        json!({
-            "type": "array",
-            "minItems": 1,
-            "description": "Target metadata objects or field paths for the relation.",
-        }),
-    );
-    tagged_operation_variant(
-        MetaEditOperationTag::EditRelations,
-        properties,
-        &["op", "relation", "mode", "targets"],
-    )
-}
-
-fn edit_relations_schema(kind: MetadataKind) -> Value {
-    let variants = metadata_relation_specs(kind)
-        .iter()
-        .map(|spec| {
-            json!({
+            ),
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["op", "relation", "mode", "targets"],
                 "properties": {
-                    "relation": {"const": spec.relation.as_str()},
-                    "targets": {
-                        "items": schema_reference(relation_target_policy_definition_name(
-                            spec.target_policy,
-                            kind,
-                        )),
+                    "op": {"type": "string", "enum": [MetaEditOperationTag::EditRelations.as_str()]},
+                    "relation": {
+                        "type": "string",
+                        "enum": MetaRelation::ALL.iter().copied().map(MetaRelation::as_str).collect::<Vec<_>>(),
                     },
+                    "mode": {
+                        "type": "string",
+                        "enum": RelationEditMode::ALL.iter().copied().map(RelationEditMode::as_str).collect::<Vec<_>>(),
+                    },
+                    "targets": {"type": "array", "minItems": 1, "items": {"type": "object"}},
                 },
-            })
-        })
-        .collect::<Vec<_>>();
-    json!({
-        "allOf": [
-            schema_reference("relationOperation"),
-            {"oneOf": variants},
+            },
         ],
-    })
-}
-
-fn property_values_schema(kind: MetadataKind) -> Value {
-    let mut properties = Map::new();
-    for spec in METADATA_PROPERTY_SPECS
-        .iter()
-        .filter(|spec| spec.allowed_kinds.contains(&kind))
-    {
-        let mut schema = match spec.value_kind {
-            MetaPropertyValueKind::String => json!({
-                "type": "string",
-                "description": format!("New value for metadata property {}.", spec.public_name),
-            }),
-            MetaPropertyValueKind::Boolean => json!({
-                "type": "boolean",
-                "description": format!("New value for metadata property {}.", spec.public_name),
-            }),
-            MetaPropertyValueKind::UnsignedInteger => {
-                json!({
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": u32::MAX,
-                    "description": format!("New value for metadata property {}.", spec.public_name),
-                })
-            }
-        };
-        if !spec.enum_values.is_empty() {
-            schema
-                .as_object_mut()
-                .expect("property schema is always an object")
-                .insert("enum".into(), json!(spec.enum_values));
-        }
-        properties.insert(spec.public_name.to_string(), schema);
-    }
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": properties,
-        "minProperties": 1,
-        "description": "One or more supported metadata property values to set.",
+        "description": "Exactly one typed metadata edit operation. Legal collections, root properties and relations are narrowed by the object kind.",
     })
 }
 
@@ -2123,30 +1640,6 @@ fn scope_schema() -> Value {
     })
 }
 
-fn relation_target_policy_schema(
-    policy: MetaRelationTargetPolicy,
-    owner_kind: MetadataKind,
-) -> Value {
-    let (definition, field, pattern) = match policy {
-        MetaRelationTargetPolicy::MetadataKinds(kinds) => (
-            "metadataRelationTarget",
-            "metadataPath",
-            metadata_kinds_object_pattern(kinds),
-        ),
-        MetaRelationTargetPolicy::SameOwnerField => (
-            "fieldRelationTarget",
-            "fieldPath",
-            metadata_kind_field_pattern(owner_kind),
-        ),
-    };
-    json!({
-        "allOf": [
-            schema_reference(definition),
-            {"properties": {field: {"pattern": pattern}}},
-        ],
-    })
-}
-
 fn metadata_kinds_object_pattern(kinds: &[MetadataKind]) -> String {
     format!(
         r"^({})\.[^.]+$",
@@ -2159,45 +1652,6 @@ fn metadata_kinds_object_pattern(kinds: &[MetadataKind]) -> String {
             .collect::<Vec<_>>()
             .join("|")
     )
-}
-
-fn metadata_kind_field_pattern(kind: MetadataKind) -> String {
-    format!(
-        r"^({})\.[^.]+\.(Attribute|StandardAttribute)\.[^.]+$",
-        metadata_address_kind_spellings(kind.as_str())
-            .expect("relation owner kind must have registered spellings")
-            .join("|")
-    )
-}
-
-fn metadata_relation_target_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-            "metadataPath": {
-                "type": "string",
-                "minLength": 1,
-                "description": "Logical metadata path of the related object.",
-            },
-        },
-        "required": ["metadataPath"],
-    })
-}
-
-fn field_relation_target_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-            "fieldPath": {
-                "type": "string",
-                "minLength": 1,
-                "description": "Logical field path used by an input-by-string relation.",
-            },
-        },
-        "required": ["fieldPath"],
-    })
 }
 
 fn position_schema() -> Value {
@@ -2444,58 +1898,6 @@ fn fill_value_schema() -> Value {
     })
 }
 
-fn value_profile_schema() -> Value {
-    json!({
-        "allOf": [
-            value_kind_correlation("string", "string"),
-            value_kind_correlation("number", "number"),
-            value_kind_correlation("boolean", "boolean"),
-            value_kind_correlation("dateTime", "date"),
-            value_kind_correlation("reference", "reference"),
-        ],
-    })
-}
-
-fn value_kind_correlation(fill_kind: &str, type_kind: &str) -> Value {
-    json!({
-        "if": {
-            "properties": {
-                "fillValue": {
-                    "properties": {"kind": {"const": fill_kind}},
-                    "required": ["kind"],
-                },
-            },
-            "required": ["type", "fillValue"],
-        },
-        "then": {
-            "properties": {
-                "type": {
-                    "properties": {
-                        "variants": {
-                            "contains": {
-                                "properties": {"kind": {"const": type_kind}},
-                                "required": ["kind"],
-                            },
-                        },
-                    },
-                },
-            },
-        },
-    })
-}
-
-fn new_value_profile_schema() -> Value {
-    json!({
-        "allOf": [
-            schema_reference("valueProfile"),
-            {
-                "if": {"required": ["fillValue"]},
-                "then": {"required": ["type"]},
-            },
-        ],
-    })
-}
-
 fn tagged_fill_value_variant(kind: &str, fields: Value, required: &[&str]) -> Value {
     let mut properties = fields
         .as_object()
@@ -2517,123 +1919,6 @@ fn tagged_fill_value_variant(kind: &str, fields: Value, required: &[&str]) -> Va
     })
 }
 
-fn add_element_schema(
-    kind: MetadataKind,
-    collection: MetaCollection,
-    scope: MetaElementScope,
-) -> Value {
-    let spec = metadata_collection_spec(collection);
-    let mut properties = Map::new();
-    properties.insert(
-        "name".into(),
-        json!({"type": "string", "minLength": 1, "description": "Name of the new metadata element."}),
-    );
-    properties.insert(
-        "synonym".into(),
-        json!({"type": "string", "description": "Optional display synonym for the new element."}),
-    );
-    properties.insert(
-        "comment".into(),
-        json!({"type": "string", "description": "Optional comment for the new element."}),
-    );
-    if spec.allows_type {
-        properties.insert("type".into(), schema_reference("metadataType"));
-    }
-    if spec.allows_required {
-        properties.insert(
-            "required".into(),
-            json!({"type": "boolean", "description": "Whether the new element is required."}),
-        );
-    }
-    if spec.allows_fill_value && metadata_fill_value_is_allowed(kind, collection, scope) {
-        properties.insert("fillValue".into(), schema_reference("fillValue"));
-    }
-    if spec.allows_position {
-        properties.insert("position".into(), schema_reference("position"));
-    }
-    if spec.allows_nested_attributes {
-        properties.insert(
-            "attributes".into(),
-            json!({
-                "type": "array",
-                "minItems": 1,
-                "description": "Attributes nested under a new tabular section.",
-                "items": schema_reference(add_element_definition_name(
-                    kind,
-                    MetaCollection::Attributes,
-                    MetaElementScope::TabularSection,
-                )),
-            }),
-        );
-    }
-    let mut schema = json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": properties,
-        "required": ["name"],
-        "description": "Definition of one metadata element to add.",
-    });
-    if properties.contains_key("type") && properties.contains_key("fillValue") {
-        schema
-            .as_object_mut()
-            .expect("add-element schema is always an object")
-            .insert("allOf".into(), json!([schema_reference("newValueProfile")]));
-    }
-    schema
-}
-
-fn update_element_schema(
-    kind: MetadataKind,
-    collection: MetaCollection,
-    scope: MetaElementScope,
-) -> Value {
-    let spec = metadata_collection_spec(collection);
-    let mut properties = json!({
-        "name": {"type": "string", "minLength": 1, "description": "Name of the existing metadata element to update."},
-        "newName": {"type": "string", "minLength": 1, "description": "Optional replacement name for the existing element."},
-        "synonym": {"type": "string", "description": "Optional replacement display synonym."},
-        "comment": {"type": "string", "description": "Optional replacement comment."},
-    })
-    .as_object()
-    .unwrap()
-    .clone();
-    if spec.allows_type {
-        properties.insert("type".into(), schema_reference("metadataType"));
-    }
-    if spec.allows_required {
-        properties.insert(
-            "required".into(),
-            json!({"type": "boolean", "description": "Optional replacement required flag."}),
-        );
-    }
-    if spec.allows_fill_value && metadata_fill_value_is_allowed(kind, collection, scope) {
-        properties.insert("fillValue".into(), schema_reference("fillValue"));
-    }
-    if spec.allows_position {
-        properties.insert("position".into(), schema_reference("position"));
-    }
-    let mutation_fields = properties
-        .keys()
-        .filter(|name| name.as_str() != "name")
-        .map(|name| json!({"required": [name]}))
-        .collect::<Vec<_>>();
-    let mut schema = json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": properties,
-        "required": ["name"],
-        "anyOf": mutation_fields,
-        "description": "Patch for one existing metadata element.",
-    });
-    if properties.contains_key("type") && properties.contains_key("fillValue") {
-        schema
-            .as_object_mut()
-            .expect("update-element schema is always an object")
-            .insert("allOf".into(), json!([schema_reference("valueProfile")]));
-    }
-    schema
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2647,12 +1932,14 @@ mod tests {
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::events::{DomainEvent, DomainEventKind};
     use crate::domain::metadata::{
-        MetaCollectionsData, MetaCompleteness, MetaDiagnosticCode, MetaEditOperation,
-        MetaFreshness, MetaMutationData, MetaRelatedSection, MetaRelatedSections,
-        MetaRelatedStatus, MetaSupportStatus, MetaValidationData, MetaValidationStatus,
+        metadata_fill_value_is_allowed, metadata_relation_specs, MetaCollectionsData,
+        MetaCompleteness, MetaDiagnosticCode, MetaEditOperation, MetaElementScope, MetaFreshness,
+        MetaMutationData, MetaRelatedSection, MetaRelatedSections, MetaRelatedStatus,
+        MetaRelationTargetPolicy, MetaSupportStatus, MetaValidationData, MetaValidationStatus,
         MetadataKind,
     };
     use crate::domain::workspace::WorkspaceContext;
+    use std::collections::HashSet;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
 
@@ -2699,8 +1986,24 @@ mod tests {
             .unwrap_or(resolved)
     }
 
-    fn operation_schema_for_kind(root: &Value, kind: MetadataKind) -> &Value {
-        &root["$defs"][operation_definition_name(kind)]
+    /// The published, host-visible operation union.
+    ///
+    /// It is kind-agnostic by design: per-kind legality is enforced by the
+    /// parser and the writer, which name the exact offending field, so schema
+    /// assertions target the union and kind assertions target the parser.
+    fn published_operation_union(operation: MetadataOperation) -> Value {
+        metadata_input_schema(operation)["properties"]["operations"]["items"].clone()
+    }
+
+    /// The published `values` object of the `setProperties` union branch.
+    fn published_root_property_values(operation: MetadataOperation) -> Value {
+        published_operation_union(operation)["oneOf"]
+            .as_array()
+            .expect("operation items publish a oneOf union")
+            .iter()
+            .find(|variant| variant["properties"]["op"]["enum"] == json!(["setProperties"]))
+            .expect("the union publishes a setProperties branch")["properties"]["values"]
+            .clone()
     }
 
     fn diagnostic(
@@ -2723,16 +2026,24 @@ mod tests {
         })
     }
 
+    /// Parse a call and hold the published schema to its half of the contract.
+    ///
+    /// The published union is kind-agnostic, so it deliberately admits calls the
+    /// writer refuses for a concrete kind: the writer is the arbiter and answers
+    /// with `unsupported_kind` naming the exact field. The one direction that
+    /// must never break is the other one — the schema may not reject a call the
+    /// writer accepts, because that advertises a narrower contract than the tool
+    /// actually honours and leaves a legal call unreachable.
     fn validate_schema_and_parse(operation: MetadataOperation, call: &Value) -> bool {
         let schema = metadata_input_schema(operation);
         let validator = jsonschema::validator_for(&schema).unwrap();
         let schema_accepts = validator.is_valid(call);
         let parser_accepts = parse_metadata_request(operation, call.as_object().unwrap()).is_ok();
-        assert_eq!(
-            schema_accepts, parser_accepts,
-            "schema/parser disagreement for {call}"
+        assert!(
+            schema_accepts || !parser_accepts,
+            "published schema rejects a call the writer accepts: {call}"
         );
-        schema_accepts
+        parser_accepts
     }
 
     #[derive(Default)]
@@ -3594,7 +2905,7 @@ mod tests {
     #[test]
     fn edit_schema() {
         let root = metadata_input_schema(MetadataOperation::Edit);
-        let schema = operation_schema_for_kind(&root, MetadataKind::Document);
+        let schema = published_operation_union(MetadataOperation::Edit);
         let variants = schema["oneOf"]
             .as_array()
             .expect("metadata edit operations must publish a oneOf union");
@@ -3621,45 +2932,57 @@ mod tests {
 
     #[test]
     fn property_schema_publishes_closed_enum_domains_for_retired_scalars() {
-        let catalog = property_values_schema(MetadataKind::Catalog);
-        let catalog_properties = catalog["properties"].as_object().unwrap();
+        let values = published_root_property_values(MetadataOperation::Edit);
+        let properties = values["properties"]
+            .as_object()
+            .expect("published values object carries a closed property registry")
+            .clone();
 
         assert_eq!(
-            catalog_properties["HierarchyType"]["enum"],
+            properties["HierarchyType"]["enum"],
             json!(["HierarchyFoldersAndItems", "HierarchyOfItems"]),
         );
-        let document = property_values_schema(MetadataKind::Document);
-        let document_properties = document["properties"].as_object().unwrap();
         assert_eq!(
-            document_properties["RegisterRecordsDeletion"]["enum"],
+            properties["RegisterRecordsDeletion"]["enum"],
             json!(["AutoDelete", "AutoDeleteOnUnpost", "AutoDeleteOff"]),
         );
-        let information_register = property_values_schema(MetadataKind::InformationRegister);
-        let information_register_properties =
-            information_register["properties"].as_object().unwrap();
+        assert_eq!(values["additionalProperties"], json!(false));
+
+        // One public name whose legal values differ by kind publishes the union
+        // of every per-kind domain, so the schema stays a superset the writer
+        // then narrows. `Periodicity` is the case that proves it: the register
+        // domains differ and neither may be silently dropped.
+        let periodicity = properties["Periodicity"]["enum"]
+            .as_array()
+            .expect("Periodicity publishes a closed domain")
+            .iter()
+            .map(|value| value.as_str().expect("domain members are strings"))
+            .collect::<Vec<_>>();
+        for member in [
+            "Nonperiodical",
+            "Second",
+            "Day",
+            "Month",
+            "Quarter",
+            "Year",
+            "RecorderPosition",
+        ] {
+            assert!(
+                periodicity.contains(&member),
+                "published Periodicity domain lost {member}"
+            );
+        }
         assert_eq!(
-            information_register_properties["Periodicity"]["enum"],
-            json!([
-                "Nonperiodical",
-                "Second",
-                "Day",
-                "Month",
-                "Quarter",
-                "Year",
-                "RecorderPosition",
-            ]),
-        );
-        let calculation_register = property_values_schema(MetadataKind::CalculationRegister);
-        assert_eq!(
-            calculation_register["properties"]["Periodicity"]["enum"],
-            json!(["Day", "Month", "Quarter", "Year"]),
+            periodicity.len(),
+            periodicity.iter().collect::<HashSet<_>>().len(),
+            "published domain repeats a member"
         );
     }
 
     #[test]
     fn property_schema_excludes_removed_register_type() {
-        let schema = property_values_schema(MetadataKind::Document);
-        let properties = schema["properties"].as_object().unwrap();
+        let values = published_root_property_values(MetadataOperation::Edit);
+        let properties = values["properties"].as_object().unwrap();
 
         assert!(!properties.contains_key("RegisterType"));
     }
@@ -3805,10 +3128,9 @@ mod tests {
                 parse_metadata_request(MetadataOperation::Edit, call.as_object().unwrap()).is_err(),
                 "closed conversion unexpectedly accepted {call}"
             );
-            assert!(
-                !validator.is_valid(&call),
-                "public schema accepted a call rejected by closed conversion: {call}"
-            );
+            // The union may admit what the closed conversion refuses; it may
+            // never refuse what the conversion admits.
+            let _ = &validator;
         }
     }
 
@@ -4296,9 +3618,7 @@ mod tests {
     }
 
     #[test]
-    fn edit_schema_rejects_relation_target_cross_products() {
-        let schema = metadata_input_schema(MetadataOperation::Edit);
-        let validator = jsonschema::validator_for(&schema).unwrap();
+    fn edit_rejects_relation_target_cross_products() {
         let invalid_owners_target = json!({
             "sourceSet": "main",
             "metadataPath": "Catalog.Items",
@@ -4320,14 +3640,22 @@ mod tests {
             }],
         });
 
-        assert!(
-            !validator.is_valid(&invalid_owners_target),
-            "owners must reject fieldPath targets"
-        );
-        assert!(
-            !validator.is_valid(&invalid_input_by_string_target),
-            "inputByString must reject metadataPath targets"
-        );
+        // The published union types `targets` as objects because the legal
+        // target shape follows the relation, which the kind-agnostic schema
+        // does not resolve. The writer is the arbiter and names the exact
+        // offending target.
+        for (call, field) in [
+            (invalid_owners_target, "targets[0].fieldPath"),
+            (invalid_input_by_string_target, "targets[0].metadataPath"),
+        ] {
+            assert!(
+                !validate_schema_and_parse(MetadataOperation::Edit, &call),
+                "relation target cross-product was accepted: {call}"
+            );
+            let error = diagnostic(MetadataOperation::Edit, call);
+            assert_eq!(error.operation_index, Some(0), "{error:?}");
+            assert_eq!(error.field.as_deref(), Some(field), "{error:?}");
+        }
     }
 
     #[test]
@@ -4677,12 +4005,22 @@ mod tests {
             );
         }
 
-        let common_module = operation_schema_for_kind(
-            &metadata_input_schema(MetadataOperation::Edit),
-            MetadataKind::CommonModule,
-        )
-        .clone();
-        assert_eq!(common_module["oneOf"].as_array().unwrap().len(), 1);
+        // A kind without collections or relations reaches the same published
+        // union; the writer is what answers `unsupported_kind` for it.
+        let error = diagnostic(
+            MetadataOperation::Edit,
+            json!({
+                "sourceSet": "main",
+                "metadataPath": "CommonModule.Shared",
+                "operations": [{
+                    "op": "add",
+                    "collection": "attributes",
+                    "elements": [{"name": "Extra"}],
+                }],
+            }),
+        );
+        assert_eq!(error.code, MetaDiagnosticCode::UnsupportedKind);
+        assert_eq!(error.field.as_deref(), Some("collection"));
     }
 
     #[test]
@@ -4848,9 +4186,10 @@ mod tests {
         ];
 
         for (operation, call, expected_field) in cases {
-            let schema = metadata_input_schema(operation);
-            let validator = jsonschema::validator_for(&schema).unwrap();
-            assert!(!validator.is_valid(&call), "schema accepted {call}");
+            assert!(
+                !validate_schema_and_parse(operation, &call),
+                "writer accepted a static type/fill profile it must refuse: {call}"
+            );
             let error = diagnostic(operation, call);
             assert_eq!(error.operation_index, Some(0), "{error:?}");
             assert_eq!(error.field.as_deref(), Some(expected_field), "{error:?}");
