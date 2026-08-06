@@ -11,7 +11,16 @@ use super::common::{
     guard_exact_preimage_if_unprotected, is_uuid_text, parse_support_header, path_arg,
     support_root_uuid_from_bytes, support_uuid_dependency_paths, MutationData,
 };
-use super::compile_transaction::{CompileTransaction, DirectoryMembershipSelector};
+use super::compile_transaction::{
+    CompileTransaction, DirectoryMembershipSelector, DirectoryMembershipSnapshot,
+    DirectoryTopologyEntry, DirectoryTopologyEntryKind,
+};
+
+type SupportVendorPayloadPreimage = (PathBuf, Vec<u8>);
+type SupportVendorPayloadSnapshot = (
+    DirectoryMembershipSnapshot,
+    Vec<SupportVendorPayloadPreimage>,
+);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SupportCapability {
@@ -286,7 +295,8 @@ fn edit_support_execution(
         return Ok((outcome, data));
     }
 
-    let vendor_payload_reads = support_vendor_payload_preimages(&config_dir)?;
+    let (vendor_payload_snapshot, vendor_payload_reads) =
+        support_vendor_payload_preimages(&config_dir)?;
     let updated_bytes = parent_configurations_bytes(&updated);
     let mut transaction = CompileTransaction::new();
     transaction.replace_bytes(&bin_path, &raw, updated_bytes.clone())?;
@@ -298,18 +308,10 @@ fn edit_support_execution(
         guard_exact_preimage_if_unprotected(&mut transaction, path, preimage)?;
     }
     let vendor_payload_directory = config_dir.join("Ext").join("ParentConfigurations");
-    let vendor_payload_names = vendor_payload_reads
-        .iter()
-        .map(|(path, _)| {
-            path.file_name()
-                .expect("vendor payload path must have a file name")
-                .to_os_string()
-        })
-        .collect();
     transaction.guard_or_verify_directory_membership(
         &vendor_payload_directory,
         DirectoryMembershipSelector::CfFilesAsciiCaseInsensitive,
-        vendor_payload_names,
+        vendor_payload_snapshot,
     )?;
     let mut format_dependencies = vec![config_path.as_path()];
     for (path, _, _) in &uuid_dependency_reads {
@@ -534,11 +536,15 @@ fn parent_configurations_bytes(text: &str) -> Vec<u8> {
     bytes
 }
 
-fn support_vendor_payload_preimages(config_dir: &Path) -> Result<Vec<(PathBuf, Vec<u8>)>, String> {
+fn support_vendor_payload_preimages(
+    config_dir: &Path,
+) -> Result<SupportVendorPayloadSnapshot, String> {
     let directory = config_dir.join("Ext").join("ParentConfigurations");
     let metadata = match fs::symlink_metadata(&directory) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return Ok((DirectoryMembershipSnapshot::Absent, Vec::new()))
+        }
         Err(error) => {
             return Err(format!(
                 "failed to inspect support vendor payload directory {}: {error}",
@@ -583,7 +589,19 @@ fn support_vendor_payload_preimages(config_dir: &Path) -> Result<Vec<(PathBuf, V
         .collect::<Vec<_>>();
     paths.sort();
 
-    paths
+    let snapshot = DirectoryMembershipSnapshot::Present(
+        paths
+            .iter()
+            .map(|path| DirectoryTopologyEntry {
+                name: path
+                    .file_name()
+                    .expect("enumerated support payload must have a file name")
+                    .to_os_string(),
+                kind: DirectoryTopologyEntryKind::File,
+            })
+            .collect(),
+    );
+    let reads = paths
         .into_iter()
         .map(|path| {
             let metadata = fs::symlink_metadata(&path).map_err(|error| {
@@ -612,7 +630,8 @@ fn support_vendor_payload_preimages(config_dir: &Path) -> Result<Vec<(PathBuf, V
             })?;
             Ok((path, preimage))
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((snapshot, reads))
 }
 
 fn replace_global_flag(text: &str, target: u8) -> Result<String, String> {

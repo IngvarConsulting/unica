@@ -199,7 +199,7 @@ impl AddressProfile {
         canonical.push(parts[1]);
         if parts.len() >= 4 {
             let child_kind = canonical_kind(parts[2])?;
-            if !matches!(child_kind, "Form" | "Command") {
+            if !matches!(child_kind, "Form" | "Template" | "Command") {
                 return Err(SourceTargetError::invalid(format!(
                     "unsupported nested metadata kind `{}`",
                     parts[2]
@@ -280,6 +280,11 @@ impl AddressProfile {
                 let terminal = match child_kind {
                     "Form" => "FormModule",
                     "Command" => "CommandModule",
+                    "Template" => {
+                        return Err(SourceTargetError::invalid(
+                            "nested Template metadata has no module terminal",
+                        ))
+                    }
                     _ => unreachable!("nested kind parser is closed"),
                 };
                 if !terminal.starts_with(parts[4]) {
@@ -489,6 +494,7 @@ const ADDRESS_KINDS: &[AddressKind] = &[
         &["IntegrationServices", "СервисыИнтеграции"],
     ),
     kind("Form", &["Форма"], &["Forms", "Формы"]),
+    kind("Template", &["Макет"], &["Templates", "Макеты"]),
     kind("Command", &["Команда"], &["Commands", "Команды"]),
     kind(
         "ExternalDataProcessor",
@@ -534,6 +540,17 @@ fn canonical_kind(raw: &str) -> Result<&'static str, SourceTargetError> {
     )))
 }
 
+pub(crate) fn metadata_address_kind_spellings(canonical: &str) -> Option<Vec<&'static str>> {
+    ADDRESS_KINDS
+        .iter()
+        .find(|kind| kind.canonical == canonical)
+        .map(|kind| {
+            std::iter::once(kind.canonical)
+                .chain(kind.russian_aliases.iter().copied())
+                .collect()
+        })
+}
+
 fn canonical_kind_or_collection(raw: &str) -> Result<&'static str, SourceTargetError> {
     ADDRESS_KINDS
         .iter()
@@ -569,7 +586,7 @@ fn is_alias_prefix(raw: &str) -> bool {
 
 fn canonical_nested_kind(raw: &str) -> Result<&'static str, SourceTargetError> {
     let canonical = canonical_kind_or_collection(raw)?;
-    if matches!(canonical, "Form" | "Command") {
+    if matches!(canonical, "Form" | "Template" | "Command") {
         Ok(canonical)
     } else {
         Err(SourceTargetError::invalid(format!(
@@ -712,6 +729,10 @@ mod tests {
             ("Справочники.Items.Man", "Catalog.Items.Man"),
             ("Catalog.Items.Forms.Ord", "Catalog.Items.Form.Ord"),
             (
+                "Catalog.Items.Templates.Print",
+                "Catalog.Items.Template.Print",
+            ),
+            (
                 "Catalog.Items.Form.Order.FormM",
                 "Catalog.Items.Form.Order.FormM",
             ),
@@ -733,6 +754,7 @@ mod tests {
             "Catalog.Items.Form.Order.Unknown",
             "Catalog.Items.ManagerModule.Extra",
             "Catalog.Items.Command.Print.FormM",
+            "Catalog.Items.Template.Print.FormModule",
         ] {
             let error =
                 MetadataAddressPrefix::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw).unwrap_err();

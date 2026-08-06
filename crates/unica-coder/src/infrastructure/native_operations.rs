@@ -11,7 +11,6 @@ pub(crate) mod form_event_registry;
 pub(crate) mod help;
 pub(crate) mod interface;
 pub(crate) mod meta;
-pub(crate) mod meta_validation_context;
 pub(crate) mod mxl;
 pub(crate) mod registry;
 pub(crate) mod role;
@@ -49,9 +48,6 @@ impl NativeOperationAdapter {
         if dry_run {
             if let Some(outcome) = external::preview(operation, tool_name, args, context) {
                 return Ok(outcome);
-            }
-            if operation == "meta-edit" {
-                return Ok(meta::preview_meta_edit(args, context));
             }
             if operation == "form-edit" && form::has_edit_payload(args) {
                 return Ok(form::preview_form_edit(args, context));

@@ -6,7 +6,10 @@
 //! application layer (ADR-0002) and keeps the tool contract data-driven from
 //! operation descriptors (ADR-0001) instead of SDK macros.
 
-use crate::application::{input_schema_for_tool, ToolSpec, UnicaApplication};
+use crate::application::{
+    input_schema_for_tool, metadata_argument_failure_result, operation_result_output_schema,
+    OperationResult, ToolHandler, ToolSpec, UnicaApplication,
+};
 use crate::domain::cancellation::CancellationToken;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ContentBlock, ErrorCode, ErrorData, Implementation,
@@ -16,6 +19,7 @@ use rmcp::model::{
 use rmcp::service::{RequestContext, ServerInitializeError};
 use rmcp::{RoleServer, ServerHandler, ServiceExt};
 use serde_json::{Map, Value};
+use std::collections::HashSet;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -24,16 +28,16 @@ const EOF_CANCELLATION_GRACE: Duration = Duration::from_secs(2);
 const RUNTIME_SHUTDOWN_GRACE: Duration = Duration::from_millis(250);
 const TOOL_EXECUTION_ERROR: i32 = -32000;
 
-/// Executes one tool call synchronously and renders the MCP text payload.
+/// Executes one tool call synchronously without leaking SDK types into the application.
 /// Injectable so transport tests can substitute slow or failing tools.
-type ToolCallHandler = dyn Fn(&str, &Map<String, Value>, CancellationToken) -> Result<String, (i32, String)>
+type ToolCallHandler = dyn Fn(&str, &Map<String, Value>, CancellationToken) -> Result<OperationResult, (i32, String)>
     + Send
     + Sync;
 
 pub fn run_stdio() {
     let app = Arc::new(UnicaApplication::new());
     let handler: Arc<ToolCallHandler> = Arc::new(move |name, arguments, cancellation| {
-        call_tool_text(&app, name, arguments, cancellation)
+        call_tool_result(&app, name, arguments, cancellation)
     });
     let server = UnicaServer::new(handler);
     let in_flight = server.in_flight();
@@ -91,6 +95,7 @@ fn drain_mcp_shutdown_with(
 pub struct UnicaServer {
     handler: Arc<ToolCallHandler>,
     in_flight: Arc<InFlightRegistry>,
+    structured_tools: HashSet<&'static str>,
 }
 
 impl UnicaServer {
@@ -98,6 +103,12 @@ impl UnicaServer {
         Self {
             handler,
             in_flight: Arc::new(InFlightRegistry::default()),
+            structured_tools: crate::application::tools()
+                .into_iter()
+                .filter_map(|spec| {
+                    matches!(spec.handler, ToolHandler::Metadata { .. }).then_some(spec.name)
+                })
+                .collect(),
         }
     }
 
@@ -145,14 +156,18 @@ impl ServerHandler for UnicaServer {
 
         let handler = Arc::clone(&self.handler);
         let name = request.name.to_string();
+        let handler_name = name.clone();
         let arguments = request.arguments.unwrap_or_default();
         let result =
-            tokio::task::spawn_blocking(move || handler(&name, &arguments, cancellation)).await;
+            tokio::task::spawn_blocking(move || handler(&handler_name, &arguments, cancellation))
+                .await;
         bridge.abort();
         drop(admission);
 
         match result {
-            Ok(Ok(text)) => Ok(CallToolResult::success(vec![ContentBlock::text(text)])),
+            Ok(Ok(result)) => {
+                render_tool_result(self.structured_tools.contains(name.as_str()), result)
+            }
             Ok(Err((code, message))) => Err(ErrorData::new(ErrorCode(code), message, None)),
             Err(join_error) => Err(ErrorData::new(
                 ErrorCode::INTERNAL_ERROR,
@@ -174,20 +189,59 @@ pub fn tool_definitions(specs: &[ToolSpec]) -> Vec<Tool> {
                     unreachable!("tool {} produced a non-object schema: {other}", spec.name)
                 }
             };
-            Tool::new(spec.name, spec.description, schema)
+            let tool = Tool::new(spec.name, spec.description, schema);
+            if matches!(spec.handler, ToolHandler::Metadata { .. }) {
+                let output_schema = match operation_result_output_schema() {
+                    Value::Object(schema) => schema,
+                    other => unreachable!("OperationResult produced a non-object schema: {other}"),
+                };
+                tool.with_raw_output_schema(Arc::new(output_schema))
+            } else {
+                tool
+            }
         })
         .collect()
 }
 
+fn render_tool_result(
+    structured: bool,
+    result: OperationResult,
+) -> Result<CallToolResult, ErrorData> {
+    let value = serde_json::to_value(&result)
+        .map_err(|error| ErrorData::new(ErrorCode::INTERNAL_ERROR, error.to_string(), None))?;
+    if structured {
+        return Ok(if result.ok {
+            CallToolResult::structured(value)
+        } else {
+            CallToolResult::structured_error(value)
+        });
+    }
+    let text = serde_json::to_string_pretty(&value)
+        .map_err(|error| ErrorData::new(ErrorCode::INTERNAL_ERROR, error.to_string(), None))?;
+    Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
+}
+
+fn call_tool_result(
+    app: &UnicaApplication,
+    name: &str,
+    args: &Map<String, Value>,
+    cancellation: CancellationToken,
+) -> Result<OperationResult, (i32, String)> {
+    if let Some(result) = metadata_argument_failure_result(name, args) {
+        return Ok(result);
+    }
+    app.call_tool_cancellable(name, args, cancellation)
+        .map_err(|message| (TOOL_EXECUTION_ERROR, message))
+}
+
+#[cfg(test)]
 fn call_tool_text(
     app: &UnicaApplication,
     name: &str,
     args: &Map<String, Value>,
     cancellation: CancellationToken,
 ) -> Result<String, (i32, String)> {
-    let result = app
-        .call_tool_cancellable(name, args, cancellation)
-        .map_err(|message| (TOOL_EXECUTION_ERROR, message))?;
+    let result = call_tool_result(app, name, args, cancellation)?;
     serde_json::to_string_pretty(&result)
         .map_err(|error| (ErrorCode::INTERNAL_ERROR.0, error.to_string()))
 }
@@ -292,6 +346,7 @@ impl Drop for InFlightGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::cache::CacheReport;
     use serde_json::json;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
@@ -299,6 +354,35 @@ mod tests {
     use tokio::time::timeout;
 
     const TEST_STEP: Duration = Duration::from_secs(10);
+
+    fn successful_test_result(summary: &str) -> OperationResult {
+        OperationResult {
+            ok: true,
+            summary: summary.to_string(),
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: Vec::new(),
+            artifacts: Vec::new(),
+            cache: CacheReport {
+                mode: "read".to_string(),
+                root: String::new(),
+                workspace_epoch: 0,
+                events: Vec::new(),
+                invalidated: Vec::new(),
+                refreshed: Vec::new(),
+                lazy_rebuilt: Vec::new(),
+                stale: Vec::new(),
+                fresh: Vec::new(),
+                publication_warnings: Vec::new(),
+            },
+            stdout: None,
+            stderr: None,
+            command: None,
+            diagnostics: None,
+            data: None,
+            job: None,
+        }
+    }
 
     struct McpClient {
         writer: tokio::io::WriteHalf<tokio::io::DuplexStream>,
@@ -391,7 +475,7 @@ mod tests {
     fn application_handler() -> Arc<ToolCallHandler> {
         let app = Arc::new(UnicaApplication::new());
         Arc::new(move |name, arguments, cancellation| {
-            call_tool_text(&app, name, arguments, cancellation)
+            call_tool_result(&app, name, arguments, cancellation)
         })
     }
 
@@ -424,7 +508,167 @@ mod tests {
         assert!(listed
             .iter()
             .any(|tool| tool["name"] == "unica.project.status"));
+        // This is the actual SDK projection hosts place in model context, not
+        // just the two largest source schemas measured in isolation.
+        let compact_result_bytes = serde_json::to_vec(&response["result"]).unwrap().len();
+        eprintln!("tools/list compact JSON bytes: {compact_result_bytes}");
+        // Release baseline for the typed Meta surface (2026-08-04): 1,275,431
+        // bytes. Keep a narrow ratchet here; the follow-up reduction target is
+        // recorded in the implementation plan instead of silently spending
+        // more model-context budget.
+        assert!(
+            compact_result_bytes < 1_285_000,
+            "tools/list result consumes {compact_result_bytes} compact JSON bytes"
+        );
         client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn tool_results_are_structured() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-meta-structured-mcp-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let source = root.join("src");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        for (relative, bytes) in [
+            (
+                "Configuration.xml",
+                include_bytes!(
+                    "../../../../tests/fixtures/unica_mcp_script_parity/meta-validate-language-aware/Configuration.xml"
+                )
+                .as_slice(),
+            ),
+            (
+                "Languages/Русский.xml",
+                include_bytes!(
+                    "../../../../tests/fixtures/unica_mcp_script_parity/meta-validate-language-aware/Languages/Русский.xml"
+                )
+                .as_slice(),
+            ),
+            (
+                "Languages/English.xml",
+                include_bytes!(
+                    "../../../../tests/fixtures/unica_mcp_script_parity/meta-validate-language-aware/Languages/English.xml"
+                )
+                .as_slice(),
+            ),
+            (
+                "Enums/LanguageAware.xml",
+                include_bytes!(
+                    "../../../../tests/fixtures/unica_mcp_script_parity/meta-validate-language-aware/Enums/LanguageAware.xml"
+                )
+                .as_slice(),
+            ),
+        ] {
+            let path = source.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        }
+
+        let cwd = crate::test_support::ProcessCwdGuard::enter(&root).unwrap();
+        let (mut client, _) = spawn_server(application_handler());
+        client.initialize().await;
+        client
+            .send(json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} }))
+            .await;
+        let listed = client.receive().await;
+        let tools = listed["result"]["tools"].as_array().unwrap();
+        let meta_schemas = tools
+            .iter()
+            .filter(|tool| {
+                tool["name"]
+                    .as_str()
+                    .is_some_and(|name| name.starts_with("unica.meta."))
+            })
+            .map(|tool| {
+                tool.get("outputSchema")
+                    .expect("every Meta tool must publish outputSchema")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(meta_schemas.len(), 4);
+        assert!(meta_schemas.windows(2).all(|pair| pair[0] == pair[1]));
+        let output_schema = meta_schemas[0];
+        assert_eq!(output_schema["type"], "object");
+        assert_eq!(output_schema["additionalProperties"], false);
+        assert_eq!(
+            output_schema["required"],
+            json!([
+                "ok",
+                "summary",
+                "changes",
+                "warnings",
+                "errors",
+                "artifacts",
+                "cache"
+            ])
+        );
+        for open_subtree in ["data", "diagnostics", "job"] {
+            assert_eq!(output_schema["properties"][open_subtree], json!({}));
+        }
+        let non_meta = tools
+            .iter()
+            .find(|tool| tool["name"] == "unica.project.status")
+            .unwrap();
+        assert!(non_meta.get("outputSchema").is_none());
+
+        client
+            .send(json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "unica.meta.add",
+                    "arguments": {
+                        "sourceSet": "main",
+                        "kind": "Catalog",
+                        "name": "Items"
+                    }
+                }
+            }))
+            .await;
+        let success = client.receive().await;
+        assert!(success.get("error").is_none(), "{success}");
+        let success_result = &success["result"];
+        let success_text: Value =
+            serde_json::from_str(success_result["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(success_result["structuredContent"], success_text);
+        assert_eq!(success_result["structuredContent"]["ok"], true, "{success}");
+        assert_eq!(success_result["isError"], false);
+
+        client
+            .send(json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "unica.meta.info",
+                    "arguments": {}
+                }
+            }))
+            .await;
+        let invalid = client.receive().await;
+        assert!(invalid.get("error").is_none(), "{invalid}");
+        let invalid_result = &invalid["result"];
+        let invalid_text: Value =
+            serde_json::from_str(invalid_result["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(invalid_result["structuredContent"], invalid_text);
+        assert_eq!(invalid_result["structuredContent"]["ok"], false);
+        assert_eq!(
+            invalid_result["structuredContent"]["diagnostics"][0]["code"],
+            "invalid_arguments"
+        );
+        assert_eq!(invalid_result["isError"], true);
+
+        client.shutdown().await;
+        drop(cwd);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -470,6 +714,21 @@ mod tests {
             assert!(properties.contains_key(name), "missing {name}");
         }
         assert!(schema.get("oneOf").is_none());
+    }
+
+    #[test]
+    fn metadata_output_schema_follows_the_registered_handler_variant() {
+        let listed = tool_definitions(&[ToolSpec {
+            name: "unica.meta.future",
+            description: "Synthetic metadata registry entry.",
+            mutating: false,
+            cache_access: crate::domain::cache::CacheAccess::default(),
+            handler: crate::application::ToolHandler::Metadata {
+                operation: crate::application::metadata::MetadataOperation::Info,
+            },
+        }]);
+
+        assert!(listed[0].output_schema.is_some());
     }
 
     #[test]
@@ -806,7 +1065,7 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(5));
             }
             seen.store(true, Ordering::SeqCst);
-            Ok("unreachable success".to_string())
+            Ok(successful_test_result("unreachable success"))
         });
         let (mut client, _) = spawn_server(handler);
         client.initialize().await;
@@ -867,7 +1126,7 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(5));
             }
             seen.store(true, Ordering::SeqCst);
-            Ok("unreachable success".to_string())
+            Ok(successful_test_result("unreachable success"))
         });
         let (mut client, in_flight) = spawn_server(handler);
         client.initialize().await;
@@ -1004,7 +1263,7 @@ mod tests {
                 }
                 std::thread::sleep(Duration::from_millis(5));
             }
-            Ok("released".to_string())
+            Ok(successful_test_result("released"))
         });
         let (mut client, in_flight) = spawn_server(handler);
         client.initialize().await;
@@ -1044,7 +1303,10 @@ mod tests {
         release.store(true, Ordering::SeqCst);
         for _ in 0..MCP_MAX_TOOL_WORKERS {
             let response = client.receive().await;
-            assert_eq!(response["result"]["content"][0]["text"], "released");
+            let payload: Value =
+                serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())
+                    .unwrap();
+            assert_eq!(payload["summary"], "released");
         }
         client.shutdown().await;
     }

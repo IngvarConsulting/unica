@@ -84,6 +84,56 @@ pub(crate) struct CommitReport {
     pub(crate) cleanup_warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CommitFailureKind {
+    ConcurrentModification,
+    ProviderUnavailable,
+    RollbackFailed,
+}
+
+#[derive(Debug)]
+pub(crate) struct CommitFailure {
+    kind: CommitFailureKind,
+    message: String,
+}
+
+impl CommitFailure {
+    pub(crate) fn concurrent(message: impl Into<String>) -> Self {
+        Self {
+            kind: CommitFailureKind::ConcurrentModification,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn provider(message: impl Into<String>) -> Self {
+        Self {
+            kind: CommitFailureKind::ProviderUnavailable,
+            message: message.into(),
+        }
+    }
+
+    fn rollback(message: impl Into<String>) -> Self {
+        Self {
+            kind: CommitFailureKind::RollbackFailed,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn kind(&self) -> CommitFailureKind {
+        self.kind
+    }
+
+    fn into_message(self) -> String {
+        self.message
+    }
+}
+
+impl From<String> for CommitFailure {
+    fn from(message: String) -> Self {
+        Self::provider(message)
+    }
+}
+
 #[derive(Debug)]
 struct PlannedCreate {
     path: PathBuf,
@@ -150,10 +200,18 @@ pub(crate) struct DirectoryTopologyEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DirectoryMembershipSnapshot {
+    /// The path did not exist when the source evidence was captured.
+    Absent,
+    /// The path was a real directory with this exact filtered direct topology.
+    Present(Vec<DirectoryTopologyEntry>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct DirectoryMembershipGuard {
     directory: PathBuf,
     selector: DirectoryMembershipSelector,
-    expected_entries: Vec<DirectoryTopologyEntry>,
+    expected: DirectoryMembershipSnapshot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -302,39 +360,33 @@ impl CompileTransaction {
         Ok(())
     }
 
-    /// Bind the exact relevant direct-child listing of a directory to this
-    /// transaction. Membership guards conservatively take the global
-    /// publication-tree lock exclusively at commit, so another cooperating
-    /// Unica writer cannot add or remove a matching entry between checks.
+    /// Bind the exact existence state and relevant direct-child listing of a
+    /// directory to this transaction. Membership guards conservatively take
+    /// the global publication-tree lock exclusively at commit, so another
+    /// cooperating Unica writer cannot create/delete the directory or add or
+    /// remove a matching entry between checks.
     pub(crate) fn guard_or_verify_directory_membership(
         &mut self,
         directory: impl Into<PathBuf>,
         selector: DirectoryMembershipSelector,
-        expected_names: Vec<OsString>,
+        expected: DirectoryMembershipSnapshot,
     ) -> Result<(), String> {
-        let expected_entries = expected_names
-            .into_iter()
-            .map(|name| DirectoryTopologyEntry {
-                name,
-                kind: DirectoryTopologyEntryKind::File,
-            })
-            .collect();
-        self.guard_or_verify_directory_entries(directory.into(), selector, expected_entries)
+        self.guard_or_verify_directory_entries(directory.into(), selector, expected)
     }
 
-    /// Bind the exact direct-child names and filesystem kinds observed by a
-    /// recursive scanner. File-to-directory replacement must be detected even
-    /// when the entry name itself is unchanged, because the replacement can
-    /// introduce an unscanned subtree.
+    /// Bind the exact directory-existence state plus direct-child names and
+    /// filesystem kinds observed by a recursive scanner. File-to-directory
+    /// replacement must be detected even when the entry name itself is
+    /// unchanged, because the replacement can introduce an unscanned subtree.
     pub(crate) fn guard_or_verify_directory_topology(
         &mut self,
         directory: impl Into<PathBuf>,
-        expected_entries: Vec<DirectoryTopologyEntry>,
+        expected: DirectoryMembershipSnapshot,
     ) -> Result<(), String> {
         self.guard_or_verify_directory_entries(
             directory.into(),
             DirectoryMembershipSelector::AllDirectEntries,
-            expected_entries,
+            expected,
         )
     }
 
@@ -342,18 +394,18 @@ impl CompileTransaction {
         &mut self,
         requested_directory: PathBuf,
         selector: DirectoryMembershipSelector,
-        expected_entries: Vec<DirectoryTopologyEntry>,
+        expected: DirectoryMembershipSnapshot,
     ) -> Result<(), String> {
-        let expected_entries = normalize_expected_directory_entries(selector, expected_entries)?;
+        let expected = normalize_directory_membership_snapshot(selector, expected)?;
         validate_directory_membership_guard(
             &requested_directory,
             selector,
-            &expected_entries,
+            &expected,
             "while planning",
         )?;
         let directory = normalize_transaction_path_identity(&requested_directory)?;
         if let Some(existing) = self.directory_membership_guards.get(&directory) {
-            if existing.selector == selector && existing.expected_entries == expected_entries {
+            if existing.selector == selector && existing.expected == expected {
                 return Ok(());
             }
             return Err(format!(
@@ -374,7 +426,7 @@ impl CompileTransaction {
             DirectoryMembershipGuard {
                 directory,
                 selector,
-                expected_entries,
+                expected,
             },
         );
         Ok(())
@@ -730,6 +782,16 @@ impl CompileTransaction {
             .collect()
     }
 
+    /// Returns the exact in-memory post-image for one registration target.
+    /// Typed metadata mutations use it to validate the same bytes that the
+    /// transaction will publish, without reopening the physical owner.
+    pub(crate) fn planned_registration_image(&self, path: &Path) -> Option<Vec<u8>> {
+        let identity = normalize_transaction_path_identity(path).ok()?;
+        self.registrations
+            .get(&identity)
+            .map(|registration| registration.updated.clone())
+    }
+
     /// Stable, compact `changes` entries suitable for a dry-run result.
     pub(crate) fn dry_run_changes(&self) -> Vec<String> {
         let mut changes = self
@@ -821,13 +883,29 @@ impl CompileTransaction {
     where
         F: FnOnce() -> Result<(), String>,
     {
+        self.commit_with_classified_post_validation(|| {
+            post_validation().map_err(CommitFailure::provider)
+        })
+        .map_err(CommitFailure::into_message)
+    }
+
+    pub(crate) fn commit_with_classified_post_validation<F>(
+        self,
+        post_validation: F,
+    ) -> Result<CommitReport, CommitFailure>
+    where
+        F: FnOnce() -> Result<(), CommitFailure>,
+    {
         let mut state = PublishState::default();
-        self.semantic_preflight()?;
+        self.semantic_preflight().map_err(CommitFailure::provider)?;
 
         for create in &self.creates {
             if let Err(error) = ensure_parent_directories(&create.path, &mut state.created_dirs) {
                 let cleanup_errors = cleanup_created_directories(&mut state.created_dirs);
-                return Err(with_cleanup_diagnostics(error, cleanup_errors));
+                return Err(with_cleanup_diagnostics(
+                    CommitFailure::provider(error),
+                    cleanup_errors,
+                ));
             }
         }
         for registration in self.registrations.values().filter(|item| item.changed()) {
@@ -835,7 +913,10 @@ impl CompileTransaction {
                 ensure_parent_directories(&registration.path, &mut state.created_dirs)
             {
                 let cleanup_errors = cleanup_created_directories(&mut state.created_dirs);
-                return Err(with_cleanup_diagnostics(error, cleanup_errors));
+                return Err(with_cleanup_diagnostics(
+                    CommitFailure::provider(error),
+                    cleanup_errors,
+                ));
             }
         }
 
@@ -884,9 +965,9 @@ impl CompileTransaction {
         lock: &'lock PublicationLockToken<'scope>,
         state: &mut PublishState,
         post_validation: &mut Option<F>,
-    ) -> Result<CommitReport, String>
+    ) -> Result<CommitReport, CommitFailure>
     where
-        F: FnOnce() -> Result<(), String>,
+        F: FnOnce() -> Result<(), CommitFailure>,
     {
         let mut prepared_creates: VecDeque<(
             &'request PlannedCreate,
@@ -899,13 +980,20 @@ impl CompileTransaction {
         let mut prepared_removals: VecDeque<(&'request PlannedRemoval, PendingRemovalRecovery)> =
             VecDeque::new();
 
-        let operation = (|| -> Result<CommitReport, String> {
-            self.recheck_exact_read_guards("before publication")?;
-            self.recheck_absence_guards("before publication")?;
-            self.recheck_directory_membership_guards(false, &[], "before publication")?;
+        let operation = (|| -> Result<CommitReport, CommitFailure> {
+            self.recheck_exact_read_guards("before publication")
+                .map_err(CommitFailure::concurrent)?;
+            self.recheck_absence_guards("before publication")
+                .map_err(CommitFailure::concurrent)?;
+            self.recheck_directory_membership_guards(
+                false,
+                &state.created_dirs,
+                "before publication",
+            )
+            .map_err(CommitFailure::concurrent)?;
 
             for removal in &self.removals {
-                recheck_removal(removal)?;
+                recheck_removal(removal).map_err(CommitFailure::concurrent)?;
             }
 
             for create in &self.creates {
@@ -931,13 +1019,15 @@ impl CompileTransaction {
                         return Err(format!(
                             "create-only publication prepared an invalid state for {}",
                             create.path.display()
-                        ));
+                        )
+                        .into());
                     }
                     PreparedPublication::Unchanged => {
                         return Err(format!(
                             "create-only publication prepared an invalid state for {}",
                             create.path.display()
-                        ));
+                        )
+                        .into());
                     }
                 }
             }
@@ -967,21 +1057,24 @@ impl CompileTransaction {
                         return Err(format!(
                             "unchanged registration prepared a replacement for {}",
                             registration.path.display()
-                        ));
+                        )
+                        .into());
                     }
                     PreparedPublication::Create(prepared) => {
                         record_cleanup_warnings(state, prepared.discard());
                         return Err(format!(
                             "changed registration prepared an invalid state for {}",
                             registration.path.display()
-                        ));
+                        )
+                        .into());
                     }
                     PreparedPublication::Unchanged if !registration.changed() => {}
                     PreparedPublication::Unchanged => {
                         return Err(format!(
                             "changed registration prepared an invalid state for {}",
                             registration.path.display()
-                        ));
+                        )
+                        .into());
                     }
                 }
             }
@@ -1032,7 +1125,7 @@ impl CompileTransaction {
                     Ok(recovery) => recovery,
                     Err(error) => {
                         record_cleanup_warnings(state, prepared.discard());
-                        return Err(error);
+                        return Err(error.into());
                     }
                 };
                 if let Err(error) =
@@ -1049,7 +1142,7 @@ impl CompileTransaction {
                 if let Err(error) = failpoint_after_registration_backup() {
                     record_cleanup_warnings(state, prepared.discard());
                     record_cleanup_strings(state, recovery.cleanup());
-                    return Err(error);
+                    return Err(error.into());
                 }
 
                 let report = match prepared.commit() {
@@ -1071,13 +1164,24 @@ impl CompileTransaction {
             }
 
             while let Some((removal, recovery)) = prepared_removals.pop_front() {
-                recheck_removal(removal)?;
+                recheck_removal(removal).map_err(CommitFailure::concurrent)?;
                 rename_no_replace(&removal.path, &recovery.path).map_err(|error| {
-                    format!(
+                    // `AlreadyExists` here means another writer took the
+                    // recovery name between the preflight and this rename, and
+                    // `NotFound` that the removal target itself disappeared.
+                    // Both are races, and collapsing them into a provider
+                    // failure would tell the caller to retry the wrong thing.
+                    let message = format!(
                         "failed to move removal target {} to no-clobber recovery {}: {error}",
                         removal.path.display(),
                         recovery.path.display()
-                    )
+                    );
+                    match error.kind() {
+                        ErrorKind::AlreadyExists | ErrorKind::NotFound => {
+                            CommitFailure::concurrent(message)
+                        }
+                        _ => CommitFailure::provider(message),
+                    }
                 })?;
                 state
                     .published_removals
@@ -1088,10 +1192,10 @@ impl CompileTransaction {
                     .expect("published removal was just recorded");
                 let moved_snapshot = snapshot_removal_path(&published.recovery)?;
                 if moved_snapshot != removal.snapshot {
-                    return Err(format!(
+                    return Err(CommitFailure::concurrent(format!(
                         "removal target changed while moving to recovery: {}",
                         removal.path.display()
-                    ));
+                    )));
                 }
             }
 
@@ -1101,24 +1205,29 @@ impl CompileTransaction {
             })?;
             validate()?;
             failpoint_post_write_validation()?;
-            self.recheck_exact_read_guards("before successful completion")?;
-            self.recheck_absence_guards("before successful completion")?;
-            let recovery_directories = state
-                .published_registrations
-                .iter()
-                .map(|published| published.recovery_directory.clone())
-                .chain(
-                    state
-                        .published_removals
-                        .iter()
-                        .map(|published| published.recovery_directory.clone()),
-                )
-                .collect::<Vec<_>>();
+            self.recheck_exact_read_guards("before successful completion")
+                .map_err(CommitFailure::concurrent)?;
+            self.recheck_absence_guards("before successful completion")
+                .map_err(CommitFailure::concurrent)?;
+            let mut transient_directories = state.created_dirs.clone();
+            transient_directories.extend(
+                state
+                    .published_registrations
+                    .iter()
+                    .map(|published| published.recovery_directory.clone())
+                    .chain(
+                        state
+                            .published_removals
+                            .iter()
+                            .map(|published| published.recovery_directory.clone()),
+                    ),
+            );
             self.recheck_directory_membership_guards(
                 true,
-                &recovery_directories,
+                &transient_directories,
                 "before successful completion",
-            )?;
+            )
+            .map_err(CommitFailure::concurrent)?;
 
             Ok(CommitReport {
                 created: self.planned_created_paths(),
@@ -1206,15 +1315,19 @@ impl CompileTransaction {
         phase: &str,
     ) -> Result<(), String> {
         for guard in self.directory_membership_guards.values() {
-            let expected_entries = if include_planned_deltas {
-                self.directory_membership_after_planned_deltas(guard, transient_additions)?
+            let expected = if include_planned_deltas || !transient_additions.is_empty() {
+                self.directory_membership_after_planned_deltas(
+                    guard,
+                    include_planned_deltas,
+                    transient_additions,
+                )?
             } else {
-                guard.expected_entries.clone()
+                guard.expected.clone()
             };
             validate_directory_membership_guard(
                 &guard.directory,
                 guard.selector,
-                &expected_entries,
+                &expected,
                 phase,
             )?;
         }
@@ -1224,34 +1337,46 @@ impl CompileTransaction {
     fn directory_membership_after_planned_deltas(
         &self,
         guard: &DirectoryMembershipGuard,
+        include_planned_deltas: bool,
         transient_additions: &[PathBuf],
-    ) -> Result<Vec<DirectoryTopologyEntry>, String> {
-        let mut expected = guard
-            .expected_entries
-            .iter()
-            .map(|entry| (entry.name.clone(), entry.kind))
-            .collect::<BTreeMap<_, _>>();
-        for create in &self.creates {
-            apply_direct_membership_delta(
-                &guard.directory,
-                guard.selector,
-                &create.path,
+    ) -> Result<DirectoryMembershipSnapshot, String> {
+        let (mut exists, mut expected) = match &guard.expected {
+            DirectoryMembershipSnapshot::Absent => (false, BTreeMap::new()),
+            DirectoryMembershipSnapshot::Present(entries) => (
                 true,
-                Some(DirectoryTopologyEntryKind::File),
-                &mut expected,
-            )?;
-        }
-        for removal in &self.removals {
-            apply_direct_membership_delta(
-                &guard.directory,
-                guard.selector,
-                &removal.path,
-                false,
-                None,
-                &mut expected,
-            )?;
+                entries
+                    .iter()
+                    .map(|entry| (entry.name.clone(), entry.kind))
+                    .collect::<BTreeMap<_, _>>(),
+            ),
+        };
+        if include_planned_deltas {
+            for create in &self.creates {
+                apply_direct_membership_delta(
+                    &guard.directory,
+                    guard.selector,
+                    &create.path,
+                    true,
+                    Some(DirectoryTopologyEntryKind::File),
+                    &mut expected,
+                )?;
+            }
+            for removal in &self.removals {
+                apply_direct_membership_delta(
+                    &guard.directory,
+                    guard.selector,
+                    &removal.path,
+                    false,
+                    None,
+                    &mut expected,
+                )?;
+            }
         }
         for path in transient_additions {
+            if normalize_transaction_path_identity(path)? == guard.directory {
+                exists = true;
+                continue;
+            }
             apply_direct_membership_delta(
                 &guard.directory,
                 guard.selector,
@@ -1261,10 +1386,20 @@ impl CompileTransaction {
                 &mut expected,
             )?;
         }
-        Ok(expected
+        let entries = expected
             .into_iter()
             .map(|(name, kind)| DirectoryTopologyEntry { name, kind })
-            .collect())
+            .collect::<Vec<_>>();
+        if exists {
+            Ok(DirectoryMembershipSnapshot::Present(entries))
+        } else if entries.is_empty() {
+            Ok(DirectoryMembershipSnapshot::Absent)
+        } else {
+            Err(format!(
+                "directory membership guard plan adds entries below an absent directory: {}",
+                guard.directory.display()
+            ))
+        }
     }
 
     fn post_validate(&self) -> Result<(), String> {
@@ -1299,20 +1434,19 @@ impl CompileTransaction {
 pub(crate) fn snapshot_directory_membership(
     directory: &Path,
     selector: DirectoryMembershipSelector,
-) -> Result<Vec<OsString>, String> {
-    Ok(snapshot_directory_membership_entries(directory, selector)?
-        .into_iter()
-        .map(|entry| entry.name)
-        .collect())
+) -> Result<DirectoryMembershipSnapshot, String> {
+    snapshot_directory_membership_entries(directory, selector)
 }
 
 fn snapshot_directory_membership_entries(
     directory: &Path,
     selector: DirectoryMembershipSelector,
-) -> Result<Vec<DirectoryTopologyEntry>, String> {
+) -> Result<DirectoryMembershipSnapshot, String> {
     let metadata = match fs::symlink_metadata(directory) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return Ok(DirectoryMembershipSnapshot::Absent)
+        }
         Err(error) => {
             return Err(format!(
                 "failed to inspect directory membership guard {}: {error}",
@@ -1387,7 +1521,7 @@ fn snapshot_directory_membership_entries(
         };
         names.push(DirectoryTopologyEntry { name, kind });
     }
-    Ok(names)
+    Ok(DirectoryMembershipSnapshot::Present(names))
 }
 
 fn snapshot_direct_entry_names(directory: &Path) -> Result<Vec<OsString>, String> {
@@ -1484,6 +1618,18 @@ fn normalize_expected_directory_entries(
         .collect())
 }
 
+fn normalize_directory_membership_snapshot(
+    selector: DirectoryMembershipSelector,
+    snapshot: DirectoryMembershipSnapshot,
+) -> Result<DirectoryMembershipSnapshot, String> {
+    match snapshot {
+        DirectoryMembershipSnapshot::Absent => Ok(DirectoryMembershipSnapshot::Absent),
+        DirectoryMembershipSnapshot::Present(entries) => Ok(DirectoryMembershipSnapshot::Present(
+            normalize_expected_directory_entries(selector, entries)?,
+        )),
+    }
+}
+
 fn directory_membership_name_matches(selector: DirectoryMembershipSelector, name: &OsStr) -> bool {
     match selector {
         DirectoryMembershipSelector::XmlFiles => {
@@ -1500,29 +1646,33 @@ fn directory_membership_name_matches(selector: DirectoryMembershipSelector, name
 fn validate_directory_membership_guard(
     directory: &Path,
     selector: DirectoryMembershipSelector,
-    expected_entries: &[DirectoryTopologyEntry],
+    expected: &DirectoryMembershipSnapshot,
     phase: &str,
 ) -> Result<(), String> {
-    let actual_entries = snapshot_directory_membership_entries(directory, selector)?;
-    if actual_entries != expected_entries {
-        let render = |entries: &[DirectoryTopologyEntry]| {
-            entries
-                .iter()
-                .map(|entry| {
-                    let suffix = match entry.kind {
-                        DirectoryTopologyEntryKind::File => "",
-                        DirectoryTopologyEntryKind::Directory => "/",
-                    };
-                    format!("{}{suffix}", entry.name.to_string_lossy())
-                })
-                .collect::<Vec<_>>()
-                .join(", ")
+    let actual = snapshot_directory_membership_entries(directory, selector)?;
+    if &actual != expected {
+        let render = |snapshot: &DirectoryMembershipSnapshot| match snapshot {
+            DirectoryMembershipSnapshot::Absent => "absent".to_string(),
+            DirectoryMembershipSnapshot::Present(entries) => {
+                let entries = entries
+                    .iter()
+                    .map(|entry| {
+                        let suffix = match entry.kind {
+                            DirectoryTopologyEntryKind::File => "",
+                            DirectoryTopologyEntryKind::Directory => "/",
+                        };
+                        format!("{}{suffix}", entry.name.to_string_lossy())
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("present [{entries}]")
+            }
         };
         return Err(format!(
-            "compile transaction directory membership guard changed after planning {phase}: {} (expected [{}], actual [{}])",
+            "compile transaction directory membership guard changed after planning {phase}: {} (expected {}, actual {})",
             directory.display(),
-            render(expected_entries),
-            render(&actual_entries)
+            render(expected),
+            render(&actual)
         ));
     }
     Ok(())
@@ -2178,8 +2328,8 @@ enum PublicationRole {
     Transaction,
 }
 
-fn adapt_publish_error(error: &PublishError, role: PublicationRole) -> String {
-    match error.kind() {
+fn adapt_publish_error(error: &PublishError, role: PublicationRole) -> CommitFailure {
+    let message = match error.kind() {
         PublishErrorKind::StalePreimage { target } => match role {
             PublicationRole::Registration => format!(
                 "registration target changed after planning: {}",
@@ -2215,7 +2365,21 @@ fn adapt_publish_error(error: &PublishError, role: PublicationRole) -> String {
         | PublishErrorKind::MultipleHardLinks { .. }
         | PublishErrorKind::StageCollisionsExhausted { .. }
         | PublishErrorKind::Io { .. } => error.to_string(),
-    }
+    };
+    let kind = match error.kind() {
+        PublishErrorKind::AlreadyExists { .. }
+        | PublishErrorKind::MissingTarget { .. }
+        | PublishErrorKind::LinkOrReparsePoint { .. }
+        | PublishErrorKind::NonRegular { .. }
+        | PublishErrorKind::MultipleHardLinks { .. }
+        | PublishErrorKind::StalePreimage { .. }
+        | PublishErrorKind::MetadataChanged { .. } => CommitFailureKind::ConcurrentModification,
+        PublishErrorKind::InvalidTarget { .. }
+        | PublishErrorKind::ReadOnly { .. }
+        | PublishErrorKind::StageCollisionsExhausted { .. }
+        | PublishErrorKind::Io { .. } => CommitFailureKind::ProviderUnavailable,
+    };
+    CommitFailure { kind, message }
 }
 
 fn record_publish_error_cleanup(state: &mut PublishState, error: &PublishError) {
@@ -2297,22 +2461,28 @@ fn cleanup_created_directories(created_dirs: &mut Vec<PathBuf>) -> Vec<String> {
     errors
 }
 
-fn with_cleanup_diagnostics(primary: String, diagnostics: Vec<String>) -> String {
+fn with_cleanup_diagnostics(mut primary: CommitFailure, diagnostics: Vec<String>) -> CommitFailure {
     if diagnostics.is_empty() {
         primary
     } else {
-        format!("{primary}; cleanup encountered: {}", diagnostics.join("; "))
+        primary.message = format!(
+            "{}; cleanup encountered: {}",
+            primary.message,
+            diagnostics.join("; ")
+        );
+        primary
     }
 }
 
-fn with_rollback_diagnostics(primary: String, diagnostics: Vec<String>) -> String {
+fn with_rollback_diagnostics(primary: CommitFailure, diagnostics: Vec<String>) -> CommitFailure {
     if diagnostics.is_empty() {
         primary
     } else {
-        format!(
-            "{primary}; rollback encountered: {}",
+        CommitFailure::rollback(format!(
+            "{}; rollback encountered: {}",
+            primary.message,
             diagnostics.join("; ")
-        )
+        ))
     }
 }
 
@@ -3039,7 +3209,7 @@ fn with_registration_recovery_pause<T>(
 }
 
 #[cfg(test)]
-fn with_before_rollback_mutation_hook<T>(
+pub(crate) fn with_before_rollback_mutation_hook<T>(
     hook: impl FnOnce(&Path) + 'static,
     action: impl FnOnce() -> T,
 ) -> T {
@@ -3138,6 +3308,20 @@ mod tests {
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+    #[test]
+    fn commit_failure_kind_does_not_depend_on_message_wording() {
+        let provider = CommitFailure::provider(
+            "changed preimage and rollback encountered are only words in this provider error",
+        );
+        assert_eq!(provider.kind(), CommitFailureKind::ProviderUnavailable);
+
+        let concurrent = CommitFailure::concurrent("opaque state mismatch");
+        assert_eq!(concurrent.kind(), CommitFailureKind::ConcurrentModification);
+
+        let rollback = with_rollback_diagnostics(provider, vec!["cleanup failed".into()]);
+        assert_eq!(rollback.kind(), CommitFailureKind::RollbackFailed);
+    }
+
     fn temp_root(name: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -3188,56 +3372,6 @@ mod tests {
         fs::create_dir_all(src.join("Languages")).unwrap();
         fs::write(src.join("Languages/English.xml"), b"language marker").unwrap();
         root
-    }
-
-    fn call_meta_compile(
-        workspace: &Path,
-        json_path: &Path,
-    ) -> crate::application::OperationResult {
-        let mut args = Map::new();
-        args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        args.insert("dryRun".to_string(), Value::Bool(false));
-        args.insert(
-            "JsonPath".to_string(),
-            Value::String(json_path.display().to_string()),
-        );
-        args.insert("OutputDir".to_string(), Value::String("src".to_string()));
-        UnicaApplication::new()
-            .call_tool("unica.meta.compile", &args)
-            .unwrap()
-    }
-
-    #[test]
-    fn public_meta_compile_batch_rolls_back_after_object_files_failure() {
-        let root = public_compile_workspace("public-meta-batch-rollback");
-        let workspace = root.join("workspace");
-        let src = workspace.join("src");
-        let config_path = src.join("Configuration.xml");
-        let config_before = fs::read(&config_path).unwrap();
-        let json_path = workspace.join("batch.json");
-        fs::write(
-            &json_path,
-            r#"[
-  {"type":"CommonModule","name":"RollbackService"},
-  {"type":"Catalog","name":"RollbackCatalog"}
-]"#,
-        )
-        .unwrap();
-
-        let result = with_commit_failpoint(CommitFailpoint::AfterObjectFiles, || {
-            call_meta_compile(&workspace, &json_path)
-        });
-
-        assert!(!result.ok, "{result:?}");
-        assert!(result.errors.join("\n").contains("after object files"));
-        assert_eq!(fs::read(&config_path).unwrap(), config_before);
-        assert!(!src.join("CommonModules").exists());
-        assert!(!src.join("Catalogs").exists());
-
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -3529,7 +3663,10 @@ mod tests {
         assert_eq!(report.created, vec![created.clone()]);
         assert_eq!(
             snapshot_directory_membership(&root, DirectoryMembershipSelector::XmlFiles).unwrap(),
-            vec![OsString::from("Created.xml")]
+            DirectoryMembershipSnapshot::Present(vec![DirectoryTopologyEntry {
+                name: OsString::from("Created.xml"),
+                kind: DirectoryTopologyEntryKind::File,
+            }])
         );
         fs::remove_dir_all(root).unwrap();
     }
@@ -3559,6 +3696,109 @@ mod tests {
             .expect("absent guarded root must allow its planned descriptor");
 
         assert_eq!(fs::read(&created).unwrap(), b"<Created/>\n");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn directory_membership_snapshot_distinguishes_absent_from_present_empty() {
+        let root = temp_root("membership-existence-snapshot");
+        let guarded = root.join("guarded");
+
+        let absent = snapshot_directory_membership_entries(
+            &guarded,
+            DirectoryMembershipSelector::AllDirectEntries,
+        )
+        .unwrap();
+        fs::create_dir(&guarded).unwrap();
+        let present_empty = snapshot_directory_membership_entries(
+            &guarded,
+            DirectoryMembershipSelector::AllDirectEntries,
+        )
+        .unwrap();
+
+        assert_ne!(absent, present_empty);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn directory_membership_guard_rejects_external_empty_root_after_absent_snapshot() {
+        let root = temp_root("membership-external-empty-root");
+        let guarded = root.join("guarded");
+        let expected = snapshot_directory_membership_entries(
+            &guarded,
+            DirectoryMembershipSelector::AllDirectEntries,
+        )
+        .unwrap();
+        fs::create_dir(&guarded).unwrap();
+        let mut transaction = CompileTransaction::new();
+
+        let error = transaction
+            .guard_or_verify_directory_topology(&guarded, expected)
+            .expect_err("an externally-created empty root must not satisfy an absent snapshot");
+
+        assert!(error.contains("directory membership"), "{error}");
+        assert_eq!(fs::read_dir(&guarded).unwrap().count(), 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn directory_membership_guard_accepts_own_nested_create_in_an_absent_root() {
+        let root = temp_root("membership-absent-nested-root");
+        let external_root = root.join("external");
+        let expected = snapshot_directory_membership_entries(
+            &external_root,
+            DirectoryMembershipSelector::AllDirectEntries,
+        )
+        .unwrap();
+        let created = external_root.join("Ext/Module.bsl");
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .guard_or_verify_directory_topology(&external_root, expected)
+            .unwrap();
+        transaction
+            .create_bytes(&created, b"Procedure Run()\nEndProcedure\n".to_vec())
+            .unwrap();
+
+        transaction
+            .commit()
+            .expect("guarded root must accept its planned transient parent directories");
+
+        assert_eq!(
+            fs::read(&created).unwrap(),
+            b"Procedure Run()\nEndProcedure\n"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn nested_directory_membership_guard_rolls_back_on_a_post_write_entry() {
+        let root = temp_root("membership-nested-concurrent-create");
+        let resource_root = root.join("Resource");
+        let ext = resource_root.join("Ext");
+        let planned = ext.join("Module.bsl");
+        let concurrent = ext.join("Help.xml");
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .guard_or_verify_directory_topology(&resource_root, DirectoryMembershipSnapshot::Absent)
+            .unwrap();
+        transaction
+            .guard_or_verify_directory_topology(&ext, DirectoryMembershipSnapshot::Absent)
+            .unwrap();
+        transaction
+            .create_bytes(&planned, b"Procedure Run()\nEndProcedure\n".to_vec())
+            .unwrap();
+        let concurrent_for_validation = concurrent.clone();
+
+        let error = transaction
+            .commit_with_post_validation(move || {
+                fs::write(&concurrent_for_validation, b"<Help/>\n")
+                    .map_err(|error| error.to_string())
+            })
+            .expect_err("unplanned nested entry must abort publication");
+
+        assert!(error.contains("directory membership guard"), "{error}");
+        assert!(!planned.exists());
+        assert_eq!(fs::read(&concurrent).unwrap(), b"<Help/>\n");
         fs::remove_dir_all(root).unwrap();
     }
 

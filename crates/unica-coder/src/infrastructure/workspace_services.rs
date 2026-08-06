@@ -2,7 +2,9 @@ use crate::domain::cancellation::{cancelled_error, CancellationToken};
 use crate::domain::events::{DomainEvent, DomainEventKind};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
-use crate::infrastructure::platform::{ManagedChild, ManagedStartupChild};
+use crate::infrastructure::platform::{
+    short_private_runtime_dir, ManagedChild, ManagedStartupChild,
+};
 use crate::infrastructure::plugin_runtime::find_plugin_root;
 use crate::infrastructure::source_roots::{normalize_path_identity, source_generation};
 use crate::infrastructure::workspace_index::{
@@ -2233,6 +2235,7 @@ impl PersistentMcpSession {
                 "stdio",
             ])
             .current_dir(&context.cwd);
+        configure_bsl_analyzer_runtime_dir(&mut command)?;
         Self::start_with_command(command, cancellation)
     }
 
@@ -2492,6 +2495,15 @@ impl Drop for PersistentMcpSession {
     fn drop(&mut self) {
         self.invalidate();
     }
+}
+
+fn configure_bsl_analyzer_runtime_dir(command: &mut Command) -> Result<(), String> {
+    if let Some(runtime_dir) = short_private_runtime_dir().map_err(|error| {
+        format!("failed to prepare short runtime directory for bsl-analyzer: {error}")
+    })? {
+        command.env("XDG_RUNTIME_DIR", runtime_dir);
+    }
+    Ok(())
 }
 
 struct RlmMcpSession {
@@ -3805,6 +3817,31 @@ mod tests {
                 limit: 7
             }
         );
+    }
+
+    #[test]
+    fn bsl_analyzer_runtime_directory_is_passed_to_the_child_and_fits_socket_budget() {
+        use std::ffi::OsStr;
+
+        let expected = short_private_runtime_dir().unwrap();
+        let mut command = Command::new("bsl-analyzer");
+        configure_bsl_analyzer_runtime_dir(&mut command).unwrap();
+        let actual = command
+            .get_envs()
+            .find(|(key, _)| *key == OsStr::new("XDG_RUNTIME_DIR"))
+            .and_then(|(_, value)| value.map(PathBuf::from));
+
+        assert_eq!(actual, expected);
+        let Some(runtime_dir) = actual else {
+            return;
+        };
+
+        let socket = runtime_dir
+            .join("bsl-mcp")
+            .join("0123456789abcdef0123456789abcdef.sock");
+
+        assert_eq!(runtime_dir.parent(), Some(Path::new("/tmp")));
+        assert!(socket.as_os_str().as_encoded_bytes().len() < 104);
     }
 
     #[test]

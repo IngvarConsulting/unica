@@ -1,4 +1,5 @@
 use super::{AdapterOutcome, ToolSpec};
+use crate::application::metadata::{MetaFailure, MetaInfoRequest, MetadataRequest};
 use crate::application::source_navigation::{
     SourceChildrenRequest, SourceChildrenResult, SourceLocateRequest, SourceLocateResult,
     SourceResolveRequest, SourceResolveResult,
@@ -10,9 +11,15 @@ use crate::domain::code_intelligence::{
     CodeIntelligenceContext, CodeIntelligenceReadRequest, CodeIntelligenceRegistry,
 };
 use crate::domain::events::DomainEvent;
+use crate::domain::metadata::{
+    MetaCollectionsData, MetaDiagnostic, MetaDiagnosticCode, MetaInfoData, MetaMutationData,
+    MetaPredefinedItemsData, MetaPropertyData, MetaRelationsData, MetaSupportStatus, MetaUsageData,
+    MetaValidationData, MetaValidationStatus, MetadataKind,
+};
 use crate::domain::source_resources::{
     ResourceManifestPage, SourceReadResult, SourceResourceError,
 };
+use crate::domain::source_target::MetadataAddress;
 use crate::domain::workspace::WorkspaceContext;
 use serde_json::{Map, Value};
 use std::fmt;
@@ -25,6 +32,7 @@ pub(crate) struct HandlerOutcome {
     pub(crate) events: Vec<DomainEvent>,
     pub(crate) projected_events: Vec<DomainEvent>,
     pub(crate) recorded_cache: Option<CacheReport>,
+    pub(crate) diagnostics: Option<Value>,
 }
 
 impl HandlerOutcome {
@@ -36,6 +44,7 @@ impl HandlerOutcome {
             events: Vec::new(),
             projected_events: Vec::new(),
             recorded_cache: None,
+            diagnostics: None,
         }
     }
 
@@ -47,6 +56,7 @@ impl HandlerOutcome {
             events: Vec::new(),
             projected_events: Vec::new(),
             recorded_cache: None,
+            diagnostics: None,
         }
     }
 
@@ -62,6 +72,7 @@ impl HandlerOutcome {
             events,
             projected_events: Vec::new(),
             recorded_cache: None,
+            diagnostics: None,
         }
     }
 
@@ -78,8 +89,205 @@ impl HandlerOutcome {
             events,
             projected_events,
             recorded_cache: None,
+            diagnostics: None,
         }
     }
+}
+
+#[allow(dead_code)] // Concrete providers land after this orchestration seam.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MetadataAuxiliaryXmlKind {
+    ExchangePlanContent,
+    BusinessProcessFlowchart,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MetadataChildResourceKind {
+    FormContent,
+    TemplateContent {
+        template_type: MetadataTemplateType,
+        part: MetadataTemplateResourcePart,
+    },
+    Module,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MetadataTemplateType {
+    HtmlDocument,
+    TextDocument,
+    SpreadsheetDocument,
+    BinaryData,
+    DataCompositionSchema,
+}
+
+impl MetadataTemplateType {
+    pub(crate) fn from_descriptor_value(value: &str) -> Option<Self> {
+        match value {
+            "HTMLDocument" => Some(Self::HtmlDocument),
+            "TextDocument" => Some(Self::TextDocument),
+            "SpreadsheetDocument" => Some(Self::SpreadsheetDocument),
+            "BinaryData" => Some(Self::BinaryData),
+            "DataCompositionSchema" => Some(Self::DataCompositionSchema),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MetadataTemplateResourcePart {
+    Primary,
+    HtmlPage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MetadataChildProfile {
+    Form,
+    Command,
+    Template(MetadataTemplateType),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum MetadataChildDirectoryKind {
+    Root,
+    Extension,
+    HtmlPages,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MetadataChildFootprintEvidence {
+    pub(crate) child: MetadataAddress,
+    pub(crate) profile: MetadataChildProfile,
+    pub(crate) directories: Vec<MetadataChildDirectoryKind>,
+}
+
+#[allow(dead_code)] // Concrete providers land after this orchestration seam.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MetadataResourceRole {
+    Descriptor,
+    Registration,
+    Module {
+        owner: MetadataAddress,
+    },
+    Form {
+        owner: MetadataAddress,
+        name: String,
+    },
+    Template {
+        owner: MetadataAddress,
+        name: String,
+    },
+    Command {
+        owner: MetadataAddress,
+        name: String,
+    },
+    ChildResource {
+        child: MetadataAddress,
+        kind: MetadataChildResourceKind,
+        ordinal: usize,
+    },
+    Dependency {
+        target: MetadataAddress,
+    },
+    AuxiliaryXml {
+        owner: MetadataAddress,
+        kind: MetadataAuxiliaryXmlKind,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MetadataResourceImage {
+    /// Provider-neutral logical role and identity; physical paths stay opaque.
+    pub(crate) role: MetadataResourceRole,
+    pub(crate) bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MetadataValidationSubject {
+    pub(crate) target: MetadataAddress,
+    pub(crate) resources: Vec<MetadataResourceImage>,
+    pub(crate) child_footprints: Vec<MetadataChildFootprintEvidence>,
+    pub(crate) registrar_evidence: MetadataEvidenceAvailability,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) enum MetadataEvidenceAvailability {
+    #[default]
+    Complete,
+    Unavailable(Vec<MetaDiagnostic>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MetaLocalInfo {
+    pub(crate) metadata_path: MetadataAddress,
+    pub(crate) kind: MetadataKind,
+    pub(crate) name: String,
+    pub(crate) synonym: Option<String>,
+    pub(crate) support: MetaSupportStatus,
+    pub(crate) properties: Vec<MetaPropertyData>,
+    pub(crate) relations: MetaRelationsData,
+    pub(crate) collections: MetaCollectionsData,
+    pub(crate) diagnostics: Vec<MetaDiagnostic>,
+}
+
+impl MetaLocalInfo {
+    pub(crate) fn into_info(
+        self,
+        validation: MetaValidationData,
+        enrichment: MetaEnrichment,
+    ) -> MetaInfoData {
+        MetaInfoData {
+            metadata_path: self.metadata_path,
+            kind: self.kind,
+            name: self.name,
+            synonym: self.synonym,
+            support: self.support,
+            properties: self.properties,
+            relations: self.relations,
+            collections: self.collections,
+            predefined_items: enrichment.predefined_items,
+            usage: enrichment.usage,
+            validation,
+        }
+    }
+}
+
+pub(crate) struct MetadataRead {
+    pub(crate) local: MetaLocalInfo,
+    pub(crate) validation_subject: MetadataValidationSubject,
+}
+
+/// Everything a metadata read adds on top of the object's own descriptor.
+///
+/// The three parts have different natures and are kept apart on purpose:
+/// `predefined_items` is the object's own content, `usage` is what the source
+/// tree says references it, and `related` is what the code index says. Only the
+/// last can be stale or missing, so only it carries index metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct MetaEnrichment {
+    pub(crate) predefined_items: Option<MetaPredefinedItemsData>,
+    pub(crate) usage: MetaUsageData,
+}
+
+pub(crate) type MetaRelatedData = MetaEnrichment;
+pub(crate) type MetadataValidationResult = MetaValidationData;
+
+pub(crate) struct MetaPublishReport {
+    pub(crate) data: MetaMutationData,
+}
+
+pub(crate) trait PreparedMetadataMutation: Send {
+    /// The preview and validation image are safe application-layer projections.
+    /// Closed handles, preimages, locks, and transactions remain in `Self`.
+    fn preview(&self) -> &MetaMutationData;
+    fn validation_subject(&self) -> &MetadataValidationSubject;
+    fn publish(
+        self: Box<Self>,
+        cancellation: &CancellationToken,
+    ) -> Result<MetaPublishReport, MetaFailure>;
+}
+
+fn unavailable_metadata_diagnostic(message: impl Into<String>) -> MetaDiagnostic {
+    MetaDiagnostic::error(MetaDiagnosticCode::CapabilityUnavailable, message)
 }
 
 pub(crate) enum SupportGuardCheck {
@@ -190,6 +398,57 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         dry_run: bool,
         context: &WorkspaceContext,
     ) -> Result<(), String>;
+
+    fn read_metadata_local(
+        &self,
+        _request: &MetaInfoRequest,
+        _context: &WorkspaceContext,
+        _cancellation: &CancellationToken,
+    ) -> Result<MetadataRead, MetaFailure> {
+        Err(unavailable_metadata_diagnostic("metadata provider is not configured").into())
+    }
+
+    fn read_metadata_related(
+        &self,
+        _request: &MetaInfoRequest,
+        _local: &MetaLocalInfo,
+        _context: &WorkspaceContext,
+        _cancellation: &CancellationToken,
+    ) -> MetaRelatedData {
+        MetaEnrichment::default()
+    }
+
+    fn validate_metadata(
+        &self,
+        _subject: &MetadataValidationSubject,
+        _context: &WorkspaceContext,
+        _cancellation: &CancellationToken,
+    ) -> MetadataValidationResult {
+        MetaValidationData {
+            status: MetaValidationStatus::Failed,
+            diagnostics: vec![unavailable_metadata_diagnostic(
+                "metadata validator is not configured",
+            )],
+        }
+    }
+
+    fn validate_metadata_read(
+        &self,
+        subject: &MetadataValidationSubject,
+        context: &WorkspaceContext,
+        cancellation: &CancellationToken,
+    ) -> MetadataValidationResult {
+        self.validate_metadata(subject, context, cancellation)
+    }
+
+    fn prepare_metadata_mutation(
+        &self,
+        _request: &MetadataRequest,
+        _context: &WorkspaceContext,
+        _cancellation: &CancellationToken,
+    ) -> Result<Box<dyn PreparedMetadataMutation>, MetaFailure> {
+        Err(unavailable_metadata_diagnostic("metadata mutation provider is not configured").into())
+    }
 
     fn resolve_code_intelligence_context(
         &self,

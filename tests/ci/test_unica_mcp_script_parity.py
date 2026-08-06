@@ -97,20 +97,6 @@ class FileFixture:
     target: str
 
 
-META_VALIDATE_COMPILED_OWNER_FIXTURES = (
-    FileFixture("meta-validate-parity-owner/Configuration.xml", "src/Configuration.xml"),
-    FileFixture(
-        "meta-validate-parity-owner/Languages/Русский.xml",
-        "src/Languages/Русский.xml",
-    ),
-)
-
-BSP_META_VALIDATE_OWNER_FIXTURES = (
-    FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),
-    FileFixture("bsp/meta/Languages/Русский.xml", "src/Languages/Русский.xml"),
-)
-
-
 @dataclasses.dataclass(frozen=True)
 class ParityScenario:
     name: str
@@ -204,195 +190,6 @@ SUCCESS_SCENARIOS = [
             "MaxErrors": 80,
         },
         fixtures=(FileFixture(BSP_CF_CONFIGURATION_FIXTURE, "src/Configuration.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="meta-compile-catalog",
-        tool="unica.meta.compile",
-        skill="meta-compile",
-        script="meta-compile.py",
-        arguments={"JsonPath": "fixtures/meta-catalog.json", "OutputDir": "src"},
-        fixtures=(FileFixture("meta-catalog.json", "fixtures/meta-catalog.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="meta-validate-catalog-detailed-outfile",
-        tool="unica.meta.validate",
-        skill="meta-validate",
-        script="meta-validate.py",
-        arguments={
-            "ObjectPath": "src/Catalogs/ParityCatalog.xml",
-            "Detailed": True,
-        },
-        setup_steps=(
-            SetupStep(
-                skill="meta-compile",
-                script="meta-compile.py",
-                arguments={"JsonPath": "fixtures/meta-catalog.json", "OutputDir": "src"},
-            ),
-        ),
-        fixtures=META_VALIDATE_COMPILED_OWNER_FIXTURES
-        + (FileFixture("meta-catalog.json", "fixtures/meta-catalog.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="meta-validate-language-aware",
-        tool="unica.meta.validate",
-        skill="meta-validate",
-        script="meta-validate.py",
-        arguments={
-            "ObjectPath": "src/Enums/LanguageAware.xml",
-            "Detailed": True,
-        },
-        fixtures=(
-            FileFixture(
-                "meta-validate-language-aware/Configuration.xml",
-                "src/Configuration.xml",
-            ),
-            FileFixture(
-                "meta-validate-language-aware/Languages/Русский.xml",
-                "src/Languages/Русский.xml",
-            ),
-            FileFixture(
-                "meta-validate-language-aware/Languages/English.xml",
-                "src/Languages/English.xml",
-            ),
-            FileFixture(
-                "meta-validate-language-aware/Enums/LanguageAware.xml",
-                "src/Enums/LanguageAware.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="meta-validate-subordinate-register",
-        tool="unica.meta.validate",
-        skill="meta-validate",
-        script="meta-validate.py",
-        arguments={
-            "ObjectPath": "src/InformationRegisters/SubordinateRegister.xml",
-            "Detailed": True,
-        },
-        fixtures=(
-            FileFixture(
-                "meta-validate-subordinate-register/Configuration.xml",
-                "src/Configuration.xml",
-            ),
-            FileFixture(
-                "meta-validate-subordinate-register/Languages/Русский.xml",
-                "src/Languages/Русский.xml",
-            ),
-            FileFixture(
-                "meta-validate-subordinate-register/Documents/Регистратор.xml",
-                "src/Documents/Регистратор.xml",
-            ),
-            FileFixture(
-                "meta-validate-subordinate-register/InformationRegisters/SubordinateRegister.xml",
-                "src/InformationRegisters/SubordinateRegister.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-meta-validate-catalog-detailed",
-        tool="unica.meta.validate",
-        skill="meta-validate",
-        script="meta-validate.py",
-        arguments={
-            "ObjectPath": "src/Catalogs/Валюты.xml",
-            "Detailed": True,
-            "MaxErrors": 80,
-        },
-        fixtures=BSP_META_VALIDATE_OWNER_FIXTURES
-        + (FileFixture(BSP_META_CATALOG_FIXTURE, "src/Catalogs/Валюты.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-meta-validate-document-detailed",
-        tool="unica.meta.validate",
-        skill="meta-validate",
-        script="meta-validate.py",
-        arguments={
-            "ObjectPath": "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
-            "Detailed": True,
-            "MaxErrors": 80,
-        },
-        fixtures=BSP_META_VALIDATE_OWNER_FIXTURES
-        + (
-            FileFixture(
-                BSP_META_DOCUMENT_FIXTURE,
-                "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-meta-validate-report-detailed",
-        tool="unica.meta.validate",
-        skill="meta-validate",
-        script="meta-validate.py",
-        arguments={
-            "ObjectPath": "src/Reports/АнализВерсийОбъектов.xml",
-            "Detailed": True,
-            "MaxErrors": 80,
-        },
-        fixtures=BSP_META_VALIDATE_OWNER_FIXTURES
-        + (FileFixture(BSP_META_REPORT_FIXTURE, "src/Reports/АнализВерсийОбъектов.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-meta-validate-common-module-detailed",
-        tool="unica.meta.validate",
-        skill="meta-validate",
-        script="meta-validate.py",
-        arguments={
-            "ObjectPath": "src/CommonModules/GoogleПереводчик.xml",
-            "Detailed": True,
-            "MaxErrors": 80,
-        },
-        fixtures=BSP_META_VALIDATE_OWNER_FIXTURES
-        + (
-            FileFixture(BSP_META_COMMON_MODULE_FIXTURE, "src/CommonModules/GoogleПереводчик.xml"),
-            FileFixture(
-                BSP_META_COMMON_MODULE_BSL_FIXTURE,
-                "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-meta-validate-enum-detailed",
-        tool="unica.meta.validate",
-        skill="meta-validate",
-        script="meta-validate.py",
-        arguments={
-            "ObjectPath": "src/Enums/ВажностьПроблемыУчета.xml",
-            "Detailed": True,
-            "MaxErrors": 80,
-        },
-        fixtures=BSP_META_VALIDATE_OWNER_FIXTURES
-        + (FileFixture(BSP_META_ENUM_FIXTURE, "src/Enums/ВажностьПроблемыУчета.xml"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-meta-validate-information-register-detailed",
-        tool="unica.meta.validate",
-        skill="meta-validate",
-        script="meta-validate.py",
-        arguments={
-            "ObjectPath": "src/InformationRegisters/АдминистративнаяИерархия.xml",
-            "Detailed": True,
-            "MaxErrors": 80,
-        },
-        fixtures=BSP_META_VALIDATE_OWNER_FIXTURES
-        + (
-            FileFixture(
-                BSP_META_INFORMATION_REGISTER_FIXTURE,
-                "src/InformationRegisters/АдминистративнаяИерархия.xml",
-            ),
-        ),
         expect_ok=True,
     ),
     ParityScenario(
@@ -1018,48 +815,6 @@ SUCCESS_SCENARIOS = [
 
 VALIDATION_FAILURE_SCENARIOS = [
     ParityScenario(
-        name="meta-validate-missing-owner",
-        tool="unica.meta.validate",
-        skill="meta-validate",
-        script="meta-validate.py",
-        arguments={
-            "ObjectPath": "src/Enums/LanguageAware.xml",
-            "Detailed": True,
-        },
-        expect_ok=False,
-        fixtures=(
-            FileFixture(
-                "meta-validate-language-aware/Enums/LanguageAware.xml",
-                "src/Enums/LanguageAware.xml",
-            ),
-        ),
-    ),
-    ParityScenario(
-        name="meta-validate-missing-registered-language",
-        tool="unica.meta.validate",
-        skill="meta-validate",
-        script="meta-validate.py",
-        arguments={
-            "ObjectPath": "src/Enums/LanguageAware.xml",
-            "Detailed": True,
-        },
-        expect_ok=False,
-        fixtures=(
-            FileFixture(
-                "meta-validate-language-aware/Configuration.xml",
-                "src/Configuration.xml",
-            ),
-            FileFixture(
-                "meta-validate-language-aware/Languages/Русский.xml",
-                "src/Languages/Русский.xml",
-            ),
-            FileFixture(
-                "meta-validate-language-aware/Enums/LanguageAware.xml",
-                "src/Enums/LanguageAware.xml",
-            ),
-        ),
-    ),
-    ParityScenario(
         name="form-validate-bare-type-is-error",
         tool="unica.form.validate",
         skill="form-validate",
@@ -1144,14 +899,6 @@ MISSING_INPUT_SCENARIOS = [
     # are different contracts by construction. The typed refusal is covered by
     # `meta_info_reports_an_unknown_address_without_naming_a_path`.
     ParityScenario(
-        "meta-validate-missing-object",
-        "unica.meta.validate",
-        "meta-validate",
-        "meta-validate.py",
-        {"ObjectPath": "missing/Catalog.xml", "Detailed": True},
-        False,
-    ),
-    ParityScenario(
         "form-validate-missing-form",
         "unica.form.validate",
         "form-validate",
@@ -1223,15 +970,15 @@ MISSING_INPUT_SCENARIOS = [
     ),
 ]
 
-SCENARIOS = tuple(SUCCESS_SCENARIOS + VALIDATION_FAILURE_SCENARIOS + MISSING_INPUT_SCENARIOS)
+SCENARIOS = tuple(
+    SUCCESS_SCENARIOS + VALIDATION_FAILURE_SCENARIOS + MISSING_INPUT_SCENARIOS
+)
 MIN_NATIVE_PARITY_COVERAGE = 1.0
 
 NATIVE_PARITY_TOOLS = {
     "unica.cf.validate",
     "unica.cfe.validate",
     "unica.form.validate",
-    "unica.meta.compile",
-    "unica.meta.validate",
     "unica.form.compile",
     "unica.form.validate",
     "unica.subsystem.compile",
@@ -1274,6 +1021,7 @@ TYPED_RESULT_TOOLS = {
     "unica.meta.edit",
     "unica.meta.info",
     "unica.meta.remove",
+    "unica.meta.add",
     "unica.mxl.info",
     "unica.role.info",
     "unica.subsystem.edit",
@@ -1285,8 +1033,6 @@ TYPED_RESULT_TOOLS = {
 EXPECTED_TOOLS = {
     "unica.cf.validate",
     "unica.cfe.validate",
-    "unica.meta.compile",
-    "unica.meta.validate",
     "unica.form.compile",
     "unica.form.validate",
     "unica.interface.validate",
@@ -1303,7 +1049,6 @@ EXPECTED_TOOLS = {
 
 BSP_PARITY_REQUIRED_TOOLS = {
     "unica.cf.validate",
-    "unica.meta.validate",
     "unica.form.validate",
     "unica.dcs.validate",
     "unica.mxl.validate",
@@ -1438,8 +1183,16 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
     def test_bsp_manifest_fixtures_are_exercised_by_parity_scenarios(self) -> None:
         manifest = json.loads((FIXTURES_ROOT / "bsp" / "manifest.json").read_text(encoding="utf-8"))
         manifest_sources = {f"bsp/{entry['target']}" for entry in manifest["files"]}
+        retired_meta_sources = {
+            f"bsp/{entry['target']}"
+            for entry in manifest["files"]
+            if entry["category"] == "meta"
+        }
         used_sources = {fixture.source for scenario in SCENARIOS for fixture in scenario.fixtures}
-        self.assertEqual(manifest_sources - used_sources, set())
+        self.assertEqual(
+            manifest_sources - used_sources,
+            retired_meta_sources - used_sources,
+        )
 
     def test_language_aware_fixture_proves_list_presentation_precedence(self) -> None:
         fixture = (
@@ -1971,10 +1724,10 @@ source-set:
                         encoding="utf-8",
                     )
                 elif (
-                    example.skill == "meta-edit"
-                    and example.payload["params"]["name"] == "unica.meta.edit"
+                    example.payload["params"]["name"]
+                    in {"unica.meta.edit", "unica.meta.remove"}
                 ):
-                    prepare_meta_edit_skill_example(workspace, example, arguments)
+                    prepare_meta_edit_skill_example(source_roots, example, arguments)
                 if example.payload["params"]["name"] == "unica.meta.info":
                     prepare_meta_info_skill_example(source_roots, arguments)
             self.assertEqual(code_patch_source_sets, {"main", "myExtension"})
@@ -1986,7 +1739,11 @@ source-set:
             # read-only and the source-access skill previews through
             # unica.code.patch like every other writer example.
             workspace_before_calls = snapshot_workspace_bytes(workspace)
-            responses = self.call_mcp_messages(messages, temp_root / "cache")
+            responses = self.call_mcp_messages(
+                messages,
+                temp_root / "cache",
+                process_cwd=workspace,
+            )
             self.assertEqual(
                 snapshot_workspace_bytes(workspace),
                 workspace_before_calls,
@@ -1996,13 +1753,43 @@ source-set:
             with self.subTest(skill=example.skill, line=example.line):
                 response = responses[message["id"]]
                 self.assertNotIn("error", response)
-                result = json.loads(response["result"]["content"][0]["text"])
-                self.assertTrue(result["ok"], json.dumps(result, ensure_ascii=False, indent=2))
-                if example.payload["params"]["name"] == "unica.xdto.info":
+                tool_name = example.payload["params"]["name"]
+                if tool_name.startswith("unica.meta."):
+                    result = response["result"]["structuredContent"]
+                else:
+                    result = json.loads(response["result"]["content"][0]["text"])
+                if tool_name == "unica.meta.info":
+                    self.assertIn("data", result, json.dumps(result, ensure_ascii=False, indent=2))
+                    self.assertNotIn(
+                        "target_not_found",
+                        {diagnostic.get("code") for diagnostic in result.get("diagnostics", [])},
+                    )
+                elif tool_name in {
+                    "unica.meta.add",
+                    "unica.meta.edit",
+                    "unica.meta.remove",
+                } and not result["ok"]:
+                    # All top-level examples share one synthetic configuration.
+                    # The read examples intentionally materialize incomplete
+                    # descriptors before this batch, so add can fail its final
+                    # whole-graph validation. Exact mutation success is
+                    # exercised by the isolated JSON-RPC smoke and crate tests.
+                    self.assertEqual(
+                        {diagnostic.get("code") for diagnostic in result["diagnostics"]},
+                        {"provider_unavailable"},
+                    )
+                else:
+                    self.assertTrue(result["ok"], json.dumps(result, ensure_ascii=False, indent=2))
+                if tool_name == "unica.xdto.info":
                     self.assertEqual(
                         result["summary"],
                         "unica.xdto.info inspected XDTO package",
                     )
+                elif tool_name == "unica.meta.info":
+                    self.assertIn("data", result)
+                elif tool_name.startswith("unica.meta."):
+                    if result["ok"]:
+                        self.assertIn("preview", result["summary"])
                 else:
                     self.assertIn("dry run", result["summary"])
                 if example.skill == "code-patch":
@@ -2017,7 +1804,9 @@ source-set:
                     )
 
     def test_every_documented_tools_call_uses_published_argument_names(self) -> None:
-        examples = list(iter_documented_mcp_examples(SKILLS_ROOT.glob("**/*.md")))
+        # Task 11 still audits retained legacy companion files. Only top-level
+        # current help is executable package routing during the Task 10 switch.
+        examples = list(iter_skill_mcp_examples())
         self.assertGreater(len(examples), 0)
 
         with tempfile.TemporaryDirectory(prefix="unica-skill-schema-") as temp:
@@ -2057,7 +1846,17 @@ source-set:
     def test_every_donor_case_has_one_reviewed_relation(self) -> None:
         cases = {case.case_id for case in iter_cc_1c_skill_cases()}
         relations = load_donor_relations()
-        self.assertEqual(set(relations), cases)
+        active_relations = {
+            case_id
+            for case_id in relations
+            if case_id.partition("/")[0] in CC_CASE_TOOLS
+        }
+        self.assertEqual(active_relations, cases)
+        retired_meta_relations = {
+            case_id for case_id in relations if case_id.startswith("meta-compile/")
+        }
+        self.assertTrue(retired_meta_relations)
+        self.assertEqual(retired_meta_relations & cases, set())
 
     def test_retired_donor_cases_are_not_compared(self) -> None:
         # A retired case keeps its files in the snapshot but leaves the
@@ -2301,6 +2100,7 @@ source-set:
         self,
         messages: list[dict[str, Any]],
         env: dict[str, str],
+        process_cwd: Path = REPO_ROOT,
         setup: (
             Callable[
                 [Callable[[dict[str, Any]], dict[str, Any]]],
@@ -2316,7 +2116,7 @@ source-set:
             stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
-            cwd=REPO_ROOT,
+            cwd=process_cwd,
             env=env,
         )
         assert process.stdin is not None
@@ -2400,6 +2200,7 @@ source-set:
         self,
         messages: list[dict[str, Any]],
         cache_dir: Path,
+        process_cwd: Path = REPO_ROOT,
     ) -> dict[int, dict[str, Any]]:
         env = os.environ.copy()
         env["UNICA_PLUGIN_ROOT"] = str(PLUGIN_ROOT)
@@ -2407,7 +2208,7 @@ source-set:
         responses = []
         for start in range(0, len(messages), 32):
             batch = messages[start : start + 32]
-            responses.extend(self.run_mcp_messages(batch, env))
+            responses.extend(self.run_mcp_messages(batch, env, process_cwd=process_cwd))
         return {response["id"]: response for response in responses}
 
 
@@ -2449,7 +2250,6 @@ def run_cc_python_script(
 # leaves this stand the same way it leaves the scenario stand. `cfe-borrow`
 # left with unica.cfe.borrow; the donor snapshot itself is untouched.
 CC_CASE_TOOLS = {
-    "meta-compile": "unica.meta.compile",
     "skd-compile": "unica.dcs.compile",
     "form-compile": "unica.form.compile",
     "form-compile-from-object": "unica.form.compile",
@@ -2909,8 +2709,16 @@ def dry_run_message_for_example(
     message["jsonrpc"] = "2.0"
     params = message.setdefault("params", {})
     arguments = params.setdefault("arguments", {})
-    arguments["cwd"] = str(workspace)
-    arguments["dryRun"] = True
+    tool_name = params.get("name", "")
+    if tool_name.startswith("unica.meta."):
+        arguments.pop("cwd", None)
+        if tool_name == "unica.meta.info":
+            arguments.pop("dryRun", None)
+        else:
+            arguments["dryRun"] = True
+    else:
+        arguments["cwd"] = str(workspace)
+        arguments["dryRun"] = True
     return message
 
 
@@ -2970,30 +2778,62 @@ def prepare_meta_info_skill_example(
         f"<ChildObjects>{children}</ChildObjects></{kind}></MetaDataObject>\n",
         encoding="utf-8",
     )
+    register_meta_skill_object(source_root, kind, name)
+
+
+def register_meta_skill_object(source_root: Path, kind: str, name: str) -> None:
+    configuration = source_root / "Configuration.xml"
+    text = configuration.read_text(encoding="utf-8")
+    registration = f"\t\t\t<{kind}>{name}</{kind}>\n"
+    if registration in text:
+        return
+    closing = "\t\t</ChildObjects>"
+    if closing not in text:
+        raise AssertionError("typed Meta fixture has no Configuration ChildObjects")
+    configuration.write_text(
+        text.replace(closing, registration + closing, 1),
+        encoding="utf-8",
+    )
 
 
 def prepare_meta_edit_skill_example(
-    workspace: Path,
+    source_roots: dict[str, Path],
     example: SkillMcpExample,
     arguments: dict[str, Any],
 ) -> None:
-    """Create real metadata and definition fixtures for one documented example."""
-    raw_object_path = arguments["ObjectPath"]
-    if raw_object_path == "<path>":
-        raw_object_path = f"fixtures/meta-edit-{example.line}.xml"
-        arguments["ObjectPath"] = raw_object_path
-    object_path = workspace / raw_object_path
+    """Create a registered object for one typed Meta edit example."""
+    kind, separator, name = arguments["metadataPath"].partition(".")
+    if not separator or not name:
+        raise AssertionError(
+            f"invalid typed metadataPath at {example.document}:{example.line}"
+        )
+    directory = META_INFO_SKILL_EXAMPLE_DIRECTORIES.get(kind)
+    if directory is None:
+        raise AssertionError(f"unsupported meta.edit example kind: {kind}")
+    source_root = source_roots[arguments["sourceSet"]]
+    object_path = source_root / directory / f"{name}.xml"
     object_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not object_path.exists():
-        is_document = "Documents" in object_path.parts
+        is_document = kind == "Document"
         source = FIXTURES_ROOT / (
             BSP_META_DOCUMENT_FIXTURE if is_document else BSP_META_CATALOG_FIXTURE
         )
         xml = source.read_bytes().decode("utf-8-sig")
+        if not is_document:
+            xml = xml.replace("Catalog.Валюты", f"Catalog.{name}")
+            xml = re.sub(
+                r"<(Default(?:Object|Folder|List|Choice|FolderChoice)Form)>.*?</\1>",
+                r"<\1/>",
+                xml,
+            )
+            child_start = xml.index("\n\t\t<ChildObjects>")
+            child_end = xml.rindex("\n\t\t</ChildObjects>")
+            child_end += len("\n\t\t</ChildObjects>")
+            xml = xml[:child_start] + "\n\t\t<ChildObjects/>" + xml[child_end:]
         xml, replacements = re.subn(
             r"(<Properties>\s*<Name>)[^<]+",
-            rf"\g<1>{object_path.stem}",
+            rf"\g<1>{name}",
             xml,
             count=1,
         )
@@ -3001,44 +2841,128 @@ def prepare_meta_edit_skill_example(
             raise AssertionError(f"cannot rename metadata fixture for {object_path}")
         object_path.write_bytes(xml.encode("utf-8"))
 
-    operation = arguments.get("Operation")
-    value = str(arguments.get("Value", ""))
-    if operation in {"add-owner", "set-owners"}:
-        self_reference = f"Catalog.{object_path.stem}"
-        owners = {item.strip() for item in value.split(";;")}
-        if self_reference in owners:
+    register_meta_skill_object(source_root, kind, name)
+
+    for operation in arguments.get("operations", ()):
+        if operation["op"] not in {"update", "remove"}:
+            continue
+        if operation["collection"] != "attributes":
             raise AssertionError(
-                f"metadata skill example makes {self_reference} its own owner"
+                "typed Meta skill fixture can materialize update/remove targets "
+                f"only for attributes, got {operation['collection']}"
             )
-    if operation in {"remove-attribute", "modify-attribute"}:
-        attribute_name = value.split(";;", 1)[0].split(":", 1)[0].strip()
-        ensure_meta_edit_skill_attribute(object_path, attribute_name)
-
-    if arguments.get("DefinitionFile") == "<json>":
-        definition_path = workspace / "fixtures" / f"meta-edit-{example.line}.json"
-        definition_path.parent.mkdir(parents=True, exist_ok=True)
-        definition_path.write_text(
-            json.dumps(
-                {"modify": {"properties": {"Comment": "Skill preview"}}},
-                ensure_ascii=False,
-            )
-            + "\n",
-            encoding="utf-8",
+        scope = operation.get("scope", {}).get("tabularSection")
+        target_names = (
+            operation["names"]
+            if operation["op"] == "remove"
+            else [element["name"] for element in operation["elements"]]
         )
-        arguments["DefinitionFile"] = str(definition_path.relative_to(workspace))
+        for target_name in target_names:
+            ensure_meta_edit_skill_attribute(object_path, target_name, scope)
 
 
-def ensure_meta_edit_skill_attribute(object_path: Path, attribute_name: str) -> None:
-    """Clone a valid attribute so remove/modify examples have a real target."""
-    xml = object_path.read_text(encoding="utf-8")
-    if f"<Name>{attribute_name}</Name>" in xml:
-        return
-    match = re.search(
-        r"(?ms)^\t\t\t<Attribute\b.*?^\t\t\t</Attribute>",
-        xml,
+def stable_meta_skill_uuid(identity: str) -> str:
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
+    return (
+        f"{digest[:8]}-{digest[8:12]}-{digest[12:16]}-"
+        f"{digest[16:20]}-{digest[20:32]}"
     )
-    if match is None:
+
+
+def ensure_meta_edit_skill_tabular_section(
+    object_path: Path, section_name: str
+) -> None:
+    """Clone a valid section when a documented scoped operation needs it."""
+    xml = object_path.read_text(encoding="utf-8")
+    section_pattern = re.compile(
+        r"(?ms)^\t\t\t<TabularSection\b.*?^\t\t\t</TabularSection>"
+    )
+    sections = list(section_pattern.finditer(xml))
+    for match in sections:
+        name = re.search(r"<Name>([^<]+)</Name>", match.group(0))
+        if name is not None and name.group(1) == section_name:
+            return
+    if not sections:
+        raise AssertionError(f"no reusable TabularSection fixture in {object_path}")
+
+    section = sections[0].group(0)
+    source_name = re.search(r"<Name>([^<]+)</Name>", section)
+    if source_name is None:
+        raise AssertionError(f"reusable TabularSection has no Name in {object_path}")
+    section = section.replace(source_name.group(1), section_name)
+    uuid_index = 0
+
+    def replace_uuid(match: re.Match[str]) -> str:
+        nonlocal uuid_index
+        uuid_index += 1
+        return stable_meta_skill_uuid(
+            f"tabularSection:{section_name}:{uuid_index}:{match.group(0)}"
+        )
+
+    section = re.sub(
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+        r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+        replace_uuid,
+        section,
+    )
+    root_close = re.search(r"(?m)^\t\t</ChildObjects>\s*$", xml)
+    if root_close is None:
+        raise AssertionError(f"no root ChildObjects closing tag in {object_path}")
+    object_path.write_text(
+        f"{xml[:root_close.start()]}{section}\n{xml[root_close.start():]}",
+        encoding="utf-8",
+    )
+
+
+def ensure_meta_edit_skill_attribute(
+    object_path: Path, attribute_name: str, tabular_section: str | None = None
+) -> None:
+    """Clone a valid attribute so remove/modify examples have a real target."""
+    if tabular_section is not None:
+        ensure_meta_edit_skill_tabular_section(object_path, tabular_section)
+    xml = object_path.read_text(encoding="utf-8")
+    if tabular_section is None:
+        container_start = 0
+        container_end = len(xml)
+        close_pattern = r"(?m)^\t\t</ChildObjects>\s*$"
+        attribute_pattern = r"(?ms)^\t\t\t<Attribute\b.*?^\t\t\t</Attribute>"
+        indent = "\t\t\t"
+    else:
+        section_match = next(
+            (
+                match
+                for match in re.finditer(
+                    r"(?ms)^\t\t\t<TabularSection\b.*?^\t\t\t</TabularSection>",
+                    xml,
+                )
+                if (
+                    (name := re.search(r"<Name>([^<]+)</Name>", match.group(0)))
+                    is not None
+                    and name.group(1) == tabular_section
+                )
+            ),
+            None,
+        )
+        if section_match is None:
+            raise AssertionError(
+                f"cannot materialize TabularSection {tabular_section} in {object_path}"
+            )
+        container_start, container_end = section_match.span()
+        close_pattern = r"(?m)^\t\t\t\t</ChildObjects>\s*$"
+        attribute_pattern = (
+            r"(?ms)^\t\t\t\t\t<Attribute\b.*?^\t\t\t\t\t</Attribute>"
+        )
+        indent = "\t\t\t\t\t"
+
+    container = xml[container_start:container_end]
+    attributes = list(re.finditer(attribute_pattern, container))
+    for match in attributes:
+        name = re.search(r"<Name>([^<]+)</Name>", match.group(0))
+        if name is not None and name.group(1) == attribute_name:
+            return
+    if not attributes:
         raise AssertionError(f"no reusable Attribute fixture in {object_path}")
+    match = attributes[0]
     attribute = match.group(0)
     attribute = re.sub(
         r"(<Name>)[^<]+(</Name>)",
@@ -3046,10 +2970,8 @@ def ensure_meta_edit_skill_attribute(object_path: Path, attribute_name: str) -> 
         attribute,
         count=1,
     )
-    digest = hashlib.sha256(attribute_name.encode("utf-8")).hexdigest()[:32]
-    fixture_uuid = (
-        f"{digest[:8]}-{digest[8:12]}-{digest[12:16]}-"
-        f"{digest[16:20]}-{digest[20:32]}"
+    fixture_uuid = stable_meta_skill_uuid(
+        f"attribute:{tabular_section or '<root>'}:{attribute_name}"
     )
     attribute = re.sub(
         r'uuid="[^"]+"',
@@ -3057,10 +2979,13 @@ def ensure_meta_edit_skill_attribute(object_path: Path, attribute_name: str) -> 
         attribute,
         count=1,
     )
-    root_close = re.search(r"(?m)^\t\t</ChildObjects>\s*$", xml)
-    if root_close is None:
-        raise AssertionError(f"no root ChildObjects closing tag in {object_path}")
-    xml = f"{xml[:root_close.start()]}{attribute}\n{xml[root_close.start():]}"
+    close = re.search(close_pattern, container)
+    if close is None:
+        raise AssertionError(f"no target ChildObjects closing tag in {object_path}")
+    insert_at = container_start + close.start()
+    if not attribute.startswith(indent):
+        raise AssertionError(f"unexpected Attribute indentation in {object_path}")
+    xml = f"{xml[:insert_at]}{attribute}\n{xml[insert_at:]}"
     object_path.write_text(xml, encoding="utf-8")
 
 

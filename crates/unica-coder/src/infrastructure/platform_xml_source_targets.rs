@@ -1,3 +1,4 @@
+use crate::application::metadata::MetaFailure;
 use crate::application::source_navigation::{
     page_bounds, NavigationCompleteness, SourceChildrenRequest, SourceChildrenResult,
     SourceLocation, SourceMatchKind, SourceNavigationMode, SourceNode, SourceNodeAddressability,
@@ -7,6 +8,7 @@ use crate::application::source_navigation::{
     LocateRejection, SourceLocateRequest, SourceLocateResult,
 };
 use crate::domain::cancellation::{cancelled_error, CancellationToken};
+use crate::domain::metadata::{MetaDiagnostic, MetaDiagnosticCode};
 use crate::domain::project_sources::{
     classify_already_read_config_dump_info_xml, ConfigDumpInfoXmlKind,
 };
@@ -18,8 +20,9 @@ use crate::domain::source_target::{
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::metadata_kinds::{
     metadata_kind, metadata_kind_by_directory, supports_direct_module_role,
-    supports_nested_form_or_command, MetadataKind, METADATA_KINDS,
+    supports_nested_form_or_command, MetadataLayout, METADATA_KINDS,
 };
+use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
 use crate::infrastructure::path_policy::WorkspacePathPolicy;
 use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
 use crate::infrastructure::source_roots::{
@@ -41,6 +44,8 @@ const MAX_NAVIGATION_DESCRIPTOR_BYTES: u64 = 8 * 1024 * 1024;
 thread_local! {
     static NAVIGATION_PROVIDER_ENTRY_HOOK: RefCell<Option<Box<dyn FnOnce()>>> =
         RefCell::new(None);
+    static OBJECT_DESCRIPTOR_CONTENT_READ_HOOK: RefCell<Option<Box<dyn FnOnce()>>> =
+        RefCell::new(None);
 }
 
 #[cfg(test)]
@@ -54,6 +59,26 @@ fn set_navigation_provider_entry_hook_for_test(hook: impl FnOnce() + 'static) {
 #[cfg(test)]
 fn run_navigation_provider_entry_hook_for_test() {
     NAVIGATION_PROVIDER_ENTRY_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(test)]
+fn set_object_descriptor_content_read_hook_for_test(hook: impl FnOnce() + 'static) {
+    OBJECT_DESCRIPTOR_CONTENT_READ_HOOK.with(|slot| {
+        let previous = slot.replace(Some(Box::new(hook)));
+        assert!(
+            previous.is_none(),
+            "object descriptor content-read hook leaked"
+        );
+    });
+}
+
+#[cfg(test)]
+fn run_object_descriptor_content_read_hook_for_test() {
+    OBJECT_DESCRIPTOR_CONTENT_READ_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
             hook();
         }
@@ -382,13 +407,14 @@ pub(crate) fn locate_platform_xml_source_path(
     }
     check_navigation_cancellation(cancellation)?;
 
-    // A nested Form or Command owns everything beneath its own directory.
+    // A nested Form, Template, or Command owns everything beneath its own directory.
     let nested = match parts.get(2).copied() {
-        Some(directory @ ("Forms" | "Commands")) => parts.get(3).map(|child| {
-            let child_kind = if directory == "Forms" {
-                "Form"
-            } else {
-                "Command"
+        Some(directory @ ("Forms" | "Templates" | "Commands")) => parts.get(3).map(|child| {
+            let child_kind = match directory {
+                "Forms" => "Form",
+                "Templates" => "Template",
+                "Commands" => "Command",
+                _ => unreachable!("nested metadata directory match is closed"),
             };
             // The same child appears twice under the collection: once as its
             // `<Name>.xml` descriptor and once as the `<Name>/` content tree.
@@ -558,14 +584,18 @@ fn resolve_prefix_by_scoped_scan(
                     &mut matches,
                 )?;
             }
-            // A nested Form or Command is addressable in its own right, so a
+            // A nested Form, Template, or Command is addressable in its own right, so a
             // prefix that can reach one must not be answered without it. The
             // descent is affordable only once a name prefix bounds the outer
             // loop; a bare-kind query says so instead of claiming completeness.
             if parts.len() < 2 {
                 continue;
             }
-            for (child_kind, child_directory) in [("Form", "Forms"), ("Command", "Commands")] {
+            for (child_kind, child_directory, module_terminal) in [
+                ("Form", "Forms", Some("FormModule")),
+                ("Template", "Templates", None),
+                ("Command", "Commands", Some("CommandModule")),
+            ] {
                 check_navigation_cancellation(cancellation)?;
                 if !supports_nested_form_or_command(kind.tag) {
                     break;
@@ -589,15 +619,16 @@ fn resolve_prefix_by_scoped_scan(
                             matches.push((address, TargetKind::MetadataObject, child.clone()));
                         }
                     }
-                    let terminal = format!("{child_kind}Module");
-                    push_module_candidate(
-                        context,
-                        &selected,
-                        &format!("{nested}.{terminal}"),
-                        &query,
-                        &terminal,
-                        &mut matches,
-                    )?;
+                    if let Some(terminal) = module_terminal {
+                        push_module_candidate(
+                            context,
+                            &selected,
+                            &format!("{nested}.{terminal}"),
+                            &query,
+                            terminal,
+                            &mut matches,
+                        )?;
+                    }
                 }
             }
         }
@@ -692,11 +723,11 @@ fn push_module_candidate(
     Ok(())
 }
 
-/// Reads one nested `Forms`/`Commands` collection of a proven owner and returns
+/// Reads one nested `Forms`/`Templates`/`Commands` collection of a proven owner and returns
 /// the child names whose own descriptor proves them.
 fn proven_child_names(
     source_root: &Path,
-    kind: &MetadataKind,
+    kind: &MetadataLayout,
     owner: &str,
     child_kind: &str,
     child_directory: &str,
@@ -744,7 +775,7 @@ fn proven_child_names(
 /// so a narrow query never pays to parse the whole collection.
 fn proven_object_names(
     source_root: &Path,
-    kind: &MetadataKind,
+    kind: &MetadataLayout,
     name_prefix: Option<&str>,
     partial: &mut bool,
     cancellation: &CancellationToken,
@@ -939,7 +970,7 @@ fn rendered_address_children(
     if let [kind, name] = parts.as_slice() {
         if let Some(kind) = metadata_kind(kind) {
             if supports_nested_form_or_command(kind.tag) {
-                for child_directory in ["Forms", "Commands"] {
+                for child_directory in ["Forms", "Templates", "Commands"] {
                     check_navigation_cancellation(cancellation)?;
                     let directory = selected
                         .path
@@ -1110,12 +1141,15 @@ fn object_descriptor_evidence(parts: &[&str]) -> Option<ObjectDescriptorEvidence
                 name: (*name).to_string(),
             })
         }
-        [kind, name, child_kind, child_name] if matches!(*child_kind, "Form" | "Command") => {
+        [kind, name, child_kind, child_name]
+            if matches!(*child_kind, "Form" | "Template" | "Command") =>
+        {
             let kind = metadata_kind(kind)?;
-            let child_directory = if *child_kind == "Form" {
-                "Forms"
-            } else {
-                "Commands"
+            let child_directory = match *child_kind {
+                "Form" => "Forms",
+                "Template" => "Templates",
+                "Command" => "Commands",
+                _ => unreachable!("nested metadata kind match is closed"),
             };
             Some(ObjectDescriptorEvidence {
                 path: PathBuf::from(kind.directory)
@@ -1644,13 +1678,23 @@ fn read_navigation_descriptor(path: &Path) -> Result<Vec<u8>, ()> {
 }
 
 fn descriptor_name_from_bytes(raw: &[u8], expected_kind: &str) -> Result<String, ()> {
+    let (version, name) = descriptor_version_and_name_from_bytes(raw, expected_kind)?;
+    if version.as_deref() != Some("2.20") {
+        return Err(());
+    }
+    Ok(name)
+}
+
+fn descriptor_version_and_name_from_bytes(
+    raw: &[u8],
+    expected_kind: &str,
+) -> Result<(Option<String>, String), ()> {
     let text = std::str::from_utf8(raw).map_err(|_| ())?;
-    let document =
-        roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).map_err(|_| ())?;
+    let source = text.trim_start_matches('\u{feff}');
+    let document = roxmltree::Document::parse(source).map_err(|_| ())?;
     let root = document.root_element();
     if root.tag_name().namespace() != Some(MD_CLASSES_NS)
         || root.tag_name().name() != "MetaDataObject"
-        || root.attribute("version") != Some("2.20")
     {
         return Err(());
     }
@@ -1682,7 +1726,10 @@ fn descriptor_name_from_bytes(raw: &[u8], expected_kind: &str) -> Result<String,
         .map(str::trim)
         .filter(|name| !name.is_empty())
         .ok_or(())?;
-    Ok(name.to_string())
+    Ok((
+        crate::infrastructure::platform_xml_owner::root_version_literal(source, root),
+        name.to_string(),
+    ))
 }
 
 fn add_address(
@@ -1886,6 +1933,126 @@ pub(crate) struct ClosedPlatformXmlTarget {
     target_kind: TargetKind,
     target_path: PathBuf,
     module_owner: Option<String>,
+}
+
+/// Closed provider handle for creation in one Platform XML source set. Public
+/// and domain results receive only logical addresses; physical state remains
+/// inside infrastructure.
+pub(crate) struct ResolvedSourceSet {
+    handle: ClosedPlatformXmlTarget,
+    pub(crate) source_root: PathBuf,
+    pub(crate) owner_path: PathBuf,
+    pub(crate) owner_preimage: Vec<u8>,
+    pub(crate) format_version: String,
+}
+
+impl fmt::Debug for ResolvedSourceSet {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ResolvedSourceSet")
+            .field("source_set", &self.handle.source_target.source_set)
+            .field("format_version", &self.format_version)
+            .field("physical_handle", &"<closed>")
+            .finish()
+    }
+}
+
+pub(crate) fn resolve_metadata_add_source(
+    context: &WorkspaceContext,
+    source_set: &str,
+) -> Result<ResolvedSourceSet, MetaFailure> {
+    let target = SourceTarget {
+        source_set: source_set.to_string(),
+        metadata_path: None,
+    };
+    let resolution = resolve_platform_xml_target(context, &target, TargetKindPolicy::Any)
+        .map_err(|error| metadata_source_failure(source_set, error))?;
+    let evidence = platform_xml_resource_evidence(context, &resolution.handle)
+        .map_err(|error| metadata_source_failure(source_set, error))?;
+    let format_version = crate::infrastructure::native_operations::common::detect_format_version(
+        &evidence.registration_path,
+        context,
+    )
+    .map_err(|_| {
+        MetaFailure::from(MetaDiagnostic::error(
+            MetaDiagnosticCode::CapabilityUnavailable,
+            format!(
+                "sourceSet `{source_set}` is outside the supported Platform XML format profile"
+            ),
+        ))
+    })?
+    .to_string();
+    let owner_preimage = fs::read(&evidence.registration_path).map_err(|_| {
+        MetaFailure::from(MetaDiagnostic::error(
+            MetaDiagnosticCode::ProviderUnavailable,
+            format!("sourceSet `{source_set}` owner image is unavailable"),
+        ))
+    })?;
+    Ok(ResolvedSourceSet {
+        handle: resolution.handle,
+        source_root: evidence.source_root,
+        owner_path: evidence.registration_path,
+        owner_preimage,
+        format_version,
+    })
+}
+
+pub(crate) fn revalidate_metadata_add_source(
+    context: &WorkspaceContext,
+    source: &ResolvedSourceSet,
+) -> Result<(), MetaFailure> {
+    revalidate_platform_xml_target(context, &source.handle)
+        .map(|_| ())
+        .map_err(|_| {
+            MetaFailure::from(MetaDiagnostic::error(
+                MetaDiagnosticCode::ConcurrentModification,
+                format!(
+                    "sourceSet `{}` changed after metadata creation was prepared",
+                    source.handle.source_target.source_set
+                ),
+            ))
+        })
+}
+
+pub(crate) fn bind_metadata_add_source_evidence(
+    transaction: &mut CompileTransaction,
+    context: &WorkspaceContext,
+    source: &ResolvedSourceSet,
+) -> Result<(), MetaFailure> {
+    transaction
+        .guard_or_verify_exact_preimage(&source.owner_path, &source.owner_preimage)
+        .map_err(metadata_concurrent_failure)?;
+    crate::infrastructure::native_operations::common::guard_resolved_platform_xml_target_dependencies(
+        transaction,
+        &source.handle,
+        context,
+    )
+    .map(|_| ())
+    .map_err(metadata_concurrent_failure)
+}
+
+fn metadata_concurrent_failure(_internal: String) -> MetaFailure {
+    MetaDiagnostic::error(
+        MetaDiagnosticCode::ConcurrentModification,
+        "sourceSet evidence changed after metadata creation was authorized",
+    )
+    .into()
+}
+
+fn metadata_source_failure(source_set: &str, error: SourceTargetError) -> MetaFailure {
+    let code = match error.code {
+        SourceTargetErrorCode::SourceSetNotFound => MetaDiagnosticCode::TargetNotFound,
+        SourceTargetErrorCode::ContainmentDenied => MetaDiagnosticCode::ProviderUnavailable,
+        _ => MetaDiagnosticCode::CapabilityUnavailable,
+    };
+    let message = match code {
+        MetaDiagnosticCode::TargetNotFound => format!("sourceSet `{source_set}` was not found"),
+        MetaDiagnosticCode::ProviderUnavailable => {
+            format!("sourceSet `{source_set}` could not be resolved safely")
+        }
+        _ => format!("sourceSet `{source_set}` does not provide Platform XML metadata creation"),
+    };
+    MetaDiagnostic::error(code, message).into()
 }
 
 impl ClosedPlatformXmlTarget {
@@ -2092,13 +2259,6 @@ fn resolve_platform_xml_object(
                 "metadataPath does not identify a known metadata object",
             )
         })?;
-    validate_platform_xml_module_descriptors(
-        context,
-        &selected.path,
-        std::slice::from_ref(&relative_path),
-    )
-    .map_err(|error| public_evidence_error(target, error))?;
-
     let target_path = WorkspacePathPolicy::new(context)
         .resolve_write(selected.path.join(&relative_path))
         .map_err(|_| target_containment_error(&target.source_set))?;
@@ -2109,19 +2269,41 @@ fn resolve_platform_xml_object(
     if !target_identity.starts_with(&selected.path) {
         return Err(target_containment_error(&target.source_set));
     }
+    validate_platform_xml_module_descriptors(
+        context,
+        &selected.path,
+        std::slice::from_ref(&relative_path),
+    )
+    .map_err(|error| public_evidence_error(target, error))?;
 
-    match exact_object_outcome(&selected.path, address, &CancellationToken::new()) {
-        Ok(ExactCandidate::Proven) => {}
-        Ok(ExactCandidate::Absent) => {
-            return Err(SourceTargetError::new(
-                SourceTargetErrorCode::MetadataAddressNotFound,
-                format!(
-                    "metadataPath `{address}` was not found in sourceSet `{}`",
-                    target.source_set
-                ),
-            ));
+    let Some(owner_version) = object_registration_evidence(context, &selected, address)? else {
+        return Err(SourceTargetError::new(
+            SourceTargetErrorCode::MetadataAddressNotFound,
+            format!(
+                "metadataPath `{address}` was not found in sourceSet `{}`",
+                target.source_set
+            ),
+        ));
+    };
+    #[cfg(test)]
+    run_object_descriptor_content_read_hook_for_test();
+    let descriptor = read_navigation_descriptor(&target_path)
+        .map_err(|_| metadata_owner_evidence_error(target))?;
+    let parts = address.segments().collect::<Vec<_>>();
+    let expected =
+        object_descriptor_evidence(&parts).ok_or_else(|| metadata_owner_evidence_error(target))?;
+    let (version, name) = descriptor_version_and_name_from_bytes(&descriptor, &expected.kind)
+        .map_err(|_| metadata_owner_evidence_error(target))?;
+    if name != expected.name {
+        return Err(metadata_owner_evidence_error(target));
+    }
+    if let ObjectOwnerVersionEvidence::Exact(owner_version) = owner_version {
+        if version != owner_version {
+            return Err(SourceTargetError::source_format_unsupported(format!(
+                "metadataPath `{address}` format does not match its proven metadata owner in sourceSet `{}`",
+                target.source_set
+            )));
         }
-        Ok(ExactCandidate::Unproven) | Err(_) => return Err(metadata_owner_evidence_error(target)),
     }
 
     let workspace_root = normalize_path_identity(&context.workspace_root)
@@ -2144,6 +2326,121 @@ fn resolve_platform_xml_object(
             module_owner: None,
         },
     })
+}
+
+enum ObjectOwnerVersionEvidence {
+    /// External processors and reports are their own source-set owner, so
+    /// there is no distinct descriptor version to compare with the target.
+    SelfOwned,
+    /// Configuration and extension objects must use the exact raw format
+    /// literal declared by the canonical owner. `None` is evidence for a
+    /// recognized versionless owner (legacy format 1.0), not a missing owner.
+    Exact(Option<String>),
+}
+
+fn object_registration_evidence(
+    context: &WorkspaceContext,
+    selected: &ResolvedNamedSourceSet,
+    address: &MetadataAddress,
+) -> Result<Option<ObjectOwnerVersionEvidence>, SourceTargetError> {
+    if matches!(
+        selected.source_set.kind,
+        SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+    ) {
+        return Ok(Some(ObjectOwnerVersionEvidence::SelfOwned));
+    }
+    let logical_target = SourceTarget {
+        source_set: selected.source_set.name.clone(),
+        metadata_path: Some(address.clone()),
+    };
+    let source_owner_relative = PathBuf::from("Configuration.xml");
+    validate_platform_xml_module_descriptors(
+        context,
+        &selected.path,
+        std::slice::from_ref(&source_owner_relative),
+    )
+    .map_err(|error| public_evidence_error(&logical_target, error))?;
+    let source_owner_path = selected.path.join(source_owner_relative);
+    let source_owner = read_navigation_descriptor(&source_owner_path)
+        .map_err(|_| metadata_owner_evidence_error(&logical_target))?;
+    let source_owner_evidence =
+        crate::infrastructure::platform_xml_owner::prove_already_read_source_set_owner(
+            &source_owner_path,
+            &source_owner,
+            selected.source_set.kind,
+        )
+        .map_err(|_| metadata_owner_evidence_error(&logical_target))?;
+    let source_owner_version = source_owner_evidence.version().map(str::to_owned);
+
+    let parts = address.segments().collect::<Vec<_>>();
+    let [owner_kind, owner_name, child_kind @ ("Form" | "Template" | "Command"), child_name] =
+        parts.as_slice()
+    else {
+        return match parts.as_slice() {
+            [kind, name] if source_owner_evidence.registers(kind, name) => Ok(Some(
+                ObjectOwnerVersionEvidence::Exact(source_owner_version),
+            )),
+            [_, _] => Ok(None),
+            _ => Ok(None),
+        };
+    };
+    let owner = object_descriptor_evidence(&[*owner_kind, *owner_name])
+        .ok_or_else(|| metadata_owner_evidence_error(&logical_target))?;
+    if !source_owner_evidence.registers(&owner.kind, &owner.name) {
+        return Ok(None);
+    }
+    validate_platform_xml_module_descriptors(
+        context,
+        &selected.path,
+        std::slice::from_ref(&owner.path),
+    )
+    .map_err(|error| public_evidence_error(&logical_target, error))?;
+    let owner_path = selected.path.join(&owner.path);
+    let owner = read_navigation_descriptor(&owner_path)
+        .map_err(|_| metadata_owner_evidence_error(&logical_target))?;
+    let (owner_version, actual_name) =
+        descriptor_version_and_name_from_bytes(&owner, owner_kind)
+            .map_err(|_| metadata_owner_evidence_error(&logical_target))?;
+    if actual_name != *owner_name {
+        return Err(metadata_owner_evidence_error(&logical_target));
+    }
+    if owner_version != source_owner_version {
+        return Err(SourceTargetError::source_format_unsupported(format!(
+            "metadata owner `{}.{}` format does not match sourceSet `{}` owner",
+            owner_kind, owner_name, selected.source_set.name
+        )));
+    }
+    let owner = std::str::from_utf8(&owner)
+        .map_err(|_| metadata_owner_evidence_error(&logical_target))?
+        .trim_start_matches('\u{feff}');
+    let document = roxmltree::Document::parse(owner)
+        .map_err(|_| metadata_owner_evidence_error(&logical_target))?;
+    let owner_node = document
+        .root_element()
+        .children()
+        .find(|node| {
+            node.is_element()
+                && node.tag_name().namespace() == Some(MD_CLASSES_NS)
+                && node.tag_name().name() == *owner_kind
+        })
+        .ok_or_else(|| metadata_owner_evidence_error(&logical_target))?;
+    if owner_node.children().any(|child_objects| {
+        child_objects.is_element()
+            && child_objects.tag_name().namespace() == Some(MD_CLASSES_NS)
+            && child_objects.tag_name().name() == "ChildObjects"
+            && child_objects.children().any(|node| {
+                node.is_element()
+                    && node.tag_name().namespace() == Some(MD_CLASSES_NS)
+                    && node.tag_name().name() == *child_kind
+                    && node.text().is_some_and(|text| text.trim() == *child_name)
+            })
+    }) {
+        Ok(Some(ObjectOwnerVersionEvidence::Exact(
+            source_owner_version,
+        )))
+    } else {
+        Ok(None)
+    }
 }
 
 fn resolve_platform_xml_root(
@@ -2820,7 +3117,7 @@ impl PlatformXmlModuleLayoutDescriptor {
 
 #[derive(Debug, Default)]
 struct ModuleLayoutCaptures<'a> {
-    kind: Option<&'static MetadataKind>,
+    kind: Option<&'static MetadataLayout>,
     owner_name: Option<&'a str>,
     child_name: Option<&'a str>,
     role: Option<PlatformXmlModuleRole>,
@@ -3041,6 +3338,7 @@ mod tests {
         children_platform_xml_source_navigation as children_platform_xml_source_navigation_cancellable,
         resolve_platform_xml_source_navigation as resolve_platform_xml_source_navigation_cancellable,
         revalidate_platform_xml_target, set_navigation_provider_entry_hook_for_test,
+        set_object_descriptor_content_read_hook_for_test,
     };
     use crate::application::source_navigation::{
         NavigationCompleteness, SourceChildrenRequest, SourceLocation, SourceMatchKind,
@@ -4366,6 +4664,12 @@ mod tests {
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form><Properties><Name>Order</Name></Properties></Form></MetaDataObject>"#,
         )
         .unwrap();
+        fs::create_dir_all(root.join("Catalogs/Items/Templates")).unwrap();
+        fs::write(
+            root.join("Catalogs/Items/Templates/Print.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Template><Properties><Name>Print</Name></Properties></Template></MetaDataObject>"#,
+        )
+        .unwrap();
         fs::write(
             root.join("Catalogs/Items/Forms/Order/Ext/Form/Module.bsl"),
             "Procedure Run()\nEndProcedure\n",
@@ -4395,6 +4699,7 @@ mod tests {
             .map(|candidate| candidate.metadata_path.as_str())
             .collect::<Vec<_>>();
         assert!(found.contains(&"Catalog.Items.Form.Order"), "{found:?}");
+        assert!(found.contains(&"Catalog.Items.Template.Print"), "{found:?}");
         assert!(
             found.contains(&"Catalog.Items.Form.Order.FormModule"),
             "{found:?}"
@@ -4412,6 +4717,16 @@ mod tests {
                 "Catalog.Items.Form.Order",
                 "Catalog.Items.Form.Order.FormModule"
             ]
+        );
+
+        let template = resolve("Catalog.Items.Template.Pr");
+        assert_eq!(
+            template
+                .candidates
+                .iter()
+                .map(|candidate| candidate.metadata_path.as_str())
+                .collect::<Vec<_>>(),
+            ["Catalog.Items.Template.Print"]
         );
 
         // A bare-kind prefix does not descend, and says so instead of claiming
@@ -4855,6 +5170,41 @@ mod tests {
     }
 
     #[test]
+    fn platform_xml_nested_object_targets_accept_canonical_form_and_command_owners() {
+        for (label, child_kind, collection, child_name) in [
+            ("form", "Form", "Forms", "List"),
+            ("command", "Command", "Commands", "Post"),
+        ] {
+            let context = fixture(
+                &format!("object-target-nested-canonical-{label}"),
+                project_yaml("main", "CONFIGURATION", "src"),
+            );
+            let root = context.workspace_root.join("src");
+            write_metadata_descriptor(&root, "Catalogs", "Catalog", "Items", "Items");
+            let descriptor = format!("Catalogs/Items/{collection}/{child_name}.xml");
+            write_nested_module_fixture(
+                &root,
+                &format!("Catalogs/Items/{collection}/{child_name}/Ext/Module.bsl"),
+                &descriptor,
+                child_kind,
+                child_name,
+            );
+
+            let resolution = resolve_platform_xml_object_target(
+                &context,
+                &target("main", &format!("Catalog.Items.{child_kind}.{child_name}")),
+            )
+            .unwrap();
+
+            assert_eq!(
+                resolution.handle.target_path,
+                normalize_path_identity(&root.join(descriptor)).unwrap()
+            );
+            cleanup(&context);
+        }
+    }
+
+    #[test]
     fn platform_xml_nested_object_target_requires_a_proven_owner() {
         let context = fixture(
             "object-target-nested-owner",
@@ -4908,6 +5258,363 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error.code, SourceTargetErrorCode::MetadataAddressNotFound);
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_object_target_does_not_classify_an_unregistered_wrong_format_partial() {
+        let context = fixture(
+            "object-target-unregistered-wrong-format",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let descriptor = context.workspace_root.join("src/Catalogs/Items.xml");
+        fs::create_dir_all(descriptor.parent().unwrap()).unwrap();
+        fs::write(
+            &descriptor,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.19"><Catalog><Properties><Name>Items</Name></Properties></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        let content_read = std::rc::Rc::new(std::cell::Cell::new(false));
+        let observer = std::rc::Rc::clone(&content_read);
+        set_object_descriptor_content_read_hook_for_test(move || observer.set(true));
+
+        let error = resolve_platform_xml_object_target(&context, &target("main", "Catalog.Items"))
+            .unwrap_err();
+
+        assert_eq!(error.code, SourceTargetErrorCode::MetadataAddressNotFound);
+        assert_eq!(error.reason(), SourceTargetErrorReason::General);
+        assert!(
+            !content_read.get(),
+            "unregistered descriptor content was read before owner registration proof"
+        );
+        super::OBJECT_DESCRIPTOR_CONTENT_READ_HOOK.with(|slot| {
+            slot.borrow_mut().take();
+        });
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_object_target_proves_a_regular_file_before_any_descriptor_content_read() {
+        let context = fixture(
+            "object-target-non-file-call-order",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let descriptor = context.workspace_root.join("src/Catalogs/Items.xml");
+        fs::create_dir_all(&descriptor).unwrap();
+        let content_read = std::rc::Rc::new(std::cell::Cell::new(false));
+        let observer = std::rc::Rc::clone(&content_read);
+        set_object_descriptor_content_read_hook_for_test(move || observer.set(true));
+
+        let error = resolve_platform_xml_object_target(&context, &target("main", "Catalog.Items"))
+            .unwrap_err();
+
+        assert_eq!(error.code, SourceTargetErrorCode::MetadataAddressNotFound);
+        assert!(
+            !content_read.get(),
+            "descriptor content was read before regular-file evidence"
+        );
+        super::OBJECT_DESCRIPTOR_CONTENT_READ_HOOK.with(|slot| {
+            slot.borrow_mut().take();
+        });
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_object_target_rejects_a_registration_lookalike_outside_the_exact_owner() {
+        let context = fixture(
+            "object-target-registration-lookalike",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        fs::create_dir_all(root.join("Catalogs")).unwrap();
+        fs::write(
+            root.join("Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Items</Name></Properties></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Bogus><ChildObjects><Catalog>Items</Catalog></ChildObjects></Bogus></MetaDataObject>"#,
+        )
+        .unwrap();
+
+        let error = resolve_platform_xml_object_target(&context, &target("main", "Catalog.Items"))
+            .unwrap_err();
+
+        assert_eq!(error.code, SourceTargetErrorCode::MetadataAddressNotFound);
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_object_target_rejects_a_multi_artifact_source_set_owner() {
+        let context = fixture(
+            "object-target-multi-artifact-owner",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_metadata_descriptor(&root, "Catalogs", "Catalog", "Items", "Items");
+        fs::write(
+            root.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Bogus/><Configuration><ChildObjects><Catalog>Items</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        let content_read = std::rc::Rc::new(std::cell::Cell::new(false));
+        let observer = std::rc::Rc::clone(&content_read);
+        set_object_descriptor_content_read_hook_for_test(move || observer.set(true));
+
+        let error = resolve_platform_xml_object_target(&context, &target("main", "Catalog.Items"))
+            .unwrap_err();
+
+        assert_eq!(error.code, SourceTargetErrorCode::MetadataAddressNotFound);
+        assert_eq!(error.reason(), SourceTargetErrorReason::General);
+        assert_eq!(
+            error.message,
+            "metadata owner evidence is unavailable for `Catalog.Items` in sourceSet `main`"
+        );
+        assert!(
+            !content_read.get(),
+            "target content read preceded owner proof"
+        );
+        assert!(!error.message.contains(root.to_string_lossy().as_ref()));
+        super::OBJECT_DESCRIPTOR_CONTENT_READ_HOOK.with(|slot| {
+            slot.borrow_mut().take();
+        });
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_object_target_rejects_an_owner_version_mismatching_the_target() {
+        let context = fixture(
+            "object-target-owner-version-mismatch",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_metadata_descriptor(&root, "Catalogs", "Catalog", "Items", "Items");
+        fs::write(
+            root.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.19"><Configuration><ChildObjects><Catalog>Items</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        let content_read = std::rc::Rc::new(std::cell::Cell::new(false));
+        let observer = std::rc::Rc::clone(&content_read);
+        set_object_descriptor_content_read_hook_for_test(move || observer.set(true));
+
+        let error = resolve_platform_xml_object_target(&context, &target("main", "Catalog.Items"))
+            .unwrap_err();
+
+        assert_eq!(error.code, SourceTargetErrorCode::SourceRootNotAddressable);
+        assert_eq!(
+            error.reason(),
+            SourceTargetErrorReason::SourceFormatUnsupported
+        );
+        assert_eq!(
+            error.message,
+            "metadataPath `Catalog.Items` format does not match its proven metadata owner in sourceSet `main`"
+        );
+        assert!(
+            content_read.get(),
+            "owner/target compatibility must use bounded target evidence"
+        );
+        assert!(!error.message.contains(root.to_string_lossy().as_ref()));
+        super::OBJECT_DESCRIPTOR_CONTENT_READ_HOOK.with(|slot| {
+            slot.borrow_mut().take();
+        });
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_object_target_accepts_a_consistent_older_owner_and_target_for_format_guard() {
+        let context = fixture(
+            "object-target-consistent-older-format",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        fs::create_dir_all(root.join("Catalogs")).unwrap();
+        fs::write(
+            root.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.19"><Configuration><ChildObjects><Catalog>Items</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.19"><Catalog><Properties><Name>Items</Name></Properties></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+
+        let resolution =
+            resolve_platform_xml_object_target(&context, &target("main", "Catalog.Items")).unwrap();
+
+        assert_eq!(
+            resolution.handle.target_path,
+            normalize_path_identity(&root.join("Catalogs/Items.xml")).unwrap()
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_object_target_accepts_consistent_versionless_evidence_for_format_guard() {
+        let context = fixture(
+            "object-target-consistent-versionless",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        fs::create_dir_all(root.join("Catalogs")).unwrap();
+        fs::write(
+            root.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Configuration><ChildObjects><Catalog>Items</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Catalog><Properties><Name>Items</Name></Properties></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+
+        let resolution =
+            resolve_platform_xml_object_target(&context, &target("main", "Catalog.Items")).unwrap();
+
+        assert_eq!(
+            resolution.handle.target_path,
+            normalize_path_identity(&root.join("Catalogs/Items.xml")).unwrap()
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_object_target_rejects_xml_decoded_version_equality() {
+        let context = fixture(
+            "object-target-raw-version-mismatch",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        fs::create_dir_all(root.join("Catalogs")).unwrap();
+        fs::write(
+            root.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><ChildObjects><Catalog>Items</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.&#50;0"><Catalog><Properties><Name>Items</Name></Properties></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+
+        let error = resolve_platform_xml_object_target(&context, &target("main", "Catalog.Items"))
+            .unwrap_err();
+
+        assert_eq!(error.code, SourceTargetErrorCode::SourceRootNotAddressable);
+        assert_eq!(
+            error.reason(),
+            SourceTargetErrorReason::SourceFormatUnsupported
+        );
+        assert_eq!(
+            error.message,
+            "metadataPath `Catalog.Items` format does not match its proven metadata owner in sourceSet `main`"
+        );
+        assert!(!error.message.contains(root.to_string_lossy().as_ref()));
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_object_target_accepts_identical_entity_spelled_raw_versions_for_format_guard() {
+        let context = fixture(
+            "object-target-identical-entity-version",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        fs::create_dir_all(root.join("Catalogs")).unwrap();
+        fs::write(
+            root.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.&#50;0"><Configuration><ChildObjects><Catalog>Items</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.&#50;0"><Catalog><Properties><Name>Items</Name></Properties></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+
+        let resolution =
+            resolve_platform_xml_object_target(&context, &target("main", "Catalog.Items")).unwrap();
+
+        assert_eq!(
+            resolution.handle.target_path,
+            normalize_path_identity(&root.join("Catalogs/Items.xml")).unwrap()
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_nested_object_target_accepts_consistent_versionless_evidence() {
+        let context = fixture(
+            "nested-object-target-consistent-versionless",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        fs::create_dir_all(root.join("Catalogs/Items/Forms")).unwrap();
+        fs::write(
+            root.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Configuration><ChildObjects><Catalog>Items</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Catalog><Properties><Name>Items</Name></Properties><ChildObjects><Form>List</Form></ChildObjects></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("Catalogs/Items/Forms/List.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Form><Properties><Name>List</Name></Properties></Form></MetaDataObject>"#,
+        )
+        .unwrap();
+
+        let resolution = resolve_platform_xml_object_target(
+            &context,
+            &target("main", "Catalog.Items.Form.List"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolution.handle.target_path,
+            normalize_path_identity(&root.join("Catalogs/Items/Forms/List.xml")).unwrap()
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_nested_object_target_accepts_identical_entity_spelled_raw_versions() {
+        let context = fixture(
+            "nested-object-target-identical-entity-version",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        fs::create_dir_all(root.join("Catalogs/Items/Forms")).unwrap();
+        fs::write(
+            root.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.&#50;0"><Configuration><ChildObjects><Catalog>Items</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.&#50;0"><Catalog><Properties><Name>Items</Name></Properties><ChildObjects><Form>List</Form></ChildObjects></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("Catalogs/Items/Forms/List.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.&#50;0"><Form><Properties><Name>List</Name></Properties></Form></MetaDataObject>"#,
+        )
+        .unwrap();
+
+        let resolution = resolve_platform_xml_object_target(
+            &context,
+            &target("main", "Catalog.Items.Form.List"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolution.handle.target_path,
+            normalize_path_identity(&root.join("Catalogs/Items/Forms/List.xml")).unwrap()
+        );
         cleanup(&context);
     }
 
@@ -4992,6 +5699,36 @@ mod tests {
             ),
         )
         .unwrap();
+        register_fixture_item(&root.join("Configuration.xml"), "Configuration", kind, name);
+    }
+
+    fn register_fixture_item(owner: &Path, owner_kind: &str, kind: &str, name: &str) {
+        let registration = format!("<{kind}>{name}</{kind}>");
+        let mut image = fs::read_to_string(owner).unwrap_or_else(|_| {
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{owner_kind}><ChildObjects></ChildObjects></{owner_kind}></MetaDataObject>"#
+            )
+        });
+        if !image.contains(&registration) {
+            if let Some(insertion) = image.rfind("</ChildObjects>") {
+                image.insert_str(insertion, &registration);
+            } else if let Some(self_closing) = image.find("<ChildObjects/>") {
+                image.replace_range(
+                    self_closing..self_closing + "<ChildObjects/>".len(),
+                    &format!("<ChildObjects>{registration}</ChildObjects>"),
+                );
+            } else {
+                let closing = format!("</{owner_kind}>");
+                let insertion = image
+                    .rfind(&closing)
+                    .expect("fixture owner has its declared closing element");
+                image.insert_str(
+                    insertion,
+                    &format!("<ChildObjects>{registration}</ChildObjects>"),
+                );
+            }
+            fs::write(owner, image).unwrap();
+        }
     }
 
     fn write_nested_module_fixture(
@@ -5022,7 +5759,36 @@ mod tests {
         fs::create_dir_all(module.parent().unwrap()).unwrap();
         fs::create_dir_all(descriptor.parent().unwrap()).unwrap();
         fs::write(module, "Procedure Run()\nEndProcedure\n").unwrap();
-        fs::write(descriptor, descriptor_xml).unwrap();
+        fs::write(&descriptor, descriptor_xml).unwrap();
+        let descriptor_relative = descriptor
+            .strip_prefix(root)
+            .expect("fixture descriptor is below its source root")
+            .components()
+            .filter_map(|component| component.as_os_str().to_str())
+            .collect::<Vec<_>>();
+        if let [owner_directory, owner_name, child_collection, child_file] =
+            descriptor_relative.as_slice()
+        {
+            let child_kind = match *child_collection {
+                "Forms" => Some("Form"),
+                "Commands" => Some("Command"),
+                _ => None,
+            };
+            if let Some(child_kind) = child_kind {
+                let owner = root.join(owner_directory).join(format!("{owner_name}.xml"));
+                if owner.is_file() {
+                    let owner_kind = super::metadata_kind_by_directory(owner_directory)
+                        .expect("fixture owner directory is registered")
+                        .tag;
+                    register_fixture_item(
+                        &owner,
+                        owner_kind,
+                        child_kind,
+                        child_file.trim_end_matches(".xml"),
+                    );
+                }
+            }
+        }
     }
 
     fn write_external_descriptor(root: &Path, kind: &str, file_stem: &str, name: &str) {

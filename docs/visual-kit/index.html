@@ -1,0 +1,1133 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Unica Visual Kit</title>
+  <link rel="icon" href="logos/unica-mark-blue.svg" type="image/svg+xml">
+  <style>
+    :root {
+      --blue: #2563eb;
+      --signal: #93c5fd;
+      --ink: #0f172a;
+      --white: #ffffff;
+      --neutral-50: #f5f6f8;
+      --neutral-200: #d8dee8;
+      --neutral-500: #64748b;
+      --content-max: 1440px;
+      --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    html { scroll-behavior: smooth; overflow-x: clip; }
+    body {
+      margin: 0;
+      overflow-x: clip;
+      background: var(--ink);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+    }
+    img { display: block; max-width: 100%; height: auto; }
+    a { color: inherit; }
+
+    .skip-link {
+      position: fixed;
+      inset: 12px auto auto 12px;
+      z-index: 10;
+      padding: 10px 14px;
+      background: var(--white);
+      color: var(--ink);
+      transform: translateY(-180%);
+    }
+    .skip-link:focus { transform: translateY(0); }
+
+    .scene {
+      min-height: min(900px, 100svh);
+      padding: clamp(32px, 6vw, 88px);
+      display: flex;
+      align-items: center;
+      position: relative;
+      isolation: isolate;
+    }
+    .scene__inner {
+      width: min(100%, var(--content-max));
+      min-width: 0;
+      margin-inline: auto;
+    }
+    .scene--blue { background: var(--blue); color: var(--white); }
+    .scene--ink { background: var(--ink); color: var(--white); }
+    .scene--neutral { background: var(--neutral-50); color: var(--ink); }
+    .scene--white { background: var(--white); color: var(--ink); }
+    .scene--signal { background: var(--signal); color: var(--ink); }
+
+    h1, h2, p { margin: 0; }
+    h2 {
+      max-width: 14ch;
+      font-size: clamp(2.6rem, 7vw, 5.75rem);
+      line-height: 0.95;
+      letter-spacing: -0.035em;
+      font-weight: 750;
+      text-wrap: balance;
+    }
+    .section-head {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 28px;
+      margin-bottom: clamp(44px, 7vw, 96px);
+    }
+    .section-note {
+      max-width: 28ch;
+      font-size: clamp(1rem, 1.5vw, 1.25rem);
+      line-height: 1.45;
+      text-wrap: pretty;
+    }
+    .scene--ink .section-note { color: var(--signal); }
+
+    .hero { min-height: 100svh; overflow: hidden; }
+    .hero__inner { display: grid; gap: clamp(34px, 6vw, 76px); }
+    .hero__wordmark { width: min(1120px, 92vw); }
+    .hero__line {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 24px;
+      border-top: 2px solid rgba(255,255,255,0.72);
+      padding-top: 22px;
+      font-size: clamp(1rem, 2vw, 1.45rem);
+      line-height: 1.35;
+    }
+    .hero__stamp {
+      font-size: 0.8rem;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      white-space: nowrap;
+    }
+
+    .wordmark-scene { padding: 0; display: block; }
+    .wordmark-intro {
+      padding: clamp(44px, 7vw, 96px) clamp(32px, 6vw, 88px);
+      background: var(--neutral-50);
+    }
+    .wordmark-intro > div { width: min(100%, var(--content-max)); margin-inline: auto; }
+    .environment {
+      min-height: min(620px, 72svh);
+      padding: clamp(36px, 7vw, 96px);
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+    }
+    .environment img { width: min(980px, 84vw); position: relative; z-index: 1; }
+    .environment--blue { background: var(--blue); }
+    .environment--ink { background: var(--ink); }
+    .environment--skeleton { background: var(--white); position: relative; }
+    .skeleton-shell {
+      width: min(1120px, 90vw);
+      min-height: 420px;
+      display: grid;
+      grid-template-columns: minmax(170px, 0.28fr) 1fr;
+      grid-template-rows: 64px 1fr;
+      border: 2px solid var(--neutral-200);
+      background: var(--white);
+    }
+    .skeleton-shell__top {
+      grid-column: 1 / -1;
+      border-bottom: 2px solid var(--neutral-200);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 18px 22px;
+    }
+    .skeleton-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--neutral-200); }
+    .skeleton-shell__side { border-right: 2px solid var(--neutral-200); padding: 30px 24px; }
+    .skeleton-shell__body { padding: clamp(30px, 5vw, 70px); display: grid; align-content: center; gap: 42px; }
+    .skeleton-logo { width: min(620px, 100%) !important; }
+    .skeleton-lines { display: grid; gap: 14px; }
+    .skeleton-line { display: block; height: 12px; background: var(--neutral-200); }
+    .skeleton-line:nth-child(2) { width: 76%; }
+    .skeleton-line:nth-child(3) { width: 52%; }
+    .skeleton-shell__side .skeleton-line { height: 9px; margin-bottom: 18px; width: 100%; }
+
+    .logo-letter-layout {
+      display: grid;
+      gap: clamp(62px, 9vw, 126px);
+    }
+    .logo-letter-master { width: min(1180px, 100%); }
+    .gap-proof {
+      width: min(1180px, 100%);
+      padding-top: 28px;
+      border-top: 1px solid rgba(147,197,253,0.54);
+      position: relative;
+    }
+    .gap-proof__geometry {
+      display: block;
+      width: 100%;
+      height: auto;
+      overflow: visible;
+    }
+    .gap-proof__measure line {
+      stroke: var(--signal);
+      stroke-width: 1px;
+      vector-effect: non-scaling-stroke;
+    }
+    .gap-proof__measure text {
+      fill: var(--signal);
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 4px;
+      font-weight: 750;
+    }
+    .gap-proof__caption {
+      position: absolute;
+      top: clamp(70px, 10vw, 120px);
+      right: 0;
+      color: var(--signal);
+      font-size: clamp(1rem, 1.5vw, 1.2rem);
+      line-height: 1.45;
+    }
+
+    .transparent-logo-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+    .transparent-logo-card {
+      border: 2px solid var(--ink);
+      background: var(--white);
+      break-inside: avoid;
+    }
+    .transparent-logo-card__preview {
+      min-height: clamp(180px, 24vw, 300px);
+      display: grid;
+      place-items: center;
+      position: relative;
+      overflow: hidden;
+      isolation: isolate;
+    }
+    .transparent-logo-card__preview::before,
+    .transparent-logo-card__preview::after {
+      content: "";
+      position: absolute;
+      inset-block: 0;
+      z-index: -1;
+    }
+    .transparent-logo-card__preview::before {
+      inset-inline: 0 50%;
+      background-color: #ffffff;
+      background-image: repeating-conic-gradient(#dce5f2 0 25%, #ffffff 0 50%);
+      background-size: 24px 24px;
+    }
+    .transparent-logo-card__preview::after {
+      inset-inline: 50% 0;
+      background: var(--field, var(--neutral-50));
+    }
+    .transparent-logo-card__preview img {
+      width: min(78%, 560px);
+      max-height: 150px;
+      position: relative;
+      z-index: 1;
+    }
+    .transparent-logo-card--logo-letter .transparent-logo-card__preview img {
+      width: min(84%, 620px);
+    }
+    .transparent-logo-card__meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 16px 18px;
+      border-top: 2px solid var(--ink);
+      color: var(--ink);
+      font-size: 0.8rem;
+      font-weight: 760;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .github-theme-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: clamp(20px, 3vw, 40px);
+    }
+    .github-frame {
+      min-width: 0;
+      overflow: hidden;
+      border: 1px solid var(--github-border);
+      border-radius: 12px;
+      background: var(--github-canvas);
+      color: var(--github-fg);
+    }
+    .github-frame--light {
+      --github-canvas: #ffffff;
+      --github-canvas-subtle: #f6f8fa;
+      --github-border: #d0d7de;
+      --github-fg: #1f2328;
+      --github-muted: #59636e;
+      --github-line: #d8dee4;
+    }
+    .github-frame--dark {
+      --github-canvas: #0d1117;
+      --github-canvas-subtle: #161b22;
+      --github-border: #30363d;
+      --github-fg: #f0f6fc;
+      --github-muted: #9198a1;
+      --github-line: #3d444d;
+    }
+    .github-frame__topbar {
+      height: 58px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding-inline: 18px;
+      border-bottom: 1px solid var(--github-border);
+      background: var(--github-canvas-subtle);
+    }
+    .github-frame__menu,
+    .github-frame__avatar {
+      flex: 0 0 auto;
+      border: 1px solid var(--github-border);
+    }
+    .github-frame__menu { width: 30px; height: 30px; border-radius: 6px; }
+    .github-frame__avatar { width: 28px; height: 28px; border-radius: 50%; background: var(--blue); }
+    .github-frame__search {
+      width: min(220px, 44%);
+      height: 28px;
+      margin-left: auto;
+      border: 1px solid var(--github-border);
+      border-radius: 6px;
+    }
+    .github-frame__repo {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 20px 22px 14px;
+      color: #0969da;
+      font-size: 0.88rem;
+      font-weight: 650;
+    }
+    .github-frame--dark .github-frame__repo { color: #4493f8; }
+    .github-frame__slash { color: var(--github-muted); font-weight: 400; }
+    .github-frame__visibility {
+      margin-left: 4px;
+      padding: 2px 8px;
+      border: 1px solid var(--github-border);
+      border-radius: 999px;
+      color: var(--github-muted);
+      font-size: 0.68rem;
+      font-weight: 600;
+    }
+    .github-frame__tabs {
+      display: flex;
+      gap: 22px;
+      padding: 0 22px;
+      border-bottom: 1px solid var(--github-border);
+      color: var(--github-muted);
+      font-size: 0.72rem;
+      font-weight: 600;
+    }
+    .github-frame__tab { padding: 10px 0 9px; }
+    .github-frame__tab:first-child { color: var(--github-fg); border-bottom: 2px solid #fd8c73; }
+    .github-readme {
+      margin: 22px;
+      border: 1px solid var(--github-border);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    .github-readme__bar {
+      padding: 11px 14px;
+      border-bottom: 1px solid var(--github-border);
+      background: var(--github-canvas-subtle);
+      font-size: 0.7rem;
+      font-weight: 650;
+    }
+    .github-readme__body {
+      min-height: 300px;
+      padding: clamp(28px, 4vw, 48px);
+      display: grid;
+      align-content: start;
+      gap: 34px;
+    }
+    .github-readme__logo { width: min(100%, 430px); }
+    .github-readme__skeleton { display: grid; gap: 11px; }
+    .github-readme__line { height: 9px; background: var(--github-line); }
+    .github-readme__line:nth-child(2) { width: 82%; }
+    .github-readme__line:nth-child(3) { width: 61%; }
+    .github-theme-caption {
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      margin-top: 14px;
+      color: var(--ink);
+      font-size: 0.78rem;
+      font-weight: 760;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .social-avatar-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: clamp(24px, 4vw, 56px);
+      align-items: start;
+    }
+    .social-avatar-sample {
+      min-width: 0;
+      display: grid;
+      justify-items: center;
+      gap: 18px;
+      padding: clamp(28px, 4vw, 52px);
+      border: 2px solid var(--ink);
+      background: var(--white);
+    }
+    .social-avatar-sample__mask {
+      width: min(360px, 72vw);
+      aspect-ratio: 1;
+      overflow: hidden;
+      background: var(--blue);
+    }
+    .social-avatar-sample--circle .social-avatar-sample__mask { border-radius: 50%; }
+    .social-avatar-sample__mask img { width: 100%; height: 100%; }
+    .social-avatar-sample__meta {
+      width: 100%;
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      padding-top: 16px;
+      border-top: 2px solid var(--ink);
+      font-size: 0.78rem;
+      font-weight: 760;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .social-avatar-rule {
+      margin-top: clamp(28px, 4vw, 48px);
+      color: var(--blue);
+      font-size: clamp(1rem, 1.6vw, 1.3rem);
+      font-weight: 720;
+      text-align: center;
+    }
+
+    .mark-rail {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: clamp(18px, 3vw, 40px);
+      min-width: 0;
+      padding-block: 42px 28px;
+      border-bottom: 2px solid var(--ink);
+    }
+    .mark-sample { display: grid; justify-items: center; gap: 16px; flex: 0 0 auto; min-width: 0; }
+    .mark-sample img { width: min(var(--size), 75vw); }
+    .mark-sample span { font-size: 0.78rem; font-weight: 720; letter-spacing: 0.08em; }
+    .mark-minimum {
+      margin-top: 24px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: var(--blue);
+      font-weight: 700;
+    }
+    .mark-minimum::before { content: ""; width: 36px; height: 4px; background: var(--blue); }
+
+    .context-grid {
+      display: grid;
+      grid-template-columns: 1.4fr 0.8fr;
+      grid-template-rows: auto auto;
+      gap: clamp(18px, 3vw, 36px);
+    }
+    .context {
+      min-width: 0;
+      overflow: hidden;
+      border-radius: 14px;
+      position: relative;
+    }
+    .context--ide { min-height: 500px; background: var(--ink); color: var(--white); grid-row: span 2; }
+    .context--product { min-height: 270px; background: var(--white); }
+    .context--banner { min-height: 270px; background: var(--blue); }
+    .context__bar {
+      height: 48px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding-inline: 18px;
+      border-bottom: 1px solid rgba(148,163,184,0.28);
+    }
+    .context__dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; opacity: 0.28; }
+    .context__body { min-height: calc(100% - 48px); padding: clamp(28px, 4vw, 56px); display: grid; align-content: center; gap: 34px; }
+    .context__body img { width: min(600px, 100%); }
+    .context--product .context__body img { width: min(380px, 85%); }
+    .context--banner .context__body img { width: min(430px, 90%); }
+    .context__skeleton { display: grid; gap: 12px; opacity: 0.46; }
+    .context__skeleton i { display: block; height: 9px; background: currentColor; font-style: normal; }
+    .context__skeleton i:nth-child(2) { width: 72%; }
+    .context__skeleton i:nth-child(3) { width: 46%; }
+
+    .signature-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(230px, 0.34fr);
+      gap: clamp(20px, 3vw, 42px);
+      align-items: stretch;
+    }
+    .signature-stack { display: grid; gap: clamp(16px, 2vw, 28px); min-width: 0; }
+    .signature-stage { min-width: 0; overflow: hidden; }
+    .signature-stage img { width: 100%; }
+    .signature-mobile { display: none; }
+    .signature-portrait { background: var(--ink); display: grid; place-items: center; }
+    .signature-portrait img { width: min(320px, 100%); height: 100%; object-fit: contain; }
+
+    .x-system-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.65fr) minmax(240px, 0.65fr);
+      gap: clamp(34px, 5vw, 76px);
+    }
+    .x-specimen {
+      min-width: 0;
+      padding-top: 20px;
+      border-top: 1px solid rgba(147,197,253,0.52);
+    }
+    .x-specimen:first-child { grid-column: 1 / -1; }
+    .x-specimen__label {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: clamp(20px, 3vw, 34px);
+      color: var(--signal);
+      font-size: 0.82rem;
+      font-weight: 750;
+      letter-spacing: 0.08em;
+    }
+    .x-specimen__label span:last-child { color: var(--white); letter-spacing: 0; }
+    .x-system-diagram { display: block; width: 100%; height: auto; overflow: visible; }
+    .x-system-diagram--wordmark { width: min(1100px, 100%); }
+    .x-system-diagram--logo-letter { width: min(920px, 100%); }
+    .x-system-diagram--mark { width: min(380px, 100%); }
+    .x-overlay { fill: var(--signal); opacity: 0.82; }
+    .x-dimension line {
+      stroke: var(--signal);
+      stroke-width: 1px;
+      vector-effect: non-scaling-stroke;
+    }
+    .x-dimension text {
+      fill: var(--signal);
+      font-family: Arial, Helvetica, sans-serif;
+      font-weight: 750;
+    }
+    .x-letter-dimension line,
+    .x-tile-dimension line {
+      stroke: var(--signal);
+      stroke-width: 1px;
+      vector-effect: non-scaling-stroke;
+    }
+    .x-letter-dimension text,
+    .x-tile-dimension text {
+      fill: var(--signal);
+      font-family: Arial, Helvetica, sans-serif;
+      font-weight: 750;
+    }
+    .x-rule {
+      margin-top: clamp(22px, 3vw, 36px);
+      color: var(--white);
+      font-size: clamp(1rem, 1.6vw, 1.3rem);
+      font-weight: 700;
+    }
+
+    .measure-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: clamp(22px, 4vw, 54px);
+      align-items: start;
+    }
+    .measure { min-width: 0; display: grid; gap: 14px; }
+    .measure__label {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 16px;
+      font-weight: 750;
+    }
+    .measure__label span:last-child { color: var(--blue); }
+    .clear-space-diagram { display: block; width: 100%; height: auto; overflow: visible; }
+    .clear-space__field {
+      fill: #eef4ff;
+      stroke: var(--blue);
+      stroke-width: 1.25px;
+      stroke-dasharray: 5 4;
+      vector-effect: non-scaling-stroke;
+    }
+    .clear-space__artwork-bound {
+      fill: none;
+      stroke: var(--neutral-500);
+      stroke-width: 1px;
+      vector-effect: non-scaling-stroke;
+    }
+    .clear-space__dimension line {
+      stroke: var(--blue);
+      stroke-width: 1px;
+      vector-effect: non-scaling-stroke;
+    }
+    .clear-space__dimension text {
+      fill: var(--blue);
+      font-family: Arial, Helvetica, sans-serif;
+      font-weight: 750;
+    }
+
+    @media (max-width: 1340px) {
+      .mark-rail { justify-content: center; flex-wrap: wrap; }
+    }
+
+    @media (max-width: 900px) {
+      .section-head { align-items: flex-start; flex-direction: column; }
+      .context-grid { grid-template-columns: 1fr; grid-template-rows: auto; }
+      .context--ide { grid-row: auto; min-height: 440px; }
+      .signature-grid { grid-template-columns: 1fr; }
+      .signature-portrait { min-height: 540px; }
+      .x-system-grid { grid-template-columns: 1fr; }
+      .x-specimen:first-child { grid-column: auto; }
+      .measure-grid { grid-template-columns: 1fr; }
+      .github-theme-grid { grid-template-columns: 1fr; }
+      .social-avatar-grid { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 720px) {
+      .scene { min-height: auto; padding: 54px 28px; align-items: stretch; }
+      .hero { min-height: 100svh; align-items: center; }
+      h2 { font-size: clamp(2.3rem, 12vw, 3.5rem); }
+      .hero__wordmark { width: 100%; }
+      .hero__line { align-items: flex-start; flex-direction: column; }
+      .wordmark-intro { padding: 54px 28px; }
+      .environment { min-height: 330px; padding: 42px 28px; }
+      .environment img { width: 100%; }
+      .skeleton-shell { width: 100%; min-height: 330px; grid-template-columns: 82px 1fr; grid-template-rows: 46px 1fr; }
+      .skeleton-shell__top { padding: 13px; }
+      .skeleton-shell__side { padding: 22px 13px; }
+      .skeleton-shell__body { padding: 26px 20px; gap: 28px; }
+      .mark-rail { justify-content: center; align-items: end; flex-wrap: wrap; }
+      .mark-sample img { width: min(var(--size), var(--mobile-size)); }
+      .context--ide { min-height: 390px; }
+      .signature-desktop { display: none; }
+      .signature-mobile { display: block; width: min(320px, 100%) !important; margin-inline: auto; }
+      .signature-portrait { display: none; }
+      .x-system-grid { gap: 44px; }
+      .transparent-logo-grid { grid-template-columns: 1fr; }
+      .transparent-logo-card__preview { min-height: 180px; }
+      .github-readme__body { min-height: 240px; }
+      .social-avatar-sample__mask { width: min(280px, 72vw); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
+        animation-duration: 0.01ms !important;
+      }
+    }
+
+    @page { size: A4; margin: 0; }
+    @page github-themes { size: A4 landscape; margin: 0; }
+
+    @media print {
+      * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      html, body { width: auto; }
+      .skip-link { display: none; }
+
+      .scene {
+        width: 210mm;
+        min-height: 297mm;
+        padding: 48px;
+        align-items: flex-start;
+        break-before: page;
+        break-inside: auto;
+      }
+      .scene:first-child { break-before: auto; }
+      .scene__inner { width: 100%; }
+      .hero {
+        width: 210mm;
+        height: 297mm;
+        min-height: 297mm;
+        padding-inline: 48px;
+        align-items: center;
+      }
+      .section-head,
+      .wordmark-intro {
+        break-after: avoid;
+        break-inside: avoid;
+      }
+
+      .wordmark-scene { padding: 0; }
+      .wordmark-intro { padding: 48px; }
+      .environment {
+        min-height: 380px;
+        height: 380px;
+        padding: 48px;
+        break-inside: avoid;
+      }
+      .environment--skeleton {
+        width: 210mm;
+        height: 297mm;
+        min-height: 297mm;
+        padding: 96px 48px;
+        break-before: page;
+      }
+      .skeleton-shell {
+        width: 100%;
+        min-height: 520px;
+      }
+
+      .mark-rail {
+        flex-wrap: nowrap;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .mark-sample img { width: var(--print-size); }
+
+      .context-grid {
+        grid-template-columns: 1.4fr 0.8fr;
+        grid-template-rows: auto auto;
+      }
+      .context--ide {
+        min-height: 500px;
+        grid-row: span 2;
+      }
+
+      .signature-grid {
+        grid-template-columns: minmax(0, 1fr) minmax(180px, 0.34fr);
+      }
+      .signature-desktop { display: block; }
+      .signature-mobile { display: none; }
+      .signature-portrait {
+        display: grid;
+        min-height: 0;
+      }
+
+      .x-system-grid {
+        grid-template-columns: minmax(0, 1.65fr) minmax(220px, 0.65fr);
+        gap: 34px;
+      }
+      .x-specimen:first-child { grid-column: 1 / -1; }
+
+      #clear-space .measure-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 18px;
+      }
+
+      .context-grid,
+      .context,
+      .transparent-logo-grid,
+      .transparent-logo-card,
+      .signature-grid,
+      .signature-stage,
+      .signature-portrait,
+      .x-specimen,
+      .measure-grid,
+      .measure {
+        break-inside: avoid;
+      }
+
+      #github-themes {
+        page: github-themes;
+        width: 297mm;
+        height: 210mm;
+        min-height: 210mm;
+        padding: 38px 48px;
+        break-before: page;
+        break-after: page;
+        break-inside: avoid;
+      }
+      #github-themes .section-head { margin-bottom: 32px; }
+      #github-themes h2 { font-size: 56px; }
+      #github-themes .github-theme-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px; }
+      #github-themes .github-frame__topbar { height: 42px; }
+      #github-themes .github-frame__repo { padding-block: 13px 9px; }
+      #github-themes .github-frame__tabs { gap: 18px; }
+      #github-themes .github-readme { margin: 14px; }
+      #github-themes .github-readme__body { min-height: 190px; padding: 28px; gap: 24px; }
+      #github-themes .github-readme__logo { width: min(100%, 330px); }
+
+      #social-avatar .social-avatar-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 30px; }
+      #social-avatar .social-avatar-sample { padding: 28px; }
+      #social-avatar .social-avatar-sample__mask { width: min(250px, 100%); }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#hero">К логотипу</a>
+  <main>
+    <section id="hero" class="scene scene--blue hero">
+      <div class="scene__inner hero__inner">
+        <h1><img class="hero__wordmark" src="logos/unica-wordmark-blue.svg" alt="Unica"></h1>
+        <div class="hero__line">
+          <p>Код без лишней рутины</p>
+          <p class="hero__stamp">UNICA VISUAL KIT · 2026</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="wordmark-environments" class="scene scene--neutral wordmark-scene">
+      <div class="wordmark-intro">
+        <div><h2>CLASSIC WORDMARK</h2></div>
+      </div>
+      <div class="environment environment--blue">
+        <img src="logos/unica-wordmark-blue.svg" alt="Белый классический wordmark Unica на синем поле">
+      </div>
+      <div class="environment environment--ink">
+        <img src="logos/unica-wordmark-ink.svg" alt="Белый классический wordmark Unica на тёмном поле">
+      </div>
+      <div class="environment environment--skeleton">
+        <div class="skeleton-shell">
+          <div class="skeleton-shell__top" aria-hidden="true">
+            <span class="skeleton-dot"></span><span class="skeleton-dot"></span><span class="skeleton-dot"></span>
+          </div>
+          <div class="skeleton-shell__side" aria-hidden="true">
+            <span class="skeleton-line"></span><span class="skeleton-line"></span><span class="skeleton-line"></span>
+          </div>
+          <div class="skeleton-shell__body">
+            <img class="skeleton-logo" src="logos/unica-wordmark-paper.svg" alt="Тёмный классический wordmark Unica в светлом интерфейсе">
+            <div class="skeleton-lines" aria-hidden="true">
+              <span class="skeleton-line"></span><span class="skeleton-line"></span><span class="skeleton-line"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="logo-letter" class="scene scene--ink">
+      <div class="scene__inner logo-letter-layout">
+        <div class="section-head">
+          <h2>LOGO-LETTER + MARK</h2>
+          <p class="section-note">Знак заменяет первую u. Контур n начинается после измеримого чистого просвета.</p>
+        </div>
+        <img class="logo-letter-master" src="logos/unica-logo-letter-ink.svg" alt="Logo-letter Unica: знак u заменяет первую букву слова">
+        <div class="gap-proof" aria-label="Просвет между плиткой знака и буквой n равен 1.35 толщины линии">
+          <svg class="gap-proof__geometry" viewBox="0 0 192.096 72" role="img" aria-labelledby="gap-proof-title">
+            <title id="gap-proof-title">Знак u и буква n в масштабе основного Logo-letter с просветом 1.35X</title>
+            <image class="gap-proof__mark" href="logos/unica-mark-blue.svg" x="0" y="0" width="53.36" height="53.36"/>
+            <g transform="translate(58.4466 8.555) scale(1.45)">
+              <path class="gap-proof__n" d="M3.3 21.7V9.695722c0-3.542246 2.853476-6.395722 6.395722-6.395722h5.608556c3.542246 0 6.395722 2.853476 6.395722 6.395722V21.7" fill="none" stroke="#ffffff" stroke-width="3.68" stroke-linecap="round" stroke-linejoin="round"/>
+            </g>
+            <g class="gap-proof__measure" aria-hidden="true">
+              <line x1="53.36" y1="47" x2="53.36" y2="63"/>
+              <line x1="60.5636" y1="47" x2="60.5636" y2="63"/>
+              <line class="gap-proof__measure-line" x1="53.36" y1="59" x2="60.5636" y2="59"/>
+              <text class="gap-proof__measure-label" x="56.9618" y="68" text-anchor="middle">1.35X</text>
+            </g>
+          </svg>
+          <p class="gap-proof__caption">X = 5.336<br>gap = 7.2036</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="transparent-logos" class="scene scene--white">
+      <div class="scene__inner">
+        <div class="section-head">
+          <h2>TRANSPARENT ASSETS</h2>
+          <p class="section-note">Без внешней подложки. Слева — прозрачность, справа — рабочий фон.</p>
+        </div>
+        <div class="transparent-logo-grid">
+          <article class="transparent-logo-card">
+            <div class="transparent-logo-card__preview" style="--field:#F8FAFC">
+              <img src="logos/unica-wordmark-transparent-ink.svg" alt="Тёмный wordmark Unica на прозрачном фоне">
+            </div>
+            <div class="transparent-logo-card__meta"><span>WORDMARK</span><span>INK · SVG + PNG</span></div>
+          </article>
+          <article class="transparent-logo-card transparent-logo-card--logo-letter">
+            <div class="transparent-logo-card__preview" style="--field:#F8FAFC">
+              <img src="logos/unica-logo-letter-transparent-ink.svg" alt="Тёмный logo-letter Unica на прозрачном фоне">
+            </div>
+            <div class="transparent-logo-card__meta"><span>LOGO-LETTER</span><span>INK · SVG + PNG</span></div>
+          </article>
+          <article class="transparent-logo-card">
+            <div class="transparent-logo-card__preview" style="--field:#0F172A">
+              <img src="logos/unica-wordmark-transparent-paper.svg" alt="Белый wordmark Unica на прозрачном фоне">
+            </div>
+            <div class="transparent-logo-card__meta"><span>WORDMARK</span><span>PAPER · SVG + PNG</span></div>
+          </article>
+          <article class="transparent-logo-card transparent-logo-card--logo-letter">
+            <div class="transparent-logo-card__preview" style="--field:#0F172A">
+              <img src="logos/unica-logo-letter-transparent-paper.svg" alt="Белый logo-letter Unica на прозрачном фоне">
+            </div>
+            <div class="transparent-logo-card__meta"><span>LOGO-LETTER</span><span>PAPER · SVG + PNG</span></div>
+          </article>
+          <article class="transparent-logo-card">
+            <div class="transparent-logo-card__preview" style="--field:#FFFFFF">
+              <img src="logos/unica-wordmark-transparent-blue.svg" alt="Синий wordmark Unica на прозрачном фоне">
+            </div>
+            <div class="transparent-logo-card__meta"><span>WORDMARK</span><span>BLUE · SVG + PNG</span></div>
+          </article>
+          <article class="transparent-logo-card transparent-logo-card--logo-letter">
+            <div class="transparent-logo-card__preview" style="--field:#FFFFFF">
+              <img src="logos/unica-logo-letter-transparent-blue.svg" alt="Синий logo-letter Unica на прозрачном фоне">
+            </div>
+            <div class="transparent-logo-card__meta"><span>LOGO-LETTER</span><span>BLUE · SVG + PNG</span></div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="github-themes" class="scene scene--neutral">
+      <div class="scene__inner">
+        <div class="section-head">
+          <h2>GITHUB THEMES</h2>
+          <p class="section-note">Один прозрачный синий logo-letter на светлой и тёмной теме README.</p>
+        </div>
+        <div class="github-theme-grid">
+          <div>
+            <article class="github-frame github-frame--light" aria-label="Светлая тема страницы репозитория">
+              <div class="github-frame__topbar" aria-hidden="true">
+                <span class="github-frame__menu"></span><span class="github-frame__search"></span><span class="github-frame__avatar"></span>
+              </div>
+              <div class="github-frame__repo"><span>unica</span><span class="github-frame__slash">/</span><span>unica</span><span class="github-frame__visibility">Public</span></div>
+              <div class="github-frame__tabs" aria-hidden="true"><span class="github-frame__tab">Code</span><span class="github-frame__tab">Issues</span><span class="github-frame__tab">Pull requests</span></div>
+              <div class="github-readme">
+                <div class="github-readme__bar">README.md</div>
+                <div class="github-readme__body">
+                  <img class="github-readme__logo" src="logos/unica-logo-letter-transparent-blue.svg" alt="Синий прозрачный logo-letter Unica на светлой теме GitHub">
+                  <div class="github-readme__skeleton" aria-hidden="true"><span class="github-readme__line"></span><span class="github-readme__line"></span><span class="github-readme__line"></span></div>
+                </div>
+              </div>
+            </article>
+            <div class="github-theme-caption"><span>LIGHT THEME</span><span>TRANSPARENT BLUE</span></div>
+          </div>
+          <div>
+            <article class="github-frame github-frame--dark" aria-label="Тёмная тема страницы репозитория">
+              <div class="github-frame__topbar" aria-hidden="true">
+                <span class="github-frame__menu"></span><span class="github-frame__search"></span><span class="github-frame__avatar"></span>
+              </div>
+              <div class="github-frame__repo"><span>unica</span><span class="github-frame__slash">/</span><span>unica</span><span class="github-frame__visibility">Public</span></div>
+              <div class="github-frame__tabs" aria-hidden="true"><span class="github-frame__tab">Code</span><span class="github-frame__tab">Issues</span><span class="github-frame__tab">Pull requests</span></div>
+              <div class="github-readme">
+                <div class="github-readme__bar">README.md</div>
+                <div class="github-readme__body">
+                  <img class="github-readme__logo" src="logos/unica-logo-letter-transparent-blue.svg" alt="Синий прозрачный logo-letter Unica на тёмной теме GitHub">
+                  <div class="github-readme__skeleton" aria-hidden="true"><span class="github-readme__line"></span><span class="github-readme__line"></span><span class="github-readme__line"></span></div>
+                </div>
+              </div>
+            </article>
+            <div class="github-theme-caption"><span>DARK THEME</span><span>TRANSPARENT BLUE</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="social-avatar" class="scene scene--signal">
+      <div class="scene__inner">
+        <div class="section-head">
+          <h2>SOCIAL AVATAR</h2>
+          <p class="section-note">Full-bleed синий фон: круглая маска не обрезает знак, квадратное отображение не открывает белые углы.</p>
+        </div>
+        <div class="social-avatar-grid">
+          <article class="social-avatar-sample social-avatar-sample--circle">
+            <div class="social-avatar-sample__mask">
+              <img src="social/unica-avatar-blue.svg" alt="Круглая маска синего аватара Unica">
+            </div>
+            <div class="social-avatar-sample__meta"><span>CIRCLE CROP</span><span>SAFE AREA</span></div>
+          </article>
+          <article class="social-avatar-sample">
+            <div class="social-avatar-sample__mask">
+              <img src="social/unica-avatar-blue.svg" alt="Квадратное отображение синего аватара Unica">
+            </div>
+            <div class="social-avatar-sample__meta"><span>SQUARE VIEW</span><span>FULL BLEED</span></div>
+          </article>
+        </div>
+        <p class="social-avatar-rule">ОДИН ФАЙЛ · КРУГЛАЯ МАСКА ИЛИ КВАДРАТ · БЕЗ ПРОЗРАЧНЫХ УГЛОВ</p>
+      </div>
+    </section>
+
+    <section id="mark-scale" class="scene scene--white">
+      <div class="scene__inner">
+        <div class="section-head">
+          <h2>MARK SCALE</h2>
+          <p class="section-note">Один знак во всех размерах. 24 px — минимальный рекомендуемый размер.</p>
+        </div>
+        <div class="mark-rail">
+          <div class="mark-sample" style="--size:24px;--mobile-size:calc(4.6875vw - 5.15625px);--print-size:10.3125px"><img src="logos/mark/unica-mark-24.png" alt="Знак Unica 24 пикселя"><span>24</span></div>
+          <div class="mark-sample" style="--size:48px;--mobile-size:calc(9.375vw - 10.3125px);--print-size:20.625px"><img src="logos/mark/unica-mark-48.png" alt="Знак Unica 48 пикселей"><span>48</span></div>
+          <div class="mark-sample" style="--size:96px;--mobile-size:calc(18.75vw - 20.625px);--print-size:41.25px"><img src="logos/mark/unica-mark-96.png" alt="Знак Unica 96 пикселей"><span>96</span></div>
+          <div class="mark-sample" style="--size:128px;--mobile-size:calc(25vw - 27.5px);--print-size:55px"><img src="logos/mark/unica-mark-128.png" alt="Знак Unica 128 пикселей"><span>128</span></div>
+          <div class="mark-sample" style="--size:256px;--mobile-size:calc(50vw - 55px);--print-size:110px"><img src="logos/mark/unica-mark-256.png" alt="Знак Unica 256 пикселей"><span>256</span></div>
+          <div class="mark-sample" style="--size:512px;--mobile-size:calc(100vw - 110px);--print-size:220px"><img src="logos/mark/unica-mark-512.png" alt="Знак Unica 512 пикселей"><span>512</span></div>
+        </div>
+        <p class="mark-minimum">MIN 24 PX</p>
+      </div>
+    </section>
+
+    <section id="contexts" class="scene scene--signal">
+      <div class="scene__inner">
+        <div class="section-head"><h2>IN CONTEXT</h2></div>
+        <div class="context-grid">
+          <div class="context context--ide">
+            <div class="context__bar" aria-hidden="true"><i class="context__dot"></i><i class="context__dot"></i><i class="context__dot"></i></div>
+            <div class="context__body">
+              <img src="logos/unica-logo-letter-ink.svg" alt="Logo-letter Unica в тёмной среде разработки">
+              <div class="context__skeleton" aria-hidden="true"><i></i><i></i><i></i></div>
+            </div>
+          </div>
+          <div class="context context--product">
+            <div class="context__bar" aria-hidden="true"><i class="context__dot"></i><i class="context__dot"></i><i class="context__dot"></i></div>
+            <div class="context__body">
+              <img src="logos/unica-wordmark-paper.svg" alt="Классический wordmark Unica на светлой странице продукта">
+              <div class="context__skeleton" aria-hidden="true"><i></i><i></i><i></i></div>
+            </div>
+          </div>
+          <div class="context context--banner">
+            <div class="context__body">
+              <img src="logos/unica-logo-letter-blue.svg" alt="Logo-letter Unica на насыщенном синем баннере">
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="signatures" class="scene scene--neutral">
+      <div class="scene__inner">
+        <div class="section-head">
+          <h2>SIGNATURES</h2>
+          <p class="section-note">Большой знак. Меньший wordmark и маркетинговая строка — единый блок напротив.</p>
+        </div>
+        <div class="signature-grid">
+          <div class="signature-stack">
+            <div class="signature-stage">
+              <img class="signature-desktop" src="logos/unica-signature-horizontal-blue-tools.svg" alt="Синяя горизонтальная подпись Unica: Код без лишней рутины">
+              <img class="signature-mobile" src="logos/unica-signature-vertical-blue-tools.svg" alt="Синяя вертикальная подпись Unica: Код без лишней рутины">
+            </div>
+            <div class="signature-stage">
+              <img class="signature-desktop" src="logos/unica-signature-horizontal-ink-ai.svg" alt="Тёмная горизонтальная подпись Unica: AI-инструменты для разработки">
+              <img class="signature-mobile" src="logos/unica-signature-vertical-ink-ai.svg" alt="Тёмная вертикальная подпись Unica: AI-инструменты для разработки">
+            </div>
+            <div class="signature-stage">
+              <img class="signature-desktop" src="logos/unica-signature-horizontal-paper-hosts.svg" alt="Светлая горизонтальная подпись Unica: Для Codex и Claude Code">
+              <img class="signature-mobile" src="logos/unica-signature-vertical-paper-hosts.svg" alt="Светлая вертикальная подпись Unica: Для Codex и Claude Code">
+            </div>
+          </div>
+          <div class="signature-portrait">
+            <img src="logos/unica-signature-vertical-ink-tools.svg" alt="Вытянутая вниз подпись Unica с крупным знаком">
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="x-system" class="scene scene--ink">
+      <div class="scene__inner">
+        <div class="section-head">
+          <h2>X SYSTEM</h2>
+          <p class="section-note">X = ВИДИМАЯ ТОЛЩИНА ЛИНИИ. Размеры каждого мастер-контура указаны в его X.</p>
+        </div>
+        <div class="x-system-grid">
+          <div class="x-specimen">
+            <div class="x-specimen__label"><span>WORDMARK</span><span>32X × 6X</span></div>
+            <svg class="x-system-diagram x-system-diagram--wordmark" data-name="wordmark" data-x="3.68" data-visible-bounds="1.46 1.46 119.22 23.54" viewBox="-11 -8 151 47" role="img" aria-label="X показан на штрихе; видимый wordmark имеет ширину 32X, буква — 6X">
+              <image class="x-system__artwork" href="logos/unica-wordmark-ink.svg" x="0" y="0" width="120" height="25"/>
+              <rect class="x-overlay" x="1.46" y="3.3" width="3.68" height="12.004278"/>
+              <g class="x-dimension" aria-hidden="true">
+                <line x1="1.46" y1="-2" x2="5.14" y2="-2"/><line x1="1.46" y1="-4.5" x2="1.46" y2="0.5"/><line x1="5.14" y1="-4.5" x2="5.14" y2="0.5"/>
+                <text x="3.3" y="-4.2" text-anchor="middle" font-size="4">X</text>
+              </g>
+              <g class="x-letter-dimension" aria-hidden="true">
+                <line x1="1.46" y1="31" x2="23.54" y2="31"/><line x1="1.46" y1="28" x2="1.46" y2="34"/><line x1="23.54" y1="28" x2="23.54" y2="34"/>
+                <text x="12.5" y="37.5" text-anchor="middle" font-size="4">6X</text>
+              </g>
+              <g class="x-letter-dimension" aria-hidden="true">
+                <line x1="-4.5" y1="1.46" x2="-4.5" y2="23.54"/><line x1="-7.5" y1="1.46" x2="-1.5" y2="1.46"/><line x1="-7.5" y1="23.54" x2="-1.5" y2="23.54"/>
+                <text x="-7" y="12.5" text-anchor="middle" font-size="4" transform="rotate(-90 -7 12.5)">6X</text>
+              </g>
+            </svg>
+            <p class="x-rule">БУКВА 6X × 6X · I 1X × 6X</p>
+          </div>
+          <div class="x-specimen">
+            <div class="x-specimen__label"><span>LOGO-LETTER</span><span>36X × 10X</span></div>
+            <svg class="x-system-diagram x-system-diagram--logo-letter" data-name="logo-letter" data-x="5.336" data-visible-bounds="0 0 192.096 53.36" viewBox="-14 -8 225 94" role="img" aria-label="X показан на штрихе n; Logo-letter имеет ширину 36X; расстояние до n равно 1.35X">
+              <image class="x-system__artwork" href="logos/unica-logo-letter-ink.svg" x="0" y="0" width="192.096" height="53.36"/>
+              <rect class="x-overlay" x="60.5636" y="22.6138" width="5.336" height="17.4062"/>
+              <g class="x-dimension" aria-hidden="true">
+                <line x1="60.5636" y1="-2" x2="65.8996" y2="-2"/><line x1="60.5636" y1="-4.5" x2="60.5636" y2="0.5"/><line x1="65.8996" y1="-4.5" x2="65.8996" y2="0.5"/>
+                <text x="63.2316" y="-4.2" text-anchor="middle" font-size="5">X</text>
+                <line x1="53.36" y1="59" x2="60.5636" y2="59"/><line x1="53.36" y1="55.5" x2="53.36" y2="62.5"/><line x1="60.5636" y1="55.5" x2="60.5636" y2="62.5"/>
+                <text x="56.9618" y="68" text-anchor="middle" font-size="5">1.35X</text>
+              </g>
+              <g class="x-tile-dimension" aria-hidden="true">
+                <line x1="0" y1="76" x2="53.36" y2="76"/><line x1="0" y1="72.5" x2="0" y2="79.5"/><line x1="53.36" y1="72.5" x2="53.36" y2="79.5"/>
+                <text x="26.68" y="84" text-anchor="middle" font-size="5">10X</text>
+                <line x1="-7" y1="0" x2="-7" y2="53.36"/><line x1="-10.5" y1="0" x2="-3.5" y2="0"/><line x1="-10.5" y1="53.36" x2="-3.5" y2="53.36"/>
+                <text x="-10" y="26.68" text-anchor="middle" font-size="5" transform="rotate(-90 -10 26.68)">10X</text>
+              </g>
+            </svg>
+            <p class="x-rule">СИНЯЯ ПОДЛОЖКА 10X × 10X · РАССТОЯНИЕ ДО N = 1.35X</p>
+          </div>
+          <div class="x-specimen">
+            <div class="x-specimen__label"><span>MARK</span><span>10X × 10X</span></div>
+            <svg class="x-system-diagram x-system-diagram--mark" data-name="mark" data-x="6.4" viewBox="-14 -8 102 94" role="img" aria-label="X показан на толщине внутреннего штриха U; синяя подложка имеет ширину и высоту 10X">
+              <image class="x-system__artwork" href="logos/unica-mark-blue.svg" x="0" y="0" width="64" height="64"/>
+              <rect class="x-overlay" x="12.8" y="16" width="6.4" height="20.877"/>
+              <g class="x-dimension" aria-hidden="true">
+                <line x1="12.8" y1="-2" x2="19.2" y2="-2"/><line x1="12.8" y1="-4.5" x2="12.8" y2="0.5"/><line x1="19.2" y1="-4.5" x2="19.2" y2="0.5"/>
+                <text x="16" y="-4.2" text-anchor="middle" font-size="5">X</text>
+              </g>
+              <g class="x-tile-dimension" aria-hidden="true">
+                <line x1="0" y1="76" x2="64" y2="76"/><line x1="0" y1="72.5" x2="0" y2="79.5"/><line x1="64" y1="72.5" x2="64" y2="79.5"/>
+                <text x="32" y="84" text-anchor="middle" font-size="5">10X</text>
+                <line x1="-7" y1="0" x2="-7" y2="64"/><line x1="-10.5" y1="0" x2="-3.5" y2="0"/><line x1="-10.5" y1="64" x2="-3.5" y2="64"/>
+                <text x="-10" y="32" text-anchor="middle" font-size="5" transform="rotate(-90 -10 32)">10X</text>
+              </g>
+            </svg>
+            <p class="x-rule">СИНЯЯ ПОДЛОЖКА 10X × 10X · U 6X × 6X</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="clear-space" class="scene scene--white">
+      <div class="scene__inner">
+        <div class="section-head">
+          <h2>CLEAR SPACE</h2>
+          <p class="section-note">ЗАЩИТНОЕ ПОЛЕ = 2X ОТ ГРАНИЦЫ ИЗОБРАЖЕНИЯ.</p>
+        </div>
+        <div class="measure-grid">
+          <div class="measure">
+            <div class="measure__label"><span>WORDMARK</span><span>2X</span></div>
+            <svg class="clear-space-diagram" data-name="wordmark" data-x="3.68" data-clear="7.36" data-visible-bounds="1.46 1.46 119.22 23.54" viewBox="-5.9 -5.9 132.48 36.8" role="img" aria-label="Защитное поле классического wordmark Unica от видимой границы контура">
+              <rect class="clear-space__field" x="-5.9" y="-5.9" width="132.48" height="36.8"/>
+              <image class="clear-space__artwork" href="logos/unica-wordmark-paper.svg" x="0" y="0" width="120" height="25"/>
+              <rect class="clear-space__artwork-bound" x="1.46" y="1.46" width="117.76" height="22.08"/>
+              <g class="clear-space__dimension" aria-hidden="true">
+                <line x1="-5.9" y1="12.5" x2="1.46" y2="12.5"/><line x1="-5.9" y1="10.7" x2="-5.9" y2="14.3"/><line x1="1.46" y1="10.7" x2="1.46" y2="14.3"/>
+                <text x="-2.22" y="9.6" text-anchor="middle" font-size="4">2X</text>
+                <line x1="60.34" y1="23.54" x2="60.34" y2="30.9"/><line x1="58.54" y1="23.54" x2="62.14" y2="23.54"/><line x1="58.54" y1="30.9" x2="62.14" y2="30.9"/>
+                <text x="63.34" y="28.5" font-size="4">2X</text>
+              </g>
+            </svg>
+          </div>
+          <div class="measure">
+            <div class="measure__label"><span>LOGO-LETTER</span><span>2X</span></div>
+            <svg class="clear-space-diagram" data-name="logo-letter" data-x="5.336" data-clear="10.672" data-visible-bounds="0 0 192.096 53.36" viewBox="-10.672 -10.672 213.44 74.704" role="img" aria-label="Защитное поле Logo-letter Unica от видимой границы композиции">
+              <rect class="clear-space__field" x="-10.672" y="-10.672" width="213.44" height="74.704"/>
+              <image class="clear-space__artwork" href="logos/unica-logo-letter-paper.svg" x="0" y="0" width="192.096" height="53.36"/>
+              <rect class="clear-space__artwork-bound" x="0" y="0" width="192.096" height="53.36"/>
+              <g class="clear-space__dimension" aria-hidden="true">
+                <line x1="-10.672" y1="26.68" x2="0" y2="26.68"/><line x1="-10.672" y1="24" x2="-10.672" y2="29.4"/><line x1="0" y1="24" x2="0" y2="29.4"/>
+                <text x="-5.336" y="22" text-anchor="middle" font-size="5.5">2X</text>
+                <line x1="96.048" y1="53.36" x2="96.048" y2="64.032"/><line x1="93.36" y1="53.36" x2="98.736" y2="53.36"/><line x1="93.36" y1="64.032" x2="98.736" y2="64.032"/>
+                <text x="100.56" y="60.5" font-size="5.5">2X</text>
+              </g>
+            </svg>
+          </div>
+          <div class="measure">
+            <div class="measure__label"><span>MARK</span><span>2X</span></div>
+            <svg class="clear-space-diagram" data-name="mark" data-x="6.4" data-clear="12.8" data-visible-bounds="0 0 64 64" viewBox="-12.8 -12.8 89.6 89.6" role="img" aria-label="Защитное поле знака Unica от видимой границы композиции">
+              <rect class="clear-space__field" x="-12.8" y="-12.8" width="89.6" height="89.6"/>
+              <image class="clear-space__artwork" href="logos/unica-mark-blue.svg" x="0" y="0" width="64" height="64"/>
+              <rect class="clear-space__artwork-bound" x="0" y="0" width="64" height="64"/>
+              <g class="clear-space__dimension" aria-hidden="true">
+                <line x1="-12.8" y1="32" x2="0" y2="32"/><line x1="-12.8" y1="28.8" x2="-12.8" y2="35.2"/><line x1="0" y1="28.8" x2="0" y2="35.2"/>
+                <text x="-6.4" y="26.5" text-anchor="middle" font-size="4.6">2X</text>
+                <line x1="32" y1="64" x2="32" y2="76.8"/><line x1="28.8" y1="64" x2="35.2" y2="64"/><line x1="28.8" y1="76.8" x2="35.2" y2="76.8"/>
+                <text x="37" y="72" font-size="4.6">2X</text>
+              </g>
+            </svg>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

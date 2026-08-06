@@ -8,6 +8,7 @@ mod target;
 pub(crate) mod testing;
 
 pub use entrypoint::run_platform_main;
+pub(crate) use filesystem::short_private_runtime_dir;
 pub(crate) use process::{
     cancel_runtime_job_process_tree, configure_runtime_job_command, ensure_truncation_diagnostics,
     ManagedChild, ManagedCommand, ManagedOutput, ManagedStartupChild,

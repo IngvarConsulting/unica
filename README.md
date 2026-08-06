@@ -1,3 +1,9 @@
+<p align="center">
+  <a href="docs/visual-kit/index.html">
+    <img src="docs/visual-kit/logos/unica-logo-letter-transparent-blue.svg" alt="Unica" width="420">
+  </a>
+</p>
+
 # Unica
 
 Unica (Ю&#x301;ника) — публичный плагин [Codex](https://openai.com/codex/) и
@@ -46,7 +52,7 @@ claude plugin install unica@unica
 ```
 
 Затем выполните `/reload-plugins` либо начните новую сессию. Навыки становятся
-доступны с префиксом плагина, например `/unica:meta-validate`.
+доступны с префиксом плагина, например `/unica:meta-info`.
 
 ### Загрузка runtime
 
@@ -101,6 +107,10 @@ codex plugin list
 | --- | --- |
 | `0.3.0`–`0.7.4` | Запустите скрипт миграции |
 | `0.7.5` и новее | Выполните обычное обновление |
+
+В `0.12.0` публичная группа `unica.meta.*` перешла на один просмотр и три
+типизированные мутации без совместимости со старыми маршрутами. Таблица замен и
+новые контракты собраны в [руководствах по миграции](docs/migrations/README.md).
 
 Для версий `0.3.0`–`0.7.4` на macOS и Linux:
 

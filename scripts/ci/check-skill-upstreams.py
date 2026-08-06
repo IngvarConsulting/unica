@@ -177,13 +177,21 @@ def validate_index(
             errors.append(f"{label}: entries must be a non-empty list")
             continue
 
+        seen_entry_skills: set[str] = set()
         for entry_index, entry in enumerate(entries):
             entry_label = f"{label}.entries[{entry_index}]"
             for key in ("skill", "status", "notes"):
                 if not isinstance(entry.get(key), str) or not entry.get(key):
                     errors.append(f"{entry_label}: {key} is required")
             if isinstance(entry.get("skill"), str) and entry.get("skill"):
-                indexed_skills.add(entry["skill"])
+                skill = entry["skill"]
+                if skill in seen_entry_skills:
+                    errors.append(
+                        f"{entry_label}: duplicate skill entry in upstream "
+                        f"{upstream_id}: {skill}"
+                    )
+                seen_entry_skills.add(skill)
+                indexed_skills.add(skill)
             status = entry.get("status")
             if isinstance(status, str) and status not in ALLOWED_STATUSES:
                 errors.append(f"{entry_label}: unsupported status: {status}")

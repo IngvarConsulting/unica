@@ -7,7 +7,7 @@ description: "Реализация интеграций 1С. Используй 
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.project.map`, `unica.meta.info`, `unica.meta.compile`, `unica.meta.edit`, `unica.code.search`, `unica.standards.search`, `unica.standards.explain`, and `unica.runtime.execute`.
+- Preferred path: use MCP `unica` tools `unica.project.map`, `unica.meta.info`, `unica.meta.add`, `unica.meta.edit`, `unica.code.search`, `unica.standards.search`, `unica.standards.explain`, and `unica.runtime.execute`.
 - Use `unica.form.*`, `unica.role.*`, or `unica.cfe.*` tools when the integration requires UI, rights, or extension changes.
 - Do not call internal metadata, analyzer, standards, runtime, or package adapters directly. They are hidden behind MCP `unica`.
 
@@ -15,7 +15,7 @@ description: "Реализация интеграций 1С. Используй 
 
 1. Define the contract first: endpoint, method, auth, payload schema, idempotency key, retries, timeout, and error response shape.
 2. Inspect existing integration modules and HTTP/web service metadata with `unica.code.search` and `unica.meta.info`.
-3. Create or edit metadata through `unica.meta.compile` / `unica.meta.edit`; keep source-set and format selected by `unica.project.map`.
+3. Create or edit metadata through `unica.meta.add` / `unica.meta.edit`; keep source-set and format selected by `unica.project.map`.
 4. Put reusable logic in common modules; keep HTTP service handlers thin and explicit about request parsing, validation, and response codes.
 5. Handle secrets outside versioned modules and configs. Do not log tokens, passwords, full request bodies with personal data, or raw auth headers.
 6. Verify syntax/tests with `unica.runtime.execute`; for live HTTP behavior use the `autonomous-server` skill or a user-provided debug URL.
@@ -47,7 +47,6 @@ description: "Реализация интеграций 1С. Используй 
   "params": {
     "name": "unica.meta.info",
     "arguments": {
-      "cwd": "<workspace>",
       "sourceSet": "main",
       "metadataPath": "HTTPService.ExternalAPI"
     }

@@ -75,7 +75,7 @@
       "contentDigest": "8fa028e6e935c898969fcfd83d651eebb626d9b6d47ebd436210072e4f0dee36"
     },
     "meta-compile": {
-      "ownerSkill": "meta-compile",
+      "ownerSkill": "meta-add",
       "caseScopes": [
         "meta-compile"
       ],
@@ -84,7 +84,7 @@
       "contentDigest": "1fe772bec92d4ef2e636579780db81d6ba2bc3227379b03b55b8ae6e7ef5b6a1"
     },
     "meta-validate": {
-      "ownerSkill": "meta-validate",
+      "ownerSkill": "meta-info",
       "caseScopes": [],
       "acceptedCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e",
       "reviewId": "2026-07-24-cc-1c-parity-refresh",

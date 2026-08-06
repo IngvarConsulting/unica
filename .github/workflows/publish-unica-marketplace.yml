@@ -29,10 +29,14 @@ permissions:
 
 jobs:
   stage:
+    # Publishing targets the IngvarConsulting marketplace and needs the shared
+    # credential, so a fork must never run it — its workflow_run trigger fires
+    # automatically after the fork's own build.
     if: >-
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' &&
+      github.repository == 'IngvarConsulting/unica' &&
+      ((github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push') ||
-      (github.event_name == 'workflow_dispatch' && inputs.mode == 'stage')
+      (github.event_name == 'workflow_dispatch' && inputs.mode == 'stage'))
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -78,7 +82,9 @@ jobs:
             --body "Stages the verified thin payload from IngvarConsulting/unica run ${SOURCE_RUN_ID}. The stable catalog is unchanged."
 
   promote:
-    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'promote'
+    if: >-
+      github.repository == 'IngvarConsulting/unica' &&
+      github.event_name == 'workflow_dispatch' && inputs.mode == 'promote'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:

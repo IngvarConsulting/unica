@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use roxmltree::Document;
 use serde::{Deserialize, Serialize};
@@ -184,8 +185,8 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
         required_branches: &["subsystem-command-interface"],
     },
     MutatorRegistryEntry {
-        tool: "unica.meta.compile",
-        operation: "meta-compile",
+        tool: "unica.meta.add",
+        operation: "meta-add",
         impact: XmlImpactClass::CreateOrModify,
         case_ids: &[
             "meta-compile-catalog",
@@ -458,117 +459,117 @@ static EXECUTABLE_CASES: &[ExecutableCase] = &[
     },
     ExecutableCase {
         id: "meta-compile-catalog",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "Catalog",
     },
     ExecutableCase {
         id: "meta-compile-document",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "Document",
     },
     ExecutableCase {
         id: "meta-compile-enum",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "Enum",
     },
     ExecutableCase {
         id: "meta-compile-constant",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "Constant",
     },
     ExecutableCase {
         id: "meta-compile-information-register",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "InformationRegister",
     },
     ExecutableCase {
         id: "meta-compile-accumulation-register",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "AccumulationRegister",
     },
     ExecutableCase {
         id: "meta-compile-accounting-register",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "AccountingRegister",
     },
     ExecutableCase {
         id: "meta-compile-calculation-register",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "CalculationRegister",
     },
     ExecutableCase {
         id: "meta-compile-chart-of-accounts",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "ChartOfAccounts",
     },
     ExecutableCase {
         id: "meta-compile-chart-of-characteristic-types",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "ChartOfCharacteristicTypes",
     },
     ExecutableCase {
         id: "meta-compile-chart-of-calculation-types",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "ChartOfCalculationTypes",
     },
     ExecutableCase {
         id: "meta-compile-business-process",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "BusinessProcess",
     },
     ExecutableCase {
         id: "meta-compile-task",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "Task",
     },
     ExecutableCase {
         id: "meta-compile-exchange-plan",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "ExchangePlan",
     },
     ExecutableCase {
         id: "meta-compile-document-journal",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "DocumentJournal",
     },
     ExecutableCase {
         id: "meta-compile-report",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "Report",
     },
     ExecutableCase {
         id: "meta-compile-data-processor",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "DataProcessor",
     },
     ExecutableCase {
         id: "meta-compile-common-module",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "CommonModule",
     },
     ExecutableCase {
         id: "meta-compile-scheduled-job",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "ScheduledJob",
     },
     ExecutableCase {
         id: "meta-compile-event-subscription",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "EventSubscription",
     },
     ExecutableCase {
         id: "meta-compile-http-service",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "HTTPService",
     },
     ExecutableCase {
         id: "meta-compile-web-service",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "WebService",
     },
     ExecutableCase {
         id: "meta-compile-defined-type",
-        tool: "unica.meta.compile",
+        tool: "unica.meta.add",
         branch: "DefinedType",
     },
     ExecutableCase {
@@ -726,7 +727,29 @@ fn common_args(workspace: &Path) -> Map<String, Value> {
 fn call_public_tool(tool: &str, args: &Map<String, Value>) -> Result<String, String> {
     assert_eq!(args.get("dryRun"), Some(&Value::Bool(false)));
     let app = UnicaApplication::new();
-    let result = app.call_tool(tool, args)?;
+    let result = if matches!(
+        tool,
+        "unica.meta.add" | "unica.meta.edit" | "unica.meta.remove"
+    ) {
+        static PROCESS_CWD_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = PROCESS_CWD_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let workspace = args
+            .get("cwd")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("{tool} corpus call has no workspace"))?;
+        let previous = std::env::current_dir().map_err(|error| error.to_string())?;
+        std::env::set_current_dir(workspace).map_err(|error| error.to_string())?;
+        let mut typed_args = args.clone();
+        typed_args.remove("cwd");
+        let result = app.call_tool(tool, &typed_args);
+        std::env::set_current_dir(previous).map_err(|error| error.to_string())?;
+        result?
+    } else {
+        app.call_tool(tool, args)?
+    };
     if !result.ok || !result.errors.is_empty() {
         return Err(format!(
             "{tool} failed: {}; errors={:?}",
@@ -1274,16 +1297,20 @@ fn write_json_input(workspace: &Path, name: &str, value: &Value) -> Result<Strin
     Ok(relative)
 }
 
-fn meta_compile_args(workspace: &Path, json_path: &str) -> Map<String, Value> {
-    let mut args = common_args(workspace);
-    args.insert("JsonPath".to_string(), Value::String(json_path.to_string()));
-    args.insert("OutputDir".to_string(), Value::String("src".to_string()));
-    args
-}
-
 fn seed_metadata(workspace: &Path, input_name: &str, definition: Value) -> Result<(), String> {
-    let path = write_json_input(workspace, input_name, &definition)?;
-    call_public_tool("unica.meta.compile", &meta_compile_args(workspace, &path))?;
+    let kind = definition
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("metadata seed {input_name} has no type"))?;
+    let name = definition
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("metadata seed {input_name} has no name"))?;
+    let mut args = common_args(workspace);
+    args.insert("sourceSet".to_string(), Value::String("main".to_string()));
+    args.insert("kind".to_string(), Value::String(kind.to_string()));
+    args.insert("name".to_string(), Value::String(name.to_string()));
+    call_public_tool("unica.meta.add", &args)?;
     Ok(())
 }
 
@@ -2087,32 +2114,37 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
         }
         let definition = meta_definition(case.branch)
             .ok_or_else(|| format!("missing metadata definition for {}", case.branch))?;
-        let path = write_json_input(workspace, case.id, &definition)?;
-        return Ok(meta_compile_args(workspace, &path));
+        let mut args = common_args(workspace);
+        args.insert("sourceSet".to_string(), Value::String("main".to_string()));
+        args.insert("kind".to_string(), Value::String(case.branch.to_string()));
+        args.insert(
+            "name".to_string(),
+            Value::String(
+                definition["name"]
+                    .as_str()
+                    .ok_or_else(|| format!("metadata case {} has no name", case.id))?
+                    .to_string(),
+            ),
+        );
+        return Ok(args);
     }
 
     if matches!(case.id, "meta-edit-property" | "meta-remove-object") {
         seed_catalog(workspace)?;
         let mut args = common_args(workspace);
+        args.insert("sourceSet".to_string(), Value::String("main".to_string()));
+        args.insert(
+            "metadataPath".to_string(),
+            Value::String("Catalog.CorpusCatalog".to_string()),
+        );
         if case.id == "meta-edit-property" {
             args.insert(
-                "ObjectPath".to_string(),
-                Value::String("src/Catalogs/CorpusCatalog.xml".to_string()),
-            );
-            args.insert(
-                "Operation".to_string(),
-                Value::String("modify-property".to_string()),
-            );
-            args.insert(
-                "Value".to_string(),
-                Value::String("Comment=Corpus edited".to_string()),
+                "operations".to_string(),
+                json!([{"op": "setProperties", "values": {"Comment": "Corpus edited"}}]),
             );
         } else {
-            args.insert("ConfigDir".to_string(), Value::String("src".to_string()));
-            args.insert(
-                "Object".to_string(),
-                Value::String("Catalog.CorpusCatalog".to_string()),
-            );
+            args.insert("force".to_string(), Value::Bool(true));
+            args.insert("confirm".to_string(), Value::Bool(true));
         }
         return Ok(args);
     }
@@ -3410,7 +3442,7 @@ fn configured_output_directory() -> Result<PathBuf, String> {
     configured_output_directory_from(raw.as_deref(), repo_root, &home)
 }
 
-fn live_public_native_mutators() -> BTreeMap<&'static str, &'static str> {
+fn live_public_mutators() -> BTreeMap<&'static str, &'static str> {
     UnicaApplication::new()
         .tools()
         .into_iter()
@@ -3418,8 +3450,15 @@ fn live_public_native_mutators() -> BTreeMap<&'static str, &'static str> {
             if !tool.mutating {
                 return None;
             }
-            let ToolHandler::NativeOperation { operation, .. } = tool.handler else {
-                return None;
+            let operation = match tool.handler {
+                ToolHandler::NativeOperation { operation, .. } => operation,
+                ToolHandler::Metadata { .. } => match tool.name {
+                    "unica.meta.add" => "meta-add",
+                    "unica.meta.edit" => "meta-edit",
+                    "unica.meta.remove" => "meta-remove",
+                    _ => return None,
+                },
+                _ => return None,
             };
             Some((tool.name, operation))
         })
@@ -3428,7 +3467,7 @@ fn live_public_native_mutators() -> BTreeMap<&'static str, &'static str> {
 
 #[test]
 fn every_public_native_mutator_has_xml_impact_and_case_coverage() {
-    let live = live_public_native_mutators();
+    let live = live_public_mutators();
     let mut registry = BTreeMap::new();
     let mut seen_operations = BTreeSet::new();
     for entry in MUTATOR_REGISTRY {
@@ -4314,7 +4353,12 @@ fn corpus_case_inventories_stable_files_outside_platform_boundaries() {
     assert!(paths
         .iter()
         .any(|path| path.ends_with("/workspace/v8project.yaml")));
-    assert!(paths.iter().any(|path| path.contains("/workspace/inputs/")));
+    assert!(
+        paths
+            .iter()
+            .all(|path| !path.contains("/workspace/inputs/")),
+        "typed meta.add must not recreate the retired JSON-DSL input channel"
+    );
     assert!(paths.iter().all(|path| !path.contains("/workspace/src/")));
 
     fs::remove_dir_all(root).unwrap();

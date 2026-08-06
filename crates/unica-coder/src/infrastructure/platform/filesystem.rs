@@ -2,7 +2,147 @@ use std::fs;
 #[cfg(unix)]
 use std::fs::File;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Returns a short, private directory suitable as a child process' Unix runtime
+/// directory.  It deliberately lives below `/tmp`: macOS's `TMPDIR` and a
+/// caller's `XDG_RUNTIME_DIR` can both be too long once a Unix socket name is
+/// appended.
+pub(crate) fn short_private_runtime_dir() -> io::Result<Option<PathBuf>> {
+    #[cfg(unix)]
+    {
+        short_private_runtime_dir_unix().map(Some)
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(None)
+    }
+}
+
+#[cfg(unix)]
+fn short_private_runtime_dir_unix() -> io::Result<PathBuf> {
+    // SAFETY: `geteuid` has no preconditions and only reads the effective UID
+    // of this process.
+    let uid = unsafe { libc::geteuid() };
+    let path = PathBuf::from("/tmp").join(format!("unica-bsl-{uid}"));
+    ensure_short_private_runtime_dir_unix(&path, uid)
+}
+
+#[cfg(unix)]
+fn runtime_directory_permissions_error(path: &Path) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        format!(
+            "short runtime directory {} must be owned by the current user and have mode 0700",
+            path.display()
+        ),
+    )
+}
+
+#[cfg(unix)]
+fn runtime_directory_metadata_is_ready(
+    path: &Path,
+    metadata: &fs::Metadata,
+    uid: libc::uid_t,
+) -> io::Result<bool> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("short runtime path {} is not a directory", path.display()),
+        ));
+    }
+    if metadata.uid() != uid {
+        return Err(runtime_directory_permissions_error(path));
+    }
+
+    Ok(metadata.permissions().mode() & 0o777 == 0o700)
+}
+
+#[cfg(unix)]
+fn ensure_short_private_runtime_dir_unix(path: &Path, uid: libc::uid_t) -> io::Result<PathBuf> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    use std::os::unix::io::FromRawFd;
+    use std::time::Duration;
+
+    const SETUP_ATTEMPTS: usize = 8;
+    const RETRY_DELAY: Duration = Duration::from_millis(1);
+
+    for _ in 0..SETUP_ATTEMPTS {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) => {
+                if runtime_directory_metadata_is_ready(path, &metadata, uid)? {
+                    return Ok(path.to_path_buf());
+                }
+
+                // Another process with the same UID can observe a directory
+                // between its creation and the creator's permission
+                // normalization. Give that bounded race time to settle.
+                std::thread::sleep(RETRY_DELAY);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                match fs::DirBuilder::new().mode(0o700).create(path) {
+                    Ok(()) => {
+                        // `DirBuilder::mode` is filtered through the caller's
+                        // umask. The directory is part of an authentication
+                        // boundary for the local socket, so normalize it before
+                        // accepting the newly created path.
+                        let encoded =
+                            CString::new(path.as_os_str().as_bytes()).map_err(|error| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidInput,
+                                    format!("short runtime path contains an embedded NUL: {error}"),
+                                )
+                            })?;
+                        // SAFETY: `encoded` is NUL-terminated and remains live for
+                        // the call. `O_NOFOLLOW` prevents a raced symlink from being
+                        // opened before the directory descriptor is owned below.
+                        let descriptor = unsafe {
+                            libc::open(
+                                encoded.as_ptr(),
+                                libc::O_RDONLY
+                                    | libc::O_DIRECTORY
+                                    | libc::O_CLOEXEC
+                                    | libc::O_NOFOLLOW,
+                            )
+                        };
+                        if descriptor < 0 {
+                            return Err(io::Error::last_os_error());
+                        }
+                        // SAFETY: `open` returned a new owned descriptor.
+                        let directory = unsafe { File::from_raw_fd(descriptor) };
+                        directory.set_permissions(fs::Permissions::from_mode(0o700))?;
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                        std::thread::sleep(RETRY_DELAY);
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    // Always validate once after the retry budget. In particular, a successful
+    // creation on the last iteration must not be reported as disappeared.
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if runtime_directory_metadata_is_ready(path, &metadata, uid)? => {
+            Ok(path.to_path_buf())
+        }
+        Ok(_) => Err(runtime_directory_permissions_error(path)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "short runtime directory {} disappeared during setup",
+                path.display()
+            ),
+        )),
+        Err(error) => Err(error),
+    }
+}
 
 #[cfg(all(test, unix))]
 pub(crate) fn create_test_directory_link(target: &Path, link: &Path) -> io::Result<()> {
@@ -168,6 +308,167 @@ pub(crate) fn file_identity(_file: &fs::File) -> io::Result<FileIdentity> {
         io::ErrorKind::Unsupported,
         "file identity is not available on this host",
     ))
+}
+
+#[cfg(unix)]
+fn open_unix_child(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+    flags: libc::c_int,
+) -> io::Result<fs::File> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Component;
+
+    let mut components = Path::new(name).components();
+    if !matches!(components.next(), Some(Component::Normal(component)) if component == name)
+        || components.next().is_some()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "child name must be exactly one normal relative component",
+        ));
+    }
+    let name = CString::new(name.as_bytes())?;
+    // SAFETY: parent owns a live descriptor, name is a NUL-terminated single component, and a
+    // successful openat result transfers one newly owned descriptor to this function.
+    let descriptor = unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), flags) };
+    if descriptor < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        // SAFETY: descriptor is a newly owned successful openat result.
+        Ok(unsafe { fs::File::from_raw_fd(descriptor) })
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn open_directory_nofollow(path: &Path) -> io::Result<fs::File> {
+    use std::ffi::CString;
+    use std::os::fd::FromRawFd;
+    use std::os::unix::ffi::OsStrExt;
+
+    let path = CString::new(path.as_os_str().as_bytes())?;
+    // This ambient entry point is used only for a filesystem namespace root. Callers which open
+    // an arbitrary absolute path walk its components with open_directory_child_nofollow.
+    let descriptor = unsafe {
+        libc::open(
+            path.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if descriptor < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        // SAFETY: descriptor is a newly owned successful open result.
+        Ok(unsafe { fs::File::from_raw_fd(descriptor) })
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn open_directory_child_nofollow(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    open_unix_child(
+        parent,
+        name,
+        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+    )
+}
+
+#[cfg(unix)]
+pub(crate) fn open_regular_child_nofollow(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    let file = open_unix_child(
+        parent,
+        name,
+        libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+    )?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "entry is not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OpenedChildKind {
+    Directory,
+    RegularFile,
+    #[allow(
+        dead_code,
+        reason = "Unix rejects links at open; Windows classifies reparse handles"
+    )]
+    ReparsePoint,
+    Unsupported,
+}
+
+#[cfg(unix)]
+pub(crate) fn opened_child_kind(file: &fs::File) -> io::Result<OpenedChildKind> {
+    let file_type = file.metadata()?.file_type();
+    if file_type.is_dir() {
+        Ok(OpenedChildKind::Directory)
+    } else if file_type.is_file() {
+        Ok(OpenedChildKind::RegularFile)
+    } else {
+        Ok(OpenedChildKind::Unsupported)
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn open_any_child_nofollow(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<(fs::File, OpenedChildKind)> {
+    let file = open_unix_child(
+        parent,
+        name,
+        libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+    )?;
+    let kind = opened_child_kind(&file)?;
+    Ok((file, kind))
+}
+
+#[cfg(unix)]
+pub(crate) fn open_child_for_secure_tree_use(
+    _parent: &fs::File,
+    _name: &std::ffi::OsStr,
+    classification_anchor: fs::File,
+    _kind: OpenedChildKind,
+) -> io::Result<fs::File> {
+    Ok(classification_anchor)
+}
+
+#[cfg(unix)]
+pub(crate) fn read_directory_names_bounded(
+    directory: &fs::File,
+    maximum_entries: usize,
+    mut checkpoint: impl FnMut() -> io::Result<()>,
+) -> io::Result<Vec<std::ffi::OsString>> {
+    let mut entries = cap_primitives::fs::read_base_dir(directory)?;
+    let mut names = Vec::new();
+    loop {
+        checkpoint()?;
+        let Some(entry) = entries.next() else {
+            break;
+        };
+        let name = entry?.file_name();
+        if names.len() >= maximum_entries {
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "directory exceeds the retained enumeration entry limit",
+            ));
+        }
+        names.push(name);
+    }
+    names.sort();
+    Ok(names)
 }
 
 #[cfg(any(test, windows))]
@@ -1359,6 +1660,32 @@ pub(crate) fn open_any_child_nofollow(
 }
 
 #[cfg(windows)]
+pub(crate) fn open_child_for_secure_tree_use(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+    classification_anchor: fs::File,
+    kind: OpenedChildKind,
+) -> io::Result<fs::File> {
+    let anchor_identity = file_identity(&classification_anchor)?;
+    let typed = match kind {
+        OpenedChildKind::Directory => open_directory_child_nofollow(parent, name)?,
+        OpenedChildKind::RegularFile => open_regular_child_nofollow(parent, name)?,
+        OpenedChildKind::ReparsePoint | OpenedChildKind::Unsupported => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "secure tree cannot use an untyped child handle",
+            ))
+        }
+    };
+    if file_identity(&typed)? != anchor_identity || opened_child_kind(&typed)? != kind {
+        return Err(io::Error::other(
+            "typed child identity differs from its classification anchor",
+        ));
+    }
+    Ok(typed)
+}
+
+#[cfg(windows)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OpenedChildKind {
     Directory,
@@ -1427,6 +1754,16 @@ fn parse_directory_information_buffer(
     buffer: &[u8],
     names: &mut Vec<std::ffi::OsString>,
 ) -> io::Result<()> {
+    parse_directory_information_buffer_bounded(buffer, names, usize::MAX, &mut || Ok(()))
+}
+
+#[cfg(windows)]
+fn parse_directory_information_buffer_bounded(
+    buffer: &[u8],
+    names: &mut Vec<std::ffi::OsString>,
+    maximum_entries: usize,
+    checkpoint: &mut impl FnMut() -> io::Result<()>,
+) -> io::Result<()> {
     use std::mem::{offset_of, size_of};
     use std::os::windows::ffi::OsStringExt;
     use windows_sys::Win32::Storage::FileSystem::FILE_ID_BOTH_DIR_INFO;
@@ -1486,7 +1823,14 @@ fn parse_directory_information_buffer(
             });
         }
         let name = std::ffi::OsString::from_wide(&name);
+        checkpoint()?;
         if name != "." && name != ".." {
+            if names.len() >= maximum_entries {
+                return Err(io::Error::new(
+                    io::ErrorKind::FileTooLarge,
+                    "directory exceeds the retained enumeration entry limit",
+                ));
+            }
             names.push(name);
         }
 
@@ -1528,6 +1872,15 @@ fn parse_directory_information_buffer(
     reason = "the following Windows full-dump tree-inspection task consumes retained enumeration"
 )]
 pub(crate) fn read_directory_names(directory: &fs::File) -> io::Result<Vec<std::ffi::OsString>> {
+    read_directory_names_bounded(directory, usize::MAX, || Ok(()))
+}
+
+#[cfg(windows)]
+pub(crate) fn read_directory_names_bounded(
+    directory: &fs::File,
+    maximum_entries: usize,
+    mut checkpoint: impl FnMut() -> io::Result<()>,
+) -> io::Result<Vec<std::ffi::OsString>> {
     use std::mem::size_of;
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
@@ -1572,7 +1925,12 @@ pub(crate) fn read_directory_names(directory: &fs::File) -> io::Result<Vec<std::
         // complete structure, name, and next-record bounds checks before reading each field.
         let buffer =
             unsafe { std::slice::from_raw_parts(storage.as_ptr().cast::<u8>(), buffer_bytes) };
-        parse_directory_information_buffer(buffer, &mut names)?;
+        parse_directory_information_buffer_bounded(
+            buffer,
+            &mut names,
+            maximum_entries,
+            &mut checkpoint,
+        )?;
     }
     names.sort();
     Ok(names)
@@ -3150,6 +3508,93 @@ mod tests {
         ))
     }
 
+    #[cfg(unix)]
+    mod unix_runtime_directory {
+        use super::{fs, unique_temp_root};
+        use crate::infrastructure::platform::filesystem::ensure_short_private_runtime_dir_unix;
+        use std::io;
+        use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
+
+        fn fixture(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+            let root = unique_temp_root(name);
+            fs::create_dir_all(&root).unwrap();
+            let runtime = root.join("runtime");
+            (root, runtime)
+        }
+
+        fn effective_uid() -> libc::uid_t {
+            // SAFETY: `geteuid` has no preconditions and only reads the
+            // effective UID of this process.
+            unsafe { libc::geteuid() }
+        }
+
+        #[test]
+        fn creates_owner_only_runtime_directory() {
+            let (root, runtime) = fixture("short-runtime-create");
+
+            let actual = ensure_short_private_runtime_dir_unix(&runtime, effective_uid()).unwrap();
+            let metadata = fs::symlink_metadata(&runtime).unwrap();
+
+            assert_eq!(actual, runtime);
+            assert!(metadata.is_dir());
+            assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn rejects_symlink_at_runtime_path() {
+            let (root, runtime) = fixture("short-runtime-symlink");
+            let target = root.join("target");
+            fs::create_dir(&target).unwrap();
+            symlink(&target, &runtime).unwrap();
+
+            let error =
+                ensure_short_private_runtime_dir_unix(&runtime, effective_uid()).unwrap_err();
+
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn rejects_regular_file_at_runtime_path() {
+            let (root, runtime) = fixture("short-runtime-file");
+            fs::write(&runtime, b"not a directory").unwrap();
+
+            let error =
+                ensure_short_private_runtime_dir_unix(&runtime, effective_uid()).unwrap_err();
+
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn rejects_runtime_directory_owned_by_another_uid() {
+            let (root, runtime) = fixture("short-runtime-owner");
+            fs::create_dir(&runtime).unwrap();
+            fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();
+            let actual_uid = fs::symlink_metadata(&runtime).unwrap().uid();
+
+            let error = ensure_short_private_runtime_dir_unix(&runtime, actual_uid.wrapping_add(1))
+                .unwrap_err();
+
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn rejects_runtime_directory_with_non_private_mode() {
+            let (root, runtime) = fixture("short-runtime-mode");
+            fs::create_dir(&runtime).unwrap();
+            fs::set_permissions(&runtime, fs::Permissions::from_mode(0o755)).unwrap();
+
+            let error =
+                ensure_short_private_runtime_dir_unix(&runtime, effective_uid()).unwrap_err();
+
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
     fn windows_api_path_text(path: &str, absolute: bool) -> String {
         let mut encoded = windows_api_path_from_utf16(path.encode_utf16().collect(), absolute);
         assert_eq!(encoded.pop(), Some(0));
@@ -3240,6 +3685,88 @@ mod tests {
         assert_eq!(staged_metadata.permissions().mode() & 0o7777, 0o600);
 
         drop(staged_file);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn retained_directory_enumeration_applies_cap_and_checkpoint_incrementally() {
+        use super::{open_directory_nofollow, read_directory_names_bounded};
+
+        let root = unique_temp_root("bounded-retained-enumeration");
+        fs::create_dir_all(&root).unwrap();
+        for index in 0..64 {
+            fs::write(root.join(format!("{index:02}.xml")), b"x").unwrap();
+        }
+        let directory = open_directory_nofollow(&root).unwrap();
+
+        let capped = read_directory_names_bounded(&directory, 3, || Ok(()));
+        assert_eq!(capped.unwrap_err().kind(), io::ErrorKind::FileTooLarge);
+
+        let checkpoints = std::cell::Cell::new(0usize);
+        let cancelled = read_directory_names_bounded(&directory, 64, || {
+            let next = checkpoints.get() + 1;
+            checkpoints.set(next);
+            if next == 5 {
+                Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"))
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(cancelled.unwrap_err().kind(), io::ErrorKind::Interrupted);
+        assert_eq!(checkpoints.get(), 5);
+
+        drop(directory);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn secure_tree_typed_reopen_provides_directory_listing_and_file_bytes() {
+        use super::{
+            open_any_child_nofollow, open_child_for_secure_tree_use, open_directory_nofollow,
+            read_directory_names_bounded, OpenedChildKind,
+        };
+        use std::io::Read;
+
+        let root = unique_temp_root("secure-tree-typed-reopen");
+        fs::create_dir_all(root.join("nested")).unwrap();
+        fs::write(root.join("nested/inside.xml"), b"inside").unwrap();
+        fs::write(root.join("payload.xml"), b"payload").unwrap();
+        let directory = open_directory_nofollow(&root).unwrap();
+
+        let (nested_anchor, nested_kind) =
+            open_any_child_nofollow(&directory, std::ffi::OsStr::new("nested")).unwrap();
+        assert_eq!(nested_kind, OpenedChildKind::Directory);
+        let nested = open_child_for_secure_tree_use(
+            &directory,
+            std::ffi::OsStr::new("nested"),
+            nested_anchor,
+            nested_kind,
+        )
+        .unwrap();
+        assert_eq!(
+            read_directory_names_bounded(&nested, 2, || Ok(())).unwrap(),
+            [std::ffi::OsString::from("inside.xml")]
+        );
+
+        let (file_anchor, file_kind) =
+            open_any_child_nofollow(&directory, std::ffi::OsStr::new("payload.xml")).unwrap();
+        assert_eq!(file_kind, OpenedChildKind::RegularFile);
+        let mut file = open_child_for_secure_tree_use(
+            &directory,
+            std::ffi::OsStr::new("payload.xml"),
+            file_anchor,
+            file_kind,
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"payload");
+
+        drop(file);
+        drop(nested);
+        drop(directory);
         fs::remove_dir_all(root).unwrap();
     }
 
