@@ -624,7 +624,6 @@ mod tests {
         cleanup(&context);
     }
 
-    #[cfg(unix)]
     #[test]
     fn source_generation_does_not_follow_symlinks_into_a_cycle() {
         let context = fixture(&[("main", "CONFIGURATION", "src")]);
@@ -634,7 +633,18 @@ mod tests {
         fs::write(&module, "Процедура Тест()\nКонецПроцедуры\n").unwrap();
         let baseline = source_generation(&source_root);
 
-        std::os::unix::fs::symlink(&source_root, source_root.join("CommonModules/loop")).unwrap();
+        // Windows agents without the privilege cannot create one at all, which
+        // is reported as `None` rather than a failure.
+        let Some(symlink_result) =
+            crate::infrastructure::platform::filesystem::create_dir_symlink_for_test(
+                &source_root,
+                source_root.join("CommonModules/loop"),
+            )
+        else {
+            cleanup(&context);
+            return;
+        };
+        symlink_result.unwrap();
 
         assert_eq!(
             source_generation(&source_root),
