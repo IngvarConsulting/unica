@@ -777,9 +777,23 @@ fn sha256_file(path: &Path) -> Result<String, String> {
 }
 
 fn is_xml_payload_path(path: &Path) -> bool {
-    path.extension()
+    if path
+        .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
-        || path.file_name().is_some_and(|name| name == "Package.bin")
+    {
+        return true;
+    }
+    // ADR-0024 grants `Package.bin` its XML reading through the XDTO package
+    // layout, not through the file name. Mirrored by `_is_xml_payload_path` in
+    // scripts/dev/verify-8-3-27-platform.py.
+    let components = path
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    let [.., collection, _package, ext, name] = components.as_slice() else {
+        return false;
+    };
+    collection == "XDTOPackages" && ext == "Ext" && name == "Package.bin"
 }
 
 fn visit_xml_files(
@@ -4830,6 +4844,35 @@ fn cfe_patch_method_corpus_covers_every_supported_module_layout_family() {
             "Constant.ValueManagerModule",
         ]
     );
+}
+
+#[test]
+fn xml_payload_rule_grants_the_bin_exception_only_to_the_xdto_layout() {
+    // ADR-0024 names `XDTOPackages/<Name>/Ext/Package.bin` as text XML. The
+    // exception belongs to that layout, not to the file name, and this rule
+    // mirrors `_is_xml_payload_path` in scripts/dev/verify-8-3-27-platform.py.
+    for granted in [
+        "src/XDTOPackages/CorpusPackage/Ext/Package.bin",
+        "XDTOPackages/CorpusPackage/Ext/Package.bin",
+        "src/Catalogs/CorpusCatalog.xml",
+        "src/Catalogs/CorpusCatalog.XML",
+    ] {
+        assert!(
+            is_xml_payload_path(Path::new(granted)),
+            "expected XML payload: {granted}"
+        );
+    }
+    for refused in [
+        "src/Ext/Package.bin",
+        "src/XDTOPackages/CorpusPackage/Package.bin",
+        "src/XDTOPackages/Ext/Package.bin",
+        "src/Ext/ParentConfigurations.bin",
+    ] {
+        assert!(
+            !is_xml_payload_path(Path::new(refused)),
+            "expected non-XML payload: {refused}"
+        );
+    }
 }
 
 #[test]

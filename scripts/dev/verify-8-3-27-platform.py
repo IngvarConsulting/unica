@@ -16,7 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath
 
 from lxml import etree
 
@@ -109,6 +109,7 @@ EXPECTED_OWNER_TYPES = {
 }
 XML_FAMILY_BY_ROOT_QNAME = {
     "{http://v8.1c.ru/8.1/data-composition-system/schema}DataCompositionSchema": "dcs",
+    "{http://v8.1c.ru/8.1/xdto}package": "xdto-package",
     "{http://v8.1c.ru/8.2/data/spreadsheet}document": "mxl",
     "{http://v8.1c.ru/8.2/managed-application/core}ClientApplicationInterface": "client-application-interface",
     "{http://v8.1c.ru/8.2/roles}Rights": "roles",
@@ -185,6 +186,7 @@ MANDATORY_CASE_IDS = frozenset(
         "cfe-init-default",
         "cfe-borrow-object",
         "cfe-borrow-managed-form",
+        "xdto-add-nested-property",
     }
 )
 FORBIDDEN_CREDENTIAL_OPTIONS = {
@@ -403,6 +405,27 @@ def _read_regular_payload(path: Path, metadata, label: str) -> bytes:
             os.close(descriptor)
 
 
+def _is_xml_payload_path(path: PurePath) -> bool:
+    """Mirror the generator's XML rule exactly.
+
+    ADR-0024 records that `XDTOPackages/<Name>/Ext/Package.bin` is text XML
+    rooted at `{http://v8.1c.ru/8.1/xdto}package` despite its extension, so the
+    suffix alone does not decide. The exception belongs to that layout and not
+    to the file name, so a `Package.bin` reached any other way stays binary.
+    Any drift between this rule and `is_xml_payload_path` in
+    `crates/unica-coder/tests/format_8_3_27_xml_corpus.rs` makes the corpus
+    declare a file the verifier cannot find.
+    """
+    if path.suffix.lower() == ".xml":
+        return True
+    parts = path.parts
+    return (
+        len(parts) >= 4
+        and parts[-4] == "XDTOPackages"
+        and parts[-2:] == ("Ext", "Package.bin")
+    )
+
+
 def _regular_payloads(
     root: Path,
 ) -> tuple[dict[str, bytes], dict[str, bytes], list[str]]:
@@ -443,7 +466,7 @@ def _regular_payloads(
                     payload = _read_regular_payload(path, metadata, "source")
                     destination = (
                         xml_payloads
-                        if path.suffix.lower() == ".xml"
+                        if _is_xml_payload_path(path)
                         else non_xml_payloads
                     )
                     destination[relative] = payload
@@ -1314,7 +1337,7 @@ def _snapshot_xml_hashes(root: Path) -> dict[str, str]:
                 raise CorpusError(f"symlink is forbidden in workspace: {path}")
             if entry.is_dir(follow_symlinks=False):
                 visit(path)
-            elif entry.is_file(follow_symlinks=False) and path.suffix.lower() == ".xml":
+            elif entry.is_file(follow_symlinks=False) and _is_xml_payload_path(path):
                 try:
                     metadata = entry.stat(follow_symlinks=False)
                     payload = _read_regular_payload(path, metadata, "workspace XML snapshot")
@@ -1415,7 +1438,7 @@ def _validate_non_xml_contract(
         workspace_path = corpus_path[len(prefix) :]
         if not workspace_path:
             raise CorpusError(f"{label} has no workspace-relative path")
-        if PurePosixPath(workspace_path).suffix.lower() == ".xml":
+        if _is_xml_payload_path(PurePosixPath(workspace_path)):
             raise CorpusError(f"{label} must identify a non-XML file")
         if not any(
             _relative_path_is_within(workspace_path, input_root)
@@ -1435,7 +1458,7 @@ def _validate_non_xml_contract(
         workspace_path = corpus_path[len(pre_prefix) :]
         if not workspace_path:
             raise CorpusError(f"{label} has no workspace-relative path")
-        if PurePosixPath(workspace_path).suffix.lower() == ".xml":
+        if _is_xml_payload_path(PurePosixPath(workspace_path)):
             raise CorpusError(f"{label} must identify a non-XML file")
         if not any(
             _relative_path_is_within(workspace_path, input_root)
@@ -1637,7 +1660,7 @@ def _validate_auxiliary_files(
             raise CorpusError(
                 f"case {case_id} auxiliaryFiles path has no workspace-relative path"
             )
-        if PurePosixPath(workspace_path).suffix.lower() == ".xml":
+        if _is_xml_payload_path(PurePosixPath(workspace_path)):
             raise CorpusError(
                 f"case {case_id} auxiliaryFiles must identify non-XML files"
             )
