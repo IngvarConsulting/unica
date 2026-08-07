@@ -83,6 +83,152 @@ pub(crate) enum DateFractions {
     DateTime,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum MetaEventSourceDateFractions {
+    Date,
+    DateTime,
+}
+
+/// One source type of an EventSubscription.
+///
+/// This algebra is intentionally distinct from [`MetadataTypeVariant`]: an
+/// event source names generated platform identities such as an object or a
+/// record set, while a metadata field type names values and references.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind"
+)]
+pub(crate) enum MetaEventSource {
+    String {
+        length: u32,
+        allowed_length: StringLengthMode,
+    },
+    Number {
+        digits: u32,
+        fraction: u32,
+        sign: NumberSign,
+    },
+    Boolean,
+    Date {
+        fractions: MetaEventSourceDateFractions,
+    },
+    ValueStorage,
+    Object {
+        metadata_path: MetadataAddress,
+    },
+    Reference {
+        metadata_path: MetadataAddress,
+    },
+    RecordSet {
+        metadata_path: MetadataAddress,
+    },
+    DefinedType {
+        metadata_path: MetadataAddress,
+    },
+}
+
+const META_EVENT_SOURCE_OBJECT_KINDS: &[MetadataKind] = &[
+    MetadataKind::Catalog,
+    MetadataKind::Document,
+    MetadataKind::ChartOfAccounts,
+    MetadataKind::ChartOfCharacteristicTypes,
+    MetadataKind::ChartOfCalculationTypes,
+    MetadataKind::ExchangePlan,
+    MetadataKind::BusinessProcess,
+    MetadataKind::Task,
+    MetadataKind::Report,
+    MetadataKind::DataProcessor,
+];
+
+const META_EVENT_SOURCE_REFERENCE_KINDS: &[MetadataKind] = &[
+    MetadataKind::Catalog,
+    MetadataKind::Document,
+    MetadataKind::Enum,
+    MetadataKind::ChartOfAccounts,
+    MetadataKind::ChartOfCharacteristicTypes,
+    MetadataKind::ChartOfCalculationTypes,
+    MetadataKind::ExchangePlan,
+    MetadataKind::BusinessProcess,
+    MetadataKind::Task,
+];
+
+const META_EVENT_SOURCE_RECORD_SET_KINDS: &[MetadataKind] = &[
+    MetadataKind::InformationRegister,
+    MetadataKind::AccumulationRegister,
+    MetadataKind::AccountingRegister,
+    MetadataKind::CalculationRegister,
+];
+const META_EVENT_SOURCE_DEFINED_TYPE_KINDS: &[MetadataKind] = &[MetadataKind::DefinedType];
+
+pub(crate) fn metadata_event_source_object_kinds() -> &'static [MetadataKind] {
+    META_EVENT_SOURCE_OBJECT_KINDS
+}
+
+pub(crate) fn metadata_event_source_reference_kinds() -> &'static [MetadataKind] {
+    META_EVENT_SOURCE_REFERENCE_KINDS
+}
+
+pub(crate) fn metadata_event_source_record_set_kinds() -> &'static [MetadataKind] {
+    META_EVENT_SOURCE_RECORD_SET_KINDS
+}
+
+impl MetaEventSource {
+    pub(crate) const fn as_str(&self) -> &'static str {
+        match self {
+            Self::String { .. } => "string",
+            Self::Number { .. } => "number",
+            Self::Boolean => "boolean",
+            Self::Date { .. } => "date",
+            Self::ValueStorage => "valueStorage",
+            Self::Object { .. } => "object",
+            Self::Reference { .. } => "reference",
+            Self::RecordSet { .. } => "recordSet",
+            Self::DefinedType { .. } => "definedType",
+        }
+    }
+
+    pub(crate) fn metadata_path(&self) -> Option<&MetadataAddress> {
+        match self {
+            Self::Object { metadata_path }
+            | Self::Reference { metadata_path }
+            | Self::RecordSet { metadata_path }
+            | Self::DefinedType { metadata_path } => Some(metadata_path),
+            Self::String { .. }
+            | Self::Number { .. }
+            | Self::Boolean
+            | Self::Date { .. }
+            | Self::ValueStorage => None,
+        }
+    }
+
+    pub(crate) const fn compatible_metadata_kinds(&self) -> Option<&'static [MetadataKind]> {
+        match self {
+            Self::Object { .. } => Some(META_EVENT_SOURCE_OBJECT_KINDS),
+            Self::Reference { .. } => Some(META_EVENT_SOURCE_REFERENCE_KINDS),
+            Self::RecordSet { .. } => Some(META_EVENT_SOURCE_RECORD_SET_KINDS),
+            Self::DefinedType { .. } => Some(META_EVENT_SOURCE_DEFINED_TYPE_KINDS),
+            Self::String { .. }
+            | Self::Number { .. }
+            | Self::Boolean
+            | Self::Date { .. }
+            | Self::ValueStorage => None,
+        }
+    }
+
+    /// Stable platform identity used for duplicate detection. Primitive
+    /// qualifiers describe the one primitive identity and therefore do not
+    /// make a second string/number/date source distinct.
+    pub(crate) fn identity_key(&self) -> String {
+        match self.metadata_path() {
+            Some(path) => format!("{}:{}", self.as_str(), path.as_str().to_lowercase()),
+            None => self.as_str().to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub(crate) enum MetadataTypeVariant {
@@ -447,6 +593,42 @@ mod tests {
         let serialized = serde_json::to_string(&value_type).unwrap();
         assert!(!serialized.contains("xs:"), "{serialized}");
         assert!(!serialized.contains("v8:"), "{serialized}");
+    }
+
+    #[test]
+    fn event_source_serialization_uses_the_public_typed_shape() {
+        let record_set =
+            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "InformationRegister.Facts")
+                .unwrap();
+        assert_eq!(
+            serde_json::to_value(MetaEventSource::String {
+                length: 0,
+                allowed_length: StringLengthMode::Variable,
+            })
+            .unwrap(),
+            serde_json::json!({
+                "kind": "string",
+                "length": 0,
+                "allowedLength": "variable",
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(MetaEventSource::Date {
+                fractions: MetaEventSourceDateFractions::DateTime,
+            })
+            .unwrap(),
+            serde_json::json!({"kind": "date", "fractions": "dateTime"})
+        );
+        assert_eq!(
+            serde_json::to_value(MetaEventSource::RecordSet {
+                metadata_path: record_set,
+            })
+            .unwrap(),
+            serde_json::json!({
+                "kind": "recordSet",
+                "metadataPath": "InformationRegister.Facts",
+            })
+        );
     }
 
     #[test]

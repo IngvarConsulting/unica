@@ -41,9 +41,9 @@ def write(path: Path, text: str) -> Path:
 
 
 class DocumentedContractTests(unittest.TestCase):
-    def test_current_case_contract_digest_is_documented(self):
+    def test_last_verified_case_contract_digest_is_documented_while_next_is_pending(self):
         verifier = load_verifier()
-        expected = f"`{verifier.EXPECTED_CASE_CONTRACT_SHA256}`"
+        last_verified = f"`{verifier.LAST_VERIFIED_CASE_CONTRACT_SHA256}`"
         documents = (
             ROOT / "spec/acceptance/format-profile-8-3-27.md",
             ROOT
@@ -52,7 +52,11 @@ class DocumentedContractTests(unittest.TestCase):
 
         for path in documents:
             with self.subTest(path=path.relative_to(ROOT).as_posix()):
-                self.assertIn(expected, path.read_text(encoding="utf-8"))
+                self.assertIn(last_verified, path.read_text(encoding="utf-8"))
+        self.assertIsNone(verifier.EXPECTED_CASE_CONTRACT_SHA256)
+        acceptance = documents[0].read_text(encoding="utf-8")
+        self.assertIn("65", acceptance)
+        self.assertIn("ожидает", acceptance)
 
 
 CONFIG_XML = '''<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="11111111-1111-1111-1111-111111111111"/></MetaDataObject>'''
@@ -560,6 +564,35 @@ class SemanticXmlTests(unittest.TestCase):
             verifier.semantic_xml(same, "same.xml"),
         )
 
+    def test_xdto_type_ref_and_base_attributes_compare_as_qnames(self):
+        verifier = load_verifier()
+        one = b'''<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:t="urn:types"><property type="t:Value"/><property ref="t:Global"/><valueType base="t:Base"/></package>'''
+        same = b'''<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:q="urn:types"><property type="q:Value"/><property ref="q:Global"/><valueType base="q:Base"/></package>'''
+        changed = b'''<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:t="urn:changed"><property type="t:Value"/><property ref="t:Global"/><valueType base="t:Base"/></package>'''
+
+        self.assertEqual(
+            verifier.semantic_xml(one, "one.bin"),
+            verifier.semantic_xml(same, "same.bin"),
+        )
+        self.assertNotEqual(
+            verifier.semantic_xml(one, "one.bin"),
+            verifier.semantic_xml(changed, "changed.bin"),
+        )
+        with self.assertRaisesRegex(verifier.SourceError, "unresolved QName prefix"):
+            verifier.semantic_xml(
+                b'''<package xmlns="http://v8.1c.ru/8.1/xdto"><property type="missing:Value"/></package>''',
+                "broken.bin",
+            )
+
+    def test_non_xdto_type_ref_and_base_attributes_remain_plain_text(self):
+        verifier = load_verifier()
+        semantic = verifier.semantic_xml(
+            b'''<root type="missing:Value" ref="missing:Global" base="missing:Base"/>''',
+            "plain.xml",
+        )
+
+        self.assertIsNotNone(semantic)
+
     def test_non_indentation_text_and_element_order_are_preserved(self):
         verifier = load_verifier()
         compact = b'<r><a> x </a><b/>tail</r>'
@@ -953,7 +986,7 @@ class CorpusAdapterTests(unittest.TestCase):
     def test_mandatory_corpus_includes_every_cfe_patch_module_layout(self):
         verifier = load_verifier()
 
-        self.assertEqual(len(verifier.MANDATORY_CASE_IDS), 64)
+        self.assertEqual(len(verifier.MANDATORY_CASE_IDS), 65)
         self.assertTrue(
             {
                 "cfe-patch-method-bsl-only",
@@ -964,6 +997,37 @@ class CorpusAdapterTests(unittest.TestCase):
                 "cfe-patch-method-constant-value-manager-module",
             }.issubset(verifier.MANDATORY_CASE_IDS)
         )
+
+    def test_next_mandatory_corpus_includes_xdto_and_event_source_cases(self):
+        verifier = load_verifier()
+
+        self.assertTrue(
+            {"xdto-add-nested-property", "meta-edit-event-source"}.issubset(
+                verifier.MANDATORY_CASE_IDS
+            )
+        )
+
+    def test_current_default_inventory_fails_explicitly_until_digest_is_pinned(self):
+        verifier = load_verifier()
+        self.assertIsNone(verifier.EXPECTED_CASE_CONTRACT_SHA256)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cases = [
+                write_platform_case(root, case_id)
+                for case_id in sorted(verifier.MANDATORY_CASE_IDS)
+            ]
+            manifest = write_manifest(root, cases)
+
+            with self.assertRaisesRegex(
+                verifier.CorpusError,
+                r"65-case public-writer inventory; last verified digest.*candidate digest.*pending",
+            ):
+                verifier.load_corpus(
+                    manifest,
+                    repo_root=ROOT,
+                    home_root=Path.home(),
+                )
 
     def load_single(self, root: Path, case: dict | None = None, **kwargs):
         verifier = load_verifier()

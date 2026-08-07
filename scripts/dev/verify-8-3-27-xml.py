@@ -29,6 +29,8 @@ XS_NS = "http://www.w3.org/2001/XMLSchema"
 XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
 CORE_NS = "http://v8.1c.ru/8.1/data/core"
 MD_CLASSES_NS = "http://v8.1c.ru/8.3/MDClasses"
+XDTO_NS = "http://v8.1c.ru/8.1/xdto"
+XDTO_QNAME_ATTRIBUTE_LOCAL_NAMES = frozenset({"base", "ref", "type"})
 QNAME_TEXT_ELEMENTS = {
     f"{{{CORE_NS}}}Type",
     f"{{{CORE_NS}}}TypeSet",
@@ -528,6 +530,18 @@ def _is_canonical_relative_path(raw, suffix: str | None = None) -> bool:
     return suffix is None or pure.suffix.lower() == suffix.lower()
 
 
+def _is_platform_xml_path(path: Path | PurePosixPath) -> bool:
+    """Recognize Designer XML payloads whose physical suffix is not `.xml`."""
+    if path.suffix.lower() == ".xml":
+        return True
+    parts = path.parts
+    return (
+        len(parts) >= 4
+        and parts[-4] == "XDTOPackages"
+        and parts[-2:] == ("Ext", "Package.bin")
+    )
+
+
 def _schema_tree(path: Path, resolver: _ManifestOnlyResolver | None = None):
     try:
         root = etree.fromstring(
@@ -684,7 +698,9 @@ def strict_xsd_error(runtime: dict, namespace: str, type_name: str, xml_text: st
 
 
 def _safe_corpus_path(root: Path, raw: str) -> Path:
-    if not _is_canonical_relative_path(raw, suffix=".xml"):
+    if not _is_canonical_relative_path(raw) or not _is_platform_xml_path(
+        PurePosixPath(raw)
+    ):
         raise CorpusError(f"unsafe corpus path or non-canonical path: {raw}")
     pure = PurePosixPath(raw)
     candidate = root
@@ -1016,12 +1032,12 @@ def _load_corpus(manifest_path: Path, expected_profile: str) -> tuple[dict, Path
     for path in root.rglob("*"):
         if path.is_symlink():
             raise CorpusError(f"corpus symlink is forbidden: {path.relative_to(root)}")
-        if path.suffix.lower() == ".xml" and not path.is_file():
+        if _is_platform_xml_path(path) and not path.is_file():
             raise CorpusError(f"special XML entry is forbidden: {path.relative_to(root)}")
     actual_xml = {
         path.relative_to(root).as_posix()
         for path in root.rglob("*")
-        if path.is_file() and path.suffix.lower() == ".xml"
+        if path.is_file() and _is_platform_xml_path(path)
     }
     unlisted = sorted(actual_xml - seen_paths)
     if unlisted:
@@ -1059,8 +1075,15 @@ def _unresolved_qname_prefix(root) -> str | None:
     for node in root.iter():
         if not isinstance(node.tag, str):
             continue
+        node_qname = etree.QName(node)
         for name, value in node.attrib.items():
-            if name == f"{{{XSI_NS}}}type" and ":" in value:
+            attribute_qname = etree.QName(name)
+            is_xdto_qname = (
+                node_qname.namespace == XDTO_NS
+                and attribute_qname.namespace is None
+                and attribute_qname.localname in XDTO_QNAME_ATTRIBUTE_LOCAL_NAMES
+            )
+            if (name == f"{{{XSI_NS}}}type" or is_xdto_qname) and ":" in value:
                 prefix = value.split(":", 1)[0]
                 if prefix not in node.nsmap:
                     return prefix

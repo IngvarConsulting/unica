@@ -3,6 +3,42 @@ use std::fmt;
 
 pub const PLATFORM_XML_8_3_27_FORMAT_2_20: &str = "platform-xml-8.3.27-format-2.20";
 
+/// XML 1.0 Fifth Edition NCName validation shared by typed metadata addresses
+/// and the XML readers that turn QName values back into logical targets.
+pub(crate) fn xml_ncname_is_valid(value: &str) -> bool {
+    let mut characters = value.chars();
+    characters.next().is_some_and(xml_ncname_is_start) && characters.all(xml_ncname_is_character)
+}
+
+fn xml_ncname_is_start(character: char) -> bool {
+    matches!(
+        character,
+        'A'..='Z'
+            | '_'
+            | 'a'..='z'
+            | '\u{00C0}'..='\u{00D6}'
+            | '\u{00D8}'..='\u{00F6}'
+            | '\u{00F8}'..='\u{02FF}'
+            | '\u{0370}'..='\u{037D}'
+            | '\u{037F}'..='\u{1FFF}'
+            | '\u{200C}'..='\u{200D}'
+            | '\u{2070}'..='\u{218F}'
+            | '\u{2C00}'..='\u{2FEF}'
+            | '\u{3001}'..='\u{D7FF}'
+            | '\u{F900}'..='\u{FDCF}'
+            | '\u{FDF0}'..='\u{FFFD}'
+            | '\u{10000}'..='\u{EFFFF}'
+    )
+}
+
+fn xml_ncname_is_character(character: char) -> bool {
+    xml_ncname_is_start(character)
+        || matches!(
+            character,
+            '-' | '.' | '0'..='9' | '\u{00B7}' | '\u{0300}'..='\u{036F}' | '\u{203F}'..='\u{2040}'
+        )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceTarget {
@@ -637,8 +673,8 @@ fn is_root_module_terminal(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        AddressProfile, MetadataAddress, MetadataAddressPrefix, SourceTargetErrorCode, TargetKind,
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
+        xml_ncname_is_valid, AddressProfile, MetadataAddress, MetadataAddressPrefix,
+        SourceTargetErrorCode, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
     };
 
     #[test]
@@ -834,6 +870,16 @@ mod tests {
             MetadataAddress::parse("platform-xml-8.3.26-format-2.19", "Catalog.Items").unwrap_err();
 
         assert_eq!(error.code, SourceTargetErrorCode::AddressProfileUnsupported);
+    }
+
+    #[test]
+    fn xml_ncname_validation_covers_unicode_and_rejects_qname_or_path_syntax() {
+        for valid in ["Name", "_Имя", "Имя-2", "A.B", "\u{10000}Name"] {
+            assert!(xml_ncname_is_valid(valid), "{valid:?}");
+        }
+        for invalid in ["", "1Name", "Bad Name", "cfg:Name", ".Name"] {
+            assert!(!xml_ncname_is_valid(invalid), "{invalid:?}");
+        }
     }
 
     #[test]

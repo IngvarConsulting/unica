@@ -1,6 +1,6 @@
 use super::{
-    MetaDiagnostic, MetaDiagnosticCode, MetaPropertyChanges, MetadataKind, MetadataReference,
-    MetadataType, MetadataTypeVariant, NumberSign,
+    MetaDiagnostic, MetaDiagnosticCode, MetaEventSource, MetaPropertyChanges, MetadataKind,
+    MetadataReference, MetadataType, MetadataTypeVariant, NumberSign, StringLengthMode,
 };
 use crate::domain::source_target::MetadataAddress;
 use serde::ser::SerializeStruct;
@@ -850,6 +850,7 @@ pub(crate) enum MetaRelation {
     RegisterRecords,
     BasedOn,
     InputByString,
+    Source,
 }
 
 impl MetaRelation {
@@ -858,6 +859,7 @@ impl MetaRelation {
         Self::RegisterRecords,
         Self::BasedOn,
         Self::InputByString,
+        Self::Source,
     ];
 
     pub(crate) const fn as_str(self) -> &'static str {
@@ -866,6 +868,7 @@ impl MetaRelation {
             Self::RegisterRecords => "registerRecords",
             Self::BasedOn => "basedOn",
             Self::InputByString => "inputByString",
+            Self::Source => "source",
         }
     }
 
@@ -892,6 +895,9 @@ pub(crate) enum MetaRelationTargetPolicy {
     /// Field existence remains a post-image validation because earlier
     /// operations in the same request may create or rename the field.
     SameOwnerField,
+    /// The target is one member of the closed EventSubscription source type
+    /// algebra. Source replacement is validated as one correlated set.
+    EventSources,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -955,6 +961,10 @@ const BASED_ON_INPUT_RELATION_SPECS: &[MetaRelationSpec] = &[
         target_policy: MetaRelationTargetPolicy::SameOwnerField,
     },
 ];
+const EVENT_SUBSCRIPTION_RELATION_SPECS: &[MetaRelationSpec] = &[MetaRelationSpec {
+    relation: MetaRelation::Source,
+    target_policy: MetaRelationTargetPolicy::EventSources,
+}];
 
 /// Relations physically present in the minimal Platform XML template for an
 /// owner kind, together with the target policy enforced by typed mutation.
@@ -968,6 +978,7 @@ pub(crate) fn metadata_relation_specs(kind: MetadataKind) -> &'static [MetaRelat
         | MetadataKind::BusinessProcess
         | MetadataKind::Task
         | MetadataKind::ExchangePlan => BASED_ON_INPUT_RELATION_SPECS,
+        MetadataKind::EventSubscription => EVENT_SUBSCRIPTION_RELATION_SPECS,
         MetadataKind::Enum
         | MetadataKind::Constant
         | MetadataKind::InformationRegister
@@ -979,7 +990,6 @@ pub(crate) fn metadata_relation_specs(kind: MetadataKind) -> &'static [MetaRelat
         | MetadataKind::DataProcessor
         | MetadataKind::CommonModule
         | MetadataKind::ScheduledJob
-        | MetadataKind::EventSubscription
         | MetadataKind::HTTPService
         | MetadataKind::WebService
         | MetadataKind::DefinedType => &[],
@@ -1097,20 +1107,23 @@ pub(crate) enum MetaEditOperation {
 pub(crate) enum MetaRelationTarget {
     Object(MetadataReference),
     Field(MetadataFieldPath),
+    EventSource(MetaEventSource),
 }
 
 impl MetaRelationTarget {
-    pub(crate) fn wire_value(&self) -> &str {
+    pub(crate) fn wire_value(&self) -> String {
         match self {
-            Self::Object(reference) => reference.metadata_path.as_str(),
-            Self::Field(path) => &path.value,
+            Self::Object(reference) => reference.metadata_path.as_str().to_string(),
+            Self::Field(path) => path.value.clone(),
+            Self::EventSource(source) => source.identity_key(),
         }
     }
 
-    pub(crate) fn dependency(&self) -> &MetadataAddress {
+    pub(crate) fn dependency(&self) -> Option<&MetadataAddress> {
         match self {
-            Self::Object(reference) => &reference.metadata_path,
-            Self::Field(path) => &path.owner,
+            Self::Object(reference) => Some(&reference.metadata_path),
+            Self::Field(path) => Some(&path.owner),
+            Self::EventSource(source) => source.metadata_path(),
         }
     }
 }
@@ -1224,6 +1237,17 @@ pub(crate) fn validate_metadata_relation_target_profile(
                 ))
             }
         }
+        (MetaRelationTargetPolicy::EventSources, MetaRelationTarget::EventSource(source)) => {
+            validate_metadata_event_source(source)
+        }
+        (MetaRelationTargetPolicy::EventSources, _) => Err(invalid_operation(
+            "targets",
+            "source relation requires typed event source targets",
+        )),
+        (_, MetaRelationTarget::EventSource(_)) => Err(invalid_operation(
+            "targets",
+            "typed event source target is only legal for the source relation",
+        )),
         (MetaRelationTargetPolicy::SameOwnerField, MetaRelationTarget::Object(_)) => Err(
             invalid_operation("targets", "inputByString requires typed field paths"),
         ),
@@ -1234,6 +1258,121 @@ pub(crate) fn validate_metadata_relation_target_profile(
             ))
         }
     }
+}
+
+fn validate_metadata_event_source(source: &MetaEventSource) -> Result<(), MetaDiagnostic> {
+    match source {
+        MetaEventSource::String {
+            length,
+            allowed_length,
+        } if *length != 0 || *allowed_length != StringLengthMode::Variable => {
+            Err(invalid_operation(
+                "targets",
+                "event source string requires length 0 and allowedLength variable",
+            ))
+        }
+        MetaEventSource::Number {
+            digits, fraction, ..
+        } if *digits > 38 || *fraction > *digits => Err(invalid_operation(
+            "targets",
+            "event source number digits must be 0..=38 and fraction must not exceed digits",
+        )),
+        source => {
+            let Some(metadata_path) = source.metadata_path() else {
+                return Ok(());
+            };
+            if metadata_path.segments().count() != 2 {
+                return Err(invalid_operation(
+                    "targets",
+                    "event source metadataPath must identify a top-level metadata object",
+                ));
+            }
+            let name = metadata_path.segments().nth(1).unwrap_or_default();
+            if !metadata_identifier_is_valid(name) {
+                return Err(invalid_operation(
+                    "targets",
+                    "event source metadataPath name must be a valid 1C identifier",
+                ));
+            }
+            let target_kind = metadata_path
+                .segments()
+                .next()
+                .and_then(|name| MetadataKind::parse(name).ok());
+            if !target_kind.is_some_and(|kind| {
+                source
+                    .compatible_metadata_kinds()
+                    .is_some_and(|allowed| allowed.contains(&kind))
+            }) {
+                return Err(invalid_operation(
+                    "targets",
+                    format!(
+                        "{} event source is incompatible with metadataPath `{}`",
+                        source.as_str(),
+                        metadata_path.as_str()
+                    ),
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
+fn validate_relation_edit_shape(
+    relation: MetaRelation,
+    mode: RelationEditMode,
+    targets: &[MetaRelationTarget],
+) -> Result<(), MetaDiagnostic> {
+    if relation != MetaRelation::Source {
+        return if targets.is_empty() {
+            Err(invalid_operation(
+                "targets",
+                "relation targets must not be empty",
+            ))
+        } else {
+            Ok(())
+        };
+    }
+    if mode != RelationEditMode::Replace {
+        return Err(invalid_operation(
+            "mode",
+            "source relation supports replace mode only",
+        ));
+    }
+    if targets.len() > 1
+        && targets.iter().any(|target| {
+            matches!(
+                target,
+                MetaRelationTarget::EventSource(MetaEventSource::ValueStorage)
+            )
+        })
+    {
+        return Err(invalid_operation(
+            "targets",
+            "ValueStorage must be the only event source target",
+        ));
+    }
+    let mut identities = HashSet::new();
+    for (index, target) in targets.iter().enumerate() {
+        let MetaRelationTarget::EventSource(source) = target else {
+            return Err(invalid_operation(
+                format!("targets[{index}]"),
+                "source relation requires typed event source targets",
+            ));
+        };
+        validate_metadata_event_source(source).map_err(|mut diagnostic| {
+            if diagnostic.field.as_deref() == Some("targets") {
+                diagnostic.field = Some(format!("targets[{index}]"));
+            }
+            diagnostic
+        })?;
+        if !identities.insert(source.identity_key()) {
+            return Err(invalid_operation(
+                format!("targets[{index}]"),
+                "duplicate event source identity",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Validate every owner-dependent part of one already parsed typed operation.
@@ -1303,8 +1442,11 @@ pub(crate) fn validate_metadata_operation_capabilities(
             validate_metadata_kind_collection(owner_kind, *collection)
         }
         MetaEditOperation::EditRelations {
-            relation, targets, ..
+            relation,
+            mode,
+            targets,
         } => {
+            validate_relation_edit_shape(*relation, *mode, targets)?;
             // Validate availability even before inspecting targets so an empty
             // or forged operation cannot turn an absent Platform XML node into
             // a provider concern.
@@ -1478,12 +1620,7 @@ impl MetaEditOperation {
         mode: RelationEditMode,
         targets: Vec<MetaRelationTarget>,
     ) -> Result<Self, MetaDiagnostic> {
-        if targets.is_empty() {
-            return Err(invalid_operation(
-                "targets",
-                "relation targets must not be empty",
-            ));
-        }
+        validate_relation_edit_shape(relation, mode, &targets)?;
         Ok(Self::EditRelations {
             relation,
             mode,
@@ -1627,7 +1764,13 @@ mod tests {
                 .copied()
                 .map(MetaRelation::as_str)
                 .collect::<Vec<_>>(),
-            ["owners", "registerRecords", "basedOn", "inputByString"]
+            [
+                "owners",
+                "registerRecords",
+                "basedOn",
+                "inputByString",
+                "source",
+            ]
         );
         assert_eq!(
             RelationEditMode::ALL
@@ -1709,7 +1852,6 @@ mod tests {
             DataProcessor,
             CommonModule,
             ScheduledJob,
-            EventSubscription,
             HTTPService,
             WebService,
             DefinedType,
@@ -1720,6 +1862,12 @@ mod tests {
                 kind.as_str()
             );
         }
+
+        assert_eq!(
+            relation_names(EventSubscription),
+            ["source"],
+            "EventSubscription owns the typed source relation"
+        );
 
         assert_eq!(
             metadata_relation_spec(Catalog, MetaRelation::Owners)
@@ -1759,6 +1907,174 @@ mod tests {
                 .target_policy,
             MetaRelationTargetPolicy::SameOwnerField
         );
+        assert_eq!(
+            metadata_relation_spec(EventSubscription, MetaRelation::Source)
+                .unwrap()
+                .target_policy,
+            MetaRelationTargetPolicy::EventSources
+        );
+    }
+
+    #[test]
+    fn event_source_relation_is_replace_only_and_is_the_only_clearable_relation() {
+        assert!(MetaEditOperation::edit_relation_targets(
+            MetaRelation::Source,
+            RelationEditMode::Replace,
+            Vec::new(),
+        )
+        .is_ok());
+        assert!(MetaEditOperation::edit_relation_targets(
+            MetaRelation::Source,
+            RelationEditMode::Add,
+            vec![MetaRelationTarget::EventSource(MetaEventSource::Boolean)],
+        )
+        .is_err());
+        assert!(MetaEditOperation::edit_relation_targets(
+            MetaRelation::Owners,
+            RelationEditMode::Replace,
+            Vec::new(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn event_source_set_rejects_duplicate_identities_and_value_storage_composites() {
+        let duplicate = MetaEditOperation::edit_relation_targets(
+            MetaRelation::Source,
+            RelationEditMode::Replace,
+            vec![
+                MetaRelationTarget::EventSource(MetaEventSource::String {
+                    length: 0,
+                    allowed_length: StringLengthMode::Variable,
+                }),
+                MetaRelationTarget::EventSource(MetaEventSource::String {
+                    length: 0,
+                    allowed_length: StringLengthMode::Variable,
+                }),
+            ],
+        )
+        .unwrap_err();
+        assert_eq!(duplicate.field.as_deref(), Some("targets[1]"));
+
+        let composite = MetaEditOperation::edit_relation_targets(
+            MetaRelation::Source,
+            RelationEditMode::Replace,
+            vec![
+                MetaRelationTarget::EventSource(MetaEventSource::ValueStorage),
+                MetaRelationTarget::EventSource(MetaEventSource::Boolean),
+            ],
+        )
+        .unwrap_err();
+        assert_eq!(composite.field.as_deref(), Some("targets"));
+    }
+
+    #[test]
+    fn event_source_profile_correlates_kind_and_metadata_path() {
+        let owner = MetadataAddress::parse(
+            crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+            "EventSubscription.Notify",
+        )
+        .unwrap();
+        let source = |source| MetaRelationTarget::EventSource(source);
+        let address = |path: &str| -> MetadataAddress {
+            MetadataAddress::parse(
+                crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                path,
+            )
+            .unwrap()
+        };
+
+        for event_source in [
+            MetaEventSource::Object {
+                metadata_path: address("Report.Sales"),
+            },
+            MetaEventSource::Reference {
+                metadata_path: address("Enum.Status"),
+            },
+            MetaEventSource::RecordSet {
+                metadata_path: address("InformationRegister.Facts"),
+            },
+            MetaEventSource::DefinedType {
+                metadata_path: address("DefinedType.Identifier"),
+            },
+        ] {
+            assert!(validate_metadata_relation_target_profile(
+                MetadataKind::EventSubscription,
+                &owner,
+                MetaRelation::Source,
+                &source(event_source),
+            )
+            .is_ok());
+        }
+
+        for event_source in [
+            MetaEventSource::Object {
+                metadata_path: address("Constant.Setting"),
+            },
+            MetaEventSource::Reference {
+                metadata_path: address("InformationRegister.Facts"),
+            },
+            MetaEventSource::RecordSet {
+                metadata_path: address("Catalog.Items"),
+            },
+            MetaEventSource::DefinedType {
+                metadata_path: address("Catalog.Items"),
+            },
+        ] {
+            assert!(validate_metadata_relation_target_profile(
+                MetadataKind::EventSubscription,
+                &owner,
+                MetaRelation::Source,
+                &source(event_source),
+            )
+            .is_err());
+        }
+
+        for invalid_name in ["Bad Name", "1Bad", "Bad:Name", "Bad-Name"] {
+            let invalid_path = format!("Catalog.{invalid_name}");
+            let event_source = MetaEventSource::Reference {
+                metadata_path: address(&invalid_path),
+            };
+            let error = validate_metadata_relation_target_profile(
+                MetadataKind::EventSubscription,
+                &owner,
+                MetaRelation::Source,
+                &source(event_source),
+            )
+            .unwrap_err();
+            assert!(error.message.contains("1C identifier"), "{error:?}");
+        }
+    }
+
+    #[test]
+    fn event_source_primitive_qualifiers_are_strict() {
+        for source in [
+            MetaEventSource::String {
+                length: 1,
+                allowed_length: StringLengthMode::Variable,
+            },
+            MetaEventSource::String {
+                length: 0,
+                allowed_length: StringLengthMode::Fixed,
+            },
+            MetaEventSource::Number {
+                digits: 39,
+                fraction: 0,
+                sign: NumberSign::Any,
+            },
+            MetaEventSource::Number {
+                digits: 5,
+                fraction: 6,
+                sign: NumberSign::Any,
+            },
+        ] {
+            assert!(MetaEditOperation::edit_relation_targets(
+                MetaRelation::Source,
+                RelationEditMode::Replace,
+                vec![MetaRelationTarget::EventSource(source)],
+            )
+            .is_err());
+        }
     }
 
     #[test]

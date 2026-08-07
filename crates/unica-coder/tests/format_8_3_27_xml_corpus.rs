@@ -243,8 +243,8 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
         tool: "unica.meta.edit",
         operation: "meta-edit",
         impact: XmlImpactClass::CreateOrModify,
-        case_ids: &["meta-edit-property"],
-        required_branches: &["modify-property"],
+        case_ids: &["meta-edit-property", "meta-edit-event-source"],
+        required_branches: &["modify-property", "event-source"],
     },
     MutatorRegistryEntry {
         tool: "unica.meta.remove",
@@ -578,6 +578,11 @@ static EXECUTABLE_CASES: &[ExecutableCase] = &[
         branch: "modify-property",
     },
     ExecutableCase {
+        id: "meta-edit-event-source",
+        tool: "unica.meta.edit",
+        branch: "event-source",
+    },
+    ExecutableCase {
         id: "meta-remove-object",
         tool: "unica.meta.remove",
         branch: "remove-object",
@@ -724,8 +729,10 @@ fn common_args(workspace: &Path) -> Map<String, Value> {
     ])
 }
 
-fn call_public_tool(tool: &str, args: &Map<String, Value>) -> Result<String, String> {
-    assert_eq!(args.get("dryRun"), Some(&Value::Bool(false)));
+fn call_public_tool_result(
+    tool: &str,
+    args: &Map<String, Value>,
+) -> Result<unica_coder::application::OperationResult, String> {
     let app = UnicaApplication::new();
     let result = if matches!(
         tool,
@@ -756,7 +763,12 @@ fn call_public_tool(tool: &str, args: &Map<String, Value>) -> Result<String, Str
             result.summary, result.errors
         ));
     }
-    Ok(result.summary)
+    Ok(result)
+}
+
+fn call_public_tool(tool: &str, args: &Map<String, Value>) -> Result<String, String> {
+    assert_eq!(args.get("dryRun"), Some(&Value::Bool(false)));
+    Ok(call_public_tool_result(tool, args)?.summary)
 }
 
 fn call_target_tool(
@@ -774,6 +786,148 @@ fn sha256_file(path: &Path) -> Result<String, String> {
     let bytes =
         fs::read(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+fn random_v4_uuid_lexeme(payload: &[u8], offset: usize) -> Option<String> {
+    const UUID_LEN: usize = 36;
+    let candidate = payload.get(offset..offset + UUID_LEN)?;
+    if (offset > 0 && payload[offset - 1].is_ascii_hexdigit())
+        || payload
+            .get(offset + UUID_LEN)
+            .is_some_and(u8::is_ascii_hexdigit)
+    {
+        return None;
+    }
+    for (index, byte) in candidate.iter().enumerate() {
+        let expected_hyphen = matches!(index, 8 | 13 | 18 | 23);
+        if (*byte == b'-') != expected_hyphen || (!expected_hyphen && !byte.is_ascii_hexdigit()) {
+            return None;
+        }
+    }
+    if candidate[14] != b'4'
+        || !matches!(
+            candidate[19].to_ascii_lowercase(),
+            b'8' | b'9' | b'a' | b'b'
+        )
+    {
+        return None;
+    }
+    Some(std::str::from_utf8(candidate).ok()?.to_ascii_lowercase())
+}
+
+fn normalize_random_v4_uuids(payloads: &BTreeMap<String, Vec<u8>>) -> BTreeMap<String, Vec<u8>> {
+    let mut identities = BTreeMap::<String, Vec<u8>>::new();
+    for payload in payloads.values() {
+        let text = std::str::from_utf8(payload)
+            .expect("captured corpus XML must be UTF-8")
+            .trim_start_matches('\u{feff}');
+        let document = Document::parse(text).expect("captured corpus XML must remain parseable");
+        for element in document.descendants().filter(|node| node.is_element()) {
+            let element_name = element.tag_name().name();
+            for attribute in element.attributes() {
+                if !matches!(attribute.name(), "uuid" | "id")
+                    || (element_name == "panelDef" && attribute.name() == "id")
+                {
+                    continue;
+                }
+                let value = attribute.value();
+                let Some(identity) = (value.len() == 36)
+                    .then(|| random_v4_uuid_lexeme(value.as_bytes(), 0))
+                    .flatten()
+                else {
+                    continue;
+                };
+                let next = identities.len() + 1;
+                identities
+                    .entry(identity)
+                    .or_insert_with(|| format!("__UNICA_UUID_{next:06}__").into_bytes());
+            }
+            if !matches!(element_name, "TypeId" | "ValueId" | "ObjectId" | "ThisNode") {
+                continue;
+            }
+            let value = element.text().unwrap_or_default().trim();
+            let Some(identity) = (value.len() == 36)
+                .then(|| random_v4_uuid_lexeme(value.as_bytes(), 0))
+                .flatten()
+            else {
+                continue;
+            };
+            let next = identities.len() + 1;
+            identities
+                .entry(identity)
+                .or_insert_with(|| format!("__UNICA_UUID_{next:06}__").into_bytes());
+        }
+    }
+    let mut normalized = BTreeMap::new();
+    for (path, payload) in payloads {
+        let mut bytes = Vec::with_capacity(payload.len());
+        let mut offset = 0;
+        while offset < payload.len() {
+            if let Some(identity) = random_v4_uuid_lexeme(payload, offset) {
+                if let Some(token) = identities.get(&identity) {
+                    bytes.extend_from_slice(token);
+                    offset += 36;
+                    continue;
+                }
+            }
+            bytes.push(payload[offset]);
+            offset += 1;
+        }
+        normalized.insert(path.clone(), bytes);
+    }
+    normalized
+}
+
+#[test]
+fn isolated_corpus_transition_normalization_only_alpha_renames_declared_identities() {
+    let declared_a = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let declared_b = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    let mut first = BTreeMap::new();
+    first.insert(
+        "a.xml".to_string(),
+        format!(
+            "<r uuid=\"{declared_a}\"><ref>{declared_a}</ref><TypeId>{declared_a}</TypeId></r>"
+        )
+        .into_bytes(),
+    );
+    let mut renamed = BTreeMap::new();
+    renamed.insert(
+        "a.xml".to_string(),
+        format!(
+            "<r uuid=\"{declared_b}\"><ref>{declared_b}</ref><TypeId>{declared_b}</TypeId></r>"
+        )
+        .into_bytes(),
+    );
+    assert_eq!(
+        normalize_random_v4_uuids(&first),
+        normalize_random_v4_uuids(&renamed)
+    );
+
+    let fixed_a = b"<r><ClassId>aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa</ClassId><panelDef id=\"cccccccc-cccc-4ccc-8ccc-cccccccccccc\"/><value>dddddddd-dddd-4ddd-8ddd-dddddddddddd</value></r>";
+    let fixed_b = b"<r><ClassId>bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb</ClassId><panelDef id=\"eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee\"/><value>ffffffff-ffff-4fff-8fff-ffffffffffff</value></r>";
+    let fixed_first = BTreeMap::from([("a.xml".to_string(), fixed_a.to_vec())]);
+    let fixed_changed = BTreeMap::from([("a.xml".to_string(), fixed_b.to_vec())]);
+    assert_ne!(
+        normalize_random_v4_uuids(&fixed_first),
+        normalize_random_v4_uuids(&fixed_changed),
+        "fixed UUID contexts must remain significant"
+    );
+}
+
+fn normalized_xml_transition(
+    pre: &XmlPayloadSnapshot,
+    post: &XmlPayloadSnapshot,
+) -> BTreeMap<String, Vec<u8>> {
+    let mut transition = BTreeMap::new();
+    transition.extend(
+        pre.iter()
+            .map(|(path, payload)| (format!("0-pre/{path}"), payload.clone())),
+    );
+    transition.extend(
+        post.iter()
+            .map(|(path, payload)| (format!("1-post/{path}"), payload.clone())),
+    );
+    normalize_random_v4_uuids(&transition)
 }
 
 fn is_xml_payload_path(path: &Path) -> bool {
@@ -2143,7 +2297,49 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
         return Ok(args);
     }
 
-    if matches!(case.id, "meta-edit-property" | "meta-remove-object") {
+    if matches!(
+        case.id,
+        "meta-edit-property" | "meta-edit-event-source" | "meta-remove-object"
+    ) {
+        if case.id == "meta-edit-event-source" {
+            seed_event_handlers(workspace)?;
+            seed_catalog(workspace)?;
+            seed_metadata(
+                workspace,
+                "seed-event-source-information-register",
+                json!({
+                    "type": "InformationRegister",
+                    "name": "CorpusInformationRegister"
+                }),
+            )?;
+            seed_metadata(
+                workspace,
+                "seed-event-subscription",
+                json!({
+                    "type": "EventSubscription",
+                    "name": "CorpusEventSubscription"
+                }),
+            )?;
+            let mut args = common_args(workspace);
+            args.insert("sourceSet".to_string(), Value::String("main".to_string()));
+            args.insert(
+                "metadataPath".to_string(),
+                Value::String("EventSubscription.CorpusEventSubscription".to_string()),
+            );
+            args.insert(
+                "operations".to_string(),
+                json!([{
+                    "op": "editRelations",
+                    "relation": "source",
+                    "mode": "replace",
+                    "targets": [{
+                        "kind": "recordSet",
+                        "metadataPath": "InformationRegister.CorpusInformationRegister"
+                    }]
+                }]),
+            );
+            return Ok(args);
+        }
         seed_catalog(workspace)?;
         let mut args = common_args(workspace);
         args.insert("sourceSet".to_string(), Value::String("main".to_string()));
@@ -3109,6 +3305,18 @@ fn assert_case_postconditions(
     {
         return Err("ExchangePlan case did not generate Ext/Content.xml".to_string());
     }
+    if case.id == "meta-edit-event-source" {
+        let descriptor = workspace.join("src/EventSubscriptions/CorpusEventSubscription.xml");
+        let xml = fs::read_to_string(&descriptor)
+            .map_err(|error| format!("cannot read {}: {error}", descriptor.display()))?;
+        let expected =
+            "<v8:Type>cfg:InformationRegisterRecordSet.CorpusInformationRegister</v8:Type>";
+        if !xml.contains(expected) || xml.contains("<v8:Type>xs:string</v8:Type>") {
+            return Err(
+                "meta.edit source relation did not replace the complete Source list".to_string(),
+            );
+        }
+    }
     if matches!(
         case.branch,
         "SpreadsheetDocument" | "DataCompositionSchema" | "HTMLDocument"
@@ -3784,6 +3992,60 @@ fn cf_init_public_case_creates_real_xml() {
 }
 
 #[test]
+fn managed_form_corpus_cases_mutate_content_without_overwriting_metadata_wrapper() {
+    let root = unique_temp_dir("managed-form-content-targets");
+    let mut gate = SequentialCallGate::default();
+
+    for (case_id, wrapper, content) in [
+        (
+            "form-compile-managed",
+            "src/Reports/CorpusReport/Forms/CorpusForm.xml",
+            "src/Reports/CorpusReport/Forms/CorpusForm/Ext/Form.xml",
+        ),
+        (
+            "form-edit-managed",
+            "src/Catalogs/CorpusCatalog/Forms/CorpusForm.xml",
+            "src/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml",
+        ),
+    ] {
+        let case = EXECUTABLE_CASES
+            .iter()
+            .find(|case| case.id == case_id)
+            .unwrap();
+
+        let generated = run_corpus_case(&root, case, &mut gate).unwrap();
+        let wrapper_file = generated
+            .files
+            .iter()
+            .find(|file| file.path == manifest_path(case_id, wrapper))
+            .expect("managed form metadata wrapper must remain in the corpus");
+        let content_file = generated
+            .files
+            .iter()
+            .find(|file| file.path == manifest_path(case_id, content))
+            .expect("managed form content must remain in the corpus");
+
+        assert_eq!(wrapper_file.delta, "unchanged", "{case_id}");
+        assert_eq!(content_file.delta, "modified", "{case_id}");
+
+        let case_root = root.join("cases").join(case_id);
+        assert_eq!(
+            fs::read(case_root.join("pre-xml").join(wrapper)).unwrap(),
+            fs::read(case_root.join("workspace").join(wrapper)).unwrap(),
+            "{case_id} must preserve the metadata wrapper byte-for-byte"
+        );
+        assert_ne!(
+            fs::read(case_root.join("pre-xml").join(content)).unwrap(),
+            fs::read(case_root.join("workspace").join(content)).unwrap(),
+            "{case_id} must mutate the managed form content"
+        );
+    }
+
+    assert_eq!(gate.completed_target_calls, 2);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn pre_snapshot_materializes_only_immutable_pre_call_bytes() {
     let root = unique_temp_dir("immutable-pre-snapshot");
     let workspace = root.join("workspace");
@@ -4356,6 +4618,115 @@ fn cfe_patch_method_inventory_covers_atomic_xml_and_bsl_change() {
         assert_exact_extended_property_state(&workspace.join(descriptor), property);
         fs::remove_dir_all(root).unwrap();
     }
+}
+
+#[test]
+fn meta_edit_event_source_case_executes_public_writer_and_binds_exact_delta() {
+    let root = unique_temp_dir("meta-edit-event-source-case");
+    fs::create_dir_all(&root).unwrap();
+    let case = EXECUTABLE_CASES
+        .iter()
+        .find(|case| case.id == "meta-edit-event-source")
+        .unwrap();
+
+    let lifecycle_workspace = root.join("preview-apply-noop");
+    let args = prepare_target(case, &lifecycle_workspace).unwrap();
+    let descriptor = lifecycle_workspace.join("src/EventSubscriptions/CorpusEventSubscription.xml");
+    let preimage = fs::read(&descriptor).unwrap();
+    let before_preview = capture_xml_payloads(&lifecycle_workspace).unwrap();
+
+    let mut preview_args = args.clone();
+    preview_args.insert("dryRun".to_string(), Value::Bool(true));
+    let preview = call_public_tool_result(case.tool, &preview_args).unwrap();
+    assert!(preview.ok, "{preview:?}");
+    assert_eq!(preview.data.as_ref().unwrap()["changed"], true);
+    assert_eq!(fs::read(&descriptor).unwrap(), preimage);
+    assert_eq!(
+        capture_xml_payloads(&lifecycle_workspace).unwrap(),
+        before_preview,
+        "typed Source preview must leave every platform XML byte unchanged"
+    );
+
+    let applied = call_public_tool_result(case.tool, &args).unwrap();
+    assert!(applied.ok, "{applied:?}");
+    assert_eq!(applied.data.as_ref().unwrap()["changed"], true);
+    assert_eq!(applied.cache.events, ["MetadataChanged"]);
+    let postimage = fs::read(&descriptor).unwrap();
+    assert_ne!(postimage, preimage);
+
+    let noop = call_public_tool_result(case.tool, &args).unwrap();
+    assert!(noop.ok, "{noop:?}");
+    assert_eq!(noop.data.as_ref().unwrap()["changed"], false);
+    assert!(noop.cache.events.is_empty());
+    assert_eq!(fs::read(&descriptor).unwrap(), postimage);
+
+    let generation_a = root.join("generation-a");
+    let generation_b = root.join("generation-b");
+    let mut gate_a = SequentialCallGate::default();
+    let mut gate_b = SequentialCallGate::default();
+    let generated = run_corpus_case(&generation_a, case, &mut gate_a).unwrap();
+    let regenerated = run_corpus_case(&generation_b, case, &mut gate_b).unwrap();
+
+    assert_eq!(gate_a.completed_target_calls, 1);
+    assert_eq!(gate_b.completed_target_calls, 1);
+    assert_eq!(generated.branch, "event-source");
+    assert_eq!(regenerated.branch, "event-source");
+    assert_eq!(generated.xml_impact, "modified");
+    assert_eq!(regenerated.xml_impact, "modified");
+    assert!(generated.files.iter().any(|file| {
+        file.path
+            .ends_with("src/EventSubscriptions/CorpusEventSubscription.xml")
+            && file.delta == "modified"
+    }));
+    let report: Value = serde_json::from_slice(
+        &fs::read(generation_a.join("cases/meta-edit-event-source/case-report.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        report["publicArguments"]["operations"],
+        json!([{
+            "op": "editRelations",
+            "relation": "source",
+            "mode": "replace",
+            "targets": [{
+                "kind": "recordSet",
+                "metadataPath": "InformationRegister.CorpusInformationRegister"
+            }]
+        }])
+    );
+    let generated_descriptor = generation_a.join(
+        "cases/meta-edit-event-source/workspace/src/EventSubscriptions/CorpusEventSubscription.xml",
+    );
+    let xml = fs::read_to_string(generated_descriptor).unwrap();
+    assert!(xml
+        .contains("<v8:Type>cfg:InformationRegisterRecordSet.CorpusInformationRegister</v8:Type>"));
+    assert!(!xml.contains("<v8:Type>xs:string</v8:Type>"));
+
+    let transition = |output: &Path| {
+        let case_root = output.join("cases/meta-edit-event-source");
+        let pre = capture_xml_payloads(&case_root.join("pre-xml")).unwrap();
+        let post = capture_xml_payloads(&case_root.join("workspace")).unwrap();
+        normalized_xml_transition(&pre, &post)
+    };
+    assert_eq!(
+        transition(&generation_a),
+        transition(&generation_b),
+        "two isolated generations must have the same UUID-normalized XML transition"
+    );
+    let workspace_a = generation_a.join("cases/meta-edit-event-source/workspace");
+    let workspace_b = generation_b.join("cases/meta-edit-event-source/workspace");
+    assert_eq!(
+        capture_non_xml_payloads(case, &workspace_a).unwrap(),
+        capture_non_xml_payloads(case, &workspace_b).unwrap(),
+        "two isolated generations must have byte-identical platform non-XML artifacts"
+    );
+    assert_eq!(
+        capture_auxiliary_payloads(case, &workspace_a).unwrap(),
+        capture_auxiliary_payloads(case, &workspace_b).unwrap(),
+        "two isolated generations must have byte-identical auxiliary artifacts"
+    );
+
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

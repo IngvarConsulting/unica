@@ -1,5 +1,6 @@
 use super::{
-    MetaDiagnostic, MetaFillValue, MetaPropertyKey, MetaPropertyValue, MetadataKind, MetadataType,
+    MetaDiagnostic, MetaEventSource, MetaFillValue, MetaPropertyKey, MetaPropertyValue,
+    MetadataKind, MetadataType,
 };
 use crate::domain::source_target::MetadataAddress;
 use serde::Serialize;
@@ -109,6 +110,7 @@ pub(crate) struct MetaRelationsData {
     pub(crate) register_records: Vec<MetaRelationTargetData>,
     pub(crate) based_on: Vec<MetaRelationTargetData>,
     pub(crate) input_by_string: Vec<MetaRelationTargetData>,
+    pub(crate) source: Vec<MetaEventSource>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

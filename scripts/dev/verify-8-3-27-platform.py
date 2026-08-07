@@ -29,6 +29,8 @@ except ModuleNotFoundError:
 XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
 CORE_NS = "http://v8.1c.ru/8.1/data/core"
 MD_CLASSES_NS = "http://v8.1c.ru/8.3/MDClasses"
+XDTO_NS = "http://v8.1c.ru/8.1/xdto"
+XDTO_QNAME_ATTRIBUTE_LOCAL_NAMES = frozenset({"base", "ref", "type"})
 QNAME_TEXT_ELEMENTS = {
     f"{{{CORE_NS}}}Type",
     f"{{{CORE_NS}}}TypeSet",
@@ -94,7 +96,14 @@ EXPECTED_PLATFORM_VERSION = "8.3.27.2074"
 EXPECTED_IBCMD_SHA256 = "e00f3c945fb6f60bb2802151df1b4e7ee4f3caaf7c9e24a981020af575fda6e5"
 EXPECTED_PLATFORM_INSTALL_SHA256 = "5eb8897c4f7e95876572f2f36943439b0d57e47688314b622f5771e5a22df0ef"
 EXPECTED_PLATFORM_INSTALL_FILE_COUNT = 4337
-EXPECTED_CASE_CONTRACT_SHA256 = "52d9889946c1e44ebf542721eee8a83c4ba525526f97fb1fe2f4f74074a7a161"
+LAST_VERIFIED_CASE_CONTRACT_SHA256 = (
+    "52d9889946c1e44ebf542721eee8a83c4ba525526f97fb1fe2f4f74074a7a161"
+)
+# The next required inventory contains both the already-pending XDTO writer
+# and the EventSubscription source relation. Pin this only after two
+# independently generated 65-case corpora have the same normalized digest and
+# both pass the exact 8.3.27.2074 gate.
+EXPECTED_CASE_CONTRACT_SHA256: str | None = None
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 300.0
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 CASE_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
@@ -120,6 +129,7 @@ XML_FAMILY_BY_ROOT_QNAME = {
     "{http://v8.1c.ru/8.3/xcf/extrnprops}Help": "help",
     "{http://v8.1c.ru/8.3/xcf/extrnprops}ExchangePlanContent": "exchange-plan-content",
     "{http://v8.1c.ru/8.3/xcf/extrnprops}HomePageWorkArea": "home-page-work-area",
+    "{http://v8.1c.ru/8.1/xdto}package": "xdto-package",
 }
 MANDATORY_CASE_IDS = frozenset(
     {
@@ -134,6 +144,7 @@ MANDATORY_CASE_IDS = frozenset(
         "cfe-patch-method-catalog-form-module",
         "cfe-patch-method-constant-value-manager-module",
         "code-patch-bsl-only",
+        "xdto-add-nested-property",
         "dcs-compile-owned-template",
         "dcs-edit-add-parameter-after-settings",
         "dcs-edit-modify-field-role-restriction",
@@ -171,6 +182,7 @@ MANDATORY_CASE_IDS = frozenset(
         "meta-compile-task",
         "meta-compile-web-service",
         "meta-edit-property",
+        "meta-edit-event-source",
         "meta-remove-object",
         "mxl-compile-owned-template",
         "role-compile-name-field",
@@ -297,10 +309,20 @@ def _semantic_element(node: etree._Element, label: str):
     attributes = []
     for name, value in node.attrib.items():
         expanded_name = _expanded_name(name)
-        if expanded_name == f"{{{XSI_NS}}}type":
+        attribute_name = etree.QName(name)
+        is_xdto_qname = (
+            etree.QName(node).namespace == XDTO_NS
+            and attribute_name.namespace is None
+            and attribute_name.localname in XDTO_QNAME_ATTRIBUTE_LOCAL_NAMES
+        )
+        if expanded_name == f"{{{XSI_NS}}}type" or is_xdto_qname:
             semantic_value = (
                 "qname",
-                _expanded_lexical_qname(value, node, f"{label} xsi:type"),
+                _expanded_lexical_qname(
+                    value,
+                    node,
+                    f"{label} {etree.QName(node).localname}/@{attribute_name.localname}",
+                ),
             )
         else:
             semantic_value = ("text", value)
@@ -2808,14 +2830,20 @@ def load_corpus(
     contract_sha256 = case_contract_sha256(
         cases, normalized, empty_directory_paths
     )
-    if (
-        expected_ids == set(MANDATORY_CASE_IDS)
-        and contract_sha256 != EXPECTED_CASE_CONTRACT_SHA256
-    ):
-        raise CorpusError(
-            "corpus case contract fields do not match the pinned public-writer inventory; "
-            f"expected {EXPECTED_CASE_CONTRACT_SHA256}, got {contract_sha256}"
-        )
+    if expected_ids == set(MANDATORY_CASE_IDS):
+        if EXPECTED_CASE_CONTRACT_SHA256 is None:
+            raise CorpusError(
+                "required corpus case contract is not pinned for the current "
+                f"{len(MANDATORY_CASE_IDS)}-case public-writer inventory; "
+                f"last verified digest for the previous inventory was "
+                f"{LAST_VERIFIED_CASE_CONTRACT_SHA256}, candidate digest is "
+                f"{contract_sha256}; exact platform gate is pending"
+            )
+        if contract_sha256 != EXPECTED_CASE_CONTRACT_SHA256:
+            raise CorpusError(
+                "corpus case contract fields do not match the pinned public-writer inventory; "
+                f"expected {EXPECTED_CASE_CONTRACT_SHA256}, got {contract_sha256}"
+            )
     declared_xml_paths = [
         item["path"]
         for case in cases
@@ -4145,6 +4173,7 @@ def _build_gate_report(
             "corpusManifestSha256": manifest_sha256,
             "caseContractSha256": corpus["caseContractSha256"],
             "expectedCaseContractSha256": EXPECTED_CASE_CONTRACT_SHA256,
+            "lastVerifiedCaseContractSha256": LAST_VERIFIED_CASE_CONTRACT_SHA256,
             "expectedIbcmdSha256": EXPECTED_IBCMD_SHA256,
             "ibcmdSha256": platform.get("ibcmdSha256") if platform else None,
             "versionCheck": platform.get("command") if platform else None,

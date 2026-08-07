@@ -34,8 +34,10 @@ MXL_NS = "urn:test:mxl"
 MD_NS = "urn:test:md"
 REAL_MD_NS = "http://v8.1c.ru/8.3/MDClasses"
 REAL_CAI_NS = "http://v8.1c.ru/8.2/managed-application/core"
+REAL_XDTO_NS = "http://v8.1c.ru/8.1/xdto"
 REAL_SCHEME_NS = "http://v8.1c.ru/8.3/xcf/scheme"
 REAL_FLOWCHART_QNAME = f"{{{REAL_SCHEME_NS}}}GraphicalSchema"
+REAL_XDTO_QNAME = f"{{{REAL_XDTO_NS}}}package"
 
 
 def sha(data):
@@ -617,6 +619,44 @@ class VerifierContractTests(unittest.TestCase):
             with self.assertRaisesRegex(verifier.CorpusError, "unlisted XML"):
                 verifier.verify_corpus(corpus, profile, runtime, None)
 
+            corpus = write_corpus(root / "unlisted-package", [("rights.xml", "<Rights xmlns='urn:test:roles' version='2.20'><setForNewObjects>true</setForNewObjects></Rights>", {})])
+            package = corpus.parent / "case/XDTOPackages/Enterprise/Ext/Package.bin"
+            package.parent.mkdir(parents=True)
+            package.write_text("<package xmlns='http://v8.1c.ru/8.1/xdto'/>")
+            with self.assertRaisesRegex(verifier.CorpusError, "unlisted XML"):
+                verifier.verify_corpus(corpus, profile, runtime, None)
+
+    def test_package_bin_xml_exception_is_limited_to_the_xdto_layout(self):
+        verifier = load_verifier()
+        self.assertTrue(
+            verifier._is_platform_xml_path(
+                verifier.PurePosixPath(
+                    "case/XDTOPackages/Enterprise/Ext/Package.bin"
+                )
+            )
+        )
+        self.assertFalse(
+            verifier._is_platform_xml_path(
+                verifier.PurePosixPath("case/Ext/Package.bin")
+            )
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            corpus = write_corpus(root, [("rights.xml", "<Rights/>", {})])
+            outside = root / "case/Ext/Package.bin"
+            outside.parent.mkdir(parents=True)
+            outside.write_bytes(b"\x00\x01binary")
+
+            verifier._load_corpus(corpus, "test-2.20")
+
+            manifest = json.loads(corpus.read_text())
+            manifest["cases"][0]["files"][0]["path"] = "case/Ext/Package.bin"
+            manifest["cases"][0]["files"][0]["sha256"] = sha(outside.read_bytes())
+            corpus.write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(verifier.CorpusError, "unsafe corpus path"):
+                verifier._load_corpus(corpus, "test-2.20")
+
     def test_pre_snapshot_inventory_shape_family_and_version_are_verified(self):
         verifier = load_verifier()
         with tempfile.TemporaryDirectory() as tmp:
@@ -855,6 +895,114 @@ class VerifierContractTests(unittest.TestCase):
             interface_row = next(row for row in report["files"] if row["path"].endswith("ClientApplicationInterface.xml"))
             self.assertEqual(next(check for check in interface_row["checks"] if check["name"] == "ownerVersion")["status"], "pass")
             self.assertNotIn("exportVersion", {check["name"] for check in interface_row["checks"]})
+
+    def test_xdto_package_is_known_not_covered_and_uses_owner_version(self):
+        verifier = load_verifier()
+        profile = json.loads(PROFILE.read_text())
+        profile["profile"] = "test-fixed-families"
+        self.assertEqual(
+            profile["families"][REAL_XDTO_QNAME],
+            {"id": "xdto-package", "coverage": "not-covered", "version": "owner"},
+        )
+        for attribute in ("type", "ref", "base"):
+            broken = verifier.etree.fromstring(
+                f"<package xmlns='{REAL_XDTO_NS}'><property {attribute}='missing:Value'/></package>"
+            )
+            self.assertEqual(verifier._unresolved_qname_prefix(broken), "missing")
+        ordinary = verifier.etree.fromstring("<root type='missing:Value'/>")
+        self.assertIsNone(verifier._unresolved_qname_prefix(ordinary))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            case = root / "case"
+            case.mkdir()
+            (root / "pre-case").mkdir()
+            owner = case / "Configuration.xml"
+            owner.write_text(
+                f"<MetaDataObject xmlns='{REAL_MD_NS}' version='2.20'><Configuration/></MetaDataObject>"
+            )
+            package = case / "XDTOPackages/Enterprise/Ext/Package.bin"
+            package.parent.mkdir(parents=True)
+            package.write_text(
+                f"<package xmlns='{REAL_XDTO_NS}' targetNamespace='urn:test'/>"
+            )
+            manifest = root / "corpus-manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 2,
+                        "profile": profile["profile"],
+                        "emptyDirectoryPaths": ["pre-case"],
+                        "cases": [
+                            {
+                                "id": "xdto-package",
+                                "workspacePath": "case",
+                                "preSnapshotPath": "pre-case",
+                                "toolId": "unica.xdto.edit",
+                                "xmlImpact": "modified",
+                                "preFiles": [],
+                                "preOwnerVersions": {},
+                                "files": [
+                                    {
+                                        "path": "case/Configuration.xml",
+                                        "sha256": sha(owner.read_bytes()),
+                                        "seed": True,
+                                        "family": "metadata",
+                                    },
+                                    {
+                                        "path": "case/XDTOPackages/Enterprise/Ext/Package.bin",
+                                        "sha256": sha(package.read_bytes()),
+                                        "seed": False,
+                                        "family": "xdto-package",
+                                        "ownerPath": "case/Configuration.xml",
+                                    },
+                                ],
+                            }
+                        ],
+                    }
+                )
+            )
+            runtime = {
+                "source": {
+                    "kind": "runtime-xsd",
+                    "sha256": "0" * 64,
+                    "formatVersion": 1,
+                    "platformVersion": "8.3.27.2074",
+                    "manifestSummary": {
+                        "packages": 1,
+                        "namespaces": 1,
+                        "success": 1,
+                        "schemas": 1,
+                        "errors": 0,
+                    },
+                    "identityStatement": "synthetic",
+                },
+                "compilationMatrix": [
+                    {
+                        "file": "synthetic.xsd",
+                        "targetNamespace": "urn:synthetic",
+                        "status": "compiled",
+                        "detail": "",
+                    }
+                ],
+                "wrappers": {},
+            }
+
+            report, status = verifier.verify_corpus(manifest, profile, runtime, None)
+
+            self.assertEqual(status, 3)
+            package_row = next(
+                row for row in report["files"] if row["path"].endswith("Package.bin")
+            )
+            self.assertEqual(package_row["coverage"], "not-covered")
+            self.assertEqual(package_row["result"], "inconclusive")
+            self.assertEqual(
+                next(
+                    check
+                    for check in package_row["checks"]
+                    if check["name"] == "ownerVersion"
+                )["status"],
+                "pass",
+            )
 
     def test_flowchart_is_known_not_covered_and_requires_root_version_2_20(self):
         verifier = load_verifier()

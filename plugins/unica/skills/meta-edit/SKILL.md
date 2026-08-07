@@ -53,8 +53,18 @@ allowed-tools:
 Доказанные переходы для прежних коллекций: значения перечисления добавляются
 как `collection: "enumValues"`, владельцы справочника и движения документа
 меняются через `editRelations` с `relation: "owners"` или
-`relation: "registerRecords"`. Скалярные свойства используйте только под
-PascalCase-именем и с enum-значением, опубликованным текущей схемой.
+`relation: "registerRecords"`. Источник подписки заменяется той же операцией с
+`relation: "source"` и только `mode: "replace"`; `targets: []` очищает список.
+Его цели — закрытое размеченное объединение `string`, `number`, `boolean`,
+`date`, `valueStorage`, `object`, `reference`, `recordSet` и `definedType`.
+`targets` — wire-массив набора: порядок его членов семантически незначим, и
+перестановка тех же целей является exact-byte no-op. При изменении Unica
+выпускает цели в детерминированном порядке.
+Конфигурационные варианты передают логический `metadataPath`; Unica проверяет
+регистрацию, дескриптор и совпадающий `GeneratedType` под тем же владельцем,
+что и подписка. `valueStorage` допускается только как единственный источник.
+Скалярные свойства используйте только под PascalCase-именем и с enum-значением,
+опубликованным текущей схемой.
 
 ### Изменить свойства
 
@@ -167,6 +177,36 @@ PascalCase-именем и с enum-значением, опубликованн�
           "mode": "replace",
           "targets": [
             {"metadataPath": "Document.СчетПокупателю"}
+          ]
+        }
+      ],
+      "dryRun": true
+    }
+  }
+}
+```
+
+### Заменить источник подписки набором записей регистра
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.meta.edit",
+    "arguments": {
+      "sourceSet": "main",
+      "metadataPath": "EventSubscription.ОбработкаИзменений",
+      "operations": [
+        {
+          "op": "editRelations",
+          "relation": "source",
+          "mode": "replace",
+          "targets": [
+            {
+              "kind": "recordSet",
+              "metadataPath": "InformationRegister.ИсторияИзменений"
+            }
           ]
         }
       ],

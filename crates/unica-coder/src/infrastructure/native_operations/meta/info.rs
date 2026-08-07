@@ -81,8 +81,9 @@ fn emit_registrar_processing_phase(phase: RegistrarProcessingPhase) {
 use super::super::common::object_support_state;
 use super::edit::ResolvedMetadataObject;
 use super::xml_model::{
-    meta_info_child, meta_info_child_text, meta_info_children, meta_info_inner_text,
-    meta_info_ml_text, meta_info_normalize_cfg_prefix,
+    meta_event_subscription_source_node, meta_info_child, meta_info_child_text, meta_info_children,
+    meta_info_inner_text, meta_info_ml_text, meta_info_normalize_cfg_prefix,
+    parse_meta_event_subscription_source,
 };
 
 /// Parse the descriptor image already acquired by the logical resolver. The
@@ -169,7 +170,7 @@ pub(crate) fn read_typed_meta_info(
         synonym,
         support: typed_support_status(&resolved.descriptor_path),
         properties: typed_properties(properties, kind),
-        relations: typed_relations(properties, target, &mut diagnostics),
+        relations: typed_relations(&doc, properties, target, &mut diagnostics),
         collections: MetaCollectionsData {
             attributes: typed_elements_with_diagnostics(
                 xml,
@@ -568,50 +569,74 @@ pub(super) fn typed_properties(
 }
 
 pub(super) fn typed_relations(
+    document: &Document<'_>,
     properties: Option<roxmltree::Node<'_, '_>>,
     target: &MetadataAddress,
     diagnostics: &mut Vec<MetaDiagnostic>,
 ) -> MetaRelationsData {
-    let mut read = |tag: &str, public_name: &str, kind: &str| {
-        let Some(container) = properties.and_then(|node| meta_info_child(node, tag)) else {
-            return Vec::new();
-        };
-        container
-            .children()
-            .filter(|node| node.is_element())
-            .enumerate()
-            .filter_map(|(index, node)| {
-                let raw = meta_info_inner_text(node);
-                let normalized = meta_info_normalize_cfg_prefix(raw.trim());
-                let normalized = normalized.strip_prefix("cfg:").unwrap_or(&normalized);
-                let valid = if kind == "field" {
-                    crate::domain::metadata::MetadataFieldPath::parse(normalized).is_ok()
-                } else {
-                    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, normalized).is_ok()
-                };
-                if !valid {
-                    diagnostics.push(
-                        MetaDiagnostic::error(
-                            MetaDiagnosticCode::ValidationFailed,
-                            "metadata relation target is malformed",
-                        )
-                        .with_metadata_path(target.clone())
-                        .with_field(format!("relations.{public_name}[{index}]")),
-                    );
-                    return None;
-                }
-                Some(MetaRelationTargetData {
-                    kind: kind.to_string(),
-                    value: normalized.to_string(),
+    let (owners, register_records, based_on, input_by_string) = {
+        let mut read = |tag: &str, public_name: &str, kind: &str| {
+            let Some(container) = properties.and_then(|node| meta_info_child(node, tag)) else {
+                return Vec::new();
+            };
+            container
+                .children()
+                .filter(|node| node.is_element())
+                .enumerate()
+                .filter_map(|(index, node)| {
+                    let raw = meta_info_inner_text(node);
+                    let normalized = meta_info_normalize_cfg_prefix(raw.trim());
+                    let normalized = normalized.strip_prefix("cfg:").unwrap_or(&normalized);
+                    let valid = if kind == "field" {
+                        crate::domain::metadata::MetadataFieldPath::parse(normalized).is_ok()
+                    } else {
+                        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, normalized).is_ok()
+                    };
+                    if !valid {
+                        diagnostics.push(
+                            MetaDiagnostic::error(
+                                MetaDiagnosticCode::ValidationFailed,
+                                "metadata relation target is malformed",
+                            )
+                            .with_metadata_path(target.clone())
+                            .with_field(format!("relations.{public_name}[{index}]")),
+                        );
+                        return None;
+                    }
+                    Some(MetaRelationTargetData {
+                        kind: kind.to_string(),
+                        value: normalized.to_string(),
+                    })
                 })
-            })
-            .collect()
+                .collect()
+        };
+        (
+            read("Owners", "owners", "object"),
+            read("RegisterRecords", "registerRecords", "object"),
+            read("BasedOn", "basedOn", "object"),
+            read("InputByString", "inputByString", "field"),
+        )
+    };
+    let source = match meta_event_subscription_source_node(document)
+        .and_then(parse_meta_event_subscription_source)
+    {
+        Ok(source) => source,
+        Err(message) if target.segments().next() == Some("EventSubscription") => {
+            diagnostics.push(
+                MetaDiagnostic::error(MetaDiagnosticCode::ValidationFailed, message)
+                    .with_metadata_path(target.clone())
+                    .with_field("relations.source"),
+            );
+            Vec::new()
+        }
+        Err(_) => Vec::new(),
     };
     MetaRelationsData {
-        owners: read("Owners", "owners", "object"),
-        register_records: read("RegisterRecords", "registerRecords", "object"),
-        based_on: read("BasedOn", "basedOn", "object"),
-        input_by_string: read("InputByString", "inputByString", "field"),
+        owners,
+        register_records,
+        based_on,
+        input_by_string,
+        source,
     }
 }
 
