@@ -1,8 +1,11 @@
+use super::edit::{
+    typed_child_directory_kind, typed_child_modelled_payload, typed_child_payload_directories,
+    typed_child_retained_payload,
+};
 use crate::application::ports::{
-    MetadataAuxiliaryXmlKind, MetadataChildDirectoryKind, MetadataChildProfile,
-    MetadataChildResourceKind, MetadataEvidenceAvailability, MetadataResourceRole,
-    MetadataTemplateResourcePart, MetadataTemplateType, MetadataValidationResult,
-    MetadataValidationSubject,
+    MetadataAuxiliaryXmlKind, MetadataChildProfile, MetadataChildResourceKind,
+    MetadataEvidenceAvailability, MetadataResourceRole, MetadataTemplateResourcePart,
+    MetadataTemplateType, MetadataValidationResult, MetadataValidationSubject,
 };
 use crate::domain::format_profile::{
     classify_root_version, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
@@ -682,6 +685,10 @@ fn validate_child_resource(kind: MetadataChildResourceKind, bytes: &[u8]) -> Res
         MetadataChildResourceKind::Module => std::str::from_utf8(bytes)
             .map(|_| ())
             .map_err(|error| format!("child module is not UTF-8: {error}")),
+        // Retained payload is carried verbatim and never interpreted, so there
+        // is no content contract to check — only the path shape, which
+        // `validate_one_child_footprint` re-derives.
+        MetadataChildResourceKind::Retained => Ok(()),
     }
 }
 
@@ -697,24 +704,32 @@ fn validate_child_footprints(
             .iter()
             .filter(|candidate| candidate.0.child == child.child)
             .collect::<Vec<_>>();
-        let descriptor = matching_descriptors
-            .first()
-            .filter(|descriptor| {
-                matching_descriptors.len() == 1
-                    && child.kind.matches(descriptor.0.profile)
-                    && child_descriptor_role_matches(
-                        &descriptor.1,
-                        &child.child,
-                        descriptor.0.profile,
-                    )
-            })
-            .map(|descriptor| &descriptor.0);
-        let Some(descriptor) = descriptor else {
-            diagnostics.push(template_resource_set_diagnostic(
-                &child.child,
-                "final child is not backed by exactly one byte-matching descriptor",
-            ));
-            continue;
+        // Three independent things can go wrong here, and a reader who only
+        // sees "not backed by a descriptor" cannot tell which. Name the one
+        // that actually failed.
+        let descriptor = match matching_descriptors.as_slice() {
+            [] => Err("final child has no descriptor among the read resources"),
+            [_, _, ..] => Err("final child is backed by more than one descriptor"),
+            [descriptor] if !child.kind.matches(descriptor.0.profile) => {
+                Err("final child descriptor declares a different child kind than the owner graph")
+            }
+            [descriptor]
+                if !child_descriptor_role_matches(
+                    &descriptor.1,
+                    &child.child,
+                    descriptor.0.profile,
+                ) =>
+            {
+                Err("final child descriptor is filed under a resource role naming another child")
+            }
+            [descriptor] => Ok(&descriptor.0),
+        };
+        let descriptor = match descriptor {
+            Ok(descriptor) => descriptor,
+            Err(message) => {
+                diagnostics.push(template_resource_set_diagnostic(&child.child, message));
+                continue;
+            }
         };
 
         let footprints = subject
@@ -1224,39 +1239,56 @@ fn validate_one_child_footprint(
         .iter()
         .filter(|(kind, _)| matches!(kind, MetadataChildResourceKind::Module))
         .count();
-    let expected_directories = match expected.profile {
-        MetadataChildProfile::Command if module_count == 0 => Vec::new(),
-        MetadataChildProfile::Form | MetadataChildProfile::Command => vec![
-            MetadataChildDirectoryKind::Root,
-            MetadataChildDirectoryKind::Extension,
-        ],
-        MetadataChildProfile::Template(MetadataTemplateType::HtmlDocument) => vec![
-            MetadataChildDirectoryKind::Root,
-            MetadataChildDirectoryKind::Extension,
-            MetadataChildDirectoryKind::HtmlPages,
-        ],
-        MetadataChildProfile::Template(_) => vec![
-            MetadataChildDirectoryKind::Root,
-            MetadataChildDirectoryKind::Extension,
-        ],
-    }
-    .into_iter()
-    .collect::<std::collections::BTreeSet<_>>();
-    let observed_directories = footprint
-        .directories
+    let html_pages =
+        if expected.profile == MetadataChildProfile::Template(MetadataTemplateType::HtmlDocument) {
+            subject
+                .resources
+                .iter()
+                .find_map(|resource| match &resource.role {
+                    MetadataResourceRole::ChildResource {
+                        child,
+                        kind:
+                            MetadataChildResourceKind::TemplateContent {
+                                template_type: MetadataTemplateType::HtmlDocument,
+                                part: MetadataTemplateResourcePart::Primary,
+                            },
+                        ..
+                    } if child == &expected.child => html_template_page_names(&resource.bytes).ok(),
+                    _ => None,
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+    // Re-derive the payload from the child's own profile rather than trusting
+    // the plan: the retained members must still be shapes the closed contract
+    // recognises, and the directory topology must be exactly their closure.
+    if !footprint
+        .retained
         .iter()
-        .copied()
-        .collect::<std::collections::BTreeSet<_>>();
-    if observed_directories != expected_directories
-        || observed_directories.len() != footprint.directories.len()
+        .all(|relative| typed_child_retained_payload(expected.profile, relative))
     {
+        diagnostics.push(template_resource_set_diagnostic(
+            &expected.child,
+            "child footprint retains a payload member the closed contract does not allow",
+        ));
+    }
+    let mut payload =
+        typed_child_modelled_payload(expected.profile, module_count == 1, &html_pages);
+    payload.extend(footprint.retained.iter().cloned());
+    let expected_directories = typed_child_payload_directories(&payload)
+        .iter()
+        .map(|relative| typed_child_directory_kind(relative))
+        .collect::<Vec<_>>();
+    if !multiset_eq(&expected_directories, &footprint.directories) {
         diagnostics.push(template_resource_set_diagnostic(
             &expected.child,
             "child footprint does not contain its exact required directory set",
         ));
     }
 
-    let expected_kinds = match expected.profile {
+    let mut expected_kinds = match expected.profile {
         MetadataChildProfile::Form => {
             let mut kinds = vec![(MetadataChildResourceKind::FormContent, 0)];
             if module_count == 1 {
@@ -1276,38 +1308,21 @@ fn validate_one_child_footprint(
                 },
                 0,
             )];
-            if template_type == MetadataTemplateType::HtmlDocument {
-                let page_count = subject
-                    .resources
-                    .iter()
-                    .find_map(|resource| match &resource.role {
-                        MetadataResourceRole::ChildResource {
-                            child,
-                            kind:
-                                MetadataChildResourceKind::TemplateContent {
-                                    template_type: MetadataTemplateType::HtmlDocument,
-                                    part: MetadataTemplateResourcePart::Primary,
-                                },
-                            ..
-                        } if child == &expected.child => {
-                            html_template_page_names(&resource.bytes).ok()
-                        }
-                        _ => None,
-                    })
-                    .map_or(0, |pages| pages.len());
-                kinds.extend((0..page_count).map(|index| {
-                    (
-                        MetadataChildResourceKind::TemplateContent {
-                            template_type,
-                            part: MetadataTemplateResourcePart::HtmlPage,
-                        },
-                        index + 1,
-                    )
-                }));
-            }
+            kinds.extend((0..html_pages.len()).map(|index| {
+                (
+                    MetadataChildResourceKind::TemplateContent {
+                        template_type,
+                        part: MetadataTemplateResourcePart::HtmlPage,
+                    },
+                    index + 1,
+                )
+            }));
             kinds
         }
     };
+    expected_kinds.extend(
+        (0..footprint.retained.len()).map(|ordinal| (MetadataChildResourceKind::Retained, ordinal)),
+    );
     if resources.len() != expected_kinds.len()
         || expected_kinds.iter().any(|expected_resource| {
             resources
@@ -1322,6 +1337,14 @@ fn validate_one_child_footprint(
             "child payload does not contain its exact canonical resource and ordinal set",
         ));
     }
+}
+
+fn multiset_eq<T: Ord + Copy>(left: &[T], right: &[T]) -> bool {
+    let mut left = left.to_vec();
+    let mut right = right.to_vec();
+    left.sort_unstable();
+    right.sort_unstable();
+    left == right
 }
 
 fn template_resource_set_diagnostic(child: &MetadataAddress, message: &str) -> MetaDiagnostic {
@@ -3669,8 +3692,8 @@ pub(super) fn meta_validate_forbidden_properties(md_type: &str) -> Option<&'stat
 mod tests {
     use super::*;
     use crate::application::ports::{
-        MetadataAuxiliaryXmlKind, MetadataChildFootprintEvidence, MetadataResourceImage,
-        MetadataResourceRole, MetadataValidationSubject,
+        MetadataAuxiliaryXmlKind, MetadataChildDirectoryKind, MetadataChildFootprintEvidence,
+        MetadataResourceImage, MetadataResourceRole, MetadataValidationSubject,
     };
     use crate::domain::metadata::{MetaDiagnosticCode, MetaValidationStatus};
     use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
@@ -3982,6 +4005,7 @@ mod tests {
                 child,
                 profile,
                 directories,
+                retained: Vec::new(),
             }],
             registrar_evidence: Default::default(),
         }
@@ -4048,7 +4072,8 @@ mod tests {
                 resource.bytes = match kind {
                     MetadataChildResourceKind::FormContent => br#"<?xml version="1.0" encoding="UTF-8"?><Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"/>"#.to_vec(),
                     MetadataChildResourceKind::TemplateContent { .. } => b"text".to_vec(),
-                    MetadataChildResourceKind::Module => unreachable!(),
+                    MetadataChildResourceKind::Module
+                    | MetadataChildResourceKind::Retained => unreachable!(),
                 };
             }
         }
@@ -4483,10 +4508,12 @@ mod tests {
 
             validate_child_footprints(&subject, &mut diagnostics);
 
+            // A forged name or kind moves the descriptor to another child
+            // identity, so the expected child is left with none at all.
             let expected_message = if label == "template-type" {
                 "footprint evidence"
             } else {
-                "byte-matching descriptor"
+                "no descriptor among the read resources"
             };
             assert!(
                 diagnostics
@@ -4535,9 +4562,69 @@ mod tests {
             validate_child_footprints(&subject, &mut diagnostics);
 
             assert!(
+                diagnostics.iter().any(|diagnostic| diagnostic
+                    .message
+                    .contains("no descriptor among the read resources")),
+                "{label}: {diagnostics:?}"
+            );
+        }
+    }
+
+    /// Issue #360 asked for this: the three ways a child can lose its
+    /// descriptor used to share one message, so the diagnostic never said which
+    /// of them happened.
+    #[test]
+    fn each_missing_child_descriptor_cause_names_itself() {
+        let form = typed_child_xml("Form", "Main", None);
+        let subject = || {
+            closed_child_subject(
+                "Form",
+                "Main",
+                None,
+                &form,
+                vec![
+                    MetadataChildDirectoryKind::Root,
+                    MetadataChildDirectoryKind::Extension,
+                ],
+                vec![(MetadataChildResourceKind::FormContent, 0)],
+            )
+        };
+
+        let mut absent = subject();
+        absent.resources.remove(1);
+        let mut duplicated = subject();
+        duplicated.resources.push(duplicated.resources[1].clone());
+        let mut misfiled = subject();
+        misfiled.resources[1].role = MetadataResourceRole::Form {
+            owner: address("Catalog.Editable"),
+            name: "Other".to_string(),
+        };
+
+        for (label, subject, expected) in [
+            (
+                "absent",
+                absent,
+                "final child has no descriptor among the read resources",
+            ),
+            (
+                "duplicated",
+                duplicated,
+                "final child is backed by more than one descriptor",
+            ),
+            (
+                "misfiled",
+                misfiled,
+                "final child descriptor is filed under a resource role naming another child",
+            ),
+        ] {
+            let mut diagnostics = Vec::new();
+
+            validate_child_footprints(&subject, &mut diagnostics);
+
+            assert!(
                 diagnostics
                     .iter()
-                    .any(|diagnostic| diagnostic.message.contains("byte-matching descriptor")),
+                    .any(|diagnostic| diagnostic.message.starts_with(expected)),
                 "{label}: {diagnostics:?}"
             );
         }
@@ -4726,7 +4813,7 @@ mod tests {
         validate_child_footprints(&duplicate_descriptor, &mut diagnostics);
         assert!(diagnostics.iter().any(|diagnostic| diagnostic
             .message
-            .contains("exactly one byte-matching descriptor")));
+            .contains("backed by more than one descriptor")));
 
         let mut orphan_descriptor = form.clone();
         let orphan_xml = typed_child_xml("Form", "Orphan", None);
@@ -4760,6 +4847,7 @@ mod tests {
                 child: address("Catalog.Editable.Command.Orphan"),
                 profile: MetadataChildProfile::Command,
                 directories: Vec::new(),
+                retained: Vec::new(),
             });
         let mut diagnostics = Vec::new();
         validate_child_footprints(&orphan_evidence, &mut diagnostics);

@@ -46,6 +46,7 @@
 - [ADR-0025: Поверхность `unica.meta.*` состоит из одного чтения и трёх мутаций](0025-meta-surface-with-typed-operations.md)
 - [ADR-0026: `insert` без селектора пишет в конец модуля](0026-insert-bez-selektora-pishet-v-konec-modulya.md)
 - [ADR-0027: Корни платформенного XML имеют единый закрытый реестр версионирования](0027-edinyy-reestr-korney-platform-xml.md)
+- [ADR-0028: Чтение `unica.meta.info` не теряет данные из-за несвязанной проверки](0028-chtenie-meta-info-ne-teryaet-dannye.md)
 
 Заголовки записей ADR-0001…ADR-0006 приведены здесь дословно: индекс называет
 документ так, как он называется сам. Почему они выглядят иначе — в разделе

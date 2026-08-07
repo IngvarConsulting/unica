@@ -220,6 +220,15 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
+    /// Designer keeps a managed form's module one level below the rest of
+    /// `Ext`, so a fixture has to create that directory before writing it.
+    fn write_form_module(payload_root: &std::path::Path, bytes: &[u8]) -> PathBuf {
+        let path = payload_root.join("Ext/Form/Module.bsl");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, bytes).unwrap();
+        path
+    }
+
     struct FixedWorkspaceApplicationPorts {
         context: WorkspaceContext,
         inner: InfrastructureApplicationPorts,
@@ -1032,7 +1041,7 @@ mod tests {
         let old_descriptor = fixture.root.join("src/Catalogs/Editable/Forms/Old.xml");
         let content = fs::read(old_root.join("Ext/Form.xml")).unwrap();
         let module = b"procedure Kept()\nendprocedure".to_vec();
-        fs::write(old_root.join("Ext/Module.bsl"), &module).unwrap();
+        write_form_module(&old_root, &module);
         let request = fixture.typed_edit(vec![MetaEditOperation::update(
             MetaCollection::Forms,
             None,
@@ -1067,7 +1076,10 @@ mod tests {
             .join("src/Catalogs/Editable/Forms/New.xml")
             .is_file());
         assert_eq!(fs::read(new_root.join("Ext/Form.xml")).unwrap(), content);
-        assert_eq!(fs::read(new_root.join("Ext/Module.bsl")).unwrap(), module);
+        assert_eq!(
+            fs::read(new_root.join("Ext/Form/Module.bsl")).unwrap(),
+            module
+        );
     }
 
     #[test]
@@ -1076,11 +1088,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         fixture.publish_form_add("Gone");
         let payload_root = fixture.root.join("src/Catalogs/Editable/Forms/Gone");
-        fs::write(
-            payload_root.join("Ext/Module.bsl"),
-            b"procedure Gone()\nendprocedure",
-        )
-        .unwrap();
+        write_form_module(&payload_root, b"procedure Gone()\nendprocedure");
         let child_descriptor = fixture.root.join("src/Catalogs/Editable/Forms/Gone.xml");
         let request = fixture.typed_edit(vec![MetaEditOperation::remove(
             MetaCollection::Forms,
@@ -1134,8 +1142,7 @@ mod tests {
         let forms = fixture.root.join("src/Catalogs/Editable/Forms");
         let descriptor = forms.join("Only.xml");
         let content = forms.join("Only/Ext/Form.xml");
-        let module = forms.join("Only/Ext/Module.bsl");
-        fs::write(&module, b"procedure Kept()\nendprocedure").unwrap();
+        let module = write_form_module(&forms.join("Only"), b"procedure Kept()\nendprocedure");
         let owner_before = fs::read(&fixture.descriptor).unwrap();
         let descriptor_before = fs::read(&descriptor).unwrap();
         let content_before = fs::read(&content).unwrap();
@@ -1175,8 +1182,7 @@ mod tests {
         fixture.publish_form_add("A");
         let payload_root = fixture.root.join("src/Catalogs/Editable/Forms/A");
         let descriptor = fixture.root.join("src/Catalogs/Editable/Forms/A.xml");
-        let stale_module = payload_root.join("Ext/Module.bsl");
-        fs::write(&stale_module, b"procedure Stale()\nendprocedure").unwrap();
+        let stale_module = write_form_module(&payload_root, b"procedure Stale()\nendprocedure");
         let request = fixture.typed_edit(vec![
             MetaEditOperation::remove(MetaCollection::Forms, None, vec!["A".into()]).unwrap(),
             MetaEditOperation::add(
@@ -1225,11 +1231,7 @@ mod tests {
         fixture.publish_form_add("A");
         let payload_root = fixture.root.join("src/Catalogs/Editable/Forms/A");
         let descriptor = fixture.root.join("src/Catalogs/Editable/Forms/A.xml");
-        fs::write(
-            payload_root.join("Ext/Module.bsl"),
-            b"procedure Initial()\nendprocedure",
-        )
-        .unwrap();
+        write_form_module(&payload_root, b"procedure Initial()\nendprocedure");
         let request = fixture.typed_edit(vec![
             MetaEditOperation::remove(MetaCollection::Forms, None, vec!["A".into()]).unwrap(),
             MetaEditOperation::add(
@@ -1352,15 +1354,11 @@ mod tests {
         fixture.publish_form_add("Old");
         let old_root = fixture.root.join("src/Catalogs/Editable/Forms/Old");
         let old_descriptor = fixture.root.join("src/Catalogs/Editable/Forms/Old.xml");
-        fs::write(
-            old_root.join("Ext/Module.bsl"),
-            b"procedure Kept()\nendprocedure",
-        )
-        .unwrap();
+        write_form_module(&old_root, b"procedure Kept()\nendprocedure");
         let owner_before = fs::read(&fixture.descriptor).unwrap();
         let descriptor_before = fs::read(&old_descriptor).unwrap();
         let form_before = fs::read(old_root.join("Ext/Form.xml")).unwrap();
-        let module_before = fs::read(old_root.join("Ext/Module.bsl")).unwrap();
+        let module_before = fs::read(old_root.join("Ext/Form/Module.bsl")).unwrap();
         let request = fixture.typed_edit(vec![MetaEditOperation::update(
             MetaCollection::Forms,
             None,
@@ -1393,7 +1391,7 @@ mod tests {
             form_before
         );
         assert_eq!(
-            fs::read(old_root.join("Ext/Module.bsl")).unwrap(),
+            fs::read(old_root.join("Ext/Form/Module.bsl")).unwrap(),
             module_before
         );
         assert!(!fixture
@@ -1823,13 +1821,10 @@ mod tests {
         let fixture = Fixture::new("retained-form-invalid-module");
         let cancellation = CancellationToken::new();
         fixture.publish_form_add("Main");
-        fs::write(
-            fixture
-                .root
-                .join("src/Catalogs/Editable/Forms/Main/Ext/Module.bsl"),
-            [0xff, 0x00, 0x80],
-        )
-        .unwrap();
+        write_form_module(
+            &fixture.root.join("src/Catalogs/Editable/Forms/Main"),
+            &[0xff, 0x00, 0x80],
+        );
         let request = fixture.typed_edit(vec![MetaEditOperation::update(
             MetaCollection::Forms,
             None,
@@ -1975,14 +1970,10 @@ mod tests {
 
         let form = Fixture::new("valid-optional-form-module-footprint");
         form.publish_form_add("Main");
-        let module = form
-            .root
-            .join("src/Catalogs/Editable/Forms/Main/Ext/Module.bsl");
-        fs::write(
-            &module,
+        write_form_module(
+            &form.root.join("src/Catalogs/Editable/Forms/Main"),
             "Процедура ПриОткрытии()\nКонецПроцедуры".as_bytes(),
-        )
-        .unwrap();
+        );
         let form_request = form.typed_edit(vec![MetaEditOperation::update(
             MetaCollection::Forms,
             None,
@@ -2000,11 +1991,14 @@ mod tests {
             prepared.validation_subject().child_footprints[0].profile,
             MetadataChildProfile::Form
         );
+        // `Ext/Form` holds the module, so the closure of the payload files
+        // carries it as an unnamed nested directory.
         assert_eq!(
             prepared.validation_subject().child_footprints[0].directories,
             vec![
                 MetadataChildDirectoryKind::Root,
                 MetadataChildDirectoryKind::Extension,
+                MetadataChildDirectoryKind::Nested,
             ]
         );
         assert!(prepared
