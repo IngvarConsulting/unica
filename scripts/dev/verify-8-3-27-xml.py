@@ -532,7 +532,14 @@ def _is_canonical_relative_path(raw, suffix: str | None = None) -> bool:
 
 def _is_platform_xml_path(path: Path | PurePosixPath) -> bool:
     """Recognize Designer XML payloads whose physical suffix is not `.xml`."""
-    return path.suffix.lower() == ".xml" or path.name == "Package.bin"
+    if path.suffix.lower() == ".xml":
+        return True
+    parts = path.parts
+    return (
+        len(parts) >= 4
+        and parts[-4] == "XDTOPackages"
+        and parts[-2:] == ("Ext", "Package.bin")
+    )
 
 
 def _schema_tree(path: Path, resolver: _ManifestOnlyResolver | None = None):

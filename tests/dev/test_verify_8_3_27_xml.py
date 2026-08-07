@@ -626,6 +626,37 @@ class VerifierContractTests(unittest.TestCase):
             with self.assertRaisesRegex(verifier.CorpusError, "unlisted XML"):
                 verifier.verify_corpus(corpus, profile, runtime, None)
 
+    def test_package_bin_xml_exception_is_limited_to_the_xdto_layout(self):
+        verifier = load_verifier()
+        self.assertTrue(
+            verifier._is_platform_xml_path(
+                verifier.PurePosixPath(
+                    "case/XDTOPackages/Enterprise/Ext/Package.bin"
+                )
+            )
+        )
+        self.assertFalse(
+            verifier._is_platform_xml_path(
+                verifier.PurePosixPath("case/Ext/Package.bin")
+            )
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            corpus = write_corpus(root, [("rights.xml", "<Rights/>", {})])
+            outside = root / "case/Ext/Package.bin"
+            outside.parent.mkdir(parents=True)
+            outside.write_bytes(b"\x00\x01binary")
+
+            verifier._load_corpus(corpus, "test-2.20")
+
+            manifest = json.loads(corpus.read_text())
+            manifest["cases"][0]["files"][0]["path"] = "case/Ext/Package.bin"
+            manifest["cases"][0]["files"][0]["sha256"] = sha(outside.read_bytes())
+            corpus.write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(verifier.CorpusError, "unsafe corpus path"):
+                verifier._load_corpus(corpus, "test-2.20")
+
     def test_pre_snapshot_inventory_shape_family_and_version_are_verified(self):
         verifier = load_verifier()
         with tempfile.TemporaryDirectory() as tmp:

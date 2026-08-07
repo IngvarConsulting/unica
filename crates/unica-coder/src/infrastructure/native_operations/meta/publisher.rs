@@ -218,9 +218,9 @@ impl PreparedMetaEdit {
             context,
         )
         .map_err(|message| provider_failure(&target, message))?;
-        for (path, snapshot) in child_resources.directory_guards {
+        for (path, selector, snapshot) in child_resources.directory_guards {
             transaction
-                .guard_or_verify_directory_topology(path, snapshot)
+                .guard_or_verify_directory_membership(path, selector, snapshot)
                 .map_err(|message| provider_failure(&target, message))?;
         }
         for (path, bytes) in child_resources.exact_file_guards {
@@ -658,9 +658,9 @@ pub(crate) fn prepare_meta_add(
             .map_err(|_| already_exists(&target))?;
     }
 
-    for (path, snapshot) in child_resources.directory_guards {
+    for (path, selector, snapshot) in child_resources.directory_guards {
         transaction
-            .guard_or_verify_directory_topology(path, snapshot)
+            .guard_or_verify_directory_membership(path, selector, snapshot)
             .map_err(|message| provider_failure(&target, message))?;
     }
     for (path, bytes) in child_resources.exact_file_guards {

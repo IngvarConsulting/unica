@@ -662,7 +662,11 @@ pub(super) struct TypedChildFileMutation {
 pub(super) struct TypedChildResourcePlan {
     pub(super) file_mutations: Vec<TypedChildFileMutation>,
     pub(super) exact_file_guards: Vec<(PathBuf, Vec<u8>)>,
-    pub(super) directory_guards: Vec<(PathBuf, DirectoryMembershipSnapshot)>,
+    pub(super) directory_guards: Vec<(
+        PathBuf,
+        DirectoryMembershipSelector,
+        DirectoryMembershipSnapshot,
+    )>,
     pub(super) publication_plan: Vec<MetaPublicationPlanEntry>,
     pub(super) validation_resources: Vec<MetadataResourceImage>,
     pub(super) validation_footprints: Vec<MetadataChildFootprintEvidence>,
@@ -783,6 +787,35 @@ pub(super) fn build_typed_operation_post_image(
     )?;
     child_resources.relation_dependencies =
         resolve_typed_relation_dependencies(&dependency_scope, target, operations, context, &xml)?;
+    if target.segments().next() == Some("EventSubscription") {
+        let directory = descriptor_path.parent().ok_or_else(|| {
+            MetaFailure::from(
+                typed_diagnostic(
+                    MetaDiagnosticCode::ProviderUnavailable,
+                    "EventSubscription collection topology is unavailable",
+                    Some("relations.source"),
+                )
+                .with_metadata_path(target.clone()),
+            )
+        })?;
+        let snapshot =
+            snapshot_directory_membership(directory, DirectoryMembershipSelector::XmlFiles)
+                .map_err(|_| {
+                    MetaFailure::from(
+                        typed_diagnostic(
+                            MetaDiagnosticCode::ProviderUnavailable,
+                            "EventSubscription collection topology is unavailable",
+                            Some("relations.source"),
+                        )
+                        .with_metadata_path(target.clone()),
+                    )
+                })?;
+        child_resources.directory_guards.push((
+            directory.to_path_buf(),
+            DirectoryMembershipSelector::XmlFiles,
+            snapshot,
+        ));
+    }
     let descriptor = if xml == normalized_preimage {
         descriptor_preimage.to_vec()
     } else if source_only {
@@ -1268,7 +1301,11 @@ pub(super) fn plan_typed_child_resources(
                 })
                 .unwrap_or_else(|| typed_child_collection_guard_failure(owner))
         })?;
-        plan.directory_guards.push((directory, snapshot));
+        plan.directory_guards.push((
+            directory,
+            DirectoryMembershipSelector::AllDirectEntries,
+            snapshot,
+        ));
     }
     Ok(plan)
 }

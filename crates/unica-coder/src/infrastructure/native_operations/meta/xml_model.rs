@@ -624,12 +624,25 @@ struct EventSourceEmissionNamespaces {
 impl EventSourceEmissionNamespaces {
     fn for_source(context: roxmltree::Node<'_, '_>, sources: &[MetaEventSource]) -> Self {
         let mut declarations = Vec::new();
-        let data = event_source_emission_prefix(context, "v8", DATA_CORE_NS, &mut declarations);
+        let mut allocated_prefixes = std::collections::BTreeSet::new();
+        let data = event_source_emission_prefix(
+            context,
+            "v8",
+            DATA_CORE_NS,
+            &mut declarations,
+            &mut allocated_prefixes,
+        );
         let current_config = sources
             .iter()
             .any(|source| source.metadata_path().is_some())
             .then(|| {
-                event_source_emission_prefix(context, "cfg", CURRENT_CONFIG_NS, &mut declarations)
+                event_source_emission_prefix(
+                    context,
+                    "cfg",
+                    CURRENT_CONFIG_NS,
+                    &mut declarations,
+                    &mut allocated_prefixes,
+                )
             });
         let xml_schema = sources
             .iter()
@@ -642,7 +655,15 @@ impl EventSourceEmissionNamespaces {
                         | MetaEventSource::Date { .. }
                 )
             })
-            .then(|| event_source_emission_prefix(context, "xs", XML_SCHEMA_NS, &mut declarations));
+            .then(|| {
+                event_source_emission_prefix(
+                    context,
+                    "xs",
+                    XML_SCHEMA_NS,
+                    &mut declarations,
+                    &mut allocated_prefixes,
+                )
+            });
         Self {
             data,
             current_config,
@@ -671,19 +692,34 @@ fn event_source_emission_prefix(
     canonical_prefix: &'static str,
     namespace_uri: &'static str,
     declarations: &mut Vec<(String, &'static str)>,
+    allocated_prefixes: &mut std::collections::BTreeSet<String>,
 ) -> String {
-    if context.lookup_namespace_uri(Some(canonical_prefix)) == Some(namespace_uri) {
+    if !allocated_prefixes.contains(canonical_prefix)
+        && context.lookup_namespace_uri(Some(canonical_prefix)) == Some(namespace_uri)
+    {
+        allocated_prefixes.insert(canonical_prefix.to_string());
         return canonical_prefix.to_string();
     }
     if let Some(prefix) = context.namespaces().find_map(|namespace| {
-        (namespace.uri() == namespace_uri)
-            .then(|| namespace.name())
-            .flatten()
+        (namespace.uri() == namespace_uri
+            && namespace
+                .name()
+                .is_some_and(|prefix| !allocated_prefixes.contains(prefix)))
+        .then(|| namespace.name())
+        .flatten()
     }) {
+        allocated_prefixes.insert(prefix.to_string());
         return prefix.to_string();
     }
-    declarations.push((canonical_prefix.to_string(), namespace_uri));
-    canonical_prefix.to_string()
+    let mut prefix = canonical_prefix.to_string();
+    let mut suffix = 1_u32;
+    while allocated_prefixes.contains(&prefix) {
+        prefix = format!("{canonical_prefix}{suffix}");
+        suffix += 1;
+    }
+    allocated_prefixes.insert(prefix.clone());
+    declarations.push((prefix.clone(), namespace_uri));
+    prefix
 }
 
 pub(super) fn event_source_generated_prefix(source: &MetaEventSource) -> &'static str {
@@ -1310,6 +1346,30 @@ mod tests {
         )
         .unwrap_err()
         .contains("duplicate"));
+    }
+
+    #[test]
+    fn event_subscription_source_does_not_shadow_an_allocated_inherited_prefix() {
+        let xml = format!(
+            r#"<MetaDataObject xmlns="{MD_CLASSES_NS}" version="2.20"><EventSubscription><Properties xmlns:cfg="{DATA_CORE_NS}"><Source/></Properties></EventSubscription></MetaDataObject>"#
+        );
+        let document = roxmltree::Document::parse(&xml).unwrap();
+        let source_node = meta_event_subscription_source_node(&document).unwrap();
+        let requested = vec![MetaEventSource::Reference {
+            metadata_path: metadata_path("Catalog.Items"),
+        }];
+
+        let emitted = emit_meta_event_subscription_source("", &requested, source_node);
+        let rewritten = xml.replace("<Source/>", &emitted);
+        let rewritten_document = roxmltree::Document::parse(&rewritten).unwrap();
+        let rewritten_source = meta_event_subscription_source_node(&rewritten_document).unwrap();
+
+        assert!(emitted.contains(&format!(r#"xmlns:cfg1="{CURRENT_CONFIG_NS}""#)));
+        assert!(emitted.contains("<cfg:Type>cfg1:CatalogRef.Items</cfg:Type>"));
+        assert_eq!(
+            parse_meta_event_subscription_source(rewritten_source).unwrap(),
+            requested
+        );
     }
 
     #[test]

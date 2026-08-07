@@ -212,6 +212,7 @@ mod tests {
     use crate::infrastructure::native_operations::compile_transaction::{
         with_before_rollback_mutation_hook, with_commit_failpoint, CommitFailpoint,
     };
+    use crate::infrastructure::native_operations::single_file_publisher::with_before_commit_hook;
     use crate::infrastructure::platform::filesystem::{
         create_dir_symlink_for_test, remove_dir_symlink_for_test,
     };
@@ -375,6 +376,45 @@ mod tests {
                 .collect(),
         )
         .unwrap()
+    }
+
+    fn prepared_event_subscription_source_change(
+        label: &str,
+    ) -> (PathBuf, Box<dyn PreparedMetadataMutation>, PathBuf, Vec<u8>) {
+        let (root, context) = empty_workspace(label);
+        add_exported_event_handler(&root, &context);
+        let cancellation = CancellationToken::new();
+        MetadataOperations::prepare_mutation(
+            &MetadataRequest::Add(MetaAddRequest {
+                source_set: "main".into(),
+                kind: MetadataKind::EventSubscription,
+                name: "Events".into(),
+                operations: vec![source_replace(vec![MetaEventSource::Boolean])],
+                dry_run: false,
+            }),
+            &context,
+            &cancellation,
+        )
+        .unwrap()
+        .publish(&cancellation)
+        .unwrap();
+        let descriptor = root.join("src/EventSubscriptions/Events.xml");
+        let preimage = fs::read(&descriptor).unwrap();
+        let target =
+            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "EventSubscription.Events")
+                .unwrap();
+        let prepared = MetadataOperations::prepare_mutation(
+            &MetadataRequest::Edit(MetaEditRequest {
+                source_set: "main".into(),
+                metadata_path: target,
+                operations: vec![source_replace(Vec::new())],
+                dry_run: false,
+            }),
+            &context,
+            &cancellation,
+        )
+        .unwrap();
+        (root, prepared, descriptor, preimage)
     }
 
     struct Fixture {
@@ -819,6 +859,54 @@ mod tests {
             .unwrap(),
             subscription_before
         );
+    }
+
+    #[test]
+    fn typed_event_source_rejects_collection_membership_drift_after_prepare() {
+        let (root, prepared, descriptor, preimage) =
+            prepared_event_subscription_source_change("event-source-membership-drift");
+        let late = root.join("src/EventSubscriptions/Late.xml");
+        let late_bytes = b"<concurrent/>";
+        fs::write(&late, late_bytes).unwrap();
+
+        let failure = match prepared.publish(&CancellationToken::new()) {
+            Ok(_) => panic!("EventSubscription collection drift unexpectedly published"),
+            Err(failure) => failure,
+        };
+
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::ConcurrentModification
+        );
+        assert_eq!(fs::read(descriptor).unwrap(), preimage);
+        assert_eq!(fs::read(late).unwrap(), late_bytes);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn typed_event_source_rolls_back_for_collection_drift_during_commit() {
+        let (root, prepared, descriptor, preimage) =
+            prepared_event_subscription_source_change("event-source-membership-rollback");
+        let late = root.join("src/EventSubscriptions/Late.xml");
+        let late_for_hook = late.clone();
+        let late_bytes = b"<concurrent/>";
+
+        let result = with_before_commit_hook(
+            move |_| fs::write(&late_for_hook, late_bytes).unwrap(),
+            || prepared.publish(&CancellationToken::new()),
+        );
+        let failure = match result {
+            Ok(_) => panic!("late EventSubscription collection drift unexpectedly published"),
+            Err(failure) => failure,
+        };
+
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::ConcurrentModification
+        );
+        assert_eq!(fs::read(descriptor).unwrap(), preimage);
+        assert_eq!(fs::read(late).unwrap(), late_bytes);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
