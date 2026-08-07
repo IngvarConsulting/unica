@@ -349,14 +349,11 @@ const NEIGHBOURING_VERSIONED_DOCUMENTS: &[(&str, &str, &str)] = &[
             "version=\"2.20\"/>",
         ),
     ),
-    (
-        "config-dump-info",
-        "src/ConfigDumpInfo.xml",
-        concat!(
-            r#"<ConfigDumpInfo xmlns="http://v8.1c.ru/8.3/xcf/dumpinfo" "#,
-            "version=\"2.20\"/>",
-        ),
-    ),
+    // `ConfigDumpInfo` is deliberately absent. It is registered with the same
+    // versioning as these three, but a removal never reads it, so a case here
+    // would pass with the root registered and without it — proving nothing. Its
+    // registration is guarded where it is observable: the registry's own
+    // coverage tests and the staged-dump validator.
 ];
 
 #[test]
