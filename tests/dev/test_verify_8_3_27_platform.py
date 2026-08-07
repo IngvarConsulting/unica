@@ -564,6 +564,35 @@ class SemanticXmlTests(unittest.TestCase):
             verifier.semantic_xml(same, "same.xml"),
         )
 
+    def test_xdto_type_ref_and_base_attributes_compare_as_qnames(self):
+        verifier = load_verifier()
+        one = b'''<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:t="urn:types"><property type="t:Value"/><property ref="t:Global"/><valueType base="t:Base"/></package>'''
+        same = b'''<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:q="urn:types"><property type="q:Value"/><property ref="q:Global"/><valueType base="q:Base"/></package>'''
+        changed = b'''<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:t="urn:changed"><property type="t:Value"/><property ref="t:Global"/><valueType base="t:Base"/></package>'''
+
+        self.assertEqual(
+            verifier.semantic_xml(one, "one.bin"),
+            verifier.semantic_xml(same, "same.bin"),
+        )
+        self.assertNotEqual(
+            verifier.semantic_xml(one, "one.bin"),
+            verifier.semantic_xml(changed, "changed.bin"),
+        )
+        with self.assertRaisesRegex(verifier.SourceError, "unresolved QName prefix"):
+            verifier.semantic_xml(
+                b'''<package xmlns="http://v8.1c.ru/8.1/xdto"><property type="missing:Value"/></package>''',
+                "broken.bin",
+            )
+
+    def test_non_xdto_type_ref_and_base_attributes_remain_plain_text(self):
+        verifier = load_verifier()
+        semantic = verifier.semantic_xml(
+            b'''<root type="missing:Value" ref="missing:Global" base="missing:Base"/>''',
+            "plain.xml",
+        )
+
+        self.assertIsNotNone(semantic)
+
     def test_non_indentation_text_and_element_order_are_preserved(self):
         verifier = load_verifier()
         compact = b'<r><a> x </a><b/>tail</r>'

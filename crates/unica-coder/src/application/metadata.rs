@@ -4,14 +4,14 @@ use crate::domain::cancellation::CancellationToken;
 use crate::domain::events::{DomainEvent, DomainEventKind};
 use crate::domain::metadata::{
     metadata_event_source_object_kinds, metadata_event_source_record_set_kinds,
-    metadata_event_source_reference_kinds, metadata_reference_type_kinds,
+    metadata_event_source_reference_kinds, metadata_reference_type_kinds, metadata_relation_specs,
     validate_metadata_kind_collection, validate_metadata_operation_capabilities, DateFractions,
     MetaCollection, MetaDiagnostic, MetaDiagnosticCode, MetaEditOperation, MetaEditOperationTag,
     MetaElementInput, MetaElementUpdateInput, MetaEventSource, MetaEventSourceDateFractions,
     MetaFillValue, MetaPosition, MetaPropertyChanges, MetaPropertyInput, MetaPropertyValue,
-    MetaPropertyValueKind, MetaRelation, MetaRelationTarget, MetaScope, MetaValidationStatus,
-    MetadataFieldPath, MetadataKind, MetadataReference, MetadataType, MetadataTypeVariant,
-    NumberSign, RelationEditMode, StringLengthMode, METADATA_PROPERTY_SPECS,
+    MetaPropertyValueKind, MetaRelation, MetaRelationTarget, MetaRelationTargetPolicy, MetaScope,
+    MetaValidationStatus, MetadataFieldPath, MetadataKind, MetadataReference, MetadataType,
+    MetadataTypeVariant, NumberSign, RelationEditMode, StringLengthMode, METADATA_PROPERTY_SPECS,
     METADATA_XS_DATETIME_PATTERN,
 };
 use crate::domain::source_target::{
@@ -1695,35 +1695,146 @@ fn host_visible_operation_schema() -> Value {
                     "items": {"type": "string", "minLength": 1},
                 }),
             ),
-            {
-                "type": "object",
-                "additionalProperties": false,
-                "description": "Edit one relation. The EventSubscription source relation is replace-only; an empty target array clears it.",
-                "required": ["op", "relation", "mode", "targets"],
-                "properties": {
-                    "op": {"type": "string", "enum": [MetaEditOperationTag::EditRelations.as_str()]},
-                    "relation": {
-                        "type": "string",
-                        "enum": MetaRelation::ALL.iter().copied().map(MetaRelation::as_str).collect::<Vec<_>>(),
-                    },
-                    "mode": {
-                        "type": "string",
-                        "enum": RelationEditMode::ALL.iter().copied().map(RelationEditMode::as_str).collect::<Vec<_>>(),
-                    },
-                    "targets": {
-                        "type": "array",
-                        "uniqueItems": true,
-                        "items": metadata_relation_target_schema(),
-                        "description": "Closed relation-target union. Only relation=source may use an empty array, and source requires mode=replace.",
-                    },
-                },
-            },
+            metadata_relation_operation_schema(),
         ],
         "description": "Exactly one typed metadata edit operation. Legal collections, root properties and relations are narrowed by the object kind. The source relation is replace-only; targets=[] clears the EventSubscription source.",
     })
 }
 
-fn metadata_relation_target_schema() -> Value {
+fn metadata_relation_operation_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Edit one relation. Each relation selects its own mode and target contract; EventSubscription source is replace-only and targets=[] clears it.",
+        "required": ["op", "relation", "mode", "targets"],
+        "properties": {
+            "op": {"type": "string", "enum": [MetaEditOperationTag::EditRelations.as_str()]},
+            "relation": {
+                "type": "string",
+                "enum": MetaRelation::ALL.iter().copied().map(MetaRelation::as_str).collect::<Vec<_>>(),
+            },
+            "mode": {
+                "type": "string",
+                "enum": RelationEditMode::ALL.iter().copied().map(RelationEditMode::as_str).collect::<Vec<_>>(),
+            },
+            "targets": {
+                "type": "array",
+                "uniqueItems": true,
+            },
+        },
+        "oneOf": MetaRelation::ALL
+            .iter()
+            .copied()
+            .map(metadata_relation_schema_branch)
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn metadata_relation_schema_branch(relation: MetaRelation) -> Value {
+    let targets = if relation == MetaRelation::Source {
+        metadata_event_source_targets_schema()
+    } else {
+        json!({
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": metadata_relation_target_schema(relation),
+        })
+    };
+    let modes = if relation == MetaRelation::Source {
+        vec![RelationEditMode::Replace.as_str()]
+    } else {
+        RelationEditMode::ALL
+            .iter()
+            .copied()
+            .map(RelationEditMode::as_str)
+            .collect()
+    };
+    json!({
+        "properties": {
+            "relation": {"const": relation.as_str()},
+            "mode": {"type": "string", "enum": modes},
+            "targets": targets,
+        },
+    })
+}
+
+fn metadata_relation_target_schema(relation: MetaRelation) -> Value {
+    let policies = MetadataKind::ALL
+        .iter()
+        .copied()
+        .flat_map(metadata_relation_specs)
+        .filter(|spec| spec.relation == relation)
+        .map(|spec| spec.target_policy)
+        .collect::<Vec<_>>();
+    let policy = *policies
+        .first()
+        .expect("every public relation has a capability policy");
+    assert!(
+        policies.iter().all(|candidate| *candidate == policy),
+        "one public relation must not publish conflicting target policies"
+    );
+    match policy {
+        MetaRelationTargetPolicy::MetadataKinds(kinds) => json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["metadataPath"],
+            "properties": {
+                "metadataPath": {
+                    "type": "string",
+                    "pattern": metadata_kinds_object_pattern(kinds),
+                },
+            },
+        }),
+        MetaRelationTargetPolicy::SameOwnerField => json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["fieldPath"],
+            "properties": {
+                "fieldPath": {
+                    "type": "string",
+                    "pattern": r"^[^.]+\.[^.]+\.(Attribute|StandardAttribute)\.[^.]+$",
+                },
+            },
+        }),
+        MetaRelationTargetPolicy::EventSources => metadata_event_source_target_schema(true),
+    }
+}
+
+fn metadata_event_source_targets_schema() -> Value {
+    json!({
+        "oneOf": [
+            {
+                "type": "array",
+                "maxItems": 0,
+            },
+            {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": metadata_event_source_target_schema(false),
+            },
+            {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 1,
+                "items": metadata_event_source_value_storage_schema(),
+            },
+        ],
+        "description": "Clear the source, replace it with non-storage typed targets, or use ValueStorage as the sole target.",
+    })
+}
+
+fn metadata_event_source_value_storage_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind"],
+        "properties": {"kind": {"const": "valueStorage"}},
+    })
+}
+
+fn metadata_event_source_target_schema(include_value_storage: bool) -> Value {
     let metadata_object = |kind: &str, kinds: &[MetadataKind]| {
         json!({
             "type": "object",
@@ -1733,83 +1844,78 @@ fn metadata_relation_target_schema() -> Value {
                 "kind": {"const": kind},
                 "metadataPath": {
                     "type": "string",
-                    "pattern": metadata_kinds_object_pattern(kinds),
+                    "pattern": metadata_kinds_xml_object_pattern(kinds),
                 },
             },
         })
     };
+    let mut number = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "digits", "fraction", "sign"],
+        "properties": {
+            "kind": {"const": "number"},
+            "digits": {"type": "integer", "minimum": 0, "maximum": 38},
+            "fraction": {"type": "integer", "minimum": 0, "maximum": 38},
+            "sign": {"type": "string", "enum": ["any", "nonNegative"]},
+        },
+    });
+    number
+        .as_object_mut()
+        .expect("event source number schema is always an object")
+        .insert(
+            "anyOf".into(),
+            Value::Array(
+                (0..=38)
+                    .map(|digits| {
+                        json!({
+                            "properties": {
+                                "digits": {"const": digits},
+                                "fraction": {"maximum": digits},
+                            },
+                        })
+                    })
+                    .collect(),
+            ),
+        );
+    let mut variants = vec![
+        json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "length", "allowedLength"],
+            "properties": {
+                "kind": {"const": "string"},
+                "length": {"const": 0},
+                "allowedLength": {"const": "variable"},
+            },
+        }),
+        number,
+        json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind"],
+            "properties": {"kind": {"const": "boolean"}},
+        }),
+        json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "fractions"],
+            "properties": {
+                "kind": {"const": "date"},
+                "fractions": {"type": "string", "enum": ["date", "dateTime"]},
+            },
+        }),
+        metadata_object("object", metadata_event_source_object_kinds()),
+        metadata_object("reference", metadata_event_source_reference_kinds()),
+        metadata_object("recordSet", metadata_event_source_record_set_kinds()),
+        metadata_object("definedType", &[MetadataKind::DefinedType]),
+    ];
+    if include_value_storage {
+        variants.push(metadata_event_source_value_storage_schema());
+    }
     json!({
-        "oneOf": [
-            {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["metadataPath"],
-                "properties": {
-                    "metadataPath": {
-                        "type": "string",
-                        "pattern": metadata_edit_path_pattern(),
-                    },
-                },
-            },
-            {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["fieldPath"],
-                "properties": {
-                    "fieldPath": {
-                        "type": "string",
-                        "pattern": r"^[^.]+\.[^.]+\.(Attribute|StandardAttribute)\.[^.]+$",
-                    },
-                },
-            },
-            {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["kind", "length", "allowedLength"],
-                "properties": {
-                    "kind": {"const": "string"},
-                    "length": {"const": 0},
-                    "allowedLength": {"const": "variable"},
-                },
-            },
-            {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["kind", "digits", "fraction", "sign"],
-                "properties": {
-                    "kind": {"const": "number"},
-                    "digits": {"type": "integer", "minimum": 0, "maximum": 38},
-                    "fraction": {"type": "integer", "minimum": 0, "maximum": 38},
-                    "sign": {"type": "string", "enum": ["any", "nonNegative"]},
-                },
-            },
-            {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["kind"],
-                "properties": {"kind": {"const": "boolean"}},
-            },
-            {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["kind", "fractions"],
-                "properties": {
-                    "kind": {"const": "date"},
-                    "fractions": {"type": "string", "enum": ["date", "dateTime"]},
-                },
-            },
-            {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["kind"],
-                "properties": {"kind": {"const": "valueStorage"}},
-            },
-            metadata_object("object", metadata_event_source_object_kinds()),
-            metadata_object("reference", metadata_event_source_reference_kinds()),
-            metadata_object("recordSet", metadata_event_source_record_set_kinds()),
-            metadata_object("definedType", &[MetadataKind::DefinedType]),
-        ],
-        "description": "A closed ordinary relation target or typed EventSubscription source target.",
+        "oneOf": variants,
+        "description": "One member of the closed typed EventSubscription source algebra.",
     })
 }
 
@@ -1841,6 +1947,25 @@ fn metadata_kinds_object_pattern(kinds: &[MetadataKind]) -> String {
             .collect::<Vec<_>>()
             .join("|")
     )
+}
+
+fn metadata_kinds_xml_object_pattern(kinds: &[MetadataKind]) -> String {
+    format!(
+        r"^({})\.{}$",
+        kinds
+            .iter()
+            .flat_map(|kind| {
+                metadata_address_kind_spellings(kind.as_str())
+                    .expect("relation target kind must have registered spellings")
+            })
+            .collect::<Vec<_>>()
+            .join("|"),
+        metadata_identifier_pattern_body(),
+    )
+}
+
+fn metadata_identifier_pattern_body() -> &'static str {
+    r"[_A-Za-zА-Яа-яЁё][_A-Za-zА-Яа-яЁё0-9]*"
 }
 
 fn position_schema() -> Value {
@@ -3104,6 +3229,142 @@ mod tests {
     }
 
     #[test]
+    fn relation_schema_correlates_source_mode_and_target_algebra() {
+        let add = published_operation_union(MetadataOperation::Add);
+        let edit = published_operation_union(MetadataOperation::Edit);
+        assert_eq!(
+            add, edit,
+            "meta.add and meta.edit share one operation algebra"
+        );
+        let operations = edit["oneOf"].as_array().expect("closed operation union");
+        assert_eq!(operations.len(), MetaEditOperationTag::ALL.len());
+        assert_eq!(
+            operations
+                .iter()
+                .map(|operation| operation["properties"]["op"]["enum"][0]
+                    .as_str()
+                    .expect("operation tag"))
+                .collect::<HashSet<_>>(),
+            HashSet::from(["setProperties", "add", "update", "remove", "editRelations",]),
+        );
+
+        let relation_operation = operations
+            .iter()
+            .find(|operation| operation["properties"]["op"]["enum"] == json!(["editRelations"]))
+            .expect("editRelations operation");
+        let relations = relation_operation["oneOf"]
+            .as_array()
+            .expect("relation-correlated operation union");
+        assert_eq!(relations.len(), MetaRelation::ALL.len());
+        let relation = |name: &str| {
+            relations
+                .iter()
+                .find(|branch| branch["properties"]["relation"]["const"] == name)
+                .unwrap_or_else(|| panic!("missing {name} relation branch"))
+        };
+
+        let source = relation("source");
+        assert_eq!(source["properties"]["mode"]["enum"], json!(["replace"]));
+        let source_targets = &source["properties"]["targets"];
+        let source_arrays = source_targets["oneOf"]
+            .as_array()
+            .expect("closed event source array union");
+        assert_eq!(source_arrays.len(), 3);
+        assert!(source_arrays.iter().any(|branch| branch["maxItems"] == 0));
+        let non_storage = source_arrays
+            .iter()
+            .find(|branch| branch["minItems"] == 1 && branch.get("maxItems").is_none())
+            .expect("non-storage event source array branch");
+        let source_variants = non_storage["items"]["oneOf"]
+            .as_array()
+            .expect("closed non-storage event source target union");
+        assert_eq!(source_variants.len(), 8);
+        assert_eq!(
+            source_variants
+                .iter()
+                .map(|variant| variant["properties"]["kind"]["const"]
+                    .as_str()
+                    .expect("event source kind"))
+                .collect::<HashSet<_>>(),
+            HashSet::from([
+                "string",
+                "number",
+                "boolean",
+                "date",
+                "object",
+                "reference",
+                "recordSet",
+                "definedType",
+            ]),
+        );
+        let value_storage = source_arrays
+            .iter()
+            .find(|branch| branch["minItems"] == 1 && branch["maxItems"] == 1)
+            .expect("sole ValueStorage event source array branch");
+        assert_eq!(
+            value_storage["items"]["properties"]["kind"]["const"],
+            "valueStorage"
+        );
+        assert!(source_variants.iter().all(|variant| {
+            variant["type"] == "object" && variant["additionalProperties"] == false
+        }));
+
+        for name in ["owners", "registerRecords", "basedOn", "inputByString"] {
+            let ordinary = relation(name);
+            assert_eq!(
+                ordinary["properties"]["mode"]["enum"],
+                json!(["add", "remove", "replace"]),
+                "{name} modes"
+            );
+            assert_eq!(ordinary["properties"]["targets"]["minItems"], 1);
+        }
+        for name in ["owners", "registerRecords", "basedOn"] {
+            assert_eq!(
+                relation(name)["properties"]["targets"]["items"]["required"],
+                json!(["metadataPath"]),
+                "{name} target shape"
+            );
+        }
+        assert_eq!(
+            relation("inputByString")["properties"]["targets"]["items"]["required"],
+            json!(["fieldPath"]),
+        );
+
+        let validator = jsonschema::validator_for(&metadata_input_schema(MetadataOperation::Edit))
+            .expect("published edit schema");
+        let call = |relation: &str, mode: &str, targets: Value| {
+            json!({
+                "sourceSet": "main",
+                "metadataPath": "EventSubscription.Notify",
+                "operations": [{
+                    "op": "editRelations",
+                    "relation": relation,
+                    "mode": mode,
+                    "targets": targets,
+                }],
+            })
+        };
+        assert!(validator.is_valid(&call("source", "replace", json!([]))));
+        for invalid in [
+            call("source", "add", json!([{"kind": "boolean"}])),
+            call(
+                "source",
+                "replace",
+                json!([{"metadataPath": "Catalog.Items"}]),
+            ),
+            call("owners", "replace", json!([])),
+            call("owners", "replace", json!([{"kind": "boolean"}])),
+            call(
+                "inputByString",
+                "replace",
+                json!([{"metadataPath": "Catalog.Items"}]),
+            ),
+        ] {
+            assert!(!validator.is_valid(&invalid), "schema accepted {invalid}");
+        }
+    }
+
+    #[test]
     fn property_schema_publishes_closed_enum_domains_for_retired_scalars() {
         let values = published_root_property_values(MetadataOperation::Edit);
         let properties = values["properties"]
@@ -3963,6 +4224,14 @@ mod tests {
                 "source clear and standalone ValueStorage are legal: {call}"
             );
         }
+
+        let unicode_name = call(json!([
+            {"kind": "reference", "metadataPath": "Catalog.Основной"}
+        ]));
+        assert!(
+            validate_schema_and_parse(MetadataOperation::Edit, &unicode_name),
+            "source metadata names retain the Unicode XML NCName range"
+        );
     }
 
     #[test]
@@ -4004,10 +4273,44 @@ mod tests {
                 "replace",
                 json!([{"kind": "string", "length": 1, "allowedLength": "variable"}]),
             ),
+            call(
+                "replace",
+                json!([{"kind": "reference", "metadataPath": "Catalog.Bad Name"}]),
+            ),
+            call(
+                "replace",
+                json!([{"kind": "reference", "metadataPath": "Catalog.1Bad"}]),
+            ),
+            call(
+                "replace",
+                json!([{"kind": "reference", "metadataPath": "Catalog.Bad:Name"}]),
+            ),
+            call(
+                "replace",
+                json!([{"kind": "reference", "metadataPath": "Catalog.Bad-Name"}]),
+            ),
         ] {
             assert!(
                 !validate_schema_and_parse(MetadataOperation::Edit, &invalid_call),
                 "invalid source operation was accepted: {invalid_call}"
+            );
+        }
+
+        let schema = metadata_input_schema(MetadataOperation::Edit);
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        for invalid_call in [
+            call(
+                "replace",
+                json!([{"kind": "valueStorage"}, {"kind": "boolean"}]),
+            ),
+            call(
+                "replace",
+                json!([{"kind": "number", "digits": 5, "fraction": 6, "sign": "any"}]),
+            ),
+        ] {
+            assert!(
+                !validator.is_valid(&invalid_call),
+                "published schema accepted an impossible source state: {invalid_call}"
             );
         }
 

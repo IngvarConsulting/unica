@@ -2672,7 +2672,11 @@ pub(super) fn meta_validate_check_cross_properties(
             issues += 1;
         }
         let has_source = meta_info_child(props_node, "Source")
-            .map(|node| !meta_info_children(node, "Type").is_empty())
+            .map(|node| {
+                ["Type", "TypeSet"]
+                    .iter()
+                    .any(|name| !meta_info_children(node, name).is_empty())
+            })
             .unwrap_or(false);
         if !has_source {
             report.warn("10. EventSubscription: no Source types specified");
@@ -5347,6 +5351,31 @@ mod tests {
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.message.contains("Duplicate URLTemplate")));
+    }
+
+    #[test]
+    fn event_subscription_defined_type_source_is_not_reported_as_empty() {
+        let document = Document::parse(
+            r#"<Properties xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config"><Handler>CommonModule.Target.Run</Handler><Source><v8:TypeSet>cfg:DefinedType.Identifier</v8:TypeSet></Source></Properties>"#,
+        )
+        .unwrap();
+        let mut report = MetaValidationReporter::new(30);
+
+        meta_validate_check_cross_properties(
+            &mut report,
+            "EventSubscription",
+            Some(document.root_element()),
+            None,
+            None,
+            None,
+            "Events",
+        );
+
+        assert!(report.errors.is_empty());
+        assert!(report
+            .warnings
+            .iter()
+            .all(|warning| !warning.contains("no Source types specified")));
     }
 
     #[test]

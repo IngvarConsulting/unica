@@ -1287,6 +1287,13 @@ fn validate_metadata_event_source(source: &MetaEventSource) -> Result<(), MetaDi
                     "event source metadataPath must identify a top-level metadata object",
                 ));
             }
+            let name = metadata_path.segments().nth(1).unwrap_or_default();
+            if !metadata_identifier_is_valid(name) {
+                return Err(invalid_operation(
+                    "targets",
+                    "event source metadataPath name must be a valid 1C identifier",
+                ));
+            }
             let target_kind = metadata_path
                 .segments()
                 .next()
@@ -1969,7 +1976,7 @@ mod tests {
         )
         .unwrap();
         let source = |source| MetaRelationTarget::EventSource(source);
-        let address = |path| {
+        let address = |path: &str| -> MetadataAddress {
             MetadataAddress::parse(
                 crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
                 path,
@@ -2021,6 +2028,21 @@ mod tests {
                 &source(event_source),
             )
             .is_err());
+        }
+
+        for invalid_name in ["Bad Name", "1Bad", "Bad:Name", "Bad-Name"] {
+            let invalid_path = format!("Catalog.{invalid_name}");
+            let event_source = MetaEventSource::Reference {
+                metadata_path: address(&invalid_path),
+            };
+            let error = validate_metadata_relation_target_profile(
+                MetadataKind::EventSubscription,
+                &owner,
+                MetaRelation::Source,
+                &source(event_source),
+            )
+            .unwrap_err();
+            assert!(error.message.contains("1C identifier"), "{error:?}");
         }
     }
 

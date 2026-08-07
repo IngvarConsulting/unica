@@ -8,11 +8,18 @@ use super::xml_model::{
 use crate::application::metadata::MetaFailure;
 use crate::application::ports::MetadataAuxiliaryXmlKind;
 use crate::domain::metadata::{MetaDiagnostic, MetaDiagnosticCode, MetadataKind};
-use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use crate::domain::source_target::{
+    MetadataAddress, SourceTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
+};
+use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::metadata_kinds::metadata_layout;
-use crate::infrastructure::platform_xml_source_targets::ResolvedSourceSet;
+use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
+use crate::infrastructure::platform_xml_source_targets::{
+    platform_xml_resource_evidence, resolve_platform_xml_target, ClosedPlatformXmlTarget,
+    ResolvedSourceSet, TargetKindPolicy,
+};
 use roxmltree::Document;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
 pub(crate) trait MetadataTemplateCatalog {
     fn minimal_object(
@@ -21,6 +28,8 @@ pub(crate) trait MetadataTemplateCatalog {
         kind: MetadataKind,
         name: &str,
         source_is_replaced_by_operation: bool,
+        source_set: &str,
+        workspace: &WorkspaceContext,
     ) -> Result<MetadataPostImage, MetaFailure>;
 }
 
@@ -37,6 +46,7 @@ pub(crate) struct MetadataTemplateFile {
     pub(crate) relative_path: PathBuf,
     pub(crate) bytes: Vec<u8>,
     pub(crate) preimage: Option<Vec<u8>>,
+    pub(crate) guard_handle: Option<ClosedPlatformXmlTarget>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +80,8 @@ impl MinimalTemplateContext {
         kind: MetadataKind,
         new_name: &str,
         source_is_replaced_by_operation: bool,
+        source_set: &str,
+        workspace: &WorkspaceContext,
     ) -> Result<Self, MetaFailure> {
         let mut context = Self {
             chart_of_accounts: None,
@@ -115,7 +127,7 @@ impl MinimalTemplateContext {
             }
             MetadataKind::ScheduledJob => {
                 let (module, method, module_guard) =
-                    required_common_module_method(source, kind, 0)?;
+                    required_common_module_method(source, source_set, workspace, kind, 0)?;
                 context.method_name = Some(format!("CommonModule.{module}.{method}"));
                 context.dependencies.push(read_dependency(
                     source,
@@ -128,7 +140,7 @@ impl MinimalTemplateContext {
             }
             MetadataKind::EventSubscription => {
                 let (module, method, module_guard) =
-                    required_common_module_method(source, kind, 2)?;
+                    required_common_module_method(source, source_set, workspace, kind, 2)?;
                 context.event_handler = Some(format!("CommonModule.{module}.{method}"));
                 context.dependencies.push(read_dependency(
                     source,
@@ -158,6 +170,8 @@ impl MinimalTemplateContext {
 
 fn required_common_module_method(
     source: &ResolvedSourceSet,
+    source_set: &str,
+    workspace: &WorkspaceContext,
     requested: MetadataKind,
     arity: usize,
 ) -> Result<(String, String, MetadataTemplateFile), MetaFailure> {
@@ -165,7 +179,34 @@ fn required_common_module_method(
         let relative_path = PathBuf::from("CommonModules")
             .join(&module)
             .join("Ext/Module.bsl");
-        let Ok(bytes) = std::fs::read(source.source_root.join(&relative_path)) else {
+        let Ok(module_address) = MetadataAddress::parse(
+            PLATFORM_XML_8_3_27_FORMAT_2_20,
+            &format!("CommonModule.{module}.Module"),
+        ) else {
+            continue;
+        };
+        let target = SourceTarget {
+            source_set: source_set.to_string(),
+            metadata_path: Some(module_address),
+        };
+        let Ok(resolution) =
+            resolve_platform_xml_target(workspace, &target, TargetKindPolicy::ModuleOnly)
+        else {
+            continue;
+        };
+        if resolution.resolved.target_kind != TargetKind::Module {
+            continue;
+        }
+        let Ok(evidence) = platform_xml_resource_evidence(workspace, &resolution.handle) else {
+            continue;
+        };
+        if evidence.source_root != source.source_root
+            || evidence.registration_path != source.owner_path
+            || evidence.target_path != source.source_root.join(&relative_path)
+        {
+            continue;
+        }
+        let Ok(bytes) = read_contained_regular_file(&source.source_root, &relative_path) else {
             continue;
         };
         let Ok(text) = std::str::from_utf8(&bytes) else {
@@ -189,6 +230,7 @@ fn required_common_module_method(
                 relative_path,
                 bytes: bytes.clone(),
                 preimage: Some(bytes),
+                guard_handle: Some(resolution.handle),
             },
         ));
     }
@@ -284,12 +326,13 @@ fn read_dependency(
         ))
     })?;
     let relative_path = PathBuf::from(layout.directory).join(format!("{name}.xml"));
-    let preimage = std::fs::read(source.source_root.join(&relative_path)).map_err(|_| {
-        MetaFailure::from(MetaDiagnostic::error(
-            MetaDiagnosticCode::ProviderUnavailable,
-            format!("metadata prerequisite `{tag}.{name}` image is unavailable"),
-        ))
-    })?;
+    let preimage =
+        read_contained_regular_file(&source.source_root, &relative_path).map_err(|_| {
+            MetaFailure::from(MetaDiagnostic::error(
+                MetaDiagnosticCode::ProviderUnavailable,
+                format!("metadata prerequisite `{tag}.{name}` image is unavailable"),
+            ))
+        })?;
     let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &format!("{tag}.{name}"))
         .map_err(|_| {
             MetaFailure::from(MetaDiagnostic::error(
@@ -303,7 +346,40 @@ fn read_dependency(
         relative_path,
         bytes: replacement.unwrap_or_else(|| preimage.clone()),
         preimage: Some(preimage),
+        guard_handle: None,
     })
+}
+
+/// Read a prerequisite only through the exact selected source-root topology.
+/// `fs::read` follows linked ancestors, which would let a registered metadata
+/// name redirect template discovery outside its source set before the
+/// transaction has a chance to bind the dependency.
+fn read_contained_regular_file(source_root: &Path, relative_path: &Path) -> Result<Vec<u8>, ()> {
+    if relative_path.is_absolute() {
+        return Err(());
+    }
+
+    let mut current = source_root.to_path_buf();
+    let mut components = relative_path.components().peekable();
+    while let Some(component) = components.next() {
+        let Component::Normal(component) = component else {
+            return Err(());
+        };
+        current.push(component);
+        let metadata = std::fs::symlink_metadata(&current).map_err(|_| ())?;
+        if metadata_is_link_or_reparse_point(&metadata) {
+            return Err(());
+        }
+        if components.peek().is_some() {
+            if !metadata.is_dir() {
+                return Err(());
+            }
+        } else if !metadata.is_file() {
+            return Err(());
+        }
+    }
+
+    std::fs::read(current).map_err(|_| ())
 }
 
 fn registrar_dependency(
@@ -372,6 +448,8 @@ impl MetadataTemplateCatalog for PlatformMetadataTemplateCatalog {
         kind: MetadataKind,
         name: &str,
         source_is_replaced_by_operation: bool,
+        source_set: &str,
+        workspace: &WorkspaceContext,
     ) -> Result<MetadataPostImage, MetaFailure> {
         if !is_1c_identifier(name) {
             return Err(MetaDiagnostic::error(
@@ -399,6 +477,8 @@ impl MetadataTemplateCatalog for PlatformMetadataTemplateCatalog {
             kind,
             name,
             source_is_replaced_by_operation,
+            source_set,
+            workspace,
         )?;
         let (xml, _) = minimal_metadata_xml(kind, name, &source.format_version, &context)
             .map_err(|message| template_failure(&metadata_path, message))?;
@@ -409,6 +489,7 @@ impl MetadataTemplateCatalog for PlatformMetadataTemplateCatalog {
             relative_path: PathBuf::from(layout.directory).join(format!("{name}.xml")),
             bytes: with_utf8_bom(xml.as_bytes()),
             preimage: None,
+            guard_handle: None,
         }];
         let ext = PathBuf::from(layout.directory).join(name).join("Ext");
         for module in minimal_module_files(kind) {
@@ -418,6 +499,7 @@ impl MetadataTemplateCatalog for PlatformMetadataTemplateCatalog {
                 relative_path: ext.join(module),
                 bytes: with_utf8_bom(&[]),
                 preimage: None,
+                guard_handle: None,
             });
         }
         for (file_name, auxiliary_kind, content) in
@@ -429,6 +511,7 @@ impl MetadataTemplateCatalog for PlatformMetadataTemplateCatalog {
                 relative_path: ext.join(file_name),
                 bytes: with_utf8_bom(content.as_bytes()),
                 preimage: None,
+                guard_handle: None,
             });
         }
         files.extend(context.dependencies);

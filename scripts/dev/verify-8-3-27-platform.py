@@ -29,6 +29,8 @@ except ModuleNotFoundError:
 XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
 CORE_NS = "http://v8.1c.ru/8.1/data/core"
 MD_CLASSES_NS = "http://v8.1c.ru/8.3/MDClasses"
+XDTO_NS = "http://v8.1c.ru/8.1/xdto"
+XDTO_QNAME_ATTRIBUTE_LOCAL_NAMES = frozenset({"base", "ref", "type"})
 QNAME_TEXT_ELEMENTS = {
     f"{{{CORE_NS}}}Type",
     f"{{{CORE_NS}}}TypeSet",
@@ -127,6 +129,7 @@ XML_FAMILY_BY_ROOT_QNAME = {
     "{http://v8.1c.ru/8.3/xcf/extrnprops}Help": "help",
     "{http://v8.1c.ru/8.3/xcf/extrnprops}ExchangePlanContent": "exchange-plan-content",
     "{http://v8.1c.ru/8.3/xcf/extrnprops}HomePageWorkArea": "home-page-work-area",
+    "{http://v8.1c.ru/8.1/xdto}package": "xdto-package",
 }
 MANDATORY_CASE_IDS = frozenset(
     {
@@ -306,10 +309,20 @@ def _semantic_element(node: etree._Element, label: str):
     attributes = []
     for name, value in node.attrib.items():
         expanded_name = _expanded_name(name)
-        if expanded_name == f"{{{XSI_NS}}}type":
+        attribute_name = etree.QName(name)
+        is_xdto_qname = (
+            etree.QName(node).namespace == XDTO_NS
+            and attribute_name.namespace is None
+            and attribute_name.localname in XDTO_QNAME_ATTRIBUTE_LOCAL_NAMES
+        )
+        if expanded_name == f"{{{XSI_NS}}}type" or is_xdto_qname:
             semantic_value = (
                 "qname",
-                _expanded_lexical_qname(value, node, f"{label} xsi:type"),
+                _expanded_lexical_qname(
+                    value,
+                    node,
+                    f"{label} {etree.QName(node).localname}/@{attribute_name.localname}",
+                ),
             )
         else:
             semantic_value = ("text", value)

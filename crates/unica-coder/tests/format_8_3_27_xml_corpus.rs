@@ -817,26 +817,101 @@ fn random_v4_uuid_lexeme(payload: &[u8], offset: usize) -> Option<String> {
 
 fn normalize_random_v4_uuids(payloads: &BTreeMap<String, Vec<u8>>) -> BTreeMap<String, Vec<u8>> {
     let mut identities = BTreeMap::<String, Vec<u8>>::new();
+    for payload in payloads.values() {
+        let text = std::str::from_utf8(payload)
+            .expect("captured corpus XML must be UTF-8")
+            .trim_start_matches('\u{feff}');
+        let document = Document::parse(text).expect("captured corpus XML must remain parseable");
+        for element in document.descendants().filter(|node| node.is_element()) {
+            let element_name = element.tag_name().name();
+            for attribute in element.attributes() {
+                if !matches!(attribute.name(), "uuid" | "id")
+                    || (element_name == "panelDef" && attribute.name() == "id")
+                {
+                    continue;
+                }
+                let value = attribute.value();
+                let Some(identity) = (value.len() == 36)
+                    .then(|| random_v4_uuid_lexeme(value.as_bytes(), 0))
+                    .flatten()
+                else {
+                    continue;
+                };
+                let next = identities.len() + 1;
+                identities
+                    .entry(identity)
+                    .or_insert_with(|| format!("__UNICA_UUID_{next:06}__").into_bytes());
+            }
+            if !matches!(element_name, "TypeId" | "ValueId" | "ObjectId" | "ThisNode") {
+                continue;
+            }
+            let value = element.text().unwrap_or_default().trim();
+            let Some(identity) = (value.len() == 36)
+                .then(|| random_v4_uuid_lexeme(value.as_bytes(), 0))
+                .flatten()
+            else {
+                continue;
+            };
+            let next = identities.len() + 1;
+            identities
+                .entry(identity)
+                .or_insert_with(|| format!("__UNICA_UUID_{next:06}__").into_bytes());
+        }
+    }
     let mut normalized = BTreeMap::new();
     for (path, payload) in payloads {
         let mut bytes = Vec::with_capacity(payload.len());
         let mut offset = 0;
         while offset < payload.len() {
             if let Some(identity) = random_v4_uuid_lexeme(payload, offset) {
-                let next = identities.len() + 1;
-                let token = identities
-                    .entry(identity)
-                    .or_insert_with(|| format!("__UNICA_UUID_{next:06}__").into_bytes());
-                bytes.extend_from_slice(token);
-                offset += 36;
-            } else {
-                bytes.push(payload[offset]);
-                offset += 1;
+                if let Some(token) = identities.get(&identity) {
+                    bytes.extend_from_slice(token);
+                    offset += 36;
+                    continue;
+                }
             }
+            bytes.push(payload[offset]);
+            offset += 1;
         }
         normalized.insert(path.clone(), bytes);
     }
     normalized
+}
+
+#[test]
+fn isolated_corpus_transition_normalization_only_alpha_renames_declared_identities() {
+    let declared_a = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let declared_b = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    let mut first = BTreeMap::new();
+    first.insert(
+        "a.xml".to_string(),
+        format!(
+            "<r uuid=\"{declared_a}\"><ref>{declared_a}</ref><TypeId>{declared_a}</TypeId></r>"
+        )
+        .into_bytes(),
+    );
+    let mut renamed = BTreeMap::new();
+    renamed.insert(
+        "a.xml".to_string(),
+        format!(
+            "<r uuid=\"{declared_b}\"><ref>{declared_b}</ref><TypeId>{declared_b}</TypeId></r>"
+        )
+        .into_bytes(),
+    );
+    assert_eq!(
+        normalize_random_v4_uuids(&first),
+        normalize_random_v4_uuids(&renamed)
+    );
+
+    let fixed_a = b"<r><ClassId>aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa</ClassId><panelDef id=\"cccccccc-cccc-4ccc-8ccc-cccccccccccc\"/><value>dddddddd-dddd-4ddd-8ddd-dddddddddddd</value></r>";
+    let fixed_b = b"<r><ClassId>bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb</ClassId><panelDef id=\"eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee\"/><value>ffffffff-ffff-4fff-8fff-ffffffffffff</value></r>";
+    let fixed_first = BTreeMap::from([("a.xml".to_string(), fixed_a.to_vec())]);
+    let fixed_changed = BTreeMap::from([("a.xml".to_string(), fixed_b.to_vec())]);
+    assert_ne!(
+        normalize_random_v4_uuids(&fixed_first),
+        normalize_random_v4_uuids(&fixed_changed),
+        "fixed UUID contexts must remain significant"
+    );
 }
 
 fn normalized_xml_transition(
@@ -3913,6 +3988,60 @@ fn cf_init_public_case_creates_real_xml() {
     let delta = enforce_xml_impact(entry.impact, &before, &after).unwrap();
     assert!(delta.created.contains(&"src/Configuration.xml".to_string()));
     assert_eq!(gate.completed_target_calls, 1);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn managed_form_corpus_cases_mutate_content_without_overwriting_metadata_wrapper() {
+    let root = unique_temp_dir("managed-form-content-targets");
+    let mut gate = SequentialCallGate::default();
+
+    for (case_id, wrapper, content) in [
+        (
+            "form-compile-managed",
+            "src/Reports/CorpusReport/Forms/CorpusForm.xml",
+            "src/Reports/CorpusReport/Forms/CorpusForm/Ext/Form.xml",
+        ),
+        (
+            "form-edit-managed",
+            "src/Catalogs/CorpusCatalog/Forms/CorpusForm.xml",
+            "src/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml",
+        ),
+    ] {
+        let case = EXECUTABLE_CASES
+            .iter()
+            .find(|case| case.id == case_id)
+            .unwrap();
+
+        let generated = run_corpus_case(&root, case, &mut gate).unwrap();
+        let wrapper_file = generated
+            .files
+            .iter()
+            .find(|file| file.path == manifest_path(case_id, wrapper))
+            .expect("managed form metadata wrapper must remain in the corpus");
+        let content_file = generated
+            .files
+            .iter()
+            .find(|file| file.path == manifest_path(case_id, content))
+            .expect("managed form content must remain in the corpus");
+
+        assert_eq!(wrapper_file.delta, "unchanged", "{case_id}");
+        assert_eq!(content_file.delta, "modified", "{case_id}");
+
+        let case_root = root.join("cases").join(case_id);
+        assert_eq!(
+            fs::read(case_root.join("pre-xml").join(wrapper)).unwrap(),
+            fs::read(case_root.join("workspace").join(wrapper)).unwrap(),
+            "{case_id} must preserve the metadata wrapper byte-for-byte"
+        );
+        assert_ne!(
+            fs::read(case_root.join("pre-xml").join(content)).unwrap(),
+            fs::read(case_root.join("workspace").join(content)).unwrap(),
+            "{case_id} must mutate the managed form content"
+        );
+    }
+
+    assert_eq!(gate.completed_target_calls, 2);
     fs::remove_dir_all(root).unwrap();
 }
 

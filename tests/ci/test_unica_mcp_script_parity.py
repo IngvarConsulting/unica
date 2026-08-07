@@ -2922,7 +2922,7 @@ def prepare_meta_edit_skill_example(
 
 def write_meta_event_subscription_fixture(descriptor: Path, name: str) -> None:
     descriptor.write_text(
-        f'''<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
+        f'''<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema" version="2.20">
   <EventSubscription uuid="11111111-1111-4111-8111-111111111111">
     <InternalInfo/>
     <Properties>
@@ -2931,7 +2931,6 @@ def write_meta_event_subscription_fixture(descriptor: Path, name: str) -> None:
       <Event>BeforeWrite</Event>
       <Handler>CommonModule.EventHandlers.OnBeforeWrite</Handler>
     </Properties>
-    <ChildObjects/>
   </EventSubscription>
 </MetaDataObject>
 ''',

@@ -3715,27 +3715,38 @@ mod tests {
         assert_eq!(targets["uniqueItems"], true);
         assert!(
             targets.get("minItems").is_none(),
-            "source replace with targets=[] is the typed clear operation"
+            "relation-specific branches own target cardinality"
         );
-        let target_variants = targets["items"]["oneOf"]
+        let relation_variants = variants[4]["oneOf"]
             .as_array()
-            .expect("relation targets publish a closed oneOf");
-        assert_eq!(target_variants.len(), 11);
+            .expect("editRelations publishes a relation-correlated oneOf");
+        assert_eq!(relation_variants.len(), 5);
+        let relation = |name: &str| {
+            relation_variants
+                .iter()
+                .find(|branch| branch["properties"]["relation"]["const"] == name)
+                .unwrap_or_else(|| panic!("missing relation branch {name}"))
+        };
+        let source = relation("source");
+        assert_eq!(source["properties"]["mode"]["enum"], json!(["replace"]));
+        let source_arrays = source["properties"]["targets"]["oneOf"]
+            .as_array()
+            .expect("source targets publish a closed array oneOf");
+        assert_eq!(source_arrays.len(), 3);
+        assert!(source_arrays.iter().any(|branch| branch["maxItems"] == 0));
+        let non_storage = source_arrays
+            .iter()
+            .find(|branch| branch["minItems"] == 1 && branch.get("maxItems").is_none())
+            .expect("source publishes a non-storage array branch");
+        let target_variants = non_storage["items"]["oneOf"]
+            .as_array()
+            .expect("non-storage source targets publish a closed oneOf");
+        assert_eq!(target_variants.len(), 8);
         for target in target_variants {
             assert_eq!(target["type"], "object");
             assert_eq!(target["additionalProperties"], false);
         }
-        assert_eq!(
-            target_variants[0]["required"],
-            json!(["metadataPath"]),
-            "ordinary object relation targets remain in the union"
-        );
-        assert_eq!(
-            target_variants[1]["required"],
-            json!(["fieldPath"]),
-            "ordinary field relation targets remain in the union"
-        );
-        let event_kinds = target_variants[2..]
+        let event_kinds = target_variants
             .iter()
             .map(|target| {
                 target["properties"]["kind"]["const"]
@@ -3750,21 +3761,44 @@ mod tests {
                 "number",
                 "boolean",
                 "date",
-                "valueStorage",
                 "object",
                 "reference",
                 "recordSet",
                 "definedType",
             ]
         );
-        assert_eq!(target_variants[2]["properties"]["length"]["const"], 0);
+        let value_storage = source_arrays
+            .iter()
+            .find(|branch| branch["minItems"] == 1 && branch["maxItems"] == 1)
+            .expect("source publishes a sole ValueStorage branch");
         assert_eq!(
-            target_variants[2]["properties"]["allowedLength"]["const"],
+            value_storage["items"]["properties"]["kind"]["const"],
+            "valueStorage"
+        );
+        assert_eq!(target_variants[0]["properties"]["length"]["const"], 0);
+        assert_eq!(
+            target_variants[0]["properties"]["allowedLength"]["const"],
             "variable"
         );
         assert_eq!(
-            target_variants[5]["properties"]["fractions"]["enum"],
+            target_variants[3]["properties"]["fractions"]["enum"],
             json!(["date", "dateTime"])
+        );
+        for name in ["owners", "registerRecords", "basedOn", "inputByString"] {
+            let branch = relation(name);
+            assert_eq!(
+                branch["properties"]["mode"]["enum"],
+                json!(["add", "remove", "replace"])
+            );
+            assert_eq!(branch["properties"]["targets"]["minItems"], 1);
+        }
+        assert_eq!(
+            relation("owners")["properties"]["targets"]["items"]["required"],
+            json!(["metadataPath"])
+        );
+        assert_eq!(
+            relation("inputByString")["properties"]["targets"]["items"]["required"],
+            json!(["fieldPath"])
         );
         assert!(variants[4]["description"]
             .as_str()

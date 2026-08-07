@@ -112,6 +112,24 @@ fn meta_edit_preserve_source_format(text: &str, format: MetaEditSourceFormat) ->
     bytes
 }
 
+fn meta_edit_lf_to_eol(text: &str, eol: MetaEditEol) -> String {
+    match eol {
+        MetaEditEol::Lf => text.to_string(),
+        MetaEditEol::CrLf => text.replace('\n', "\r\n"),
+        MetaEditEol::Cr => text.replace('\n', "\r"),
+    }
+}
+
+fn meta_edit_preserve_existing_eol(text: &str, has_bom: bool) -> Vec<u8> {
+    let source = text.trim_start_matches('\u{feff}');
+    let mut bytes = Vec::with_capacity(source.len() + usize::from(has_bom) * 3);
+    if has_bom {
+        bytes.extend_from_slice(b"\xef\xbb\xbf");
+    }
+    bytes.extend_from_slice(source.as_bytes());
+    bytes
+}
+
 fn meta_edit_line_indent(text: &str, position: usize) -> String {
     let line_start = text[..position].rfind('\n').map_or(0, |index| index + 1);
     text[line_start..position]
@@ -662,6 +680,7 @@ pub(super) struct TypedRelationDependency {
 
 #[derive(Debug)]
 pub(super) struct TypedDependencyModule {
+    pub(super) handle: ClosedPlatformXmlTarget,
     pub(super) path: PathBuf,
     pub(super) bytes: Vec<u8>,
 }
@@ -708,6 +727,17 @@ pub(super) fn build_typed_operation_post_image(
     operations: &[MetaEditOperation],
     context: &WorkspaceContext,
 ) -> Result<TypedOperationPostImage, MetaFailure> {
+    let source_only = !operations.is_empty()
+        && operations.iter().all(|operation| {
+            matches!(
+                operation,
+                MetaEditOperation::EditRelations {
+                    relation: MetaRelation::Source,
+                    mode: RelationEditMode::Replace,
+                    ..
+                }
+            )
+        });
     let mut xml = String::from_utf8(descriptor_preimage.to_vec()).map_err(|_| {
         MetaFailure::from(
             typed_diagnostic(
@@ -753,8 +783,15 @@ pub(super) fn build_typed_operation_post_image(
     )?;
     child_resources.relation_dependencies =
         resolve_typed_relation_dependencies(&dependency_scope, target, operations, context, &xml)?;
+    let descriptor = if xml == normalized_preimage {
+        descriptor_preimage.to_vec()
+    } else if source_only {
+        meta_edit_preserve_existing_eol(&xml, source_format.has_bom)
+    } else {
+        meta_edit_preserve_source_format(&xml, source_format)
+    };
     Ok(TypedOperationPostImage {
-        descriptor: meta_edit_preserve_source_format(&xml, source_format),
+        descriptor,
         child_resources,
         effects: applied.effects,
     })
@@ -2418,24 +2455,66 @@ fn resolve_typed_event_subscription_handler_dependency(
             .with_metadata_path(metadata_path.clone()),
         )
     })?;
-    let modules = evidence
-        .module_paths
-        .into_iter()
-        .map(|path| {
-            fs::read(&path)
-                .map(|bytes| TypedDependencyModule { path, bytes })
-                .map_err(|_| {
-                    MetaFailure::from(
-                        typed_diagnostic(
-                            MetaDiagnosticCode::ProviderUnavailable,
-                            "EventSubscription Handler module pre-image is unavailable",
-                            Some("properties.handler"),
-                        )
-                        .with_metadata_path(metadata_path.clone()),
-                    )
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let module_address = MetadataAddress::parse(
+        PLATFORM_XML_8_3_27_FORMAT_2_20,
+        &format!("CommonModule.{module_name}.Module"),
+    )
+    .expect("a registered common module has a canonical module address");
+    let module_source_target = SourceTarget {
+        source_set: source_set.to_string(),
+        metadata_path: Some(module_address),
+    };
+    let module_resolution =
+        resolve_platform_xml_target(context, &module_source_target, TargetKindPolicy::ModuleOnly)
+            .map_err(|_| {
+            MetaFailure::from(
+                typed_diagnostic(
+                    MetaDiagnosticCode::TargetNotFound,
+                    "EventSubscription Handler module does not resolve in the selected source set",
+                    Some("properties.handler"),
+                )
+                .with_metadata_path(metadata_path.clone()),
+            )
+        })?;
+    let module_evidence = platform_xml_resource_evidence(context, &module_resolution.handle)
+        .map_err(|_| {
+            MetaFailure::from(
+                typed_diagnostic(
+                    MetaDiagnosticCode::ProviderUnavailable,
+                    "EventSubscription Handler module evidence is unavailable",
+                    Some("properties.handler"),
+                )
+                .with_metadata_path(metadata_path.clone()),
+            )
+        })?;
+    if module_evidence.source_root != owner_source_root
+        || module_evidence.registration_path != owner_registration_path
+        || evidence.module_paths.as_slice() != [module_evidence.target_path.as_path()]
+    {
+        return Err(MetaFailure::from(
+            typed_diagnostic(
+                MetaDiagnosticCode::InvalidArguments,
+                "EventSubscription Handler must have exactly one module in the owner source set",
+                Some("properties.handler"),
+            )
+            .with_metadata_path(metadata_path.clone()),
+        ));
+    }
+    let module_bytes = fs::read(&module_evidence.target_path).map_err(|_| {
+        MetaFailure::from(
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "EventSubscription Handler module pre-image is unavailable",
+                Some("properties.handler"),
+            )
+            .with_metadata_path(metadata_path.clone()),
+        )
+    })?;
+    let modules = vec![TypedDependencyModule {
+        handle: module_resolution.handle,
+        path: module_evidence.target_path,
+        bytes: module_bytes,
+    }];
     Ok(TypedRelationDependency {
         handle: resolution.handle,
         path: evidence.target_path,
@@ -4226,9 +4305,20 @@ fn apply_typed_event_subscription_source(
     let range = source_node.range();
     let range = range.start + source_offset..range.end + source_offset;
     let indent = meta_edit_line_indent(xml_text, range.start);
-    let replacement = emit_meta_event_subscription_source(&indent, &requested);
+    let current_source = &xml_text[range.clone()];
+    let replacement_eol = if current_source
+        .as_bytes()
+        .iter()
+        .any(|byte| matches!(*byte, b'\r' | b'\n'))
+    {
+        meta_edit_source_eol(current_source)
+    } else {
+        meta_edit_source_eol(xml_text)
+    };
+    let replacement = emit_meta_event_subscription_source(&indent, &requested, source_node);
+    let replacement = meta_edit_lf_to_eol(replacement.trim_start(), replacement_eol);
     drop(document);
-    xml_text.replace_range(range, replacement.trim_start());
+    xml_text.replace_range(range, &replacement);
     Ok(())
 }
 
@@ -4269,7 +4359,25 @@ mod tests {
 			<Event>BeforeWrite</Event>
 			<Handler>CommonModule.Handler.OnEvent</Handler>
 		</Properties>
-		<ChildObjects/>
+	</EventSubscription>
+</MetaDataObject>
+"#
+        )
+    }
+
+    fn event_subscription_alias_xml(source: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:c="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:d="http://v8.1c.ru/8.1/data/core" xmlns:s="http://www.w3.org/2001/XMLSchema" version="2.20">
+	<EventSubscription uuid="11111111-1111-4111-8111-111111111111">
+		<Properties>
+			<Name>Events</Name>
+			<Synonym/>
+			<Comment/>
+			{source}
+			<Event>BeforeWrite</Event>
+			<Handler>CommonModule.Handler.OnEvent</Handler>
+		</Properties>
 	</EventSubscription>
 </MetaDataObject>
 "#
@@ -5209,7 +5317,7 @@ mod tests {
         let mut xml = event_subscription_xml(&format!("<Source/>{nested_decoy}"));
         let operation = source_replace(vec![MetaEventSource::Boolean]);
 
-        let result = apply_typed_operations(&mut xml, &[operation.clone()]).unwrap();
+        let result = apply_typed_operations(&mut xml, std::slice::from_ref(&operation)).unwrap();
 
         assert_eq!(result.effects.len(), 1);
         assert_eq!(result.effects[0].before, Some(serde_json::json!([])));
@@ -5258,6 +5366,87 @@ mod tests {
     }
 
     #[test]
+    fn typed_event_source_alias_qname_noop_is_byte_exact_and_changes_reuse_aliases() {
+        let source = concat!(
+            "<Source>",
+            "<d:Type>c:CatalogRef.Items</d:Type>",
+            "<d:Type>s:boolean</d:Type>",
+            "</Source>"
+        );
+        let mut xml = event_subscription_alias_xml(source);
+        let before = xml.clone();
+        let reference = MetaEventSource::Reference {
+            metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items")
+                .unwrap(),
+        };
+
+        apply_typed_operations(
+            &mut xml,
+            &[source_replace(vec![
+                reference.clone(),
+                MetaEventSource::Boolean,
+            ])],
+        )
+        .unwrap();
+        assert_eq!(xml, before);
+
+        apply_typed_operations(&mut xml, &[source_replace(vec![reference])]).unwrap();
+        assert!(xml.contains("<d:Type>c:CatalogRef.Items</d:Type>"));
+        assert!(!xml.contains("<v8:") && !xml.contains("cfg:") && !xml.contains("xs:"));
+        roxmltree::Document::parse(&xml).unwrap();
+    }
+
+    #[test]
+    fn typed_event_source_change_declares_missing_canonical_namespaces_locally() {
+        let mut xml = event_subscription_alias_xml("<Source/>")
+            .replace(
+                r#" xmlns:c="http://v8.1c.ru/8.1/data/enterprise/current-config""#,
+                "",
+            )
+            .replace(r#" xmlns:s="http://www.w3.org/2001/XMLSchema""#, "");
+        let target = MetaEventSource::Reference {
+            metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items")
+                .unwrap(),
+        };
+
+        apply_typed_operations(&mut xml, &[source_replace(vec![target])]).unwrap();
+
+        assert!(xml.contains(r#"xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config""#));
+        assert!(xml.contains("<d:Type>cfg:CatalogRef.Items</d:Type>"));
+        roxmltree::Document::parse(&xml).unwrap();
+    }
+
+    #[test]
+    fn typed_event_source_change_does_not_reuse_declarations_on_replaced_source() {
+        let local_source = concat!(
+            r#"<Source xmlns:d="http://v8.1c.ru/8.1/data/core" "#,
+            r#"xmlns:c="http://v8.1c.ru/8.1/data/enterprise/current-config" "#,
+            r#"xmlns:s="http://www.w3.org/2001/XMLSchema">"#,
+            "<d:Type>s:boolean</d:Type>",
+            "</Source>"
+        );
+        let mut xml = event_subscription_alias_xml(local_source)
+            .replacen(
+                r#" xmlns:c="http://v8.1c.ru/8.1/data/enterprise/current-config""#,
+                "",
+                1,
+            )
+            .replacen(r#" xmlns:d="http://v8.1c.ru/8.1/data/core""#, "", 1)
+            .replacen(r#" xmlns:s="http://www.w3.org/2001/XMLSchema""#, "", 1);
+        let target = MetaEventSource::Reference {
+            metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items")
+                .unwrap(),
+        };
+
+        apply_typed_operations(&mut xml, &[source_replace(vec![target])]).unwrap();
+
+        assert!(xml.contains(
+            r#"<Source xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config">"#
+        ));
+        roxmltree::Document::parse(&xml).unwrap();
+    }
+
+    #[test]
     fn typed_event_source_build_preserves_bom_and_crlf_for_change_and_noop() {
         let lf = event_subscription_xml("<Source/>");
         let mut preimage = b"\xef\xbb\xbf".to_vec();
@@ -5284,7 +5473,7 @@ mod tests {
             std::path::Path::new("/unused/EventSubscriptions/Events.xml"),
             &target,
             &preimage,
-            &[operation.clone()],
+            std::slice::from_ref(&operation),
             &context,
         )
         .unwrap()
@@ -5308,12 +5497,57 @@ mod tests {
             std::path::Path::new("/unused/EventSubscriptions/Events.xml"),
             &target,
             &changed,
-            &[operation],
+            std::slice::from_ref(&operation),
             &context,
         )
         .unwrap()
         .descriptor;
         assert_eq!(noop, changed);
+
+        let mixed = event_subscription_xml("<Source/>").replacen('\n', "\r\n", 1);
+        let mut mixed_preimage = b"\xef\xbb\xbf".to_vec();
+        mixed_preimage.extend_from_slice(mixed.as_bytes());
+        let mixed_changed = build_typed_operation_post_image(
+            TypedOperationDependencyScope::new(
+                "main",
+                std::path::Path::new("/unused"),
+                std::path::Path::new("/unused/Configuration.xml"),
+                b"",
+                false,
+            ),
+            std::path::Path::new("/unused/EventSubscriptions/Events.xml"),
+            &target,
+            &mixed_preimage,
+            std::slice::from_ref(&operation),
+            &context,
+        )
+        .unwrap()
+        .descriptor;
+        let expected_mixed = mixed.replace(
+            "<Source/>",
+            "<Source>\r\n\t\t\t\t<v8:Type>xs:boolean</v8:Type>\r\n\t\t\t</Source>",
+        );
+        let mut expected_mixed_bytes = b"\xef\xbb\xbf".to_vec();
+        expected_mixed_bytes.extend_from_slice(expected_mixed.as_bytes());
+        assert_eq!(mixed_changed, expected_mixed_bytes);
+
+        let mixed_noop = build_typed_operation_post_image(
+            TypedOperationDependencyScope::new(
+                "main",
+                std::path::Path::new("/unused"),
+                std::path::Path::new("/unused/Configuration.xml"),
+                b"",
+                false,
+            ),
+            std::path::Path::new("/unused/EventSubscriptions/Events.xml"),
+            &target,
+            &mixed_changed,
+            &[operation],
+            &context,
+        )
+        .unwrap()
+        .descriptor;
+        assert_eq!(mixed_noop, mixed_changed);
     }
 
     #[test]

@@ -1,10 +1,12 @@
 use super::super::common::{escape_xml, multilang_text};
 use super::super::role::role_info_element;
 use crate::domain::metadata::{
-    DateFractions, MetaEventSource, MetaEventSourceDateFractions, MetaFillValue, MetadataType,
-    MetadataTypeVariant, NumberSign, StringLengthMode,
+    metadata_identifier_is_valid, DateFractions, MetaEventSource, MetaEventSourceDateFractions,
+    MetaFillValue, MetadataType, MetadataTypeVariant, NumberSign, StringLengthMode,
 };
-use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use crate::domain::source_target::{
+    xml_ncname_is_valid, MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20,
+};
 
 pub(super) const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 const DATA_CORE_NS: &str = "http://v8.1c.ru/8.1/data/core";
@@ -102,19 +104,6 @@ pub(super) fn meta_event_subscription_source_node<'a, 'input>(
     }
     let properties = single_direct_md_child(*object, "Properties", "EventSubscription")?;
     let source = single_direct_md_child(properties, "Source", "EventSubscription Properties")?;
-    for (prefix, expected) in [
-        (None, MD_CLASSES_NS),
-        (Some("v8"), DATA_CORE_NS),
-        (Some("cfg"), CURRENT_CONFIG_NS),
-        (Some("xs"), XML_SCHEMA_NS),
-    ] {
-        if properties.lookup_namespace_uri(prefix) != Some(expected) {
-            let label = prefix.unwrap_or("default");
-            return Err(format!(
-                "EventSubscription Properties must bind {label} namespace to {expected}"
-            ));
-        }
-    }
     Ok(source)
 }
 
@@ -137,6 +126,43 @@ fn strict_leaf_text(node: roxmltree::Node<'_, '_>, label: &str) -> Result<String
         return Err(format!("{label} must not contain surrounding whitespace"));
     }
     Ok(value.to_string())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct EventSourceQName {
+    namespace: String,
+    local_name: String,
+}
+
+fn resolve_event_source_qname(
+    node: roxmltree::Node<'_, '_>,
+    wire_type: &str,
+) -> Result<EventSourceQName, String> {
+    let Some((prefix, local_name)) = wire_type.split_once(':') else {
+        return Err(format!(
+            "EventSubscription Source wire type {wire_type} must be a QName"
+        ));
+    };
+    if local_name.contains(':') || !xml_ncname_is_valid(prefix) || !xml_ncname_is_valid(local_name)
+    {
+        return Err(format!(
+            "EventSubscription Source wire type {wire_type} is not a lexical QName"
+        ));
+    }
+    let Some(namespace) = node.lookup_namespace_uri(Some(prefix)) else {
+        return Err(format!(
+            "EventSubscription Source wire type {wire_type} must bind {prefix} at the declaring node"
+        ));
+    };
+    if !matches!(namespace, CURRENT_CONFIG_NS | DATA_CORE_NS | XML_SCHEMA_NS) {
+        return Err(format!(
+            "EventSubscription Source wire type {wire_type} must bind {prefix} to a supported source namespace at the declaring node"
+        ));
+    }
+    Ok(EventSourceQName {
+        namespace: namespace.to_string(),
+        local_name: local_name.to_string(),
+    })
 }
 
 fn strict_qualifier_values(
@@ -242,14 +268,15 @@ fn event_source_generated_contract(
     Some(contract)
 }
 
-fn parse_event_source_generated(tag: &str, wire_type: &str) -> Result<MetaEventSource, String> {
-    let generated = wire_type.strip_prefix("cfg:").ok_or_else(|| {
-        format!("EventSubscription Source contains unsupported wire type {wire_type}")
-    })?;
+fn parse_event_source_generated(
+    tag: &str,
+    wire_type: &str,
+    generated: &str,
+) -> Result<MetaEventSource, String> {
     let (prefix, name) = generated.split_once('.').ok_or_else(|| {
         format!("EventSubscription Source configuration type {wire_type} is malformed")
     })?;
-    if name.contains('.') || name.is_empty() {
+    if name.contains('.') || !metadata_identifier_is_valid(name) {
         return Err(format!(
             "EventSubscription Source configuration type {wire_type} is malformed"
         ));
@@ -338,18 +365,30 @@ pub(super) fn parse_meta_event_subscription_source(
                 }
                 let wire_type =
                     strict_leaf_text(child, &format!("EventSubscription Source v8:{tag}"))?;
-                if !seen_wire_types.insert((tag.to_string(), wire_type.clone())) {
+                let qname = resolve_event_source_qname(child, &wire_type)?;
+                if !seen_wire_types.insert((tag.to_string(), qname.clone())) {
                     return Err(format!(
                         "EventSubscription Source contains duplicate v8:{tag} {wire_type}"
                     ));
                 }
-                let parsed = match (tag, wire_type.as_str()) {
-                    ("Type", "xs:string") => WireSource::String,
-                    ("Type", "xs:decimal") => WireSource::Number,
-                    ("Type", "xs:boolean") => WireSource::Ready(MetaEventSource::Boolean),
-                    ("Type", "xs:dateTime") => WireSource::Date,
-                    ("Type", "v8:ValueStorage") => WireSource::Ready(MetaEventSource::ValueStorage),
-                    _ => WireSource::Ready(parse_event_source_generated(tag, &wire_type)?),
+                let parsed = match (tag, qname.namespace.as_str(), qname.local_name.as_str()) {
+                    ("Type", XML_SCHEMA_NS, "string") => WireSource::String,
+                    ("Type", XML_SCHEMA_NS, "decimal") => WireSource::Number,
+                    ("Type", XML_SCHEMA_NS, "boolean") => {
+                        WireSource::Ready(MetaEventSource::Boolean)
+                    }
+                    ("Type", XML_SCHEMA_NS, "dateTime") => WireSource::Date,
+                    ("Type", DATA_CORE_NS, "ValueStorage") => {
+                        WireSource::Ready(MetaEventSource::ValueStorage)
+                    }
+                    (_, CURRENT_CONFIG_NS, generated) => {
+                        WireSource::Ready(parse_event_source_generated(tag, &wire_type, generated)?)
+                    }
+                    _ => {
+                        return Err(format!(
+                            "EventSubscription Source contains unsupported wire type {wire_type}"
+                        ));
+                    }
                 };
                 wire_sources.push(parsed);
             }
@@ -517,25 +556,134 @@ pub(super) fn parse_meta_event_subscription_source(
     Ok(sources)
 }
 
-fn event_source_wire_contract(source: &MetaEventSource) -> (&'static str, String) {
+#[derive(Clone, Copy)]
+enum EventSourceWireNamespace {
+    Data,
+    CurrentConfig,
+    XmlSchema,
+}
+
+fn event_source_wire_contract(
+    source: &MetaEventSource,
+) -> (&'static str, EventSourceWireNamespace, String) {
     match source {
-        MetaEventSource::String { .. } => ("Type", "xs:string".to_string()),
-        MetaEventSource::Number { .. } => ("Type", "xs:decimal".to_string()),
-        MetaEventSource::Boolean => ("Type", "xs:boolean".to_string()),
-        MetaEventSource::Date { .. } => ("Type", "xs:dateTime".to_string()),
-        MetaEventSource::ValueStorage => ("Type", "v8:ValueStorage".to_string()),
+        MetaEventSource::String { .. } => (
+            "Type",
+            EventSourceWireNamespace::XmlSchema,
+            "string".to_string(),
+        ),
+        MetaEventSource::Number { .. } => (
+            "Type",
+            EventSourceWireNamespace::XmlSchema,
+            "decimal".to_string(),
+        ),
+        MetaEventSource::Boolean => (
+            "Type",
+            EventSourceWireNamespace::XmlSchema,
+            "boolean".to_string(),
+        ),
+        MetaEventSource::Date { .. } => (
+            "Type",
+            EventSourceWireNamespace::XmlSchema,
+            "dateTime".to_string(),
+        ),
+        MetaEventSource::ValueStorage => (
+            "Type",
+            EventSourceWireNamespace::Data,
+            "ValueStorage".to_string(),
+        ),
         MetaEventSource::Object { metadata_path }
         | MetaEventSource::Reference { metadata_path }
         | MetaEventSource::RecordSet { metadata_path } => {
             let prefix = event_source_generated_prefix(source);
             let name = metadata_path.segments().nth(1).unwrap_or_default();
-            ("Type", format!("cfg:{prefix}.{name}"))
+            (
+                "Type",
+                EventSourceWireNamespace::CurrentConfig,
+                format!("{prefix}.{name}"),
+            )
         }
         MetaEventSource::DefinedType { metadata_path } => {
             let name = metadata_path.segments().nth(1).unwrap_or_default();
-            ("TypeSet", format!("cfg:DefinedType.{name}"))
+            (
+                "TypeSet",
+                EventSourceWireNamespace::CurrentConfig,
+                format!("DefinedType.{name}"),
+            )
         }
     }
+}
+
+struct EventSourceEmissionNamespaces {
+    data: String,
+    current_config: Option<String>,
+    xml_schema: Option<String>,
+    declarations: Vec<(String, &'static str)>,
+}
+
+impl EventSourceEmissionNamespaces {
+    fn for_source(context: roxmltree::Node<'_, '_>, sources: &[MetaEventSource]) -> Self {
+        let mut declarations = Vec::new();
+        let data = event_source_emission_prefix(context, "v8", DATA_CORE_NS, &mut declarations);
+        let current_config = sources
+            .iter()
+            .any(|source| source.metadata_path().is_some())
+            .then(|| {
+                event_source_emission_prefix(context, "cfg", CURRENT_CONFIG_NS, &mut declarations)
+            });
+        let xml_schema = sources
+            .iter()
+            .any(|source| {
+                matches!(
+                    source,
+                    MetaEventSource::String { .. }
+                        | MetaEventSource::Number { .. }
+                        | MetaEventSource::Boolean
+                        | MetaEventSource::Date { .. }
+                )
+            })
+            .then(|| event_source_emission_prefix(context, "xs", XML_SCHEMA_NS, &mut declarations));
+        Self {
+            data,
+            current_config,
+            xml_schema,
+            declarations,
+        }
+    }
+
+    fn wire_prefix(&self, namespace: EventSourceWireNamespace) -> &str {
+        match namespace {
+            EventSourceWireNamespace::Data => &self.data,
+            EventSourceWireNamespace::CurrentConfig => self
+                .current_config
+                .as_deref()
+                .expect("configuration source requires a configuration namespace"),
+            EventSourceWireNamespace::XmlSchema => self
+                .xml_schema
+                .as_deref()
+                .expect("primitive source requires an XML Schema namespace"),
+        }
+    }
+}
+
+fn event_source_emission_prefix(
+    context: roxmltree::Node<'_, '_>,
+    canonical_prefix: &'static str,
+    namespace_uri: &'static str,
+    declarations: &mut Vec<(String, &'static str)>,
+) -> String {
+    if context.lookup_namespace_uri(Some(canonical_prefix)) == Some(namespace_uri) {
+        return canonical_prefix.to_string();
+    }
+    if let Some(prefix) = context.namespaces().find_map(|namespace| {
+        (namespace.uri() == namespace_uri)
+            .then(|| namespace.name())
+            .flatten()
+    }) {
+        return prefix.to_string();
+    }
+    declarations.push((canonical_prefix.to_string(), namespace_uri));
+    canonical_prefix.to_string()
 }
 
 pub(super) fn event_source_generated_prefix(source: &MetaEventSource) -> &'static str {
@@ -661,19 +809,34 @@ pub(super) fn canonical_meta_event_sources(sources: &[MetaEventSource]) -> Vec<M
 pub(super) fn emit_meta_event_subscription_source(
     indent: &str,
     sources: &[MetaEventSource],
+    namespace_context: roxmltree::Node<'_, '_>,
 ) -> String {
     if sources.is_empty() {
         return format!("{indent}<Source/>");
     }
     let sources = canonical_meta_event_sources(sources);
+    // The complete old Source node is replaced, so only declarations on its
+    // surviving parent (or an ancestor) can be reused by the new fragment.
+    let surviving_namespace_context = namespace_context
+        .parent_element()
+        .unwrap_or(namespace_context);
+    let namespaces =
+        EventSourceEmissionNamespaces::for_source(surviving_namespace_context, &sources);
     let content_indent = format!("{indent}\t");
-    let mut lines = vec![format!("{indent}<Source>")];
+    let declarations = namespaces
+        .declarations
+        .iter()
+        .map(|(prefix, uri)| format!(r#" xmlns:{prefix}="{uri}""#))
+        .collect::<String>();
+    let mut lines = vec![format!("{indent}<Source{declarations}>")];
+    let data_prefix = &namespaces.data;
     for expected_tag in ["Type", "TypeSet"] {
         for source in &sources {
-            let (tag, wire_type) = event_source_wire_contract(source);
+            let (tag, namespace, local_name) = event_source_wire_contract(source);
             if tag == expected_tag {
+                let wire_type = format!("{}:{local_name}", namespaces.wire_prefix(namespace));
                 lines.push(format!(
-                    "{content_indent}<v8:{tag}>{}</v8:{tag}>",
+                    "{content_indent}<{data_prefix}:{tag}>{}</{data_prefix}:{tag}>",
                     escape_xml(&wire_type)
                 ));
             }
@@ -686,19 +849,21 @@ pub(super) fn emit_meta_event_subscription_source(
             sign,
         } = source
         {
-            lines.push(format!("{content_indent}<v8:NumberQualifiers>"));
-            lines.push(format!("{content_indent}\t<v8:Digits>{digits}</v8:Digits>"));
+            lines.push(format!("{content_indent}<{data_prefix}:NumberQualifiers>"));
             lines.push(format!(
-                "{content_indent}\t<v8:FractionDigits>{fraction}</v8:FractionDigits>"
+                "{content_indent}\t<{data_prefix}:Digits>{digits}</{data_prefix}:Digits>"
             ));
             lines.push(format!(
-                "{content_indent}\t<v8:AllowedSign>{}</v8:AllowedSign>",
+                "{content_indent}\t<{data_prefix}:FractionDigits>{fraction}</{data_prefix}:FractionDigits>"
+            ));
+            lines.push(format!(
+                "{content_indent}\t<{data_prefix}:AllowedSign>{}</{data_prefix}:AllowedSign>",
                 match sign {
                     NumberSign::Any => "Any",
                     NumberSign::NonNegative => "Nonnegative",
                 }
             ));
-            lines.push(format!("{content_indent}</v8:NumberQualifiers>"));
+            lines.push(format!("{content_indent}</{data_prefix}:NumberQualifiers>"));
         }
     }
     for source in &sources {
@@ -707,29 +872,31 @@ pub(super) fn emit_meta_event_subscription_source(
             allowed_length,
         } = source
         {
-            lines.push(format!("{content_indent}<v8:StringQualifiers>"));
-            lines.push(format!("{content_indent}\t<v8:Length>{length}</v8:Length>"));
+            lines.push(format!("{content_indent}<{data_prefix}:StringQualifiers>"));
             lines.push(format!(
-                "{content_indent}\t<v8:AllowedLength>{}</v8:AllowedLength>",
+                "{content_indent}\t<{data_prefix}:Length>{length}</{data_prefix}:Length>"
+            ));
+            lines.push(format!(
+                "{content_indent}\t<{data_prefix}:AllowedLength>{}</{data_prefix}:AllowedLength>",
                 match allowed_length {
                     StringLengthMode::Variable => "Variable",
                     StringLengthMode::Fixed => "Fixed",
                 }
             ));
-            lines.push(format!("{content_indent}</v8:StringQualifiers>"));
+            lines.push(format!("{content_indent}</{data_prefix}:StringQualifiers>"));
         }
     }
     for source in &sources {
         if let MetaEventSource::Date { fractions } = source {
-            lines.push(format!("{content_indent}<v8:DateQualifiers>"));
+            lines.push(format!("{content_indent}<{data_prefix}:DateQualifiers>"));
             lines.push(format!(
-                "{content_indent}\t<v8:DateFractions>{}</v8:DateFractions>",
+                "{content_indent}\t<{data_prefix}:DateFractions>{}</{data_prefix}:DateFractions>",
                 match fractions {
                     MetaEventSourceDateFractions::Date => "Date",
                     MetaEventSourceDateFractions::DateTime => "DateTime",
                 }
             ));
-            lines.push(format!("{content_indent}</v8:DateQualifiers>"));
+            lines.push(format!("{content_indent}</{data_prefix}:DateQualifiers>"));
         }
     }
     lines.push(format!("{indent}</Source>"));
@@ -1052,7 +1219,12 @@ mod tests {
             },
             MetaEventSource::Boolean,
         ];
-        let source = emit_meta_event_subscription_source("\t", &requested);
+        let namespace_context_xml = event_subscription_xml("<Source/>");
+        let namespace_context_document =
+            roxmltree::Document::parse(&namespace_context_xml).unwrap();
+        let namespace_context =
+            meta_event_subscription_source_node(&namespace_context_document).unwrap();
+        let source = emit_meta_event_subscription_source("\t", &requested, namespace_context);
         let xml = event_subscription_xml(&source);
         let document = roxmltree::Document::parse(&xml).unwrap();
         let source_node = meta_event_subscription_source_node(&document).unwrap();
@@ -1093,6 +1265,74 @@ mod tests {
         )
         .unwrap_err()
         .contains("Length=0"));
+
+        for shadowed in [
+            r#"<Source xmlns:cfg="urn:not-current-config"><v8:Type>cfg:CatalogRef.Items</v8:Type></Source>"#,
+            r#"<Source><v8:Type xmlns:xs="urn:not-xml-schema">xs:boolean</v8:Type></Source>"#,
+        ] {
+            let xml = event_subscription_xml(shadowed);
+            let document = roxmltree::Document::parse(&xml).unwrap();
+            let error = parse_meta_event_subscription_source(
+                meta_event_subscription_source_node(&document).unwrap(),
+            )
+            .unwrap_err();
+            assert!(error.contains("must bind"), "{error}");
+        }
+    }
+
+    #[test]
+    fn event_subscription_source_resolves_alias_qnames_by_namespace_uri() {
+        let xml = format!(
+            r#"<MetaDataObject xmlns="{MD_CLASSES_NS}" xmlns:d="{DATA_CORE_NS}" xmlns:c="{CURRENT_CONFIG_NS}" xmlns:s="{XML_SCHEMA_NS}" version="2.20"><EventSubscription><Properties><Source><d:Type>c:CatalogRef.Items</d:Type><d:Type>s:boolean</d:Type></Source></Properties></EventSubscription></MetaDataObject>"#
+        );
+        let document = roxmltree::Document::parse(&xml).unwrap();
+        let parsed = parse_meta_event_subscription_source(
+            meta_event_subscription_source_node(&document).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            parsed,
+            vec![
+                MetaEventSource::Reference {
+                    metadata_path: metadata_path("Catalog.Items"),
+                },
+                MetaEventSource::Boolean,
+            ]
+        );
+
+        let duplicate = format!(
+            r#"<MetaDataObject xmlns="{MD_CLASSES_NS}" xmlns:d="{DATA_CORE_NS}" xmlns:cfg="{CURRENT_CONFIG_NS}" xmlns:c="{CURRENT_CONFIG_NS}" version="2.20"><EventSubscription><Properties><Source><d:Type>cfg:CatalogRef.Items</d:Type><d:Type>c:CatalogRef.Items</d:Type></Source></Properties></EventSubscription></MetaDataObject>"#
+        );
+        let document = roxmltree::Document::parse(&duplicate).unwrap();
+        assert!(parse_meta_event_subscription_source(
+            meta_event_subscription_source_node(&document).unwrap()
+        )
+        .unwrap_err()
+        .contains("duplicate"));
+    }
+
+    #[test]
+    fn event_subscription_source_rejects_generated_names_that_are_not_1c_identifiers() {
+        for generated in [
+            "CatalogRef.Bad Name",
+            "CatalogRef.1Bad",
+            "CatalogRef.Bad:Name",
+            "CatalogRef.Bad-Name",
+        ] {
+            let xml = event_subscription_xml(&format!(
+                "<Source><v8:Type>cfg:{generated}</v8:Type></Source>"
+            ));
+            let document = roxmltree::Document::parse(&xml).unwrap();
+            let error = parse_meta_event_subscription_source(
+                meta_event_subscription_source_node(&document).unwrap(),
+            )
+            .unwrap_err();
+            assert!(
+                error.contains("malformed") || error.contains("lexical QName"),
+                "{generated}: {error}"
+            );
+        }
     }
 
     #[test]
