@@ -1,8 +1,8 @@
 blank_issues_enabled: true
 contact_links:
   - name: Вопрос по использованию
-    url: https://github.com/IngvarConsulting/unica/discussions
-    about: Как что-то сделать в Unica — спрашивайте в обсуждениях, а не в issue.
+    url: https://t.me/unica_ai
+    about: Как что-то сделать в Unica — спрашивайте в Telegram-канале, а не в issue.
   - name: Продукт Unica
     url: https://ingvar.pro/products/unica/ru
     about: Описание продукта и установка.
