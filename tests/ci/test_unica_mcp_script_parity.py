@@ -1707,6 +1707,9 @@ source-set:
                         / "Module.bsl"
                     )
                     module_path.parent.mkdir(parents=True, exist_ok=True)
+                    # A selector-less insert is served by the same module as a
+                    # selector-bearing one: the end of the module is always
+                    # addressable, so no separate empty-module seed is needed.
                     module_path.write_text(
                         """Процедура ПриСозданииНаСервере()\n
     Сообщить(\"Готово\");\n

@@ -41,9 +41,8 @@ impl SourceTextSnapshot {
         &self.raw
     }
 
-    // These observations are part of the shared writer contract; code.patch is
-    // intentionally the first consumer and does not need every field yet.
-    #[allow(dead_code)]
+    /// The decoded text without a leading byte order mark, so a caller can ask
+    /// whether the module holds content rather than merely bytes.
     pub(crate) fn text(&self) -> &str {
         &self.decoded_text[self.content_start..]
     }
@@ -52,6 +51,8 @@ impl SourceTextSnapshot {
         &self.decoded_text
     }
 
+    // Part of the shared writer contract; code.patch is intentionally the first
+    // consumer and does not need every observation yet.
     #[allow(dead_code)]
     pub(crate) fn bom(&self) -> Utf8Bom {
         self.bom

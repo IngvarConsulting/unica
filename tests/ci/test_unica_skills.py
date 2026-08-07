@@ -1777,6 +1777,39 @@ Use `.claude/commands/xdto.md` as the execution route.
         self.assertIn("sourceSet", text)
         self.assertIn("metadataPath", text)
 
+    def test_code_patch_prompt_metadata_covers_every_public_operation(self) -> None:
+        """Prompt metadata names the published operations and only those.
+
+        `description` and `argument-hint` are what a host shows before the body
+        is ever read, so an operation missing there is invisible at the moment
+        of choosing the skill, and a retired one advertises a call that now
+        fails. The published enum is the source of truth; this keeps the two
+        from drifting apart in either direction.
+        """
+        path = self.skill_root() / "code-patch" / "SKILL.md"
+        text = path.read_text(encoding="utf-8")
+        published = ("insert", "replace")
+        retired = ("initialize",)
+
+        fields = {
+            field: match.group(1)
+            for field in ("description", "argument-hint")
+            if (match := re.search(rf"(?m)^{re.escape(field)}:\s*(.+)$", text))
+        }
+        self.assertEqual(set(fields), {"description", "argument-hint"})
+        for field, value in fields.items():
+            for operation in published:
+                with self.subTest(field=field, operation=operation):
+                    self.assertRegex(value, rf"\b{operation}\b")
+            for operation in retired:
+                with self.subTest(field=field, retired=operation):
+                    self.assertNotRegex(value, rf"\b{operation}\b")
+
+        # A selector-less insert is the whole point of the current surface, so
+        # the body must say where the content lands when the selector is absent.
+        self.assertRegex(text, r"(?is)`selector` is optional for `insert`")
+        self.assertIn("end of the module", text)
+
     def test_xdto_skill_uses_one_confirmed_info_preview_apply_mcp_flow(self) -> None:
         path = self.skill_root() / "xdto" / "SKILL.md"
         text = path.read_text(encoding="utf-8")
