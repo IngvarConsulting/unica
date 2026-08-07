@@ -384,6 +384,11 @@ fn meta_remove_reads_every_neighbouring_versioned_document_without_blocking() {
             "{relative}: {:?}",
             preview.diagnostics
         );
+        assert_eq!(
+            preview.data.as_ref().unwrap()["effects"][0]["target"],
+            "Catalog.Removable",
+            "{relative}: preview must still plan the requested removal"
+        );
     }
 }
 
@@ -426,6 +431,44 @@ fn meta_remove_refuses_predefined_data_from_a_newer_export_format() {
         "{:?}",
         result.diagnostics
     );
+}
+
+#[test]
+fn meta_remove_refuses_versionless_predefined_data_as_legacy_format() {
+    let workspace = create_remove_workspace("versionless-predefined-data");
+    let source = workspace.path().join("src");
+    let before = tree_snapshot(&source);
+    let predefined = source.join("Catalogs/Sibling/Ext/Predefined.xml");
+    std::fs::create_dir_all(predefined.parent().unwrap()).unwrap();
+    std::fs::write(
+        &predefined,
+        concat!(
+            r#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" "#,
+            r#"xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" "#,
+            r#"xsi:type="CatalogPredefinedItems"/>"#,
+        ),
+    )
+    .unwrap();
+    let with_predefined = tree_snapshot(&source);
+    assert_ne!(with_predefined, before);
+
+    let result = call_remove(workspace.path(), true);
+
+    assert!(!result.ok, "{:?}", result.summary);
+    assert!(result.data.is_none());
+    assert!(
+        result
+            .diagnostics
+            .as_ref()
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "capability_unavailable"),
+        "{:?}",
+        result.diagnostics
+    );
+    assert_eq!(tree_snapshot(&source), with_predefined);
 }
 
 #[test]

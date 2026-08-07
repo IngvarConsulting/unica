@@ -9526,10 +9526,10 @@ mod tests {
             .collect::<BTreeSet<_>>();
         let uncovered = STAGED_ROOT_REGISTRY
             .iter()
-            .filter(|(namespace, local_name, _)| {
-                !covered.contains(&((*namespace).to_string(), (*local_name).to_string()))
+            .filter(|root| {
+                !covered.contains(&(root.namespace.to_string(), root.local_name.to_string()))
             })
-            .map(|(namespace, local_name, _)| format!("{{{namespace}}}{local_name}"))
+            .map(|root| format!("{{{}}}{}", root.namespace, root.local_name))
             .collect::<Vec<_>>();
 
         assert!(

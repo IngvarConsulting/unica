@@ -28,110 +28,118 @@ pub(crate) enum PlatformXmlRootVersioning {
     Versionless,
 }
 
+/// One qualified root in the closed Platform XML registry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PlatformXmlRoot {
+    pub(crate) namespace: &'static str,
+    pub(crate) local_name: &'static str,
+    pub(crate) versioning: PlatformXmlRootVersioning,
+}
+
 /// Every root the platform writes, with the versioning it guarantees.
-pub(crate) static PLATFORM_XML_ROOTS: &[(&str, &str, PlatformXmlRootVersioning)] = &[
+pub(crate) static PLATFORM_XML_ROOTS: &[PlatformXmlRoot] = &[
     // Configuration.xml and every object owner
-    (
-        "http://v8.1c.ru/8.3/MDClasses",
-        "MetaDataObject",
-        PlatformXmlRootVersioning::ExactRootVersion,
-    ),
+    PlatformXmlRoot {
+        namespace: "http://v8.1c.ru/8.3/MDClasses",
+        local_name: "MetaDataObject",
+        versioning: PlatformXmlRootVersioning::ExactRootVersion,
+    },
     // Forms/*/Ext/Form.xml
-    (
-        "http://v8.1c.ru/8.3/xcf/logform",
-        "Form",
-        PlatformXmlRootVersioning::ExactRootVersion,
-    ),
+    PlatformXmlRoot {
+        namespace: "http://v8.1c.ru/8.3/xcf/logform",
+        local_name: "Form",
+        versioning: PlatformXmlRootVersioning::ExactRootVersion,
+    },
     // Ext/CommandInterface.xml
-    (
-        "http://v8.1c.ru/8.3/xcf/extrnprops",
-        "CommandInterface",
-        PlatformXmlRootVersioning::ExactRootVersion,
-    ),
+    PlatformXmlRoot {
+        namespace: "http://v8.1c.ru/8.3/xcf/extrnprops",
+        local_name: "CommandInterface",
+        versioning: PlatformXmlRootVersioning::ExactRootVersion,
+    },
     // Ext/Help.xml
-    (
-        "http://v8.1c.ru/8.3/xcf/extrnprops",
-        "Help",
-        PlatformXmlRootVersioning::ExactRootVersion,
-    ),
+    PlatformXmlRoot {
+        namespace: "http://v8.1c.ru/8.3/xcf/extrnprops",
+        local_name: "Help",
+        versioning: PlatformXmlRootVersioning::ExactRootVersion,
+    },
     // ExchangePlans/*/Ext/Content.xml
-    (
-        "http://v8.1c.ru/8.3/xcf/extrnprops",
-        "ExchangePlanContent",
-        PlatformXmlRootVersioning::ExactRootVersion,
-    ),
+    PlatformXmlRoot {
+        namespace: "http://v8.1c.ru/8.3/xcf/extrnprops",
+        local_name: "ExchangePlanContent",
+        versioning: PlatformXmlRootVersioning::ExactRootVersion,
+    },
     // Ext/HomePageWorkArea.xml
-    (
-        "http://v8.1c.ru/8.3/xcf/extrnprops",
-        "HomePageWorkArea",
-        PlatformXmlRootVersioning::ExactRootVersion,
-    ),
+    PlatformXmlRoot {
+        namespace: "http://v8.1c.ru/8.3/xcf/extrnprops",
+        local_name: "HomePageWorkArea",
+        versioning: PlatformXmlRootVersioning::ExactRootVersion,
+    },
     // CommonPictures/*/Ext/Picture.xml and Ext/Splash.xml
-    (
-        "http://v8.1c.ru/8.3/xcf/extrnprops",
-        "ExtPicture",
-        PlatformXmlRootVersioning::ExactRootVersion,
-    ),
+    PlatformXmlRoot {
+        namespace: "http://v8.1c.ru/8.3/xcf/extrnprops",
+        local_name: "ExtPicture",
+        versioning: PlatformXmlRootVersioning::ExactRootVersion,
+    },
     // ScheduledJobs/*/Ext/Schedule.xml
-    (
-        "http://v8.1c.ru/8.3/xcf/extrnprops",
-        "JobSchedule",
-        PlatformXmlRootVersioning::ExactRootVersion,
-    ),
+    PlatformXmlRoot {
+        namespace: "http://v8.1c.ru/8.3/xcf/extrnprops",
+        local_name: "JobSchedule",
+        versioning: PlatformXmlRootVersioning::ExactRootVersion,
+    },
     // Catalogs/*/Ext/Predefined.xml and the other predefined-data owners
-    (
-        "http://v8.1c.ru/8.3/xcf/predef",
-        "PredefinedData",
-        PlatformXmlRootVersioning::ExactRootVersion,
-    ),
+    PlatformXmlRoot {
+        namespace: "http://v8.1c.ru/8.3/xcf/predef",
+        local_name: "PredefinedData",
+        versioning: PlatformXmlRootVersioning::ExactRootVersion,
+    },
     // ConfigDumpInfo.xml
-    (
-        "http://v8.1c.ru/8.3/xcf/dumpinfo",
-        "ConfigDumpInfo",
-        PlatformXmlRootVersioning::ExactRootVersion,
-    ),
+    PlatformXmlRoot {
+        namespace: "http://v8.1c.ru/8.3/xcf/dumpinfo",
+        local_name: "ConfigDumpInfo",
+        versioning: PlatformXmlRootVersioning::ExactRootVersion,
+    },
     // BusinessProcesses/*/Ext/Flowchart.xml
-    (
-        "http://v8.1c.ru/8.3/xcf/scheme",
-        "GraphicalSchema",
-        PlatformXmlRootVersioning::ExactRootVersion,
-    ),
+    PlatformXmlRoot {
+        namespace: "http://v8.1c.ru/8.3/xcf/scheme",
+        local_name: "GraphicalSchema",
+        versioning: PlatformXmlRootVersioning::ExactRootVersion,
+    },
     // Roles/*/Ext/Rights.xml
-    (
-        "http://v8.1c.ru/8.2/roles",
-        "Rights",
-        PlatformXmlRootVersioning::ExactRootVersion,
-    ),
+    PlatformXmlRoot {
+        namespace: "http://v8.1c.ru/8.2/roles",
+        local_name: "Rights",
+        versioning: PlatformXmlRootVersioning::ExactRootVersion,
+    },
     // Ext/ClientApplicationInterface.xml
-    (
-        "http://v8.1c.ru/8.2/managed-application/core",
-        "ClientApplicationInterface",
-        PlatformXmlRootVersioning::InheritedRootVersion,
-    ),
+    PlatformXmlRoot {
+        namespace: "http://v8.1c.ru/8.2/managed-application/core",
+        local_name: "ClientApplicationInterface",
+        versioning: PlatformXmlRootVersioning::InheritedRootVersion,
+    },
     // Templates/*/Ext/Template.xml for a data composition schema
-    (
-        "http://v8.1c.ru/8.1/data-composition-system/schema",
-        "DataCompositionSchema",
-        PlatformXmlRootVersioning::Versionless,
-    ),
+    PlatformXmlRoot {
+        namespace: "http://v8.1c.ru/8.1/data-composition-system/schema",
+        local_name: "DataCompositionSchema",
+        versioning: PlatformXmlRootVersioning::Versionless,
+    },
     // CommonTemplates/*/Ext/Template.xml for a report appearance template
-    (
-        "http://v8.1c.ru/8.1/data-composition-system/appearance-template",
-        "AppearanceTemplate",
-        PlatformXmlRootVersioning::Versionless,
-    ),
+    PlatformXmlRoot {
+        namespace: "http://v8.1c.ru/8.1/data-composition-system/appearance-template",
+        local_name: "AppearanceTemplate",
+        versioning: PlatformXmlRootVersioning::Versionless,
+    },
     // Templates/*/Ext/Template.xml for a spreadsheet document
-    (
-        "http://v8.1c.ru/8.2/data/spreadsheet",
-        "document",
-        PlatformXmlRootVersioning::Versionless,
-    ),
+    PlatformXmlRoot {
+        namespace: "http://v8.1c.ru/8.2/data/spreadsheet",
+        local_name: "document",
+        versioning: PlatformXmlRootVersioning::Versionless,
+    },
     // WSReferences/*/Ext/WSDefinition.xml, stored as the service published it
-    (
-        "http://schemas.xmlsoap.org/wsdl/",
-        "definitions",
-        PlatformXmlRootVersioning::Versionless,
-    ),
+    PlatformXmlRoot {
+        namespace: "http://schemas.xmlsoap.org/wsdl/",
+        local_name: "definitions",
+        versioning: PlatformXmlRootVersioning::Versionless,
+    },
 ];
 
 /// Returns how the platform versions the qualified root, or `None` when the
@@ -142,10 +150,8 @@ pub(crate) fn platform_xml_root_versioning(
 ) -> Option<PlatformXmlRootVersioning> {
     PLATFORM_XML_ROOTS
         .iter()
-        .find(|(registered_namespace, registered_local_name, _)| {
-            *registered_namespace == namespace && *registered_local_name == local_name
-        })
-        .map(|(_, _, versioning)| *versioning)
+        .find(|root| root.namespace == namespace && root.local_name == local_name)
+        .map(|root| root.versioning)
 }
 
 #[cfg(test)]
@@ -156,10 +162,12 @@ mod tests {
     #[test]
     fn every_root_is_registered_once() {
         let mut seen = BTreeSet::new();
-        for (namespace, local_name, _) in PLATFORM_XML_ROOTS {
+        for root in PLATFORM_XML_ROOTS {
             assert!(
-                seen.insert((*namespace, *local_name)),
-                "{{{namespace}}}{local_name} is registered twice"
+                seen.insert((root.namespace, root.local_name)),
+                "{{{}}}{} is registered twice",
+                root.namespace,
+                root.local_name
             );
         }
     }
