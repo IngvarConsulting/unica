@@ -230,6 +230,7 @@ fn declared_output_root_expectation(
         "dcs-compile" => (output_path_arg(args, context), DCS_ROOT),
         "dcs-edit" | "dcs-validate" => (resolve_dcs_validate_path(args, context).ok(), DCS_ROOT),
         "mxl-compile" => (output_path_arg(args, context), MXL_ROOT),
+        "mxl-validate" => (resolve_mxl_validate_path(args, context).ok(), MXL_ROOT),
         "form-compile" => (
             form_compile_format_paths(args, context).into_iter().next(),
             MANAGED_FORM_ROOT,
@@ -3036,6 +3037,41 @@ mod tests {
             assert_eq!(std::fs::read_to_string(&target).unwrap(), source);
             let _ = std::fs::remove_dir_all(root);
         }
+    }
+
+    #[test]
+    fn mxl_validate_warns_for_a_version_attribute_on_the_versionless_document_root() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-format-guard-versioned-mxl-validate-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let target = root.join("Template/Ext/Template.xml");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(
+            &target,
+            r#"<document xmlns="http://v8.1c.ru/8.2/data/spreadsheet" version="2.20"/>"#,
+        )
+        .unwrap();
+        let args = Map::from_iter([(
+            "TemplatePath".to_string(),
+            Value::String(root.join("Template").display().to_string()),
+        )]);
+
+        let check =
+            evaluate_format_guard(spec("unica.mxl.validate"), &args, &context(&root)).unwrap();
+        let FormatGuardCheck::Warn {
+            warning,
+            diagnostic,
+        } = check
+        else {
+            panic!("a version-bearing versionless MXL root must warn during validation");
+        };
+        assert_eq!(diagnostic["code"], "formatVersionInvalid");
+        assert!(
+            warning.contains("must not carry a version attribute"),
+            "{warning}"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
