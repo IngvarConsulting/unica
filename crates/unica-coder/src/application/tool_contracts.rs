@@ -3103,7 +3103,11 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
                 },
                 "description": "Ordered closed setRight operations; each effect is reported by operationIndex."
             }),
-            "dryRun" => json!({"type": "boolean", "default": true}),
+            "dryRun" => json!({
+                "type": "boolean",
+                "default": true,
+                "description": "Preview the typed role edit without writing workspace files; when omitted it defaults to true. Send false only when the user explicitly requests application."
+            }),
             _ => property_schema(name),
         };
     }
@@ -6166,6 +6170,9 @@ mod tests {
             schema["required"],
             json!(["sourceSet", "metadataPath", "operations"])
         );
+        assert!(schema["properties"]["dryRun"]["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("typed role edit")));
         assert_eq!(
             schema["properties"]["operations"]["items"]["additionalProperties"],
             false

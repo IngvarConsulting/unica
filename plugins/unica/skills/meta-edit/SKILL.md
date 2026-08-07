@@ -54,6 +54,8 @@ allowed-tools:
 `accountType` допускает `Active`, `Passive`, `ActivePassive`;
 `accountingFlags` — закрытый объект `имя: boolean`; `extDimensionTypes` —
 массив объектов с `name` и необязательными `turnover`, `accountingFlags`.
+Явно переданные пустые `{}` и `[]` очищают соответственно поддержанные
+`Flag` и `ExtDimensionType`; отсутствие поля сохраняет прежнее значение.
 
 `add` создаёт только корневой элемент. Совпадающий UUID даёт no-op только при
 эквивалентном образе, иначе `already_exists`. `update` и `remove` находят UUID

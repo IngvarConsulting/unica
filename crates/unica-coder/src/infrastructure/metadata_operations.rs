@@ -89,7 +89,7 @@ impl MetadataOperations {
             scan_local_enrichment(
                 &source.path,
                 local.kind,
-                &local.name,
+                &local.metadata_path,
                 &local_sections,
                 request.limit,
                 cancellation,

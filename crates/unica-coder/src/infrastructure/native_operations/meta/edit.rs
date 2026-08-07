@@ -757,9 +757,6 @@ pub(super) fn build_typed_operation_post_image(
         .validation_footprints
         .extend(predefined_resources.validation_footprints);
     child_resources
-        .relation_dependencies
-        .extend(predefined_resources.relation_dependencies);
-    child_resources
         .expected_post_images
         .extend(predefined_resources.expected_post_images);
     child_resources.relation_dependencies =

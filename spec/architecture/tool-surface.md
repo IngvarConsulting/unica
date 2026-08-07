@@ -1024,7 +1024,7 @@ Edit role rights through a closed logical typed contract.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
+| `dryRun` | boolean | нет | Preview the typed role edit without writing workspace files; when omitted it defaults to true. Send false only when the user explicitly requests application. |
 | `metadataPath` | string | да | Canonical logical role address in the form Role.<name>. |
 | `operations` | array | да | Ordered closed setRight operations; each effect is reported by operationIndex. |
 | `sourceSet` | string | да | Exact configured source-set name; physical source paths are not accepted. |

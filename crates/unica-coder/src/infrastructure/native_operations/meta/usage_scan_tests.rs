@@ -1,6 +1,9 @@
-use super::usage_scan::{scan_local_enrichment, LocalSection};
+use super::usage_scan::{
+    scan_local_enrichment as scan_local_enrichment_by_address, LocalEnrichment, LocalSection,
+};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::metadata::MetadataKind;
+use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -24,6 +27,29 @@ fn write(root: &Path, relative: &str, body: &str) {
     let path = root.join(relative);
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, body).unwrap();
+}
+
+fn scan_local_enrichment(
+    source_root: &Path,
+    kind: MetadataKind,
+    name: &str,
+    sections: &[LocalSection],
+    limit: usize,
+    cancellation: &CancellationToken,
+) -> LocalEnrichment {
+    let metadata_path = MetadataAddress::parse(
+        PLATFORM_XML_8_3_27_FORMAT_2_20,
+        &format!("{}.{name}", kind.as_str()),
+    )
+    .unwrap();
+    scan_local_enrichment_by_address(
+        source_root,
+        kind,
+        &metadata_path,
+        sections,
+        limit,
+        cancellation,
+    )
 }
 
 fn role(root: &Path, name: &str, subjects: &[&str]) {

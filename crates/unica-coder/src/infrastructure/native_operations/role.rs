@@ -2030,14 +2030,14 @@ fn edit_with_data(
     let request = match parse_role_edit_request(args) {
         Ok(request) => request,
         Err(error) => {
-            let failed_data = RoleEditData::failed(
-                args.get("metadataPath")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Role.Invalid"),
-                error.code,
-                error.message.clone(),
-                error.operation_index,
-            );
+            let failed_data = args.get("metadataPath").and_then(Value::as_str).map(|raw| {
+                RoleEditData::failed(
+                    raw,
+                    error.code,
+                    error.message.clone(),
+                    error.operation_index,
+                )
+            });
             return role_edit_failure(
                 if preview {
                     "dry run: unica.role.edit rejected invalid arguments"
@@ -2046,7 +2046,7 @@ fn edit_with_data(
                 },
                 error.code,
                 &error.message,
-                Some(failed_data),
+                failed_data,
             );
         }
     };
@@ -3068,6 +3068,7 @@ mod role_edit_contract_tests {
         assert_eq!(effect.action, RoleEditEffectAction::RemoveObject);
         assert_eq!(effect.before, Some(true));
         assert!(!removed.contains("DataProcessor.Worker"));
+        assert_eq!(removed.matches("<name>View</name>").count(), 1);
         assert!(removed.contains("Catalog.Demo"));
         assert!(removed.contains("restrictionTemplate"));
     }
@@ -3240,6 +3241,28 @@ mod role_edit_contract_tests {
             replacement.as_bytes().iter().copied(),
         );
         updated
+    }
+
+    #[test]
+    fn parse_failure_never_fabricates_a_role_metadata_path() {
+        let (context, mut args, _) = fixture("invalid-metadata-path");
+
+        args.remove("metadataPath");
+        let missing = preview_edit_with_data(&args, &context);
+        assert!(!missing.outcome.ok);
+        assert!(missing.data.is_none());
+
+        args.insert("metadataPath".to_string(), json!(42));
+        let non_string = preview_edit_with_data(&args, &context);
+        assert!(!non_string.outcome.ok);
+        assert!(non_string.data.is_none());
+
+        args.insert("metadataPath".to_string(), json!("Role.123"));
+        let supplied = preview_edit_with_data(&args, &context);
+        assert!(!supplied.outcome.ok);
+        assert_eq!(supplied.data.unwrap().metadata_path, "Role.123");
+
+        fs::remove_dir_all(context.workspace_root).unwrap();
     }
 
     #[test]

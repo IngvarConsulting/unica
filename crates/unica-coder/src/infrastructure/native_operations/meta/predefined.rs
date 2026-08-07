@@ -39,8 +39,7 @@ const MAX_PREDEFINED_BYTES: usize = 8 * 1024 * 1024;
 #[derive(Clone)]
 struct FragmentXmlContext {
     wrapper_start: String,
-    xsi_prefix: Option<String>,
-    xs_prefix: Option<String>,
+    in_scope_prefixes: BTreeMap<String, String>,
 }
 
 impl FragmentXmlContext {
@@ -60,12 +59,11 @@ impl FragmentXmlContext {
         let namespaces = namespaces
             .map(|(name, uri)| (name.to_string(), uri.to_string()))
             .collect::<Vec<_>>();
-        let xsi_prefix = namespaces
+        let in_scope_prefixes = namespaces
             .iter()
-            .find_map(|(name, uri)| (uri == XSI_NS && !name.is_empty()).then(|| name.clone()));
-        let xs_prefix = namespaces
-            .iter()
-            .find_map(|(name, uri)| (uri == XS_NS && !name.is_empty()).then(|| name.clone()));
+            .filter(|(name, _)| name != "xml" && !name.is_empty())
+            .cloned()
+            .collect::<BTreeMap<_, _>>();
         let mut prefixes = BTreeMap::from([
             ("cfg".to_string(), CFG_NS.to_string()),
             ("v8".to_string(), V8_NS.to_string()),
@@ -89,19 +87,54 @@ impl FragmentXmlContext {
         wrapper_start.push('>');
         Self {
             wrapper_start,
-            xsi_prefix,
-            xs_prefix,
+            in_scope_prefixes,
         }
     }
 
+    fn generated_prefix(&self, namespace: &str, canonical: &str) -> (String, bool) {
+        if let Some((prefix, _)) = self
+            .in_scope_prefixes
+            .iter()
+            .find(|(_, uri)| uri.as_str() == namespace)
+        {
+            return (prefix.clone(), false);
+        }
+        if !self.in_scope_prefixes.contains_key(canonical) {
+            return (canonical.to_string(), true);
+        }
+        for suffix in 1.. {
+            let candidate = format!("{canonical}_{suffix}");
+            if !self.in_scope_prefixes.contains_key(&candidate) {
+                return (candidate, true);
+            }
+        }
+        unreachable!("a finite namespace context cannot occupy every generated prefix")
+    }
+
+    fn with_local_declarations(&self, source: &str, node: Node<'_, '_>) -> Result<Self, String> {
+        let mut prefixes = self.in_scope_prefixes.clone();
+        for (name, _) in opening_tag_attributes(&source[node.range()])? {
+            let Some(prefix) = name.strip_prefix("xmlns:") else {
+                continue;
+            };
+            let namespace = node.lookup_namespace_uri(Some(prefix)).ok_or_else(|| {
+                format!("predefined namespace declaration `{prefix}` cannot be resolved")
+            })?;
+            prefixes.insert(prefix.to_string(), namespace.to_string());
+        }
+        Ok(Self::from_namespaces(prefixes.iter().map(
+            |(prefix, namespace)| (prefix.as_str(), namespace.as_str()),
+        )))
+    }
+
     fn decimal_type_attributes(&self) -> String {
-        let xsi_prefix = self.xsi_prefix.as_deref().unwrap_or("xsi");
-        let xs_prefix = self.xs_prefix.as_deref().unwrap_or("xs");
+        let (xsi_prefix, declare_xsi) = self.generated_prefix(XSI_NS, "xsi");
+        let (xs_prefix, declare_xs) = self.generated_prefix(XS_NS, "xs");
         let mut attributes = String::new();
-        if self.xsi_prefix.is_none() {
+        if declare_xsi {
             attributes.push_str(&format!(" xmlns:{xsi_prefix}=\"{XSI_NS}\""));
         }
-        if self.xs_prefix.is_none() {
+        if declare_xs {
             attributes.push_str(&format!(" xmlns:{xs_prefix}=\"{XS_NS}\""));
         }
         attributes.push_str(&format!(" {xsi_prefix}:type=\"{xs_prefix}:decimal\""));
@@ -1077,13 +1110,12 @@ fn patch_fields(
         )?;
     }
     if let Some(value) = &fields.r#type {
-        set_complex_child(
-            item,
-            "Type",
-            &render_type(value, "", eol),
-            eol,
-            fragment_context,
-        )?;
+        let render_context = fragment_direct_child_location(item, "Type", None, fragment_context)?
+            .map_or_else(|| fragment_context.clone(), |location| location.context);
+        let indent = child_indent(item);
+        let rendered = render_type(value, &indent, eol, &render_context);
+        let rendered = rendered.strip_prefix(&indent).unwrap_or(&rendered);
+        set_complex_child(item, "Type", rendered, eol, fragment_context)?;
     }
     if let Some(flags) = &fields.accounting_flags {
         merge_flags_container(item, "AccountingFlags", flags, eol, fragment_context)?;
@@ -1130,7 +1162,7 @@ fn render_item(
         )),
         MetadataKind::ChartOfCharacteristicTypes => {
             if let Some(metadata_type) = &element.fields.r#type {
-                let rendered = render_type(metadata_type, "\t", eol);
+                let rendered = render_type(metadata_type, "\t", eol, fragment_context);
                 lines.extend(rendered.split(eol).map(str::to_string));
             }
             lines.push(format!(
@@ -1293,6 +1325,40 @@ fn selected_effect(
         _ => return Ok(None),
     };
     let document = Document::parse(text).map_err(|error| format!("Predefined.xml: {error}"))?;
+    if matches!(operation, MetaEditOperation::RemovePredefinedItems { .. }) && !after {
+        let requested = ids
+            .into_iter()
+            .map(|id| {
+                uuid::Uuid::parse_str(id)
+                    .map_err(|_| "predefined item id is not a UUID".to_string())
+            })
+            .collect::<Result<HashSet<_>, _>>()?;
+        let mut selected = Vec::new();
+        for item in document
+            .descendants()
+            .filter(|node| is_predefined_element(*node, "Item"))
+        {
+            let belongs_to_removed_subtree = std::iter::once(item)
+                .chain(item.ancestors())
+                .filter(|node| is_predefined_element(*node, "Item"))
+                .filter_map(|node| node.attribute("id"))
+                .filter_map(|id| uuid::Uuid::parse_str(id).ok())
+                .any(|id| requested.contains(&id));
+            if !belongs_to_removed_subtree {
+                continue;
+            }
+            let parent_id = item
+                .parent_element()
+                .filter(|parent| is_predefined_element(*parent, "ChildItems"))
+                .and_then(|parent| parent.parent_element())
+                .and_then(|parent| parent.attribute("id"))
+                .map(str::to_string);
+            selected.push(parse_item(text, item, kind, parent_id)?);
+        }
+        return serde_json::to_value(selected)
+            .map(Some)
+            .map_err(|_| "predefined semantic effect cannot be serialized".to_string());
+    }
     let mut selected = Vec::new();
     for requested in ids {
         let canonical = uuid::Uuid::parse_str(requested)
@@ -1347,7 +1413,9 @@ fn set_code_child(
     eol: &str,
     fragment_context: &FragmentXmlContext,
 ) -> Result<(), String> {
-    let rendered = render_code(value, code_type, fragment_context)?;
+    let render_context = fragment_direct_child_location(item, "Code", None, fragment_context)?
+        .map_or_else(|| fragment_context.clone(), |location| location.context);
+    let rendered = render_code(value, code_type, &render_context)?;
     set_complex_child(item, "Code", &rendered, eol, fragment_context)
 }
 
@@ -1372,6 +1440,149 @@ fn render_code(
     Ok(format!("<Code>{}</Code>", escape_xml(value)))
 }
 
+fn opening_tag_end(fragment: &str) -> Result<usize, String> {
+    let mut quote = None;
+    for (index, character) in fragment.char_indices() {
+        match (quote, character) {
+            (Some(expected), current) if current == expected => quote = None,
+            (None, '\'' | '"') => quote = Some(character),
+            (None, '>') => return Ok(index),
+            _ => {}
+        }
+    }
+    Err("predefined element opening tag is unavailable".to_string())
+}
+
+fn opening_tag_attributes(fragment: &str) -> Result<Vec<(String, String)>, String> {
+    let end = opening_tag_end(fragment)?;
+    let opening = &fragment[..end];
+    let bytes = opening.as_bytes();
+    let mut index = 1;
+    while bytes
+        .get(index)
+        .is_some_and(|byte| !byte.is_ascii_whitespace() && !matches!(byte, b'/' | b'>'))
+    {
+        index += 1;
+    }
+    let mut attributes = Vec::new();
+    while index < bytes.len() {
+        while bytes.get(index).is_some_and(u8::is_ascii_whitespace) {
+            index += 1;
+        }
+        if index >= bytes.len() || bytes[index] == b'/' {
+            break;
+        }
+        let name_start = index;
+        while bytes
+            .get(index)
+            .is_some_and(|byte| !byte.is_ascii_whitespace() && *byte != b'=')
+        {
+            index += 1;
+        }
+        let name_end = index;
+        while bytes.get(index).is_some_and(u8::is_ascii_whitespace) {
+            index += 1;
+        }
+        if bytes.get(index) != Some(&b'=') {
+            return Err("predefined element attribute is malformed".to_string());
+        }
+        index += 1;
+        while bytes.get(index).is_some_and(u8::is_ascii_whitespace) {
+            index += 1;
+        }
+        let quote = *bytes
+            .get(index)
+            .filter(|quote| matches!(quote, b'\'' | b'"'))
+            .ok_or_else(|| "predefined element attribute value is unquoted".to_string())?;
+        index += 1;
+        while bytes.get(index).is_some_and(|byte| *byte != quote) {
+            index += 1;
+        }
+        if bytes.get(index) != Some(&quote) {
+            return Err("predefined element attribute value is unterminated".to_string());
+        }
+        index += 1;
+        attributes.push((
+            opening[name_start..name_end].to_string(),
+            opening[name_start..index].to_string(),
+        ));
+    }
+    Ok(attributes)
+}
+
+fn insert_opening_attributes(fragment: &mut String, attributes: &[String]) -> Result<(), String> {
+    if attributes.is_empty() {
+        return Ok(());
+    }
+    let end = opening_tag_end(fragment)?;
+    let insert_at = fragment[..end]
+        .rfind('/')
+        .filter(|slash| fragment[*slash + 1..end].trim().is_empty())
+        .unwrap_or(end);
+    fragment.insert_str(insert_at, &format!(" {}", attributes.join(" ")));
+    Ok(())
+}
+
+fn preserve_element_attributes(
+    existing: &str,
+    rendered: &str,
+    fragment_context: &FragmentXmlContext,
+) -> Result<String, String> {
+    let existing_opening = opening_tag_attributes(existing)?;
+    let rendered_opening = opening_tag_attributes(rendered)?;
+    let rendered_names = rendered_opening
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect::<HashSet<_>>();
+    let preserved_namespaces = existing_opening
+        .iter()
+        .filter(|(name, _)| name == "xmlns" || name.starts_with("xmlns:"))
+        .filter(|(name, _)| !rendered_names.contains(name.as_str()))
+        .map(|(_, lexeme)| lexeme.clone())
+        .collect::<Vec<_>>();
+
+    let mut merged = rendered.to_string();
+    insert_opening_attributes(&mut merged, &preserved_namespaces)?;
+
+    let wrapped_existing = format!("{}{existing}</Root>", fragment_context.wrapper_start);
+    let existing_document = Document::parse(&wrapped_existing)
+        .map_err(|error| format!("predefined XML fragment: {error}"))?;
+    let existing_node = existing_document
+        .root_element()
+        .children()
+        .find(|node| node.is_element())
+        .ok_or_else(|| "predefined XML fragment has no element".to_string())?;
+    let wrapped_merged = format!("{}{merged}</Root>", fragment_context.wrapper_start);
+    let merged_document = Document::parse(&wrapped_merged)
+        .map_err(|error| format!("predefined XML fragment: {error}"))?;
+    let merged_node = merged_document
+        .root_element()
+        .children()
+        .find(|node| node.is_element())
+        .ok_or_else(|| "predefined XML fragment has no element".to_string())?;
+    let rendered_keys = merged_node
+        .attributes()
+        .map(|attribute| {
+            (
+                attribute.namespace().map(str::to_string),
+                attribute.name().to_string(),
+            )
+        })
+        .collect::<HashSet<_>>();
+    let preserved_attributes = existing_node
+        .attributes()
+        .filter(|attribute| {
+            !rendered_keys.contains(&(
+                attribute.namespace().map(str::to_string),
+                attribute.name().to_string(),
+            ))
+        })
+        .map(|attribute| wrapped_existing[attribute.range()].to_string())
+        .collect::<Vec<_>>();
+    insert_opening_attributes(&mut merged, &preserved_attributes)?;
+    Ok(merged)
+}
+
 fn set_complex_child(
     parent: &mut String,
     tag: &str,
@@ -1379,10 +1590,13 @@ fn set_complex_child(
     eol: &str,
     fragment_context: &FragmentXmlContext,
 ) -> Result<(), String> {
-    if let Some(range) = fragment_direct_child_range(parent, tag, None, fragment_context)? {
+    if let Some(location) = fragment_direct_child_location(parent, tag, None, fragment_context)? {
+        let range = location.range;
         let existing_qname = lexical_element_name(&parent[range.clone()])?;
         let prefix = lexical_element_prefix(existing_qname);
         let rendered = qualify_generated_predefined_elements(rendered, prefix);
+        let rendered =
+            preserve_element_attributes(&parent[range.clone()], &rendered, &location.context)?;
         if parent[range.clone()] != rendered {
             parent.replace_range(range, &rendered);
         }
@@ -1413,16 +1627,24 @@ fn merge_flags_container(
     fragment_context: &FragmentXmlContext,
 ) -> Result<(), String> {
     if requested.is_empty() {
-        if fragment_direct_child_range(parent, tag, None, fragment_context)?.is_none() {
-            set_complex_child(parent, tag, &format!("<{tag}/>"), eol, fragment_context)?;
+        if let Some(location) = fragment_direct_child_location(parent, tag, None, fragment_context)?
+        {
+            let range = location.range;
+            let mut container = parent[range.clone()].to_string();
+            remove_direct_children(&mut container, "Flag", &location.context)?;
+            if parent[range.clone()] != container {
+                parent.replace_range(range, &container);
+            }
         }
         return Ok(());
     }
     if fragment_direct_child_range(parent, tag, None, fragment_context)?.is_none() {
         set_complex_child(parent, tag, &format!("<{tag}/>"), eol, fragment_context)?;
     }
-    let range = fragment_direct_child_range(parent, tag, None, fragment_context)?
+    let container_location = fragment_direct_child_location(parent, tag, None, fragment_context)?
         .ok_or_else(|| format!("predefined {tag} is unavailable"))?;
+    let range = container_location.range;
+    let container_context = container_location.context;
     let mut container = parent[range.clone()].to_string();
     let container_qname = lexical_element_name(&container)?.to_string();
     let container_prefix = lexical_element_prefix(&container_qname);
@@ -1430,17 +1652,23 @@ fn merge_flags_container(
     expand_self_closing(&mut container, &container_qname, eol, &child_indent(parent));
     for (name, value) in requested {
         let rendered = format!("<Flag ref=\"{}\">{value}</Flag>", escape_xml(name));
-        if let Some(flag_range) = fragment_direct_child_range(
+        if let Some(flag_location) = fragment_direct_child_location(
             &container,
             "Flag",
             Some(("ref", name.as_str())),
-            fragment_context,
+            &container_context,
         )? {
+            let flag_range = flag_location.range;
             let existing_qname = lexical_element_name(&container[flag_range.clone()])?;
             let rendered = qualify_generated_predefined_elements(
                 &rendered,
                 lexical_element_prefix(existing_qname),
             );
+            let rendered = preserve_element_attributes(
+                &container[flag_range.clone()],
+                &rendered,
+                &flag_location.context,
+            )?;
             if container[flag_range.clone()] != rendered {
                 container.replace_range(flag_range, &rendered);
             }
@@ -1463,15 +1691,15 @@ fn merge_ext_dimensions(
     fragment_context: &FragmentXmlContext,
 ) -> Result<(), String> {
     if requested.is_empty() {
-        if fragment_direct_child_range(item, "ExtDimensionTypes", None, fragment_context)?.is_none()
+        if let Some(location) =
+            fragment_direct_child_location(item, "ExtDimensionTypes", None, fragment_context)?
         {
-            set_complex_child(
-                item,
-                "ExtDimensionTypes",
-                "<ExtDimensionTypes/>",
-                eol,
-                fragment_context,
-            )?;
+            let range = location.range;
+            let mut container = item[range.clone()].to_string();
+            remove_direct_children(&mut container, "ExtDimensionType", &location.context)?;
+            if item[range.clone()] != container {
+                item.replace_range(range, &container);
+            }
         }
         return Ok(());
     }
@@ -1484,20 +1712,24 @@ fn merge_ext_dimensions(
             fragment_context,
         )?;
     }
-    let range = fragment_direct_child_range(item, "ExtDimensionTypes", None, fragment_context)?
-        .ok_or_else(|| "ExtDimensionTypes is unavailable".to_string())?;
+    let container_location =
+        fragment_direct_child_location(item, "ExtDimensionTypes", None, fragment_context)?
+            .ok_or_else(|| "ExtDimensionTypes is unavailable".to_string())?;
+    let range = container_location.range;
+    let container_context = container_location.context;
     let mut container = item[range.clone()].to_string();
     let container_qname = lexical_element_name(&container)?.to_string();
     let container_prefix = lexical_element_prefix(&container_qname);
     let container_indent = child_indent(item);
     expand_self_closing(&mut container, &container_qname, eol, &container_indent);
     for requested in requested {
-        if let Some(item_range) = fragment_direct_child_range(
+        if let Some(item_location) = fragment_direct_child_location(
             &container,
             "ExtDimensionType",
             Some(("name", requested.name.as_str())),
-            fragment_context,
+            &container_context,
         )? {
+            let item_range = item_location.range;
             let mut existing = container[item_range.clone()].to_string();
             if let Some(turnover) = requested.turnover {
                 set_simple_child(
@@ -1505,7 +1737,7 @@ fn merge_ext_dimensions(
                     "Turnover",
                     &turnover.to_string(),
                     eol,
-                    fragment_context,
+                    &item_location.context,
                 )?;
             }
             if let Some(flags) = &requested.accounting_flags {
@@ -1514,7 +1746,7 @@ fn merge_ext_dimensions(
                     "AccountingFlags",
                     flags,
                     eol,
-                    fragment_context,
+                    &item_location.context,
                 )?;
             }
             container.replace_range(item_range, &existing);
@@ -1586,18 +1818,44 @@ fn render_ext_dimension_lines(value: &MetaPredefinedExtDimensionType, indent: &s
     lines
 }
 
-fn render_type(metadata_type: &MetadataType, indent: &str, eol: &str) -> String {
+fn render_type(
+    metadata_type: &MetadataType,
+    indent: &str,
+    eol: &str,
+    fragment_context: &FragmentXmlContext,
+) -> String {
     let mut lines = Vec::new();
     emit_meta_typed_value_type(&mut lines, indent, metadata_type);
+    let (v8_prefix, declare_v8) = fragment_context.generated_prefix(V8_NS, "v8");
+    let (xs_prefix, declare_xs) = fragment_context.generated_prefix(XS_NS, "xs");
+    let (cfg_prefix, declare_cfg) = fragment_context.generated_prefix(CFG_NS, "cfg");
     for line in &mut lines {
-        if line.contains(">cfg:") {
-            *line = line
-                .replacen("<v8:Type>", &format!("<v8:Type xmlns:cfg=\"{CFG_NS}\">"), 1)
-                .replacen(
-                    "<v8:TypeSet>",
-                    &format!("<v8:TypeSet xmlns:cfg=\"{CFG_NS}\">"),
-                    1,
-                );
+        *line = line
+            .replace("<v8:", &format!("<{v8_prefix}:"))
+            .replace("</v8:", &format!("</{v8_prefix}:"))
+            .replace(">xs:", &format!(">{xs_prefix}:"))
+            .replace(">cfg:", &format!(">{cfg_prefix}:"))
+            .replace(">v8:", &format!(">{v8_prefix}:"));
+    }
+    let rendered_uses_xs = lines
+        .iter()
+        .any(|line| line.contains(&format!(">{xs_prefix}:")));
+    let rendered_uses_cfg = lines
+        .iter()
+        .any(|line| line.contains(&format!(">{cfg_prefix}:")));
+    if let Some(opening) = lines.first_mut() {
+        let mut declarations = Vec::new();
+        if declare_v8 {
+            declarations.push(format!("xmlns:{v8_prefix}=\"{V8_NS}\""));
+        }
+        if rendered_uses_xs && declare_xs {
+            declarations.push(format!("xmlns:{xs_prefix}=\"{XS_NS}\""));
+        }
+        if rendered_uses_cfg && declare_cfg {
+            declarations.push(format!("xmlns:{cfg_prefix}=\"{CFG_NS}\""));
+        }
+        if !declarations.is_empty() {
+            opening.insert_str(opening.len() - 1, &format!(" {}", declarations.join(" ")));
         }
     }
     lines.join(eol)
@@ -1810,12 +2068,58 @@ fn predefined_field_rank(parent: &str, tag: &str) -> usize {
     }
 }
 
+#[derive(Clone)]
+struct FragmentChildLocation {
+    range: Range<usize>,
+    context: FragmentXmlContext,
+}
+
+fn fragment_direct_child_location(
+    fragment: &str,
+    tag: &str,
+    attribute: Option<(&str, &str)>,
+    fragment_context: &FragmentXmlContext,
+) -> Result<Option<FragmentChildLocation>, String> {
+    let wrapped = format!("{}{fragment}</Root>", fragment_context.wrapper_start);
+    let document =
+        Document::parse(&wrapped).map_err(|error| format!("predefined XML fragment: {error}"))?;
+    let parent = document
+        .root_element()
+        .children()
+        .find(|node| node.is_element())
+        .ok_or_else(|| "predefined XML fragment has no element".to_string())?;
+    let Some(node) = parent.children().find(|node| {
+        is_predefined_element(*node, tag)
+            && attribute.is_none_or(|(name, value)| node.attribute(name) == Some(value))
+    }) else {
+        return Ok(None);
+    };
+    let range = node.range();
+    let parent_context = fragment_context.with_local_declarations(&wrapped, parent)?;
+    Ok(Some(FragmentChildLocation {
+        range: range.start - fragment_context.wrapper_start.len()
+            ..range.end - fragment_context.wrapper_start.len(),
+        context: parent_context.with_local_declarations(&wrapped, node)?,
+    }))
+}
+
 fn fragment_direct_child_range(
     fragment: &str,
     tag: &str,
     attribute: Option<(&str, &str)>,
     fragment_context: &FragmentXmlContext,
 ) -> Result<Option<Range<usize>>, String> {
+    Ok(
+        fragment_direct_child_location(fragment, tag, attribute, fragment_context)?
+            .map(|location| location.range),
+    )
+}
+
+fn fragment_direct_child_ranges(
+    fragment: &str,
+    tag: &str,
+    fragment_context: &FragmentXmlContext,
+) -> Result<Vec<Range<usize>>, String> {
     let wrapped = format!("{}{fragment}</Root>", fragment_context.wrapper_start);
     let document =
         Document::parse(&wrapped).map_err(|error| format!("predefined XML fragment: {error}"))?;
@@ -1826,15 +2130,26 @@ fn fragment_direct_child_range(
         .ok_or_else(|| "predefined XML fragment has no element".to_string())?;
     Ok(parent
         .children()
-        .find(|node| {
-            is_predefined_element(*node, tag)
-                && attribute.is_none_or(|(name, value)| node.attribute(name) == Some(value))
-        })
+        .filter(|node| is_predefined_element(*node, tag))
         .map(|node| {
             let range = node.range();
             range.start - fragment_context.wrapper_start.len()
                 ..range.end - fragment_context.wrapper_start.len()
-        }))
+        })
+        .collect())
+}
+
+fn remove_direct_children(
+    fragment: &mut String,
+    tag: &str,
+    fragment_context: &FragmentXmlContext,
+) -> Result<(), String> {
+    let ranges = fragment_direct_child_ranges(fragment, tag, fragment_context)?;
+    for range in ranges.into_iter().rev() {
+        let range = removal_range(fragment, range);
+        fragment.replace_range(range, "");
+    }
+    Ok(())
 }
 
 fn expand_self_closing_root(text: &mut String, eol: &str) {
@@ -2078,6 +2393,285 @@ mod tests {
             [MetadataTypeVariant::Reference { metadata_path }]
                 if metadata_path.as_str() == "Catalog.Items"
         ));
+    }
+
+    #[test]
+    fn type_update_preserves_the_item_child_indentation() {
+        let mut item = concat!(
+            "<Item id=\"a7d2e6fc-3824-4b56-b4be-ae6be4944c0e\">\n",
+            "\t<Name>Kind</Name>\n",
+            "\t<Type/>\n",
+            "\t<IsFolder>false</IsFolder>\n",
+            "</Item>"
+        )
+        .to_string();
+        let fields = MetaPredefinedFields {
+            r#type: Some(MetadataType::new(vec![MetadataTypeVariant::Boolean]).unwrap()),
+            ..MetaPredefinedFields::default()
+        };
+
+        patch_fields(
+            &mut item,
+            MetadataKind::ChartOfCharacteristicTypes,
+            PredefinedCodeType::String,
+            &fields,
+            "\n",
+            &FragmentXmlContext::platform_default(),
+        )
+        .unwrap();
+
+        assert!(
+            item.contains(&format!(
+                "\n\t<Type xmlns:v8=\"{V8_NS}\" xmlns:xs=\"{XS_NS}\">\n\t\t<v8:Type>xs:boolean</v8:Type>\n\t</Type>\n"
+            )),
+            "{item}"
+        );
+        assert!(!item.lines().any(|line| line.starts_with("<v8:")), "{item}");
+    }
+
+    #[test]
+    fn type_writer_reuses_aliases_or_declares_every_required_namespace_locally() {
+        let aliases =
+            FragmentXmlContext::from_namespaces([("core", V8_NS), ("schema", XS_NS)].into_iter());
+        let metadata_type = MetadataType::new(vec![MetadataTypeVariant::Boolean]).unwrap();
+        let aliased = render_type(&metadata_type, "", "\n", &aliases);
+        assert_eq!(
+            aliased,
+            "<Type>\n\t<core:Type>schema:boolean</core:Type>\n</Type>"
+        );
+
+        let local_type = MetadataType::new(vec![
+            MetadataTypeVariant::Boolean,
+            MetadataTypeVariant::Reference {
+                metadata_path: owner("Catalog"),
+            },
+        ])
+        .unwrap();
+        let local = render_type(
+            &local_type,
+            "\t",
+            "\n",
+            &FragmentXmlContext::platform_default(),
+        );
+        for declaration in [
+            format!(r#"xmlns:v8="{V8_NS}""#),
+            format!(r#"xmlns:xs="{XS_NS}""#),
+            format!(r#"xmlns:cfg="{CFG_NS}""#),
+        ] {
+            assert!(
+                local.contains(&declaration),
+                "missing {declaration}: {local}"
+            );
+        }
+        let xml = format!(
+            r#"<PredefinedData xmlns="{PREDEFINED_NS}" xmlns:xsi="{XSI_NS}" xsi:type="PlanOfCharacteristicKindPredefinedItems" version="2.20"><Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Kind</Name>{local}<IsFolder>false</IsFolder></Item></PredefinedData>"#
+        );
+        validate_predefined_text(MetadataKind::ChartOfCharacteristicTypes, &xml).unwrap();
+        let data =
+            read_predefined_items(xml.as_bytes(), MetadataKind::ChartOfCharacteristicTypes, 10)
+                .unwrap();
+        assert_eq!(data.items[0].r#type.as_ref().unwrap(), &local_type);
+    }
+
+    #[test]
+    fn type_update_avoids_a_local_prefix_collision_and_preserves_attribute_identity() {
+        let mut item = r#"<Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Kind</Name><Type xmlns:v8="urn:future" v8:stamp="keep"/><IsFolder>false</IsFolder></Item>"#.to_string();
+        let fields = MetaPredefinedFields {
+            r#type: Some(MetadataType::new(vec![MetadataTypeVariant::Boolean]).unwrap()),
+            ..MetaPredefinedFields::default()
+        };
+
+        patch_fields(
+            &mut item,
+            MetadataKind::ChartOfCharacteristicTypes,
+            PredefinedCodeType::String,
+            &fields,
+            "\n",
+            &FragmentXmlContext::platform_default(),
+        )
+        .unwrap();
+
+        assert!(item.contains(&format!(r#"xmlns:v8_1="{V8_NS}""#)), "{item}");
+        let wrapped = format!(r#"<Root xmlns="{PREDEFINED_NS}">{item}</Root>"#);
+        let document = Document::parse(&wrapped).unwrap();
+        let type_node = document
+            .descendants()
+            .find(|node| is_predefined_element(*node, "Type"))
+            .unwrap();
+        assert_eq!(type_node.attribute(("urn:future", "stamp")), Some("keep"));
+        assert_eq!(type_node.attribute((V8_NS, "stamp")), None);
+        assert!(type_node
+            .children()
+            .any(|node| node.tag_name().namespace() == Some(V8_NS)));
+    }
+
+    #[test]
+    fn ext_dimension_update_inherits_an_alias_declared_on_its_container() {
+        let mut item = format!(
+            r#"<Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><ExtDimensionTypes xmlns:p="{PREDEFINED_NS}"><p:ExtDimensionType name="Kinds"><p:Turnover>false</p:Turnover><p:AccountingFlags><p:Flag ref="Debit">false</p:Flag></p:AccountingFlags></p:ExtDimensionType></ExtDimensionTypes></Item>"#
+        );
+        let requested = [MetaPredefinedExtDimensionType {
+            name: "Kinds".to_string(),
+            turnover: Some(true),
+            accounting_flags: Some(BTreeMap::from([("Debit".to_string(), true)])),
+        }];
+
+        merge_ext_dimensions(
+            &mut item,
+            &requested,
+            "\n",
+            &FragmentXmlContext::platform_default(),
+        )
+        .unwrap();
+
+        assert!(item.contains("<p:Turnover>true</p:Turnover>"), "{item}");
+        assert!(
+            item.contains("<p:Flag ref=\"Debit\">true</p:Flag>"),
+            "{item}"
+        );
+        let wrapped = format!(r#"<Root xmlns="{PREDEFINED_NS}">{item}</Root>"#);
+        Document::parse(&wrapped).unwrap();
+    }
+
+    #[test]
+    fn replacement_preserves_local_namespace_declarations_and_unknown_attributes() {
+        let mut item = format!(
+            r#"<Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><p:Description xmlns:p="{PREDEFINED_NS}" xmlns:future="urn:future" future:stamp="keep">old</p:Description></Item>"#
+        );
+
+        set_simple_child(
+            &mut item,
+            "Description",
+            "new",
+            "\n",
+            &FragmentXmlContext::platform_default(),
+        )
+        .unwrap();
+
+        assert!(item.contains(&format!(
+            r#"<p:Description xmlns:p="{PREDEFINED_NS}" xmlns:future="urn:future" future:stamp="keep">new</p:Description>"#
+        )), "{item}");
+        let wrapped = format!("<Root xmlns=\"{PREDEFINED_NS}\">{item}</Root>");
+        Document::parse(&wrapped).unwrap();
+    }
+
+    #[test]
+    fn explicit_empty_structural_fields_clear_typed_children_and_preserve_unknown_xml() {
+        let context = FragmentXmlContext::platform_default();
+        let mut item = concat!(
+            "<Item id=\"a7d2e6fc-3824-4b56-b4be-ae6be4944c0e\">\n",
+            "\t<AccountingFlags xmlns:future=\"urn:future\" future:stamp=\"keep\">\n",
+            "\t\t<Flag ref=\"Debit\">true</Flag>\n",
+            "\t\t<future:Keep/>\n",
+            "\t\t<Flag ref=\"Credit\">false</Flag>\n",
+            "\t</AccountingFlags>\n",
+            "\t<ExtDimensionTypes future:stamp=\"keep\" xmlns:future=\"urn:future\">\n",
+            "\t\t<ExtDimensionType name=\"Kinds\"><Turnover>true</Turnover></ExtDimensionType>\n",
+            "\t\t<future:Keep/>\n",
+            "\t</ExtDimensionTypes>\n",
+            "</Item>"
+        )
+        .to_string();
+
+        merge_flags_container(
+            &mut item,
+            "AccountingFlags",
+            &BTreeMap::new(),
+            "\n",
+            &context,
+        )
+        .unwrap();
+        merge_ext_dimensions(&mut item, &[], "\n", &context).unwrap();
+
+        assert!(!item.contains("<Flag "), "{item}");
+        assert!(!item.contains("<ExtDimensionType "), "{item}");
+        assert_eq!(item.matches("<future:Keep/>").count(), 2, "{item}");
+        assert_eq!(item.matches("future:stamp=\"keep\"").count(), 2, "{item}");
+    }
+
+    #[test]
+    fn planner_clears_explicit_empty_structural_fields_and_repeats_as_a_noop() {
+        let root = temp_root("clear-structural-fields");
+        let descriptor = root.join("ChartsOfAccounts/Items.xml");
+        let path = descriptor.with_extension("").join("Ext/Predefined.xml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            format!(
+                r#"<PredefinedData xmlns="{PREDEFINED_NS}" xmlns:future="urn:future" xmlns:xsi="{XSI_NS}" xsi:type="ChartOfAccountsPredefinedItems" version="2.20"><Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Main</Name><AccountingFlags future:stamp="keep"><Flag ref="Debit">true</Flag><future:Keep/></AccountingFlags><ExtDimensionTypes future:stamp="keep"><ExtDimensionType name="Kinds"><Turnover>true</Turnover></ExtDimensionType><future:Keep/></ExtDimensionTypes></Item></PredefinedData>"#
+            ),
+        )
+        .unwrap();
+        let operation =
+            MetaEditOperation::update_predefined_items(vec![MetaPredefinedItemUpdate {
+                id: "a7d2e6fc-3824-4b56-b4be-ae6be4944c0e".to_string(),
+                name: None,
+                fields: MetaPredefinedFields {
+                    accounting_flags: Some(BTreeMap::new()),
+                    ext_dimension_types: Some(Vec::new()),
+                    ..MetaPredefinedFields::default()
+                },
+            }])
+            .unwrap();
+
+        let first = plan_predefined_resource(
+            &root,
+            &descriptor,
+            &owner("ChartOfAccounts"),
+            MetadataKind::ChartOfAccounts,
+            &descriptor_image(MetadataKind::ChartOfAccounts, "String"),
+            std::slice::from_ref(&operation),
+        )
+        .unwrap();
+        assert_eq!(first.resources.file_mutations.len(), 1);
+        assert_ne!(first.effects[0].before, first.effects[0].after);
+        let after = first.resources.file_mutations[0]
+            .post_image
+            .as_deref()
+            .unwrap();
+        let after_text = std::str::from_utf8(after).unwrap();
+        assert!(!after_text.contains("<Flag "), "{after_text}");
+        assert!(!after_text.contains("<ExtDimensionType "), "{after_text}");
+        assert_eq!(after_text.matches("<future:Keep/>").count(), 2);
+        assert_eq!(after_text.matches("future:stamp=\"keep\"").count(), 2);
+
+        fs::write(&path, after).unwrap();
+        let repeated = plan_predefined_resource(
+            &root,
+            &descriptor,
+            &owner("ChartOfAccounts"),
+            MetadataKind::ChartOfAccounts,
+            &descriptor_image(MetadataKind::ChartOfAccounts, "String"),
+            &[operation],
+        )
+        .unwrap();
+        assert!(repeated.resources.file_mutations.is_empty());
+        assert_eq!(repeated.effects[0].before, repeated.effects[0].after);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn remove_effect_reports_the_entire_subtree_in_document_order() {
+        let parent = "a7d2e6fc-3824-4b56-b4be-ae6be4944c0e";
+        let child = "b7d2e6fc-3824-4b56-b4be-ae6be4944c0e";
+        let sibling = "c7d2e6fc-3824-4b56-b4be-ae6be4944c0e";
+        let xml = format!(
+            r#"<PredefinedData xmlns="{PREDEFINED_NS}" xmlns:xsi="{XSI_NS}" xsi:type="CatalogPredefinedItems" version="2.20"><Item id="{parent}"><Name>Parent</Name><ChildItems><Item id="{child}"><Name>Child</Name></Item></ChildItems></Item><Item id="{sibling}"><Name>Sibling</Name></Item></PredefinedData>"#
+        );
+        let operation =
+            MetaEditOperation::remove_predefined_items(vec![parent.to_string()]).unwrap();
+
+        let before = selected_effect(&xml, MetadataKind::Catalog, &operation, false)
+            .unwrap()
+            .unwrap();
+        let items = before.as_array().unwrap();
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["id"], parent);
+        assert_eq!(items[0]["parentId"], Value::Null);
+        assert_eq!(items[1]["id"], child);
+        assert_eq!(items[1]["parentId"], parent);
+        assert!(!items.iter().any(|item| item["id"] == sibling));
     }
 
     #[test]

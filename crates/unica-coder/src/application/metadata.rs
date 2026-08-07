@@ -4917,6 +4917,42 @@ mod tests {
                 if elements[0].id == "a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"
         ));
 
+        let clear_structural_fields = json!({
+            "sourceSet": "main",
+            "metadataPath": "ChartOfAccounts.Items",
+            "operations": [{
+                "op": "update",
+                "collection": "predefinedItems",
+                "elements": [{
+                    "id": "a7d2e6fc-3824-4b56-b4be-ae6be4944c0e",
+                    "accountingFlags": {},
+                    "extDimensionTypes": []
+                }]
+            }]
+        });
+        assert!(validator.is_valid(&clear_structural_fields));
+        let MetadataRequest::Edit(clear_request) = parse_metadata_request(
+            MetadataOperation::Edit,
+            clear_structural_fields.as_object().unwrap(),
+        )
+        .unwrap() else {
+            panic!("expected edit request")
+        };
+        assert!(matches!(
+            &clear_request.operations[0],
+            MetaEditOperation::UpdatePredefinedItems { elements }
+                if elements[0]
+                    .fields
+                    .accounting_flags
+                    .as_ref()
+                    .is_some_and(BTreeMap::is_empty)
+                    && elements[0]
+                        .fields
+                        .ext_dimension_types
+                        .as_ref()
+                        .is_some_and(Vec::is_empty)
+        ));
+
         for invalid_operation in [
             json!({
                 "op": "remove",

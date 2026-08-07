@@ -16,7 +16,7 @@ use crate::domain::cancellation::CancellationToken;
 use crate::domain::metadata::{
     MetaDiagnostic, MetaDiagnosticCode, MetaPredefinedItemsData, MetaUsageData, MetadataKind,
 };
-use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use crate::domain::source_target::MetadataAddress;
 use crate::infrastructure::metadata_kinds::{metadata_kind_value_types, metadata_layout};
 use crate::infrastructure::platform::secure_read::read_root_relative_regular_file;
 use roxmltree::Document;
@@ -56,18 +56,22 @@ pub(crate) enum LocalSection {
 pub(crate) fn scan_local_enrichment(
     source_root: &Path,
     kind: MetadataKind,
-    name: &str,
+    metadata_path: &MetadataAddress,
     sections: &[LocalSection],
     limit: usize,
     cancellation: &CancellationToken,
 ) -> LocalEnrichment {
-    let target = format!("{}.{}", kind.as_str(), name);
+    let target = metadata_path.as_str();
+    let name = metadata_path
+        .segments()
+        .last()
+        .expect("a parsed metadata address has an object name");
     let mut enrichment = LocalEnrichment::default();
     if sections.contains(&LocalSection::Roles) && !cancellation.is_cancelled() {
-        enrichment.usage.roles = Some(scan_roles(source_root, &target));
+        enrichment.usage.roles = Some(scan_roles(source_root, target));
     }
     if sections.contains(&LocalSection::FunctionalOptions) && !cancellation.is_cancelled() {
-        enrichment.usage.functional_options = Some(scan_functional_options(source_root, &target));
+        enrichment.usage.functional_options = Some(scan_functional_options(source_root, target));
     }
     if sections.contains(&LocalSection::Subscriptions) && !cancellation.is_cancelled() {
         enrichment.usage.subscriptions = Some(scan_subscriptions(source_root, kind, name));
@@ -76,11 +80,6 @@ pub(crate) fn scan_local_enrichment(
         if !crate::domain::metadata::metadata_kind_collections(kind)
             .contains(&crate::domain::metadata::MetaCollection::PredefinedItems)
         {
-            let target = MetadataAddress::parse(
-                PLATFORM_XML_8_3_27_FORMAT_2_20,
-                &format!("{}.{name}", kind.as_str()),
-            )
-            .expect("metadata read owns a canonical top-level address");
             enrichment.diagnostics.push(
                 MetaDiagnostic::error(
                     MetaDiagnosticCode::UnsupportedKind,
@@ -89,11 +88,11 @@ pub(crate) fn scan_local_enrichment(
                         kind.as_str()
                     ),
                 )
-                .with_metadata_path(target)
+                .with_metadata_path(metadata_path.clone())
                 .with_field("predefinedItems"),
             );
         } else {
-            match read_predefined_items(source_root, kind, name, limit) {
+            match read_predefined_items(source_root, kind, name, metadata_path, limit) {
                 Ok(items) => enrichment.predefined_items = Some(items),
                 Err(diagnostic) => enrichment.diagnostics.push(diagnostic),
             }
@@ -269,6 +268,7 @@ fn read_predefined_items(
     source_root: &Path,
     kind: MetadataKind,
     name: &str,
+    metadata_path: &MetadataAddress,
     limit: usize,
 ) -> Result<MetaPredefinedItemsData, MetaDiagnostic> {
     let path = source_root
@@ -276,11 +276,6 @@ fn read_predefined_items(
         .join(name)
         .join("Ext")
         .join("Predefined.xml");
-    let target = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{}.{name}", kind.as_str()),
-    )
-    .expect("metadata read owns a canonical top-level address");
     let bytes =
         match read_root_relative_regular_file(source_root, &path, USAGE_FILE_MAX_BYTES, |_| {}) {
             Ok(read) => read.bytes,
@@ -297,13 +292,13 @@ fn read_predefined_items(
                     MetaDiagnosticCode::ProviderUnavailable,
                     "predefined data cannot be read through the source-root boundary",
                 )
-                .with_metadata_path(target)
+                .with_metadata_path(metadata_path.clone())
                 .with_field("predefinedItems"))
             }
         };
     super::predefined::read_predefined_items(&bytes, kind, limit).map_err(|message| {
         MetaDiagnostic::error(MetaDiagnosticCode::ValidationFailed, message)
-            .with_metadata_path(target)
+            .with_metadata_path(metadata_path.clone())
             .with_field("predefinedItems")
     })
 }

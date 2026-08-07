@@ -207,6 +207,8 @@ Unica. Каждая запись формулирует одно нормати�
   записывающий компонент сохраняет невыбранные права, ограничения на уровне
   записей, шаблоны и глобальные флаги в одной атомарной транзакции.
 - **Decision:** ADR-0029
+- **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/role.rs`
 - **Check:** `ci-test` — `tests/ci/test_unica_skills.py`
 - **Scope:** source, packaged, runtime
