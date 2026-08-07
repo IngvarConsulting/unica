@@ -547,6 +547,25 @@ fn emit_meta_catalog_xml(
     Ok((format!("{}\n", lines.join("\n")), obj_uuid))
 }
 
+/// Whether 8.3.27 declares a `ChildObjects` collection for the kind.
+///
+/// The platform refuses the import outright when a childless kind carries the
+/// element: `document format error: unexpected read property. Current property:
+/// ChildObjects, expected property: <Kind>`. The set below is measured against a
+/// real 8.3.27 dump, where the split is total — every kind either always carries
+/// the element or never does — and confirmed by the exact platform gate.
+fn kind_declares_child_objects(kind: crate::domain::metadata::MetadataKind) -> bool {
+    use crate::domain::metadata::MetadataKind;
+    !matches!(
+        kind,
+        MetadataKind::CommonModule
+            | MetadataKind::Constant
+            | MetadataKind::DefinedType
+            | MetadataKind::EventSubscription
+            | MetadataKind::ScheduledJob
+    )
+}
+
 fn minimal_metadata_xml(
     kind: crate::domain::metadata::MetadataKind,
     obj_name: &str,
@@ -681,7 +700,7 @@ fn minimal_metadata_xml(
             &mut next_uuid,
         );
         lines.push("\t\t</ChildObjects>".to_string());
-    } else {
+    } else if kind_declares_child_objects(kind) {
         lines.push("\t\t<ChildObjects/>".to_string());
     }
     lines.push(format!("\t</{object_type}>"));
