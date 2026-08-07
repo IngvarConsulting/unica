@@ -2248,7 +2248,7 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
         args.insert("JsonPath".to_string(), Value::String(path));
         args.insert(
             "OutputPath".to_string(),
-            Value::String("src/Reports/CorpusReport/Forms/CorpusForm.xml".to_string()),
+            Value::String("src/Reports/CorpusReport/Forms/CorpusForm/Ext/Form.xml".to_string()),
         );
         return Ok(args);
     }
@@ -2259,7 +2259,9 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
         if case.id == "form-edit-managed" {
             args.insert(
                 "FormPath".to_string(),
-                Value::String("src/Catalogs/CorpusCatalog/Forms/CorpusForm.xml".to_string()),
+                Value::String(
+                    "src/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml".to_string(),
+                ),
             );
             args.insert(
                 "definition".to_string(),
@@ -4116,6 +4118,51 @@ fn non_xml_inventory_covers_every_xml_none_impact_case() {
                 .unwrap(),
             );
         }
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn managed_form_cases_address_logform_content_and_spare_the_descriptor() {
+    let expectations = [
+        ("form-compile-managed", "src/Reports/CorpusReport"),
+        ("form-edit-managed", "src/Catalogs/CorpusCatalog"),
+    ];
+    for (case_id, owner) in expectations {
+        let root = unique_temp_dir(case_id);
+        let case = EXECUTABLE_CASES
+            .iter()
+            .find(|case| case.id == case_id)
+            .unwrap();
+        let mut gate = SequentialCallGate::default();
+
+        let generated = run_corpus_case(&root, case, &mut gate).unwrap();
+
+        let prefix = manifest_case_prefix(case_id);
+        let content = format!("{prefix}/{owner}/Forms/CorpusForm/Ext/Form.xml");
+        let descriptor = format!("{prefix}/{owner}/Forms/CorpusForm.xml");
+        let families = generated
+            .files
+            .iter()
+            .map(|file| (file.path.as_str(), file.family.as_str()))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            families.get(descriptor.as_str()).copied(),
+            Some("metadata"),
+            "{case_id} rewrote the managed form descriptor"
+        );
+        let changed = generated
+            .files
+            .iter()
+            .filter(|file| matches!(file.delta.as_str(), "created" | "modified"))
+            .map(|file| (file.path.as_str(), file.family.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            changed,
+            [(content.as_str(), "managed-form")],
+            "{case_id} did not change exactly the managed form content"
+        );
+
         fs::remove_dir_all(root).unwrap();
     }
 }
