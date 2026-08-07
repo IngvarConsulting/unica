@@ -2347,8 +2347,7 @@ mod tests {
             "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
         )
         .unwrap();
-        let previous = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&workspace).unwrap();
+        let cwd = crate::test_support::ProcessCwdGuard::enter(&workspace).unwrap();
         let application = crate::application::UnicaApplication::new();
         for name in ["Owner", "Subject"] {
             let added = application
@@ -2425,7 +2424,7 @@ mod tests {
                 })),
             )
             .unwrap();
-        std::env::set_current_dir(previous).unwrap();
+        drop(cwd);
         let _ = std::fs::remove_dir_all(&workspace);
 
         assert!(preview.ok, "{:?}", preview.errors);
