@@ -1,9 +1,11 @@
 use super::{
-    MetaDiagnostic, MetaFillValue, MetaPropertyKey, MetaPropertyValue, MetadataKind, MetadataType,
+    MetaDiagnostic, MetaFillValue, MetaPredefinedAccountType, MetaPropertyKey, MetaPropertyValue,
+    MetadataKind, MetadataType,
 };
 use crate::domain::source_target::MetadataAddress;
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -48,7 +50,41 @@ pub(crate) struct MetaPredefinedItemsData {
     pub(crate) total: usize,
     pub(crate) returned: usize,
     pub(crate) truncated: bool,
-    pub(crate) items: Vec<Value>,
+    pub(crate) items: Vec<MetaPredefinedItemData>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MetaPredefinedItemData {
+    pub(crate) id: String,
+    pub(crate) parent_id: Option<String>,
+    pub(crate) name: String,
+    pub(crate) code: String,
+    pub(crate) description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) is_folder: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) r#type: Option<MetadataType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) account_type: Option<MetaPredefinedAccountType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) off_balance: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) order: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) accounting_flags: Option<BTreeMap<String, bool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) ext_dimension_types: Option<Vec<MetaPredefinedExtDimensionTypeData>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) action_period_is_base: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MetaPredefinedExtDimensionTypeData {
+    pub(crate) name: String,
+    pub(crate) turnover: bool,
+    pub(crate) accounting_flags: BTreeMap<String, bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -155,6 +191,7 @@ pub(crate) enum MetaPublicationResource {
     Template,
     Command,
     Dependency,
+    PredefinedData,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

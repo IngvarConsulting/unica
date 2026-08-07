@@ -2,13 +2,18 @@ use super::{
     cf, cfe, code, external, form, help, mxl, registry, role, subsystem, template, xdto,
     NativeOperationAdapter,
 };
-use crate::{application::AdapterOutcome, domain::workspace::WorkspaceContext};
+use crate::{
+    application::AdapterOutcome,
+    domain::{cache::CacheReport, events::DomainEvent, workspace::WorkspaceContext},
+};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
 pub(crate) struct NativeOperationResult {
     pub(crate) adapter: AdapterOutcome,
     pub(crate) data: Option<Value>,
+    pub(crate) events: Vec<DomainEvent>,
+    pub(crate) recorded_cache: Option<CacheReport>,
 }
 
 impl NativeOperationAdapter {
@@ -43,6 +48,18 @@ impl NativeOperationAdapter {
                     return typed_operation_result(execution.outcome, execution.data, "form edit");
                 }
                 Some(registry::TypedMutationHandler::FormEdit) => {}
+                Some(registry::TypedMutationHandler::RoleEdit) => {
+                    let execution = if dry_run {
+                        role::preview_edit_with_data(args, context)
+                    } else {
+                        role::apply_edit_with_data(args, context)
+                    };
+                    let mut result =
+                        typed_operation_result(execution.outcome, execution.data, "role edit")?;
+                    result.events = execution.events;
+                    result.recorded_cache = execution.recorded_cache;
+                    return Ok(result);
+                }
                 Some(registry::TypedMutationHandler::XdtoEdit) => {
                     let execution = if dry_run {
                         xdto::preview_with_data(args, context)
@@ -222,6 +239,8 @@ impl NativeOperationAdapter {
             NativeOperationResult {
                 adapter,
                 data: None,
+                events: Vec::new(),
+                recorded_cache: None,
             }
         })
     }
@@ -237,5 +256,10 @@ fn typed_operation_result<T: Serialize>(
         .map(serde_json::to_value)
         .transpose()
         .map_err(|error| format!("serialize typed {operation} result: {error}"))?;
-    Ok(NativeOperationResult { adapter, data })
+    Ok(NativeOperationResult {
+        adapter,
+        data,
+        events: Vec::new(),
+        recorded_cache: None,
+    })
 }

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="ChartOfAccountsPredefinedItems" version="2.20">
+	<Item id="83d798ec-929f-4f72-b78b-44e770856be4">
+		<Name>ОСвОрганизации</Name>
+		<Code>01.01</Code>
+		<Description>Основные средства в организации</Description>
+		<AccountType>Active</AccountType>
+		<OffBalance>false</OffBalance>
+		<Order> 01.01</Order>
+		<AccountingFlags>
+			<Flag ref="ChartOfAccounts.Хозрасчетный.AccountingFlag.Валютный">false</Flag>
+			<Flag ref="ChartOfAccounts.Хозрасчетный.AccountingFlag.Количественный">false</Flag>
+			<Flag ref="ChartOfAccounts.Хозрасчетный.AccountingFlag.УчетПоПодразделениям">true</Flag>
+			<Flag ref="ChartOfAccounts.Хозрасчетный.AccountingFlag.НалоговыйУчет">true</Flag>
+		</AccountingFlags>
+		<ExtDimensionTypes>
+			<ExtDimensionType name="ChartOfCharacteristicTypes.ВидыСубконтоХозрасчетные.ОсновныеСредства">
+				<Turnover>false</Turnover>
+				<AccountingFlags>
+					<Flag ref="ChartOfAccounts.Хозрасчетный.ExtDimensionAccountingFlag.Суммовой">true</Flag>
+					<Flag ref="ChartOfAccounts.Хозрасчетный.ExtDimensionAccountingFlag.Валютный">true</Flag>
+					<Flag ref="ChartOfAccounts.Хозрасчетный.ExtDimensionAccountingFlag.Количественный">true</Flag>
+				</AccountingFlags>
+			</ExtDimensionType>
+		</ExtDimensionTypes>
+	</Item>
+</PredefinedData>

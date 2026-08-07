@@ -629,6 +629,9 @@ fn complete_read_invalid(
 }
 
 fn validate_auxiliary_xml(kind: MetadataAuxiliaryXmlKind, bytes: &[u8]) -> Result<(), String> {
+    if let MetadataAuxiliaryXmlKind::PredefinedData(owner_kind) = kind {
+        return super::predefined::validate_predefined_image(owner_kind, bytes);
+    }
     let text = std::str::from_utf8(bytes)
         .map_err(|error| format!("auxiliary XML image is not UTF-8: {error}"))?
         .trim_start_matches('\u{feff}');
@@ -642,6 +645,7 @@ fn validate_auxiliary_xml(kind: MetadataAuxiliaryXmlKind, bytes: &[u8]) -> Resul
         MetadataAuxiliaryXmlKind::BusinessProcessFlowchart => {
             ("GraphicalSchema", "http://v8.1c.ru/8.3/xcf/scheme")
         }
+        MetadataAuxiliaryXmlKind::PredefinedData(_) => unreachable!("handled above"),
     };
     if root.tag_name().name() != expected_name
         || root.tag_name().namespace() != Some(expected_namespace)
@@ -3490,16 +3494,17 @@ pub(super) fn meta_validate_child_rules(md_type: &str) -> Option<Vec<&'static st
     let kind = MetadataKind::parse(md_type).ok()?;
     let mut rules = metadata_kind_collections(kind)
         .iter()
-        .map(|collection| match collection {
-            MetaCollection::Attributes => "Attribute",
-            MetaCollection::TabularSections => "TabularSection",
-            MetaCollection::Dimensions => "Dimension",
-            MetaCollection::Resources => "Resource",
-            MetaCollection::EnumValues => "EnumValue",
-            MetaCollection::Columns => "Column",
-            MetaCollection::Forms => "Form",
-            MetaCollection::Templates => "Template",
-            MetaCollection::Commands => "Command",
+        .filter_map(|collection| match collection {
+            MetaCollection::Attributes => Some("Attribute"),
+            MetaCollection::TabularSections => Some("TabularSection"),
+            MetaCollection::Dimensions => Some("Dimension"),
+            MetaCollection::Resources => Some("Resource"),
+            MetaCollection::EnumValues => Some("EnumValue"),
+            MetaCollection::Columns => Some("Column"),
+            MetaCollection::Forms => Some("Form"),
+            MetaCollection::Templates => Some("Template"),
+            MetaCollection::Commands => Some("Command"),
+            MetaCollection::PredefinedItems => None,
         })
         .collect::<Vec<_>>();
     match kind {

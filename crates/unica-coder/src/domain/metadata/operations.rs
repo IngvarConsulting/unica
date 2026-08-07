@@ -5,7 +5,7 @@ use super::{
 use crate::domain::source_target::MetadataAddress;
 use serde::ser::SerializeStruct;
 use serde::{Serialize, Serializer};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum MetaCollection {
@@ -18,6 +18,7 @@ pub(crate) enum MetaCollection {
     Forms,
     Templates,
     Commands,
+    PredefinedItems,
 }
 
 impl MetaCollection {
@@ -31,6 +32,7 @@ impl MetaCollection {
         Self::Forms,
         Self::Templates,
         Self::Commands,
+        Self::PredefinedItems,
     ];
 
     pub(crate) const fn as_str(self) -> &'static str {
@@ -44,6 +46,7 @@ impl MetaCollection {
             Self::Forms => "forms",
             Self::Templates => "templates",
             Self::Commands => "commands",
+            Self::PredefinedItems => "predefinedItems",
         }
     }
 
@@ -79,7 +82,26 @@ pub(crate) fn metadata_kind_collections(kind: super::MetadataKind) -> &'static [
         | MetadataKind::Task
         | MetadataKind::ExchangePlan
         | MetadataKind::Report
-        | MetadataKind::DataProcessor => &[Attributes, TabularSections, Forms, Templates, Commands],
+        | MetadataKind::DataProcessor => {
+            if matches!(
+                kind,
+                MetadataKind::Catalog
+                    | MetadataKind::ChartOfAccounts
+                    | MetadataKind::ChartOfCharacteristicTypes
+                    | MetadataKind::ChartOfCalculationTypes
+            ) {
+                &[
+                    Attributes,
+                    TabularSections,
+                    Forms,
+                    Templates,
+                    Commands,
+                    PredefinedItems,
+                ]
+            } else {
+                &[Attributes, TabularSections, Forms, Templates, Commands]
+            }
+        }
         MetadataKind::Enum => &[EnumValues, Forms, Templates, Commands],
         MetadataKind::Constant => &[Forms],
         MetadataKind::InformationRegister
@@ -518,6 +540,14 @@ const COLLECTION_SPECS: &[MetaCollectionSpec] = &[
     collection_spec(MetaCollection::Forms, false, false, false, false, true),
     collection_spec(MetaCollection::Templates, false, false, false, false, true),
     collection_spec(MetaCollection::Commands, false, false, false, false, true),
+    collection_spec(
+        MetaCollection::PredefinedItems,
+        false,
+        false,
+        false,
+        false,
+        false,
+    ),
 ];
 
 const fn collection_spec(
@@ -1091,6 +1121,100 @@ pub(crate) enum MetaEditOperation {
         mode: RelationEditMode,
         targets: Vec<MetaRelationTarget>,
     },
+    AddPredefinedItems {
+        elements: Vec<MetaPredefinedItemAdd>,
+    },
+    UpdatePredefinedItems {
+        elements: Vec<MetaPredefinedItemUpdate>,
+    },
+    RemovePredefinedItems {
+        ids: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(crate) enum MetaPredefinedAccountType {
+    #[serde(rename = "Active")]
+    Active,
+    #[serde(rename = "Passive")]
+    Passive,
+    #[serde(rename = "ActivePassive")]
+    ActivePassive,
+}
+
+impl MetaPredefinedAccountType {
+    pub(crate) const ALL: &'static [Self] = &[Self::Active, Self::Passive, Self::ActivePassive];
+
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "Active",
+            Self::Passive => "Passive",
+            Self::ActivePassive => "ActivePassive",
+        }
+    }
+
+    pub(crate) fn parse(value: &str, field: &str) -> Result<Self, MetaDiagnostic> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|candidate| candidate.as_str() == value)
+            .ok_or_else(|| {
+                invalid_operation(
+                    field,
+                    "accountType must be Active, Passive, or ActivePassive",
+                )
+            })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MetaPredefinedExtDimensionType {
+    pub(crate) name: String,
+    pub(crate) turnover: Option<bool>,
+    pub(crate) accounting_flags: Option<BTreeMap<String, bool>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct MetaPredefinedFields {
+    pub(crate) code: Option<String>,
+    pub(crate) description: Option<String>,
+    pub(crate) is_folder: Option<bool>,
+    pub(crate) r#type: Option<MetadataType>,
+    pub(crate) account_type: Option<MetaPredefinedAccountType>,
+    pub(crate) off_balance: Option<bool>,
+    pub(crate) order: Option<String>,
+    pub(crate) accounting_flags: Option<BTreeMap<String, bool>>,
+    pub(crate) ext_dimension_types: Option<Vec<MetaPredefinedExtDimensionType>>,
+    pub(crate) action_period_is_base: Option<bool>,
+}
+
+impl MetaPredefinedFields {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.code.is_none()
+            && self.description.is_none()
+            && self.is_folder.is_none()
+            && self.r#type.is_none()
+            && self.account_type.is_none()
+            && self.off_balance.is_none()
+            && self.order.is_none()
+            && self.accounting_flags.is_none()
+            && self.ext_dimension_types.is_none()
+            && self.action_period_is_base.is_none()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MetaPredefinedItemAdd {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) fields: MetaPredefinedFields,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MetaPredefinedItemUpdate {
+    pub(crate) id: String,
+    pub(crate) name: Option<String>,
+    pub(crate) fields: MetaPredefinedFields,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1330,7 +1454,92 @@ pub(crate) fn validate_metadata_operation_capabilities(
             }
             Ok(())
         }
+        MetaEditOperation::AddPredefinedItems { elements } => {
+            validate_metadata_kind_collection(owner_kind, MetaCollection::PredefinedItems)?;
+            for (index, element) in elements.iter().enumerate() {
+                validate_predefined_fields(
+                    owner_kind,
+                    &element.fields,
+                    &format!("elements[{index}]"),
+                )?;
+            }
+            Ok(())
+        }
+        MetaEditOperation::UpdatePredefinedItems { elements } => {
+            validate_metadata_kind_collection(owner_kind, MetaCollection::PredefinedItems)?;
+            for (index, element) in elements.iter().enumerate() {
+                validate_predefined_fields(
+                    owner_kind,
+                    &element.fields,
+                    &format!("elements[{index}]"),
+                )?;
+            }
+            Ok(())
+        }
+        MetaEditOperation::RemovePredefinedItems { .. } => {
+            validate_metadata_kind_collection(owner_kind, MetaCollection::PredefinedItems)
+        }
     }
+}
+
+fn validate_predefined_fields(
+    owner_kind: MetadataKind,
+    fields: &MetaPredefinedFields,
+    prefix: &str,
+) -> Result<(), MetaDiagnostic> {
+    let unsupported = match owner_kind {
+        MetadataKind::Catalog => [
+            (fields.r#type.is_some(), "type"),
+            (fields.account_type.is_some(), "accountType"),
+            (fields.off_balance.is_some(), "offBalance"),
+            (fields.order.is_some(), "order"),
+            (fields.accounting_flags.is_some(), "accountingFlags"),
+            (fields.ext_dimension_types.is_some(), "extDimensionTypes"),
+            (fields.action_period_is_base.is_some(), "actionPeriodIsBase"),
+        ]
+        .into_iter()
+        .find_map(|(present, field)| present.then_some(field)),
+        MetadataKind::ChartOfCharacteristicTypes => [
+            (fields.account_type.is_some(), "accountType"),
+            (fields.off_balance.is_some(), "offBalance"),
+            (fields.order.is_some(), "order"),
+            (fields.accounting_flags.is_some(), "accountingFlags"),
+            (fields.ext_dimension_types.is_some(), "extDimensionTypes"),
+            (fields.action_period_is_base.is_some(), "actionPeriodIsBase"),
+        ]
+        .into_iter()
+        .find_map(|(present, field)| present.then_some(field)),
+        MetadataKind::ChartOfAccounts => [
+            (fields.is_folder.is_some(), "isFolder"),
+            (fields.r#type.is_some(), "type"),
+            (fields.action_period_is_base.is_some(), "actionPeriodIsBase"),
+        ]
+        .into_iter()
+        .find_map(|(present, field)| present.then_some(field)),
+        MetadataKind::ChartOfCalculationTypes => [
+            (fields.is_folder.is_some(), "isFolder"),
+            (fields.r#type.is_some(), "type"),
+            (fields.account_type.is_some(), "accountType"),
+            (fields.off_balance.is_some(), "offBalance"),
+            (fields.order.is_some(), "order"),
+            (fields.accounting_flags.is_some(), "accountingFlags"),
+            (fields.ext_dimension_types.is_some(), "extDimensionTypes"),
+        ]
+        .into_iter()
+        .find_map(|(present, field)| present.then_some(field)),
+        _ => None,
+    };
+    if let Some(field) = unsupported {
+        return Err(MetaDiagnostic::error(
+            MetaDiagnosticCode::UnsupportedKind,
+            format!(
+                "predefined item field `{field}` is not supported for {}",
+                owner_kind.as_str()
+            ),
+        )
+        .with_field(format!("{prefix}.{field}")));
+    }
+    Ok(())
 }
 
 fn validate_element_fill_value_capability(
@@ -1457,6 +1666,63 @@ impl MetaEditOperation {
         })
     }
 
+    pub(crate) fn add_predefined_items(
+        elements: Vec<MetaPredefinedItemAdd>,
+    ) -> Result<Self, MetaDiagnostic> {
+        if elements.is_empty() {
+            return Err(invalid_operation(
+                "elements",
+                "predefined item add elements must not be empty",
+            ));
+        }
+        validate_predefined_ids(
+            elements.iter().map(|element| element.id.as_str()),
+            "elements",
+        )?;
+        for (index, element) in elements.iter().enumerate() {
+            validate_name(&element.name, &format!("elements[{index}].name"))?;
+        }
+        Ok(Self::AddPredefinedItems { elements })
+    }
+
+    pub(crate) fn update_predefined_items(
+        elements: Vec<MetaPredefinedItemUpdate>,
+    ) -> Result<Self, MetaDiagnostic> {
+        if elements.is_empty() {
+            return Err(invalid_operation(
+                "elements",
+                "predefined item update elements must not be empty",
+            ));
+        }
+        validate_predefined_ids(
+            elements.iter().map(|element| element.id.as_str()),
+            "elements",
+        )?;
+        for (index, element) in elements.iter().enumerate() {
+            if let Some(name) = &element.name {
+                validate_name(name, &format!("elements[{index}].name"))?;
+            }
+            if element.name.is_none() && element.fields.is_empty() {
+                return Err(invalid_operation(
+                    format!("elements[{index}]"),
+                    "predefined item update requires at least one changed field",
+                ));
+            }
+        }
+        Ok(Self::UpdatePredefinedItems { elements })
+    }
+
+    pub(crate) fn remove_predefined_items(ids: Vec<String>) -> Result<Self, MetaDiagnostic> {
+        if ids.is_empty() {
+            return Err(invalid_operation(
+                "ids",
+                "predefined item remove ids must not be empty",
+            ));
+        }
+        validate_predefined_ids(ids.iter().map(String::as_str), "ids")?;
+        Ok(Self::RemovePredefinedItems { ids })
+    }
+
     #[cfg(test)]
     pub(crate) fn edit_relations(
         relation: MetaRelation,
@@ -1545,9 +1811,65 @@ impl MetaEditOperation {
                 }
             }
             Self::SetProperties { .. } | Self::EditRelations { .. } => {}
+            Self::AddPredefinedItems { .. }
+            | Self::UpdatePredefinedItems { .. }
+            | Self::RemovePredefinedItems { .. } => {}
         }
         Ok(())
     }
+}
+
+fn validate_predefined_ids<'a>(
+    ids: impl Iterator<Item = &'a str>,
+    field: &str,
+) -> Result<(), MetaDiagnostic> {
+    let mut seen = HashSet::new();
+    for (index, id) in ids.enumerate() {
+        let canonical = canonical_predefined_uuid(id).ok_or_else(|| {
+            invalid_operation(
+                if field == "ids" {
+                    format!("ids[{index}]")
+                } else {
+                    format!("elements[{index}].id")
+                },
+                "predefined item id must be a UUID",
+            )
+        })?;
+        if !seen.insert(canonical) {
+            return Err(invalid_operation(
+                if field == "ids" {
+                    format!("ids[{index}]")
+                } else {
+                    format!("elements[{index}].id")
+                },
+                "predefined item id is duplicated",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Parse the one UUID spelling published by the predefinedItems schema.
+///
+/// `uuid::Uuid::parse_str` deliberately accepts compact and braced spellings,
+/// while the MCP contract accepts only the canonical 8-4-4-4-12 lexeme. Keep
+/// parser, domain validation and Platform XML validation on the same boundary.
+pub(crate) fn canonical_predefined_uuid(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    if bytes.len() != 36
+        || [8, 13, 18, 23]
+            .into_iter()
+            .any(|index| bytes[index] != b'-')
+        || bytes
+            .iter()
+            .enumerate()
+            .any(|(index, byte)| !matches!(index, 8 | 13 | 18 | 23) && !byte.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    uuid::Uuid::parse_str(value)
+        .ok()
+        .map(|value| value.to_string())
 }
 
 fn reject_duplicate_names<'a>(
@@ -1619,6 +1941,7 @@ mod tests {
                 "forms",
                 "templates",
                 "commands",
+                "predefinedItems",
             ]
         );
         assert_eq!(

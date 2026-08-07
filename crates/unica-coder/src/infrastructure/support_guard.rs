@@ -9,6 +9,7 @@ use crate::infrastructure::native_operations::common::{
     SupportGuardViolation,
 };
 use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
+use crate::infrastructure::native_operations::role::resolve_role_edit_guard_path;
 use crate::infrastructure::native_operations::template;
 use crate::infrastructure::native_operations::xdto::resolve_xdto_guard_path;
 use crate::infrastructure::source_roots::normalize_path_identity;
@@ -161,6 +162,7 @@ fn support_guard_target(
         SupportGuardPolicy::HandlerResolved { requirement } => {
             let resolved = match operation {
                 "xdto-edit" => resolve_xdto_guard_path(args, context).ok(),
+                "role-edit" => resolve_role_edit_guard_path(args, context).ok(),
                 _ => resolve_code_patch_guard_path(args, context).ok(),
             };
             resolved.map(|path| (path, requirement))

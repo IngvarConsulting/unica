@@ -25,6 +25,7 @@ sha2.workspace = true
 rmcp.workspace = true
 tokio.workspace = true
 roxmltree.workspace = true
+regex.workspace = true
 ureq.workspace = true
 uuid.workspace = true
 

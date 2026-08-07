@@ -82,13 +82,15 @@ impl MetadataOperations {
         let LocalEnrichment {
             usage,
             predefined_items,
+            diagnostics,
         } = if local_sections.is_empty() {
             LocalEnrichment::default()
         } else {
             scan_local_enrichment(
                 &source.path,
                 local.kind,
-                &local.name,
+                &local.metadata_path,
+                local.predefined_code_type.as_deref(),
                 &local_sections,
                 request.limit,
                 cancellation,
@@ -98,6 +100,7 @@ impl MetadataOperations {
         MetaEnrichment {
             predefined_items,
             usage,
+            diagnostics,
         }
     }
 
@@ -517,6 +520,7 @@ mod tests {
                 synonym: None,
                 support: crate::domain::metadata::MetaSupportStatus::Supported,
                 properties: Vec::new(),
+                predefined_code_type: Some("String".to_string()),
                 relations: crate::domain::metadata::MetaRelationsData {
                     owners: Vec::new(),
                     register_records: Vec::new(),

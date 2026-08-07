@@ -88,6 +88,7 @@ IN_SCOPE_TOOLS = {
     "mxl-info": "unica.mxl.info",
     "mxl-validate": "unica.mxl.validate",
     "role-compile": "unica.role.compile",
+    "role-edit": "unica.role.edit",
     "role-info": "unica.role.info",
     "role-validate": "unica.role.validate",
 }
@@ -352,6 +353,7 @@ TASK_EXAMPLE_ARGUMENT_KEYS = {
     "mxl-info": ["TemplatePath", "WithText"],
     "mxl-validate": ["TemplatePath"],
     "role-compile": ["JsonPath", "OutputDir"],
+    "role-edit": ["sourceSet", "metadataPath", "operations"],
     "role-info": ["RightsPath"],
     "role-validate": ["RightsPath"],
 }
@@ -386,6 +388,7 @@ SCENARIO_PRESERVING_MIN_MCP_CALLS = {
     "mxl-info": 3,
     "mxl-validate": 2,
     "role-info": 2,
+    "role-edit": 1,
     "dcs-edit": 4,
     "role-compile": 3,
 }
@@ -758,14 +761,43 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         )
         for operation in edit_operations:
             with self.subTest(edit_operation=operation.get("op")):
-                allowed_fields = {
-                    "setProperties": {"op", "values"},
-                    "add": {"op", "collection", "scope", "elements"},
-                    "update": {"op", "collection", "scope", "elements"},
-                    "remove": {"op", "collection", "scope", "names"},
-                    "editRelations": {"op", "relation", "mode", "targets"},
-                }[operation["op"]]
+                if operation.get("collection") == "predefinedItems":
+                    allowed_fields = {
+                        "add": {"op", "collection", "elements"},
+                        "update": {"op", "collection", "elements"},
+                        "remove": {"op", "collection", "ids"},
+                    }[operation["op"]]
+                else:
+                    allowed_fields = {
+                        "setProperties": {"op", "values"},
+                        "add": {"op", "collection", "scope", "elements"},
+                        "update": {"op", "collection", "scope", "elements"},
+                        "remove": {"op", "collection", "scope", "names"},
+                        "editRelations": {"op", "relation", "mode", "targets"},
+                    }[operation["op"]]
                 self.assertLessEqual(set(operation), allowed_fields)
+
+        predefined_operations = [
+            operation
+            for operation in edit_operations
+            if operation.get("collection") == "predefinedItems"
+        ]
+        self.assertEqual(
+            {operation["op"] for operation in predefined_operations},
+            {"add", "update", "remove"},
+        )
+        for operation in predefined_operations:
+            with self.subTest(predefined_operation=operation["op"]):
+                self.assertNotIn("scope", operation)
+                self.assertNotIn("names", operation)
+                if operation["op"] == "remove":
+                    self.assertEqual(set(operation), {"op", "collection", "ids"})
+                    self.assertTrue(operation["ids"])
+                else:
+                    self.assertEqual(
+                        set(operation), {"op", "collection", "elements"}
+                    )
+                    self.assertTrue(operation["elements"])
 
         for scoped_operation in ("update", "remove"):
             matching = [
@@ -813,6 +845,8 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                     "не является вторым контрактом", " ".join(text.split())
                 )
 
+        self.assertNotIn("upsert-predefined", documents["meta-edit"])
+
         for skill in ("meta-add", "meta-edit", "meta-remove"):
             with self.subTest(skill=skill, contract="preview effects"):
                 text = documents[skill]
@@ -822,6 +856,49 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         remove = documents["meta-remove"]
         self.assertIn("`sourceSet + metadataPath`", remove)
         self.assertIn("`force: true`, `confirm: true`, `dryRun: false`", remove)
+
+    def test_role_edit_skill_uses_only_the_logical_typed_contract(self) -> None:
+        text = (self.skill_root() / "role-edit" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        calls = [
+            json.loads(block)
+            for block in re.findall(r"```json\n(.*?)\n```", text, flags=re.S)
+            if '"method": "tools/call"' in block
+        ]
+
+        self.assertEqual(len(calls), 1)
+        params = calls[0]["params"]
+        self.assertEqual(params["name"], "unica.role.edit")
+        arguments = params["arguments"]
+        self.assertEqual(
+            set(arguments), {"sourceSet", "metadataPath", "operations", "dryRun"}
+        )
+        self.assertRegex(arguments["metadataPath"], r"^Role\.[^.]+$")
+        self.assertIs(arguments["dryRun"], True)
+        self.assertTrue(arguments["operations"])
+        for operation in arguments["operations"]:
+            self.assertEqual(
+                set(operation), {"op", "objectName", "right", "value"}
+            )
+            self.assertEqual(operation["op"], "setRight")
+            self.assertIsInstance(operation["value"], bool)
+
+        encoded_call = json.dumps(calls[0], ensure_ascii=False)
+        for legacy in ("RightsPath", "Path", "ObjectName", "Name", "Value"):
+            with self.subTest(legacy=legacy):
+                self.assertNotIn(f'"{legacy}"', encoded_call)
+        for token in (
+            "structuredContent.data",
+            "metadataPath",
+            "changed",
+            "effects",
+            "operationIndex",
+            "validation",
+            "diagnostics",
+        ):
+            with self.subTest(result_token=token):
+                self.assertIn(token, text)
 
     def test_prompt_visible_meta_routes_have_no_retired_contract_grammar(self) -> None:
         prompt_documents = list(self.skill_root().glob("meta-*/**/*.md")) + [
@@ -2048,7 +2125,8 @@ Use `.claude/commands/xdto.md` as the execution route.
         }
         self.assertEqual(
             modelled_skills,
-            set(IN_SCOPE_TOOLS) - {"epf-init", "erf-init", "meta-add", "meta-edit"},
+            set(IN_SCOPE_TOOLS)
+            - {"epf-init", "erf-init", "meta-add", "meta-edit", "role-edit"},
         )
         allowed_suffixes = {".json", ".md", ".ps1", ".py"}
         for path in models_root.rglob("*"):

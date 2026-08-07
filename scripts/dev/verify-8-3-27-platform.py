@@ -94,7 +94,7 @@ EXPECTED_PLATFORM_VERSION = "8.3.27.2074"
 EXPECTED_IBCMD_SHA256 = "e00f3c945fb6f60bb2802151df1b4e7ee4f3caaf7c9e24a981020af575fda6e5"
 EXPECTED_PLATFORM_INSTALL_SHA256 = "5eb8897c4f7e95876572f2f36943439b0d57e47688314b622f5771e5a22df0ef"
 EXPECTED_PLATFORM_INSTALL_FILE_COUNT = 4337
-EXPECTED_CASE_CONTRACT_SHA256 = "52d9889946c1e44ebf542721eee8a83c4ba525526f97fb1fe2f4f74074a7a161"
+EXPECTED_CASE_CONTRACT_SHA256 = "d23ee8a6f02ecf97d8102ff5a881800dc66bf12433f5e1330d39aad32c6eb6bb"
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 300.0
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 CASE_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
@@ -113,6 +113,8 @@ XML_FAMILY_BY_ROOT_QNAME = {
     "{http://v8.1c.ru/8.2/data/spreadsheet}document": "mxl",
     "{http://v8.1c.ru/8.2/managed-application/core}ClientApplicationInterface": "client-application-interface",
     "{http://v8.1c.ru/8.2/roles}Rights": "roles",
+    "{http://v8.1c.ru/8.1/xdto}package": "xdto-package",
+    "{http://v8.1c.ru/8.3/xcf/predef}PredefinedData": "predefined-data",
     "{http://v8.1c.ru/8.3/MDClasses}MetaDataObject": "metadata",
     "{http://v8.1c.ru/8.3/xcf/scheme}GraphicalSchema": "flowchart",
     "{http://v8.1c.ru/8.3/xcf/logform}Form": "managed-form",
@@ -170,10 +172,12 @@ MANDATORY_CASE_IDS = frozenset(
         "meta-compile-scheduled-job",
         "meta-compile-task",
         "meta-compile-web-service",
+        "meta-edit-predefined-items",
         "meta-edit-property",
         "meta-remove-object",
         "mxl-compile-owned-template",
         "role-compile-name-field",
+        "role-edit-set-right",
         "subsystem-compile-child",
         "subsystem-edit-add-child",
         "support-edit-bin-only",
@@ -183,6 +187,7 @@ MANDATORY_CASE_IDS = frozenset(
         "template-add-spreadsheet-document",
         "template-add-text-document",
         "template-remove-object-template",
+        "xdto-add-nested-property",
         "cfe-init-default",
         "cfe-borrow-object",
         "cfe-borrow-managed-form",
@@ -465,9 +470,7 @@ def _regular_payloads(
                     identities[identity] = relative
                     payload = _read_regular_payload(path, metadata, "source")
                     destination = (
-                        xml_payloads
-                        if _is_xml_payload_path(path)
-                        else non_xml_payloads
+                        xml_payloads if _is_xml_payload_path(path) else non_xml_payloads
                     )
                     destination[relative] = payload
                 else:

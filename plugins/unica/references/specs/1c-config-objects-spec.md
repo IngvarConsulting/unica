@@ -901,9 +901,55 @@ XML-элемент: `<Catalog>`. Категория InternalInfo: CatalogObject,
 
 Корень — `PredefinedData` в пространстве имён `http://v8.1c.ru/8.3/xcf/predef`
 (не `MDClasses`), с обязательным `version="2.20"`. `xsi:type` зависит от вида
-владельца: на выгрузках 8.3.27.2074 подтверждены `CatalogPredefinedItems` и
-`PlanOfCharacteristicKindPredefinedItems`. Расширения используют тот же корень —
-см. [1c-extension-spec.md § 8](1c-extension-spec.md).
+владельца. Для поддержанного профиля 8.3.27/2.20 закрыто сопоставлены:
+
+| Владелец | `xsi:type` |
+| --- | --- |
+| `Catalog` | `CatalogPredefinedItems` |
+| `ChartOfAccounts` | `ChartOfAccountsPredefinedItems` |
+| `ChartOfCharacteristicTypes` | `PlanOfCharacteristicKindPredefinedItems` |
+| `ChartOfCalculationTypes` | `CalculationTypePredefinedItems` |
+
+Расширения используют тот же корень — см.
+[1c-extension-spec.md § 8](1c-extension-spec.md).
+
+Каждый `<Item>` адресуется UUID в атрибуте `id`. Общие прямые дети — `Name`,
+`Code`, `Description`. Видоспецифичные прямые дети имеют следующую форму:
+
+- `Catalog`: `IsFolder`;
+- `ChartOfCharacteristicTypes`: структурный `Type` с вариантами платформенных
+  типов и `IsFolder`;
+- `ChartOfAccounts`: `AccountType`, `OffBalance`, `Order`,
+  `AccountingFlags`, `ExtDimensionTypes`;
+- `ChartOfCalculationTypes`: `ActionPeriodIsBase`.
+
+Форма `Code` определяется итоговым `CodeType` описателя владельца. Для
+`String` непустое значение записывается как обычный `<Code>...</Code>`, без
+`xsi:type`. Для `Number` непустое значение обязано быть лексическим
+XML Schema `decimal` и записывается с `xsi:type`, QName которого разрешается в
+`{http://www.w3.org/2001/XMLSchema}decimal` (обычно `xs:decimal`). Пустой код
+остаётся `<Code/>`. Оба значения `CodeType` writer учитывает у `Catalog` и
+`ChartOfCalculationTypes`; у остальных поддержанных владельцев применяется
+строковая форма. Namespace-префиксы не являются частью семантики и при точечной
+правке сохраняются из исходного документа.
+
+У элемента плана счетов `AccountingFlags/Flag` хранит булево значение и полный
+идентификатор флага в атрибуте `ref`. Подконто имеет форму
+`ExtDimensionTypes/ExtDimensionType[@name]/Turnover/AccountingFlags`.
+У элемента плана видов характеристик `Type` содержит один или несколько
+структурных вариантов, например `v8:Type`; namespace-префикс QName является
+деталью XML, а не частью публичного typed-значения.
+
+Вложенность задаётся `ChildItems`, внутри которого снова находятся `Item`.
+Адресная мутация ищет поддержанные поля только среди прямых детей выбранного
+`Item`; удаление родителя удаляет весь его `ChildItems`. Непереданные
+поддержанные поля, неизвестные XML-узлы и порядок соседей сохраняются. Для
+self-closing `Item` добавление первого ребёнка раскрывает элемент, не меняя
+прочие узлы документа.
+
+Физически документ находится в
+`<Группа>/<ИмяОбъекта>/Ext/Predefined.xml`, но публичные инструменты выбирают
+его только через `sourceSet + metadataPath`; путь не является аргументом DSL.
 
 ---
 

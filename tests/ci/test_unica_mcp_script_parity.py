@@ -1024,6 +1024,7 @@ TYPED_RESULT_TOOLS = {
     "unica.meta.add",
     "unica.mxl.info",
     "unica.role.info",
+    "unica.role.edit",
     "unica.subsystem.edit",
     "unica.subsystem.info",
     "unica.template.add",
@@ -1731,6 +1732,8 @@ source-set:
                     in {"unica.meta.edit", "unica.meta.remove"}
                 ):
                     prepare_meta_edit_skill_example(source_roots, example, arguments)
+                elif example.payload["params"]["name"] == "unica.role.edit":
+                    prepare_role_edit_skill_example(source_roots, arguments)
                 if example.payload["params"]["name"] == "unica.meta.info":
                     prepare_meta_info_skill_example(source_roots, arguments)
             self.assertEqual(code_patch_source_sets, {"main", "myExtension"})
@@ -2713,7 +2716,7 @@ def dry_run_message_for_example(
     params = message.setdefault("params", {})
     arguments = params.setdefault("arguments", {})
     tool_name = params.get("name", "")
-    if tool_name.startswith("unica.meta."):
+    if tool_name.startswith("unica.meta.") or tool_name == "unica.role.edit":
         arguments.pop("cwd", None)
         if tool_name == "unica.meta.info":
             arguments.pop("dryRun", None)
@@ -2799,6 +2802,38 @@ def register_meta_skill_object(source_root: Path, kind: str, name: str) -> None:
     )
 
 
+def prepare_role_edit_skill_example(
+    source_roots: dict[str, Path], arguments: dict[str, Any]
+) -> None:
+    """Create one registered exact-profile role for the documented logical call."""
+    kind, separator, name = arguments["metadataPath"].partition(".")
+    if (kind, bool(separator and name)) != ("Role", True):
+        raise AssertionError("role.edit skill example must use Role.<name>")
+    source_root = source_roots[arguments["sourceSet"]]
+    descriptor = source_root / "Roles" / f"{name}.xml"
+    rights = source_root / "Roles" / name / "Ext/Rights.xml"
+    descriptor.parent.mkdir(parents=True, exist_ok=True)
+    rights.parent.mkdir(parents=True, exist_ok=True)
+    descriptor.write_text(
+        '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">'
+        f'<Role uuid="{stable_meta_skill_uuid(f"role:{name}")}">'
+        f"<Properties><Name>{name}</Name></Properties></Role></MetaDataObject>\n",
+        encoding="utf-8",
+    )
+    rights.write_text(
+        '<Rights xmlns="http://v8.1c.ru/8.2/roles" '
+        'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        'xsi:type="Rights" version="2.20">'
+        "<setForNewObjects>false</setForNewObjects>"
+        "<setForAttributesByDefault>true</setForAttributesByDefault>"
+        "<independentRightsOfChildObjects>false</independentRightsOfChildObjects>"
+        "<object><name>Catalog.Демо</name><right><name>Delete</name>"
+        "<value>true</value></right></object></Rights>\n",
+        encoding="utf-8",
+    )
+    register_meta_skill_object(source_root, "Role", name)
+
+
 def prepare_meta_edit_skill_example(
     source_roots: dict[str, Path],
     example: SkillMcpExample,
@@ -2846,7 +2881,27 @@ def prepare_meta_edit_skill_example(
 
     register_meta_skill_object(source_root, kind, name)
 
+    introduced_predefined_ids: set[str] = set()
+    required_predefined_ids: list[str] = []
     for operation in arguments.get("operations", ()):
+        if operation.get("collection") == "predefinedItems":
+            if operation["op"] == "add":
+                introduced_predefined_ids.update(
+                    element["id"] for element in operation["elements"]
+                )
+            elif operation["op"] == "update":
+                required_predefined_ids.extend(
+                    element["id"]
+                    for element in operation["elements"]
+                    if element["id"] not in introduced_predefined_ids
+                )
+            elif operation["op"] == "remove":
+                required_predefined_ids.extend(
+                    item_id
+                    for item_id in operation["ids"]
+                    if item_id not in introduced_predefined_ids
+                )
+            continue
         if operation["op"] not in {"update", "remove"}:
             continue
         if operation["collection"] != "attributes":
@@ -2862,6 +2917,10 @@ def prepare_meta_edit_skill_example(
         )
         for target_name in target_names:
             ensure_meta_edit_skill_attribute(object_path, target_name, scope)
+    if required_predefined_ids:
+        ensure_meta_edit_skill_predefined_items(
+            object_path, kind, required_predefined_ids
+        )
 
 
 def stable_meta_skill_uuid(identity: str) -> str:
@@ -2869,6 +2928,37 @@ def stable_meta_skill_uuid(identity: str) -> str:
     return (
         f"{digest[:8]}-{digest[8:12]}-{digest[12:16]}-"
         f"{digest[16:20]}-{digest[20:32]}"
+    )
+
+
+def ensure_meta_edit_skill_predefined_items(
+    object_path: Path, kind: str, item_ids: list[str]
+) -> None:
+    """Materialize initial UUID targets used by documented update/remove calls."""
+    root_types = {
+        "Catalog": "CatalogPredefinedItems",
+        "ChartOfAccounts": "ChartOfAccountsPredefinedItems",
+        "ChartOfCharacteristicTypes": "PlanOfCharacteristicKindPredefinedItems",
+        "ChartOfCalculationTypes": "CalculationTypePredefinedItems",
+    }
+    root_type = root_types.get(kind)
+    if root_type is None:
+        raise AssertionError(f"unsupported predefinedItems owner in skill fixture: {kind}")
+    unique_ids = list(dict.fromkeys(item_ids))
+    items = "\n".join(
+        f'\t<Item id="{item_id}"><Name>Fixture{index}</Name></Item>'
+        for index, item_id in enumerate(unique_ids, start=1)
+    )
+    predefined = object_path.with_suffix("") / "Ext/Predefined.xml"
+    predefined.parent.mkdir(parents=True, exist_ok=True)
+    predefined.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" '
+        'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        f'xsi:type="{root_type}" version="2.20">\n'
+        f"{items}\n"
+        "</PredefinedData>\n",
+        encoding="utf-8",
     )
 
 
