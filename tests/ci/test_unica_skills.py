@@ -1791,9 +1791,70 @@ Use `.claude/commands/xdto.md` as the execution route.
         published = ("insert", "replace")
         retired = ("initialize",)
 
+        def yaml_double_quoted_scalar(token: str) -> str | None:
+            simple_escapes = {
+                "0": "\0",
+                "a": "\x07",
+                "b": "\x08",
+                "t": "\t",
+                "n": "\n",
+                "v": "\x0b",
+                "f": "\x0c",
+                "r": "\r",
+                "e": "\x1b",
+                " ": " ",
+                '"': '"',
+                "/": "/",
+                "\\": "\\",
+                "N": "\u0085",
+                "_": "\u00a0",
+                "L": "\u2028",
+                "P": "\u2029",
+            }
+            hexadecimal_widths = {"x": 2, "u": 4, "U": 8}
+            source = token[1:-1]
+            decoded = []
+            index = 0
+            while index < len(source):
+                character = source[index]
+                index += 1
+                if character != "\\":
+                    decoded.append(character)
+                    continue
+                if index == len(source):
+                    return None
+
+                escape = source[index]
+                index += 1
+                if escape in simple_escapes:
+                    decoded.append(simple_escapes[escape])
+                    continue
+                if escape not in hexadecimal_widths:
+                    return None
+
+                width = hexadecimal_widths[escape]
+                digits = source[index : index + width]
+                if len(digits) != width or not re.fullmatch(r"[0-9A-Fa-f]+", digits):
+                    return None
+                codepoint = int(digits, 16)
+                if codepoint > 0x10FFFF or 0xD800 <= codepoint <= 0xDFFF:
+                    return None
+                decoded.append(chr(codepoint))
+                index += width
+            return "".join(decoded)
+
         def single_line_scalar(raw: str) -> str | None:
             value = raw.strip()
-            if not value or value[0] in "|>":
+            # This is a deliberately closed subset: exactly one plain or
+            # quoted scalar, never a block, collection, tag, anchor, or alias.
+            if (
+                not value
+                or value[0] in "|>[{]}!&*#,%@`"
+                or (
+                    value[0] in "-?:"
+                    and (len(value) == 1 or value[1] in " \t")
+                )
+            ):
                 return None
             if value[0] == '"':
                 match = re.fullmatch(
@@ -1801,9 +1862,8 @@ Use `.claude/commands/xdto.md` as the execution route.
                 )
                 if not match:
                     return None
-                try:
-                    parsed = json.loads(match.group(1))
-                except json.JSONDecodeError:
+                parsed = yaml_double_quoted_scalar(match.group(1))
+                if parsed is None:
                     return None
                 value = parsed
             elif value[0] == "'":
@@ -1815,7 +1875,11 @@ Use `.claude/commands/xdto.md` as the execution route.
                 value = match.group(1)[1:-1].replace("''", "'")
             else:
                 value = re.split(r"(?:^|[ \t]+)#", value, maxsplit=1)[0].rstrip()
-                if value.casefold() == "null" or value == "~":
+                if (
+                    re.search(r":[ \t]", value)
+                    or value.casefold() == "null"
+                    or value == "~"
+                ):
                     return None
             if not value.strip() or "\r" in value or "\n" in value:
                 return None
@@ -1835,9 +1899,9 @@ Use `.claude/commands/xdto.md` as the execution route.
             for line in lines[1:end]:
                 for field in requested:
                     if match := re.fullmatch(
-                        rf"{re.escape(field)}:[ \t]*(.*)", line
+                        rf"{re.escape(field)}:(?:[ \t]+(.*))?", line
                     ):
-                        raw_fields[field].append(match.group(1))
+                        raw_fields[field].append(match.group(1) or "")
 
             fields = {}
             for field, candidates in raw_fields.items():
@@ -1855,12 +1919,36 @@ Use `.claude/commands/xdto.md` as the execution route.
         invalid_descriptions = {
             "empty": "---\ndescription:\nargument-hint: insert replace\n---\n",
             "whitespace": "---\ndescription:   \nargument-hint: insert replace\n---\n",
+            "missing-yaml-separation": (
+                "---\ndescription:insert replace\n"
+                "argument-hint: insert replace\n---\n"
+            ),
             "quoted-empty": (
                 '---\ndescription: "" # insert replace\n'
                 "argument-hint: insert replace\n---\n"
             ),
             "quoted-concatenation": (
                 '---\ndescription: "" "insert replace"\n'
+                "argument-hint: insert replace\n---\n"
+            ),
+            "flow-sequence": (
+                "---\ndescription: [insert, replace]\n"
+                "argument-hint: insert replace\n---\n"
+            ),
+            "flow-mapping": (
+                "---\ndescription: {insert: replace}\n"
+                "argument-hint: insert replace\n---\n"
+            ),
+            "invalid-plain-colon": (
+                "---\ndescription: insert: replace\n"
+                "argument-hint: insert replace\n---\n"
+            ),
+            "block-sequence-indicator": (
+                "---\ndescription: - insert replace\n"
+                "argument-hint: insert replace\n---\n"
+            ),
+            "explicit-key-indicator": (
+                "---\ndescription: ? insert replace\n"
                 "argument-hint: insert replace\n---\n"
             ),
             "null-with-comment": (
@@ -1889,6 +1977,13 @@ Use `.claude/commands/xdto.md` as the execution route.
         self.assertEqual(
             prompt_frontmatter(
                 "---\ndescription: 'insert replace' # visible value\n"
+                "argument-hint: insert replace\n---\n"
+            )["description"],
+            "insert replace",
+        )
+        self.assertEqual(
+            prompt_frontmatter(
+                '---\ndescription: "insert \\x72eplace"\n'
                 "argument-hint: insert replace\n---\n"
             )["description"],
             "insert replace",
