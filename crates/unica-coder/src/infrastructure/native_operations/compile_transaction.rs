@@ -156,6 +156,7 @@ struct PlannedReadGuard {
 #[derive(Debug)]
 struct PlannedRemoval {
     path: PathBuf,
+    identity: PathBuf,
     snapshot: RemovalSnapshot,
 }
 
@@ -469,6 +470,42 @@ impl CompileTransaction {
                 path.display()
             ));
         }
+        if matches!(
+            self.planned_path_identities.get(&identity),
+            Some(PlannedPathKind::Create | PlannedPathKind::AbsenceGuard)
+        ) {
+            return validate_absence_guard(&identity, "while planning");
+        }
+        if let Some((removal_identity, PlannedPathKind::Removal)) =
+            find_overlapping_planned_identity(&self.planned_path_identities, &identity)
+        {
+            let removal = self
+                .removals
+                .iter()
+                .find(|removal| removal.identity == *removal_identity)
+                .expect("planned removal identity must retain its snapshot");
+            let relative_path = identity
+                .strip_prefix(removal_identity)
+                .expect("an overlapping removal must contain the guarded path");
+            let expected_size = u64::try_from(expected_preimage.len())
+                .map_err(|_| format!("protected path is too large: {}", path.display()))?;
+            let expected_sha256: [u8; 32] = Sha256::digest(expected_preimage).into();
+            let matches_snapshot = removal.snapshot.entries.iter().any(|entry| {
+                entry.relative_path == relative_path
+                    && matches!(
+                        entry.kind,
+                        RemovalEntryKind::File { size, sha256 }
+                            if size == expected_size && sha256 == expected_sha256
+                    )
+            });
+            if matches_snapshot {
+                return Ok(());
+            }
+            return Err(format!(
+                "protected path changed while planning: {}",
+                path.display()
+            ));
+        }
         self.reject_duplicate_normalized_plan_path(&identity, &path)?;
         validate_exact_read_guard(&path, expected_preimage, "while planning")?;
         self.read_guards.insert(
@@ -595,8 +632,12 @@ impl CompileTransaction {
             ));
         }
         let snapshot = snapshot_removal_path(&path)?;
-        self.record_planned_path(removal_identity, PlannedPathKind::Removal);
-        self.removals.push(PlannedRemoval { path, snapshot });
+        self.record_planned_path(removal_identity.clone(), PlannedPathKind::Removal);
+        self.removals.push(PlannedRemoval {
+            path,
+            identity: removal_identity,
+            snapshot,
+        });
         Ok(())
     }
 
@@ -630,8 +671,12 @@ impl CompileTransaction {
         if removal_snapshot_direct_entry_names(&snapshot)? != expected_names {
             return Ok(false);
         }
-        self.record_planned_path(removal_identity, PlannedPathKind::Removal);
-        self.removals.push(PlannedRemoval { path, snapshot });
+        self.record_planned_path(removal_identity.clone(), PlannedPathKind::Removal);
+        self.removals.push(PlannedRemoval {
+            path,
+            identity: removal_identity,
+            snapshot,
+        });
         Ok(true)
     }
 
@@ -4729,6 +4774,30 @@ mod tests {
         transaction.commit().expect("transaction must commit");
 
         assert_eq!(fs::read(&owner).unwrap(), after);
+        fs::remove_dir_all(root).expect("temporary root must be removed");
+    }
+
+    #[test]
+    fn exact_input_guard_verifies_a_file_inside_a_removal_snapshot() {
+        let root = temp_root("exact-input-removal-snapshot");
+        let removed = root.join("Removed");
+        let input = removed.join("Input.xml");
+        let original = b"<Input><State>original</State></Input>\n";
+        fs::create_dir(&removed).unwrap();
+        fs::write(&input, original).unwrap();
+
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .remove_path(&removed)
+            .expect("the complete subtree must be snapshotted");
+        transaction
+            .guard_or_verify_exact_preimage(&input, original)
+            .expect("matching semantic evidence must reuse the removal snapshot");
+        let error = transaction
+            .guard_or_verify_exact_preimage(&input, b"<Input><State>concurrent</State></Input>\n")
+            .expect_err("different semantic evidence must not reuse the removal snapshot");
+
+        assert!(error.contains("changed while planning"), "{error}");
         fs::remove_dir_all(root).expect("temporary root must be removed");
     }
 

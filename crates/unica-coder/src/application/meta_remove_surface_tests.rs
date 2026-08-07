@@ -320,10 +320,10 @@ fn meta_remove_reauthorizes_every_planned_subsystem_cleanup_before_mutations() {
     assert_eq!(tree_snapshot(&source), expected);
 }
 
-/// Every neighbouring container-scoped document at its dump-relative path. The
+/// Every neighbouring non-owner document at its dump-relative path. The
 /// reference scan reads and binds each file, but none contributes an independent
-/// format owner for removal of another metadata object.
-const NEIGHBOURING_VERSIONED_DOCUMENTS: &[(&str, &str, &str)] = &[
+/// format owner or applies its publication syntax to removal of another object.
+const NEIGHBOURING_NON_OWNER_DOCUMENTS: &[(&str, &str, &str)] = &[
     (
         "predefined-data",
         "src/Catalogs/Sibling/Ext/Predefined.xml",
@@ -349,6 +349,14 @@ const NEIGHBOURING_VERSIONED_DOCUMENTS: &[(&str, &str, &str)] = &[
             "version=\"2.20\"/>",
         ),
     ),
+    (
+        "version-bearing-dcs-dependency",
+        "src/Catalogs/Sibling/Templates/Schema/Ext/Template.xml",
+        concat!(
+            r#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" "#,
+            "version=\"2.21\"/>",
+        ),
+    ),
     // `ConfigDumpInfo` is deliberately absent. It has the same exact publication
     // policy, but a removal never reads it, so a case here
     // would pass with the root registered and without it — proving nothing. Its
@@ -357,10 +365,10 @@ const NEIGHBOURING_VERSIONED_DOCUMENTS: &[(&str, &str, &str)] = &[
 ];
 
 #[test]
-fn meta_remove_reads_every_neighbouring_versioned_document_without_blocking() {
+fn meta_remove_reads_every_neighbouring_non_owner_document_without_blocking() {
     // Publication validates each document's own syntax. This unrelated read
     // resolves compatibility from Configuration.xml instead.
-    for (label, relative, xml) in NEIGHBOURING_VERSIONED_DOCUMENTS {
+    for (label, relative, xml) in NEIGHBOURING_NON_OWNER_DOCUMENTS {
         let workspace = create_remove_workspace(label);
         let document = workspace.path().join(relative);
         std::fs::create_dir_all(document.parent().unwrap()).unwrap();

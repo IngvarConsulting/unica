@@ -95,9 +95,7 @@ impl PlatformXmlOwnerProvenance {
         for (path, input) in &self.candidates {
             match input {
                 PlatformXmlOwnerCandidateInput::ExactFile(raw) => {
-                    if !transaction.protects_path(path)? {
-                        transaction.guard_or_verify_exact_preimage(path, raw)?;
-                    }
+                    transaction.guard_or_verify_exact_preimage(path, raw)?;
                 }
                 PlatformXmlOwnerCandidateInput::Absent => {
                     if !transaction.protects_path(path)? {
@@ -614,7 +612,8 @@ fn read_version_owning_target(
         .0
         .and_then(|namespace| platform_xml_owner_policy(namespace, root_qname.1));
     let raw_version = root_version_literal(source, root);
-    if raw_version.is_some()
+    if expected_root.is_some()
+        && raw_version.is_some()
         && root_qname.0.is_some_and(|namespace| {
             platform_xml_publication_policy(namespace, root_qname.1)
                 == Some(PlatformXmlPublicationPolicy::Versionless)
@@ -1182,10 +1181,38 @@ mod tests {
             .expect_err("a declared versionless target must reject a version attribute");
         assert!(error.message.contains("must not carry a version attribute"));
 
-        let error = resolve_platform_xml_owners(&invalid, &context)
-            .expect_err("a generic read must not bypass a versionless root policy");
-        assert!(error.message.contains("must not carry a version attribute"));
+        let owners = resolve_platform_xml_owners(&invalid, &context)
+            .expect("an unrelated dependency does not apply publication syntax");
+        assert!(owners.is_empty(), "{owners:?}");
 
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn exact_root_provenance_must_match_an_existing_replacement_preimage() {
+        let context = temp_context("exact-root-replacement-preimage");
+        let target = context.cwd.join("CompositionSchema");
+        let original = br#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" version="2.21"/>"#;
+        let planned = br#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"><dataSources/></DataCompositionSchema>"#;
+        let concurrent = br#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"/>"#;
+        fs::write(&target, original).unwrap();
+
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .replace_bytes(&target, original, planned.to_vec())
+            .expect("the original bytes must register the replacement preimage");
+        fs::write(&target, concurrent).unwrap();
+
+        let resolution =
+            resolve_platform_xml_owners_for_exact_root_with_provenance(&target, &context, DCS_ROOT)
+                .expect("the concurrent image is a valid exact DCS root");
+        let error = resolution
+            .provenance
+            .bind_to(&mut transaction)
+            .expect_err("semantic authorization must match the replacement preimage");
+
+        assert!(error.contains("changed while planning"), "{error}");
+        assert_eq!(fs::read(&target).unwrap(), concurrent);
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
