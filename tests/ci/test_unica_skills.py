@@ -1791,26 +1791,107 @@ Use `.claude/commands/xdto.md` as the execution route.
         published = ("insert", "replace")
         retired = ("initialize",)
 
-        def frontmatter_pattern(field: str) -> str:
-            return rf"(?m)^{re.escape(field)}:[ \t]*(?=[^\r\n]*\S)([^\r\n]+)$"
+        def single_line_scalar(raw: str) -> str | None:
+            value = raw.strip()
+            if not value or value[0] in "|>":
+                return None
+            if value[0] == '"':
+                match = re.fullmatch(
+                    r'("(?:\\.|[^"\\])*")(?:[ \t]+#.*)?[ \t]*', value
+                )
+                if not match:
+                    return None
+                try:
+                    parsed = json.loads(match.group(1))
+                except json.JSONDecodeError:
+                    return None
+                value = parsed
+            elif value[0] == "'":
+                match = re.fullmatch(
+                    r"('(?:''|[^'])*')(?:[ \t]+#.*)?[ \t]*", value
+                )
+                if not match:
+                    return None
+                value = match.group(1)[1:-1].replace("''", "'")
+            else:
+                value = re.split(r"(?:^|[ \t]+)#", value, maxsplit=1)[0].rstrip()
+                if value.casefold() == "null" or value == "~":
+                    return None
+            if not value.strip() or "\r" in value or "\n" in value:
+                return None
+            return value
 
-        fields = {
-            field: match.group(1)
-            for field in ("description", "argument-hint")
-            if (match := re.search(frontmatter_pattern(field), text))
-        }
+        def prompt_frontmatter(document: str) -> dict[str, str]:
+            lines = document.removeprefix("\ufeff").splitlines()
+            if not lines or lines[0] != "---":
+                return {}
+            try:
+                end = lines.index("---", 1)
+            except ValueError:
+                return {}
+
+            requested = ("description", "argument-hint")
+            raw_fields: dict[str, list[str]] = {field: [] for field in requested}
+            for line in lines[1:end]:
+                for field in requested:
+                    if match := re.fullmatch(
+                        rf"{re.escape(field)}:[ \t]*(.*)", line
+                    ):
+                        raw_fields[field].append(match.group(1))
+
+            fields = {}
+            for field, candidates in raw_fields.items():
+                if len(candidates) != 1:
+                    continue
+                if value := single_line_scalar(candidates[0]):
+                    fields[field] = value
+            return fields
+
+        fields = prompt_frontmatter(text)
         self.assertEqual(set(fields), {"description", "argument-hint"})
-        self.assertIsNone(
-            re.search(
-                frontmatter_pattern("description"),
-                "description:\nargument-hint: insert replace\n",
-            )
+        # Prompt-visible metadata is intentionally one physical scalar line:
+        # block scalars make host rendering policy-dependent and cannot satisfy
+        # this contract.
+        invalid_descriptions = {
+            "empty": "---\ndescription:\nargument-hint: insert replace\n---\n",
+            "whitespace": "---\ndescription:   \nargument-hint: insert replace\n---\n",
+            "quoted-empty": (
+                '---\ndescription: "" # insert replace\n'
+                "argument-hint: insert replace\n---\n"
+            ),
+            "quoted-concatenation": (
+                '---\ndescription: "" "insert replace"\n'
+                "argument-hint: insert replace\n---\n"
+            ),
+            "null-with-comment": (
+                "---\ndescription: null # insert replace\n"
+                "argument-hint: insert replace\n---\n"
+            ),
+            "body-decoy": (
+                "---\nargument-hint: insert replace\n---\n"
+                "description: insert replace\n"
+            ),
+            "folded-scalar": (
+                "---\ndescription: >\n  insert replace\n"
+                "argument-hint: insert replace\n---\n"
+            ),
+        }
+        for case, document in invalid_descriptions.items():
+            with self.subTest(case=case):
+                self.assertNotIn("description", prompt_frontmatter(document))
+        self.assertEqual(
+            prompt_frontmatter(
+                '---\ndescription: "insert replace" # visible value\n'
+                "argument-hint: insert replace\n---\n"
+            )["description"],
+            "insert replace",
         )
-        self.assertIsNone(
-            re.search(
-                frontmatter_pattern("description"),
-                "description:   \nargument-hint: insert replace\n",
-            )
+        self.assertEqual(
+            prompt_frontmatter(
+                "---\ndescription: 'insert replace' # visible value\n"
+                "argument-hint: insert replace\n---\n"
+            )["description"],
+            "insert replace",
         )
         for field, value in fields.items():
             for operation in published:
