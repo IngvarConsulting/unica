@@ -81,6 +81,9 @@ mod tests {
         assert_eq!(services.len(), 1);
         assert_eq!(services[0].platform_message, "Empty name space");
 
-        assert_eq!(meta_object_integrity_rules(MetadataKind::Catalog).count(), 0);
+        assert_eq!(
+            meta_object_integrity_rules(MetadataKind::Catalog).count(),
+            0
+        );
     }
 }

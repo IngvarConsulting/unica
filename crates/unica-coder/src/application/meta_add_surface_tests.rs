@@ -109,14 +109,45 @@ fn create_configuration_workspace(label: &str) -> TempWorkspace {
     workspace
 }
 
+/// Минимальные `operations`, делающие объект целостным по ADR-0030.
+///
+/// Виды без записи в таблице условий не требуют ничего, и инструмент за них
+/// ничего не придумывает, поэтому здесь для них пусто.
+fn coherence_operations(kind: &str) -> Option<Value> {
+    match kind {
+        "InformationRegister" | "AccumulationRegister" => Some(json!([{
+            "op": "add",
+            "collection": "resources",
+            "elements": [{
+                "name": "Value",
+                "type": {"variants": [{
+                    "kind": "number",
+                    "digits": 15,
+                    "fraction": 2,
+                    "sign": "any"
+                }]}
+            }]
+        }])),
+        "WebService" => Some(json!([{
+            "op": "setProperties",
+            "values": {"Namespace": "urn:unica:test"}
+        }])),
+        _ => None,
+    }
+}
+
 fn add_args(workspace: &Path, kind: &str, name: &str, dry_run: bool) -> Map<String, Value> {
     let _ = workspace;
-    Map::from_iter([
+    let mut args = Map::from_iter([
         ("sourceSet".to_string(), Value::String("main".to_string())),
         ("kind".to_string(), Value::String(kind.to_string())),
         ("name".to_string(), Value::String(name.to_string())),
         ("dryRun".to_string(), Value::Bool(dry_run)),
-    ])
+    ]);
+    if let Some(operations) = coherence_operations(kind) {
+        args.insert("operations".to_string(), operations);
+    }
+    args
 }
 
 fn call_add(workspace: &Path, kind: &str, name: &str, dry_run: bool) -> OperationResult {
@@ -185,6 +216,76 @@ fn call_edit(
             ]),
         )
         .expect("internal meta.edit call")
+}
+
+#[test]
+fn add_refuses_an_incoherent_object_and_names_what_the_platform_requires() {
+    // 8.3.27 принимает такой дескриптор как документ и отвергает как объект
+    // конфигурации, поэтому отказ выдаётся на входе (ADR-0030).
+    let workspace = create_configuration_workspace("incoherent-register");
+    let mut args = add_args(workspace.path(), "InformationRegister", "Prices", false);
+    args.remove("operations");
+
+    let applied = call_add_with_args(workspace.path(), &args);
+
+    assert!(!applied.ok, "{applied:?}");
+    let message = applied.errors.join(" ");
+    assert!(
+        message.contains("Register without dimensions, resources, and attributes"),
+        "{message}"
+    );
+    assert!(
+        message.contains("dimensions, resources, attributes"),
+        "{message}"
+    );
+    assert!(!workspace
+        .path()
+        .join("src/InformationRegisters/Prices.xml")
+        .exists());
+
+    args.insert("dryRun".to_string(), json!(true));
+    let preview = call_add_with_args(workspace.path(), &args);
+
+    assert!(
+        !preview.ok,
+        "dryRun must report the same refusal: {preview:?}"
+    );
+}
+
+#[test]
+fn edit_judges_the_final_state_of_the_call_not_each_operation() {
+    // Замена единственного ресурса — remove вместе с add в одном вызове.
+    // Промежуточная пустота нарушением не считается.
+    let workspace = create_configuration_workspace("replace-only-resource");
+    let created = call_add(workspace.path(), "InformationRegister", "Prices", false);
+    assert!(created.ok, "{created:?}");
+
+    let replaced = call_edit(
+        workspace.path(),
+        "InformationRegister.Prices",
+        json!([
+            {"op": "remove", "collection": "resources", "names": ["Value"]},
+            {"op": "add", "collection": "resources", "elements": [{
+                "name": "Price",
+                "type": {"variants": [{"kind": "number", "digits": 15, "fraction": 2, "sign": "any"}]}
+            }]}
+        ]),
+        false,
+    );
+
+    assert!(replaced.ok, "{replaced:?}");
+
+    let emptied = call_edit(
+        workspace.path(),
+        "InformationRegister.Prices",
+        json!([{"op": "remove", "collection": "resources", "names": ["Price"]}]),
+        false,
+    );
+
+    assert!(
+        !emptied.ok,
+        "emptying the register must be refused: {emptied:?}"
+    );
 }
 
 #[test]
