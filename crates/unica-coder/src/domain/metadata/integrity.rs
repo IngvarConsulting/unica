@@ -32,6 +32,14 @@ pub(crate) const META_OBJECT_INTEGRITY_RULES: &[MetaObjectIntegrityRule] = &[
         ]),
         platform_message: "Register without dimensions, resources, and attributes",
     },
+    // Регистр бухгалтерии отказал на гейте после снятия автодополнения, а
+    // регистр расчёта тем же прогоном прошёл без ресурса — поэтому запись
+    // только для первого.
+    MetaObjectIntegrityRule {
+        kinds: &[MetadataKind::AccountingRegister],
+        requirement: MetaObjectRequirement::AnyCollectionNonEmpty(&[MetaCollection::Resources]),
+        platform_message: "The register doesn't have any resources specified",
+    },
     MetaObjectIntegrityRule {
         kinds: &[MetadataKind::WebService],
         requirement: MetaObjectRequirement::PropertyNonEmpty(MetaPropertyKey::Namespace),
@@ -76,6 +84,21 @@ mod tests {
             registers[0].requirement,
             MetaObjectRequirement::AnyCollectionNonEmpty(_)
         ));
+
+        let accounting =
+            meta_object_integrity_rules(MetadataKind::AccountingRegister).collect::<Vec<_>>();
+        assert_eq!(accounting.len(), 1);
+        assert_eq!(
+            accounting[0].platform_message,
+            "The register doesn't have any resources specified"
+        );
+        // Регистр расчёта платформа приняла без ресурса на том же прогоне,
+        // поэтому условия у него нет: правило заводится под наблюдённый отказ,
+        // а не по симметрии видов (ADR-0030).
+        assert_eq!(
+            meta_object_integrity_rules(MetadataKind::CalculationRegister).count(),
+            0
+        );
 
         let services = meta_object_integrity_rules(MetadataKind::WebService).collect::<Vec<_>>();
         assert_eq!(services.len(), 1);

@@ -1332,6 +1332,10 @@ fn meta_operations(kind: &str) -> Option<Value> {
             {"op": "add", "collection": "resources",
              "elements": [{"name": "Quantity", "type": number(15, 3)}]}
         ])),
+        "AccountingRegister" => Some(json!([
+            {"op": "add", "collection": "resources",
+             "elements": [{"name": "Amount", "type": number(15, 2)}]}
+        ])),
         "WebService" => Some(json!([
             {"op": "setProperties", "values": {"Namespace": "urn:corpus"}}
         ])),

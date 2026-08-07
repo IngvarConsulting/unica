@@ -115,7 +115,7 @@ fn create_configuration_workspace(label: &str) -> TempWorkspace {
 /// ничего не придумывает, поэтому здесь для них пусто.
 fn coherence_operations(kind: &str) -> Option<Value> {
     match kind {
-        "InformationRegister" | "AccumulationRegister" => Some(json!([{
+        "InformationRegister" | "AccumulationRegister" | "AccountingRegister" => Some(json!([{
             "op": "add",
             "collection": "resources",
             "elements": [{
