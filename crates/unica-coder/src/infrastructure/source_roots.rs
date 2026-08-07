@@ -4,10 +4,14 @@ use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform::filesystem::strip_windows_extended_length_prefix;
 use crate::infrastructure::project_sources::discover_project_source_map;
 use std::collections::hash_map::DefaultHasher;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs;
 use std::hash::{Hash, Hasher};
+use std::num::NonZeroUsize;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -198,53 +202,179 @@ pub(crate) fn normalize_path_identity(path: &Path) -> Result<PathBuf, String> {
     Ok(strip_windows_extended_length_prefix(&canonical))
 }
 
+/// Backstop for the source walk. Symlinks are never followed, so a real tree
+/// cannot cycle and this limit only bounds pathological inputs. A real 8.3.27
+/// configuration bottoms out around depth 10 — nested subsystem XML reaches it —
+/// so the limit does not fire in practice. It must stay far above any real
+/// layout: a walk that stops early reports an unchanged generation for edits
+/// below the cut, which is exactly the stale read this fingerprint prevents.
+const MAX_SOURCE_DEPTH: usize = 64;
+
+/// Directory frames keep `A/` + `B` from hashing like a sibling pair `A`, `B`.
+const ENTER_DIRECTORY: u8 = 1;
+const LEAVE_DIRECTORY: u8 = 2;
+/// Emitted where the walk knows something exists but cannot read it, so losing
+/// access changes the generation instead of reading as "nothing changed".
+const UNREADABLE_ENTRY: u8 = 3;
+
+const GENERATED_DIR_NAME: &str = ".build";
+
+/// The walk is bound by metadata syscalls, not CPU, so it stops scaling early:
+/// on a 43k-file 8.3.27 configuration (APFS, 14 cores) one worker takes 883 ms,
+/// four take 438 ms, and sixteen fall back to 610 ms on filesystem contention.
+/// Four keeps the win without paying for the regression.
+const MAX_SOURCE_WALK_WORKERS: usize = 4;
+
+/// The walk is `stat`-bound — one call per source file, tens of thousands on a
+/// vendor-class configuration — and every RLM-backed read pays for it. Each
+/// top-level child is fingerprinted independently, so the children fan out
+/// across worker threads and fold back in sorted order for a stable result.
 pub(crate) fn source_generation(source_root: &Path) -> u64 {
-    let mut hasher = DefaultHasher::new();
     let normalized_root =
         normalize_path_identity(source_root).unwrap_or_else(|_| source_root.to_path_buf());
-    hash_source_path(&mut hasher, &normalized_root, 0);
+    let mut hasher = DefaultHasher::new();
+    let Some(children) = read_source_children(&normalized_root) else {
+        UNREADABLE_ENTRY.hash(&mut hasher);
+        return hasher.finish();
+    };
+    for (child, digest) in children.iter().zip(child_digests(&children)) {
+        child.name.as_encoded_bytes().hash(&mut hasher);
+        digest.hash(&mut hasher);
+    }
     hasher.finish()
 }
 
-fn hash_source_path(hasher: &mut DefaultHasher, path: &Path, depth: usize) {
-    if depth > 8 {
-        return;
+struct SourceChild {
+    name: OsString,
+    entry: fs::DirEntry,
+    is_directory: bool,
+}
+
+/// Lists the entries of one directory that take part in the fingerprint, in a
+/// stable order. `None` means the directory itself could not be read.
+fn read_source_children(directory: &Path) -> Option<Vec<SourceChild>> {
+    let mut children = Vec::new();
+    for entry in fs::read_dir(directory).ok()?.flatten() {
+        // `file_type` comes from the directory enumeration, so this neither
+        // follows symlinks nor pays for the extra stat the old `is_dir` did.
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
+        let name = entry.file_name();
+        let is_directory = file_type.is_dir();
+        if is_directory {
+            if name.as_encoded_bytes() == GENERATED_DIR_NAME.as_bytes() {
+                continue;
+            }
+        } else if !is_source_file_name(&name) {
+            continue;
+        }
+        children.push(SourceChild {
+            name,
+            entry,
+            is_directory,
+        });
     }
-    let Ok(metadata) = path.metadata() else {
-        0_u8.hash(hasher);
-        return;
-    };
-    path.display().to_string().hash(hasher);
-    if !metadata.is_dir() {
-        metadata.len().hash(hasher);
-        if let Ok(modified) = metadata.modified() {
-            if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
-                duration.as_secs().hash(hasher);
-                duration.subsec_nanos().hash(hasher);
+    children.sort_by(|left, right| left.name.cmp(&right.name));
+    Some(children)
+}
+
+fn child_digests(children: &[SourceChild]) -> Vec<u64> {
+    let workers = thread::available_parallelism()
+        .map(NonZeroUsize::get)
+        .unwrap_or(1)
+        .min(children.len())
+        .min(MAX_SOURCE_WALK_WORKERS);
+    if workers <= 1 {
+        return children.iter().map(child_digest).collect();
+    }
+    let mut digests = vec![0_u64; children.len()];
+    let cursor = AtomicUsize::new(0);
+    thread::scope(|scope| {
+        let workers = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut computed = Vec::new();
+                    loop {
+                        let index = cursor.fetch_add(1, Ordering::Relaxed);
+                        let Some(child) = children.get(index) else {
+                            return computed;
+                        };
+                        computed.push((index, child_digest(child)));
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for worker in workers {
+            // A panic here would be a bug in the walk itself; propagating it
+            // beats folding a silently wrong fingerprint into the generation.
+            for (index, digest) in worker.join().expect("source generation worker panicked") {
+                digests[index] = digest;
             }
         }
+    });
+    digests
+}
+
+/// Fingerprints one child on its own hasher so subtrees stay independent of the
+/// order their workers happen to finish in.
+fn child_digest(child: &SourceChild) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    if child.is_directory {
+        ENTER_DIRECTORY.hash(&mut hasher);
+        hash_source_tree(&mut hasher, &child.entry.path(), 1);
+        LEAVE_DIRECTORY.hash(&mut hasher);
+    } else {
+        hash_source_file(&mut hasher, &child.entry);
+    }
+    hasher.finish()
+}
+
+/// Hashes names relative to the walked directory rather than absolute paths:
+/// the fingerprint answers "did these sources change", and the marker that
+/// stores it is pinned to its source root separately.
+fn hash_source_tree(hasher: &mut DefaultHasher, directory: &Path, depth: usize) {
+    if depth > MAX_SOURCE_DEPTH {
+        UNREADABLE_ENTRY.hash(hasher);
         return;
     }
-    let Ok(entries) = fs::read_dir(path) else {
+    let Some(children) = read_source_children(directory) else {
+        UNREADABLE_ENTRY.hash(hasher);
         return;
     };
-    let mut paths = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|value| value.to_str())
-                .is_none_or(|name| name != ".build")
-                && (path.is_dir()
-                    || matches!(
-                        path.extension().and_then(|value| value.to_str()),
-                        Some("bsl" | "xml" | "yaml" | "yml")
-                    ))
-        })
-        .collect::<Vec<_>>();
-    paths.sort();
-    for child in paths.into_iter().take(20_000) {
-        hash_source_path(hasher, &child, depth + 1);
+    for child in children {
+        child.name.as_encoded_bytes().hash(hasher);
+        if child.is_directory {
+            ENTER_DIRECTORY.hash(hasher);
+            hash_source_tree(hasher, &child.entry.path(), depth + 1);
+            LEAVE_DIRECTORY.hash(hasher);
+        } else {
+            hash_source_file(hasher, &child.entry);
+        }
+    }
+}
+
+fn is_source_file_name(name: &OsStr) -> bool {
+    Path::new(name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|extension| matches!(extension, "bsl" | "xml" | "yaml" | "yml"))
+}
+
+fn hash_source_file(hasher: &mut DefaultHasher, entry: &fs::DirEntry) {
+    let Ok(metadata) = entry.metadata() else {
+        UNREADABLE_ENTRY.hash(hasher);
+        return;
+    };
+    metadata.len().hash(hasher);
+    if let Ok(modified) = metadata.modified() {
+        if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
+            duration.as_secs().hash(hasher);
+            duration.subsec_nanos().hash(hasher);
+        }
     }
 }
 
@@ -437,6 +567,80 @@ mod tests {
         )
         .unwrap();
         assert_ne!(source_generation(&source_root), baseline);
+        cleanup(&context);
+    }
+
+    /// A real 8.3.27 configuration puts nested subsystem XML at depth 10, and
+    /// `Ext/Form/Module.bsl` under a nested source set reaches the same range.
+    /// The walk used to stop at depth 8, so edits below the cut left the
+    /// generation unchanged and a stale index still read as fresh.
+    #[test]
+    fn source_generation_tracks_changes_below_the_former_depth_limit() {
+        let context = fixture(&[("main", "CONFIGURATION", "src")]);
+        let source_root = context.workspace_root.join("src");
+        let nested = source_root
+            .join("Subsystems/Обмен/Subsystems/ЭДО/Subsystems/Форматы/Subsystems/Служебный");
+        fs::create_dir_all(&nested).unwrap();
+        let deep = nested.join("Ext/Module.bsl");
+        fs::create_dir_all(deep.parent().unwrap()).unwrap();
+        fs::write(&deep, "Процедура Тест() Экспорт\nКонецПроцедуры\n").unwrap();
+        let baseline = source_generation(&source_root);
+
+        fs::write(
+            &deep,
+            "Процедура Тест(НовыйПараметр) Экспорт\nКонецПроцедуры\n",
+        )
+        .unwrap();
+
+        assert_ne!(
+            source_generation(&source_root),
+            baseline,
+            "a change below the former depth limit must change the source generation"
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn source_generation_is_stable_across_repeated_walks() {
+        let context = fixture(&[("main", "CONFIGURATION", "src")]);
+        let source_root = context.workspace_root.join("src");
+        for index in 0..64 {
+            let module = source_root.join(format!("CommonModules/Module{index}/Ext/Module.bsl"));
+            fs::create_dir_all(module.parent().unwrap()).unwrap();
+            fs::write(
+                &module,
+                format!("Процедура Тест{index}()\nКонецПроцедуры\n"),
+            )
+            .unwrap();
+        }
+
+        let first = source_generation(&source_root);
+
+        assert_eq!(
+            source_generation(&source_root),
+            first,
+            "the fan-out walk must fold worker results back in a stable order"
+        );
+        cleanup(&context);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_generation_does_not_follow_symlinks_into_a_cycle() {
+        let context = fixture(&[("main", "CONFIGURATION", "src")]);
+        let source_root = context.workspace_root.join("src");
+        let module = source_root.join("CommonModules/SmokeModule.bsl");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        fs::write(&module, "Процедура Тест()\nКонецПроцедуры\n").unwrap();
+        let baseline = source_generation(&source_root);
+
+        std::os::unix::fs::symlink(&source_root, source_root.join("CommonModules/loop")).unwrap();
+
+        assert_eq!(
+            source_generation(&source_root),
+            baseline,
+            "symlinks must be skipped so the walk cannot cycle"
+        );
         cleanup(&context);
     }
 

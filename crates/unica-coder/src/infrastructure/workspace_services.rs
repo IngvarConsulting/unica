@@ -1292,6 +1292,11 @@ struct WorkspaceServiceRuntime {
     rlm_starter: Arc<RlmSessionStarter>,
     rlm_maintenance_requester: Arc<RlmIndexMaintenanceRequester>,
     rlm_maintenance_pending: Arc<AtomicBool>,
+    /// Index maintenance outlives the read that noticed the index was stale, so
+    /// it cannot borrow that read's token: the operation is unregistered as soon
+    /// as it answers, which would both hide the thread from `begin_shutdown` and
+    /// let a late `cancel` for the finished read kill the scheduled update.
+    rlm_maintenance_cancellation: CancellationToken,
     session_teardowns: SessionTeardownLifecycle,
     analyzer_source_generation: Mutex<u64>,
     rlm_source_generation: Mutex<u64>,
@@ -1357,6 +1362,7 @@ impl WorkspaceServiceRuntime {
                 );
             }),
             rlm_maintenance_pending: Arc::new(AtomicBool::new(false)),
+            rlm_maintenance_cancellation: CancellationToken::new(),
             session_teardowns: SessionTeardownLifecycle::default(),
             analyzer_source_generation: Mutex::new(source_generation),
             rlm_source_generation: Mutex::new(source_generation),
@@ -1460,6 +1466,7 @@ impl WorkspaceServiceRuntime {
 
     fn begin_shutdown(&self) -> ServiceResponse {
         self.shutting_down.store(true, Ordering::Release);
+        self.rlm_maintenance_cancellation.cancel();
         let cancellations = self
             .operations
             .lock()
@@ -1632,7 +1639,7 @@ impl WorkspaceServiceRuntime {
         let requester = Arc::clone(&self.rlm_maintenance_requester);
         let context = self.context.clone();
         let source_root = PathBuf::from(&self.identity.source_root);
-        let cancellation = cancellation.clone();
+        let cancellation = self.rlm_maintenance_cancellation.clone();
         let pending = Arc::clone(&self.rlm_maintenance_pending);
         match thread::Builder::new()
             .name("unica-rlm-index-maintenance".to_string())
@@ -1713,6 +1720,11 @@ impl WorkspaceServiceRuntime {
         match result {
             Ok(output) => {
                 let post_execution_generation = source_generation(source_root);
+                // Deliberately re-checked against the generation this read was
+                // admitted under, not the one observed just now: a background
+                // job that landed a newer marker mid-execute discards this
+                // output rather than blessing it. That costs a repeated read
+                // and never returns an answer built on sources RLM did not see.
                 let boundary_readiness = ready_index_for_source_generation(
                     &self.context,
                     source_root,
