@@ -1056,6 +1056,7 @@ mod tests {
     use crate::infrastructure::platform::testing::{
         create_file_link_fixture_for_test, FileLinkFixtureOutcome,
     };
+    use crate::infrastructure::platform_xml_roots::PLATFORM_XML_ROOTS;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_context(name: &str) -> WorkspaceContext {
@@ -1073,6 +1074,26 @@ mod tests {
             workspace_root: root.clone(),
             cache_root: root.join(".build/unica"),
             workspace_epoch: 1,
+        }
+    }
+
+    #[test]
+    fn shared_registry_derives_the_complete_standalone_owner_family() {
+        for root in PLATFORM_XML_ROOTS {
+            let expected = (root.namespace, root.local_name) != (MD_CLASSES_NS, "MetaDataObject")
+                && matches!(
+                    root.versioning,
+                    PlatformXmlRootVersioning::ExactRootVersion
+                        | PlatformXmlRootVersioning::InheritedRootVersion
+                );
+
+            assert_eq!(
+                known_standalone_root((Some(root.namespace), root.local_name)),
+                expected,
+                "{{{}}}{} must derive its owner classification from the shared versioning policy",
+                root.namespace,
+                root.local_name
+            );
         }
     }
 
