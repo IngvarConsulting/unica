@@ -798,6 +798,22 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/format_guard.rs`
 - **Scope:** runtime, source
 
+### INV-SOURCE-ROOT-REGISTRY — Корни платформенного XML классифицируются одним реестром
+
+- **Rule:** Квалифицированные корни платформенного XML, которые валидатор полной
+  выгрузки допускает к публикации, а разрешитель владельцев классифицирует при
+  чтении, описываются одним закрытым реестром точных QName и явной политикой
+  версионирования; оба потребителя выводят свои решения из этого реестра, так
+  что добавить или изменить корень только с одной стороны нельзя. Политика
+  реестра различает отдельно маршрутизируемый `MetaDataObject`,
+  `ClientApplicationInterface` с наследуемой версией и корни без собственной
+  версии; независимых списков исключений потребителей для них нет.
+- **Decision:** ADR-0027
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_roots.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_owner.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs`
+- **Scope:** runtime, source
+
 ### INV-SOURCE-OWNER-VERSION-GATE — Версию решает корень-владелец, отказ наступает до первой записи
 
 - **Rule:** Формат выгрузки разрешается от XML-корня, владеющего версией, для

@@ -320,6 +320,154 @@ fn meta_remove_reauthorizes_every_planned_subsystem_cleanup_before_mutations() {
     assert_eq!(tree_snapshot(&source), expected);
 }
 
+/// Every neighbouring document the platform writes with its own export format
+/// version, at the dump-relative path it occupies. The reference scan reads
+/// each of them, so each joins the removal's format dependency set.
+const NEIGHBOURING_VERSIONED_DOCUMENTS: &[(&str, &str, &str)] = &[
+    (
+        "predefined-data",
+        "src/Catalogs/Sibling/Ext/Predefined.xml",
+        concat!(
+            r#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" "#,
+            r#"xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" "#,
+            "xsi:type=\"CatalogPredefinedItems\" version=\"2.20\"/>",
+        ),
+    ),
+    (
+        "ext-picture",
+        "src/CommonPictures/Logo/Ext/Picture.xml",
+        concat!(
+            r#"<ExtPicture xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" "#,
+            "version=\"2.20\"/>",
+        ),
+    ),
+    (
+        "job-schedule",
+        "src/ScheduledJobs/Nightly/Ext/Schedule.xml",
+        concat!(
+            r#"<JobSchedule xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" "#,
+            "version=\"2.20\"/>",
+        ),
+    ),
+    // `ConfigDumpInfo` is deliberately absent. It is registered with the same
+    // versioning as these three, but a removal never reads it, so a case here
+    // would pass with the root registered and without it — proving nothing. Its
+    // registration is guarded where it is observable: the registry's own
+    // coverage tests and the staged-dump validator.
+];
+
+#[test]
+fn meta_remove_reads_every_neighbouring_versioned_document_without_blocking() {
+    // Each of these documents carries its own export format version, but none of
+    // them is the owner from which the configuration format is inferred. An
+    // unrecognised root is refused as unsupported, which turns any configuration
+    // that merely owns the artifact into one where removal cannot run at all.
+    for (label, relative, xml) in NEIGHBOURING_VERSIONED_DOCUMENTS {
+        let workspace = create_remove_workspace(label);
+        let document = workspace.path().join(relative);
+        std::fs::create_dir_all(document.parent().unwrap()).unwrap();
+        std::fs::write(&document, xml).unwrap();
+
+        let preview = call_remove(workspace.path(), true);
+
+        assert!(preview.ok, "{relative}: {:?}", preview.errors);
+        assert_eq!(
+            preview.data.as_ref().unwrap()["validation"]["status"],
+            "passed",
+            "{relative}"
+        );
+        assert!(
+            preview.diagnostics.is_none(),
+            "{relative}: {:?}",
+            preview.diagnostics
+        );
+        assert_eq!(
+            preview.data.as_ref().unwrap()["effects"][0]["target"],
+            "Catalog.Removable",
+            "{relative}: preview must still plan the requested removal"
+        );
+    }
+}
+
+#[test]
+fn meta_remove_refuses_predefined_data_from_a_newer_export_format() {
+    let workspace = create_remove_workspace("newer-predefined-data");
+    // Recognizing the root is what makes its version meaningful: a sibling's
+    // predefined data written by a newer platform marks the source tree as a
+    // mixed-format dump, and the removal must not proceed on it. This pins the
+    // contract rather than the fix — an unrecognized root is refused through
+    // the same code, so it also guards against a future correction that drops
+    // predefined data from the format dependency set altogether.
+    let predefined = workspace
+        .path()
+        .join("src/Catalogs/Sibling/Ext/Predefined.xml");
+    std::fs::create_dir_all(predefined.parent().unwrap()).unwrap();
+    std::fs::write(
+        &predefined,
+        concat!(
+            r#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" "#,
+            r#"xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" "#,
+            "xsi:type=\"CatalogPredefinedItems\" version=\"2.21\"/>",
+        ),
+    )
+    .unwrap();
+
+    let result = call_remove(workspace.path(), true);
+
+    assert!(!result.ok, "{:?}", result.summary);
+    assert!(result.data.is_none());
+    assert!(
+        result
+            .diagnostics
+            .as_ref()
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "capability_unavailable"),
+        "{:?}",
+        result.diagnostics
+    );
+}
+
+#[test]
+fn meta_remove_refuses_versionless_predefined_data_as_legacy_format() {
+    let workspace = create_remove_workspace("versionless-predefined-data");
+    let source = workspace.path().join("src");
+    let before = tree_snapshot(&source);
+    let predefined = source.join("Catalogs/Sibling/Ext/Predefined.xml");
+    std::fs::create_dir_all(predefined.parent().unwrap()).unwrap();
+    std::fs::write(
+        &predefined,
+        concat!(
+            r#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" "#,
+            r#"xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" "#,
+            r#"xsi:type="CatalogPredefinedItems"/>"#,
+        ),
+    )
+    .unwrap();
+    let with_predefined = tree_snapshot(&source);
+    assert_ne!(with_predefined, before);
+
+    let result = call_remove(workspace.path(), true);
+
+    assert!(!result.ok, "{:?}", result.summary);
+    assert!(result.data.is_none());
+    assert!(
+        result
+            .diagnostics
+            .as_ref()
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "capability_unavailable"),
+        "{:?}",
+        result.diagnostics
+    );
+    assert_eq!(tree_snapshot(&source), with_predefined);
+}
+
 #[test]
 fn meta_remove_rejects_descriptor_identity_mismatch_before_effect_projection() {
     let workspace = create_remove_workspace("identity-mismatch");
