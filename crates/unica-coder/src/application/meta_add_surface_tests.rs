@@ -793,6 +793,83 @@ fn meta_edit_warning_is_derived_from_late_support_authorization() {
     );
 }
 
+fn add_with_synonym(workspace: &TempWorkspace, name: &str, synonym: &str) -> Vec<String> {
+    let mut args = add_args(workspace.path(), "Catalog", name, false);
+    args.insert(
+        "operations".to_string(),
+        json!([{"op": "setProperties", "values": {"Synonym": synonym}}]),
+    );
+    let result = call_add_with_args(workspace.path(), &args);
+    assert!(result.ok, "{name}: {:?}", result.errors);
+    let data = result.data.expect("typed mutation data");
+    assert_eq!(data["validation"]["status"], "passed", "{name}");
+    data["validation"]["diagnostics"]
+        .as_array()
+        .expect("validation diagnostics")
+        .iter()
+        .filter(|diagnostic| diagnostic["severity"] == "warning")
+        .map(|diagnostic| diagnostic["message"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn add_warns_when_command_text_passes_the_recommended_limit() {
+    let workspace = create_configuration_workspace("command-text-soft-limit");
+    // 33 characters: over the recommended 30 but within the hard 38 ceiling.
+    let warnings = add_with_synonym(&workspace, "SoftLimit", "Договоры контрагентов по продажам");
+
+    assert!(
+        warnings.iter().any(|warning| warning
+            == "3. Properties: Synonym 'Договоры контрагентов по продажам' is longer than \
+                the recommended 30 characters (33) for the command interface, language 'ru'"),
+        "{warnings:?}"
+    );
+    assert!(
+        !warnings
+            .iter()
+            .any(|warning| warning.contains("longer than 38 characters")),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn add_allows_command_text_within_the_recommended_limit() {
+    let workspace = create_configuration_workspace("command-text-within-limit");
+    let warnings = add_with_synonym(&workspace, "ShortLimit", "Договоры");
+
+    assert!(
+        !warnings
+            .iter()
+            .any(|warning| warning.contains("for the command interface")),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn add_still_warns_above_the_hard_command_text_ceiling() {
+    let workspace = create_configuration_workspace("command-text-hard-limit");
+    // 52 characters: the ceiling message replaces the recommended-limit one so
+    // a single value never reports both.
+    let warnings = add_with_synonym(
+        &workspace,
+        "HardLimit",
+        "Очень длинное наименование для командного интерфейса",
+    );
+
+    assert!(
+        warnings.iter().any(|warning| warning
+            == "3. Properties: Synonym 'Очень длинное наименование для командного интерфейса' \
+                is longer than 38 characters (52) for the command interface, language 'ru'"),
+        "{warnings:?}"
+    );
+    assert!(
+        !warnings
+            .iter()
+            .any(|warning| warning.contains("recommended 30 characters")),
+        "{warnings:?}"
+    );
+}
+
 fn assert_partial_is_stable(workspace: &TempWorkspace, kind: &str, name: &str) {
     let before = tree_snapshot(&workspace.path().join("src"));
     let result = call_add(workspace.path(), kind, name, false);
