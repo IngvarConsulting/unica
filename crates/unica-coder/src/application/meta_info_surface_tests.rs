@@ -1043,3 +1043,143 @@ fn meta_info_post_capture_cancellation_before_complete_return_is_provider_unavai
     assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
     assert_no_error_diagnostic(&result, "validation_failed");
 }
+
+const COMMAND_INTERFACE_RULE: &str = "belongs to no subsystem with IncludeInCommandInterface";
+
+fn write_subsystem(workspace: &Path, relative_dir: &str, name: &str, include: &str, content: &str) {
+    let dir = workspace.join(relative_dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join(format!("{name}.xml")),
+        format!(
+            concat!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" ",
+                "xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" ",
+                "xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" ",
+                "xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.20\">\n",
+                "\t<Subsystem uuid=\"77777777-7777-4777-8777-777777777777\">\n",
+                "\t\t<Properties>\n",
+                "\t\t\t<Name>{}</Name>\n",
+                "\t\t\t<IncludeInCommandInterface>{}</IncludeInCommandInterface>\n",
+                "\t\t\t<Content>\n",
+                "{}",
+                "\t\t\t</Content>\n",
+                "\t\t</Properties>\n",
+                "\t</Subsystem>\n",
+                "</MetaDataObject>\n"
+            ),
+            name, include, content
+        ),
+    )
+    .unwrap();
+}
+
+fn content_item(reference: &str) -> String {
+    format!("\t\t\t\t<xr:Item xsi:type=\"xr:MDObjectRef\">{reference}</xr:Item>\n")
+}
+
+fn register_command_interface_warnings(workspace: &Path, name: &str) -> Vec<String> {
+    {
+        let _cwd = ProcessCwdGuard::enter(workspace).unwrap();
+        let added = UnicaApplication::new()
+            .call_tool(
+                "unica.meta.add",
+                &Map::from_iter([
+                    ("sourceSet".to_string(), Value::String("main".to_string())),
+                    (
+                        "kind".to_string(),
+                        Value::String("InformationRegister".to_string()),
+                    ),
+                    ("name".to_string(), Value::String(name.to_string())),
+                    ("dryRun".to_string(), Value::Bool(false)),
+                ]),
+            )
+            .unwrap();
+        assert!(added.ok, "{name}: {:?}", added.errors);
+    }
+    let result = call_info_path(workspace, &format!("InformationRegister.{name}"), []);
+    assert!(result.ok, "{name}: {:?}", result.errors);
+    let data = result.data.expect("typed meta.info data");
+    data["validation"]["diagnostics"]
+        .as_array()
+        .expect("validation diagnostics")
+        .iter()
+        .filter(|diagnostic| diagnostic["severity"] == "warning")
+        .map(|diagnostic| diagnostic["message"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn info_warns_when_a_command_interface_register_is_in_no_subsystem() {
+    let workspace = create_info_workspace("register-without-subsystem");
+    let warnings = register_command_interface_warnings(workspace.path(), "Orphan");
+
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.contains(COMMAND_INTERFACE_RULE)),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn info_accepts_a_register_listed_in_a_command_interface_subsystem() {
+    let workspace = create_info_workspace("register-in-subsystem");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Sales",
+        "true",
+        &content_item("InformationRegister.Listed"),
+    );
+    let warnings = register_command_interface_warnings(workspace.path(), "Listed");
+
+    assert!(
+        !warnings
+            .iter()
+            .any(|warning| warning.contains(COMMAND_INTERFACE_RULE)),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn info_warns_when_the_only_subsystem_is_excluded_from_the_command_interface() {
+    let workspace = create_info_workspace("register-in-excluded-subsystem");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Service",
+        "false",
+        &content_item("InformationRegister.Excluded"),
+    );
+    let warnings = register_command_interface_warnings(workspace.path(), "Excluded");
+
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.contains(COMMAND_INTERFACE_RULE)),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn info_accepts_a_register_listed_in_a_nested_subsystem() {
+    let workspace = create_info_workspace("register-in-nested-subsystem");
+    write_subsystem(workspace.path(), "src/Subsystems", "Parent", "true", "");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems/Parent/Subsystems",
+        "Child",
+        "true",
+        &content_item("InformationRegister.Nested"),
+    );
+    let warnings = register_command_interface_warnings(workspace.path(), "Nested");
+
+    assert!(
+        !warnings
+            .iter()
+            .any(|warning| warning.contains(COMMAND_INTERFACE_RULE)),
+        "{warnings:?}"
+    );
+}

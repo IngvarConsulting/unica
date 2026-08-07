@@ -2243,6 +2243,7 @@ mod tests {
             }],
             child_footprints: Vec::new(),
             registrar_evidence: Default::default(),
+            subsystem_evidence: Default::default(),
         }
     }
 

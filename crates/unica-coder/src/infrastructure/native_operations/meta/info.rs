@@ -24,6 +24,11 @@ use crate::infrastructure::platform::secure_read::{
 const REGISTRAR_SCAN_MAX_ENTRIES: usize = 20_000;
 const REGISTRAR_SCAN_MAX_FILES: usize = 20_000;
 const REGISTRAR_SCAN_MAX_BYTES: usize = 64 * 1024 * 1024;
+// Subsystems nest, so the walk needs depth; two path levels per nesting level.
+const SUBSYSTEM_SCAN_MAX_DEPTH: usize = 16;
+const SUBSYSTEM_SCAN_MAX_ENTRIES: usize = 20_000;
+const SUBSYSTEM_SCAN_MAX_FILES: usize = 20_000;
+const SUBSYSTEM_SCAN_MAX_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RegistrarProcessingPhase {
@@ -274,6 +279,9 @@ pub(crate) fn read_typed_meta_info(
     let (registrar_resources, registrar_evidence) =
         typed_registrar_document_images(resolved, kind, properties, target, deadline, cancellation);
     validation_resources.extend(registrar_resources);
+    let (subsystem_resources, subsystem_evidence) =
+        typed_subsystem_images(resolved, kind, properties, target, deadline, cancellation);
+    validation_resources.extend(subsystem_resources);
     let child_resources = match super::edit::plan_typed_child_resources(
         &resolved.descriptor_path,
         target,
@@ -294,6 +302,7 @@ pub(crate) fn read_typed_meta_info(
         resources: validation_resources,
         child_footprints: child_resources.validation_footprints,
         registrar_evidence,
+        subsystem_evidence,
     };
     Ok((local, validation_subject))
 }
@@ -465,6 +474,133 @@ fn registrar_evidence_unavailable(
         .with_metadata_path(target.clone())
         .with_field("registrarEvidence")]),
     )
+}
+
+fn subsystem_evidence_unavailable(
+    target: &MetadataAddress,
+    message: &str,
+) -> (Vec<MetadataResourceImage>, MetadataEvidenceAvailability) {
+    (
+        Vec::new(),
+        MetadataEvidenceAvailability::Unavailable(vec![MetaDiagnostic::error(
+            MetaDiagnosticCode::ProviderUnavailable,
+            message,
+        )
+        .with_metadata_path(target.clone())
+        .with_field("subsystemEvidence")]),
+    )
+}
+
+/// Collects the subsystems that already show the register in the command
+/// interface. Only registers that reach the command interface read them, and a
+/// complete scan with no match is what lets the rule warn.
+fn typed_subsystem_images(
+    resolved: &ResolvedMetadataObject,
+    kind: MetadataKind,
+    properties: Option<roxmltree::Node<'_, '_>>,
+    target: &MetadataAddress,
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+) -> (Vec<MetadataResourceImage>, MetadataEvidenceAvailability) {
+    let register_in_command_interface = matches!(
+        kind,
+        MetadataKind::AccumulationRegister
+            | MetadataKind::AccountingRegister
+            | MetadataKind::CalculationRegister
+            | MetadataKind::InformationRegister
+    ) && properties
+        .and_then(|node| meta_info_child_text(node, "UseStandardCommands"))
+        .as_deref()
+        == Some("true")
+        && !(kind == MetadataKind::InformationRegister
+            && properties
+                .and_then(|node| meta_info_child_text(node, "WriteMode"))
+                .as_deref()
+                == Some("RecorderSubordinate"));
+    if !register_in_command_interface {
+        return (Vec::new(), MetadataEvidenceAvailability::Complete);
+    }
+    let is_subsystem_directory =
+        |path: &Path| path.file_name().and_then(|name| name.to_str()) == Some("Subsystems");
+    let sits_in_a_subsystem_directory = |path: &Path| {
+        path.parent()
+            .and_then(|parent| parent.file_name())
+            .and_then(|name| name.to_str())
+            == Some("Subsystems")
+    };
+    let checkpoint = || registrar_scan_checkpoint(deadline, cancellation);
+    let entries = match capture_root_relative_regular_files(
+        &resolved.source_root,
+        Path::new("Subsystems"),
+        SecureTreeCaptureLimits {
+            maximum_depth: SUBSYSTEM_SCAN_MAX_DEPTH,
+            maximum_entries: SUBSYSTEM_SCAN_MAX_ENTRIES,
+            maximum_files: SUBSYSTEM_SCAN_MAX_FILES,
+            maximum_bytes: SUBSYSTEM_SCAN_MAX_BYTES,
+        },
+        // Subsystems nest as Subsystems/<Parent>/Subsystems/<Child>.xml, so the
+        // walk descends a subsystem folder and its nested Subsystems only. Ext/
+        // holds command interface files, not subsystem descriptors.
+        |path| is_subsystem_directory(path) || sits_in_a_subsystem_directory(path),
+        |path| {
+            path.extension().and_then(|extension| extension.to_str()) == Some("xml")
+                && sits_in_a_subsystem_directory(path)
+        },
+        &checkpoint,
+    ) {
+        Ok(entries) => entries,
+        Err(_) => {
+            return subsystem_evidence_unavailable(
+                target,
+                "subsystem evidence cannot be scanned completely",
+            )
+        }
+    };
+    if entries.start_missing {
+        return (Vec::new(), MetadataEvidenceAvailability::Complete);
+    }
+    let mut resources = Vec::new();
+    let register_reference = target.as_str().to_string();
+    for entry in entries.files {
+        if checkpoint().is_err() {
+            return subsystem_evidence_unavailable(
+                target,
+                "subsystem evidence processing was interrupted",
+            );
+        }
+        let bytes = entry.bytes;
+        let listing = match super::validation::subsystem_command_interface_listing(
+            &bytes,
+            &register_reference,
+        ) {
+            Ok(listing) => listing,
+            Err(_) => {
+                return subsystem_evidence_unavailable(
+                    target,
+                    "subsystem evidence candidate is malformed",
+                )
+            }
+        };
+        let Some(subsystem_name) = listing else {
+            continue;
+        };
+        let Ok(dependency_target) = MetadataAddress::parse(
+            PLATFORM_XML_8_3_27_FORMAT_2_20,
+            &format!("Subsystem.{subsystem_name}"),
+        ) else {
+            return subsystem_evidence_unavailable(
+                target,
+                "subsystem evidence candidate has no logical identity",
+            );
+        };
+        resources.push(MetadataResourceImage {
+            role: MetadataResourceRole::Dependency {
+                target: dependency_target,
+            },
+            bytes,
+        });
+    }
+    (resources, MetadataEvidenceAvailability::Complete)
 }
 
 fn typed_registered_language_images(
