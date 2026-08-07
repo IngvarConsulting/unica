@@ -111,6 +111,41 @@ fn typed_minimal_templates_cover_all_public_add_kinds() {
 }
 
 #[test]
+fn minimal_templates_emit_child_objects_only_where_the_kind_declares_them() {
+    // 8.3.27 refuses to import a descriptor carrying `ChildObjects` for a kind
+    // that has no child collection: `document format error: unexpected read
+    // property. Current property: ChildObjects, expected property: <Kind>`.
+    // The childless set is measured against a real 8.3.27 dump — across 12k
+    // descriptors every kind is all-or-nothing, never mixed — and confirmed by
+    // the exact platform gate, where every other kind imports with the element.
+    const CHILDLESS: &[MetadataKind] = &[
+        MetadataKind::CommonModule,
+        MetadataKind::Constant,
+        MetadataKind::DefinedType,
+        MetadataKind::EventSubscription,
+        MetadataKind::ScheduledJob,
+    ];
+
+    for kind in MetadataKind::ALL {
+        let (xml, _) = minimal_metadata_xml_for_tests(*kind, "Evidence").unwrap();
+        let document = Document::parse(&xml).unwrap();
+        let object = document
+            .root_element()
+            .children()
+            .find(Node::is_element)
+            .unwrap();
+
+        let emitted = meta_info_child(object, "ChildObjects").is_some();
+        assert_eq!(
+            emitted,
+            !CHILDLESS.contains(kind),
+            "{} emitted ChildObjects={emitted}: {xml}",
+            kind.as_str()
+        );
+    }
+}
+
+#[test]
 fn generated_synonym_separates_digits_from_the_words_around_them() {
     for (name, synonym) in [
         ("СуммаЗакупокЗа30Дней", "Сумма закупок за 30 дней"),
