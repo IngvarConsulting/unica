@@ -8,6 +8,9 @@ use crate::infrastructure::native_operations::compile_transaction::{
     DirectoryMembershipSnapshot,
 };
 use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
+use crate::infrastructure::platform_xml_roots::{
+    platform_xml_root_versioning, PlatformXmlRootVersioning,
+};
 use crate::infrastructure::project_sources::{
     discover_project_source_map_with_provenance, ProjectSourceMapProvenance,
 };
@@ -1003,48 +1006,41 @@ fn is_supported_metadata_artifact(tag: &str) -> bool {
         )
 }
 
-/// Returns whether the qualified root is supported as a standalone Platform XML owner.
+/// Returns whether the qualified root is supported as a standalone Platform XML
+/// owner.
+///
+/// Derived from [`PLATFORM_XML_ROOTS`] rather than listed again here: the same
+/// roots decide what full-dump publication may write, and a second hand-kept
+/// list is exactly what drifted in issue #327. `MetaDataObject` is registered
+/// there too but is not standalone — callers classify it as the metadata owner
+/// before reaching this predicate.
 fn known_standalone_root(qname: (Option<&str>, &str)) -> bool {
+    let (Some(namespace), local_name) = qname else {
+        return false;
+    };
+    if (namespace, local_name) == (MD_CLASSES_NS, "MetaDataObject") {
+        return false;
+    }
     matches!(
-        qname,
-        (Some("http://v8.1c.ru/8.3/xcf/logform"), "Form")
-            | (
-                Some("http://v8.1c.ru/8.3/xcf/extrnprops"),
-                "CommandInterface"
-            )
-            | (Some("http://v8.1c.ru/8.3/xcf/extrnprops"), "Help")
-            | (
-                Some("http://v8.1c.ru/8.3/xcf/extrnprops"),
-                "ExchangePlanContent"
-            )
-            | (
-                Some("http://v8.1c.ru/8.3/xcf/extrnprops"),
-                "HomePageWorkArea"
-            )
-            | (Some("http://v8.1c.ru/8.3/xcf/scheme"), "GraphicalSchema")
-            | (Some("http://v8.1c.ru/8.2/roles"), "Rights")
-            | (
-                Some("http://v8.1c.ru/8.2/managed-application/core"),
-                "ClientApplicationInterface"
-            )
-            | (Some("http://v8.1c.ru/8.3/xcf/predef"), "PredefinedData")
+        platform_xml_root_versioning(namespace, local_name),
+        Some(PlatformXmlRootVersioning::ExactRootVersion)
+            | Some(PlatformXmlRootVersioning::InheritedRootVersion)
     )
 }
 
 /// Returns whether a registered root without a `version` attribute inherits the
 /// format of its container instead of owning one.
 ///
-/// `PredefinedData` is deliberately absent: the platform always writes the
-/// attribute on predefined data, so a document without it is anomalous and must
-/// fail closed as the default format rather than silently adopt the
-/// configuration's. `ClientApplicationInterface` is the opposite case — the
-/// platform legitimately emits it versionless.
+/// Only [`PlatformXmlRootVersioning::InheritedRootVersion`] roots do. A root the
+/// platform always versions — predefined data among them — is anomalous without
+/// the attribute and must fail closed as the default format rather than
+/// silently adopt the configuration's.
 fn version_is_inherited_when_missing(qname: (Option<&str>, &str)) -> bool {
-    qname
-        == (
-            Some("http://v8.1c.ru/8.2/managed-application/core"),
-            "ClientApplicationInterface",
-        )
+    let (Some(namespace), local_name) = qname else {
+        return false;
+    };
+    platform_xml_root_versioning(namespace, local_name)
+        == Some(PlatformXmlRootVersioning::InheritedRootVersion)
 }
 
 fn invalid_owner<T>(path: &Path, reason: &str) -> Result<T, PlatformXmlOwnerError> {

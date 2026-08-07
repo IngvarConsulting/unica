@@ -320,35 +320,71 @@ fn meta_remove_reauthorizes_every_planned_subsystem_cleanup_before_mutations() {
     assert_eq!(tree_snapshot(&source), expected);
 }
 
-#[test]
-fn meta_remove_reads_an_unrelated_predefined_data_document_without_blocking() {
-    let workspace = create_remove_workspace("unrelated-predefined-data");
-    // The reference scan reads every neighboring descriptor, so a sibling's
-    // predefined data joins the removal's format dependency set. That document
-    // carries its own export format version, but it is not the owner from which
-    // the configuration format is inferred, and it must not block the removal.
-    let predefined = workspace
-        .path()
-        .join("src/Catalogs/Sibling/Ext/Predefined.xml");
-    std::fs::create_dir_all(predefined.parent().unwrap()).unwrap();
-    std::fs::write(
-        &predefined,
+/// Every neighbouring document the platform writes with its own export format
+/// version, at the dump-relative path it occupies. The reference scan reads
+/// each of them, so each joins the removal's format dependency set.
+const NEIGHBOURING_VERSIONED_DOCUMENTS: &[(&str, &str, &str)] = &[
+    (
+        "predefined-data",
+        "src/Catalogs/Sibling/Ext/Predefined.xml",
         concat!(
             r#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" "#,
             r#"xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" "#,
             "xsi:type=\"CatalogPredefinedItems\" version=\"2.20\"/>",
         ),
-    )
-    .unwrap();
+    ),
+    (
+        "ext-picture",
+        "src/CommonPictures/Logo/Ext/Picture.xml",
+        concat!(
+            r#"<ExtPicture xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" "#,
+            "version=\"2.20\"/>",
+        ),
+    ),
+    (
+        "job-schedule",
+        "src/ScheduledJobs/Nightly/Ext/Schedule.xml",
+        concat!(
+            r#"<JobSchedule xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" "#,
+            "version=\"2.20\"/>",
+        ),
+    ),
+    (
+        "config-dump-info",
+        "src/ConfigDumpInfo.xml",
+        concat!(
+            r#"<ConfigDumpInfo xmlns="http://v8.1c.ru/8.3/xcf/dumpinfo" "#,
+            "version=\"2.20\"/>",
+        ),
+    ),
+];
 
-    let preview = call_remove(workspace.path(), true);
+#[test]
+fn meta_remove_reads_every_neighbouring_versioned_document_without_blocking() {
+    // Each of these documents carries its own export format version, but none of
+    // them is the owner from which the configuration format is inferred. An
+    // unrecognised root is refused as unsupported, which turns any configuration
+    // that merely owns the artifact into one where removal cannot run at all.
+    for (label, relative, xml) in NEIGHBOURING_VERSIONED_DOCUMENTS {
+        let workspace = create_remove_workspace(label);
+        let document = workspace.path().join(relative);
+        std::fs::create_dir_all(document.parent().unwrap()).unwrap();
+        std::fs::write(&document, xml).unwrap();
 
-    assert!(preview.ok, "{:?}", preview.errors);
-    assert_eq!(
-        preview.data.as_ref().unwrap()["validation"]["status"],
-        "passed"
-    );
-    assert!(preview.diagnostics.is_none(), "{:?}", preview.diagnostics);
+        let preview = call_remove(workspace.path(), true);
+
+        assert!(preview.ok, "{relative}: {:?}", preview.errors);
+        assert_eq!(
+            preview.data.as_ref().unwrap()["validation"]["status"],
+            "passed",
+            "{relative}"
+        );
+        assert!(
+            preview.diagnostics.is_none(),
+            "{relative}: {:?}",
+            preview.diagnostics
+        );
+    }
 }
 
 #[test]

@@ -5505,20 +5505,21 @@ fn validate_staged_xml(path: &Path, expected: &TreeEntryKind) -> Result<(), Stri
     let namespace = root.tag_name().namespace().unwrap_or("");
     let local_name = root.tag_name().name();
     match staged_root_version_policy(namespace, local_name) {
+        Some(StagedRootVersionPolicy::InheritedRootVersion)
+        | Some(StagedRootVersionPolicy::Versionless) => {
+            if let Some(version) = root_version_literal(source, root) {
+                return Err(format!(
+                    "staged XML root {{{namespace}}}{local_name} is a registered versionless family and must not declare version={version} in {}",
+                    path.display()
+                ));
+            }
+        }
         Some(StagedRootVersionPolicy::ExactRootVersion) => {
             let version = root_version_literal(source, root);
             if version.as_deref() != Some(TARGET_EXPORT_FORMAT) {
                 return Err(format!(
                     "staged XML root {{{namespace}}}{local_name} must use the exact raw version literal {TARGET_EXPORT_FORMAT}; found {} (missing means legacy format 1.0) in {}",
                     version.as_deref().unwrap_or("<missing>"),
-                    path.display()
-                ));
-            }
-        }
-        Some(StagedRootVersionPolicy::Versionless) => {
-            if let Some(version) = root_version_literal(source, root) {
-                return Err(format!(
-                    "staged XML root {{{namespace}}}{local_name} is a registered versionless family and must not declare version={version} in {}",
                     path.display()
                 ));
             }
@@ -5561,135 +5562,18 @@ fn read_tree_bound_file(
     Ok(actual.raw)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StagedRootVersionPolicy {
-    ExactRootVersion,
-    Versionless,
-}
-
-/// Closed registry of the XML roots an 8.3.27 / export format 2.20 dump writes.
-///
-/// The registry is fail-closed: an unlisted root discards the staged dump, so a
-/// missing entry makes `mode=full` unusable for every configuration that owns
-/// the artifact. Each entry is the root of a file the platform itself produces;
-/// the comment above it names that dump artifact. Tests enumerate this table, so
-/// a new entry that no test case reaches fails the coverage assertion.
-static STAGED_ROOT_REGISTRY: &[(&str, &str, StagedRootVersionPolicy)] = &[
-    // Configuration.xml and every object owner
-    (
-        MD_CLASSES_NS,
-        "MetaDataObject",
-        StagedRootVersionPolicy::ExactRootVersion,
-    ),
-    // Forms/*/Ext/Form.xml
-    (
-        "http://v8.1c.ru/8.3/xcf/logform",
-        "Form",
-        StagedRootVersionPolicy::ExactRootVersion,
-    ),
-    // Ext/CommandInterface.xml
-    (
-        "http://v8.1c.ru/8.3/xcf/extrnprops",
-        "CommandInterface",
-        StagedRootVersionPolicy::ExactRootVersion,
-    ),
-    // Ext/Help.xml
-    (
-        "http://v8.1c.ru/8.3/xcf/extrnprops",
-        "Help",
-        StagedRootVersionPolicy::ExactRootVersion,
-    ),
-    // ExchangePlans/*/Ext/Content.xml
-    (
-        "http://v8.1c.ru/8.3/xcf/extrnprops",
-        "ExchangePlanContent",
-        StagedRootVersionPolicy::ExactRootVersion,
-    ),
-    // Ext/HomePageWorkArea.xml
-    (
-        "http://v8.1c.ru/8.3/xcf/extrnprops",
-        "HomePageWorkArea",
-        StagedRootVersionPolicy::ExactRootVersion,
-    ),
-    // CommonPictures/*/Ext/Picture.xml and Ext/Splash.xml
-    (
-        "http://v8.1c.ru/8.3/xcf/extrnprops",
-        "ExtPicture",
-        StagedRootVersionPolicy::ExactRootVersion,
-    ),
-    // ScheduledJobs/*/Ext/Schedule.xml
-    (
-        "http://v8.1c.ru/8.3/xcf/extrnprops",
-        "JobSchedule",
-        StagedRootVersionPolicy::ExactRootVersion,
-    ),
-    // Catalogs/*/Ext/Predefined.xml and the other predefined-data owners
-    (
-        "http://v8.1c.ru/8.3/xcf/predef",
-        "PredefinedData",
-        StagedRootVersionPolicy::ExactRootVersion,
-    ),
-    // ConfigDumpInfo.xml
-    (
-        "http://v8.1c.ru/8.3/xcf/dumpinfo",
-        "ConfigDumpInfo",
-        StagedRootVersionPolicy::ExactRootVersion,
-    ),
-    // BusinessProcesses/*/Ext/Flowchart.xml
-    (
-        "http://v8.1c.ru/8.3/xcf/scheme",
-        "GraphicalSchema",
-        StagedRootVersionPolicy::ExactRootVersion,
-    ),
-    // Roles/*/Ext/Rights.xml
-    (
-        "http://v8.1c.ru/8.2/roles",
-        "Rights",
-        StagedRootVersionPolicy::ExactRootVersion,
-    ),
-    // Templates/*/Ext/Template.xml for a data composition schema
-    (
-        "http://v8.1c.ru/8.1/data-composition-system/schema",
-        "DataCompositionSchema",
-        StagedRootVersionPolicy::Versionless,
-    ),
-    // CommonTemplates/*/Ext/Template.xml for a report appearance template
-    (
-        "http://v8.1c.ru/8.1/data-composition-system/appearance-template",
-        "AppearanceTemplate",
-        StagedRootVersionPolicy::Versionless,
-    ),
-    // Templates/*/Ext/Template.xml for a spreadsheet document
-    (
-        "http://v8.1c.ru/8.2/data/spreadsheet",
-        "document",
-        StagedRootVersionPolicy::Versionless,
-    ),
-    // WSReferences/*/Ext/WSDefinition.xml, stored as the service published it
-    (
-        "http://schemas.xmlsoap.org/wsdl/",
-        "definitions",
-        StagedRootVersionPolicy::Versionless,
-    ),
-    // Ext/ClientApplicationInterface.xml
-    (
-        "http://v8.1c.ru/8.2/managed-application/core",
-        "ClientApplicationInterface",
-        StagedRootVersionPolicy::Versionless,
-    ),
-];
-
-fn staged_root_version_policy(
-    namespace: &str,
-    local_name: &str,
-) -> Option<StagedRootVersionPolicy> {
-    STAGED_ROOT_REGISTRY
-        .iter()
-        .find(|(registered_namespace, registered_local_name, _)| {
-            *registered_namespace == namespace && *registered_local_name == local_name
-        })
-        .map(|(_, _, policy)| *policy)
-}
+// The closed root registry is shared with platform XML owner resolution so the
+// two cannot disagree about a root; see `infrastructure::platform_xml_roots`
+// for why it lives there. Fail-closed here means an unlisted root discards the
+// staged dump, so a missing entry makes `mode=full` unusable for every
+// configuration that owns the artifact. Tests enumerate the table, so a new
+// entry that no test case reaches fails the coverage assertion.
+#[cfg(test)]
+use crate::infrastructure::platform_xml_roots::PLATFORM_XML_ROOTS as STAGED_ROOT_REGISTRY;
+use crate::infrastructure::platform_xml_roots::{
+    platform_xml_root_versioning as staged_root_version_policy,
+    PlatformXmlRootVersioning as StagedRootVersionPolicy,
+};
 
 fn publish_staged_tree(
     private: &mut PrivateDumpStage,
@@ -9606,7 +9490,10 @@ mod tests {
         (
             "Ext/ClientApplicationInterface.xml",
             br#"<ClientApplicationInterface xmlns="http://v8.1c.ru/8.2/managed-application/core"/>"#,
-            StagedRootVersionPolicy::Versionless,
+            // Staged without a version like the versionless family, but unlike
+            // it this root still heads a format-bearing artifact and inherits
+            // the configuration's format when the file is read back.
+            StagedRootVersionPolicy::InheritedRootVersion,
         ),
     ];
 
@@ -9706,7 +9593,11 @@ mod tests {
                     );
                     (mutated, "2.19")
                 }
-                StagedRootVersionPolicy::Versionless => {
+                // A staged inherited-version root is written exactly like a
+                // versionless one; the two differ only when the file is read
+                // back and needs an owner.
+                StagedRootVersionPolicy::Versionless
+                | StagedRootVersionPolicy::InheritedRootVersion => {
                     assert!(
                         root_node.attribute("version").is_none(),
                         "{relative}: the root must stay versionless"
