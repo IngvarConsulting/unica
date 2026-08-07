@@ -40,6 +40,7 @@ const MAX_PREDEFINED_BYTES: usize = 8 * 1024 * 1024;
 struct FragmentXmlContext {
     wrapper_start: String,
     in_scope_prefixes: BTreeMap<String, String>,
+    reserved_generated_prefixes: HashSet<String>,
 }
 
 impl FragmentXmlContext {
@@ -88,23 +89,26 @@ impl FragmentXmlContext {
         Self {
             wrapper_start,
             in_scope_prefixes,
+            reserved_generated_prefixes: HashSet::new(),
         }
     }
 
     fn generated_prefix(&self, namespace: &str, canonical: &str) -> (String, bool) {
-        if let Some((prefix, _)) = self
-            .in_scope_prefixes
-            .iter()
-            .find(|(_, uri)| uri.as_str() == namespace)
-        {
+        if let Some((prefix, _)) = self.in_scope_prefixes.iter().find(|(prefix, uri)| {
+            uri.as_str() == namespace && !self.reserved_generated_prefixes.contains(prefix.as_str())
+        }) {
             return (prefix.clone(), false);
         }
-        if !self.in_scope_prefixes.contains_key(canonical) {
+        if !self.in_scope_prefixes.contains_key(canonical)
+            && !self.reserved_generated_prefixes.contains(canonical)
+        {
             return (canonical.to_string(), true);
         }
         for suffix in 1.. {
             let candidate = format!("{canonical}_{suffix}");
-            if !self.in_scope_prefixes.contains_key(&candidate) {
+            if !self.in_scope_prefixes.contains_key(&candidate)
+                && !self.reserved_generated_prefixes.contains(&candidate)
+            {
                 return (candidate, true);
             }
         }
@@ -122,9 +126,32 @@ impl FragmentXmlContext {
             })?;
             prefixes.insert(prefix.to_string(), namespace.to_string());
         }
-        Ok(Self::from_namespaces(prefixes.iter().map(
-            |(prefix, namespace)| (prefix.as_str(), namespace.as_str()),
-        )))
+        let mut context = Self::from_namespaces(
+            prefixes
+                .iter()
+                .map(|(prefix, namespace)| (prefix.as_str(), namespace.as_str())),
+        );
+        context.reserved_generated_prefixes = self.reserved_generated_prefixes.clone();
+        Ok(context)
+    }
+
+    fn reserve_descendant_prefixes(mut self, fragment: &str) -> Result<Self, String> {
+        let wrapped = format!("{}{fragment}</Root>", self.wrapper_start);
+        let document = Document::parse(&wrapped)
+            .map_err(|error| format!("predefined XML fragment: {error}"))?;
+        let root = document
+            .root_element()
+            .children()
+            .find(|node| node.is_element())
+            .ok_or_else(|| "predefined XML fragment has no element".to_string())?;
+        for descendant in root.descendants().skip(1).filter(|node| node.is_element()) {
+            for (name, _) in opening_tag_attributes(&wrapped[descendant.range()])? {
+                if let Some(prefix) = name.strip_prefix("xmlns:") {
+                    self.reserved_generated_prefixes.insert(prefix.to_string());
+                }
+            }
+        }
+        Ok(self)
     }
 
     fn decimal_type_attributes(&self) -> String {
@@ -1110,8 +1137,14 @@ fn patch_fields(
         )?;
     }
     if let Some(value) = &fields.r#type {
-        let render_context = fragment_direct_child_location(item, "Type", None, fragment_context)?
-            .map_or_else(|| fragment_context.clone(), |location| location.context);
+        let render_context = if let Some(location) =
+            fragment_direct_child_location(item, "Type", None, fragment_context)?
+        {
+            let FragmentChildLocation { range, context } = location;
+            context.reserve_descendant_prefixes(&item[range])?
+        } else {
+            fragment_context.clone()
+        };
         let indent = child_indent(item);
         let rendered = render_type(value, &indent, eol, &render_context);
         let rendered = rendered.strip_prefix(&indent).unwrap_or(&rendered);
@@ -1526,7 +1559,8 @@ fn insert_opening_attributes(fragment: &mut String, attributes: &[String]) -> Re
 fn preserve_element_attributes(
     existing: &str,
     rendered: &str,
-    fragment_context: &FragmentXmlContext,
+    existing_context: &FragmentXmlContext,
+    rendered_context: &FragmentXmlContext,
 ) -> Result<String, String> {
     let existing_opening = opening_tag_attributes(existing)?;
     let rendered_opening = opening_tag_attributes(rendered)?;
@@ -1544,7 +1578,7 @@ fn preserve_element_attributes(
     let mut merged = rendered.to_string();
     insert_opening_attributes(&mut merged, &preserved_namespaces)?;
 
-    let wrapped_existing = format!("{}{existing}</Root>", fragment_context.wrapper_start);
+    let wrapped_existing = format!("{}{existing}</Root>", existing_context.wrapper_start);
     let existing_document = Document::parse(&wrapped_existing)
         .map_err(|error| format!("predefined XML fragment: {error}"))?;
     let existing_node = existing_document
@@ -1552,7 +1586,7 @@ fn preserve_element_attributes(
         .children()
         .find(|node| node.is_element())
         .ok_or_else(|| "predefined XML fragment has no element".to_string())?;
-    let wrapped_merged = format!("{}{merged}</Root>", fragment_context.wrapper_start);
+    let wrapped_merged = format!("{}{merged}</Root>", rendered_context.wrapper_start);
     let merged_document = Document::parse(&wrapped_merged)
         .map_err(|error| format!("predefined XML fragment: {error}"))?;
     let merged_node = merged_document
@@ -1583,6 +1617,262 @@ fn preserve_element_attributes(
     Ok(merged)
 }
 
+type ExpandedElementName = (Option<String>, String);
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum ChildAnchor {
+    Element(ExpandedElementName, usize),
+    Text(usize),
+}
+
+#[derive(Clone)]
+struct ControlledChildFragment {
+    key: ExpandedElementName,
+    occurrence: usize,
+    range: Range<usize>,
+    context: FragmentXmlContext,
+    has_preservation_obligation: bool,
+}
+
+struct PreservedChildFragment {
+    source: String,
+    following_anchors: Vec<ChildAnchor>,
+}
+
+struct ElementChildren {
+    controlled: Vec<ControlledChildFragment>,
+    preserved: Vec<PreservedChildFragment>,
+    anchors: Vec<(ChildAnchor, usize)>,
+}
+
+fn expanded_element_name(node: Node<'_, '_>) -> ExpandedElementName {
+    (
+        node.tag_name().namespace().map(str::to_string),
+        node.tag_name().name().to_string(),
+    )
+}
+
+fn writer_controls_child(parent: Node<'_, '_>, child: Node<'_, '_>) -> bool {
+    if !child.is_element() || child.tag_name().namespace() != Some(V8_NS) {
+        return false;
+    }
+    match (parent.tag_name().namespace(), parent.tag_name().name()) {
+        (Some(PREDEFINED_NS), "Type") => matches!(
+            child.tag_name().name(),
+            "Type"
+                | "TypeSet"
+                | "NumberQualifiers"
+                | "StringQualifiers"
+                | "DateQualifiers"
+                | "BinaryDataQualifiers"
+        ),
+        (Some(V8_NS), "NumberQualifiers") => matches!(
+            child.tag_name().name(),
+            "Digits" | "FractionDigits" | "AllowedSign"
+        ),
+        (Some(V8_NS), "StringQualifiers" | "BinaryDataQualifiers") => {
+            matches!(child.tag_name().name(), "Length" | "AllowedLength")
+        }
+        (Some(V8_NS), "DateQualifiers") => child.tag_name().name() == "DateFractions",
+        _ => false,
+    }
+}
+
+fn controlled_subtree_has_preservation_obligation(node: Node<'_, '_>) -> bool {
+    node.attributes().next().is_some()
+        || node.children().any(|child| {
+            if child.is_text() {
+                false
+            } else if writer_controls_child(node, child) {
+                controlled_subtree_has_preservation_obligation(child)
+            } else {
+                true
+            }
+        })
+}
+
+fn element_children(
+    fragment: &str,
+    fragment_context: &FragmentXmlContext,
+) -> Result<ElementChildren, String> {
+    let wrapped = format!("{}{fragment}</Root>", fragment_context.wrapper_start);
+    let document =
+        Document::parse(&wrapped).map_err(|error| format!("predefined XML fragment: {error}"))?;
+    let root = document
+        .root_element()
+        .children()
+        .find(|node| node.is_element())
+        .ok_or_else(|| "predefined XML fragment has no element".to_string())?;
+    let root_context = fragment_context.with_local_declarations(&wrapped, root)?;
+    let children = root.children().collect::<Vec<_>>();
+    let has_controlled_elements = children
+        .iter()
+        .any(|child| writer_controls_child(root, *child));
+    let mut occurrences = BTreeMap::<ExpandedElementName, usize>::new();
+    let mut text_occurrence = 0;
+    let mut labels = Vec::with_capacity(children.len());
+    let mut controlled = Vec::new();
+    let mut anchors = Vec::new();
+    for child in &children {
+        if child.is_text() && !has_controlled_elements {
+            let anchor = ChildAnchor::Text(text_occurrence);
+            text_occurrence += 1;
+            anchors.push((
+                anchor.clone(),
+                child.range().start - fragment_context.wrapper_start.len(),
+            ));
+            labels.push(Some(anchor));
+            continue;
+        }
+        if !writer_controls_child(root, *child) {
+            labels.push(None);
+            continue;
+        }
+        let key = expanded_element_name(*child);
+        let occurrence = *occurrences.entry(key.clone()).or_default();
+        occurrences.insert(key.clone(), occurrence + 1);
+        let range = child.range();
+        let anchor = ChildAnchor::Element(key.clone(), occurrence);
+        anchors.push((
+            anchor.clone(),
+            range.start - fragment_context.wrapper_start.len(),
+        ));
+        labels.push(Some(anchor));
+        controlled.push(ControlledChildFragment {
+            key,
+            occurrence,
+            range: range.start - fragment_context.wrapper_start.len()
+                ..range.end - fragment_context.wrapper_start.len(),
+            context: root_context.with_local_declarations(&wrapped, *child)?,
+            has_preservation_obligation: controlled_subtree_has_preservation_obligation(*child),
+        });
+    }
+
+    let mut preserved = Vec::new();
+    for (index, child) in children.iter().enumerate() {
+        if child.is_text() || labels[index].is_some() {
+            continue;
+        }
+        preserved.push(PreservedChildFragment {
+            source: wrapped[child.range()].to_string(),
+            following_anchors: labels[index + 1..]
+                .iter()
+                .filter_map(Clone::clone)
+                .collect(),
+        });
+    }
+    Ok(ElementChildren {
+        controlled,
+        preserved,
+        anchors,
+    })
+}
+
+fn expand_self_closing_for_preserved_children(fragment: &mut String) -> Result<(), String> {
+    if !fragment.trim_end().ends_with("/>") {
+        return Ok(());
+    }
+    let qname = lexical_element_name(fragment)?.to_string();
+    let slash = fragment
+        .rfind("/>")
+        .ok_or_else(|| "predefined self-closing element terminator is unavailable".to_string())?;
+    fragment.replace_range(slash..slash + 2, &format!("></{qname}>"));
+    Ok(())
+}
+
+fn closing_element_start(fragment: &str) -> Result<usize, String> {
+    let qname = lexical_element_name(fragment)?;
+    fragment
+        .rfind(&format!("</{qname}>"))
+        .ok_or_else(|| format!("predefined {qname} closing tag is unavailable"))
+}
+
+fn preserve_element_extensions_with_contexts(
+    existing: &str,
+    rendered: &str,
+    existing_context: &FragmentXmlContext,
+    rendered_context: &FragmentXmlContext,
+) -> Result<String, String> {
+    let existing_children = element_children(existing, existing_context)?;
+    let mut merged =
+        preserve_element_attributes(existing, rendered, existing_context, rendered_context)?;
+    let rendered_children = element_children(&merged, rendered_context)?;
+    let rendered_by_key = rendered_children
+        .controlled
+        .iter()
+        .map(|child| ((child.key.clone(), child.occurrence), child))
+        .collect::<BTreeMap<_, _>>();
+    let mut replacements = Vec::new();
+    for existing_child in &existing_children.controlled {
+        let Some(rendered_child) =
+            rendered_by_key.get(&(existing_child.key.clone(), existing_child.occurrence))
+        else {
+            if existing_child.has_preservation_obligation {
+                return Err(
+                    "predefined type update would discard unknown XML from a removed typed branch"
+                        .to_string(),
+                );
+            }
+            continue;
+        };
+        replacements.push((
+            rendered_child.range.clone(),
+            preserve_element_extensions_with_contexts(
+                &existing[existing_child.range.clone()],
+                &merged[rendered_child.range.clone()],
+                &existing_child.context,
+                &rendered_child.context,
+            )?,
+        ));
+    }
+    replacements.sort_by_key(|(range, _)| range.start);
+    for (range, replacement) in replacements.into_iter().rev() {
+        merged.replace_range(range, &replacement);
+    }
+
+    if existing_children.preserved.is_empty() {
+        return Ok(merged);
+    }
+    expand_self_closing_for_preserved_children(&mut merged)?;
+    let current_children = element_children(&merged, rendered_context)?;
+    let anchors = current_children
+        .anchors
+        .into_iter()
+        .collect::<BTreeMap<_, _>>();
+    let closing = closing_element_start(&merged)?;
+    let mut insertions = existing_children
+        .preserved
+        .into_iter()
+        .enumerate()
+        .map(|(sequence, preserved)| {
+            let position = preserved
+                .following_anchors
+                .iter()
+                .find_map(|anchor| anchors.get(anchor).copied())
+                .unwrap_or(closing);
+            (position, sequence, preserved.source)
+        })
+        .collect::<Vec<_>>();
+    insertions.sort_by_key(|(position, sequence, _)| (*position, *sequence));
+    for (position, _, source) in insertions.into_iter().rev() {
+        merged.insert_str(position, &source);
+    }
+    Ok(merged)
+}
+
+fn preserve_element_extensions(
+    existing: &str,
+    rendered: &str,
+    fragment_context: &FragmentXmlContext,
+) -> Result<String, String> {
+    preserve_element_extensions_with_contexts(
+        existing,
+        rendered,
+        fragment_context,
+        fragment_context,
+    )
+}
+
 fn set_complex_child(
     parent: &mut String,
     tag: &str,
@@ -1596,7 +1886,7 @@ fn set_complex_child(
         let prefix = lexical_element_prefix(existing_qname);
         let rendered = qualify_generated_predefined_elements(rendered, prefix);
         let rendered =
-            preserve_element_attributes(&parent[range.clone()], &rendered, &location.context)?;
+            preserve_element_extensions(&parent[range.clone()], &rendered, &location.context)?;
         if parent[range.clone()] != rendered {
             parent.replace_range(range, &rendered);
         }
@@ -1664,7 +1954,7 @@ fn merge_flags_container(
                 &rendered,
                 lexical_element_prefix(existing_qname),
             );
-            let rendered = preserve_element_attributes(
+            let rendered = preserve_element_extensions(
                 &container[flag_range.clone()],
                 &rendered,
                 &flag_location.context,
@@ -2200,16 +2490,22 @@ fn removal_range(text: &str, range: Range<usize>) -> Range<usize> {
     if !text[line_start..range.start].trim().is_empty() {
         return range;
     }
-    let mut end = range.end;
-    while end < text.len() && matches!(text.as_bytes()[end], b' ' | b'\t') {
-        end += 1;
+    let mut line_end = range.end;
+    while line_end < text.len() && matches!(text.as_bytes()[line_end], b' ' | b'\t') {
+        line_end += 1;
     }
-    if text[end..].starts_with("\r\n") {
-        end += 2;
-    } else if end < text.len() && matches!(text.as_bytes()[end], b'\r' | b'\n') {
-        end += 1;
+    let eol_end = if text[line_end..].starts_with("\r\n") {
+        Some(line_end + 2)
+    } else if line_end < text.len() && matches!(text.as_bytes()[line_end], b'\r' | b'\n') {
+        Some(line_end + 1)
+    } else {
+        None
+    };
+    if let Some(eol_end) = eol_end {
+        line_start..eol_end
+    } else {
+        range
     }
-    line_start..end
 }
 
 fn child<'a>(node: Node<'a, 'a>, name: &str) -> Option<Node<'a, 'a>> {
@@ -2506,9 +2802,119 @@ mod tests {
     }
 
     #[test]
+    fn type_update_recursively_preserves_unknown_extension_descendants() {
+        let mut item = format!(
+            r#"<Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Kind</Name><Type xmlns:v8="{V8_NS}" xmlns:xs="{XS_NS}" xmlns:f="urn:future"><v8:Type>xs:decimal</v8:Type><v8:NumberQualifiers><v8:Digits><f:BeforeDigits/>10<f:InsideDigits/></v8:Digits><f:InsideQualifiers/><v8:FractionDigits>2</v8:FractionDigits><v8:AllowedSign>Any</v8:AllowedSign></v8:NumberQualifiers><f:InsideType/></Type><IsFolder>false</IsFolder></Item>"#
+        );
+        let fields = MetaPredefinedFields {
+            r#type: Some(
+                MetadataType::new(vec![MetadataTypeVariant::Number {
+                    digits: 12,
+                    fraction: 3,
+                    sign: crate::domain::metadata::NumberSign::NonNegative,
+                }])
+                .unwrap(),
+            ),
+            ..MetaPredefinedFields::default()
+        };
+
+        patch_fields(
+            &mut item,
+            MetadataKind::ChartOfCharacteristicTypes,
+            PredefinedCodeType::String,
+            &fields,
+            "\n",
+            &FragmentXmlContext::platform_default(),
+        )
+        .unwrap();
+
+        for expected in [
+            "<v8:Digits><f:BeforeDigits/>12<f:InsideDigits/></v8:Digits>",
+            "<f:InsideQualifiers/>",
+            "<f:InsideType/>",
+            "<v8:FractionDigits>3</v8:FractionDigits>",
+            "<v8:AllowedSign>Nonnegative</v8:AllowedSign>",
+        ] {
+            assert!(item.contains(expected), "missing {expected}: {item}");
+        }
+        let wrapped = format!(r#"<Root xmlns="{PREDEFINED_NS}">{item}</Root>"#);
+        Document::parse(&wrapped).unwrap();
+    }
+
+    #[test]
+    fn type_update_rejects_discarding_an_extension_in_a_removed_typed_branch() {
+        let mut item = format!(
+            r#"<Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Kind</Name><Type xmlns:v8="{V8_NS}" xmlns:xs="{XS_NS}" xmlns:f="urn:future"><v8:Type>xs:decimal</v8:Type><v8:NumberQualifiers><v8:Digits>10</v8:Digits><f:Keep/><v8:FractionDigits>2</v8:FractionDigits><v8:AllowedSign>Any</v8:AllowedSign></v8:NumberQualifiers></Type><IsFolder>false</IsFolder></Item>"#
+        );
+        let before = item.clone();
+        let fields = MetaPredefinedFields {
+            r#type: Some(MetadataType::new(vec![MetadataTypeVariant::Boolean]).unwrap()),
+            ..MetaPredefinedFields::default()
+        };
+
+        let error = patch_fields(
+            &mut item,
+            MetadataKind::ChartOfCharacteristicTypes,
+            PredefinedCodeType::String,
+            &fields,
+            "\n",
+            &FragmentXmlContext::platform_default(),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("would discard unknown XML"), "{error}");
+        assert_eq!(item, before);
+    }
+
+    #[test]
+    fn type_update_uses_an_alias_not_shadowed_by_a_nested_declaration() {
+        let mut item = format!(
+            r#"<Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Kind</Name><Type xmlns:v8="{V8_NS}" xmlns:xs="{XS_NS}"><v8:Type>xs:decimal</v8:Type><core:NumberQualifiers xmlns:core="{V8_NS}" xmlns:v8="urn:future"><core:Digits>10</core:Digits><core:FractionDigits>2</core:FractionDigits><core:AllowedSign>Any</core:AllowedSign></core:NumberQualifiers></Type><IsFolder>false</IsFolder></Item>"#
+        );
+        let fields = MetaPredefinedFields {
+            r#type: Some(
+                MetadataType::new(vec![MetadataTypeVariant::Number {
+                    digits: 12,
+                    fraction: 3,
+                    sign: crate::domain::metadata::NumberSign::NonNegative,
+                }])
+                .unwrap(),
+            ),
+            ..MetaPredefinedFields::default()
+        };
+
+        patch_fields(
+            &mut item,
+            MetadataKind::ChartOfCharacteristicTypes,
+            PredefinedCodeType::String,
+            &fields,
+            "\n",
+            &FragmentXmlContext::platform_default(),
+        )
+        .unwrap();
+
+        let wrapped = format!(r#"<Root xmlns="{PREDEFINED_NS}">{item}</Root>"#);
+        let document = Document::parse(&wrapped).unwrap();
+        for name in [
+            "NumberQualifiers",
+            "Digits",
+            "FractionDigits",
+            "AllowedSign",
+        ] {
+            let node = document
+                .descendants()
+                .find(|node| node.is_element() && node.tag_name().name() == name)
+                .unwrap();
+            assert_eq!(node.tag_name().namespace(), Some(V8_NS), "{item}");
+        }
+        assert!(item.contains(&format!(r#"xmlns:v8_1="{V8_NS}""#)), "{item}");
+        assert!(item.contains(r#"xmlns:v8="urn:future""#), "{item}");
+    }
+
+    #[test]
     fn ext_dimension_update_inherits_an_alias_declared_on_its_container() {
         let mut item = format!(
-            r#"<Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><ExtDimensionTypes xmlns:p="{PREDEFINED_NS}"><p:ExtDimensionType name="Kinds"><p:Turnover>false</p:Turnover><p:AccountingFlags><p:Flag ref="Debit">false</p:Flag></p:AccountingFlags></p:ExtDimensionType></ExtDimensionTypes></Item>"#
+            r#"<Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><ExtDimensionTypes xmlns:p="{PREDEFINED_NS}" xmlns:f="urn:future"><p:ExtDimensionType name="Kinds"><p:Turnover><f:BeforeTurnover/>false<f:TurnoverMarker/></p:Turnover><p:AccountingFlags><p:Flag ref="Debit"><?keep flag?>false<f:FlagMarker/></p:Flag></p:AccountingFlags></p:ExtDimensionType></ExtDimensionTypes></Item>"#
         );
         let requested = [MetaPredefinedExtDimensionType {
             name: "Kinds".to_string(),
@@ -2524,9 +2930,12 @@ mod tests {
         )
         .unwrap();
 
-        assert!(item.contains("<p:Turnover>true</p:Turnover>"), "{item}");
         assert!(
-            item.contains("<p:Flag ref=\"Debit\">true</p:Flag>"),
+            item.contains("<p:Turnover><f:BeforeTurnover/>true<f:TurnoverMarker/></p:Turnover>"),
+            "{item}"
+        );
+        assert!(
+            item.contains("<p:Flag ref=\"Debit\"><?keep flag?>true<f:FlagMarker/></p:Flag>"),
             "{item}"
         );
         let wrapped = format!(r#"<Root xmlns="{PREDEFINED_NS}">{item}</Root>"#);
@@ -2536,7 +2945,7 @@ mod tests {
     #[test]
     fn replacement_preserves_local_namespace_declarations_and_unknown_attributes() {
         let mut item = format!(
-            r#"<Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><p:Description xmlns:p="{PREDEFINED_NS}" xmlns:future="urn:future" future:stamp="keep">old</p:Description></Item>"#
+            r#"<Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><p:Description xmlns:p="{PREDEFINED_NS}" xmlns:future="urn:future" future:stamp="keep">old<future:Marker/></p:Description></Item>"#
         );
 
         set_simple_child(
@@ -2549,8 +2958,28 @@ mod tests {
         .unwrap();
 
         assert!(item.contains(&format!(
-            r#"<p:Description xmlns:p="{PREDEFINED_NS}" xmlns:future="urn:future" future:stamp="keep">new</p:Description>"#
+            r#"<p:Description xmlns:p="{PREDEFINED_NS}" xmlns:future="urn:future" future:stamp="keep">new<future:Marker/></p:Description>"#
         )), "{item}");
+        let wrapped = format!("<Root xmlns=\"{PREDEFINED_NS}\">{item}</Root>");
+        Document::parse(&wrapped).unwrap();
+    }
+
+    #[test]
+    fn replacement_preserves_extension_order_around_the_typed_text_slot() {
+        let mut item = r#"<Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Description xmlns:f="urn:future"><f:Before/><?keep before?>old<!--after--><f:After/></Description></Item>"#.to_string();
+
+        set_simple_child(
+            &mut item,
+            "Description",
+            "new",
+            "\n",
+            &FragmentXmlContext::platform_default(),
+        )
+        .unwrap();
+
+        assert!(item.contains(
+            r#"<Description xmlns:f="urn:future"><f:Before/><?keep before?>new<!--after--><f:After/></Description>"#
+        ), "{item}");
         let wrapped = format!("<Root xmlns=\"{PREDEFINED_NS}\">{item}</Root>");
         Document::parse(&wrapped).unwrap();
     }
@@ -2561,13 +2990,11 @@ mod tests {
         let mut item = concat!(
             "<Item id=\"a7d2e6fc-3824-4b56-b4be-ae6be4944c0e\">\n",
             "\t<AccountingFlags xmlns:future=\"urn:future\" future:stamp=\"keep\">\n",
-            "\t\t<Flag ref=\"Debit\">true</Flag>\n",
-            "\t\t<future:Keep/>\n",
+            "\t\t<Flag ref=\"Debit\">true</Flag>  <future:Keep/>\n",
             "\t\t<Flag ref=\"Credit\">false</Flag>\n",
             "\t</AccountingFlags>\n",
             "\t<ExtDimensionTypes future:stamp=\"keep\" xmlns:future=\"urn:future\">\n",
-            "\t\t<ExtDimensionType name=\"Kinds\"><Turnover>true</Turnover></ExtDimensionType>\n",
-            "\t\t<future:Keep/>\n",
+            "\t\t<ExtDimensionType name=\"Kinds\"><Turnover>true</Turnover></ExtDimensionType>  <future:Keep/>\n",
             "\t</ExtDimensionTypes>\n",
             "</Item>"
         )
@@ -2586,6 +3013,7 @@ mod tests {
         assert!(!item.contains("<Flag "), "{item}");
         assert!(!item.contains("<ExtDimensionType "), "{item}");
         assert_eq!(item.matches("<future:Keep/>").count(), 2, "{item}");
+        assert_eq!(item.matches("\t\t  <future:Keep/>").count(), 2, "{item}");
         assert_eq!(item.matches("future:stamp=\"keep\"").count(), 2, "{item}");
     }
 
@@ -2672,6 +3100,36 @@ mod tests {
         assert_eq!(items[1]["id"], child);
         assert_eq!(items[1]["parentId"], parent);
         assert!(!items.iter().any(|item| item["id"] == sibling));
+    }
+
+    #[test]
+    fn remove_preserves_bytes_before_an_inline_following_sibling() {
+        let removed = "a7d2e6fc-3824-4b56-b4be-ae6be4944c0e";
+        let kept = "b7d2e6fc-3824-4b56-b4be-ae6be4944c0e";
+        let mut xml = format!(
+            r#"<PredefinedData xmlns="{PREDEFINED_NS}" xmlns:xsi="{XSI_NS}" xsi:type="CatalogPredefinedItems" version="2.20">
+	<Item id="{removed}"><Name>Drop</Name></Item>  <Item id="{kept}"><Name>Keep</Name></Item>
+</PredefinedData>"#
+        );
+        let operation =
+            MetaEditOperation::remove_predefined_items(vec![removed.to_string()]).unwrap();
+
+        apply_operation(
+            &mut xml,
+            "\n",
+            MetadataKind::Catalog,
+            PredefinedCodeType::String,
+            &operation,
+            &owner("Catalog"),
+            0,
+        )
+        .unwrap();
+
+        assert!(
+            xml.contains(&format!("\n\t  <Item id=\"{kept}\">")),
+            "{xml}"
+        );
+        validate_predefined_text(MetadataKind::Catalog, &xml).unwrap();
     }
 
     #[test]
