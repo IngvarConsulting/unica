@@ -2174,17 +2174,23 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
         if case.id == "meta-edit-predefined-items" {
             args.insert(
                 "operations".to_string(),
-                json!([{
-                    "op": "add",
-                    "collection": "predefinedItems",
-                    "elements": [{
-                        "id": "a7d2e6fc-3824-4b56-b4be-ae6be4944c0e",
-                        "name": "CorpusMain",
-                        "code": "001",
-                        "description": "Corpus predefined item",
-                        "isFolder": false
-                    }]
-                }]),
+                json!([
+                    {
+                        "op": "setProperties",
+                        "values": {"CodeType": "Number"}
+                    },
+                    {
+                        "op": "add",
+                        "collection": "predefinedItems",
+                        "elements": [{
+                            "id": "a7d2e6fc-3824-4b56-b4be-ae6be4944c0e",
+                            "name": "CorpusMain",
+                            "code": "643",
+                            "description": "Corpus predefined item",
+                            "isFolder": false
+                        }]
+                    }
+                ]),
             );
         } else if case.id == "meta-edit-property" {
             args.insert(

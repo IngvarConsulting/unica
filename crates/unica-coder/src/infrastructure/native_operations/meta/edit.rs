@@ -734,6 +734,7 @@ pub(super) fn build_typed_operation_post_image(
         descriptor_path,
         target,
         owner_kind,
+        &xml,
         operations,
     )?;
     let predefined_resources = planned_predefined.resources;

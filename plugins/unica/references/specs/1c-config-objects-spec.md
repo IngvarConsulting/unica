@@ -923,6 +923,16 @@ XML-элемент: `<Catalog>`. Категория InternalInfo: CatalogObject,
   `AccountingFlags`, `ExtDimensionTypes`;
 - `ChartOfCalculationTypes`: `ActionPeriodIsBase`.
 
+Форма `Code` определяется итоговым `CodeType` описателя владельца. Для
+`String` непустое значение записывается как обычный `<Code>...</Code>`, без
+`xsi:type`. Для `Number` непустое значение обязано быть лексическим
+XML Schema `decimal` и записывается с `xsi:type`, QName которого разрешается в
+`{http://www.w3.org/2001/XMLSchema}decimal` (обычно `xs:decimal`). Пустой код
+остаётся `<Code/>`. Оба значения `CodeType` writer учитывает у `Catalog` и
+`ChartOfCalculationTypes`; у остальных поддержанных владельцев применяется
+строковая форма. Namespace-префиксы не являются частью семантики и при точечной
+правке сохраняются из исходного документа.
+
 У элемента плана счетов `AccountingFlags/Flag` хранит булево значение и полный
 идентификатор флага в атрибуте `ref`. Подконто имеет форму
 `ExtDimensionTypes/ExtDimensionType[@name]/Turnover/AccountingFlags`.

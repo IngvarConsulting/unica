@@ -4,11 +4,12 @@ use crate::application::ports::{
 };
 use crate::domain::format_profile::ACTIVE_FORMAT_PROFILE;
 use crate::domain::metadata::{
-    MetaDiagnostic, MetaDiagnosticCode, MetaEditOperation, MetaMutationEffect,
-    MetaPredefinedAccountType, MetaPredefinedExtDimensionType, MetaPredefinedExtDimensionTypeData,
-    MetaPredefinedFields, MetaPredefinedItemAdd, MetaPredefinedItemData, MetaPredefinedItemUpdate,
-    MetaPredefinedItemsData, MetaPublicationAction, MetaPublicationPlanEntry,
-    MetaPublicationResource, MetadataKind, MetadataType,
+    metadata_decimal_shape, MetaDiagnostic, MetaDiagnosticCode, MetaEditOperation,
+    MetaMutationEffect, MetaPredefinedAccountType, MetaPredefinedExtDimensionType,
+    MetaPredefinedExtDimensionTypeData, MetaPredefinedFields, MetaPredefinedItemAdd,
+    MetaPredefinedItemData, MetaPredefinedItemUpdate, MetaPredefinedItemsData,
+    MetaPublicationAction, MetaPublicationPlanEntry, MetaPublicationResource, MetadataKind,
+    MetadataType,
 };
 use crate::domain::source_target::MetadataAddress;
 use crate::infrastructure::platform::secure_read::read_root_relative_regular_file;
@@ -27,6 +28,7 @@ use super::edit::{TypedChildFileMutation, TypedChildResourcePlan};
 use super::xml_model::emit_meta_typed_value_type;
 
 const PREDEFINED_NS: &str = "http://v8.1c.ru/8.3/xcf/predef";
+const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 const V8_NS: &str = "http://v8.1c.ru/8.1/data/core";
 const CFG_NS: &str = "http://v8.1c.ru/8.1/data/enterprise/current-config";
 const XR_NS: &str = "http://v8.1c.ru/8.3/xcf/readable";
@@ -37,6 +39,8 @@ const MAX_PREDEFINED_BYTES: usize = 8 * 1024 * 1024;
 #[derive(Clone)]
 struct FragmentXmlContext {
     wrapper_start: String,
+    xsi_prefix: Option<String>,
+    xs_prefix: Option<String>,
 }
 
 impl FragmentXmlContext {
@@ -53,6 +57,15 @@ impl FragmentXmlContext {
     }
 
     fn from_namespaces<'a>(namespaces: impl Iterator<Item = (&'a str, &'a str)>) -> Self {
+        let namespaces = namespaces
+            .map(|(name, uri)| (name.to_string(), uri.to_string()))
+            .collect::<Vec<_>>();
+        let xsi_prefix = namespaces
+            .iter()
+            .find_map(|(name, uri)| (uri == XSI_NS && !name.is_empty()).then(|| name.clone()));
+        let xs_prefix = namespaces
+            .iter()
+            .find_map(|(name, uri)| (uri == XS_NS && !name.is_empty()).then(|| name.clone()));
         let mut prefixes = BTreeMap::from([
             ("cfg".to_string(), CFG_NS.to_string()),
             ("v8".to_string(), V8_NS.to_string()),
@@ -62,7 +75,7 @@ impl FragmentXmlContext {
         ]);
         for (name, uri) in namespaces {
             if name != "xml" && !name.is_empty() {
-                prefixes.insert(name.to_string(), uri.to_string());
+                prefixes.insert(name, uri);
             }
         }
         let mut wrapper_start = format!("<Root xmlns=\"{PREDEFINED_NS}\"");
@@ -74,7 +87,25 @@ impl FragmentXmlContext {
             ));
         }
         wrapper_start.push('>');
-        Self { wrapper_start }
+        Self {
+            wrapper_start,
+            xsi_prefix,
+            xs_prefix,
+        }
+    }
+
+    fn decimal_type_attributes(&self) -> String {
+        let xsi_prefix = self.xsi_prefix.as_deref().unwrap_or("xsi");
+        let xs_prefix = self.xs_prefix.as_deref().unwrap_or("xs");
+        let mut attributes = String::new();
+        if self.xsi_prefix.is_none() {
+            attributes.push_str(&format!(" xmlns:{xsi_prefix}=\"{XSI_NS}\""));
+        }
+        if self.xs_prefix.is_none() {
+            attributes.push_str(&format!(" xmlns:{xs_prefix}=\"{XS_NS}\""));
+        }
+        attributes.push_str(&format!(" {xsi_prefix}:type=\"{xs_prefix}:decimal\""));
+        attributes
     }
 }
 
@@ -83,11 +114,24 @@ pub(super) struct PlannedPredefinedResource {
     pub(super) effects: Vec<MetaMutationEffect>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PredefinedCodeType {
+    String,
+    Number,
+}
+
+#[derive(Clone, Copy)]
+struct PredefinedOperationContext<'a> {
+    owner: &'a MetadataAddress,
+    operation_index: usize,
+}
+
 pub(super) fn plan_predefined_resource(
     source_root: &Path,
     descriptor_path: &Path,
     owner: &MetadataAddress,
     kind: MetadataKind,
+    descriptor_post_image: &str,
     operations: &[MetaEditOperation],
 ) -> Result<PlannedPredefinedResource, MetaFailure> {
     if !operations.iter().any(is_predefined_operation) {
@@ -96,6 +140,15 @@ pub(super) fn plan_predefined_resource(
             effects: Vec::new(),
         });
     }
+    let code_type = predefined_code_type(kind, descriptor_post_image).map_err(|message| {
+        failure(
+            owner,
+            MetaDiagnosticCode::ValidationFailed,
+            message,
+            None,
+            Some("properties.CodeType".to_string()),
+        )
+    })?;
 
     let path = descriptor_path
         .with_extension("")
@@ -156,7 +209,15 @@ pub(super) fn plan_predefined_resource(
                 None,
             )
         })?;
-        apply_operation(&mut text, eol, kind, operation, owner, operation_index)?;
+        apply_operation(
+            &mut text,
+            eol,
+            kind,
+            code_type,
+            operation,
+            owner,
+            operation_index,
+        )?;
         validate_predefined_text_allowing_self_closing_items(kind, &text).map_err(|message| {
             failure(
                 owner,
@@ -183,7 +244,7 @@ pub(super) fn plan_predefined_resource(
             after,
         });
     }
-    validate_predefined_text(kind, &text).map_err(|message| {
+    validate_predefined_text_for_code_type(kind, code_type, &text).map_err(|message| {
         failure(
             owner,
             MetaDiagnosticCode::ValidationFailed,
@@ -231,6 +292,73 @@ pub(super) fn plan_predefined_resource(
     Ok(PlannedPredefinedResource { resources, effects })
 }
 
+fn predefined_code_type(
+    kind: MetadataKind,
+    descriptor_post_image: &str,
+) -> Result<PredefinedCodeType, String> {
+    if !matches!(
+        kind,
+        MetadataKind::Catalog | MetadataKind::ChartOfCalculationTypes
+    ) {
+        return Ok(PredefinedCodeType::String);
+    }
+    let document = Document::parse(descriptor_post_image)
+        .map_err(|error| format!("metadata descriptor: {error}"))?;
+    let root = document.root_element();
+    let mut owners = root.children().filter(|node| {
+        node.is_element()
+            && node.tag_name().namespace() == Some(MD_CLASSES_NS)
+            && node.tag_name().name() == kind.as_str()
+    });
+    let object = owners
+        .next()
+        .ok_or_else(|| format!("{} descriptor has no direct owner", kind.as_str()))?;
+    if owners.next().is_some() {
+        return Err(format!(
+            "{} descriptor has duplicate direct owners",
+            kind.as_str()
+        ));
+    }
+    let mut property_containers = object.children().filter(|node| {
+        node.is_element()
+            && node.tag_name().namespace() == Some(MD_CLASSES_NS)
+            && node.tag_name().name() == "Properties"
+    });
+    let properties = property_containers
+        .next()
+        .ok_or_else(|| format!("{} descriptor has no direct Properties", kind.as_str()))?;
+    if property_containers.next().is_some() {
+        return Err(format!(
+            "{} descriptor has duplicate direct Properties",
+            kind.as_str()
+        ));
+    }
+    let mut code_types = properties.children().filter(|node| {
+        node.is_element()
+            && node.tag_name().namespace() == Some(MD_CLASSES_NS)
+            && node.tag_name().name() == "CodeType"
+    });
+    let code_type = code_types
+        .next()
+        .and_then(|node| node.text())
+        .map(str::trim)
+        .unwrap_or("String");
+    if code_types.next().is_some() {
+        return Err(format!(
+            "{} descriptor has duplicate direct CodeType",
+            kind.as_str()
+        ));
+    }
+    match code_type {
+        "String" => Ok(PredefinedCodeType::String),
+        "Number" => Ok(PredefinedCodeType::Number),
+        other => Err(format!(
+            "{} descriptor CodeType `{other}` is unsupported",
+            kind.as_str()
+        )),
+    }
+}
+
 pub(crate) fn read_predefined_items(
     bytes: &[u8],
     kind: MetadataKind,
@@ -267,18 +395,27 @@ pub(super) fn validate_predefined_image(kind: MetadataKind, bytes: &[u8]) -> Res
 }
 
 fn validate_predefined_text(kind: MetadataKind, text: &str) -> Result<(), String> {
-    validate_predefined_text_with_options(kind, text, false)
+    validate_predefined_text_with_options(kind, None, text, false)
+}
+
+fn validate_predefined_text_for_code_type(
+    kind: MetadataKind,
+    code_type: PredefinedCodeType,
+    text: &str,
+) -> Result<(), String> {
+    validate_predefined_text_with_options(kind, Some(code_type), text, false)
 }
 
 fn validate_predefined_text_allowing_self_closing_items(
     kind: MetadataKind,
     text: &str,
 ) -> Result<(), String> {
-    validate_predefined_text_with_options(kind, text, true)
+    validate_predefined_text_with_options(kind, None, text, true)
 }
 
 fn validate_predefined_text_with_options(
     kind: MetadataKind,
+    code_type: Option<PredefinedCodeType>,
     text: &str,
     allow_self_closing_items: bool,
 ) -> Result<(), String> {
@@ -299,6 +436,27 @@ fn validate_predefined_text_with_options(
             ACTIVE_FORMAT_PROFILE.export_format,
             kind.as_str()
         ));
+    }
+    for node in root.descendants().filter(|node| node.is_element()) {
+        let Some(parent) = node
+            .parent_element()
+            .filter(|parent| parent.tag_name().namespace() == Some(PREDEFINED_NS))
+        else {
+            continue;
+        };
+        if node.tag_name().namespace() != Some(PREDEFINED_NS)
+            && expected_predefined_child_name(
+                kind,
+                parent.tag_name().name(),
+                node.tag_name().name(),
+            )
+        {
+            return Err(format!(
+                "predefined {} must use the predefined namespace under {}",
+                node.tag_name().name(),
+                parent.tag_name().name()
+            ));
+        }
     }
     let mut ids = HashSet::new();
     for child_items in root
@@ -369,9 +527,69 @@ fn validate_predefined_text_with_options(
                 ));
             }
         }
+        if let (Some(code_type), Some(code)) = (code_type, child(item, "Code")) {
+            validate_code_value(code, code_type)?;
+        }
         parse_item(text, item, kind, None)?;
     }
     Ok(())
+}
+
+fn validate_code_value(code: Node<'_, '_>, code_type: PredefinedCodeType) -> Result<(), String> {
+    let value = code.text().unwrap_or_default();
+    if code_type == PredefinedCodeType::String {
+        return if code.attribute((XSI_NS, "type")).is_none() {
+            Ok(())
+        } else {
+            Err("predefined string Code must not declare xsi:type".to_string())
+        };
+    }
+    if value.is_empty() {
+        return Ok(());
+    }
+    if metadata_decimal_shape(value).is_none() {
+        return Err("predefined numeric Code is not an XML Schema decimal".to_string());
+    }
+    let raw_type = code
+        .attribute((XSI_NS, "type"))
+        .ok_or_else(|| "predefined numeric Code requires xsi:type".to_string())?;
+    let (prefix, local) = raw_type
+        .split_once(':')
+        .filter(|(prefix, local)| !prefix.is_empty() && !local.is_empty() && !local.contains(':'))
+        .ok_or_else(|| "predefined numeric Code xsi:type is not a QName".to_string())?;
+    if local != "decimal" || code.lookup_namespace_uri(Some(prefix)) != Some(XS_NS) {
+        return Err("predefined numeric Code xsi:type must resolve to xs:decimal".to_string());
+    }
+    Ok(())
+}
+
+fn expected_predefined_child_name(kind: MetadataKind, parent: &str, child: &str) -> bool {
+    match parent {
+        "PredefinedData" | "ChildItems" => child == "Item",
+        "Item" => {
+            matches!(child, "Name" | "Code" | "Description" | "ChildItems")
+                || match kind {
+                    MetadataKind::Catalog => child == "IsFolder",
+                    MetadataKind::ChartOfCharacteristicTypes => {
+                        matches!(child, "Type" | "IsFolder")
+                    }
+                    MetadataKind::ChartOfAccounts => matches!(
+                        child,
+                        "AccountType"
+                            | "OffBalance"
+                            | "Order"
+                            | "AccountingFlags"
+                            | "ExtDimensionTypes"
+                    ),
+                    MetadataKind::ChartOfCalculationTypes => child == "ActionPeriodIsBase",
+                    _ => false,
+                }
+        }
+        "AccountingFlags" => child == "Flag",
+        "ExtDimensionTypes" => child == "ExtDimensionType",
+        "ExtDimensionType" => matches!(child, "Turnover" | "AccountingFlags"),
+        _ => false,
+    }
 }
 
 fn collect_items(
@@ -544,19 +762,54 @@ fn apply_operation(
     text: &mut String,
     eol: &str,
     kind: MetadataKind,
+    code_type: PredefinedCodeType,
     operation: &MetaEditOperation,
     owner: &MetadataAddress,
     operation_index: usize,
 ) -> Result<(), MetaFailure> {
+    let operation_context = PredefinedOperationContext {
+        owner,
+        operation_index,
+    };
     match operation {
         MetaEditOperation::AddPredefinedItems { elements } => {
             for (index, element) in elements.iter().enumerate() {
-                add_item(text, eol, kind, element, owner, operation_index, index)?;
+                validate_requested_code(
+                    element.fields.code.as_deref(),
+                    code_type,
+                    owner,
+                    operation_index,
+                    index,
+                )?;
+                add_item(
+                    text,
+                    eol,
+                    kind,
+                    code_type,
+                    element,
+                    operation_context,
+                    index,
+                )?;
             }
         }
         MetaEditOperation::UpdatePredefinedItems { elements } => {
             for (index, element) in elements.iter().enumerate() {
-                update_item(text, eol, kind, element, owner, operation_index, index)?;
+                validate_requested_code(
+                    element.fields.code.as_deref(),
+                    code_type,
+                    owner,
+                    operation_index,
+                    index,
+                )?;
+                update_item(
+                    text,
+                    eol,
+                    kind,
+                    code_type,
+                    element,
+                    operation_context,
+                    index,
+                )?;
             }
         }
         MetaEditOperation::RemovePredefinedItems { ids } => {
@@ -588,15 +841,40 @@ fn apply_operation(
     Ok(())
 }
 
-fn add_item(
-    text: &mut String,
-    eol: &str,
-    kind: MetadataKind,
-    element: &MetaPredefinedItemAdd,
+fn validate_requested_code(
+    code: Option<&str>,
+    code_type: PredefinedCodeType,
     owner: &MetadataAddress,
     operation_index: usize,
     element_index: usize,
 ) -> Result<(), MetaFailure> {
+    if code_type == PredefinedCodeType::Number
+        && code.is_some_and(|value| !value.is_empty() && metadata_decimal_shape(value).is_none())
+    {
+        return Err(failure(
+            owner,
+            MetaDiagnosticCode::InvalidArguments,
+            "predefined numeric Code is not an XML Schema decimal",
+            Some(operation_index),
+            Some(format!("elements[{element_index}].code")),
+        ));
+    }
+    Ok(())
+}
+
+fn add_item(
+    text: &mut String,
+    eol: &str,
+    kind: MetadataKind,
+    code_type: PredefinedCodeType,
+    element: &MetaPredefinedItemAdd,
+    context: PredefinedOperationContext<'_>,
+    element_index: usize,
+) -> Result<(), MetaFailure> {
+    let PredefinedOperationContext {
+        owner,
+        operation_index,
+    } = context;
     if let Some(location) = find_item(text, &element.id).map_err(|message| {
         failure(
             owner,
@@ -639,7 +917,32 @@ fn add_item(
         ));
     }
     expand_self_closing_root(text, eol);
-    let close = text.rfind("</PredefinedData>").ok_or_else(|| {
+    let (root_qname, root_context) = {
+        let document = Document::parse(text).map_err(|error| {
+            failure(
+                owner,
+                MetaDiagnosticCode::ValidationFailed,
+                format!("Predefined.xml: {error}"),
+                Some(operation_index),
+                None,
+            )
+        })?;
+        let root = document.root_element();
+        lexical_element_name(&text[root.range()])
+            .map(str::to_string)
+            .map_err(|message| {
+                failure(
+                    owner,
+                    MetaDiagnosticCode::ValidationFailed,
+                    message,
+                    Some(operation_index),
+                    None,
+                )
+            })
+            .map(|qname| (qname, FragmentXmlContext::for_node(root)))?
+    };
+    let closing_tag = format!("</{root_qname}>");
+    let close = text.rfind(&closing_tag).ok_or_else(|| {
         failure(
             owner,
             MetaDiagnosticCode::ValidationFailed,
@@ -648,7 +951,18 @@ fn add_item(
             None,
         )
     })?;
-    let fragment = render_item(element, kind, eol);
+    let rendered_item =
+        render_item(element, kind, code_type, eol, &root_context).map_err(|message| {
+            failure(
+                owner,
+                MetaDiagnosticCode::InvalidArguments,
+                message,
+                Some(operation_index),
+                Some(format!("elements[{element_index}].code")),
+            )
+        })?;
+    let fragment =
+        qualify_generated_predefined_elements(&rendered_item, lexical_element_prefix(&root_qname));
     let fragment = format!("\t{}", fragment.replace(eol, &format!("{eol}\t")));
     text.insert_str(close, &format!("{fragment}{eol}"));
     Ok(())
@@ -658,11 +972,15 @@ fn update_item(
     text: &mut String,
     eol: &str,
     kind: MetadataKind,
+    code_type: PredefinedCodeType,
     element: &MetaPredefinedItemUpdate,
-    owner: &MetadataAddress,
-    operation_index: usize,
+    context: PredefinedOperationContext<'_>,
     element_index: usize,
 ) -> Result<(), MetaFailure> {
+    let PredefinedOperationContext {
+        owner,
+        operation_index,
+    } = context;
     let Some(location) = find_item(text, &element.id).map_err(|message| {
         failure(
             owner,
@@ -696,17 +1014,23 @@ fn update_item(
             },
         )?;
     }
-    patch_fields(&mut fragment, kind, &element.fields, eol, fragment_context).map_err(
-        |message| {
-            failure(
-                owner,
-                MetaDiagnosticCode::ValidationFailed,
-                message,
-                Some(operation_index),
-                Some(format!("elements[{element_index}]")),
-            )
-        },
-    )?;
+    patch_fields(
+        &mut fragment,
+        kind,
+        code_type,
+        &element.fields,
+        eol,
+        fragment_context,
+    )
+    .map_err(|message| {
+        failure(
+            owner,
+            MetaDiagnosticCode::ValidationFailed,
+            message,
+            Some(operation_index),
+            Some(format!("elements[{element_index}]")),
+        )
+    })?;
     text.replace_range(location.range, &fragment);
     Ok(())
 }
@@ -714,12 +1038,13 @@ fn update_item(
 fn patch_fields(
     item: &mut String,
     kind: MetadataKind,
+    code_type: PredefinedCodeType,
     fields: &MetaPredefinedFields,
     eol: &str,
     fragment_context: &FragmentXmlContext,
 ) -> Result<(), String> {
     if let Some(value) = &fields.code {
-        set_simple_child(item, "Code", value, eol, fragment_context)?;
+        set_code_child(item, value, code_type, eol, fragment_context)?;
     }
     if let Some(value) = &fields.description {
         set_simple_child(item, "Description", value, eol, fragment_context)?;
@@ -776,11 +1101,22 @@ fn patch_fields(
     Ok(())
 }
 
-fn render_item(element: &MetaPredefinedItemAdd, kind: MetadataKind, eol: &str) -> String {
+fn render_item(
+    element: &MetaPredefinedItemAdd,
+    kind: MetadataKind,
+    code_type: PredefinedCodeType,
+    eol: &str,
+    fragment_context: &FragmentXmlContext,
+) -> Result<String, String> {
+    let code = render_code(
+        element.fields.code.as_deref().unwrap_or(""),
+        code_type,
+        fragment_context,
+    )?;
     let mut lines = vec![
         format!("<Item id=\"{}\">", escape_xml(&element.id)),
         format!("\t<Name>{}</Name>", escape_xml(&element.name)),
-        simple_line("Code", element.fields.code.as_deref().unwrap_or(""), "\t"),
+        format!("\t{code}"),
         simple_line(
             "Description",
             element.fields.description.as_deref().unwrap_or(""),
@@ -837,7 +1173,7 @@ fn render_item(element: &MetaPredefinedItemAdd, kind: MetadataKind, eol: &str) -
         _ => unreachable!("capability validation rejects this predefined owner"),
     }
     lines.push("</Item>".to_string());
-    lines.join(eol)
+    Ok(lines.join(eol))
 }
 
 fn add_projection(element: &MetaPredefinedItemAdd, kind: MetadataKind) -> MetaPredefinedItemData {
@@ -1004,6 +1340,38 @@ fn set_simple_child(
     set_complex_child(item, tag, &rendered, eol, fragment_context)
 }
 
+fn set_code_child(
+    item: &mut String,
+    value: &str,
+    code_type: PredefinedCodeType,
+    eol: &str,
+    fragment_context: &FragmentXmlContext,
+) -> Result<(), String> {
+    let rendered = render_code(value, code_type, fragment_context)?;
+    set_complex_child(item, "Code", &rendered, eol, fragment_context)
+}
+
+fn render_code(
+    value: &str,
+    code_type: PredefinedCodeType,
+    fragment_context: &FragmentXmlContext,
+) -> Result<String, String> {
+    if value.is_empty() {
+        return Ok("<Code/>".to_string());
+    }
+    if code_type == PredefinedCodeType::Number {
+        if metadata_decimal_shape(value).is_none() {
+            return Err("predefined numeric Code is not an XML Schema decimal".to_string());
+        }
+        return Ok(format!(
+            "<Code{}>{}</Code>",
+            fragment_context.decimal_type_attributes(),
+            escape_xml(value)
+        ));
+    }
+    Ok(format!("<Code>{}</Code>", escape_xml(value)))
+}
+
 fn set_complex_child(
     parent: &mut String,
     tag: &str,
@@ -1012,12 +1380,17 @@ fn set_complex_child(
     fragment_context: &FragmentXmlContext,
 ) -> Result<(), String> {
     if let Some(range) = fragment_direct_child_range(parent, tag, None, fragment_context)? {
-        if parent[range.clone()] != *rendered {
-            parent.replace_range(range, rendered);
+        let existing_qname = lexical_element_name(&parent[range.clone()])?;
+        let prefix = lexical_element_prefix(existing_qname);
+        let rendered = qualify_generated_predefined_elements(rendered, prefix);
+        if parent[range.clone()] != rendered {
+            parent.replace_range(range, &rendered);
         }
         return Ok(());
     }
     let parent_tag = fragment_root_name(parent, fragment_context)?;
+    let prefix = lexical_element_prefix(&parent_tag);
+    let rendered = qualify_generated_predefined_elements(rendered, prefix);
     expand_self_closing(parent, &parent_tag, eol, "");
     let indent = child_indent(parent);
     if let Some(before) = ordered_insertion_anchor(parent, tag, fragment_context)? {
@@ -1051,8 +1424,10 @@ fn merge_flags_container(
     let range = fragment_direct_child_range(parent, tag, None, fragment_context)?
         .ok_or_else(|| format!("predefined {tag} is unavailable"))?;
     let mut container = parent[range.clone()].to_string();
+    let container_qname = lexical_element_name(&container)?.to_string();
+    let container_prefix = lexical_element_prefix(&container_qname);
     let indent = format!("{}\t", child_indent(parent));
-    expand_self_closing(&mut container, tag, eol, &child_indent(parent));
+    expand_self_closing(&mut container, &container_qname, eol, &child_indent(parent));
     for (name, value) in requested {
         let rendered = format!("<Flag ref=\"{}\">{value}</Flag>", escape_xml(name));
         if let Some(flag_range) = fragment_direct_child_range(
@@ -1061,12 +1436,18 @@ fn merge_flags_container(
             Some(("ref", name.as_str())),
             fragment_context,
         )? {
+            let existing_qname = lexical_element_name(&container[flag_range.clone()])?;
+            let rendered = qualify_generated_predefined_elements(
+                &rendered,
+                lexical_element_prefix(existing_qname),
+            );
             if container[flag_range.clone()] != rendered {
                 container.replace_range(flag_range, &rendered);
             }
         } else {
+            let rendered = qualify_generated_predefined_elements(&rendered, container_prefix);
             let close = container
-                .rfind(&format!("</{tag}>"))
+                .rfind(&format!("</{container_qname}>"))
                 .ok_or_else(|| format!("predefined {tag} closing tag is unavailable"))?;
             container.insert_str(close, &format!("{eol}{indent}{rendered}"));
         }
@@ -1106,8 +1487,10 @@ fn merge_ext_dimensions(
     let range = fragment_direct_child_range(item, "ExtDimensionTypes", None, fragment_context)?
         .ok_or_else(|| "ExtDimensionTypes is unavailable".to_string())?;
     let mut container = item[range.clone()].to_string();
+    let container_qname = lexical_element_name(&container)?.to_string();
+    let container_prefix = lexical_element_prefix(&container_qname);
     let container_indent = child_indent(item);
-    expand_self_closing(&mut container, "ExtDimensionTypes", eol, &container_indent);
+    expand_self_closing(&mut container, &container_qname, eol, &container_indent);
     for requested in requested {
         if let Some(item_range) = fragment_direct_child_range(
             &container,
@@ -1137,9 +1520,12 @@ fn merge_ext_dimensions(
             container.replace_range(item_range, &existing);
         } else {
             let indent = format!("{container_indent}\t");
-            let rendered = render_ext_dimension(requested, &indent, eol);
+            let rendered = qualify_generated_predefined_elements(
+                &render_ext_dimension(requested, &indent, eol),
+                container_prefix,
+            );
             let close = container
-                .rfind("</ExtDimensionTypes>")
+                .rfind(&format!("</{container_qname}>"))
                 .ok_or_else(|| "ExtDimensionTypes closing tag is unavailable".to_string())?;
             container.insert_str(close, &format!("{eol}{rendered}"));
         }
@@ -1287,12 +1673,96 @@ fn fragment_root_name(
     let wrapped = format!("{}{fragment}</Root>", fragment_context.wrapper_start);
     let document =
         Document::parse(&wrapped).map_err(|error| format!("predefined XML fragment: {error}"))?;
-    document
+    let node = document
         .root_element()
         .children()
         .find(|node| node.is_element())
-        .map(|node| node.tag_name().name().to_string())
-        .ok_or_else(|| "predefined XML fragment has no root element".to_string())
+        .ok_or_else(|| "predefined XML fragment has no root element".to_string())?;
+    let range = node.range();
+    let relative = range.start - fragment_context.wrapper_start.len()
+        ..range.end - fragment_context.wrapper_start.len();
+    lexical_element_name(&fragment[relative]).map(str::to_string)
+}
+
+fn lexical_element_name(source: &str) -> Result<&str, String> {
+    source
+        .strip_prefix('<')
+        .and_then(|source| {
+            let end = source
+                .find(|character: char| {
+                    character.is_ascii_whitespace() || matches!(character, '/' | '>')
+                })
+                .unwrap_or(source.len());
+            source.get(..end)
+        })
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| "predefined element QName cannot be preserved".to_string())
+}
+
+fn lexical_element_prefix(qname: &str) -> &str {
+    qname
+        .rsplit_once(':')
+        .map_or("", |(prefix, _)| &qname[..prefix.len() + 1])
+}
+
+fn qualify_generated_predefined_elements(fragment: &str, prefix: &str) -> String {
+    if prefix.is_empty() {
+        return fragment.to_string();
+    }
+    const GENERATED_NAMES: &[&str] = &[
+        "Item",
+        "Name",
+        "Code",
+        "Description",
+        "IsFolder",
+        "Type",
+        "AccountType",
+        "OffBalance",
+        "Order",
+        "AccountingFlags",
+        "Flag",
+        "ExtDimensionTypes",
+        "ExtDimensionType",
+        "Turnover",
+        "ActionPeriodIsBase",
+        "ChildItems",
+    ];
+
+    let bytes = fragment.as_bytes();
+    let mut insertions = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'<' {
+            index += 1;
+            continue;
+        }
+        let mut name_start = index + 1;
+        if bytes.get(name_start) == Some(&b'/') {
+            name_start += 1;
+        }
+        if matches!(bytes.get(name_start), Some(b'!' | b'?')) {
+            index = name_start + 1;
+            continue;
+        }
+        let mut name_end = name_start;
+        while bytes
+            .get(name_end)
+            .is_some_and(|byte| !byte.is_ascii_whitespace() && !matches!(byte, b'/' | b'>'))
+        {
+            name_end += 1;
+        }
+        if let Some(name) = fragment.get(name_start..name_end) {
+            if !name.contains(':') && GENERATED_NAMES.contains(&name) {
+                insertions.push(name_start);
+            }
+        }
+        index = name_end.max(index + 1);
+    }
+    let mut qualified = fragment.to_string();
+    for insertion in insertions.into_iter().rev() {
+        qualified.insert_str(insertion, prefix);
+    }
+    qualified
 }
 
 fn ordered_insertion_anchor(
@@ -1375,10 +1845,13 @@ fn expand_self_closing_root(text: &mut String, eol: &str) {
     let range = root.range();
     if text[range.clone()].trim_end().ends_with("/>") {
         let fragment = &text[range.clone()];
+        let Ok(qname) = lexical_element_name(fragment) else {
+            return;
+        };
         let slash = fragment
             .rfind("/>")
             .expect("self-closing root has terminator");
-        let replacement = format!("{}>{eol}</PredefinedData>", &fragment[..slash]);
+        let replacement = format!("{}>{eol}</{qname}>", &fragment[..slash]);
         text.replace_range(range, &replacement);
     }
 }
@@ -1543,6 +2016,13 @@ mod tests {
         .unwrap()
     }
 
+    fn descriptor_image(kind: MetadataKind, code_type: &str) -> String {
+        format!(
+            "<MetaDataObject xmlns=\"{MD_CLASSES_NS}\" version=\"2.20\"><{kind}><Properties><Name>Items</Name><CodeType>{code_type}</CodeType></Properties></{kind}></MetaDataObject>",
+            kind = kind.as_str()
+        )
+    }
+
     #[test]
     fn info_is_flat_document_order_with_explicit_root_parent() {
         let bytes = br#"<?xml version="1.0"?><PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CatalogPredefinedItems" version="2.20"><Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Parent</Name><ChildItems><Item id="b7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Child</Name></Item></ChildItems></Item></PredefinedData>"#;
@@ -1647,6 +2127,7 @@ mod tests {
             &descriptor,
             &owner("Catalog"),
             MetadataKind::Catalog,
+            &descriptor_image(MetadataKind::Catalog, "String"),
             &[operation],
         )
         .unwrap();
@@ -1690,6 +2171,7 @@ mod tests {
             &descriptor,
             &owner("Catalog"),
             MetadataKind::Catalog,
+            &descriptor_image(MetadataKind::Catalog, "String"),
             &[operation],
         )
         .unwrap();
@@ -1723,9 +2205,12 @@ mod tests {
             &mut xml,
             "\n",
             MetadataKind::Catalog,
+            PredefinedCodeType::String,
             &element,
-            &owner,
-            0,
+            PredefinedOperationContext {
+                owner: &owner,
+                operation_index: 0,
+            },
             0,
         )
         .unwrap_err();
@@ -1748,9 +2233,12 @@ mod tests {
             &mut xml,
             "\n",
             MetadataKind::Catalog,
+            PredefinedCodeType::String,
             &element,
-            &owner("Catalog"),
-            0,
+            PredefinedOperationContext {
+                owner: &owner("Catalog"),
+                operation_index: 0,
+            },
             0,
         )
         .unwrap();
@@ -1773,6 +2261,7 @@ mod tests {
             &descriptor,
             &owner("Catalog"),
             MetadataKind::Catalog,
+            &descriptor_image(MetadataKind::Catalog, "String"),
             std::slice::from_ref(&operation),
         )
         .unwrap();
@@ -1793,6 +2282,7 @@ mod tests {
             &descriptor,
             &owner("Catalog"),
             MetadataKind::Catalog,
+            &descriptor_image(MetadataKind::Catalog, "String"),
             &[operation],
         )
         .unwrap();
@@ -1825,6 +2315,7 @@ mod tests {
             &descriptor,
             &owner("Catalog"),
             MetadataKind::Catalog,
+            &descriptor_image(MetadataKind::Catalog, "String"),
             &[operation],
         )
         .unwrap();
@@ -1837,6 +2328,291 @@ mod tests {
         assert!(text.contains("\r\n\t<Item"));
         assert!(!text.replace("\r\n", "").contains('\n'));
         assert!(text.contains("</PredefinedData>"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn numeric_code_uses_effective_descriptor_post_image_for_add_and_update() {
+        let root = temp_root("numeric-code");
+        let descriptor = root.join("Catalogs/Items.xml");
+        let add = MetaEditOperation::add_predefined_items(vec![MetaPredefinedItemAdd {
+            id: "a7d2e6fc-3824-4b56-b4be-ae6be4944c0e".to_string(),
+            name: "Main".to_string(),
+            fields: MetaPredefinedFields {
+                code: Some("643".to_string()),
+                ..MetaPredefinedFields::default()
+            },
+        }])
+        .unwrap();
+        let first = plan_predefined_resource(
+            &root,
+            &descriptor,
+            &owner("Catalog"),
+            MetadataKind::Catalog,
+            &descriptor_image(MetadataKind::Catalog, "Number"),
+            &[add],
+        )
+        .unwrap();
+        let first_bytes = first.resources.file_mutations[0]
+            .post_image
+            .as_deref()
+            .unwrap();
+        let first_text = std::str::from_utf8(first_bytes)
+            .unwrap()
+            .trim_start_matches('\u{feff}');
+        assert!(first_text.contains(r#"<Code xsi:type="xs:decimal">643</Code>"#));
+        validate_predefined_text_for_code_type(
+            MetadataKind::Catalog,
+            PredefinedCodeType::Number,
+            first_text,
+        )
+        .unwrap();
+
+        let path = descriptor.with_extension("").join("Ext/Predefined.xml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, first_bytes).unwrap();
+        let update = MetaEditOperation::update_predefined_items(vec![MetaPredefinedItemUpdate {
+            id: "a7d2e6fc-3824-4b56-b4be-ae6be4944c0e".to_string(),
+            name: None,
+            fields: MetaPredefinedFields {
+                code: Some("840".to_string()),
+                ..MetaPredefinedFields::default()
+            },
+        }])
+        .unwrap();
+        let second = plan_predefined_resource(
+            &root,
+            &descriptor,
+            &owner("Catalog"),
+            MetadataKind::Catalog,
+            &descriptor_image(MetadataKind::Catalog, "Number"),
+            &[update],
+        )
+        .unwrap();
+        let second_text = std::str::from_utf8(
+            second.resources.file_mutations[0]
+                .post_image
+                .as_deref()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(second_text.contains(r#"<Code xsi:type="xs:decimal">840</Code>"#));
+        assert_eq!(second_text.matches("xsi:type=\"xs:decimal\"").count(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn numeric_code_rejects_non_decimal_public_values() {
+        for (index, code) in ["ABC", "1e3", " 1", "1 ", "1."].into_iter().enumerate() {
+            let root = temp_root(&format!("invalid-numeric-code-{index}"));
+            let descriptor = root.join("Catalogs/Items.xml");
+            let operation = MetaEditOperation::add_predefined_items(vec![MetaPredefinedItemAdd {
+                id: format!("a7d2e6fc-3824-4b56-b4be-{:012x}", index + 1),
+                name: "Main".to_string(),
+                fields: MetaPredefinedFields {
+                    code: Some(code.to_string()),
+                    ..MetaPredefinedFields::default()
+                },
+            }])
+            .unwrap();
+            let failure = plan_predefined_resource(
+                &root,
+                &descriptor,
+                &owner("Catalog"),
+                MetadataKind::Catalog,
+                &descriptor_image(MetadataKind::Catalog, "Number"),
+                &[operation],
+            )
+            .err()
+            .expect("invalid numeric code must be rejected");
+            assert_eq!(
+                failure.diagnostics[0].code,
+                MetaDiagnosticCode::InvalidArguments,
+                "{code}"
+            );
+            assert_eq!(
+                failure.diagnostics[0].field.as_deref(),
+                Some("operations[0].elements[0].code")
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn numeric_code_validation_resolves_the_xs_decimal_qname_by_namespace() {
+        let alias = r#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:d="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CatalogPredefinedItems" version="2.20"><Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Main</Name><Code xsi:type="d:decimal">643</Code></Item></PredefinedData>"#;
+        validate_predefined_text_for_code_type(
+            MetadataKind::Catalog,
+            PredefinedCodeType::Number,
+            alias,
+        )
+        .unwrap();
+        let wrong = alias.replace(
+            "http://www.w3.org/2001/XMLSchema\" xmlns:xsi",
+            "urn:not-xml-schema\" xmlns:xsi",
+        );
+        assert!(validate_predefined_text_for_code_type(
+            MetadataKind::Catalog,
+            PredefinedCodeType::Number,
+            &wrong,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn numeric_code_writer_reuses_in_scope_namespace_aliases() {
+        let root = temp_root("numeric-code-aliases");
+        let descriptor = root.join("Catalogs/Items.xml");
+        let path = descriptor.with_extension("").join("Ext/Predefined.xml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            format!(
+                r#"<p:PredefinedData xmlns:p="{PREDEFINED_NS}" xmlns:i="{XSI_NS}" xmlns:d="{XS_NS}" i:type="CatalogPredefinedItems" version="2.20"><p:Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><p:Name>Main</p:Name><p:Code/></p:Item></p:PredefinedData>"#
+            ),
+        )
+        .unwrap();
+        let operation =
+            MetaEditOperation::update_predefined_items(vec![MetaPredefinedItemUpdate {
+                id: "a7d2e6fc-3824-4b56-b4be-ae6be4944c0e".to_string(),
+                name: None,
+                fields: MetaPredefinedFields {
+                    code: Some("643".to_string()),
+                    ..MetaPredefinedFields::default()
+                },
+            }])
+            .unwrap();
+        let planned = plan_predefined_resource(
+            &root,
+            &descriptor,
+            &owner("Catalog"),
+            MetadataKind::Catalog,
+            &descriptor_image(MetadataKind::Catalog, "Number"),
+            &[operation],
+        )
+        .unwrap();
+        let after = std::str::from_utf8(
+            planned.resources.file_mutations[0]
+                .post_image
+                .as_deref()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            after.contains(r#"<p:Code i:type="d:decimal">643</p:Code>"#),
+            "{after}"
+        );
+        assert!(!after.contains("xmlns:xs="), "{after}");
+        assert!(!after.contains("xmlns:xsi="), "{after}");
+        validate_predefined_text_for_code_type(
+            MetadataKind::Catalog,
+            PredefinedCodeType::Number,
+            after,
+        )
+        .unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn prefixed_predefined_update_preserves_qnames_and_repairs_self_closing_code() {
+        for (index, code) in ["<p:Code>1</p:Code>", "<p:Code/>"].into_iter().enumerate() {
+            let root = temp_root(&format!("prefixed-update-{index}"));
+            let descriptor = root.join("Catalogs/Items.xml");
+            let path = descriptor.with_extension("").join("Ext/Predefined.xml");
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(
+                &path,
+                format!(
+                    r#"<p:PredefinedData xmlns:p="{PREDEFINED_NS}" xmlns:xsi="{XSI_NS}" xsi:type="CatalogPredefinedItems" version="2.20"><p:Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><p:Name>Main</p:Name>{code}</p:Item></p:PredefinedData>"#
+                ),
+            )
+            .unwrap();
+            let operation =
+                MetaEditOperation::update_predefined_items(vec![MetaPredefinedItemUpdate {
+                    id: "a7d2e6fc-3824-4b56-b4be-ae6be4944c0e".to_string(),
+                    name: None,
+                    fields: MetaPredefinedFields {
+                        code: Some("2".to_string()),
+                        description: Some("Changed".to_string()),
+                        ..MetaPredefinedFields::default()
+                    },
+                }])
+                .unwrap();
+            let planned = plan_predefined_resource(
+                &root,
+                &descriptor,
+                &owner("Catalog"),
+                MetadataKind::Catalog,
+                &descriptor_image(MetadataKind::Catalog, "String"),
+                &[operation],
+            )
+            .unwrap();
+            let after = std::str::from_utf8(
+                planned.resources.file_mutations[0]
+                    .post_image
+                    .as_deref()
+                    .unwrap(),
+            )
+            .unwrap();
+            assert!(after.contains("<p:Code>2</p:Code>"), "{after}");
+            assert!(
+                after.contains("<p:Description>Changed</p:Description>"),
+                "{after}"
+            );
+            assert!(!after.contains("<Code>"), "{after}");
+            let data = read_predefined_items(after.as_bytes(), MetadataKind::Catalog, 10).unwrap();
+            assert_eq!(data.items[0].code, "2");
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn prefixed_self_closing_root_add_uses_the_root_qname_for_the_whole_item() {
+        let root = temp_root("prefixed-root-add");
+        let descriptor = root.join("Catalogs/Items.xml");
+        let path = descriptor.with_extension("").join("Ext/Predefined.xml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            format!(
+                r#"<p:PredefinedData xmlns:p="{PREDEFINED_NS}" xmlns:xsi="{XSI_NS}" xsi:type="CatalogPredefinedItems" version="2.20"/>"#
+            ),
+        )
+        .unwrap();
+        let operation = MetaEditOperation::add_predefined_items(vec![MetaPredefinedItemAdd {
+            id: "a7d2e6fc-3824-4b56-b4be-ae6be4944c0e".to_string(),
+            name: "Main".to_string(),
+            fields: MetaPredefinedFields::default(),
+        }])
+        .unwrap();
+        let planned = plan_predefined_resource(
+            &root,
+            &descriptor,
+            &owner("Catalog"),
+            MetadataKind::Catalog,
+            &descriptor_image(MetadataKind::Catalog, "String"),
+            &[operation],
+        )
+        .unwrap();
+        let after = std::str::from_utf8(
+            planned.resources.file_mutations[0]
+                .post_image
+                .as_deref()
+                .unwrap(),
+        )
+        .unwrap();
+        for expected in [
+            "<p:Item ",
+            "<p:Name>Main</p:Name>",
+            "<p:Code/>",
+            "<p:Description/>",
+            "<p:IsFolder>false</p:IsFolder>",
+            "</p:Item>",
+            "</p:PredefinedData>",
+        ] {
+            assert!(after.contains(expected), "missing {expected}: {after}");
+        }
+        read_predefined_items(after.as_bytes(), MetadataKind::Catalog, 10).unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1953,6 +2729,7 @@ mod tests {
             &descriptor,
             &owner("ChartOfAccounts"),
             MetadataKind::ChartOfAccounts,
+            &descriptor_image(MetadataKind::ChartOfAccounts, "String"),
             &[operation],
         )
         .unwrap();

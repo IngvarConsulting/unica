@@ -2780,22 +2780,23 @@ fn line_aware_removal_range(text: &str, range: std::ops::Range<usize>) -> std::o
         .rfind('\n')
         .map(|offset| offset + 1)
         .unwrap_or(0);
-    let start = if text[line_start..range.start]
+    let starts_on_own_line = text[line_start..range.start]
         .chars()
-        .all(|character| character == ' ' || character == '\t' || character == '\r')
-    {
-        line_start
+        .all(|character| matches!(character, ' ' | '\t' | '\r'));
+    let next_newline = text[range.end..]
+        .find('\n')
+        .map(|offset| range.end + offset);
+    let ends_on_own_line = next_newline.is_some_and(|line_end| {
+        text[range.end..line_end]
+            .chars()
+            .all(|character| matches!(character, ' ' | '\t' | '\r'))
+    });
+
+    if starts_on_own_line && ends_on_own_line {
+        line_start..next_newline.expect("ends_on_own_line requires a newline") + 1
     } else {
-        range.start
-    };
-    let end = if text[range.end..].starts_with("\r\n") {
-        range.end + 2
-    } else if text[range.end..].starts_with('\n') {
-        range.end + 1
-    } else {
-        range.end
-    };
-    start..end
+        range
+    }
 }
 
 fn right_insertion(
@@ -3069,6 +3070,28 @@ mod role_edit_contract_tests {
         assert!(!removed.contains("DataProcessor.Worker"));
         assert!(removed.contains("Catalog.Demo"));
         assert!(removed.contains("restrictionTemplate"));
+    }
+
+    #[test]
+    fn data_processor_removal_preserves_eol_when_object_follows_an_inline_sibling() {
+        let body = rights_xml("\n", "<value>true</value>").replace(
+            "\t</object>\n\t<object>\n\t\t<name>DataProcessor.Worker</name>",
+            "\t</object><object>\n\t\t<name>DataProcessor.Worker</name>",
+        );
+        assert!(body.contains("\t</object><object>\n"), "{body}");
+
+        let (removed, effect) =
+            apply_role_edit_operation(&body, &operation("DataProcessor.Worker", "Use", false), 0)
+                .unwrap();
+
+        assert_eq!(effect.action, RoleEditEffectAction::RemoveObject);
+        assert_eq!(effect.before, Some(true));
+        assert!(!removed.contains("DataProcessor.Worker"));
+        assert!(
+            removed.contains("\t</object>\n\t<restrictionTemplate>"),
+            "{removed}"
+        );
+        validate_role_rights_document(&removed, true).unwrap();
     }
 
     #[test]
