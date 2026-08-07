@@ -1795,6 +1795,16 @@ Use `.claude/commands/xdto.md` as the execution route.
 
         class UniqueKeySafeLoader(yaml.SafeLoader):
             def construct_mapping(self, node, deep=False):
+                if any(
+                    key_node.tag == "tag:yaml.org,2002:merge"
+                    for key_node, _ in node.value
+                ):
+                    raise yaml.constructor.ConstructorError(
+                        "while constructing a mapping",
+                        node.start_mark,
+                        "YAML merge keys are not allowed in skill frontmatter",
+                        node.start_mark,
+                    )
                 self.flatten_mapping(node)
                 mapping = {}
                 for key_node, value_node in node.value:
@@ -1909,6 +1919,12 @@ Use `.claude/commands/xdto.md` as the execution route.
                 "---\ndescription: insert replace\n"
                 "argument-hint: insert replace\n"
                 "unrelated:\n  key: one\n  'key': two\n---\n"
+            ),
+            "yaml-merge-key": (
+                "---\ndefaults: &defaults {unrelated: true}\n"
+                "<<: *defaults\n"
+                "description: insert replace\n"
+                "argument-hint: insert replace\n---\n"
             ),
             "block-sequence-indicator": (
                 "---\ndescription: - insert replace\n"
