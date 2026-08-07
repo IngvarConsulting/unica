@@ -3,6 +3,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import sys
 import stat
 import subprocess
@@ -580,6 +581,25 @@ class SemanticXmlTests(unittest.TestCase):
 
 
 class SemanticDirectoryTests(unittest.TestCase):
+    def test_xdto_package_is_captured_as_xml_despite_its_bin_extension(self):
+        """ADR-0024 names `XDTOPackages/<Name>/Ext/Package.bin` as text XML with
+        root `{http://v8.1c.ru/8.1/xdto}package`. Classifying sources by suffix
+        alone drops it out of the XML snapshot the corpus declares it in."""
+        verifier = load_verifier()
+        package = (
+            '﻿<package xmlns="http://v8.1c.ru/8.1/xdto" '
+            'targetNamespace="urn:corpus"/>'
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root / "Configuration.xml", CONFIG_XML)
+            write(root / "XDTOPackages/Corpus/Ext/Package.bin", package)
+
+            xml_payloads, non_xml_payloads, _ = verifier._regular_payloads(root)
+
+            self.assertIn("XDTOPackages/Corpus/Ext/Package.bin", xml_payloads)
+            self.assertNotIn("XDTOPackages/Corpus/Ext/Package.bin", non_xml_payloads)
+
     def test_snapshot_comparison_detects_added_and_removed_empty_directories(self):
         verifier = load_verifier()
         with tempfile.TemporaryDirectory() as tmp:
@@ -880,10 +900,44 @@ class CorpusAdapterTests(unittest.TestCase):
             }.issubset(verifier.MANDATORY_CASE_IDS)
         )
 
+    def test_mandatory_corpus_matches_the_generator_case_inventory(self):
+        """The pinned inventory is only honest while it names the same cases the
+        generator emits. A hardcoded count cannot notice a case added on the Rust
+        side, so bind the two inventories to each other instead."""
+        verifier = load_verifier()
+        source = (
+            ROOT / "crates/unica-coder/tests/format_8_3_27_xml_corpus.rs"
+        ).read_text(encoding="utf-8")
+        generated = set(
+            re.findall(r"ExecutableCase\s*\{\s*id:\s*\"([^\"]+)\"", source)
+        )
+
+        self.assertTrue(generated, "generator case inventory could not be read")
+        self.assertEqual(generated, set(verifier.MANDATORY_CASE_IDS))
+
+    def test_family_registry_matches_the_generator_root_registry(self):
+        """A root the generator classifies but the verifier does not makes the
+        corpus declare a family the gate reads as `None`."""
+        verifier = load_verifier()
+        source = (
+            ROOT / "crates/unica-coder/tests/format_8_3_27_xml_corpus.rs"
+        ).read_text(encoding="utf-8")
+        body = source.split("fn family_for_root", 1)[1].split("=> {\n            return", 1)[0]
+        generated = {
+            f"{{{namespace}}}{local_name}": family
+            for namespace, local_name, family in re.findall(
+                r'\(\s*"([^"]+)",\s*"([^"]+)"\s*\)\s*=>\s*(?:\{\s*)?"([^"]+)"',
+                body,
+            )
+        }
+
+        self.assertTrue(generated, "generator root registry could not be read")
+        self.assertEqual(generated, verifier.XML_FAMILY_BY_ROOT_QNAME)
+
     def test_mandatory_corpus_includes_every_cfe_patch_module_layout(self):
         verifier = load_verifier()
 
-        self.assertEqual(len(verifier.MANDATORY_CASE_IDS), 63)
+        self.assertEqual(len(verifier.MANDATORY_CASE_IDS), 64)
         self.assertTrue(
             {
                 "cfe-patch-method-bsl-only",
