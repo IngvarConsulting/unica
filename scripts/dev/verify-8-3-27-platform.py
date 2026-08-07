@@ -410,11 +410,20 @@ def _is_xml_payload_path(path: PurePath) -> bool:
 
     ADR-0024 records that `XDTOPackages/<Name>/Ext/Package.bin` is text XML
     rooted at `{http://v8.1c.ru/8.1/xdto}package` despite its extension, so the
-    suffix alone does not decide. Any drift between this rule and
-    `is_xml_payload_path` in `crates/unica-coder/tests/format_8_3_27_xml_corpus.rs`
-    makes the corpus declare a file the verifier cannot find.
+    suffix alone does not decide. The exception belongs to that layout and not
+    to the file name, so a `Package.bin` reached any other way stays binary.
+    Any drift between this rule and `is_xml_payload_path` in
+    `crates/unica-coder/tests/format_8_3_27_xml_corpus.rs` makes the corpus
+    declare a file the verifier cannot find.
     """
-    return path.suffix.lower() == ".xml" or path.name == "Package.bin"
+    if path.suffix.lower() == ".xml":
+        return True
+    parts = path.parts
+    return (
+        len(parts) >= 4
+        and parts[-4] == "XDTOPackages"
+        and parts[-2:] == ("Ext", "Package.bin")
+    )
 
 
 def _regular_payloads(

@@ -600,6 +600,22 @@ class SemanticDirectoryTests(unittest.TestCase):
             self.assertIn("XDTOPackages/Corpus/Ext/Package.bin", xml_payloads)
             self.assertNotIn("XDTOPackages/Corpus/Ext/Package.bin", non_xml_payloads)
 
+    def test_package_bin_outside_the_xdto_layout_stays_non_xml(self):
+        """ADR-0024 grants the exception to `XDTOPackages/<Name>/Ext/Package.bin`
+        and to nothing else, so a file that merely shares the name keeps its
+        binary classification instead of entering XML validation."""
+        verifier = load_verifier()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root / "Configuration.xml", CONFIG_XML)
+            (root / "Ext").mkdir(parents=True, exist_ok=True)
+            (root / "Ext/Package.bin").write_bytes(b"\x00\x01binary")
+
+            xml_payloads, non_xml_payloads, _ = verifier._regular_payloads(root)
+
+            self.assertIn("Ext/Package.bin", non_xml_payloads)
+            self.assertNotIn("Ext/Package.bin", xml_payloads)
+
     def test_snapshot_comparison_detects_added_and_removed_empty_directories(self):
         verifier = load_verifier()
         with tempfile.TemporaryDirectory() as tmp:
