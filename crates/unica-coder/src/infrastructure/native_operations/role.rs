@@ -12,6 +12,9 @@ use crate::domain::source_target::{
     PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::native_operations::text_snapshot::{
+    resolve_line_ending, EolPolicy, LineEndingProfile, SourceTextSnapshot,
+};
 use crate::infrastructure::path_policy::WorkspacePathPolicy;
 use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
 use crate::infrastructure::platform_xml_roots::{
@@ -2854,8 +2857,9 @@ fn right_insertion(
         .rfind("</")
         .ok_or_else(|| "role object closing tag is malformed".to_string())?;
     let close = range.start + close_relative;
-    let line_start = text[..close]
-        .rfind('\n')
+    let line_start = text.as_bytes()[..close]
+        .iter()
+        .rposition(|byte| matches!(byte, b'\r' | b'\n'))
         .map(|offset| offset + 1)
         .unwrap_or(close);
     let has_line_layout = line_start < close
@@ -2871,7 +2875,7 @@ fn right_insertion(
         ));
     }
     let closing_indent = text[line_start..close].trim_end_matches('\r');
-    let eol = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let eol = role_source_eol(text)?;
     let right_indent = direct_rights
         .first()
         .map(|right| line_indent(text, right.range().start))
@@ -2889,6 +2893,19 @@ fn right_insertion(
             "{right_indent}<{right_prefix}right>{eol}{child_indent}<{name_prefix}name>{right_name}</{name_prefix}name>{eol}{child_indent}<{value_prefix}value>{value}</{value_prefix}value>{eol}{right_indent}</{right_prefix}right>{eol}"
         ),
     ))
+}
+
+fn role_source_eol(text: &str) -> Result<&'static str, String> {
+    let snapshot = SourceTextSnapshot::from_bytes(text.as_bytes())
+        .map_err(|error| format!("unsupported_node: {error}"))?;
+    let policy = if snapshot.line_endings() == LineEndingProfile::None {
+        EolPolicy::Lf
+    } else {
+        EolPolicy::Preserve
+    };
+    resolve_line_ending(policy, &snapshot, None)
+        .map(|ending| ending.as_str())
+        .map_err(|error| format!("unsupported_node: {error}"))
 }
 
 fn lexical_role_prefix(text: &str, node: roxmltree::Node<'_, '_>) -> Result<String, String> {
@@ -3012,6 +3029,31 @@ mod role_edit_contract_tests {
                 "accepted incompatible root contract: {invalid}"
             );
         }
+    }
+
+    #[test]
+    fn right_insertion_rejects_mixed_eol_and_preserves_uniform_lone_cr() {
+        let mixed = rights_xml("\n", "<value>true</value>").replacen('\n', "\r\n", 1);
+        let mixed_document = Document::parse(&mixed).unwrap();
+        let mixed_object = direct_role_children(
+            mixed_document.root_element(),
+            "object",
+            ROLE_RIGHTS_NAMESPACE,
+        )[0];
+        let error = right_insertion(&mixed, mixed_object, "Edit", true)
+            .expect_err("mixed EOL must not choose a global fallback");
+        assert!(error.contains("ambiguous"), "{error}");
+
+        let lone_cr = rights_xml("\r", "<value>true</value>");
+        let lone_cr_document = Document::parse(&lone_cr).unwrap();
+        let lone_cr_object = direct_role_children(
+            lone_cr_document.root_element(),
+            "object",
+            ROLE_RIGHTS_NAMESPACE,
+        )[0];
+        let (_, insertion) = right_insertion(&lone_cr, lone_cr_object, "Edit", true).unwrap();
+        assert!(insertion.contains('\r'));
+        assert!(!insertion.contains('\n'));
     }
 
     #[test]

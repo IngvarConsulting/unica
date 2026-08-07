@@ -8,10 +8,13 @@ use crate::domain::metadata::{
     MetaEditOperation, MetaMutationEffect, MetaPredefinedAccountType,
     MetaPredefinedExtDimensionType, MetaPredefinedExtDimensionTypeData, MetaPredefinedFields,
     MetaPredefinedItemAdd, MetaPredefinedItemData, MetaPredefinedItemUpdate,
-    MetaPredefinedItemsData, MetaPublicationAction, MetaPublicationPlanEntry,
+    MetaPredefinedItemsData, MetaPropertyKey, MetaPublicationAction, MetaPublicationPlanEntry,
     MetaPublicationResource, MetadataKind, MetadataType,
 };
 use crate::domain::source_target::MetadataAddress;
+use crate::infrastructure::native_operations::text_snapshot::{
+    resolve_line_ending, EolPolicy, LineEndingProfile, SourceTextSnapshot,
+};
 use crate::infrastructure::platform::secure_read::read_root_relative_regular_file;
 use crate::infrastructure::platform_xml_roots::{
     platform_xml_root_versioning, PlatformXmlRootVersioning,
@@ -186,7 +189,8 @@ struct PredefinedOperationContext<'a> {
     operation_index: usize,
 }
 
-pub(super) fn plan_predefined_resource(
+#[cfg(test)]
+fn plan_predefined_resource(
     source_root: &Path,
     descriptor_path: &Path,
     owner: &MetadataAddress,
@@ -194,7 +198,29 @@ pub(super) fn plan_predefined_resource(
     descriptor_post_image: &str,
     operations: &[MetaEditOperation],
 ) -> Result<PlannedPredefinedResource, MetaFailure> {
-    if !operations.iter().any(is_predefined_operation) {
+    plan_predefined_resource_after_descriptor_edit(
+        source_root,
+        descriptor_path,
+        owner,
+        kind,
+        descriptor_post_image,
+        descriptor_post_image,
+        operations,
+    )
+}
+
+pub(super) fn plan_predefined_resource_after_descriptor_edit(
+    source_root: &Path,
+    descriptor_path: &Path,
+    owner: &MetadataAddress,
+    kind: MetadataKind,
+    descriptor_pre_image: &str,
+    descriptor_post_image: &str,
+    operations: &[MetaEditOperation],
+) -> Result<PlannedPredefinedResource, MetaFailure> {
+    let has_predefined_operations = operations.iter().any(is_predefined_operation);
+    let code_type_is_touched = operations.iter().any(operation_touches_code_type);
+    if !has_predefined_operations && !code_type_is_touched {
         return Ok(PlannedPredefinedResource {
             resources: TypedChildResourcePlan::default(),
             effects: Vec::new(),
@@ -209,6 +235,25 @@ pub(super) fn plan_predefined_resource(
             Some("properties.CodeType".to_string()),
         )
     })?;
+    let code_type_changed = if code_type_is_touched {
+        predefined_code_type(kind, descriptor_pre_image).map_err(|message| {
+            failure(
+                owner,
+                MetaDiagnosticCode::ValidationFailed,
+                message,
+                None,
+                Some("properties.CodeType".to_string()),
+            )
+        })? != code_type
+    } else {
+        false
+    };
+    if !has_predefined_operations && !code_type_changed {
+        return Ok(PlannedPredefinedResource {
+            resources: TypedChildResourcePlan::default(),
+            effects: Vec::new(),
+        });
+    }
 
     let path = descriptor_path
         .with_extension("")
@@ -227,6 +272,14 @@ pub(super) fn plan_predefined_resource(
                 ))
             }
         };
+    if original.is_none() && !has_predefined_operations {
+        let mut resources = TypedChildResourcePlan::default();
+        resources.absent_path_guards.push(path);
+        return Ok(PlannedPredefinedResource {
+            resources,
+            effects: Vec::new(),
+        });
+    }
     let (mut text, has_bom) = match &original {
         Some(bytes) => {
             let text = std::str::from_utf8(bytes).map_err(|_| {
@@ -254,7 +307,8 @@ pub(super) fn plan_predefined_resource(
             None,
         )
     })?;
-    let eol = source_eol(&text);
+    let observed_eol = source_eol(&text);
+    let rendering_eol = observed_eol.as_deref().unwrap_or("\n");
     let mut effects = Vec::new();
     for (operation_index, operation) in operations.iter().enumerate() {
         if !is_predefined_operation(operation) {
@@ -269,15 +323,27 @@ pub(super) fn plan_predefined_resource(
                 None,
             )
         })?;
+        let operation_preimage = text.clone();
         apply_operation(
             &mut text,
-            eol,
+            rendering_eol,
             kind,
             code_type,
             operation,
             owner,
             operation_index,
         )?;
+        if text != operation_preimage {
+            if let Err(message) = &observed_eol {
+                return Err(failure(
+                    owner,
+                    MetaDiagnosticCode::ValidationFailed,
+                    message.clone(),
+                    Some(operation_index),
+                    None,
+                ));
+            }
+        }
         validate_predefined_text_allowing_self_closing_items(kind, &text).map_err(|message| {
             failure(
                 owner,
@@ -305,12 +371,17 @@ pub(super) fn plan_predefined_resource(
         });
     }
     validate_predefined_text_for_code_type(kind, code_type, &text).map_err(|message| {
+        let operation_index = if code_type_changed {
+            operations.iter().rposition(operation_touches_code_type)
+        } else {
+            operations.iter().rposition(is_predefined_operation)
+        };
         failure(
             owner,
             MetaDiagnosticCode::ValidationFailed,
             message,
-            operations.iter().rposition(is_predefined_operation),
-            None,
+            operation_index,
+            code_type_changed.then(|| "values.CodeType".to_string()),
         )
     })?;
 
@@ -398,11 +469,8 @@ fn predefined_code_type(
             && node.tag_name().namespace() == Some(MD_CLASSES_NS)
             && node.tag_name().name() == "CodeType"
     });
-    let code_type = code_types
-        .next()
-        .and_then(|node| node.text())
-        .map(str::trim)
-        .unwrap_or("String");
+    let code_type_text = code_types.next().map(direct_text_content);
+    let code_type = code_type_text.as_deref().map(str::trim).unwrap_or("String");
     if code_types.next().is_some() {
         return Err(format!(
             "{} descriptor has duplicate direct CodeType",
@@ -615,7 +683,7 @@ fn validate_predefined_text_with_options(
 }
 
 fn validate_code_value(code: Node<'_, '_>, code_type: PredefinedCodeType) -> Result<(), String> {
-    let value = code.text().unwrap_or_default();
+    let value = direct_text_content(code);
     if code_type == PredefinedCodeType::String {
         return if code.attribute((XSI_NS, "type")).is_none() {
             Ok(())
@@ -630,7 +698,7 @@ fn validate_code_value(code: Node<'_, '_>, code_type: PredefinedCodeType) -> Res
             Err("empty predefined numeric Code must not declare xsi:type".to_string())
         };
     }
-    if metadata_decimal_shape(value).is_none() {
+    if metadata_decimal_shape(&value).is_none() {
         return Err("predefined numeric Code is not an XML Schema decimal".to_string());
     }
     let raw_type = code
@@ -781,9 +849,10 @@ fn parse_flags(container: Option<Node<'_, '_>>) -> Result<BTreeMap<String, bool>
             .attribute("ref")
             .filter(|name| !name.is_empty())
             .ok_or_else(|| "predefined Flag requires ref".to_string())?;
-        let value = match flag.text().map(str::trim) {
-            Some("true") => true,
-            Some("false") => false,
+        let flag_text = direct_text_content(flag);
+        let value = match flag_text.trim() {
+            "true" => true,
+            "false" => false,
             _ => return Err("predefined Flag value is not boolean".to_string()),
         };
         if flags.insert(name.to_string(), value).is_some() {
@@ -1485,8 +1554,7 @@ fn set_code_child(
             .children()
             .find(|node| node.is_element())
             .ok_or_else(|| "predefined Code fragment has no element".to_string())?;
-        if code.text().unwrap_or_default() == value && validate_code_value(code, code_type).is_ok()
-        {
+        if direct_text_content(code) == value && validate_code_value(code, code_type).is_ok() {
             return Ok(());
         }
     }
@@ -1516,7 +1584,7 @@ fn direct_child_typed_text_matches(
         .root_element()
         .children()
         .find(|node| node.is_element())
-        .is_some_and(|node| node.text().unwrap_or_default() == value))
+        .is_some_and(|node| direct_text_content(node) == value))
 }
 
 fn render_code(
@@ -2279,9 +2347,7 @@ fn render_type(
 fn parse_item_type(source: &str, node: Node<'_, '_>) -> Result<MetadataType, String> {
     let node_range = node.range();
     let mut fragment = source[node_range.clone()].to_string();
-    let opening_end = fragment
-        .find('>')
-        .ok_or_else(|| "predefined Type opening tag is unavailable".to_string())?;
+    let opening_end = opening_tag_end(&fragment)?;
     let opening = &fragment[..opening_end];
     let declarations = node
         .namespaces()
@@ -2639,9 +2705,14 @@ fn child<'a>(node: Node<'a, 'a>, name: &str) -> Option<Node<'a, 'a>> {
 }
 
 fn child_text(node: Node<'_, '_>, name: &str) -> Option<String> {
-    child(node, name)
-        .and_then(|child| child.text())
-        .map(str::to_string)
+    child(node, name).map(direct_text_content)
+}
+
+fn direct_text_content(node: Node<'_, '_>) -> String {
+    node.children()
+        .filter(|child| child.is_text())
+        .filter_map(|child| child.text())
+        .collect()
 }
 
 fn is_predefined_element(node: Node<'_, '_>, name: &str) -> bool {
@@ -2668,14 +2739,17 @@ fn empty_document(kind: MetadataKind) -> String {
     )
 }
 
-fn source_eol(text: &str) -> &'static str {
-    if text.contains("\r\n") {
-        "\r\n"
-    } else if text.contains('\r') {
-        "\r"
+fn source_eol(text: &str) -> Result<&'static str, String> {
+    let snapshot = SourceTextSnapshot::from_bytes(text.as_bytes())
+        .map_err(|error| format!("Predefined.xml {error}"))?;
+    let policy = if snapshot.line_endings() == LineEndingProfile::None {
+        EolPolicy::Lf
     } else {
-        "\n"
-    }
+        EolPolicy::Preserve
+    };
+    resolve_line_ending(policy, &snapshot, None)
+        .map(|ending| ending.as_str())
+        .map_err(|error| format!("Predefined.xml {error}"))
 }
 
 fn simple_line(tag: &str, value: &str, indent: &str) -> String {
@@ -2692,6 +2766,17 @@ fn is_predefined_operation(operation: &MetaEditOperation) -> bool {
         MetaEditOperation::AddPredefinedItems { .. }
             | MetaEditOperation::UpdatePredefinedItems { .. }
             | MetaEditOperation::RemovePredefinedItems { .. }
+    )
+}
+
+fn operation_touches_code_type(operation: &MetaEditOperation) -> bool {
+    matches!(
+        operation,
+        MetaEditOperation::SetProperties { values }
+            if values
+                .entries()
+                .iter()
+                .any(|(key, _)| *key == MetaPropertyKey::CodeType)
     )
 }
 
@@ -2727,7 +2812,9 @@ fn failure(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::metadata::MetadataTypeVariant;
+    use crate::domain::metadata::{
+        MetaPropertyChanges, MetaPropertyInput, MetaPropertyValue, MetadataTypeVariant,
+    };
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -2812,11 +2899,202 @@ mod tests {
         assert_eq!(item, before);
     }
 
+    #[test]
+    fn mixed_text_children_are_one_typed_value_for_validation_info_and_noop() {
+        let invalid_number = format!(
+            r#"<PredefinedData xmlns="{PREDEFINED_NS}" xmlns:xsi="{XSI_NS}" xmlns:xs="{XS_NS}" xsi:type="CatalogPredefinedItems" version="2.20"><Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Main</Name><Code xsi:type="xs:decimal">1<!--keep-->garbage</Code></Item></PredefinedData>"#
+        );
+        assert!(validate_predefined_text_for_code_type(
+            MetadataKind::Catalog,
+            PredefinedCodeType::Number,
+            &invalid_number,
+        )
+        .is_err());
+
+        let mut item = r#"<Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Description>old<!--keep-->tail</Description></Item>"#.to_string();
+        let before = item.clone();
+        set_simple_child(
+            &mut item,
+            "Description",
+            "old",
+            "\n",
+            &FragmentXmlContext::platform_default(),
+        )
+        .unwrap();
+        assert_ne!(item, before, "old + tail must not compare equal to old");
+        assert!(item.contains("<!--keep-->"), "{item}");
+        assert!(!item.contains("tail"), "{item}");
+
+        let info = format!(
+            r#"<PredefinedData xmlns="{PREDEFINED_NS}" xmlns:xsi="{XSI_NS}" xsi:type="CatalogPredefinedItems" version="2.20"><Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Main</Name><Description>old<!--keep-->tail</Description></Item></PredefinedData>"#
+        );
+        let data = read_predefined_items(info.as_bytes(), MetadataKind::Catalog, 10).unwrap();
+        assert_eq!(data.items[0].description, "oldtail");
+    }
+
     fn descriptor_image(kind: MetadataKind, code_type: &str) -> String {
         format!(
             "<MetaDataObject xmlns=\"{MD_CLASSES_NS}\" version=\"2.20\"><{kind}><Properties><Name>Items</Name><CodeType>{code_type}</CodeType></Properties></{kind}></MetaDataObject>",
             kind = kind.as_str()
         )
+    }
+
+    fn set_catalog_code_type(value: &str) -> MetaEditOperation {
+        MetaEditOperation::SetProperties {
+            values: MetaPropertyChanges::convert(
+                MetadataKind::Catalog,
+                vec![MetaPropertyInput::new(
+                    "CodeType",
+                    MetaPropertyValue::String(value.to_string()),
+                )],
+            )
+            .unwrap(),
+        }
+    }
+
+    #[test]
+    fn code_type_transition_validates_or_explicitly_rewrites_predefined_codes_atomically() {
+        let root = temp_root("code-type-transition");
+        let descriptor = root.join("Catalogs/Items.xml");
+        let path = descriptor.with_extension("").join("Ext/Predefined.xml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let string_image = format!(
+            r#"<PredefinedData xmlns="{PREDEFINED_NS}" xmlns:xsi="{XSI_NS}" xmlns:xs="{XS_NS}" xsi:type="CatalogPredefinedItems" version="2.20"><Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Main</Name><Code>643</Code></Item></PredefinedData>"#
+        );
+        fs::write(&path, &string_image).unwrap();
+        let set_number = set_catalog_code_type("Number");
+
+        let rejected = plan_predefined_resource_after_descriptor_edit(
+            &root,
+            &descriptor,
+            &owner("Catalog"),
+            MetadataKind::Catalog,
+            &descriptor_image(MetadataKind::Catalog, "String"),
+            &descriptor_image(MetadataKind::Catalog, "Number"),
+            std::slice::from_ref(&set_number),
+        )
+        .err()
+        .expect("implicit Code migration must be rejected");
+        assert_eq!(
+            rejected.diagnostics[0].code,
+            MetaDiagnosticCode::ValidationFailed
+        );
+        assert_eq!(rejected.diagnostics[0].operation_index, Some(0));
+        assert_eq!(
+            rejected.diagnostics[0].field.as_deref(),
+            Some("operations[0].values.CodeType")
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), string_image);
+
+        let number_image = string_image.replace(
+            "<Code>643</Code>",
+            r#"<Code xsi:type="xs:decimal">643</Code>"#,
+        );
+        fs::write(&path, &number_image).unwrap();
+        let rejected_string = plan_predefined_resource_after_descriptor_edit(
+            &root,
+            &descriptor,
+            &owner("Catalog"),
+            MetadataKind::Catalog,
+            &descriptor_image(MetadataKind::Catalog, "Number"),
+            &descriptor_image(MetadataKind::Catalog, "String"),
+            &[set_catalog_code_type("String")],
+        )
+        .err()
+        .expect("implicit xsi:type removal must be rejected");
+        assert_eq!(
+            rejected_string.diagnostics[0].code,
+            MetaDiagnosticCode::ValidationFailed
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), number_image);
+        fs::write(&path, &string_image).unwrap();
+
+        let explicit_update =
+            MetaEditOperation::update_predefined_items(vec![MetaPredefinedItemUpdate {
+                id: "a7d2e6fc-3824-4b56-b4be-ae6be4944c0e".to_string(),
+                name: None,
+                fields: MetaPredefinedFields {
+                    code: Some("643".to_string()),
+                    ..MetaPredefinedFields::default()
+                },
+            }])
+            .unwrap();
+        let planned = plan_predefined_resource_after_descriptor_edit(
+            &root,
+            &descriptor,
+            &owner("Catalog"),
+            MetadataKind::Catalog,
+            &descriptor_image(MetadataKind::Catalog, "String"),
+            &descriptor_image(MetadataKind::Catalog, "Number"),
+            &[set_number, explicit_update],
+        )
+        .unwrap();
+        let post_image = planned.resources.file_mutations[0]
+            .post_image
+            .as_deref()
+            .unwrap();
+        assert!(String::from_utf8_lossy(post_image)
+            .contains(r#"<Code xsi:type="xs:decimal">643</Code>"#));
+        assert_eq!(planned.effects.len(), 1);
+        assert_eq!(planned.effects[0].operation_index, Some(1));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unchanged_or_absent_code_type_companion_keeps_precise_preimage_guards() {
+        let root = temp_root("code-type-companion-guards");
+        let descriptor = root.join("Catalogs/Items.xml");
+        let path = descriptor.with_extension("").join("Ext/Predefined.xml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"not xml").unwrap();
+        let unchanged = plan_predefined_resource_after_descriptor_edit(
+            &root,
+            &descriptor,
+            &owner("Catalog"),
+            MetadataKind::Catalog,
+            &descriptor_image(MetadataKind::Catalog, "String"),
+            &descriptor_image(MetadataKind::Catalog, "String"),
+            &[set_catalog_code_type("String")],
+        )
+        .unwrap();
+        assert!(unchanged.resources.file_mutations.is_empty());
+        assert!(unchanged.resources.exact_file_guards.is_empty());
+
+        let compatible = format!(
+            r#"<PredefinedData xmlns="{PREDEFINED_NS}" xmlns:xsi="{XSI_NS}" xsi:type="CatalogPredefinedItems" version="2.20"><Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Main</Name><Code/></Item></PredefinedData>"#
+        );
+        fs::write(&path, &compatible).unwrap();
+        let guarded = plan_predefined_resource_after_descriptor_edit(
+            &root,
+            &descriptor,
+            &owner("Catalog"),
+            MetadataKind::Catalog,
+            &descriptor_image(MetadataKind::Catalog, "String"),
+            &descriptor_image(MetadataKind::Catalog, "Number"),
+            &[set_catalog_code_type("Number")],
+        )
+        .unwrap();
+        assert!(guarded.resources.file_mutations.is_empty());
+        assert_eq!(guarded.resources.exact_file_guards.len(), 1);
+        assert_eq!(
+            guarded.resources.exact_file_guards[0].1,
+            compatible.as_bytes()
+        );
+
+        fs::remove_file(&path).unwrap();
+        let changed = plan_predefined_resource_after_descriptor_edit(
+            &root,
+            &descriptor,
+            &owner("Catalog"),
+            MetadataKind::Catalog,
+            &descriptor_image(MetadataKind::Catalog, "String"),
+            &descriptor_image(MetadataKind::Catalog, "Number"),
+            &[set_catalog_code_type("Number")],
+        )
+        .unwrap();
+        assert_eq!(changed.resources.absent_path_guards, vec![path]);
+        assert!(changed.resources.file_mutations.is_empty());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -2866,7 +3144,7 @@ mod tests {
 
     #[test]
     fn type_qname_is_resolved_by_namespace_not_by_prefix_spelling() {
-        let bytes = br#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="PlanOfCharacteristicKindPredefinedItems" version="2.20"><Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Kind</Name><Type><v8:Type>ent:CatalogRef.Items</v8:Type></Type><IsFolder>false</IsFolder></Item></PredefinedData>"#;
+        let bytes = br#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="PlanOfCharacteristicKindPredefinedItems" version="2.20"><Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Kind</Name><Type xmlns:future="urn:future" future:note="a>b"><v8:Type>ent:CatalogRef.Items</v8:Type></Type><IsFolder>false</IsFolder></Item></PredefinedData>"#;
         let data =
             read_predefined_items(bytes, MetadataKind::ChartOfCharacteristicTypes, 10).unwrap();
         assert!(matches!(
@@ -3565,6 +3843,64 @@ mod tests {
         assert!(text.contains("\r\n\t<Item"));
         assert!(!text.replace("\r\n", "").contains('\n'));
         assert!(text.contains("</PredefinedData>"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn planner_rejects_ambiguous_mixed_eol_and_preserves_uniform_lone_cr() {
+        let root = temp_root("observed-eol");
+        let descriptor = root.join("Catalogs/Items.xml");
+        let path = descriptor.with_extension("").join("Ext/Predefined.xml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let id = "a7d2e6fc-3824-4b56-b4be-ae6be4944c0e";
+        let operation =
+            MetaEditOperation::update_predefined_items(vec![MetaPredefinedItemUpdate {
+                id: id.to_string(),
+                name: None,
+                fields: MetaPredefinedFields {
+                    description: Some("new".to_string()),
+                    ..MetaPredefinedFields::default()
+                },
+            }])
+            .unwrap();
+        let mixed = format!(
+            "<PredefinedData xmlns=\"{PREDEFINED_NS}\" xmlns:xsi=\"{XSI_NS}\" xsi:type=\"CatalogPredefinedItems\" version=\"2.20\">\r\n\t<Item id=\"{id}\"><Name>Main</Name><Description>old</Description></Item>\n</PredefinedData>\r\n"
+        );
+        fs::write(&path, &mixed).unwrap();
+        let rejected = plan_predefined_resource(
+            &root,
+            &descriptor,
+            &owner("Catalog"),
+            MetadataKind::Catalog,
+            &descriptor_image(MetadataKind::Catalog, "String"),
+            std::slice::from_ref(&operation),
+        )
+        .err()
+        .expect("mixed EOL must not choose a global fallback");
+        assert!(
+            rejected.diagnostics[0].message.contains("ambiguous"),
+            "{:?}",
+            rejected.diagnostics
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), mixed);
+
+        let lone_cr = mixed.replace("\r\n", "\r").replace('\n', "\r");
+        fs::write(&path, &lone_cr).unwrap();
+        let planned = plan_predefined_resource(
+            &root,
+            &descriptor,
+            &owner("Catalog"),
+            MetadataKind::Catalog,
+            &descriptor_image(MetadataKind::Catalog, "String"),
+            &[operation],
+        )
+        .unwrap();
+        let post_image = planned.resources.file_mutations[0]
+            .post_image
+            .as_deref()
+            .unwrap();
+        assert!(post_image.contains(&b'\r'));
+        assert!(!post_image.contains(&b'\n'));
         fs::remove_dir_all(root).unwrap();
     }
 

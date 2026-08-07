@@ -630,6 +630,7 @@ pub(super) struct TypedChildFileMutation {
 #[derive(Debug, Default)]
 pub(super) struct TypedChildResourcePlan {
     pub(super) file_mutations: Vec<TypedChildFileMutation>,
+    pub(super) absent_path_guards: Vec<PathBuf>,
     pub(super) exact_file_guards: Vec<(PathBuf, Vec<u8>)>,
     pub(super) directory_guards: Vec<(PathBuf, DirectoryMembershipSnapshot)>,
     pub(super) publication_plan: Vec<MetaPublicationPlanEntry>,
@@ -729,11 +730,12 @@ pub(super) fn build_typed_operation_post_image(
                 )
             })?
             .path;
-    let planned_predefined = super::predefined::plan_predefined_resource(
+    let planned_predefined = super::predefined::plan_predefined_resource_after_descriptor_edit(
         &source_root,
         descriptor_path,
         target,
         owner_kind,
+        &normalized_preimage,
         &xml,
         operations,
     )?;
@@ -741,6 +743,9 @@ pub(super) fn build_typed_operation_post_image(
     child_resources
         .file_mutations
         .extend(predefined_resources.file_mutations);
+    child_resources
+        .absent_path_guards
+        .extend(predefined_resources.absent_path_guards);
     child_resources
         .exact_file_guards
         .extend(predefined_resources.exact_file_guards);

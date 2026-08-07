@@ -270,6 +270,11 @@ impl PreparedMetaEdit {
                 .guard_or_verify_directory_topology(path, snapshot)
                 .map_err(|message| provider_failure(&target, message))?;
         }
+        for path in child_resources.absent_path_guards {
+            transaction
+                .guard_path_absent(path)
+                .map_err(|message| concurrent_preparation_failure(&target, message))?;
+        }
         for (path, bytes) in child_resources.exact_file_guards {
             transaction
                 .guard_or_verify_exact_preimage(path, &bytes)
@@ -679,6 +684,11 @@ pub(crate) fn prepare_meta_add(
             .guard_or_verify_directory_topology(path, snapshot)
             .map_err(|message| provider_failure(&target, message))?;
     }
+    for path in child_resources.absent_path_guards {
+        transaction
+            .guard_path_absent(path)
+            .map_err(|message| concurrent_preparation_failure(&target, message))?;
+    }
     for (path, bytes) in child_resources.exact_file_guards {
         transaction
             .guard_or_verify_exact_preimage(path, &bytes)
@@ -993,6 +1003,18 @@ fn provider_failure(
     .into()
 }
 
+fn concurrent_preparation_failure(
+    target: &crate::domain::source_target::MetadataAddress,
+    _internal: String,
+) -> MetaFailure {
+    MetaDiagnostic::error(
+        MetaDiagnosticCode::ConcurrentModification,
+        format!("metadata source changed while preparing `{target}`"),
+    )
+    .with_metadata_path(target.clone())
+    .into()
+}
+
 fn publication_failure(
     target: &crate::domain::source_target::MetadataAddress,
     kind: CommitFailureKind,
@@ -1046,7 +1068,8 @@ mod typed_add_publication_tests {
     use crate::application::metadata::MetaAddRequest;
     use crate::domain::metadata::{
         MetaCollection, MetaEditOperation, MetaElementInput, MetaPredefinedFields,
-        MetaPredefinedItemAdd, MetaRelation, MetadataKind, MetadataReference, RelationEditMode,
+        MetaPredefinedItemAdd, MetaPropertyChanges, MetaPropertyInput, MetaPropertyValue,
+        MetaRelation, MetadataKind, MetadataReference, RelationEditMode,
     };
     use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
     use crate::infrastructure::native_operations::cf::create_configuration_scaffold;
@@ -1225,6 +1248,47 @@ mod typed_add_publication_tests {
         );
         assert_eq!(fs::read(owner).unwrap(), external_image);
         assert!(!fixture.root.join("src/Catalogs/Concurrent.xml").exists());
+    }
+
+    #[test]
+    fn meta_add_code_type_change_guards_an_absent_predefined_companion() {
+        let fixture = Fixture::new("concurrent-predefined-companion");
+        let cancellation = CancellationToken::new();
+        let request = MetaAddRequest {
+            operations: vec![MetaEditOperation::SetProperties {
+                values: MetaPropertyChanges::convert(
+                    MetadataKind::Catalog,
+                    vec![MetaPropertyInput::new(
+                        "CodeType",
+                        MetaPropertyValue::String("Number".to_string()),
+                    )],
+                )
+                .unwrap(),
+            }],
+            ..fixture.request("ConcurrentPredefined")
+        };
+        let prepared = prepare_meta_add(&request, &fixture.context, &cancellation).unwrap();
+        let predefined = fixture
+            .root
+            .join("src/Catalogs/ConcurrentPredefined/Ext/Predefined.xml");
+        fs::create_dir_all(predefined.parent().unwrap()).unwrap();
+        let external = b"external concurrent companion";
+        fs::write(&predefined, external).unwrap();
+
+        let failure = match prepared.publish(&cancellation) {
+            Ok(_) => panic!("a concurrently created companion published unexpectedly"),
+            Err(failure) => failure,
+        };
+
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::ConcurrentModification
+        );
+        assert_eq!(fs::read(&predefined).unwrap(), external);
+        assert!(!fixture
+            .root
+            .join("src/Catalogs/ConcurrentPredefined.xml")
+            .exists());
     }
 
     #[test]
