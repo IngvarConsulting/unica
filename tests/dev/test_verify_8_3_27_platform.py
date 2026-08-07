@@ -909,8 +909,8 @@ class CorpusAdapterTests(unittest.TestCase):
 
         package = Path("src/XDTOPackages/Sample/Ext/Package.bin")
         unrelated = Path("src/Catalogs/Sample/Ext/Package.bin")
-        self.assertTrue(verifier._is_platform_xml_payload_path(package))
-        self.assertFalse(verifier._is_platform_xml_payload_path(unrelated))
+        self.assertTrue(verifier._is_xml_payload_path(package))
+        self.assertFalse(verifier._is_xml_payload_path(unrelated))
         self.assertEqual(
             verifier.XML_FAMILY_BY_ROOT_QNAME["{http://v8.1c.ru/8.1/xdto}package"],
             "xdto-package",
