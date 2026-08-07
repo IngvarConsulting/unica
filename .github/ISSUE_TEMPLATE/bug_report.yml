@@ -1,0 +1,112 @@
+name: Дефект
+description: Сообщить об ошибке в Unica
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Главное поле этой формы — «Где найдено». Строка версии сама по себе не
+        различает опубликованный релиз и сборку из исходников: после тега `main`
+        какое-то время носит ту же версию. Поэтому способ установки нужно указать
+        явно — от него зависит, попал дефект к пользователям или ещё нет.
+
+  - type: dropdown
+    id: found-on
+    attributes:
+      label: Где найдено
+      description: Откуда взята работавшая сборка Unica.
+      options:
+        - Опубликованная версия (marketplace / GitHub Release)
+        - Сборка из исходников (main или ветка PR)
+        - Не знаю
+    validations:
+      required: true
+
+  - type: input
+    id: unica-version
+    attributes:
+      label: Версия Unica
+      description: >-
+        `serverInfo.version` из ответа MCP на `initialize`, либо вывод
+        `unica --version`. Для сборки из исходников добавьте коммит:
+        `git rev-parse --short HEAD`.
+      placeholder: "0.11.0 (marketplace) — или — 0.12.0 @ 9f48a9e1 (main)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: components
+    attributes:
+      label: Компоненты
+      description: >-
+        Версии поставляемых инструментов и окружения. Версии из
+        `plugins/unica/third-party/tools.lock.json` заполняйте, только если
+        дефект касается соответствующего инструмента.
+      value: |
+        | Компонент | Версия |
+        |---|---|
+        | Плагин Unica |  |
+        | Хост | Claude Code / Codex |
+        | ОС |  |
+        | Платформа 1С |  |
+        | v8-runner |  |
+        | bsl-analyzer |  |
+        | rlm-tools-bsl |  |
+    validations:
+      required: false
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Воспроизведение
+      description: >-
+        Минимальная последовательность. Если дефект виден на публичном корпусе
+        (например, OpenSubsystemsLibrary), укажите это — проприетарный дамп
+        тогда не нужен.
+      placeholder: |
+        1. …
+        2. …
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Фактическое поведение
+      description: Дословный вывод — код возврата, сообщение, диагностика.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Ожидаемое поведение
+    validations:
+      required: true
+
+  - type: dropdown
+    id: cross-check
+    attributes:
+      label: Проверка на другой стороне
+      description: >-
+        Найдено на релизе — воспроизводится ли на `main`; найдено на `main` —
+        воспроизводится ли на последнем теге. «Не проверял» — нормальный ответ,
+        проверку выполнит триаж.
+      options:
+        - Не проверял
+        - Воспроизводится и там
+        - Не воспроизводится — специфично для указанной стороны
+    validations:
+      required: true
+
+  - type: input
+    id: origin
+    attributes:
+      label: Что внесло поведение
+      description: >-
+        Заполняйте, если известно: PR или коммит, после которого дефект появился.
+        Доказанный источник переводит issue в `regression:unreleased` и делает
+        его блокирующим для ближайшего релиза.
+      placeholder: "PR #309 / a12ea328"
+    validations:
+      required: false
