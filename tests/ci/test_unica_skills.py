@@ -1791,12 +1791,21 @@ Use `.claude/commands/xdto.md` as the execution route.
         published = ("insert", "replace")
         retired = ("initialize",)
 
+        def frontmatter_pattern(field: str) -> str:
+            return rf"(?m)^{re.escape(field)}:[ \t]*([^\r\n]+)$"
+
         fields = {
             field: match.group(1)
             for field in ("description", "argument-hint")
-            if (match := re.search(rf"(?m)^{re.escape(field)}:\s*(.+)$", text))
+            if (match := re.search(frontmatter_pattern(field), text))
         }
         self.assertEqual(set(fields), {"description", "argument-hint"})
+        self.assertIsNone(
+            re.search(
+                frontmatter_pattern("description"),
+                "description:\nargument-hint: insert replace\n",
+            )
+        )
         for field, value in fields.items():
             for operation in published:
                 with self.subTest(field=field, operation=operation):
