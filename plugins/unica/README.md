@@ -204,6 +204,7 @@ and immutable marketplace tag exist.
 ## Verification
 
 ```sh
+python3.12 -m pip install -r tests/ci/requirements.txt
 python3.12 -m unittest discover -s tests/ci
 python3.12 -m py_compile scripts/ci/*.py tests/ci/*.py
 cargo fmt --all -- --check

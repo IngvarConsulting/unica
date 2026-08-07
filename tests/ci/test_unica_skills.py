@@ -1829,15 +1829,16 @@ Use `.claude/commands/xdto.md` as the execution route.
                 return mapping
 
         def prompt_frontmatter(document: str) -> dict[str, str]:
-            lines = document.removeprefix("\ufeff").splitlines()
-            if not lines or lines[0] != "---":
-                return {}
-            try:
-                end = lines.index("---", 1)
-            except ValueError:
+            frontmatter_match = re.match(
+                r"\A---(?:\r\n|\r|\n)(?P<body>.*?)(?:\r\n|\r|\n)"
+                r"---(?=\r\n|\r|\n|\Z)",
+                document.removeprefix("\ufeff"),
+                re.DOTALL,
+            )
+            if frontmatter_match is None:
                 return {}
 
-            frontmatter = "\n".join(lines[1:end]) + "\n"
+            frontmatter = frontmatter_match.group("body")
             try:
                 values = yaml.load(frontmatter, Loader=UniqueKeySafeLoader)
                 syntax = yaml.compose(frontmatter, Loader=yaml.SafeLoader)
@@ -1914,6 +1915,14 @@ Use `.claude/commands/xdto.md` as the execution route.
                 "---\ndescription: insert replace\n"
                 "argument-hint: insert replace\n"
                 "unrelated: [unterminated\n---\n"
+            ),
+            "control-line-separator": (
+                "---\vdescription: insert replace\v"
+                "argument-hint: insert replace\v---"
+            ),
+            "internal-control-separator": (
+                "---\ndescription: insert replace\v"
+                "argument-hint: insert replace\n---\n"
             ),
             "duplicate-unrelated-key": (
                 "---\ndescription: insert replace\n"

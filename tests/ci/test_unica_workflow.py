@@ -25,8 +25,9 @@ def run_block_lines(workflow: str):
     name to `env:` defuses it.
 
     Blocks are found by indentation: the body of a block scalar is indented
-    past the column of its `run:` key. PyYAML is not a dependency of this suite,
-    and pulling one in to read four lines of indentation is a poor trade.
+    past the column of its `run:` key. PyYAML is a suite dependency for skill
+    frontmatter, but this guard inspects source spelling so YAML normalization
+    cannot hide which bytes become shell script.
     """
     lines = workflow.splitlines()
     index = 0

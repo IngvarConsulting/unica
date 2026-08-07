@@ -90,6 +90,7 @@ Tests that assert the current version still need updating by hand; they fail wit
 an explicit diff, so run the suite before opening the pull request:
 
 ```bash
+python3.12 -m pip install -r tests/ci/requirements.txt
 python3.12 -m unittest discover -s tests/ci
 ```
 
