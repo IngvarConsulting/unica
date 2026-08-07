@@ -2970,6 +2970,41 @@ mod tests {
     }
 
     #[test]
+    fn dcs_edit_blocks_a_version_attribute_on_the_versionless_schema_root() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-format-guard-versioned-dcs-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("Template.xml");
+        let source = r#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" version="2.21"/>"#;
+        std::fs::write(&target, source).unwrap();
+        let args = Map::from_iter([(
+            "TemplatePath".to_string(),
+            Value::String(target.display().to_string()),
+        )]);
+
+        let check = evaluate_format_guard(spec("unica.dcs.edit"), &args, &context(&root)).unwrap();
+        let FormatGuardCheck::Block {
+            outcome,
+            diagnostic,
+        } = check
+        else {
+            panic!("a version-bearing versionless DCS root must block edit");
+        };
+        assert_eq!(diagnostic["code"], "formatVersionInvalid");
+        assert!(
+            outcome
+                .errors
+                .join("\n")
+                .contains("must not carry a version attribute"),
+            "{outcome:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), source);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn mxl_info_warns_old_external_source_set_via_owner_descriptor() {
         let root = std::env::temp_dir().join(format!(
             "unica-format-guard-old-external-mxl-info-{}",

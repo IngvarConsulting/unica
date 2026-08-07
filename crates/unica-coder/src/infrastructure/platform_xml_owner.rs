@@ -596,7 +596,6 @@ fn read_version_owning_target(
     })?;
     let root = document.root_element();
     let root_qname = (root.tag_name().namespace(), root.tag_name().name());
-    let declared_exact_target = expected_root.is_some();
     if let Some(expected_root) = expected_root {
         if root_qname != (Some(expected_root.namespace), expected_root.local_name) {
             return invalid_owner(
@@ -615,8 +614,7 @@ fn read_version_owning_target(
         .0
         .and_then(|namespace| platform_xml_owner_policy(namespace, root_qname.1));
     let raw_version = root_version_literal(source, root);
-    if declared_exact_target
-        && raw_version.is_some()
+    if raw_version.is_some()
         && root_qname.0.is_some_and(|namespace| {
             platform_xml_publication_policy(namespace, root_qname.1)
                 == Some(PlatformXmlPublicationPolicy::Versionless)
@@ -625,7 +623,7 @@ fn read_version_owning_target(
         return invalid_owner(
             &path,
             &format!(
-                "declared platform XML target root {{{}}}{} must not carry a version attribute",
+                "registered versionless platform XML root {{{}}}{} must not carry a version attribute",
                 root_qname.0.unwrap_or(""),
                 root_qname.1
             ),
@@ -1182,6 +1180,10 @@ mod tests {
         .unwrap();
         let error = resolve_platform_xml_owners_for_exact_root(&invalid, &context, MXL_ROOT)
             .expect_err("a declared versionless target must reject a version attribute");
+        assert!(error.message.contains("must not carry a version attribute"));
+
+        let error = resolve_platform_xml_owners(&invalid, &context)
+            .expect_err("a generic read must not bypass a versionless root policy");
         assert!(error.message.contains("must not carry a version attribute"));
 
         let _ = fs::remove_dir_all(&context.cwd);

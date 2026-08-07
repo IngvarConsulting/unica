@@ -10344,6 +10344,33 @@ mod tests {
     }
 
     #[test]
+    fn dcs_edit_rejects_a_version_attribute_on_the_versionless_root_without_writing() {
+        let context = temp_context("dcs-edit-versionless-root-policy");
+        let template_path = context.cwd.join("Template.xml");
+        let source = base_dcs_xml().replacen(
+            "<DataCompositionSchema ",
+            "<DataCompositionSchema version=\"2.21\" ",
+            1,
+        );
+        let original = exact_dcs_bytes(&source);
+        fs::write(&template_path, &original).unwrap();
+        let args = dcs_edit_args("add-total", "Amount: SUM(Amount)", false);
+
+        let outcome = edit_dcs(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .join("\n")
+                .contains("must not carry a version attribute"),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&template_path).unwrap(), original);
+        fs::remove_dir_all(&context.cwd).unwrap();
+    }
+
+    #[test]
     fn dcs_compile_rejects_invalid_generated_dcs_without_leaving_a_file() {
         let context = temp_context("dcs-compile-invalid-post-validation");
         let definition = json!({
