@@ -146,6 +146,16 @@ enum Selector {
 }
 
 impl Selector {
+    /// `insert` names a place only when it has one to name. An absent selector
+    /// is not an error: it means the end of the module, which is the one place
+    /// every module has, including a module that holds no method yet.
+    fn parse_optional(args: &Map<String, Value>) -> Result<Option<Self>, String> {
+        if !args.contains_key("selector") {
+            return Ok(None);
+        }
+        Self::parse(args).map(Some)
+    }
+
     fn parse(args: &Map<String, Value>) -> Result<Self, String> {
         let selector = args
             .get("selector")
@@ -238,7 +248,7 @@ struct CodePatchPlan {
     target: CodePatchTarget,
     before: Vec<u8>,
     after: Vec<u8>,
-    selector: Selector,
+    selector: Option<Selector>,
     content: String,
     insertion: Vec<u8>,
     site: PatchSite,
@@ -250,29 +260,57 @@ fn build_patch(
     context: &WorkspaceContext,
 ) -> Result<CodePatchPlan, String> {
     let target = resolve_target(args, context)?;
-    let before = fs::read(&target.path)
-        .map_err(|error| format!("failed to read {}: {error}", target.path.display()))?;
+    // A module the platform never exported reads as no bytes at all, which is
+    // exactly the preimage a first body is appended to.
+    let before = if target.existed {
+        fs::read(&target.path)
+            .map_err(|error| format!("failed to read {}: {error}", target.path.display()))?
+    } else {
+        Vec::new()
+    };
     let snapshot = SourceTextSnapshot::from_bytes(&before)
         .map_err(|error| format!("BSL module snapshot: {error}"))?;
     let text = snapshot.decoded_text();
-    let selector = Selector::parse(args)?;
     let operation = PatchOperation::parse(string_arg(args, "operation")?)?;
     let indexed = analyze_module(text)?;
     reject_parse_diagnostics(&indexed.diagnostics, "validate original BSL module")?;
     let content = string_arg(args, "content")?.to_string();
-    let (site, insertion, no_op, after) = match operation {
+    let (selector, site, insertion, no_op, after) = match operation {
         PatchOperation::Insert => {
-            let position = Position::parse(string_arg(args, "position")?)?;
-            let site = locate_selector(&snapshot, position, &selector, &indexed.methods)?;
+            let selector = Selector::parse_optional(args)?;
+            let site = match &selector {
+                Some(selector) => {
+                    let position = Position::parse(string_arg(args, "position")?)?;
+                    locate_selector(&snapshot, position, selector, &indexed.methods)?
+                }
+                // Without a selector there is nothing to place content relative
+                // to, so `position` is refused rather than silently ignored.
+                None => {
+                    if args.contains_key("position") {
+                        return Err(
+                            "unica.code.patch does not accept `position` without a `selector`; content goes to the end of the module"
+                                .to_string(),
+                        );
+                    }
+                    locate_module_tail(&snapshot)?
+                }
+            };
             let insertion = normalized_content(&content, site.eol, site.leading_separator);
             let no_op = insertion_is_present(snapshot.raw(), site, &insertion);
             let mut after = snapshot.raw().to_vec();
             if !no_op {
                 after.splice(site.offset..site.offset, insertion.iter().copied());
             }
-            (PatchSite::Insertion(site), insertion, no_op, after)
+            (
+                selector,
+                PatchSite::Insertion(site),
+                insertion,
+                no_op,
+                after,
+            )
         }
         PatchOperation::Replace => {
+            let selector = Selector::parse(args)?;
             let site = locate_replacement(&snapshot, &selector, &indexed.methods)?;
             let replacement = normalized_replacement(&content, site.eol, site.trailing_eol);
             let no_op = snapshot.raw().get(site.start..site.end) == Some(replacement.as_slice());
@@ -280,7 +318,13 @@ fn build_patch(
             if !no_op {
                 after.splice(site.start..site.end, replacement.iter().copied());
             }
-            (PatchSite::Replacement(site), replacement, no_op, after)
+            (
+                Some(selector),
+                PatchSite::Replacement(site),
+                replacement,
+                no_op,
+                after,
+            )
         }
     };
     Ok(CodePatchPlan {
@@ -349,7 +393,13 @@ fn finish_patch(
     if mode == PatchMode::Apply && !plan.no_op {
         let publish_result = (|| -> Result<(), String> {
             let mut transaction = CompileTransaction::new();
-            transaction.replace_bytes(&plan.target.path, &plan.before, plan.after.clone())?;
+            if plan.target.existed {
+                transaction.replace_bytes(&plan.target.path, &plan.before, plan.after.clone())?;
+            } else {
+                // `create_bytes` refuses if the file appeared meanwhile, so a
+                // concurrent creator is not overwritten either.
+                transaction.create_bytes(&plan.target.path, plan.after.clone())?;
+            }
             let revalidated =
                 guard_code_patch_resolved_target(&mut transaction, &plan.target.handle, context)?;
             if revalidated != plan.target.path {
@@ -478,6 +528,10 @@ struct CodePatchTarget {
     handle: ClosedPlatformXmlTarget,
     owner: String,
     module_role: String,
+    /// Whether the module file existed when the patch was planned. The platform
+    /// omits an empty object or manager module on export, so a legitimate
+    /// address can point at a file that is not there yet.
+    existed: bool,
 }
 
 impl CodePatchTarget {
@@ -497,9 +551,12 @@ fn resolve_target(
     let source_target = code_patch_source_target(args).map_err(|error| error.to_string())?;
     // `ModuleOnly` is the write surface's declaration: a descriptor or any other
     // metadata object address is refused here, not deeper.
-    let resolution =
-        resolve_platform_xml_target(context, &source_target, TargetKindPolicy::ModuleOnly)
-            .map_err(|error| error.to_string())?;
+    let resolution = resolve_platform_xml_target(
+        context,
+        &source_target,
+        TargetKindPolicy::ModuleOnlyAllowingAbsent,
+    )
+    .map_err(|error| error.to_string())?;
     let path = revalidate_platform_xml_target(context, &resolution.handle)
         .map_err(|error| error.to_string())?
         .path;
@@ -523,12 +580,14 @@ fn resolve_target(
             return Err("resolved module metadataPath has an invalid shape".to_string());
         }
     };
+    let existed = path.is_file();
     Ok(CodePatchTarget {
         path,
         resolved: resolution.resolved,
         handle: resolution.handle,
         owner,
         module_role,
+        existed,
     })
 }
 
@@ -611,6 +670,44 @@ fn locate_selector(
     Ok(InsertionSite {
         offset,
         position,
+        eol,
+        leading_separator,
+    })
+}
+
+/// Resolves the one place every module has: its end.
+///
+/// The site is `Before` the end-of-text offset rather than `After` it, because
+/// that is what makes the repeat provable. On the next identical call the offset
+/// has moved to the new end, and `insertion_is_present` then asks whether the
+/// text already ends with the same bytes — which is exactly the question. An
+/// `After` site would look at the empty tail past the end and never match.
+///
+/// A module holding no method yet is not a special case here: its text is empty,
+/// so the offset is zero and no separator is owed.
+fn locate_module_tail(snapshot: &SourceTextSnapshot) -> Result<InsertionSite, String> {
+    reject_lone_cr_line_endings(snapshot)?;
+    let text = snapshot.decoded_text();
+    let offset = text.len();
+    let local = local_line_ending_at(text, offset, Position::Before);
+    let policy = match snapshot.line_endings() {
+        LineEndingProfile::None => EolPolicy::Lf,
+        LineEndingProfile::Uniform(_) | LineEndingProfile::Mixed { .. } => EolPolicy::Preserve,
+    };
+    let eol = resolve_line_ending(policy, snapshot, local)
+        .map_err(|error| format!("resolve code.patch EOL: {error}"))?;
+    // The separator question is about content, not bytes: a module holding only
+    // a byte order mark has nothing to be separated from, so it owes no blank
+    // line. `text()` is the same span as `decoded_text()` without that mark.
+    let content = snapshot.text();
+    let leading_separator = if content.is_empty() || content.as_bytes().ends_with(b"\n") {
+        LeadingSeparator::None
+    } else {
+        LeadingSeparator::LocalEol
+    };
+    Ok(InsertionSite {
+        offset,
+        position: Position::Before,
         eol,
         leading_separator,
     })
@@ -768,8 +865,14 @@ fn prove_repeat_is_noop(
         |error: String| format!("patch cannot be applied idempotently on the next call: {error}");
     let repeated_is_noop = match plan.site {
         PatchSite::Insertion(site) => {
-            let repeat_site = locate_selector(&snapshot, site.position, &plan.selector, methods)
-                .map_err(stale)?;
+            let repeat_site = match plan.selector.as_ref() {
+                Some(selector) => {
+                    locate_selector(&snapshot, site.position, selector, methods).map_err(stale)?
+                }
+                // The end of the module is still the end of the module, so the
+                // repeat resolves; whether it writes is decided just below.
+                None => locate_module_tail(&snapshot).map_err(stale)?,
+            };
             let repeat_insertion = normalized_content(
                 &plan.content,
                 repeat_site.eol,
@@ -777,7 +880,11 @@ fn prove_repeat_is_noop(
             );
             insertion_is_present(postimage.as_bytes(), repeat_site, &repeat_insertion)
         }
-        PatchSite::Replacement(_) => match locate_replacement(&snapshot, &plan.selector, methods) {
+        PatchSite::Replacement(_) => match locate_replacement(
+            &snapshot,
+            plan.selector.as_ref().expect("replacement has a selector"),
+            methods,
+        ) {
             // The edit consumed its own selector — an anchor rewritten to new
             // text, a method renamed. A repeated identical call then resolves
             // nothing and fails closed without writing, which is exactly the
@@ -2288,6 +2395,175 @@ mod tests {
         assert_eq!(serialized["validation"]["status"], "failed");
         assert_eq!(serialized["validation"]["kind"], "bsl-analyzer-parser");
         fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn code_patch_without_a_selector_appends_to_the_end_and_proves_the_repeat() {
+        let context = temp_context("tail-append");
+        let module = context
+            .workspace_root
+            .join("src/CommonModules/Sample/Ext/Module.bsl");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        let before = "Procedure Run()\nEndProcedure\n";
+        fs::write(&module, before).unwrap();
+        let args = tail_args(
+            "main",
+            "CommonModule.Sample.Module",
+            "Procedure Added()\nEndProcedure",
+        );
+
+        let preview = patch_inner(&args, &context, PatchMode::Preview);
+        assert!(preview.outcome.ok, "{:?}", preview.outcome.errors);
+        assert_eq!(fs::read(&module).unwrap(), before.as_bytes());
+
+        let applied = patch_inner(&args, &context, PatchMode::Apply);
+        assert!(applied.outcome.ok, "{:?}", applied.outcome.errors);
+        let expected = "Procedure Run()\nEndProcedure\nProcedure Added()\nEndProcedure\n";
+        assert_eq!(fs::read(&module).unwrap(), expected.as_bytes());
+
+        // The end of the module is still addressable afterwards, so the repeat
+        // is a proven no-op rather than a refusal after the write landed.
+        let repeat = patch_inner(&args, &context, PatchMode::Apply);
+        assert!(repeat.outcome.ok, "{:?}", repeat.outcome.errors);
+        assert!(repeat.outcome.summary.contains("already applied"));
+        assert_eq!(fs::read(&module).unwrap(), expected.as_bytes());
+        fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn code_patch_creates_a_module_file_the_platform_never_exported() {
+        let context = temp_context("tail-absent");
+        let module = context
+            .workspace_root
+            .join("src/CommonModules/Sample/Ext/Module.bsl");
+        assert!(!module.exists());
+        let args = tail_args(
+            "main",
+            "CommonModule.Sample.Module",
+            "Procedure Run()\nEndProcedure",
+        );
+
+        // Preview stays read-only: an absent file is not created to be shown.
+        let preview = patch_inner(&args, &context, PatchMode::Preview);
+        assert!(preview.outcome.ok, "{:?}", preview.outcome.errors);
+        assert!(!module.exists(), "preview created the module file");
+        let data = preview.data.unwrap();
+        assert_eq!(data.pre_hash, hash(b""));
+        assert_eq!(data.validation.status, ValidationStatus::Passed);
+
+        let applied = patch_inner(&args, &context, PatchMode::Apply);
+        assert!(applied.outcome.ok, "{:?}", applied.outcome.errors);
+        assert_eq!(
+            fs::read(&module).unwrap(),
+            b"Procedure Run()\nEndProcedure\n"
+        );
+
+        // Once materialised the module is ordinary, so the repeat is the same
+        // proven no-op as for a module that was exported all along.
+        let repeat = patch_inner(&args, &context, PatchMode::Apply);
+        assert!(repeat.outcome.ok, "{:?}", repeat.outcome.errors);
+        assert_eq!(
+            fs::read(&module).unwrap(),
+            b"Procedure Run()\nEndProcedure\n"
+        );
+        fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn code_patch_refuses_a_module_role_the_metadata_kind_never_owns() {
+        let context = temp_context("tail-absent-role");
+        // A common module owns `Module`; it never owns an object module, so the
+        // absent file is not an omitted empty one and must stay unaddressable.
+        let args = tail_args(
+            "main",
+            "CommonModule.Sample.ObjectModule",
+            "Procedure Run()\nEndProcedure",
+        );
+        let refused = patch_inner(&args, &context, PatchMode::Apply);
+        assert!(!refused.outcome.ok);
+        assert!(!context
+            .workspace_root
+            .join("src/CommonModules/Sample/Ext/ObjectModule.bsl")
+            .exists());
+        fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn code_patch_writes_the_first_body_of_an_empty_or_bom_only_module() {
+        for (label, before, expected) in [
+            (
+                "bom-only",
+                b"\xef\xbb\xbf".to_vec(),
+                b"\xef\xbb\xbfProcedure Run()\nEndProcedure\n".to_vec(),
+            ),
+            (
+                "byte-empty",
+                Vec::new(),
+                b"Procedure Run()\nEndProcedure\n".to_vec(),
+            ),
+        ] {
+            let context = temp_context(&format!("tail-first-{label}"));
+            let module = context
+                .workspace_root
+                .join("src/CommonModules/Sample/Ext/Module.bsl");
+            fs::create_dir_all(module.parent().unwrap()).unwrap();
+            fs::write(&module, &before).unwrap();
+            let args = tail_args(
+                "main",
+                "CommonModule.Sample.Module",
+                "Procedure Run()\nEndProcedure",
+            );
+
+            let preview = patch_inner(&args, &context, PatchMode::Preview);
+            assert!(preview.outcome.ok, "{label}: {:?}", preview.outcome.errors);
+            assert_eq!(fs::read(&module).unwrap(), before, "{label} preview wrote");
+            let data = preview.data.unwrap();
+            assert_eq!(data.pre_hash, hash(&before), "{label}");
+            assert_eq!(data.post_hash, hash(&expected), "{label}");
+            assert_eq!(data.validation.status, ValidationStatus::Passed, "{label}");
+
+            let applied = patch_inner(&args, &context, PatchMode::Apply);
+            assert!(applied.outcome.ok, "{label}: {:?}", applied.outcome.errors);
+            // No blank line is owed: a byte order mark is not content.
+            assert_eq!(fs::read(&module).unwrap(), expected, "{label}");
+
+            let repeat = patch_inner(&args, &context, PatchMode::Apply);
+            assert!(repeat.outcome.ok, "{label}: {:?}", repeat.outcome.errors);
+            assert_eq!(fs::read(&module).unwrap(), expected, "{label} repeat wrote");
+            fs::remove_dir_all(&context.workspace_root).unwrap();
+        }
+    }
+
+    #[test]
+    fn code_patch_separates_an_appended_method_from_a_module_without_a_trailing_eol() {
+        let context = temp_context("tail-separator");
+        let module = context
+            .workspace_root
+            .join("src/CommonModules/Sample/Ext/Module.bsl");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        fs::write(&module, "Procedure Run()\nEndProcedure").unwrap();
+        let args = tail_args(
+            "main",
+            "CommonModule.Sample.Module",
+            "Procedure Added()\nEndProcedure",
+        );
+
+        let applied = patch_inner(&args, &context, PatchMode::Apply);
+        assert!(applied.outcome.ok, "{:?}", applied.outcome.errors);
+        assert_eq!(
+            fs::read(&module).unwrap(),
+            b"Procedure Run()\nEndProcedure\nProcedure Added()\nEndProcedure\n"
+        );
+        fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    fn tail_args(source_set: &str, metadata_path: &str, content: &str) -> Map<String, Value> {
+        Map::from_iter([
+            ("sourceSet".to_string(), json!(source_set)),
+            ("metadataPath".to_string(), json!(metadata_path)),
+            ("operation".to_string(), json!("insert")),
+            ("content".to_string(), json!(content)),
+        ])
     }
 
     #[test]
