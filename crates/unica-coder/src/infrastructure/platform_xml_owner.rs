@@ -194,7 +194,6 @@ pub(crate) const MXL_ROOT: PlatformXmlRootExpectation =
     PlatformXmlRootExpectation::new("http://v8.1c.ru/8.2/data/spreadsheet", "document");
 
 const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
-const PREDEFINED_DATA_NS: &str = "http://v8.1c.ru/8.3/xcf/predef";
 
 pub(crate) fn root_version_literal(source: &str, root: roxmltree::Node<'_, '_>) -> Option<String> {
     root.attributes()
@@ -1028,10 +1027,18 @@ fn known_standalone_root(qname: (Option<&str>, &str)) -> bool {
                 Some("http://v8.1c.ru/8.2/managed-application/core"),
                 "ClientApplicationInterface"
             )
-            | (Some(PREDEFINED_DATA_NS), "PredefinedData")
+            | (Some("http://v8.1c.ru/8.3/xcf/predef"), "PredefinedData")
     )
 }
 
+/// Returns whether a registered root without a `version` attribute inherits the
+/// format of its container instead of owning one.
+///
+/// `PredefinedData` is deliberately absent: the platform always writes the
+/// attribute on predefined data, so a document without it is anomalous and must
+/// fail closed as the default format rather than silently adopt the
+/// configuration's. `ClientApplicationInterface` is the opposite case — the
+/// platform legitimately emits it versionless.
 fn version_is_inherited_when_missing(qname: (Option<&str>, &str)) -> bool {
     qname
         == (
@@ -1191,6 +1198,28 @@ mod tests {
         assert_eq!(owners.len(), 1);
         assert_eq!(owners[0].path, normalized_path(&path));
         assert_eq!(owners[0].version.as_deref(), Some("2.20"));
+        assert_eq!(owners[0].kind, PlatformXmlOwnerKind::Standalone);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn predefined_data_without_a_version_owns_the_default_format_instead_of_being_ignored() {
+        let context = temp_context("predefined-data-versionless");
+        let path = context.cwd.join("Predefined.xml");
+        fs::write(
+            &path,
+            br#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xsi:type="CatalogPredefinedItems" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>"#,
+        )
+        .unwrap();
+
+        let owners = resolve_platform_xml_owners(&path, &context).unwrap();
+
+        // Registering the root also decides what a missing attribute means. The
+        // platform always writes it here, so such a document is anomalous and
+        // owns the default format rather than inheriting the configuration's.
+        assert_eq!(owners.len(), 1);
+        assert_eq!(owners[0].path, normalized_path(&path));
+        assert_eq!(owners[0].version, None);
         assert_eq!(owners[0].kind, PlatformXmlOwnerKind::Standalone);
         let _ = fs::remove_dir_all(&context.cwd);
     }

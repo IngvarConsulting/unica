@@ -352,6 +352,47 @@ fn meta_remove_reads_an_unrelated_predefined_data_document_without_blocking() {
 }
 
 #[test]
+fn meta_remove_refuses_predefined_data_from_a_newer_export_format() {
+    let workspace = create_remove_workspace("newer-predefined-data");
+    // Recognizing the root is what makes its version meaningful: a sibling's
+    // predefined data written by a newer platform marks the source tree as a
+    // mixed-format dump, and the removal must not proceed on it. This pins the
+    // contract rather than the fix — an unrecognized root is refused through
+    // the same code, so it also guards against a future correction that drops
+    // predefined data from the format dependency set altogether.
+    let predefined = workspace
+        .path()
+        .join("src/Catalogs/Sibling/Ext/Predefined.xml");
+    std::fs::create_dir_all(predefined.parent().unwrap()).unwrap();
+    std::fs::write(
+        &predefined,
+        concat!(
+            r#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" "#,
+            r#"xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" "#,
+            "xsi:type=\"CatalogPredefinedItems\" version=\"2.21\"/>",
+        ),
+    )
+    .unwrap();
+
+    let result = call_remove(workspace.path(), true);
+
+    assert!(!result.ok, "{:?}", result.summary);
+    assert!(result.data.is_none());
+    assert!(
+        result
+            .diagnostics
+            .as_ref()
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "capability_unavailable"),
+        "{:?}",
+        result.diagnostics
+    );
+}
+
+#[test]
 fn meta_remove_rejects_descriptor_identity_mismatch_before_effect_projection() {
     let workspace = create_remove_workspace("identity-mismatch");
     let descriptor = workspace.path().join("src/Catalogs/Removable.xml");
