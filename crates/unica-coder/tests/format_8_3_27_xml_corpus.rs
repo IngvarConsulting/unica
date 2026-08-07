@@ -243,8 +243,8 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
         tool: "unica.meta.edit",
         operation: "meta-edit",
         impact: XmlImpactClass::CreateOrModify,
-        case_ids: &["meta-edit-property", "meta-edit-set-source"],
-        required_branches: &["modify-property", "set-source"],
+        case_ids: &["meta-edit-property", "meta-edit-event-source"],
+        required_branches: &["modify-property", "event-source"],
     },
     MutatorRegistryEntry {
         tool: "unica.meta.remove",
@@ -578,9 +578,9 @@ static EXECUTABLE_CASES: &[ExecutableCase] = &[
         branch: "modify-property",
     },
     ExecutableCase {
-        id: "meta-edit-set-source",
+        id: "meta-edit-event-source",
         tool: "unica.meta.edit",
-        branch: "set-source",
+        branch: "event-source",
     },
     ExecutableCase {
         id: "meta-remove-object",
@@ -2299,9 +2299,9 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
 
     if matches!(
         case.id,
-        "meta-edit-property" | "meta-edit-set-source" | "meta-remove-object"
+        "meta-edit-property" | "meta-edit-event-source" | "meta-remove-object"
     ) {
-        if case.id == "meta-edit-set-source" {
+        if case.id == "meta-edit-event-source" {
             seed_event_handlers(workspace)?;
             seed_catalog(workspace)?;
             seed_metadata(
@@ -3305,7 +3305,7 @@ fn assert_case_postconditions(
     {
         return Err("ExchangePlan case did not generate Ext/Content.xml".to_string());
     }
-    if case.id == "meta-edit-set-source" {
+    if case.id == "meta-edit-event-source" {
         let descriptor = workspace.join("src/EventSubscriptions/CorpusEventSubscription.xml");
         let xml = fs::read_to_string(&descriptor)
             .map_err(|error| format!("cannot read {}: {error}", descriptor.display()))?;
@@ -4621,12 +4621,12 @@ fn cfe_patch_method_inventory_covers_atomic_xml_and_bsl_change() {
 }
 
 #[test]
-fn meta_edit_set_source_case_executes_public_writer_and_binds_exact_delta() {
-    let root = unique_temp_dir("meta-edit-set-source-case");
+fn meta_edit_event_source_case_executes_public_writer_and_binds_exact_delta() {
+    let root = unique_temp_dir("meta-edit-event-source-case");
     fs::create_dir_all(&root).unwrap();
     let case = EXECUTABLE_CASES
         .iter()
-        .find(|case| case.id == "meta-edit-set-source")
+        .find(|case| case.id == "meta-edit-event-source")
         .unwrap();
 
     let lifecycle_workspace = root.join("preview-apply-noop");
@@ -4669,8 +4669,8 @@ fn meta_edit_set_source_case_executes_public_writer_and_binds_exact_delta() {
 
     assert_eq!(gate_a.completed_target_calls, 1);
     assert_eq!(gate_b.completed_target_calls, 1);
-    assert_eq!(generated.branch, "set-source");
-    assert_eq!(regenerated.branch, "set-source");
+    assert_eq!(generated.branch, "event-source");
+    assert_eq!(regenerated.branch, "event-source");
     assert_eq!(generated.xml_impact, "modified");
     assert_eq!(regenerated.xml_impact, "modified");
     assert!(generated.files.iter().any(|file| {
@@ -4679,7 +4679,7 @@ fn meta_edit_set_source_case_executes_public_writer_and_binds_exact_delta() {
             && file.delta == "modified"
     }));
     let report: Value = serde_json::from_slice(
-        &fs::read(generation_a.join("cases/meta-edit-set-source/case-report.json")).unwrap(),
+        &fs::read(generation_a.join("cases/meta-edit-event-source/case-report.json")).unwrap(),
     )
     .unwrap();
     assert_eq!(
@@ -4695,7 +4695,7 @@ fn meta_edit_set_source_case_executes_public_writer_and_binds_exact_delta() {
         }])
     );
     let generated_descriptor = generation_a.join(
-        "cases/meta-edit-set-source/workspace/src/EventSubscriptions/CorpusEventSubscription.xml",
+        "cases/meta-edit-event-source/workspace/src/EventSubscriptions/CorpusEventSubscription.xml",
     );
     let xml = fs::read_to_string(generated_descriptor).unwrap();
     assert!(xml
@@ -4703,7 +4703,7 @@ fn meta_edit_set_source_case_executes_public_writer_and_binds_exact_delta() {
     assert!(!xml.contains("<v8:Type>xs:string</v8:Type>"));
 
     let transition = |output: &Path| {
-        let case_root = output.join("cases/meta-edit-set-source");
+        let case_root = output.join("cases/meta-edit-event-source");
         let pre = capture_xml_payloads(&case_root.join("pre-xml")).unwrap();
         let post = capture_xml_payloads(&case_root.join("workspace")).unwrap();
         normalized_xml_transition(&pre, &post)
@@ -4713,8 +4713,8 @@ fn meta_edit_set_source_case_executes_public_writer_and_binds_exact_delta() {
         transition(&generation_b),
         "two isolated generations must have the same UUID-normalized XML transition"
     );
-    let workspace_a = generation_a.join("cases/meta-edit-set-source/workspace");
-    let workspace_b = generation_b.join("cases/meta-edit-set-source/workspace");
+    let workspace_a = generation_a.join("cases/meta-edit-event-source/workspace");
+    let workspace_b = generation_b.join("cases/meta-edit-event-source/workspace");
     assert_eq!(
         capture_non_xml_payloads(case, &workspace_a).unwrap(),
         capture_non_xml_payloads(case, &workspace_b).unwrap(),

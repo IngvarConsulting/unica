@@ -1002,7 +1002,7 @@ class CorpusAdapterTests(unittest.TestCase):
         verifier = load_verifier()
 
         self.assertTrue(
-            {"xdto-add-nested-property", "meta-edit-set-source"}.issubset(
+            {"xdto-add-nested-property", "meta-edit-event-source"}.issubset(
                 verifier.MANDATORY_CASE_IDS
             )
         )

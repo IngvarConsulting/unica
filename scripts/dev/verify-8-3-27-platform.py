@@ -182,7 +182,7 @@ MANDATORY_CASE_IDS = frozenset(
         "meta-compile-task",
         "meta-compile-web-service",
         "meta-edit-property",
-        "meta-edit-set-source",
+        "meta-edit-event-source",
         "meta-remove-object",
         "mxl-compile-owned-template",
         "role-compile-name-field",
