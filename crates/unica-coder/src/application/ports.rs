@@ -224,6 +224,7 @@ pub(crate) struct MetadataValidationSubject {
     pub(crate) resources: Vec<MetadataResourceImage>,
     pub(crate) child_footprints: Vec<MetadataChildFootprintEvidence>,
     pub(crate) registrar_evidence: MetadataEvidenceAvailability,
+    pub(crate) subsystem_evidence: MetadataEvidenceAvailability,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
