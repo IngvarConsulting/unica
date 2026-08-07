@@ -1731,6 +1731,8 @@ source-set:
                     in {"unica.meta.edit", "unica.meta.remove"}
                 ):
                     prepare_meta_edit_skill_example(source_roots, example, arguments)
+                elif example.payload["params"]["name"] == "unica.meta.add":
+                    prepare_meta_add_skill_example(source_roots, arguments)
                 if example.payload["params"]["name"] == "unica.meta.info":
                     prepare_meta_info_skill_example(source_roots, arguments)
             self.assertEqual(code_patch_source_sets, {"main", "myExtension"})
@@ -2738,6 +2740,36 @@ META_INFO_SKILL_EXAMPLE_DIRECTORIES = {
 }
 
 
+def prepare_meta_add_skill_example(
+    source_roots: dict[str, Path], arguments: dict[str, Any]
+) -> None:
+    """Materialize prerequisites selected by a documented Meta add template."""
+    if arguments["kind"] != "EventSubscription":
+        return
+    source_root = source_roots[arguments["sourceSet"]]
+    module_name = "EventHandlers"
+    descriptor = source_root / "CommonModules" / f"{module_name}.xml"
+    descriptor.parent.mkdir(parents=True, exist_ok=True)
+    descriptor.write_text(
+        f'''<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <CommonModule uuid="55555555-5555-4555-8555-555555555555">
+    <InternalInfo/>
+    <Properties><Name>{module_name}</Name></Properties>
+    <ChildObjects/>
+  </CommonModule>
+</MetaDataObject>
+''',
+        encoding="utf-8",
+    )
+    module = source_root / "CommonModules" / module_name / "Ext" / "Module.bsl"
+    module.parent.mkdir(parents=True, exist_ok=True)
+    module.write_text(
+        "Процедура Обработать(Источник, Отказ) Экспорт\nКонецПроцедуры\n",
+        encoding="utf-8",
+    )
+    register_meta_skill_object(source_root, "CommonModule", module_name)
+
+
 def prepare_meta_info_skill_example(
     source_roots: dict[str, Path],
     arguments: dict[str, Any],
@@ -2754,6 +2786,10 @@ def prepare_meta_info_skill_example(
     source_root = source_roots[arguments["sourceSet"]]
     descriptor = source_root / directory / f"{name}.xml"
     descriptor.parent.mkdir(parents=True, exist_ok=True)
+    if kind == "EventSubscription":
+        write_meta_event_subscription_fixture(descriptor, name)
+        register_meta_skill_object(source_root, kind, name)
+        return
     drill = arguments.get("Name")
     children = ""
     if drill and kind == "HTTPService":
@@ -2817,6 +2853,26 @@ def prepare_meta_edit_skill_example(
     object_path = source_root / directory / f"{name}.xml"
     object_path.parent.mkdir(parents=True, exist_ok=True)
 
+    if kind == "EventSubscription":
+        write_meta_event_subscription_fixture(object_path, name)
+        register_meta_skill_object(source_root, kind, name)
+        for operation in arguments.get("operations", ()):
+            if operation.get("relation") != "source":
+                continue
+            for target in operation.get("targets", ()):
+                if target.get("kind") != "recordSet":
+                    continue
+                target_kind, separator, target_name = target[
+                    "metadataPath"
+                ].partition(".")
+                if not separator or target_kind != "InformationRegister":
+                    raise AssertionError(
+                        "typed Meta skill source fixture supports an "
+                        "InformationRegister recordSet target"
+                    )
+                write_meta_information_register_fixture(source_root, target_name)
+        return
+
     if not object_path.exists():
         is_document = kind == "Document"
         source = FIXTURES_ROOT / (
@@ -2862,6 +2918,47 @@ def prepare_meta_edit_skill_example(
         )
         for target_name in target_names:
             ensure_meta_edit_skill_attribute(object_path, target_name, scope)
+
+
+def write_meta_event_subscription_fixture(descriptor: Path, name: str) -> None:
+    descriptor.write_text(
+        f'''<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
+  <EventSubscription uuid="11111111-1111-4111-8111-111111111111">
+    <InternalInfo/>
+    <Properties>
+      <Name>{name}</Name>
+      <Source><v8:Type>xs:boolean</v8:Type></Source>
+      <Event>BeforeWrite</Event>
+      <Handler>CommonModule.EventHandlers.OnBeforeWrite</Handler>
+    </Properties>
+    <ChildObjects/>
+  </EventSubscription>
+</MetaDataObject>
+''',
+        encoding="utf-8",
+    )
+
+
+def write_meta_information_register_fixture(source_root: Path, name: str) -> None:
+    descriptor = source_root / "InformationRegisters" / f"{name}.xml"
+    descriptor.parent.mkdir(parents=True, exist_ok=True)
+    descriptor.write_text(
+        f'''<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20">
+  <InformationRegister uuid="22222222-2222-4222-8222-222222222222">
+    <InternalInfo>
+      <xr:GeneratedType name="InformationRegisterRecordSet.{name}" category="RecordSet">
+        <xr:TypeId>33333333-3333-4333-8333-333333333333</xr:TypeId>
+        <xr:ValueId>44444444-4444-4444-8444-444444444444</xr:ValueId>
+      </xr:GeneratedType>
+    </InternalInfo>
+    <Properties><Name>{name}</Name></Properties>
+    <ChildObjects/>
+  </InformationRegister>
+</MetaDataObject>
+''',
+        encoding="utf-8",
+    )
+    register_meta_skill_object(source_root, "InformationRegister", name)
 
 
 def stable_meta_skill_uuid(identity: str) -> str:

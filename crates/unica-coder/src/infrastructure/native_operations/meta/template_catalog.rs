@@ -20,6 +20,7 @@ pub(crate) trait MetadataTemplateCatalog {
         source: &ResolvedSourceSet,
         kind: MetadataKind,
         name: &str,
+        source_is_replaced_by_operation: bool,
     ) -> Result<MetadataPostImage, MetaFailure>;
 }
 
@@ -68,6 +69,7 @@ impl MinimalTemplateContext {
         source: &ResolvedSourceSet,
         kind: MetadataKind,
         new_name: &str,
+        source_is_replaced_by_operation: bool,
     ) -> Result<Self, MetaFailure> {
         let mut context = Self {
             chart_of_accounts: None,
@@ -127,9 +129,7 @@ impl MinimalTemplateContext {
             MetadataKind::EventSubscription => {
                 let (module, method, module_guard) =
                     required_common_module_method(source, kind, 2)?;
-                let catalog = required_registered_name(source, "Catalog", kind)?;
                 context.event_handler = Some(format!("CommonModule.{module}.{method}"));
-                context.event_source = Some(format!("CatalogObject.{catalog}"));
                 context.dependencies.push(read_dependency(
                     source,
                     "CommonModule",
@@ -138,13 +138,17 @@ impl MinimalTemplateContext {
                     None,
                 )?);
                 context.dependencies.push(module_guard);
-                context.dependencies.push(read_dependency(
-                    source,
-                    "Catalog",
-                    &catalog,
-                    MetadataTemplateFileMode::Guard,
-                    None,
-                )?);
+                if !source_is_replaced_by_operation {
+                    let catalog = required_registered_name(source, "Catalog", kind)?;
+                    context.event_source = Some(format!("CatalogObject.{catalog}"));
+                    context.dependencies.push(read_dependency(
+                        source,
+                        "Catalog",
+                        &catalog,
+                        MetadataTemplateFileMode::Guard,
+                        None,
+                    )?);
+                }
             }
             _ => {}
         }
@@ -367,6 +371,7 @@ impl MetadataTemplateCatalog for PlatformMetadataTemplateCatalog {
         source: &ResolvedSourceSet,
         kind: MetadataKind,
         name: &str,
+        source_is_replaced_by_operation: bool,
     ) -> Result<MetadataPostImage, MetaFailure> {
         if !is_1c_identifier(name) {
             return Err(MetaDiagnostic::error(
@@ -389,7 +394,12 @@ impl MetadataTemplateCatalog for PlatformMetadataTemplateCatalog {
                 .with_field("name"),
             )
         })?;
-        let context = MinimalTemplateContext::from_source(source, kind, name)?;
+        let context = MinimalTemplateContext::from_source(
+            source,
+            kind,
+            name,
+            source_is_replaced_by_operation,
+        )?;
         let (xml, _) = minimal_metadata_xml(kind, name, &source.format_version, &context)
             .map_err(|message| template_failure(&metadata_path, message))?;
         let layout = metadata_layout(kind);

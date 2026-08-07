@@ -47,9 +47,14 @@ use super::template_catalog::{
     meta_attribute_context, metadata_standard_attribute_names, split_meta_camel_case,
     MetadataAttributeTemplate, MetadataEnumValueTemplate, MetadataTabularSectionTemplate,
 };
+use super::validation_context::{
+    validate_event_source_dependency_descriptor, validate_event_source_registration,
+};
 use super::xml_model::{
-    emit_meta_mltext, emit_meta_typed_fill_value, emit_meta_typed_value_type, meta_info_child,
-    meta_info_child_text, meta_info_children, meta_info_inner_text,
+    canonical_meta_event_sources, emit_meta_event_subscription_source, emit_meta_mltext,
+    emit_meta_typed_fill_value, emit_meta_typed_value_type, event_source_generated_prefix,
+    meta_event_subscription_source_node, meta_info_child, meta_info_child_text, meta_info_children,
+    meta_info_inner_text, parse_meta_event_subscription_source,
 };
 
 #[derive(Debug, Default)]
@@ -105,6 +110,14 @@ fn meta_edit_preserve_source_format(text: &str, format: MetaEditSourceFormat) ->
     }
     bytes.extend_from_slice(serialized.as_bytes());
     bytes
+}
+
+fn meta_edit_line_indent(text: &str, position: usize) -> String {
+    let line_start = text[..position].rfind('\n').map_or(0, |index| index + 1);
+    text[line_start..position]
+        .chars()
+        .take_while(|character| matches!(character, '\t' | ' '))
+        .collect()
 }
 
 pub(super) fn meta_edit_object_identity(xml_text: &str) -> Result<(String, String), String> {
@@ -644,6 +657,13 @@ pub(super) struct TypedRelationDependency {
     pub(super) path: PathBuf,
     pub(super) bytes: Vec<u8>,
     pub(super) target: MetadataAddress,
+    pub(super) modules: Vec<TypedDependencyModule>,
+}
+
+#[derive(Debug)]
+pub(super) struct TypedDependencyModule {
+    pub(super) path: PathBuf,
+    pub(super) bytes: Vec<u8>,
 }
 
 pub(super) struct TypedOperationPostImage {
@@ -652,10 +672,36 @@ pub(super) struct TypedOperationPostImage {
     pub(super) effects: Vec<MetaMutationEffect>,
 }
 
+pub(super) struct TypedOperationDependencyScope<'a> {
+    source_set: &'a str,
+    owner_source_root: &'a Path,
+    owner_registration_path: &'a Path,
+    owner_registration_preimage: &'a [u8],
+    include_handler_dependency: bool,
+}
+
+impl<'a> TypedOperationDependencyScope<'a> {
+    pub(super) fn new(
+        source_set: &'a str,
+        owner_source_root: &'a Path,
+        owner_registration_path: &'a Path,
+        owner_registration_preimage: &'a [u8],
+        include_handler_dependency: bool,
+    ) -> Self {
+        Self {
+            source_set,
+            owner_source_root,
+            owner_registration_path,
+            owner_registration_preimage,
+            include_handler_dependency,
+        }
+    }
+}
+
 /// Build the complete descriptor and child-resource plan privately. No
 /// transaction mutation is registered until this function returns success.
 pub(super) fn build_typed_operation_post_image(
-    source_set: &str,
+    dependency_scope: TypedOperationDependencyScope<'_>,
     descriptor_path: &Path,
     target: &MetadataAddress,
     descriptor_preimage: &[u8],
@@ -706,7 +752,7 @@ pub(super) fn build_typed_operation_post_image(
         &xml,
     )?;
     child_resources.relation_dependencies =
-        resolve_typed_relation_dependencies(source_set, target, operations, context, &xml)?;
+        resolve_typed_relation_dependencies(&dependency_scope, target, operations, context, &xml)?;
     Ok(TypedOperationPostImage {
         descriptor: meta_edit_preserve_source_format(&xml, source_format),
         child_resources,
@@ -1993,7 +2039,13 @@ pub(crate) fn prepare_typed_edit(
         child_resources,
         effects,
     } = build_typed_operation_post_image(
-        &request.source_set,
+        TypedOperationDependencyScope::new(
+            &request.source_set,
+            &resolved.source_root,
+            &resolved.owner_path,
+            &resolved.owner_preimage,
+            true,
+        ),
         &resolved.descriptor_path,
         &request.metadata_path,
         &resolved.descriptor_preimage,
@@ -2045,7 +2097,7 @@ fn restore_initial_empty_top_child_objects(pre_image: &str, post_image: &mut Str
 }
 
 fn resolve_typed_relation_dependencies(
-    source_set: &str,
+    dependency_scope: &TypedOperationDependencyScope<'_>,
     metadata_path: &MetadataAddress,
     operations: &[MetaEditOperation],
     context: &WorkspaceContext,
@@ -2068,9 +2120,21 @@ fn resolve_typed_relation_dependencies(
             );
         }
     }
-    for (relation, relation_index, target) in
-        parse_typed_final_relation_graph(owner_post_image, metadata_path)?
-    {
+    let final_graph = parse_typed_final_relation_graph(owner_post_image, metadata_path)?;
+    let mut source_prefixes = BTreeMap::<String, BTreeSet<String>>::new();
+    for (_, _, target) in &final_graph {
+        let crate::domain::metadata::MetaRelationTarget::EventSource(source) = target else {
+            continue;
+        };
+        let Some(dependency) = source.metadata_path() else {
+            continue;
+        };
+        source_prefixes
+            .entry(dependency.as_str().to_string())
+            .or_default()
+            .insert(event_source_generated_prefix(source).to_string());
+    }
+    for (relation, relation_index, target) in final_graph {
         let origin = request_origins
             .get(&(relation.as_str(), target.wire_value().to_string()))
             .copied();
@@ -2087,12 +2151,14 @@ fn resolve_typed_relation_dependencies(
                 diagnostic.field = Some(diagnostic_field.clone());
                 MetaFailure::from(diagnostic.with_metadata_path(metadata_path.clone()))
             })?;
-        let dependency = target.dependency();
+        let Some(dependency) = target.dependency() else {
+            continue;
+        };
         if dependency == metadata_path || !seen.insert(dependency.clone()) {
             continue;
         }
         let source_target = SourceTarget {
-            source_set: source_set.to_string(),
+            source_set: dependency_scope.source_set.to_string(),
             metadata_path: Some(dependency.clone()),
         };
         let resolution =
@@ -2137,14 +2203,246 @@ fn resolve_typed_relation_dependencies(
             diagnostic.operation_index = origin.map(|(index, _)| index);
             MetaFailure::from(diagnostic.with_metadata_path(metadata_path.clone()))
         })?;
+        if relation == MetaRelation::Source {
+            if evidence.source_root != dependency_scope.owner_source_root
+                || evidence.registration_path != dependency_scope.owner_registration_path
+            {
+                let mut diagnostic = typed_diagnostic(
+                    MetaDiagnosticCode::InvalidArguments,
+                    "EventSubscription Source dependency must belong to the exact owner source set",
+                    Some(&diagnostic_field),
+                );
+                diagnostic.operation_index = origin.map(|(index, _)| index);
+                return Err(MetaFailure::from(
+                    diagnostic.with_metadata_path(metadata_path.clone()),
+                ));
+            }
+            let segments = dependency.segments().collect::<Vec<_>>();
+            let [expected_kind, expected_name] = segments.as_slice() else {
+                let mut diagnostic = typed_diagnostic(
+                    MetaDiagnosticCode::InvalidArguments,
+                    "EventSubscription Source dependency must identify one metadata object",
+                    Some(&diagnostic_field),
+                );
+                diagnostic.operation_index = origin.map(|(index, _)| index);
+                return Err(MetaFailure::from(
+                    diagnostic.with_metadata_path(metadata_path.clone()),
+                ));
+            };
+            validate_event_source_registration(
+                dependency_scope.owner_registration_preimage,
+                expected_kind,
+                expected_name,
+            )
+            .and_then(|()| {
+                let prefixes = source_prefixes
+                    .get(dependency.as_str())
+                    .map(|prefixes| prefixes.iter().cloned().collect::<Vec<_>>())
+                    .unwrap_or_default();
+                validate_event_source_dependency_descriptor(
+                    &bytes,
+                    expected_kind,
+                    expected_name,
+                    &prefixes,
+                )
+            })
+            .map_err(|message| {
+                let mut diagnostic = typed_diagnostic(
+                    MetaDiagnosticCode::ValidationFailed,
+                    message,
+                    Some(&diagnostic_field),
+                );
+                diagnostic.operation_index = origin.map(|(index, _)| index);
+                MetaFailure::from(diagnostic.with_metadata_path(metadata_path.clone()))
+            })?;
+        }
         dependencies.push(TypedRelationDependency {
             handle: resolution.handle,
             path: evidence.target_path,
             bytes,
             target: dependency.clone(),
+            modules: Vec::new(),
         });
     }
+    if dependency_scope.include_handler_dependency
+        && metadata_path.segments().next() == Some("EventSubscription")
+    {
+        let handler = resolve_typed_event_subscription_handler_dependency(
+            dependency_scope.source_set,
+            dependency_scope.owner_source_root,
+            dependency_scope.owner_registration_path,
+            metadata_path,
+            owner_post_image,
+            context,
+        )?;
+        if !seen.contains(&handler.target) {
+            dependencies.push(handler);
+        }
+    }
     Ok(dependencies)
+}
+
+fn resolve_typed_event_subscription_handler_dependency(
+    source_set: &str,
+    owner_source_root: &Path,
+    owner_registration_path: &Path,
+    metadata_path: &MetadataAddress,
+    owner_post_image: &str,
+    context: &WorkspaceContext,
+) -> Result<TypedRelationDependency, MetaFailure> {
+    let document =
+        Document::parse(owner_post_image.trim_start_matches('\u{feff}')).map_err(|_| {
+            MetaFailure::from(
+                typed_diagnostic(
+                    MetaDiagnosticCode::ProviderUnavailable,
+                    "EventSubscription post-image is not valid XML",
+                    Some("properties.handler"),
+                )
+                .with_metadata_path(metadata_path.clone()),
+            )
+        })?;
+    let source = meta_event_subscription_source_node(&document).map_err(|message| {
+        MetaFailure::from(
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                message,
+                Some("properties.handler"),
+            )
+            .with_metadata_path(metadata_path.clone()),
+        )
+    })?;
+    let properties = source.parent().ok_or_else(|| {
+        MetaFailure::from(
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "EventSubscription Properties are unavailable",
+                Some("properties.handler"),
+            )
+            .with_metadata_path(metadata_path.clone()),
+        )
+    })?;
+    let handler = meta_info_child_text(properties, "Handler")
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            MetaFailure::from(
+                typed_diagnostic(
+                    MetaDiagnosticCode::ValidationFailed,
+                    "EventSubscription Handler is empty",
+                    Some("properties.handler"),
+                )
+                .with_metadata_path(metadata_path.clone()),
+            )
+        })?;
+    let parts = handler.trim().split('.').collect::<Vec<_>>();
+    let module_name = match parts.as_slice() {
+        ["CommonModule", module, _] | [module, _] => *module,
+        _ => {
+            return Err(MetaFailure::from(
+                typed_diagnostic(
+                    MetaDiagnosticCode::ValidationFailed,
+                    "EventSubscription Handler must identify a CommonModule procedure",
+                    Some("properties.handler"),
+                )
+                .with_metadata_path(metadata_path.clone()),
+            ))
+        }
+    };
+    let target = MetadataAddress::parse(
+        PLATFORM_XML_8_3_27_FORMAT_2_20,
+        &format!("CommonModule.{module_name}"),
+    )
+    .map_err(|_| {
+        MetaFailure::from(
+            typed_diagnostic(
+                MetaDiagnosticCode::ValidationFailed,
+                "EventSubscription Handler CommonModule is invalid",
+                Some("properties.handler"),
+            )
+            .with_metadata_path(metadata_path.clone()),
+        )
+    })?;
+    let source_target = SourceTarget {
+        source_set: source_set.to_string(),
+        metadata_path: Some(target.clone()),
+    };
+    let resolution = resolve_platform_xml_target(context, &source_target, TargetKindPolicy::Any)
+        .map_err(|_| {
+            MetaFailure::from(
+                typed_diagnostic(
+                    MetaDiagnosticCode::TargetNotFound,
+                    "EventSubscription Handler CommonModule does not resolve in the selected source set",
+                    Some("properties.handler"),
+                )
+                .with_metadata_path(metadata_path.clone()),
+            )
+        })?;
+    if resolution.resolved.target_kind != TargetKind::MetadataObject {
+        return Err(MetaFailure::from(
+            typed_diagnostic(
+                MetaDiagnosticCode::InvalidArguments,
+                "EventSubscription Handler must resolve to a metadata object",
+                Some("properties.handler"),
+            )
+            .with_metadata_path(metadata_path.clone()),
+        ));
+    }
+    let evidence = platform_xml_resource_evidence(context, &resolution.handle).map_err(|_| {
+        MetaFailure::from(
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "EventSubscription Handler evidence is unavailable",
+                Some("properties.handler"),
+            )
+            .with_metadata_path(metadata_path.clone()),
+        )
+    })?;
+    if evidence.source_root != owner_source_root
+        || evidence.registration_path != owner_registration_path
+    {
+        return Err(MetaFailure::from(
+            typed_diagnostic(
+                MetaDiagnosticCode::InvalidArguments,
+                "EventSubscription Handler must belong to the exact owner source set",
+                Some("properties.handler"),
+            )
+            .with_metadata_path(metadata_path.clone()),
+        ));
+    }
+    let bytes = fs::read(&evidence.target_path).map_err(|_| {
+        MetaFailure::from(
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "EventSubscription Handler descriptor pre-image is unavailable",
+                Some("properties.handler"),
+            )
+            .with_metadata_path(metadata_path.clone()),
+        )
+    })?;
+    let modules = evidence
+        .module_paths
+        .into_iter()
+        .map(|path| {
+            fs::read(&path)
+                .map(|bytes| TypedDependencyModule { path, bytes })
+                .map_err(|_| {
+                    MetaFailure::from(
+                        typed_diagnostic(
+                            MetaDiagnosticCode::ProviderUnavailable,
+                            "EventSubscription Handler module pre-image is unavailable",
+                            Some("properties.handler"),
+                        )
+                        .with_metadata_path(metadata_path.clone()),
+                    )
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(TypedRelationDependency {
+        handle: resolution.handle,
+        path: evidence.target_path,
+        bytes,
+        target,
+        modules,
+    })
 }
 
 fn parse_typed_final_relation_graph(
@@ -2232,6 +2530,27 @@ fn parse_typed_final_relation_graph(
                 )
             };
             graph.push((relation, index, target));
+        }
+    }
+    if owner.segments().next() == Some("EventSubscription") {
+        let source = meta_event_subscription_source_node(&document)
+            .and_then(parse_meta_event_subscription_source)
+            .map_err(|message| {
+                MetaFailure::from(
+                    typed_diagnostic(
+                        MetaDiagnosticCode::ValidationFailed,
+                        message,
+                        Some("relations.source"),
+                    )
+                    .with_metadata_path(owner.clone()),
+                )
+            })?;
+        for (index, source) in source.into_iter().enumerate() {
+            graph.push((
+                MetaRelation::Source,
+                index,
+                crate::domain::metadata::MetaRelationTarget::EventSource(source),
+            ));
         }
     }
     Ok(graph)
@@ -2537,16 +2856,18 @@ fn typed_operation_effect_value(
         )?,
         MetaEditOperation::EditRelations { relation, .. } => {
             let mut diagnostics = Vec::new();
-            let relations = super::info::typed_relations(properties, &target, &mut diagnostics);
+            let relations =
+                super::info::typed_relations(&document, properties, &target, &mut diagnostics);
             if let Some(diagnostic) = diagnostics.into_iter().next() {
                 return Err(diagnostic);
             }
-            serde_json::to_value(match relation {
-                MetaRelation::Owners => relations.owners,
-                MetaRelation::RegisterRecords => relations.register_records,
-                MetaRelation::BasedOn => relations.based_on,
-                MetaRelation::InputByString => relations.input_by_string,
-            })
+            match relation {
+                MetaRelation::Owners => serde_json::to_value(relations.owners),
+                MetaRelation::RegisterRecords => serde_json::to_value(relations.register_records),
+                MetaRelation::BasedOn => serde_json::to_value(relations.based_on),
+                MetaRelation::InputByString => serde_json::to_value(relations.input_by_string),
+                MetaRelation::Source => serde_json::to_value(relations.source),
+            }
             .map_err(|_| {
                 typed_diagnostic(
                     MetaDiagnosticCode::ProviderUnavailable,
@@ -3696,11 +4017,21 @@ fn apply_typed_relations(
     mode: RelationEditMode,
     targets: &[crate::domain::metadata::MetaRelationTarget],
 ) -> Result<(), MetaDiagnostic> {
+    if relation == MetaRelation::Source {
+        return apply_typed_event_subscription_source(xml_text, mode, targets);
+    }
     let tag = match relation {
         MetaRelation::Owners => "Owners",
         MetaRelation::RegisterRecords => "RegisterRecords",
         MetaRelation::BasedOn => "BasedOn",
         MetaRelation::InputByString => "InputByString",
+        MetaRelation::Source => {
+            return Err(typed_diagnostic(
+                MetaDiagnosticCode::InvalidArguments,
+                "EventSubscription Source requires replace mode",
+                Some("relation"),
+            ))
+        }
     };
     let item_tag = if relation == MetaRelation::InputByString {
         "xr:Field"
@@ -3841,14 +4172,74 @@ fn apply_typed_relations(
     Ok(())
 }
 
+fn apply_typed_event_subscription_source(
+    xml_text: &mut String,
+    mode: RelationEditMode,
+    targets: &[crate::domain::metadata::MetaRelationTarget],
+) -> Result<(), MetaDiagnostic> {
+    if mode != RelationEditMode::Replace {
+        return Err(typed_diagnostic(
+            MetaDiagnosticCode::InvalidArguments,
+            "EventSubscription Source supports replace mode only",
+            Some("mode"),
+        ));
+    }
+    let requested = targets
+        .iter()
+        .enumerate()
+        .map(|(index, target)| match target {
+            crate::domain::metadata::MetaRelationTarget::EventSource(source) => Ok(source.clone()),
+            _ => Err(typed_diagnostic(
+                MetaDiagnosticCode::InvalidArguments,
+                "Source relation target has the wrong typed shape",
+                Some(&format!("targets[{index}]")),
+            )),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let source_text = xml_text.trim_start_matches('\u{feff}');
+    let source_offset = xml_text.len() - source_text.len();
+    let document = Document::parse(source_text).map_err(|_| {
+        typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata descriptor is not valid XML",
+            None,
+        )
+    })?;
+    let source_node = meta_event_subscription_source_node(&document).map_err(|message| {
+        typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            message,
+            Some("relation"),
+        )
+    })?;
+    let current = parse_meta_event_subscription_source(source_node).map_err(|message| {
+        typed_diagnostic(
+            MetaDiagnosticCode::ValidationFailed,
+            message,
+            Some("relation"),
+        )
+    })?;
+    let requested = canonical_meta_event_sources(&requested);
+    if canonical_meta_event_sources(&current) == requested {
+        return Ok(());
+    }
+    let range = source_node.range();
+    let range = range.start + source_offset..range.end + source_offset;
+    let indent = meta_edit_line_indent(xml_text, range.start);
+    let replacement = emit_meta_event_subscription_source(&indent, &requested);
+    drop(document);
+    xml_text.replace_range(range, replacement.trim_start());
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::metadata::{
         DateFractions, MetaCollection, MetaEditOperation, MetaElementInput, MetaElementUpdateInput,
-        MetaFillValue, MetaPosition, MetaPropertyChanges, MetaPropertyInput, MetaPropertyValue,
-        MetaRelation, MetaScope, MetadataReference, MetadataType, MetadataTypeVariant, NumberSign,
-        RelationEditMode, StringLengthMode,
+        MetaEventSource, MetaFillValue, MetaPosition, MetaPropertyChanges, MetaPropertyInput,
+        MetaPropertyValue, MetaRelation, MetaRelationTarget, MetaScope, MetadataReference,
+        MetadataType, MetadataTypeVariant, NumberSign, RelationEditMode, StringLengthMode,
     };
     use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 
@@ -3863,6 +4254,38 @@ mod tests {
 </MetaDataObject>
 "#
         )
+    }
+
+    fn event_subscription_xml(source: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+	<EventSubscription uuid="11111111-1111-4111-8111-111111111111">
+		<Properties>
+			<Name>Events</Name>
+			<Synonym/>
+			<Comment/>
+			{source}
+			<Event>BeforeWrite</Event>
+			<Handler>CommonModule.Handler.OnEvent</Handler>
+		</Properties>
+		<ChildObjects/>
+	</EventSubscription>
+</MetaDataObject>
+"#
+        )
+    }
+
+    fn source_replace(sources: Vec<MetaEventSource>) -> MetaEditOperation {
+        MetaEditOperation::edit_relation_targets(
+            MetaRelation::Source,
+            RelationEditMode::Replace,
+            sources
+                .into_iter()
+                .map(MetaRelationTarget::EventSource)
+                .collect(),
+        )
+        .unwrap()
     }
 
     fn metadata_reference(path: &str) -> MetadataReference {
@@ -4781,9 +5204,122 @@ mod tests {
     }
 
     #[test]
+    fn typed_event_source_replaces_only_the_exact_direct_source_and_is_semantically_idempotent() {
+        let nested_decoy = "<Wrapper><Source><v8:Type>xs:boolean</v8:Type></Source></Wrapper>";
+        let mut xml = event_subscription_xml(&format!("<Source/>{nested_decoy}"));
+        let operation = source_replace(vec![MetaEventSource::Boolean]);
+
+        let result = apply_typed_operations(&mut xml, &[operation.clone()]).unwrap();
+
+        assert_eq!(result.effects.len(), 1);
+        assert_eq!(result.effects[0].before, Some(serde_json::json!([])));
+        assert_eq!(
+            result.effects[0].after,
+            Some(serde_json::json!([{ "kind": "boolean" }]))
+        );
+        assert!(xml.contains("<Source>\n\t\t\t\t<v8:Type>xs:boolean</v8:Type>\n\t\t\t</Source>"));
+        assert!(xml.contains(nested_decoy));
+
+        let post_image = xml.clone();
+        apply_typed_operations(&mut xml, &[operation]).unwrap();
+        assert_eq!(xml, post_image);
+    }
+
+    #[test]
+    fn typed_event_source_semantic_noop_is_order_insensitive_and_preserves_exact_bytes() {
+        let source = concat!(
+            "<Source>",
+            "<v8:Type>cfg:CatalogRef.Items</v8:Type>",
+            "<v8:Type>cfg:DocumentObject.Sale</v8:Type>",
+            "</Source>"
+        );
+        let mut xml = event_subscription_xml(source);
+        let before = xml.clone();
+        let operation = source_replace(vec![
+            MetaEventSource::Object {
+                metadata_path: MetadataAddress::parse(
+                    PLATFORM_XML_8_3_27_FORMAT_2_20,
+                    "Document.Sale",
+                )
+                .unwrap(),
+            },
+            MetaEventSource::Reference {
+                metadata_path: MetadataAddress::parse(
+                    PLATFORM_XML_8_3_27_FORMAT_2_20,
+                    "Catalog.Items",
+                )
+                .unwrap(),
+            },
+        ]);
+
+        apply_typed_operations(&mut xml, &[operation]).unwrap();
+
+        assert_eq!(xml, before);
+    }
+
+    #[test]
+    fn typed_event_source_build_preserves_bom_and_crlf_for_change_and_noop() {
+        let lf = event_subscription_xml("<Source/>");
+        let mut preimage = b"\xef\xbb\xbf".to_vec();
+        preimage.extend_from_slice(lf.replace('\n', "\r\n").as_bytes());
+        let operation = source_replace(vec![MetaEventSource::Boolean]);
+        let target =
+            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "EventSubscription.Events")
+                .unwrap();
+        let context = crate::domain::workspace::WorkspaceContext {
+            cwd: std::path::PathBuf::from("/unused"),
+            workspace_root: std::path::PathBuf::from("/unused"),
+            cache_root: std::path::PathBuf::from("/unused/.build"),
+            workspace_epoch: 0,
+        };
+
+        let changed = build_typed_operation_post_image(
+            TypedOperationDependencyScope::new(
+                "main",
+                std::path::Path::new("/unused"),
+                std::path::Path::new("/unused/Configuration.xml"),
+                b"",
+                false,
+            ),
+            std::path::Path::new("/unused/EventSubscriptions/Events.xml"),
+            &target,
+            &preimage,
+            &[operation.clone()],
+            &context,
+        )
+        .unwrap()
+        .descriptor;
+
+        assert!(changed.starts_with(b"\xef\xbb\xbf"));
+        assert!(changed.windows(2).any(|pair| pair == b"\r\n"));
+        assert!(!changed
+            .iter()
+            .enumerate()
+            .any(|(index, byte)| *byte == b'\n' && (index == 0 || changed[index - 1] != b'\r')));
+
+        let noop = build_typed_operation_post_image(
+            TypedOperationDependencyScope::new(
+                "main",
+                std::path::Path::new("/unused"),
+                std::path::Path::new("/unused/Configuration.xml"),
+                b"",
+                false,
+            ),
+            std::path::Path::new("/unused/EventSubscriptions/Events.xml"),
+            &target,
+            &changed,
+            &[operation],
+            &context,
+        )
+        .unwrap()
+        .descriptor;
+        assert_eq!(noop, changed);
+    }
+
+    #[test]
     fn typed_relation_registry_matches_template_nodes_and_guards_private_images() {
         use crate::domain::metadata::{
-            metadata_relation_spec, MetaRelationTarget, MetaRelationTargetPolicy,
+            metadata_relation_spec, MetaEventSource, MetaRelationTarget, MetaRelationTargetPolicy,
         };
 
         for kind in MetadataKind::ALL {
@@ -4796,6 +5332,7 @@ mod tests {
                     MetaRelation::RegisterRecords => "RegisterRecords",
                     MetaRelation::BasedOn => "BasedOn",
                     MetaRelation::InputByString => "InputByString",
+                    MetaRelation::Source => "Source",
                 };
                 let document = Document::parse(&template).unwrap();
                 let has_node = document.descendants().any(|node| {
@@ -4828,6 +5365,9 @@ mod tests {
                             .unwrap(),
                         )
                     }
+                    Some(MetaRelationTargetPolicy::EventSources) => {
+                        MetaRelationTarget::EventSource(MetaEventSource::Boolean)
+                    }
                     None => match relation {
                         MetaRelation::InputByString => MetaRelationTarget::Field(
                             crate::domain::metadata::MetadataFieldPath::parse(&format!(
@@ -4844,6 +5384,9 @@ mod tests {
                         MetaRelation::BasedOn => MetaRelationTarget::Object(metadata_reference(
                             &format!("{}.Target", kind.as_str()),
                         )),
+                        MetaRelation::Source => {
+                            MetaRelationTarget::EventSource(MetaEventSource::Boolean)
+                        }
                     },
                 };
                 let operation = MetaEditOperation::edit_relation_targets(

@@ -808,6 +808,7 @@ Create one metadata object from a typed internal template and optionally configu
 
 - Создать минимальный справочник по логическому sourceSet
 - Одним вызовом создать и настроить объект через общий типизированный `operations` union
+- Создать подписку на событие и сразу задать источник через `editRelations.source`
 - Предварительно проверить план создания объекта без записи файлов
 
 ### `unica.meta.edit`
@@ -821,7 +822,7 @@ Apply ordered typed metadata edit operations atomically.
 | `operations` | array | да | Ordered typed edit operations applied as one atomic change. |
 | `sourceSet` | string | да | Exact Configuration source-set name from v8project.yaml. |
 
-**Результат сейчас:** `structuredContent.data`: логический адрес, валидация, семантические `effects` по `operationIndex` и план атомарной публикации пяти вариантов typed-операций (отвечают типизированным `data`)
+**Результат сейчас:** `structuredContent.data`: логический адрес, валидация, семантические `effects` по `operationIndex` и план атомарной публикации пяти вариантов typed-операций, включая замену `EventSubscription.Source` через `editRelations.source` (отвечают типизированным `data`)
 
 **Целевой контракт:** достигнут
 
@@ -829,6 +830,7 @@ Apply ordered typed metadata edit operations atomically.
 
 - Добавить реквизит существующему документу
 - Назначить владельцев подчинённому справочнику
+- Заменить источник существующей подписки набором записей регистра сведений
 
 ### `unica.meta.info`
 
@@ -841,7 +843,7 @@ Inspect one metadata object with validation and source-tree usage.
 | `sections` | array | нет | Extra sections to compute, all read from the source tree: `roles`, `subscriptions` and `functionalOptions` land in `usage`, `predefinedItems` in its own field. Omit or pass [] to inspect the object alone. |
 | `sourceSet` | string | да | Exact Configuration source-set name from v8project.yaml. |
 
-**Результат сейчас:** `structuredContent.data`: локальная структура и валидация объекта; явно выбранные секции читаются из дерева исходников в `usage` и `predefinedItems`, обращения к RLM нет ни при каких аргументах (отвечают типизированным `data`)
+**Результат сейчас:** `structuredContent.data`: локальная структура и валидация объекта, включая typed readback `relations.source` подписки; явно выбранные секции читаются из дерева исходников в `usage` и `predefinedItems`, обращения к RLM нет ни при каких аргументах (отвечают типизированным `data`)
 
 **Целевой контракт:** достигнут
 
@@ -850,6 +852,7 @@ Inspect one metadata object with validation and source-tree usage.
 - Изучить структуру справочника перед написанием запроса
 - Сравнить два объекта по подчинению и составу реквизитов
 - Уточнить длину кода и основное представление перед генерацией формы
+- Прочитать фактический типизированный список источников подписки на событие
 
 ### `unica.meta.remove`
 

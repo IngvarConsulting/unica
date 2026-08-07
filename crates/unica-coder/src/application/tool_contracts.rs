@@ -3699,12 +3699,76 @@ mod tests {
         relations.sort_unstable();
         assert_eq!(
             relations,
-            vec!["basedOn", "inputByString", "owners", "registerRecords"]
+            vec![
+                "basedOn",
+                "inputByString",
+                "owners",
+                "registerRecords",
+                "source",
+            ]
         );
         assert_eq!(
             variants[4]["properties"]["mode"]["enum"],
             json!(["add", "remove", "replace"])
         );
+        let targets = &variants[4]["properties"]["targets"];
+        assert_eq!(targets["uniqueItems"], true);
+        assert!(
+            targets.get("minItems").is_none(),
+            "source replace with targets=[] is the typed clear operation"
+        );
+        let target_variants = targets["items"]["oneOf"]
+            .as_array()
+            .expect("relation targets publish a closed oneOf");
+        assert_eq!(target_variants.len(), 11);
+        for target in target_variants {
+            assert_eq!(target["type"], "object");
+            assert_eq!(target["additionalProperties"], false);
+        }
+        assert_eq!(
+            target_variants[0]["required"],
+            json!(["metadataPath"]),
+            "ordinary object relation targets remain in the union"
+        );
+        assert_eq!(
+            target_variants[1]["required"],
+            json!(["fieldPath"]),
+            "ordinary field relation targets remain in the union"
+        );
+        let event_kinds = target_variants[2..]
+            .iter()
+            .map(|target| {
+                target["properties"]["kind"]["const"]
+                    .as_str()
+                    .expect("event target kind is a const")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            event_kinds,
+            [
+                "string",
+                "number",
+                "boolean",
+                "date",
+                "valueStorage",
+                "object",
+                "reference",
+                "recordSet",
+                "definedType",
+            ]
+        );
+        assert_eq!(target_variants[2]["properties"]["length"]["const"], 0);
+        assert_eq!(
+            target_variants[2]["properties"]["allowedLength"]["const"],
+            "variable"
+        );
+        assert_eq!(
+            target_variants[5]["properties"]["fractions"]["enum"],
+            json!(["date", "dateTime"])
+        );
+        assert!(variants[4]["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("replace-only")));
 
         let schemas = [
             info,
@@ -3726,6 +3790,7 @@ mod tests {
             "Object",
             "jsonPath",
             "definitionFile",
+            "generatedType",
             "operation",
             "objectPath",
             "configDir",

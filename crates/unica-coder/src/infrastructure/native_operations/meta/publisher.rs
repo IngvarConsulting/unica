@@ -9,8 +9,9 @@ use crate::application::SupportGuardRequirement;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::metadata::{
     metadata_identifier_is_valid, MetaDiagnostic, MetaDiagnosticCode, MetaDiagnosticSeverity,
-    MetaMutationData, MetaMutationEffect, MetaPublicationAction, MetaPublicationPlanEntry,
-    MetaPublicationResource, MetaValidationData, MetaValidationStatus,
+    MetaEditOperation, MetaMutationData, MetaMutationEffect, MetaPublicationAction,
+    MetaPublicationPlanEntry, MetaPublicationResource, MetaRelation, MetaValidationData,
+    MetaValidationStatus, RelationEditMode,
 };
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::metadata_kinds::metadata_layout;
@@ -28,7 +29,7 @@ use super::super::compile_transaction::{
 };
 use super::edit::{
     build_typed_operation_post_image, resolve_typed_metadata_object, ResolvedMetadataObject,
-    TypedChildResourcePlan, TypedOperationPostImage,
+    TypedChildResourcePlan, TypedOperationDependencyScope, TypedOperationPostImage,
 };
 use super::remove::{plan_typed_remove, TypedMetaRemovePlan};
 use super::template_catalog::{
@@ -258,6 +259,17 @@ impl PreparedMetaEdit {
                 context,
             )
             .map_err(|message| provider_failure(&target, message))?;
+            for module in dependency.modules {
+                transaction
+                    .guard_or_verify_exact_preimage(&module.path, &module.bytes)
+                    .map_err(|message| provider_failure(&target, message))?;
+                validation_resources.push(MetadataResourceImage {
+                    role: MetadataResourceRole::Module {
+                        owner: dependency.target.clone(),
+                    },
+                    bytes: module.bytes,
+                });
+            }
             validation_resources.push(MetadataResourceImage {
                 role: MetadataResourceRole::Dependency {
                     target: dependency.target,
@@ -497,8 +509,22 @@ pub(crate) fn prepare_meta_add(
             .into());
         }
     }
-    let mut post_image =
-        PlatformMetadataTemplateCatalog.minimal_object(&source, request.kind, &request.name)?;
+    let source_is_replaced_by_operation = request.operations.iter().any(|operation| {
+        matches!(
+            operation,
+            MetaEditOperation::EditRelations {
+                relation: MetaRelation::Source,
+                mode: RelationEditMode::Replace,
+                ..
+            }
+        )
+    });
+    let mut post_image = PlatformMetadataTemplateCatalog.minimal_object(
+        &source,
+        request.kind,
+        &request.name,
+        source_is_replaced_by_operation,
+    )?;
     let target = post_image.metadata_path.clone();
     let descriptor_file = post_image
         .files
@@ -511,7 +537,13 @@ pub(crate) fn prepare_meta_add(
         child_resources,
         effects,
     } = build_typed_operation_post_image(
-        &request.source_set,
+        TypedOperationDependencyScope::new(
+            &request.source_set,
+            &source.source_root,
+            &source.owner_path,
+            &source.owner_preimage,
+            false,
+        ),
         &descriptor_path,
         &target,
         &descriptor_file.bytes,
@@ -726,6 +758,17 @@ pub(crate) fn prepare_meta_add(
             context,
         )
         .map_err(|message| provider_failure(&target, message))?;
+        for module in dependency.modules {
+            transaction
+                .guard_or_verify_exact_preimage(&module.path, &module.bytes)
+                .map_err(|message| provider_failure(&target, message))?;
+            validation_resources.push(MetadataResourceImage {
+                role: MetadataResourceRole::Module {
+                    owner: dependency.target.clone(),
+                },
+                bytes: module.bytes,
+            });
+        }
         validation_resources.push(MetadataResourceImage {
             role: MetadataResourceRole::Dependency {
                 target: dependency.target,
