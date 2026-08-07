@@ -2510,7 +2510,8 @@ fn validate_role_edit_descriptor(raw: &[u8], role_name: &str) -> Result<(), Stri
     let root = document.root_element();
     if root.tag_name().name() != "MetaDataObject"
         || root.tag_name().namespace() != Some(ROLE_METADATA_NAMESPACE)
-        || root.attribute("version") != Some("2.20")
+        || crate::infrastructure::platform_xml_owner::root_version_literal(&text, root).as_deref()
+            != Some("2.20")
     {
         return Err("role descriptor must use exact MDClasses format 2.20".to_string());
     }
@@ -2570,6 +2571,19 @@ fn role_text_content(node: roxmltree::Node<'_, '_>) -> String {
         .collect()
 }
 
+fn role_direct_boolean(node: roxmltree::Node<'_, '_>) -> Option<bool> {
+    let mut text_nodes = node.children().filter(|child| child.is_text());
+    let value = text_nodes.next()?.text()?;
+    if text_nodes.next().is_some() {
+        return None;
+    }
+    match value {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
 fn validate_role_rights_document(text: &str, require_boolean_values: bool) -> Result<(), String> {
     let document =
         Document::parse(text).map_err(|_| "Rights.xml is not well-formed XML".to_string())?;
@@ -2590,7 +2604,7 @@ fn validate_role_rights_document(text: &str, require_boolean_values: bool) -> Re
         "independentRightsOfChildObjects",
     ] {
         let nodes = direct_role_children(root, flag, ROLE_RIGHTS_NAMESPACE);
-        if nodes.len() != 1 || !matches!(role_text_content(nodes[0]).as_str(), "true" | "false") {
+        if nodes.len() != 1 || role_direct_boolean(nodes[0]).is_none() {
             return Err(format!(
                 "Rights.xml must contain one direct boolean `{flag}` element"
             ));
@@ -2639,9 +2653,7 @@ fn validate_role_rights_document(text: &str, require_boolean_values: bool) -> Re
                     "right `{right_name}` of `{object_name}` must have one direct value"
                 ));
             }
-            if require_boolean_values
-                && !matches!(role_text_content(values[0]).as_str(), "true" | "false")
-            {
+            if require_boolean_values && role_direct_boolean(values[0]).is_none() {
                 return Err(format!(
                     "right `{right_name}` of `{object_name}` must have a boolean value"
                 ));
@@ -2727,11 +2739,9 @@ fn apply_role_edit_operation(
     }
     let before = matching_rights.first().and_then(|right| {
         let values = direct_role_children(*right, "value", ROLE_RIGHTS_NAMESPACE);
-        (values.len() == 1).then(|| match role_text_content(values[0]).as_str() {
-            "true" => Some(true),
-            "false" => Some(false),
-            _ => None,
-        })?
+        (values.len() == 1)
+            .then(|| role_direct_boolean(values[0]))
+            .flatten()
     });
 
     let action = if data_processor_cascade {
@@ -3092,6 +3102,20 @@ mod role_edit_contract_tests {
         );
         assert!(validate_role_edit_descriptor(descriptor.as_bytes(), "Demo").is_err());
         validate_role_edit_descriptor(descriptor.as_bytes(), "DemoSuffix").unwrap();
+        let encoded_version = descriptor.replace("version=\"2.20\"", "version=\"2.2&#48;\"");
+        assert!(validate_role_edit_descriptor(encoded_version.as_bytes(), "DemoSuffix").is_err());
+
+        let split_boolean =
+            body.replacen("<value>true</value>", "<value>tr<!--future-->ue</value>", 1);
+        validate_role_rights_document(&split_boolean, false).unwrap();
+        assert!(validate_role_rights_document(&split_boolean, true).is_err());
+        let error = apply_role_edit_operation(
+            &split_boolean,
+            &operation("Catalog.Demo", "Delete", false),
+            0,
+        )
+        .expect_err("a split boolean must not have a distinct no-op interpretation");
+        assert!(error.contains("one direct boolean text value"), "{error}");
     }
 
     #[test]

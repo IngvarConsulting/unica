@@ -2366,10 +2366,15 @@ fn parse_item_type(source: &str, node: Node<'_, '_>) -> Result<MetadataType, Str
             && candidate.tag_name().namespace() == Some(V8_NS)
             && matches!(candidate.tag_name().name(), "Type" | "TypeSet")
     }) {
-        let Some(text_node) = value_node.children().find(|child| child.is_text()) else {
+        let text_nodes = value_node
+            .children()
+            .filter(|child| child.is_text())
+            .collect::<Vec<_>>();
+        if text_nodes.is_empty() {
             continue;
-        };
-        let raw = text_node.text().unwrap_or_default().trim();
+        }
+        let text_value = direct_text_content(value_node);
+        let raw = text_value.trim();
         let (prefix, local) = raw.split_once(':').ok_or_else(|| {
             "predefined Type value must be a namespace-qualified QName".to_string()
         })?;
@@ -2389,14 +2394,23 @@ fn parse_item_type(source: &str, node: Node<'_, '_>) -> Result<MetadataType, Str
                 ))
             }
         };
-        let range = text_node.range();
-        let mut start = range.start - node_range.start;
-        let mut end = range.end - node_range.start;
-        if start >= opening_end {
-            start += declaration_length;
-            end += declaration_length;
+        for (index, text_node) in text_nodes.into_iter().enumerate() {
+            let range = text_node.range();
+            let mut start = range.start - node_range.start;
+            let mut end = range.end - node_range.start;
+            if start >= opening_end {
+                start += declaration_length;
+                end += declaration_length;
+            }
+            edits.push((
+                start..end,
+                if index == 0 {
+                    format!("{canonical_prefix}:{local}")
+                } else {
+                    String::new()
+                },
+            ));
         }
-        edits.push((start..end, format!("{canonical_prefix}:{local}")));
     }
     edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
     for (range, replacement) in edits {
@@ -3152,6 +3166,31 @@ mod tests {
             [MetadataTypeVariant::Reference { metadata_path }]
                 if metadata_path.as_str() == "Catalog.Items"
         ));
+
+        let segmented = String::from_utf8(bytes.to_vec())
+            .unwrap()
+            .replace("ent:CatalogRef.Items", "v8:Value<!--keep-->Storage");
+        let data = read_predefined_items(
+            segmented.as_bytes(),
+            MetadataKind::ChartOfCharacteristicTypes,
+            10,
+        )
+        .unwrap();
+        assert!(matches!(
+            data.items[0].r#type.as_ref().unwrap().variants.as_slice(),
+            [MetadataTypeVariant::ValueStorage]
+        ));
+
+        let invalid = segmented.replace(
+            "v8:Value<!--keep-->Storage",
+            "v8:ValueStorage<!--keep-->garbage",
+        );
+        assert!(read_predefined_items(
+            invalid.as_bytes(),
+            MetadataKind::ChartOfCharacteristicTypes,
+            10,
+        )
+        .is_err());
     }
 
     #[test]

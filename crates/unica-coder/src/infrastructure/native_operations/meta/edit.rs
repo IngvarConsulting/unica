@@ -3658,7 +3658,12 @@ pub(super) fn parse_typed_metadata_type(
             && node.tag_name().namespace() == Some("http://v8.1c.ru/8.1/data/core")
             && matches!(node.tag_name().name(), "Type" | "TypeSet")
     }) {
-        let value = node.text().unwrap_or_default();
+        let value = node
+            .children()
+            .filter(|child| child.is_text())
+            .filter_map(|child| child.text())
+            .collect::<String>();
+        let value = value.as_str();
         let variant = if node.tag_name().name() == "TypeSet" {
             let raw = value.strip_prefix("cfg:").unwrap_or(value);
             MetadataTypeVariant::DefinedType {
@@ -3994,6 +3999,21 @@ mod tests {
                 "writer fill parser disagrees at timezone {timezone}: {result:?}"
             );
         }
+    }
+
+    #[test]
+    fn typed_metadata_type_uses_the_complete_direct_text_value() {
+        let parsed =
+            parse_typed_metadata_type("<v8:Type>xs:str<!--future-separator-->ing</v8:Type>")
+                .unwrap();
+        assert!(matches!(
+            parsed.variants.as_slice(),
+            [MetadataTypeVariant::String { .. }]
+        ));
+
+        let invalid =
+            parse_typed_metadata_type("<v8:Type>xs:string<!--future-suffix-->garbage</v8:Type>");
+        assert!(invalid.is_err());
     }
 
     #[test]

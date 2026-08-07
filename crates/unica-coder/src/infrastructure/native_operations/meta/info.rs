@@ -307,11 +307,15 @@ pub(super) fn predefined_code_type_for_info(
         MetadataKind::Catalog | MetadataKind::ChartOfCalculationTypes => Some(
             properties
                 .and_then(|node| meta_info_child(node, "CodeType"))
-                .and_then(|node| node.text())
-                .map(str::trim)
+                .map(|node| {
+                    node.children()
+                        .filter(|child| child.is_text())
+                        .filter_map(|child| child.text())
+                        .collect::<String>()
+                })
+                .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
-                .unwrap_or("String")
-                .to_string(),
+                .unwrap_or_else(|| "String".to_string()),
         ),
         MetadataKind::ChartOfAccounts | MetadataKind::ChartOfCharacteristicTypes => {
             Some("String".to_string())
@@ -879,4 +883,32 @@ pub(crate) fn resolve_meta_info_path(mut object_path: PathBuf) -> Result<PathBuf
         return Err(format!("[ERROR] File not found: {}", object_path.display()));
     }
     Ok(object_path)
+}
+
+#[cfg(test)]
+mod predefined_code_type_tests {
+    use super::*;
+
+    #[test]
+    fn info_uses_the_complete_direct_code_type_text() {
+        let document = Document::parse(
+            r#"<Properties xmlns="http://v8.1c.ru/8.3/MDClasses"><CodeType>Num<!--keep-->ber</CodeType></Properties>"#,
+        )
+        .unwrap();
+        assert_eq!(
+            predefined_code_type_for_info(Some(document.root_element()), MetadataKind::Catalog)
+                .as_deref(),
+            Some("Number")
+        );
+
+        let suffixed = Document::parse(
+            r#"<Properties xmlns="http://v8.1c.ru/8.3/MDClasses"><CodeType>Number<!--keep-->Suffix</CodeType></Properties>"#,
+        )
+        .unwrap();
+        assert_eq!(
+            predefined_code_type_for_info(Some(suffixed.root_element()), MetadataKind::Catalog)
+                .as_deref(),
+            Some("NumberSuffix")
+        );
+    }
 }
