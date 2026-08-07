@@ -2523,7 +2523,7 @@ fn validate_role_edit_descriptor(raw: &[u8], role_name: &str) -> Result<(), Stri
         return Err("Role must contain exactly one direct Properties element".to_string());
     }
     let names = direct_role_children(properties[0], "Name", ROLE_METADATA_NAMESPACE);
-    if names.len() != 1 || names[0].text() != Some(role_name) {
+    if names.len() != 1 || role_text_content(names[0]) != role_name {
         return Err("Role.Properties.Name does not match metadataPath".to_string());
     }
     Ok(())
@@ -2563,6 +2563,13 @@ fn direct_role_children<'a, 'input>(
         .collect()
 }
 
+fn role_text_content(node: roxmltree::Node<'_, '_>) -> String {
+    node.descendants()
+        .filter(|descendant| descendant.is_text())
+        .filter_map(|descendant| descendant.text())
+        .collect()
+}
+
 fn validate_role_rights_document(text: &str, require_boolean_values: bool) -> Result<(), String> {
     let document =
         Document::parse(text).map_err(|_| "Rights.xml is not well-formed XML".to_string())?;
@@ -2583,7 +2590,7 @@ fn validate_role_rights_document(text: &str, require_boolean_values: bool) -> Re
         "independentRightsOfChildObjects",
     ] {
         let nodes = direct_role_children(root, flag, ROLE_RIGHTS_NAMESPACE);
-        if nodes.len() != 1 || !matches!(nodes[0].text(), Some("true" | "false")) {
+        if nodes.len() != 1 || !matches!(role_text_content(nodes[0]).as_str(), "true" | "false") {
             return Err(format!(
                 "Rights.xml must contain one direct boolean `{flag}` element"
             ));
@@ -2599,10 +2606,11 @@ fn validate_role_rights_document(text: &str, require_boolean_values: bool) -> Re
         let Some(name) = names.first() else {
             continue;
         };
-        let Some(object_name) = name.text().filter(|value| !value.is_empty()) else {
+        let object_name = role_text_content(*name);
+        if object_name.is_empty() {
             continue;
-        };
-        if !seen_objects.insert(object_name.to_string()) {
+        }
+        if !seen_objects.insert(object_name.clone()) {
             return Err(format!("duplicate role object `{object_name}`"));
         }
         let mut seen_rights = HashSet::new();
@@ -2616,10 +2624,11 @@ fn validate_role_rights_document(text: &str, require_boolean_values: bool) -> Re
             let Some(name) = names.first() else {
                 continue;
             };
-            let Some(right_name) = name.text().filter(|value| !value.is_empty()) else {
+            let right_name = role_text_content(*name);
+            if right_name.is_empty() {
                 continue;
-            };
-            if !seen_rights.insert(right_name.to_string()) {
+            }
+            if !seen_rights.insert(right_name.clone()) {
                 return Err(format!(
                     "duplicate right `{right_name}` for object `{object_name}`"
                 ));
@@ -2630,7 +2639,9 @@ fn validate_role_rights_document(text: &str, require_boolean_values: bool) -> Re
                     "right `{right_name}` of `{object_name}` must have one direct value"
                 ));
             }
-            if require_boolean_values && !matches!(values[0].text(), Some("true" | "false")) {
+            if require_boolean_values
+                && !matches!(role_text_content(values[0]).as_str(), "true" | "false")
+            {
                 return Err(format!(
                     "right `{right_name}` of `{object_name}` must have a boolean value"
                 ));
@@ -2659,7 +2670,8 @@ fn apply_role_edit_operation(
         .into_iter()
         .filter(|object| {
             let names = direct_role_children(*object, "name", ROLE_RIGHTS_NAMESPACE);
-            names.len() == 1 && names[0].text() == Some(operation.object_name.as_str())
+            names.len() == 1
+                && role_text_content(names[0]).as_str() == operation.object_name.as_str()
         })
         .collect::<Vec<_>>();
     if objects.len() > 1 {
@@ -2704,7 +2716,7 @@ fn apply_role_edit_operation(
         .into_iter()
         .filter(|right| {
             let names = direct_role_children(*right, "name", ROLE_RIGHTS_NAMESPACE);
-            names.len() == 1 && names[0].text() == Some(operation.right.as_str())
+            names.len() == 1 && role_text_content(names[0]).as_str() == operation.right.as_str()
         })
         .collect::<Vec<_>>();
     if matching_rights.len() > 1 {
@@ -2715,9 +2727,9 @@ fn apply_role_edit_operation(
     }
     let before = matching_rights.first().and_then(|right| {
         let values = direct_role_children(*right, "value", ROLE_RIGHTS_NAMESPACE);
-        (values.len() == 1).then(|| match values[0].text() {
-            Some("true") => Some(true),
-            Some("false") => Some(false),
+        (values.len() == 1).then(|| match role_text_content(values[0]).as_str() {
+            "true" => Some(true),
+            "false" => Some(false),
             _ => None,
         })?
     });
@@ -3029,6 +3041,57 @@ mod role_edit_contract_tests {
                 "accepted incompatible root contract: {invalid}"
             );
         }
+    }
+
+    #[test]
+    fn role_identity_matching_uses_complete_xml_string_values() {
+        let body = rights_xml("\n", "<value>true</value>");
+        let misleading_object = body.replacen(
+            "<name>Catalog.Demo</name>",
+            "<name>Catalog.Demo<!--future-->Suffix</name>",
+            1,
+        );
+        let error = apply_role_edit_operation(
+            &misleading_object,
+            &operation("Catalog.Demo", "Delete", false),
+            0,
+        )
+        .expect_err("a prefix text node must not identify the role object");
+        assert!(error.contains("was not found"), "{error}");
+        validate_role_rights_document(&misleading_object, true).unwrap();
+
+        let misleading_right = body.replacen(
+            "\t\t\t<name>Delete</name>",
+            "\t\t\t<name>Delete<!--future-->Suffix</name>",
+            1,
+        );
+        let (updated, effect) = apply_role_edit_operation(
+            &misleading_right,
+            &operation("Catalog.Demo", "Delete", false),
+            0,
+        )
+        .unwrap();
+        assert_eq!(effect.before, None);
+        assert!(effect.changed);
+        assert!(updated.contains("<name>Delete<!--future-->Suffix</name>"));
+        let document = Document::parse(&updated).unwrap();
+        let object =
+            direct_role_children(document.root_element(), "object", ROLE_RIGHTS_NAMESPACE)[0];
+        let right_names = direct_role_children(object, "right", ROLE_RIGHTS_NAMESPACE)
+            .into_iter()
+            .map(|right| {
+                role_text_content(direct_role_children(right, "name", ROLE_RIGHTS_NAMESPACE)[0])
+            })
+            .collect::<Vec<_>>();
+        assert!(right_names.iter().any(|name| name == "DeleteSuffix"));
+        assert!(right_names.iter().any(|name| name == "Delete"));
+        validate_role_rights_document(&updated, true).unwrap();
+
+        let descriptor = format!(
+            r#"<MetaDataObject xmlns="{ROLE_METADATA_NAMESPACE}" version="2.20"><Role><Properties><Name>Demo<!--future-->Suffix</Name></Properties></Role></MetaDataObject>"#
+        );
+        assert!(validate_role_edit_descriptor(descriptor.as_bytes(), "Demo").is_err());
+        validate_role_edit_descriptor(descriptor.as_bytes(), "DemoSuffix").unwrap();
     }
 
     #[test]
