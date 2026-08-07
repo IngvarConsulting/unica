@@ -5,6 +5,8 @@ import re
 import unittest
 from pathlib import Path
 
+import yaml
+
 
 # Both ways a document points at another one: a backticked path, where the
 # slash separates a link from a bare filename mentioned as prose (`SKILL.md`),
@@ -1791,99 +1793,30 @@ Use `.claude/commands/xdto.md` as the execution route.
         published = ("insert", "replace")
         retired = ("initialize",)
 
-        def yaml_double_quoted_scalar(token: str) -> str | None:
-            simple_escapes = {
-                "0": "\0",
-                "a": "\x07",
-                "b": "\x08",
-                "t": "\t",
-                "n": "\n",
-                "v": "\x0b",
-                "f": "\x0c",
-                "r": "\r",
-                "e": "\x1b",
-                " ": " ",
-                '"': '"',
-                "/": "/",
-                "\\": "\\",
-                "N": "\u0085",
-                "_": "\u00a0",
-                "L": "\u2028",
-                "P": "\u2029",
-            }
-            hexadecimal_widths = {"x": 2, "u": 4, "U": 8}
-            source = token[1:-1]
-            decoded = []
-            index = 0
-            while index < len(source):
-                character = source[index]
-                index += 1
-                if character != "\\":
-                    decoded.append(character)
-                    continue
-                if index == len(source):
-                    return None
-
-                escape = source[index]
-                index += 1
-                if escape in simple_escapes:
-                    decoded.append(simple_escapes[escape])
-                    continue
-                if escape not in hexadecimal_widths:
-                    return None
-
-                width = hexadecimal_widths[escape]
-                digits = source[index : index + width]
-                if len(digits) != width or not re.fullmatch(r"[0-9A-Fa-f]+", digits):
-                    return None
-                codepoint = int(digits, 16)
-                if codepoint > 0x10FFFF or 0xD800 <= codepoint <= 0xDFFF:
-                    return None
-                decoded.append(chr(codepoint))
-                index += width
-            return "".join(decoded)
-
-        def single_line_scalar(raw: str) -> str | None:
-            value = raw.strip()
-            # This is a deliberately closed subset: exactly one plain or
-            # quoted scalar, never a block, collection, tag, anchor, or alias.
-            if (
-                not value
-                or value[0] in "|>[{]}!&*#,%@`"
-                or (
-                    value[0] in "-?:"
-                    and (len(value) == 1 or value[1] in " \t")
-                )
-            ):
-                return None
-            if value[0] == '"':
-                match = re.fullmatch(
-                    r'("(?:\\.|[^"\\])*")(?:[ \t]+#.*)?[ \t]*', value
-                )
-                if not match:
-                    return None
-                parsed = yaml_double_quoted_scalar(match.group(1))
-                if parsed is None:
-                    return None
-                value = parsed
-            elif value[0] == "'":
-                match = re.fullmatch(
-                    r"('(?:''|[^'])*')(?:[ \t]+#.*)?[ \t]*", value
-                )
-                if not match:
-                    return None
-                value = match.group(1)[1:-1].replace("''", "'")
-            else:
-                value = re.split(r"(?:^|[ \t]+)#", value, maxsplit=1)[0].rstrip()
-                if (
-                    re.search(r":[ \t]", value)
-                    or value.casefold() == "null"
-                    or value == "~"
-                ):
-                    return None
-            if not value.strip() or "\r" in value or "\n" in value:
-                return None
-            return value
+        class UniqueKeySafeLoader(yaml.SafeLoader):
+            def construct_mapping(self, node, deep=False):
+                self.flatten_mapping(node)
+                mapping = {}
+                for key_node, value_node in node.value:
+                    key = self.construct_object(key_node, deep=deep)
+                    try:
+                        duplicate = key in mapping
+                    except TypeError as error:
+                        raise yaml.constructor.ConstructorError(
+                            "while constructing a mapping",
+                            node.start_mark,
+                            "found an unhashable key",
+                            key_node.start_mark,
+                        ) from error
+                    if duplicate:
+                        raise yaml.constructor.ConstructorError(
+                            "while constructing a mapping",
+                            node.start_mark,
+                            f"found duplicate key {key!r}",
+                            key_node.start_mark,
+                        )
+                    mapping[key] = self.construct_object(value_node, deep=deep)
+                return mapping
 
         def prompt_frontmatter(document: str) -> dict[str, str]:
             lines = document.removeprefix("\ufeff").splitlines()
@@ -1894,21 +1827,36 @@ Use `.claude/commands/xdto.md` as the execution route.
             except ValueError:
                 return {}
 
-            requested = ("description", "argument-hint")
-            raw_fields: dict[str, list[str]] = {field: [] for field in requested}
-            for line in lines[1:end]:
-                for field in requested:
-                    if match := re.fullmatch(
-                        rf"{re.escape(field)}:(?:[ \t]+(.*))?", line
-                    ):
-                        raw_fields[field].append(match.group(1) or "")
+            frontmatter = "\n".join(lines[1:end]) + "\n"
+            try:
+                values = yaml.load(frontmatter, Loader=UniqueKeySafeLoader)
+                syntax = yaml.compose(frontmatter, Loader=yaml.SafeLoader)
+            except yaml.YAMLError:
+                return {}
+            if not isinstance(values, dict) or not isinstance(syntax, yaml.MappingNode):
+                return {}
 
+            scalar_nodes = {
+                key_node.value: value_node
+                for key_node, value_node in syntax.value
+                if isinstance(key_node, yaml.ScalarNode)
+                and key_node.tag == "tag:yaml.org,2002:str"
+            }
             fields = {}
-            for field, candidates in raw_fields.items():
-                if len(candidates) != 1:
+            for field in ("description", "argument-hint"):
+                value = values.get(field)
+                node = scalar_nodes.get(field)
+                if not isinstance(value, str) or not isinstance(node, yaml.ScalarNode):
                     continue
-                if value := single_line_scalar(candidates[0]):
-                    fields[field] = value
+                if node.style not in (None, "'", '"'):
+                    continue
+                if node.start_mark.line != node.end_mark.line:
+                    continue
+                if not value.strip() or any(
+                    line_break in value for line_break in "\r\n\x85\u2028\u2029"
+                ):
+                    continue
+                fields[field] = value
             return fields
 
         fields = prompt_frontmatter(text)
@@ -1943,6 +1891,25 @@ Use `.claude/commands/xdto.md` as the execution route.
                 "---\ndescription: insert: replace\n"
                 "argument-hint: insert replace\n---\n"
             ),
+            "invalid-trailing-colon": (
+                "---\ndescription: insert replace:\n"
+                "argument-hint: insert replace\n---\n"
+            ),
+            "quoted-duplicate-key": (
+                "---\ndescription: insert replace\n"
+                '"description": initialize\n'
+                "argument-hint: insert replace\n---\n"
+            ),
+            "invalid-unrelated-field": (
+                "---\ndescription: insert replace\n"
+                "argument-hint: insert replace\n"
+                "unrelated: [unterminated\n---\n"
+            ),
+            "duplicate-unrelated-key": (
+                "---\ndescription: insert replace\n"
+                "argument-hint: insert replace\n"
+                "unrelated:\n  key: one\n  'key': two\n---\n"
+            ),
             "block-sequence-indicator": (
                 "---\ndescription: - insert replace\n"
                 "argument-hint: insert replace\n---\n"
@@ -1961,6 +1928,14 @@ Use `.claude/commands/xdto.md` as the execution route.
             ),
             "folded-scalar": (
                 "---\ndescription: >\n  insert replace\n"
+                "argument-hint: insert replace\n---\n"
+            ),
+            "multiline-plain-scalar": (
+                "---\ndescription: insert\n  replace\n"
+                "argument-hint: insert replace\n---\n"
+            ),
+            "escaped-line-break": (
+                '---\ndescription: "insert \\L replace"\n'
                 "argument-hint: insert replace\n---\n"
             ),
         }
@@ -1987,6 +1962,13 @@ Use `.claude/commands/xdto.md` as the execution route.
                 "argument-hint: insert replace\n---\n"
             )["description"],
             "insert replace",
+        )
+        self.assertEqual(
+            prompt_frontmatter(
+                '---\n"description": insert replace\n'
+                "'argument-hint': insert replace\n---\n"
+            ),
+            {"description": "insert replace", "argument-hint": "insert replace"},
         )
         for field, value in fields.items():
             for operation in published:
