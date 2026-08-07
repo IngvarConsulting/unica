@@ -27,7 +27,7 @@ use crate::infrastructure::platform_xml_source_targets::{
 use crate::infrastructure::support_guard::{
     evaluate_resolved_support_guard, ResolvedSupportGuardCheck,
 };
-use roxmltree::Document;
+use roxmltree::{Document, Node};
 use serde_json::{Map as JsonMap, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -1764,6 +1764,9 @@ const TYPED_CHILD_TREE_MAX_DEPTH: usize = 64;
 const TYPED_CHILD_TREE_MAX_ENTRIES: usize = 20_000;
 const TYPED_CHILD_TREE_MAX_FILES: usize = 20_000;
 const TYPED_CHILD_TREE_MAX_BYTES: usize = 64 * 1024 * 1024;
+const META_V8_NS: &str = "http://v8.1c.ru/8.1/data/core";
+const META_MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
+const META_PREDEFINED_NS: &str = "http://v8.1c.ru/8.3/xcf/predef";
 
 #[derive(Default)]
 struct TypedChildTreeBudget {
@@ -3634,12 +3637,31 @@ pub(super) fn parse_typed_metadata_type(
             Some("type"),
         )
     })?;
-    let qualifier_text = |container: &str, name: &str| -> Option<&str> {
-        document
-            .descendants()
-            .find(|node| node.is_element() && node.tag_name().name() == container)
-            .and_then(|node| meta_info_child(node, name))
-            .and_then(|node| node.text())
+    let wrapper = document.root_element();
+    let fragment_root = wrapper.children().find(|node| node.is_element());
+    let type_container = match fragment_root {
+        Some(node) if typed_type_container(node, "Properties") => node
+            .children()
+            .find(|child| typed_type_container(*child, "Type")),
+        Some(node) if typed_type_container(node, "Type") => Some(node),
+        _ => Some(wrapper),
+    }
+    .ok_or_else(|| {
+        typed_diagnostic(
+            MetaDiagnosticCode::ValidationFailed,
+            "metadata properties have no direct Type element",
+            Some("type"),
+        )
+    })?;
+    let qualifier_text = |container: &str, name: &str| -> Option<String> {
+        typed_direct_v8_child(type_container, container)
+            .and_then(|node| typed_direct_v8_child(node, name))
+            .map(|node| {
+                node.children()
+                    .filter(|child| child.is_text())
+                    .filter_map(|child| child.text())
+                    .collect()
+            })
     };
     let qualifier_u32 = |container: &str, name: &str| -> Result<u32, MetaDiagnostic> {
         qualifier_text(container, name).map_or(Ok(0), |value| {
@@ -3653,9 +3675,9 @@ pub(super) fn parse_typed_metadata_type(
         })
     };
     let mut variants = Vec::new();
-    for node in document.descendants().filter(|node| {
+    for node in type_container.children().filter(|node| {
         node.is_element()
-            && node.tag_name().namespace() == Some("http://v8.1c.ru/8.1/data/core")
+            && node.tag_name().namespace() == Some(META_V8_NS)
             && matches!(node.tag_name().name(), "Type" | "TypeSet")
     }) {
         let value = node
@@ -3680,7 +3702,9 @@ pub(super) fn parse_typed_metadata_type(
             match value {
                 "xs:string" => MetadataTypeVariant::String {
                     length: qualifier_u32("StringQualifiers", "Length")?,
-                    allowed_length: match qualifier_text("StringQualifiers", "AllowedLength") {
+                    allowed_length: match qualifier_text("StringQualifiers", "AllowedLength")
+                        .as_deref()
+                    {
                         Some("Fixed") => StringLengthMode::Fixed,
                         Some("Variable") | None => StringLengthMode::Variable,
                         Some(_) => {
@@ -3695,7 +3719,7 @@ pub(super) fn parse_typed_metadata_type(
                 "xs:decimal" => MetadataTypeVariant::Number {
                     digits: qualifier_u32("NumberQualifiers", "Digits")?,
                     fraction: qualifier_u32("NumberQualifiers", "FractionDigits")?,
-                    sign: match qualifier_text("NumberQualifiers", "AllowedSign") {
+                    sign: match qualifier_text("NumberQualifiers", "AllowedSign").as_deref() {
                         Some("Nonnegative") => NumberSign::NonNegative,
                         Some("Any") | None => NumberSign::Any,
                         Some(_) => {
@@ -3709,7 +3733,7 @@ pub(super) fn parse_typed_metadata_type(
                 },
                 "xs:boolean" => MetadataTypeVariant::Boolean,
                 "xs:dateTime" => MetadataTypeVariant::Date {
-                    fractions: match qualifier_text("DateQualifiers", "DateFractions") {
+                    fractions: match qualifier_text("DateQualifiers", "DateFractions").as_deref() {
                         Some("Date") => DateFractions::Date,
                         Some("Time") => DateFractions::Time,
                         Some("DateTime") | None => DateFractions::DateTime,
@@ -3724,7 +3748,9 @@ pub(super) fn parse_typed_metadata_type(
                 },
                 "xs:binary" => MetadataTypeVariant::BinaryData {
                     length: qualifier_u32("BinaryDataQualifiers", "Length")?,
-                    allowed_length: match qualifier_text("BinaryDataQualifiers", "AllowedLength") {
+                    allowed_length: match qualifier_text("BinaryDataQualifiers", "AllowedLength")
+                        .as_deref()
+                    {
                         Some("Fixed") => StringLengthMode::Fixed,
                         Some("Variable") | None => StringLengthMode::Variable,
                         Some(_) => {
@@ -3782,6 +3808,26 @@ pub(super) fn parse_typed_metadata_type(
         diagnostic.field = Some("type".to_string());
         diagnostic
     })
+}
+
+fn typed_direct_v8_child<'a, 'input>(
+    parent: Node<'a, 'input>,
+    name: &str,
+) -> Option<Node<'a, 'input>> {
+    parent.children().find(|child| {
+        child.is_element()
+            && child.tag_name().namespace() == Some(META_V8_NS)
+            && child.tag_name().name() == name
+    })
+}
+
+fn typed_type_container(node: Node<'_, '_>, name: &str) -> bool {
+    node.is_element()
+        && node.tag_name().name() == name
+        && matches!(
+            node.tag_name().namespace(),
+            None | Some(META_MD_NS | META_PREDEFINED_NS)
+        )
 }
 
 fn remove_typed_element(
@@ -4014,6 +4060,50 @@ mod tests {
         let invalid =
             parse_typed_metadata_type("<v8:Type>xs:string<!--future-suffix-->garbage</v8:Type>");
         assert!(invalid.is_err());
+
+        let qualified = parse_typed_metadata_type(concat!(
+            "<v8:Type>xs:string</v8:Type>",
+            "<v8:StringQualifiers>",
+            "<v8:Length>1<!--future-separator-->0</v8:Length>",
+            "<v8:AllowedLength>Fi<!--future-separator-->xed</v8:AllowedLength>",
+            "</v8:StringQualifiers>"
+        ))
+        .unwrap();
+        assert!(matches!(
+            qualified.variants.as_slice(),
+            [MetadataTypeVariant::String {
+                length: 10,
+                allowed_length: StringLengthMode::Fixed,
+            }]
+        ));
+
+        let invalid_qualifier = parse_typed_metadata_type(concat!(
+            "<v8:Type>xs:string</v8:Type>",
+            "<v8:StringQualifiers>",
+            "<v8:Length>10<!--future-suffix-->garbage</v8:Length>",
+            "</v8:StringQualifiers>"
+        ));
+        assert!(invalid_qualifier.is_err());
+
+        let scoped = parse_typed_metadata_type(concat!(
+            "<Properties>",
+            "<future:Type xmlns:future=\"urn:future\"><v8:Type>xs:boolean</v8:Type></future:Type>",
+            "<Type>",
+            "<v8:Type>xs:string</v8:Type>",
+            "<future:Extension xmlns:future=\"urn:future\">",
+            "<v8:Type>xs:boolean</v8:Type>",
+            "<v8:StringQualifiers><v8:Length>99</v8:Length></v8:StringQualifiers>",
+            "</future:Extension>",
+            "</Type></Properties>"
+        ))
+        .unwrap();
+        assert!(matches!(
+            scoped.variants.as_slice(),
+            [MetadataTypeVariant::String {
+                length: 0,
+                allowed_length: StringLengthMode::Variable,
+            }]
+        ));
     }
 
     #[test]

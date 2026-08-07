@@ -2361,7 +2361,7 @@ fn parse_item_type(source: &str, node: Node<'_, '_>) -> Result<MetadataType, Str
 
     let declaration_length = declarations.len();
     let mut edits = Vec::new();
-    for value_node in node.descendants().filter(|candidate| {
+    for value_node in node.children().filter(|candidate| {
         candidate.is_element()
             && candidate.tag_name().namespace() == Some(V8_NS)
             && matches!(candidate.tag_name().name(), "Type" | "TypeSet")
@@ -3191,6 +3191,27 @@ mod tests {
             10,
         )
         .is_err());
+
+        let nested_extension = String::from_utf8(bytes.to_vec()).unwrap().replace(
+            "</v8:Type>",
+            concat!(
+                "</v8:Type>",
+                "<future:Extension>",
+                "<v8:Type>v8:ValueStorage</v8:Type>",
+                "</future:Extension>"
+            ),
+        );
+        let data = read_predefined_items(
+            nested_extension.as_bytes(),
+            MetadataKind::ChartOfCharacteristicTypes,
+            10,
+        )
+        .unwrap();
+        assert!(matches!(
+            data.items[0].r#type.as_ref().unwrap().variants.as_slice(),
+            [MetadataTypeVariant::Reference { metadata_path }]
+                if metadata_path.as_str() == "Catalog.Items"
+        ));
     }
 
     #[test]
