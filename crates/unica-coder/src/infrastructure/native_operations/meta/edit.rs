@@ -4399,6 +4399,37 @@ mod tests {
     }
 
     #[test]
+    fn typed_resource_add_keeps_digits_apart_in_the_generated_synonym() {
+        let mut xml = object_xml("InformationRegister", "PaymentTerms", "");
+        apply_typed_operations(
+            &mut xml,
+            &[MetaEditOperation::add(
+                MetaCollection::Resources,
+                None,
+                vec![
+                    MetaElementInput::named("СуммаЗакупокЗа30Дней"),
+                    MetaElementInput {
+                        name: "СуммаПродажЗа30Дней".into(),
+                        synonym: Some("Сумма продаж за месяц".into()),
+                        ..MetaElementInput::default()
+                    },
+                ],
+            )
+            .unwrap()],
+        )
+        .unwrap();
+
+        assert!(
+            xml.contains("<v8:content>Сумма закупок за 30 дней</v8:content>"),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("<v8:content>Сумма продаж за месяц</v8:content>"),
+            "{xml}"
+        );
+    }
+
+    #[test]
     fn typed_child_tree_rejects_excessive_depth_before_capture() {
         let root = std::env::temp_dir().join(format!(
             "unica-meta-edit-child-depth-{}",
