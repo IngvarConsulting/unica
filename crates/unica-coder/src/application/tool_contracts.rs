@@ -6196,7 +6196,12 @@ mod tests {
         assert!(validator.is_valid(&cyrillic), "schema rejected {cyrillic}");
         validate_tool_arguments(tool, cyrillic.as_object().unwrap(), true).unwrap();
 
-        for (field, invalid) in [("metadataPath", "Role.123"), ("objectName", "Catalog.123")] {
+        for (field, invalid) in [
+            ("metadataPath", "Role.123"),
+            ("objectName", "Catalog.123"),
+            ("metadataPath", "Role.Ⅻ"),
+            ("objectName", "Catalog.Ⅻ"),
+        ] {
             let mut call = valid.clone();
             if field == "metadataPath" {
                 call[field] = json!(invalid);

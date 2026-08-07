@@ -4,12 +4,12 @@ use crate::application::ports::{
 };
 use crate::domain::format_profile::ACTIVE_FORMAT_PROFILE;
 use crate::domain::metadata::{
-    metadata_decimal_shape, MetaDiagnostic, MetaDiagnosticCode, MetaEditOperation,
-    MetaMutationEffect, MetaPredefinedAccountType, MetaPredefinedExtDimensionType,
-    MetaPredefinedExtDimensionTypeData, MetaPredefinedFields, MetaPredefinedItemAdd,
-    MetaPredefinedItemData, MetaPredefinedItemUpdate, MetaPredefinedItemsData,
-    MetaPublicationAction, MetaPublicationPlanEntry, MetaPublicationResource, MetadataKind,
-    MetadataType,
+    canonical_predefined_uuid, metadata_decimal_shape, MetaDiagnostic, MetaDiagnosticCode,
+    MetaEditOperation, MetaMutationEffect, MetaPredefinedAccountType,
+    MetaPredefinedExtDimensionType, MetaPredefinedExtDimensionTypeData, MetaPredefinedFields,
+    MetaPredefinedItemAdd, MetaPredefinedItemData, MetaPredefinedItemUpdate,
+    MetaPredefinedItemsData, MetaPublicationAction, MetaPublicationPlanEntry,
+    MetaPublicationResource, MetadataKind, MetadataType,
 };
 use crate::domain::source_target::MetadataAddress;
 use crate::infrastructure::platform::secure_read::read_root_relative_regular_file;
@@ -175,7 +175,7 @@ pub(super) struct PlannedPredefinedResource {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PredefinedCodeType {
+pub(super) enum PredefinedCodeType {
     String,
     Number,
 }
@@ -419,15 +419,34 @@ fn predefined_code_type(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn read_predefined_items(
     bytes: &[u8],
     kind: MetadataKind,
     limit: usize,
 ) -> Result<MetaPredefinedItemsData, String> {
+    read_predefined_items_with_code_type(bytes, kind, None, limit)
+}
+
+pub(super) fn read_predefined_items_for_code_type(
+    bytes: &[u8],
+    kind: MetadataKind,
+    code_type: PredefinedCodeType,
+    limit: usize,
+) -> Result<MetaPredefinedItemsData, String> {
+    read_predefined_items_with_code_type(bytes, kind, Some(code_type), limit)
+}
+
+fn read_predefined_items_with_code_type(
+    bytes: &[u8],
+    kind: MetadataKind,
+    code_type: Option<PredefinedCodeType>,
+    limit: usize,
+) -> Result<MetaPredefinedItemsData, String> {
     let text = std::str::from_utf8(bytes)
         .map_err(|_| "Predefined.xml is not UTF-8".to_string())?
         .trim_start_matches('\u{feff}');
-    validate_predefined_text(kind, text)?;
+    validate_predefined_text_with_options(kind, code_type, text, false)?;
     let document = Document::parse(text).map_err(|error| format!("Predefined.xml: {error}"))?;
     let mut items = Vec::new();
     for item in document
@@ -488,7 +507,8 @@ fn validate_predefined_text_with_options(
         || platform_xml_root_versioning(namespace, local_name)
             != Some(PlatformXmlRootVersioning::ExactRootVersion)
         || root.attribute((XSI_NS, "type")) != Some(root_type(kind)?)
-        || root.attribute("version") != Some(ACTIVE_FORMAT_PROFILE.export_format)
+        || crate::infrastructure::platform_xml_owner::root_version_literal(text, root).as_deref()
+            != Some(ACTIVE_FORMAT_PROFILE.export_format)
     {
         return Err(format!(
             "Predefined.xml does not match the exact {}/{} profile for {}",
@@ -537,9 +557,8 @@ fn validate_predefined_text_with_options(
         let Some(raw_id) = item.attribute("id") else {
             return Err("predefined Item requires id".to_string());
         };
-        let id = uuid::Uuid::parse_str(raw_id)
-            .map_err(|_| "predefined Item id is not a UUID".to_string())?
-            .to_string();
+        let id = canonical_predefined_uuid(raw_id)
+            .ok_or_else(|| "predefined Item id is not a canonical UUID".to_string())?;
         if !ids.insert(id) {
             return Err("predefined Item UUID is duplicated".to_string());
         }
@@ -605,7 +624,11 @@ fn validate_code_value(code: Node<'_, '_>, code_type: PredefinedCodeType) -> Res
         };
     }
     if value.is_empty() {
-        return Ok(());
+        return if code.attribute((XSI_NS, "type")).is_none() {
+            Ok(())
+        } else {
+            Err("empty predefined numeric Code must not declare xsi:type".to_string())
+        };
     }
     if metadata_decimal_shape(value).is_none() {
         return Err("predefined numeric Code is not an XML Schema decimal".to_string());
@@ -679,12 +702,11 @@ fn parse_item(
     kind: MetadataKind,
     parent_id: Option<String>,
 ) -> Result<MetaPredefinedItemData, String> {
-    let id = uuid::Uuid::parse_str(
+    let id = canonical_predefined_uuid(
         item.attribute("id")
             .ok_or_else(|| "predefined Item requires id".to_string())?,
     )
-    .map_err(|_| "predefined Item id is not a UUID".to_string())?
-    .to_string();
+    .ok_or_else(|| "predefined Item id is not a canonical UUID".to_string())?;
     let text = |tag: &str| child_text(item, tag).unwrap_or_default();
     let bool_value = |tag: &str| -> Result<bool, String> {
         match child_text(item, tag).as_deref().unwrap_or("false").trim() {
@@ -1431,6 +1453,9 @@ fn set_simple_child(
     eol: &str,
     fragment_context: &FragmentXmlContext,
 ) -> Result<(), String> {
+    if direct_child_typed_text_matches(item, tag, value, fragment_context)? {
+        return Ok(());
+    }
     let rendered = if value.is_empty() {
         format!("<{tag}/>")
     } else {
@@ -1446,10 +1471,52 @@ fn set_code_child(
     eol: &str,
     fragment_context: &FragmentXmlContext,
 ) -> Result<(), String> {
-    let render_context = fragment_direct_child_location(item, "Code", None, fragment_context)?
-        .map_or_else(|| fragment_context.clone(), |location| location.context);
+    let existing = fragment_direct_child_location(item, "Code", None, fragment_context)?;
+    if let Some(location) = &existing {
+        let wrapped = format!(
+            "{}{}</Root>",
+            location.context.wrapper_start,
+            &item[location.range.clone()]
+        );
+        let document = Document::parse(&wrapped)
+            .map_err(|error| format!("predefined XML fragment: {error}"))?;
+        let code = document
+            .root_element()
+            .children()
+            .find(|node| node.is_element())
+            .ok_or_else(|| "predefined Code fragment has no element".to_string())?;
+        if code.text().unwrap_or_default() == value && validate_code_value(code, code_type).is_ok()
+        {
+            return Ok(());
+        }
+    }
+    let render_context =
+        existing.map_or_else(|| fragment_context.clone(), |location| location.context);
     let rendered = render_code(value, code_type, &render_context)?;
     set_complex_child(item, "Code", &rendered, eol, fragment_context)
+}
+
+fn direct_child_typed_text_matches(
+    parent: &str,
+    tag: &str,
+    value: &str,
+    fragment_context: &FragmentXmlContext,
+) -> Result<bool, String> {
+    let Some(location) = fragment_direct_child_location(parent, tag, None, fragment_context)?
+    else {
+        return Ok(false);
+    };
+    let wrapped = format!(
+        "{}{}</Root>",
+        location.context.wrapper_start, &parent[location.range]
+    );
+    let document =
+        Document::parse(&wrapped).map_err(|error| format!("predefined XML fragment: {error}"))?;
+    Ok(document
+        .root_element()
+        .children()
+        .find(|node| node.is_element())
+        .is_some_and(|node| node.text().unwrap_or_default() == value))
 }
 
 fn render_code(
@@ -1568,16 +1635,6 @@ fn preserve_element_attributes(
         .iter()
         .map(|(name, _)| name.as_str())
         .collect::<HashSet<_>>();
-    let preserved_namespaces = existing_opening
-        .iter()
-        .filter(|(name, _)| name == "xmlns" || name.starts_with("xmlns:"))
-        .filter(|(name, _)| !rendered_names.contains(name.as_str()))
-        .map(|(_, lexeme)| lexeme.clone())
-        .collect::<Vec<_>>();
-
-    let mut merged = rendered.to_string();
-    insert_opening_attributes(&mut merged, &preserved_namespaces)?;
-
     let wrapped_existing = format!("{}{existing}</Root>", existing_context.wrapper_start);
     let existing_document = Document::parse(&wrapped_existing)
         .map_err(|error| format!("predefined XML fragment: {error}"))?;
@@ -1586,6 +1643,27 @@ fn preserve_element_attributes(
         .children()
         .find(|node| node.is_element())
         .ok_or_else(|| "predefined XML fragment has no element".to_string())?;
+    let wrapped_rendered = format!("{}{rendered}</Root>", rendered_context.wrapper_start);
+    let rendered_document = Document::parse(&wrapped_rendered)
+        .map_err(|error| format!("predefined XML fragment: {error}"))?;
+    let rendered_node = rendered_document
+        .root_element()
+        .children()
+        .find(|node| node.is_element())
+        .ok_or_else(|| "predefined XML fragment has no element".to_string())?;
+    let preserved_namespaces = existing_opening
+        .iter()
+        .filter(|(name, _)| name == "xmlns" || name.starts_with("xmlns:"))
+        .filter(|(name, _)| !rendered_names.contains(name.as_str()))
+        .filter(|(name, _)| {
+            !writer_controls_namespace_declaration(existing_node, rendered_node, name)
+        })
+        .map(|(_, lexeme)| lexeme.clone())
+        .collect::<Vec<_>>();
+
+    let mut merged = rendered.to_string();
+    insert_opening_attributes(&mut merged, &preserved_namespaces)?;
+
     let wrapped_merged = format!("{}{merged}</Root>", rendered_context.wrapper_start);
     let merged_document = Document::parse(&wrapped_merged)
         .map_err(|error| format!("predefined XML fragment: {error}"))?;
@@ -1606,15 +1684,62 @@ fn preserve_element_attributes(
     let preserved_attributes = existing_node
         .attributes()
         .filter(|attribute| {
-            !rendered_keys.contains(&(
-                attribute.namespace().map(str::to_string),
-                attribute.name().to_string(),
-            ))
+            !writer_controls_attribute(existing_node, *attribute)
+                && !rendered_keys.contains(&(
+                    attribute.namespace().map(str::to_string),
+                    attribute.name().to_string(),
+                ))
         })
         .map(|attribute| wrapped_existing[attribute.range()].to_string())
         .collect::<Vec<_>>();
     insert_opening_attributes(&mut merged, &preserved_attributes)?;
     Ok(merged)
+}
+
+fn writer_controls_attribute(
+    element: Node<'_, '_>,
+    attribute: roxmltree::Attribute<'_, '_>,
+) -> bool {
+    element.tag_name().namespace() == Some(PREDEFINED_NS)
+        && element.tag_name().name() == "Code"
+        && attribute.namespace() == Some(XSI_NS)
+        && attribute.name() == "type"
+}
+
+fn writer_controls_namespace_declaration(
+    existing: Node<'_, '_>,
+    rendered: Node<'_, '_>,
+    declaration_name: &str,
+) -> bool {
+    if existing.tag_name().namespace() != Some(PREDEFINED_NS)
+        || existing.tag_name().name() != "Code"
+        || rendered.attribute((XSI_NS, "type")).is_some()
+    {
+        return false;
+    }
+    let Some(prefix) = declaration_name.strip_prefix("xmlns:") else {
+        return false;
+    };
+    let Some(namespace) = existing.lookup_namespace_uri(Some(prefix)) else {
+        return false;
+    };
+    if !matches!(namespace, XSI_NS | XS_NS) {
+        return false;
+    }
+    let qname_prefix = format!("{prefix}:");
+    !existing.descendants().any(|node| {
+        (node.is_element()
+            && ((node != existing && node.tag_name().namespace() == Some(namespace))
+                || node.attributes().any(|attribute| {
+                    !writer_controls_attribute(node, attribute)
+                        && (attribute.namespace() == Some(namespace)
+                            || attribute.value().contains(&qname_prefix))
+                })))
+            || node
+                .children()
+                .filter_map(|child| child.text())
+                .any(|text| text.contains(&qname_prefix))
+    })
 }
 
 type ExpandedElementName = (Option<String>, String);
@@ -2625,6 +2750,66 @@ mod tests {
             &format!("{kind}.Items"),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn exact_profile_rejects_entity_spelled_version_and_compact_item_uuid() {
+        let valid = r#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CatalogPredefinedItems" version="2.20"><Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Main</Name></Item></PredefinedData>"#;
+        assert!(validate_predefined_text(MetadataKind::Catalog, valid).is_ok());
+        assert!(validate_predefined_text(
+            MetadataKind::Catalog,
+            &valid.replace(r#"version="2.20""#, r#"version="2.2&#48;""#),
+        )
+        .is_err());
+        assert!(validate_predefined_text(
+            MetadataKind::Catalog,
+            &valid.replace(
+                "a7d2e6fc-3824-4b56-b4be-ae6be4944c0e",
+                "a7d2e6fc38244b56b4beae6be4944c0e",
+            ),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn code_writer_removes_controlled_xsi_type_for_empty_and_string_values() {
+        let context = FragmentXmlContext::platform_default();
+        let mut numeric = format!(
+            r#"<Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Main</Name><Code xmlns:xsi="{XSI_NS}" xmlns:xs="{XS_NS}" xsi:type="xs:decimal">643</Code></Item>"#
+        );
+        set_code_child(&mut numeric, "", PredefinedCodeType::Number, "\n", &context).unwrap();
+        assert!(numeric.contains("<Code/>"), "{numeric}");
+        assert!(!numeric.contains("xsi:type"), "{numeric}");
+
+        let mut changed_type = format!(
+            r#"<Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Main</Name><Code xmlns:xsi="{XSI_NS}" xmlns:xs="{XS_NS}" xsi:type="xs:decimal">643</Code></Item>"#
+        );
+        set_code_child(
+            &mut changed_type,
+            "ABC",
+            PredefinedCodeType::String,
+            "\n",
+            &context,
+        )
+        .unwrap();
+        assert!(changed_type.contains("<Code"), "{changed_type}");
+        assert!(changed_type.contains(">ABC</Code>"), "{changed_type}");
+        assert!(!changed_type.contains("xsi:type"), "{changed_type}");
+    }
+
+    #[test]
+    fn equivalent_simple_update_preserves_attribute_order_byte_for_byte() {
+        let mut item = r#"<Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Description future:stamp="keep" xmlns:future="urn:future">old</Description></Item>"#.to_string();
+        let before = item.clone();
+        set_simple_child(
+            &mut item,
+            "Description",
+            "old",
+            "\n",
+            &FragmentXmlContext::platform_default(),
+        )
+        .unwrap();
+        assert_eq!(item, before);
     }
 
     fn descriptor_image(kind: MetadataKind, code_type: &str) -> String {

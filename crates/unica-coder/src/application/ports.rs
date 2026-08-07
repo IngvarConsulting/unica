@@ -241,6 +241,9 @@ pub(crate) struct MetaLocalInfo {
     pub(crate) synonym: Option<String>,
     pub(crate) support: MetaSupportStatus,
     pub(crate) properties: Vec<MetaPropertyData>,
+    /// Internal owner context needed to validate typed Predefined.xml values.
+    /// It is deliberately not copied into the public `meta.info` result.
+    pub(crate) predefined_code_type: Option<String>,
     pub(crate) relations: MetaRelationsData,
     pub(crate) collections: MetaCollectionsData,
     pub(crate) diagnostics: Vec<MetaDiagnostic>,
@@ -293,6 +296,7 @@ pub(crate) struct MetaPublishReport {
     pub(crate) data: MetaMutationData,
     pub(crate) events: Vec<DomainEvent>,
     pub(crate) recorded_cache: Option<CacheReport>,
+    pub(crate) warnings: Vec<String>,
 }
 
 impl MetaPublishReport {
@@ -302,6 +306,7 @@ impl MetaPublishReport {
             data,
             events: Vec::new(),
             recorded_cache: None,
+            warnings: Vec::new(),
         }
     }
 }

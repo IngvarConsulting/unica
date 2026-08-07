@@ -1729,6 +1729,7 @@ dependencies = [
  "jsonschema",
  "libc",
  "parser",
+ "regex",
  "rmcp",
  "roxmltree",
  "serde",

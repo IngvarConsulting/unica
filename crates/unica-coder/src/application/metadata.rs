@@ -249,6 +249,7 @@ fn invoke_mutation(
         .map_err(|error| format!("cannot serialize metadata mutation result: {error}"))?;
     let mut outcome = metadata_success("metadata mutation published", data, events, Vec::new());
     outcome.recorded_cache = report.recorded_cache;
+    outcome.adapter.warnings = report.warnings;
     Ok(outcome)
 }
 
@@ -706,9 +707,8 @@ fn canonical_uuid(
 ) -> Result<String, MetaDiagnostic> {
     let field = format!("{prefix}.{name}");
     let raw = required_string_at(object, name, &field)?;
-    uuid::Uuid::parse_str(&raw)
-        .map(|value| value.to_string())
-        .map_err(|_| invalid(field, "predefined item id must be a UUID"))
+    crate::domain::metadata::canonical_predefined_uuid(&raw)
+        .ok_or_else(|| invalid(field, "predefined item id must be a UUID"))
 }
 
 fn parse_predefined_fields(
@@ -2642,6 +2642,7 @@ mod tests {
                         synonym: Some("Order".to_string()),
                         support: MetaSupportStatus::Supported,
                         properties: Vec::new(),
+                        predefined_code_type: None,
                         relations: empty_relations(),
                         collections: empty_collections(),
                         diagnostics: Vec::new(),
@@ -2826,6 +2827,7 @@ mod tests {
                     synonym: Some("Order".to_string()),
                     support: MetaSupportStatus::Supported,
                     properties: Vec::new(),
+                    predefined_code_type: None,
                     relations: empty_relations(),
                     collections: empty_collections(),
                     diagnostics: Vec::new(),
@@ -3043,11 +3045,10 @@ mod tests {
 
     #[test]
     fn coordinator_apply_publishes_once_and_emits_only_an_actual_metadata_event() {
-        let (ports, state) = fake_ports(
-            passed_validation(),
-            true,
-            Ok(MetaPublishReport::source_only(mutation_data(true))),
-        );
+        let mut publication = MetaPublishReport::source_only(mutation_data(true));
+        publication.warnings =
+            vec!["publication_cleanup_incomplete: metadata mutation was committed".to_string()];
+        let (ports, state) = fake_ports(passed_validation(), true, Ok(publication));
 
         let outcome = invoke(
             MetadataOperation::Add,
@@ -3063,6 +3064,8 @@ mod tests {
         assert_eq!(outcome.events.len(), 1);
         assert_eq!(outcome.events[0].kind, DomainEventKind::MetadataChanged);
         assert!(outcome.projected_events.is_empty());
+        assert_eq!(outcome.adapter.warnings.len(), 1);
+        assert!(outcome.adapter.warnings[0].contains("publication_cleanup_incomplete"));
         let state = state.lock().unwrap();
         assert_eq!(state.calls, ["prepare", "validate", "publish"]);
         assert_eq!(state.publish_calls, 1);
@@ -4963,6 +4966,11 @@ mod tests {
                 "op": "remove",
                 "collection": "predefinedItems",
                 "ids": ["not-a-uuid"]
+            }),
+            json!({
+                "op": "remove",
+                "collection": "predefinedItems",
+                "ids": ["a7d2e6fc38244b56b4beae6be4944c0e"]
             }),
             json!({
                 "op": "add",

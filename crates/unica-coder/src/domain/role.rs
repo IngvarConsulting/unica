@@ -2,6 +2,7 @@ use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
+use std::sync::OnceLock;
 
 pub const ROLE_METADATA_PATH_PATTERN: &str = r"^Role\.[\p{L}_][\p{L}\p{N}_]*$";
 pub const ROLE_OBJECT_NAME_PATTERN: &str = concat!(
@@ -326,12 +327,13 @@ fn validate_object_name(value: &str) -> Result<(), String> {
 }
 
 fn is_1c_identifier(value: &str) -> bool {
-    let mut characters = value.chars();
-    let Some(first) = characters.next() else {
-        return false;
-    };
-    (first == '_' || first.is_alphabetic())
-        && characters.all(|character| character == '_' || character.is_alphanumeric())
+    static IDENTIFIER: OnceLock<regex::Regex> = OnceLock::new();
+    IDENTIFIER
+        .get_or_init(|| {
+            regex::Regex::new(r"^[\p{L}_][\p{L}\p{N}_]*$")
+                .expect("role identifier pattern is static and valid")
+        })
+        .is_match(value)
 }
 
 pub fn validate_nested_right(object_name: &str, right: &str) -> Result<(), String> {

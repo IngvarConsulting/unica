@@ -974,6 +974,14 @@ fn inspect_replace_target(
     inspect_replace_target_against(target, expected_preimage, phase, None)
 }
 
+pub(super) fn validate_replace_target(
+    target: &Path,
+    expected_preimage: &[u8],
+    phase: PublishPhase,
+) -> Result<(), PublishError> {
+    inspect_replace_target(target, expected_preimage, phase).map(|_| ())
+}
+
 fn recheck_replace_target(
     target: &Path,
     initial: &ReplaceSnapshot,

@@ -49,6 +49,16 @@ use crate::infrastructure::workspace_state::WorkspaceStateRepository;
 
 const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
+fn metadata_cleanup_warnings(target: &str, cleanup_warnings: &[String]) -> Vec<String> {
+    if cleanup_warnings.is_empty() {
+        Vec::new()
+    } else {
+        vec![format!(
+            "publication_cleanup_incomplete: metadata `{target}` was committed; private recovery cleanup is incomplete"
+        )]
+    }
+}
+
 fn stage_metadata_publication_state(
     transaction: &mut CompileTransaction,
     context: &WorkspaceContext,
@@ -393,7 +403,8 @@ impl PreparedMetadataMutation for PreparedMetaEdit {
         let context = &self.context;
         let (events, recorded_cache) =
             stage_metadata_publication_state(&mut self.transaction, &self.context, &self.preview)?;
-        self.transaction
+        let report = self
+            .transaction
             .commit_with_classified_post_validation(|| {
                 for (path, expected) in &expected_post_images {
                     let published = fs::read(path).map_err(|_| {
@@ -412,10 +423,12 @@ impl PreparedMetadataMutation for PreparedMetaEdit {
                     })
             })
             .map_err(|failure| publication_failure(&target, failure.kind()))?;
+        let warnings = metadata_cleanup_warnings(target.as_str(), &report.cleanup_warnings);
         Ok(MetaPublishReport {
             data: self.preview,
             events,
             recorded_cache,
+            warnings,
         })
     }
 }
@@ -486,7 +499,8 @@ impl PreparedMetadataMutation for PreparedMetaRemove {
         let expected_absent = self.expected_absent.clone();
         let (events, recorded_cache) =
             stage_metadata_publication_state(&mut self.transaction, &self.context, &self.preview)?;
-        self.transaction
+        let report = self
+            .transaction
             .commit_with_classified_post_validation(move || {
                 for (path, expected) in &expected_post_images {
                     let actual = fs::read(path).map_err(|_| {
@@ -516,10 +530,12 @@ impl PreparedMetadataMutation for PreparedMetaRemove {
                 Ok(())
             })
             .map_err(|failure| publication_failure(&target, failure.kind()))?;
+        let warnings = metadata_cleanup_warnings(target.as_str(), &report.cleanup_warnings);
         Ok(MetaPublishReport {
             data: self.preview,
             events,
             recorded_cache,
+            warnings,
         })
     }
 }
@@ -929,7 +945,8 @@ impl PreparedMetadataMutation for PreparedMetaAdd {
         let expected_post_images = self.expected_post_images.clone();
         let (events, recorded_cache) =
             stage_metadata_publication_state(&mut self.transaction, &self.context, &self.preview)?;
-        self.transaction
+        let report = self
+            .transaction
             .commit_with_classified_post_validation(|| {
                 for (path, expected) in &expected_post_images {
                     let published = fs::read(path).map_err(|_| {
@@ -945,10 +962,12 @@ impl PreparedMetadataMutation for PreparedMetaAdd {
                     .map_err(|failure| commit_failure_from_meta(&failure))
             })
             .map_err(|failure| publication_failure(&target, failure.kind()))?;
+        let warnings = metadata_cleanup_warnings(target.as_str(), &report.cleanup_warnings);
         Ok(MetaPublishReport {
             data: self.preview,
             events,
             recorded_cache,
+            warnings,
         })
     }
 }
@@ -1146,6 +1165,18 @@ mod typed_add_publication_tests {
             let source = self.root.join("src");
             crate::test_support::tree_snapshot(&source)
         }
+    }
+
+    #[test]
+    fn metadata_cleanup_warning_is_stable_and_hides_private_cleanup_details() {
+        let warnings = metadata_cleanup_warnings(
+            "Catalog.Items",
+            &["/private/recovery/item.xml could not be removed".to_string()],
+        );
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("publication_cleanup_incomplete"));
+        assert!(warnings[0].contains("Catalog.Items"));
+        assert!(!warnings[0].contains("/private/recovery"));
     }
 
     impl Drop for Fixture {

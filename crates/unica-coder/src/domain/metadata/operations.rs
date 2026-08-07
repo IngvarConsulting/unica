@@ -1825,18 +1825,16 @@ fn validate_predefined_ids<'a>(
 ) -> Result<(), MetaDiagnostic> {
     let mut seen = HashSet::new();
     for (index, id) in ids.enumerate() {
-        let canonical = uuid::Uuid::parse_str(id)
-            .map(|value| value.to_string())
-            .map_err(|_| {
-                invalid_operation(
-                    if field == "ids" {
-                        format!("ids[{index}]")
-                    } else {
-                        format!("elements[{index}].id")
-                    },
-                    "predefined item id must be a UUID",
-                )
-            })?;
+        let canonical = canonical_predefined_uuid(id).ok_or_else(|| {
+            invalid_operation(
+                if field == "ids" {
+                    format!("ids[{index}]")
+                } else {
+                    format!("elements[{index}].id")
+                },
+                "predefined item id must be a UUID",
+            )
+        })?;
         if !seen.insert(canonical) {
             return Err(invalid_operation(
                 if field == "ids" {
@@ -1849,6 +1847,29 @@ fn validate_predefined_ids<'a>(
         }
     }
     Ok(())
+}
+
+/// Parse the one UUID spelling published by the predefinedItems schema.
+///
+/// `uuid::Uuid::parse_str` deliberately accepts compact and braced spellings,
+/// while the MCP contract accepts only the canonical 8-4-4-4-12 lexeme. Keep
+/// parser, domain validation and Platform XML validation on the same boundary.
+pub(crate) fn canonical_predefined_uuid(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    if bytes.len() != 36
+        || [8, 13, 18, 23]
+            .into_iter()
+            .any(|index| bytes[index] != b'-')
+        || bytes
+            .iter()
+            .enumerate()
+            .any(|(index, byte)| !matches!(index, 8 | 13 | 18 | 23) && !byte.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    uuid::Uuid::parse_str(value)
+        .ok()
+        .map(|value| value.to_string())
 }
 
 fn reject_duplicate_names<'a>(

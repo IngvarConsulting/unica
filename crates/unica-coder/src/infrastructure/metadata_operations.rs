@@ -90,6 +90,7 @@ impl MetadataOperations {
                 &source.path,
                 local.kind,
                 &local.metadata_path,
+                local.predefined_code_type.as_deref(),
                 &local_sections,
                 request.limit,
                 cancellation,
@@ -519,6 +520,7 @@ mod tests {
                 synonym: None,
                 support: crate::domain::metadata::MetaSupportStatus::Supported,
                 properties: Vec::new(),
+                predefined_code_type: Some("String".to_string()),
                 relations: crate::domain::metadata::MetaRelationsData {
                     owners: Vec::new(),
                     register_records: Vec::new(),

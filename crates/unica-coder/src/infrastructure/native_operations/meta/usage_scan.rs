@@ -57,6 +57,7 @@ pub(crate) fn scan_local_enrichment(
     source_root: &Path,
     kind: MetadataKind,
     metadata_path: &MetadataAddress,
+    predefined_code_type: Option<&str>,
     sections: &[LocalSection],
     limit: usize,
     cancellation: &CancellationToken,
@@ -92,7 +93,14 @@ pub(crate) fn scan_local_enrichment(
                 .with_field("predefinedItems"),
             );
         } else {
-            match read_predefined_items(source_root, kind, name, metadata_path, limit) {
+            match read_predefined_items(
+                source_root,
+                kind,
+                name,
+                metadata_path,
+                predefined_code_type,
+                limit,
+            ) {
                 Ok(items) => enrichment.predefined_items = Some(items),
                 Err(diagnostic) => enrichment.diagnostics.push(diagnostic),
             }
@@ -269,6 +277,7 @@ fn read_predefined_items(
     kind: MetadataKind,
     name: &str,
     metadata_path: &MetadataAddress,
+    code_type: Option<&str>,
     limit: usize,
 ) -> Result<MetaPredefinedItemsData, MetaDiagnostic> {
     let path = source_root
@@ -296,11 +305,25 @@ fn read_predefined_items(
                 .with_field("predefinedItems"))
             }
         };
-    super::predefined::read_predefined_items(&bytes, kind, limit).map_err(|message| {
-        MetaDiagnostic::error(MetaDiagnosticCode::ValidationFailed, message)
+    let code_type = match code_type.unwrap_or("String") {
+        "String" => super::predefined::PredefinedCodeType::String,
+        "Number" => super::predefined::PredefinedCodeType::Number,
+        other => {
+            return Err(MetaDiagnostic::error(
+                MetaDiagnosticCode::ValidationFailed,
+                format!("predefined owner CodeType `{other}` is unsupported"),
+            )
             .with_metadata_path(metadata_path.clone())
-            .with_field("predefinedItems")
-    })
+            .with_field("predefinedItems"))
+        }
+    };
+    super::predefined::read_predefined_items_for_code_type(&bytes, kind, code_type, limit).map_err(
+        |message| {
+            MetaDiagnostic::error(MetaDiagnosticCode::ValidationFailed, message)
+                .with_metadata_path(metadata_path.clone())
+                .with_field("predefinedItems")
+        },
+    )
 }
 
 /// `Kind.Name` itself, or anything nested beneath it.

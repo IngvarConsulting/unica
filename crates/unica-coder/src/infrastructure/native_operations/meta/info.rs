@@ -169,6 +169,7 @@ pub(crate) fn read_typed_meta_info(
         synonym,
         support: typed_support_status(&resolved.descriptor_path),
         properties: typed_properties(properties, kind),
+        predefined_code_type: predefined_code_type_for_info(properties, kind),
         relations: typed_relations(properties, target, &mut diagnostics),
         collections: MetaCollectionsData {
             attributes: typed_elements_with_diagnostics(
@@ -296,6 +297,27 @@ pub(crate) fn read_typed_meta_info(
         registrar_evidence,
     };
     Ok((local, validation_subject))
+}
+
+pub(super) fn predefined_code_type_for_info(
+    properties: Option<roxmltree::Node<'_, '_>>,
+    kind: MetadataKind,
+) -> Option<String> {
+    match kind {
+        MetadataKind::Catalog | MetadataKind::ChartOfCalculationTypes => Some(
+            properties
+                .and_then(|node| meta_info_child(node, "CodeType"))
+                .and_then(|node| node.text())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("String")
+                .to_string(),
+        ),
+        MetadataKind::ChartOfAccounts | MetadataKind::ChartOfCharacteristicTypes => {
+            Some("String".to_string())
+        }
+        _ => None,
+    }
 }
 
 fn typed_registrar_document_images(

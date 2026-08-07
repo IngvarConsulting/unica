@@ -59,6 +59,8 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
     static ROLE_EDIT_BEFORE_PUBLISH_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
+    static ROLE_EDIT_AFTER_RIGHTS_REREAD_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
     static ROLE_EDIT_POST_VALIDATION_FAILURE: std::cell::Cell<bool> = const {
         std::cell::Cell::new(false)
     };
@@ -113,6 +115,34 @@ fn with_role_edit_before_publish_hook<T>(
 #[cfg(test)]
 fn run_role_edit_before_publish_hook() {
     ROLE_EDIT_BEFORE_PUBLISH_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(test)]
+fn with_role_edit_after_rights_reread_hook<T>(
+    hook: impl FnOnce() + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<Box<dyn FnOnce()>>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            ROLE_EDIT_AFTER_RIGHTS_REREAD_HOOK.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+    let previous =
+        ROLE_EDIT_AFTER_RIGHTS_REREAD_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
+    let _reset = Reset(previous);
+    action()
+}
+
+#[cfg(test)]
+fn run_role_edit_after_rights_reread_hook() {
+    ROLE_EDIT_AFTER_RIGHTS_REREAD_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
             hook();
         }
@@ -2296,14 +2326,17 @@ fn publish_role_edit(
         return Err(("concurrent_modification", None));
     }
 
+    #[cfg(test)]
+    run_role_edit_after_rights_reread_hook();
+
     let mut transaction = CompileTransaction::new();
     transaction
-        .replace_bytes(
+        .replace_bytes_classified(
             &target.rights_path,
             &target.rights_preimage,
             postimage.to_vec(),
         )
-        .map_err(|_| ("provider_unavailable", None))?;
+        .map_err(|failure| (role_commit_failure_code(failure.kind()), None))?;
     transaction
         .guard_or_verify_exact_preimage(&target.descriptor_path, &target.descriptor_preimage)
         .map_err(|_| ("concurrent_modification", None))?;
@@ -2393,14 +2426,15 @@ fn publish_role_edit(
                 cache,
             })
         }
-        Err(error) => Err((
-            match error.kind() {
-                CommitFailureKind::ConcurrentModification => "concurrent_modification",
-                CommitFailureKind::ProviderUnavailable => "provider_unavailable",
-                CommitFailureKind::RollbackFailed => "rollback_failed",
-            },
-            None,
-        )),
+        Err(error) => Err((role_commit_failure_code(error.kind()), None)),
+    }
+}
+
+fn role_commit_failure_code(kind: CommitFailureKind) -> &'static str {
+    match kind {
+        CommitFailureKind::ConcurrentModification => "concurrent_modification",
+        CommitFailureKind::ProviderUnavailable => "provider_unavailable",
+        CommitFailureKind::RollbackFailed => "rollback_failed",
     }
 }
 
@@ -2534,7 +2568,8 @@ fn validate_role_rights_document(text: &str, require_boolean_values: bool) -> Re
     if (namespace, root.tag_name().name()) != (ROLE_RIGHTS_NAMESPACE, "Rights")
         || platform_xml_root_versioning(namespace, root.tag_name().name())
             != Some(PlatformXmlRootVersioning::ExactRootVersion)
-        || root.attribute("version") != Some("2.20")
+        || crate::infrastructure::platform_xml_owner::root_version_literal(text, root).as_deref()
+            != Some("2.20")
         || root.attribute((XSI_NAMESPACE, "type")) != Some("Rights")
     {
         return Err("Rights.xml must use exact roles format 2.20".to_string());
@@ -2902,7 +2937,7 @@ mod role_edit_contract_tests {
     use super::super::single_file_publisher::{with_publish_failpoints, PublishCheckpoint};
     use super::*;
     use crate::infrastructure::platform::testing::{
-        create_dir_symlink_for_test, remove_dir_symlink_for_test,
+        create_dir_symlink_for_test, create_file_symlink_for_test, remove_dir_symlink_for_test,
     };
     use serde_json::json;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -3312,7 +3347,7 @@ mod role_edit_contract_tests {
         let (context, args, rights) = fixture("exact-profile");
         let original = fs::read(&rights).unwrap();
 
-        for version in [Some("2.19"), Some("2.21"), None] {
+        for version in [Some("2.19"), Some("2.21"), Some("2.2&#48;"), None] {
             let incompatible = replace_format_version(&original, version);
             fs::write(&rights, &incompatible).unwrap();
             let rejected = apply_edit_with_data(&args, &context);
@@ -3323,7 +3358,7 @@ mod role_edit_contract_tests {
         fs::write(&rights, &original).unwrap();
         let descriptor = context.workspace_root.join("src/Roles/Demo.xml");
         let original_descriptor = fs::read(&descriptor).unwrap();
-        for version in [Some("2.19"), Some("2.21"), None] {
+        for version in [Some("2.19"), Some("2.21"), Some("2.2&#48;"), None] {
             let incompatible = replace_format_version(&original_descriptor, version);
             fs::write(&descriptor, &incompatible).unwrap();
             let rejected = apply_edit_with_data(&args, &context);
@@ -3332,6 +3367,74 @@ mod role_edit_contract_tests {
             assert_eq!(fs::read(&descriptor).unwrap(), incompatible);
         }
         fs::write(&descriptor, original_descriptor).unwrap();
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn rights_drift_in_the_staging_window_is_classified_as_concurrent() {
+        let (context, args, rights) = fixture("staging-byte-drift");
+        let changed_rights = rights.clone();
+        let changed = with_role_edit_after_rights_reread_hook(
+            move || {
+                let mut bytes = fs::read(&changed_rights).unwrap();
+                bytes.extend_from_slice(b"<!-- concurrent -->");
+                fs::write(&changed_rights, bytes).unwrap();
+            },
+            || apply_edit_with_data(&args, &context),
+        );
+        assert!(!changed.outcome.ok);
+        assert!(changed.outcome.errors[0].starts_with("concurrent_modification:"));
+        assert!(fs::read(&rights).unwrap().ends_with(b"<!-- concurrent -->"));
+        assert!(changed.events.is_empty());
+        assert!(changed.recorded_cache.is_none());
+        fs::remove_dir_all(context.workspace_root).unwrap();
+
+        let (context, args, rights) = fixture("staging-disappearance");
+        let removed_rights = rights.clone();
+        let removed = with_role_edit_after_rights_reread_hook(
+            move || fs::remove_file(&removed_rights).unwrap(),
+            || apply_edit_with_data(&args, &context),
+        );
+        assert!(!removed.outcome.ok);
+        assert!(removed.outcome.errors[0].starts_with("concurrent_modification:"));
+        assert!(!rights.exists());
+        assert!(removed.events.is_empty());
+        assert!(removed.recorded_cache.is_none());
+        fs::remove_dir_all(context.workspace_root).unwrap();
+
+        let (context, args, rights) = fixture("staging-symlink-swap");
+        let original = fs::read(&rights).unwrap();
+        let saved = rights.with_extension("saved");
+        let outside = context.workspace_root.join("outside-rights.xml");
+        fs::write(&outside, &original).unwrap();
+        let Some(probe) = create_file_symlink_for_test(&outside, &saved) else {
+            fs::remove_dir_all(context.workspace_root).unwrap();
+            return;
+        };
+        if probe.is_err() {
+            fs::remove_dir_all(context.workspace_root).unwrap();
+            return;
+        }
+        fs::remove_file(&saved).unwrap();
+        let swapped_rights = rights.clone();
+        let swapped_saved = saved.clone();
+        let swapped_outside = outside.clone();
+        let swapped = with_role_edit_after_rights_reread_hook(
+            move || {
+                fs::rename(&swapped_rights, &swapped_saved).unwrap();
+                create_file_symlink_for_test(&swapped_outside, &swapped_rights)
+                    .expect("file links are available on this test host")
+                    .expect("test host permits a file link");
+            },
+            || apply_edit_with_data(&args, &context),
+        );
+        assert!(!swapped.outcome.ok);
+        assert!(swapped.outcome.errors[0].starts_with("concurrent_modification:"));
+        assert_eq!(fs::read(&outside).unwrap(), original);
+        assert_eq!(fs::read(&saved).unwrap(), original);
+        assert!(swapped.events.is_empty());
+        assert!(swapped.recorded_cache.is_none());
+        fs::remove_file(&rights).unwrap();
         fs::remove_dir_all(context.workspace_root).unwrap();
     }
 

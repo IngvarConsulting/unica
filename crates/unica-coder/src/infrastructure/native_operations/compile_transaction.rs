@@ -42,7 +42,7 @@ use super::single_file_publisher::{
     cleanup_publication_artifact, prepare, with_publication_locks_mode_and_guard_targets,
     write_exact_new_file, CleanupWarning, PreparedCreate, PreparedPublication, PreparedReplace,
     PublicationLockToken, PublicationTreeLockMode, PublishError, PublishErrorKind, PublishMode,
-    PublishRequest,
+    PublishPhase, PublishRequest,
 };
 
 #[cfg(test)]
@@ -535,40 +535,32 @@ impl CompileTransaction {
         expected_preimage: impl AsRef<[u8]>,
         replacement: impl Into<Vec<u8>>,
     ) -> Result<(), String> {
+        self.replace_bytes_classified(path, expected_preimage, replacement)
+            .map_err(CommitFailure::into_message)
+    }
+
+    /// Plan an exact replacement while retaining the typed reason a target
+    /// cannot be bound. Logical mutation APIs use this form to distinguish a
+    /// stale/missing/link-swapped preimage from an unavailable provider.
+    pub(crate) fn replace_bytes_classified(
+        &mut self,
+        path: impl Into<PathBuf>,
+        expected_preimage: impl AsRef<[u8]>,
+        replacement: impl Into<Vec<u8>>,
+    ) -> Result<(), CommitFailure> {
         let path = path.into();
-        let identity = self.reject_duplicate_plan_path(&path)?;
-        let metadata = fs::symlink_metadata(&path).map_err(|error| {
-            format!(
-                "failed to inspect replacement target {}: {error}",
-                path.display()
-            )
-        })?;
-        if metadata_is_link_or_reparse_point(&metadata) {
-            return Err(format!(
-                "replacement target must not be a symbolic link or reparse point: {}",
-                path.display()
-            ));
-        }
-        if !metadata.is_file() {
-            return Err(format!(
-                "replacement target is not a regular file: {}",
-                path.display()
-            ));
-        }
-        let original = fs::read(&path).map_err(|error| {
-            format!(
-                "failed to read replacement target {}: {error}",
-                path.display()
-            )
-        })?;
-        if original != expected_preimage.as_ref() {
-            return Err(format!(
-                "replacement target changed while planning: {}",
-                path.display()
-            ));
-        }
+        let identity = self
+            .reject_duplicate_plan_path(&path)
+            .map_err(CommitFailure::provider)?;
+        let original = expected_preimage.as_ref().to_vec();
+        super::single_file_publisher::validate_replace_target(
+            &path,
+            &original,
+            PublishPhase::Inspect,
+        )
+        .map_err(|error| adapt_publish_error(&error, PublicationRole::Registration))?;
         let updated = replacement.into();
-        validate_xml_when_applicable(&path, &updated)?;
+        validate_xml_when_applicable(&path, &updated).map_err(CommitFailure::provider)?;
         self.registrations.insert(
             identity.clone(),
             PlannedRegistration {

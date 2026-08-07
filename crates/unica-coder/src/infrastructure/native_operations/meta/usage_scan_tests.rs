@@ -46,6 +46,7 @@ fn scan_local_enrichment(
         source_root,
         kind,
         &metadata_path,
+        Some("String"),
         sections,
         limit,
         cancellation,
@@ -332,6 +333,35 @@ fn requested_malformed_predefined_data_reports_validation_diagnostic() {
         found.diagnostics[0].code,
         crate::domain::metadata::MetaDiagnosticCode::ValidationFailed
     );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn predefined_items_are_validated_against_the_owner_code_type() {
+    let root = temp_root("numeric-predefined");
+    write(
+        &root,
+        "Catalogs/Goods/Ext/Predefined.xml",
+        r#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CatalogPredefinedItems" version="2.20"><Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Main</Name><Code>ABC</Code></Item></PredefinedData>"#,
+    );
+    let metadata_path =
+        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Goods").unwrap();
+    let found = scan_local_enrichment_by_address(
+        &root,
+        MetadataKind::Catalog,
+        &metadata_path,
+        Some("Number"),
+        &[LocalSection::PredefinedItems],
+        50,
+        &CancellationToken::new(),
+    );
+    assert!(found.predefined_items.is_none());
+    assert_eq!(found.diagnostics.len(), 1);
+    assert_eq!(
+        found.diagnostics[0].code,
+        crate::domain::metadata::MetaDiagnosticCode::ValidationFailed
+    );
+    assert!(found.diagnostics[0].message.contains("numeric Code"));
     fs::remove_dir_all(root).unwrap();
 }
 
