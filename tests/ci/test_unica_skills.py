@@ -1792,7 +1792,7 @@ Use `.claude/commands/xdto.md` as the execution route.
         retired = ("initialize",)
 
         def frontmatter_pattern(field: str) -> str:
-            return rf"(?m)^{re.escape(field)}:[ \t]*([^\r\n]+)$"
+            return rf"(?m)^{re.escape(field)}:[ \t]*(?=[^\r\n]*\S)([^\r\n]+)$"
 
         fields = {
             field: match.group(1)
@@ -1804,6 +1804,12 @@ Use `.claude/commands/xdto.md` as the execution route.
             re.search(
                 frontmatter_pattern("description"),
                 "description:\nargument-hint: insert replace\n",
+            )
+        )
+        self.assertIsNone(
+            re.search(
+                frontmatter_pattern("description"),
+                "description:   \nargument-hint: insert replace\n",
             )
         )
         for field, value in fields.items():
