@@ -1043,3 +1043,119 @@ fn meta_info_post_capture_cancellation_before_complete_return_is_provider_unavai
     assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
     assert_no_error_diagnostic(&result, "validation_failed");
 }
+
+fn add_enum_with_presentations(
+    workspace: &Path,
+    name: &str,
+    synonym: &str,
+    list_presentation: Option<&str>,
+) -> Vec<String> {
+    {
+        let _cwd = ProcessCwdGuard::enter(workspace).unwrap();
+        let added = UnicaApplication::new()
+            .call_tool(
+                "unica.meta.add",
+                &Map::from_iter([
+                    ("sourceSet".to_string(), Value::String("main".to_string())),
+                    ("kind".to_string(), Value::String("Enum".to_string())),
+                    ("name".to_string(), Value::String(name.to_string())),
+                    (
+                        "operations".to_string(),
+                        serde_json::json!([
+                            {"op": "setProperties", "values": {"Synonym": synonym}}
+                        ]),
+                    ),
+                    ("dryRun".to_string(), Value::Bool(false)),
+                ]),
+            )
+            .unwrap();
+        assert!(added.ok, "{name}: {:?}", added.errors);
+    }
+
+    // ListPresentation is not a settable property of the typed surface, so the
+    // descriptor carries it the way the platform writes it: right after Comment.
+    if let Some(list_presentation) = list_presentation {
+        let descriptor = workspace.join(format!("src/Enums/{name}.xml"));
+        let text = std::fs::read_to_string(&descriptor).unwrap();
+        let patched = text.replace(
+            "<Comment/>",
+            &format!(
+                concat!(
+                    "<Comment/>\n",
+                    "\t\t\t<ListPresentation>\n",
+                    "\t\t\t\t<v8:item>\n",
+                    "\t\t\t\t\t<v8:lang>ru</v8:lang>\n",
+                    "\t\t\t\t\t<v8:content>{}</v8:content>\n",
+                    "\t\t\t\t</v8:item>\n",
+                    "\t\t\t</ListPresentation>"
+                ),
+                list_presentation
+            ),
+        );
+        assert_ne!(patched, text, "{name}: no Comment anchor in the descriptor");
+        std::fs::write(&descriptor, patched).unwrap();
+    }
+
+    let result = call_info_path(workspace, &format!("Enum.{name}"), []);
+    assert!(result.ok, "{name}: {:?}", result.errors);
+    let data = result.data.expect("typed meta.info data");
+    assert_eq!(data["validation"]["status"], "passed", "{name}");
+    data["validation"]["diagnostics"]
+        .as_array()
+        .expect("validation diagnostics")
+        .iter()
+        .filter(|diagnostic| diagnostic["severity"] == "warning")
+        .map(|diagnostic| diagnostic["message"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn info_warns_when_list_presentation_duplicates_the_synonym() {
+    let workspace = create_info_workspace("redundant-list-presentation");
+    let warnings = add_enum_with_presentations(
+        workspace.path(),
+        "RedundantList",
+        "Виды оплаты",
+        Some("Виды оплаты"),
+    );
+
+    assert!(
+        warnings.iter().any(|warning| warning
+            == "3. Properties: ListPresentation 'Виды оплаты' duplicates the Synonym for the \
+                command interface, language 'ru' (a list presentation equal to the synonym is \
+                redundant)"),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn info_allows_list_presentation_that_differs_from_the_synonym() {
+    let workspace = create_info_workspace("distinct-list-presentation");
+    let warnings = add_enum_with_presentations(
+        workspace.path(),
+        "DistinctList",
+        "Вид оплаты",
+        Some("Виды оплаты"),
+    );
+
+    assert!(
+        !warnings
+            .iter()
+            .any(|warning| warning.contains("duplicates the Synonym")),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn info_allows_synonym_fallback_without_a_redundancy_warning() {
+    let workspace = create_info_workspace("fallback-list-presentation");
+    let warnings =
+        add_enum_with_presentations(workspace.path(), "FallbackList", "Виды оплаты", None);
+
+    assert!(
+        !warnings
+            .iter()
+            .any(|warning| warning.contains("duplicates the Synonym")),
+        "{warnings:?}"
+    );
+}

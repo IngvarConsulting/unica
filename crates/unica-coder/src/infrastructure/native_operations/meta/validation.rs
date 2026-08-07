@@ -2229,6 +2229,20 @@ fn meta_validate_check_command_texts(
                 language.as_deref() == Some(language_code.as_str()) && !text.trim().is_empty()
             })
             .collect::<Vec<_>>();
+        // A list presentation that merely repeats the synonym adds nothing to the
+        // command interface, so a value equal to the synonym is redundant.
+        for (_, list_text) in &list_values {
+            let duplicates_synonym = synonyms.iter().any(|(language, synonym_text)| {
+                language.as_deref() == Some(language_code.as_str())
+                    && !synonym_text.trim().is_empty()
+                    && synonym_text == list_text
+            });
+            if duplicates_synonym {
+                report.warn(format!(
+                    "3. Properties: ListPresentation '{list_text}' duplicates the Synonym for the command interface, language '{language_code}' (a list presentation equal to the synonym is redundant)"
+                ));
+            }
+        }
         let selected = if list_values.is_empty() {
             synonyms
                 .iter()
