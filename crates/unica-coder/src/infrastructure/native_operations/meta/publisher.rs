@@ -6,7 +6,9 @@ use crate::application::ports::{
     PreparedMetadataMutation,
 };
 use crate::application::SupportGuardRequirement;
+use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
+use crate::domain::events::{DomainEvent, DomainEventKind};
 use crate::domain::metadata::{
     metadata_identifier_is_valid, MetaDiagnostic, MetaDiagnosticCode, MetaDiagnosticSeverity,
     MetaMutationData, MetaMutationEffect, MetaPublicationAction, MetaPublicationPlanEntry,
@@ -43,8 +45,44 @@ use crate::infrastructure::support_guard::{
     bind_resolved_support_guard_evidence, evaluate_resolved_support_guard,
     ResolvedSupportGuardCheck,
 };
+use crate::infrastructure::workspace_state::WorkspaceStateRepository;
 
 const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
+
+fn stage_metadata_publication_state(
+    transaction: &mut CompileTransaction,
+    context: &WorkspaceContext,
+    data: &MetaMutationData,
+) -> Result<(Vec<DomainEvent>, Option<CacheReport>), MetaFailure> {
+    if !data.changed {
+        return Ok((Vec::new(), None));
+    }
+    let event = DomainEvent::new(
+        DomainEventKind::MetadataChanged,
+        data.metadata_path.as_str().to_string(),
+    );
+    let cache = WorkspaceStateRepository::new(context)
+        .stage_report_in_transaction(
+            transaction,
+            context,
+            std::slice::from_ref(&event),
+            false,
+            CacheAccess {
+                reads: &[],
+                writes: &["workspace_graph", "metadata_graph"],
+            },
+        )
+        .map_err(|_| {
+            MetaFailure::from(
+                MetaDiagnostic::error(
+                    MetaDiagnosticCode::ProviderUnavailable,
+                    "metadata cache state could not join the publication transaction",
+                )
+                .with_metadata_path(data.metadata_path.clone()),
+            )
+        })?;
+    Ok((vec![event], Some(cache)))
+}
 
 #[cfg(test)]
 thread_local! {
@@ -118,6 +156,7 @@ pub(crate) struct PreparedMetaAdd {
     transaction: CompileTransaction,
     context: WorkspaceContext,
     source: ResolvedSourceSet,
+    expected_post_images: Vec<(PathBuf, Vec<u8>)>,
 }
 
 pub(crate) struct PreparedMetaEdit {
@@ -126,7 +165,7 @@ pub(crate) struct PreparedMetaEdit {
     transaction: CompileTransaction,
     context: WorkspaceContext,
     resolved: ResolvedMetadataObject,
-    expected_post_image: Vec<u8>,
+    expected_post_images: Vec<(PathBuf, Vec<u8>)>,
 }
 
 pub(crate) struct PreparedMetaRemove {
@@ -150,6 +189,8 @@ impl PreparedMetaEdit {
         effects: Vec<MetaMutationEffect>,
     ) -> Result<Box<dyn PreparedMetadataMutation>, MetaFailure> {
         let target = request.metadata_path.clone();
+        let mut expected_post_images = child_resources.expected_post_images.clone();
+        expected_post_images.push((resolved.descriptor_path.clone(), post_image.clone()));
         let changed = post_image != resolved.descriptor_preimage;
         if !changed
             && child_resources.publication_plan.is_empty()
@@ -311,7 +352,7 @@ impl PreparedMetaEdit {
             transaction,
             context: context.clone(),
             resolved,
-            expected_post_image: post_image,
+            expected_post_images,
         }))
     }
 }
@@ -326,7 +367,7 @@ impl PreparedMetadataMutation for PreparedMetaEdit {
     }
 
     fn publish(
-        self: Box<Self>,
+        mut self: Box<Self>,
         cancellation: &CancellationToken,
     ) -> Result<MetaPublishReport, MetaFailure> {
         if cancellation.is_cancelled() {
@@ -347,19 +388,22 @@ impl PreparedMetadataMutation for PreparedMetaEdit {
                 .with_metadata_path(target.clone()),
             )
         })?;
-        let descriptor_path = self.resolved.descriptor_path.clone();
-        let expected = self.expected_post_image.clone();
+        let expected_post_images = self.expected_post_images.clone();
         let handle = &self.resolved.handle;
         let context = &self.context;
+        let (events, recorded_cache) =
+            stage_metadata_publication_state(&mut self.transaction, &self.context, &self.preview)?;
         self.transaction
             .commit_with_classified_post_validation(|| {
-                let published = fs::read(&descriptor_path).map_err(|_| {
-                    CommitFailure::provider("published metadata descriptor is unavailable")
-                })?;
-                if published != expected {
-                    return Err(CommitFailure::provider(
-                        "published metadata descriptor differs from its post-image",
-                    ));
+                for (path, expected) in &expected_post_images {
+                    let published = fs::read(path).map_err(|_| {
+                        CommitFailure::provider("published metadata post-image is unavailable")
+                    })?;
+                    if &published != expected {
+                        return Err(CommitFailure::concurrent(
+                            "published metadata post-image differs from its plan",
+                        ));
+                    }
                 }
                 revalidate_platform_xml_target(context, handle)
                     .map(|_| ())
@@ -368,7 +412,11 @@ impl PreparedMetadataMutation for PreparedMetaEdit {
                     })
             })
             .map_err(|failure| publication_failure(&target, failure.kind()))?;
-        Ok(MetaPublishReport { data: self.preview })
+        Ok(MetaPublishReport {
+            data: self.preview,
+            events,
+            recorded_cache,
+        })
     }
 }
 
@@ -413,7 +461,7 @@ impl PreparedMetadataMutation for PreparedMetaRemove {
     }
 
     fn publish(
-        self: Box<Self>,
+        mut self: Box<Self>,
         cancellation: &CancellationToken,
     ) -> Result<MetaPublishReport, MetaFailure> {
         if cancellation.is_cancelled() {
@@ -436,6 +484,8 @@ impl PreparedMetadataMutation for PreparedMetaRemove {
         })?;
         let expected_post_images = self.expected_post_images.clone();
         let expected_absent = self.expected_absent.clone();
+        let (events, recorded_cache) =
+            stage_metadata_publication_state(&mut self.transaction, &self.context, &self.preview)?;
         self.transaction
             .commit_with_classified_post_validation(move || {
                 for (path, expected) in &expected_post_images {
@@ -466,7 +516,11 @@ impl PreparedMetadataMutation for PreparedMetaRemove {
                 Ok(())
             })
             .map_err(|failure| publication_failure(&target, failure.kind()))?;
-        Ok(MetaPublishReport { data: self.preview })
+        Ok(MetaPublishReport {
+            data: self.preview,
+            events,
+            recorded_cache,
+        })
     }
 }
 
@@ -572,6 +626,19 @@ pub(crate) fn prepare_meta_add(
         .source_root
         .join(metadata_layout(request.kind).directory)
         .join(&request.name);
+    let mut expected_post_images = child_resources.expected_post_images.clone();
+    expected_post_images.extend(
+        post_image
+            .files
+            .iter()
+            .filter(|file| file.mode != MetadataTemplateFileMode::Guard)
+            .map(|file| {
+                (
+                    source.source_root.join(&file.relative_path),
+                    file.bytes.clone(),
+                )
+            }),
+    );
     let mut guarded_resource_directories = BTreeSet::from([resource_root.clone()]);
     for file in &post_image.files {
         let path = source.source_root.join(&file.relative_path);
@@ -652,6 +719,7 @@ pub(crate) fn prepare_meta_add(
                 "metadata owner registration post-image is unavailable".to_string(),
             )
         })?;
+    expected_post_images.push((source.owner_path.clone(), registration_image.clone()));
 
     let mut validation_resources = child_resources.validation_resources;
     let mut publication_plan = child_resources.publication_plan;
@@ -772,6 +840,7 @@ pub(crate) fn prepare_meta_add(
         transaction,
         context: context.clone(),
         source,
+        expected_post_images,
     }))
 }
 
@@ -844,7 +913,7 @@ impl PreparedMetadataMutation for PreparedMetaAdd {
     }
 
     fn publish(
-        self: Box<Self>,
+        mut self: Box<Self>,
         cancellation: &CancellationToken,
     ) -> Result<MetaPublishReport, MetaFailure> {
         if cancellation.is_cancelled() {
@@ -857,13 +926,30 @@ impl PreparedMetadataMutation for PreparedMetaAdd {
         }
         revalidate_metadata_add_source(&self.context, &self.source)?;
         let target = self.preview.metadata_path.clone();
+        let expected_post_images = self.expected_post_images.clone();
+        let (events, recorded_cache) =
+            stage_metadata_publication_state(&mut self.transaction, &self.context, &self.preview)?;
         self.transaction
             .commit_with_classified_post_validation(|| {
+                for (path, expected) in &expected_post_images {
+                    let published = fs::read(path).map_err(|_| {
+                        CommitFailure::provider("published metadata post-image is unavailable")
+                    })?;
+                    if &published != expected {
+                        return Err(CommitFailure::concurrent(
+                            "published metadata post-image differs from its plan",
+                        ));
+                    }
+                }
                 revalidate_metadata_add_source(&self.context, &self.source)
                     .map_err(|failure| commit_failure_from_meta(&failure))
             })
             .map_err(|failure| publication_failure(&target, failure.kind()))?;
-        Ok(MetaPublishReport { data: self.preview })
+        Ok(MetaPublishReport {
+            data: self.preview,
+            events,
+            recorded_cache,
+        })
     }
 }
 
@@ -940,8 +1026,8 @@ mod typed_add_publication_tests {
     use super::*;
     use crate::application::metadata::MetaAddRequest;
     use crate::domain::metadata::{
-        MetaCollection, MetaEditOperation, MetaElementInput, MetaRelation, MetadataKind,
-        MetadataReference, RelationEditMode,
+        MetaCollection, MetaEditOperation, MetaElementInput, MetaPredefinedFields,
+        MetaPredefinedItemAdd, MetaRelation, MetadataKind, MetadataReference, RelationEditMode,
     };
     use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
     use crate::infrastructure::native_operations::cf::create_configuration_scaffold;
@@ -1135,6 +1221,47 @@ mod typed_add_publication_tests {
             MetaDiagnosticCode::ProviderUnavailable
         );
         assert_eq!(fixture.source_snapshot(), before);
+        assert!(!fixture.context.cache_root.join("state.json").exists());
+        assert!(!fixture
+            .context
+            .cache_root
+            .join("caches/metadata_graph.json")
+            .exists());
+    }
+
+    #[test]
+    fn predefined_add_cache_planning_failure_leaves_all_source_bytes_unchanged() {
+        let fixture = Fixture::new("predefined-cache-planning-failure");
+        let cancellation = CancellationToken::new();
+        let request = MetaAddRequest {
+            operations: vec![MetaEditOperation::add_predefined_items(vec![
+                MetaPredefinedItemAdd {
+                    id: "a7d2e6fc-3824-4b56-b4be-ae6be4944c0e".to_string(),
+                    name: "Main".to_string(),
+                    fields: MetaPredefinedFields::default(),
+                },
+            ])
+            .unwrap()],
+            ..fixture.request("CacheRejected")
+        };
+        let prepared = prepare_meta_add(&request, &fixture.context, &cancellation).unwrap();
+        let before = fixture.source_snapshot();
+        fs::create_dir_all(fixture.context.cache_root.join("state.json")).unwrap();
+
+        let failure = match prepared.publish(&cancellation) {
+            Ok(_) => panic!("an unusable cache target published source bytes"),
+            Err(failure) => failure,
+        };
+
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::ProviderUnavailable
+        );
+        assert_eq!(fixture.source_snapshot(), before);
+        assert!(!fixture
+            .root
+            .join("src/Catalogs/CacheRejected/Ext/Predefined.xml")
+            .exists());
     }
 
     #[test]

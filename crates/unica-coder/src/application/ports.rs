@@ -94,11 +94,11 @@ impl HandlerOutcome {
     }
 }
 
-#[allow(dead_code)] // Concrete providers land after this orchestration seam.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MetadataAuxiliaryXmlKind {
     ExchangePlanContent,
     BusinessProcessFlowchart,
+    PredefinedData(MetadataKind),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -283,6 +283,7 @@ pub(crate) struct MetadataRead {
 pub(crate) struct MetaEnrichment {
     pub(crate) predefined_items: Option<MetaPredefinedItemsData>,
     pub(crate) usage: MetaUsageData,
+    pub(crate) diagnostics: Vec<MetaDiagnostic>,
 }
 
 pub(crate) type MetaRelatedData = MetaEnrichment;
@@ -290,6 +291,19 @@ pub(crate) type MetadataValidationResult = MetaValidationData;
 
 pub(crate) struct MetaPublishReport {
     pub(crate) data: MetaMutationData,
+    pub(crate) events: Vec<DomainEvent>,
+    pub(crate) recorded_cache: Option<CacheReport>,
+}
+
+impl MetaPublishReport {
+    #[cfg(test)]
+    pub(crate) fn source_only(data: MetaMutationData) -> Self {
+        Self {
+            data,
+            events: Vec::new(),
+            recorded_cache: None,
+        }
+    }
 }
 
 pub(crate) trait PreparedMetadataMutation: Send {

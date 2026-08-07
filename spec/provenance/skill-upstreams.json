@@ -25,6 +25,19 @@
         "crates/unica-coder/src/application/source_resources.rs",
         "tests/ci/test_unica_skills.py"
       ]
+    },
+    {
+      "skill": "role-edit",
+      "notes": "Unica-owned skill implementing the logical typed unica.role.edit contract from ADR-0029 without exposing Rights.xml or legacy top-level aliases.",
+      "localPaths": [
+        "plugins/unica/skills/role-edit"
+      ],
+      "contractPaths": [
+        "crates/unica-coder/src/application/tool_contracts.rs",
+        "crates/unica-coder/src/infrastructure/native_operations/role.rs",
+        "spec/architecture/invariants.md",
+        "tests/ci/test_unica_skills.py"
+      ]
     }
   ],
   "upstreams": [

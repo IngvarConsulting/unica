@@ -58,6 +58,12 @@ allowed-tools:
 разойтись с ним не могут, поэтому никаких признаков давности у них нет.
 Предопределённые элементы лежат отдельно в `data.predefinedItems` вместе с
 `total`, `returned` и `truncated`, потому что это содержимое самого объекта.
+`items` возвращается плоско в документном порядке: каждый элемент содержит
+UUID в `id`, поддержанные typed-поля своего владельца и `parentId` для
+вложенного элемента. `Catalog`, `ChartOfAccounts`,
+`ChartOfCharacteristicTypes` и `ChartOfCalculationTypes` имеют разные закрытые
+наборы полей; структурные `type`, `accountingFlags` и `extDimensionTypes`
+читайте как объекты из ответа, не восстанавливайте из них строковый DSL.
 Подписка может достигать объекта через `DefinedType`; такое совпадение входит в
 ответ и помечено полем `via`. Без `sections` или с `sections: []` не читается
 ничего сверх самого объекта.
@@ -115,6 +121,28 @@ allowed-tools:
   }
 }
 ```
+
+### Предопределённые элементы в документном порядке
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.meta.info",
+    "arguments": {
+      "sourceSet": "main",
+      "metadataPath": "Catalog.Валюты",
+      "sections": ["predefinedItems"],
+      "limit": 20
+    }
+  }
+}
+```
+
+Сначала проверяйте `total`, `returned` и `truncated`, затем обходите `items`.
+`parentId: null` означает корневой элемент; UUID родителя связывает вложенный
+элемент без раскрытия физической структуры `Predefined.xml`.
 
 ### HTTP-сервис
 

@@ -217,14 +217,18 @@ fn a_kind_that_cannot_be_a_source_collects_no_subscriptions() {
 fn predefined_items_report_the_exact_total_and_their_own_truncation() {
     let root = temp_root("predefined");
     let items = (0..5)
-        .map(|index| format!("<Item><Name>Item{index}</Name></Item>"))
+        .map(|index| {
+            format!(
+                "<Item id=\"00000000-0000-0000-0000-00000000000{index}\"><Name>Item{index}</Name></Item>"
+            )
+        })
         .collect::<String>();
     write(
         &root,
         "Catalogs/Goods/Ext/Predefined.xml",
         &format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
-<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" version="2.20">{items}</PredefinedData>"#
+<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CatalogPredefinedItems" version="2.20">{items}</PredefinedData>"#
         ),
     );
 
@@ -242,7 +246,13 @@ fn predefined_items_report_the_exact_total_and_their_own_truncation() {
     assert_eq!(page.total, 5);
     assert_eq!(page.returned, 2);
     assert!(page.truncated);
-    assert_eq!(names(&page.items), vec!["Item0", "Item1"]);
+    assert_eq!(
+        page.items
+            .iter()
+            .map(|item| item.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Item0", "Item1"]
+    );
 
     let whole = scan_local_enrichment(
         &root,
@@ -271,6 +281,51 @@ fn predefined_items_report_the_exact_total_and_their_own_truncation() {
     .unwrap();
     assert_eq!(empty.total, 0);
     assert!(!empty.truncated);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn requested_malformed_predefined_data_reports_validation_diagnostic() {
+    let root = temp_root("malformed-predefined");
+    write(
+        &root,
+        "Catalogs/Goods/Ext/Predefined.xml",
+        r#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="ChartOfAccountsPredefinedItems" version="2.20"/>"#,
+    );
+    let found = scan_local_enrichment(
+        &root,
+        MetadataKind::Catalog,
+        "Goods",
+        &[LocalSection::PredefinedItems],
+        50,
+        &CancellationToken::new(),
+    );
+    assert!(found.predefined_items.is_none());
+    assert_eq!(found.diagnostics.len(), 1);
+    assert_eq!(
+        found.diagnostics[0].code,
+        crate::domain::metadata::MetaDiagnosticCode::ValidationFailed
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn predefined_section_on_unsupported_owner_reports_unsupported_kind() {
+    let root = temp_root("unsupported-predefined-owner");
+    let found = scan_local_enrichment(
+        &root,
+        MetadataKind::Document,
+        "Order",
+        &[LocalSection::PredefinedItems],
+        50,
+        &CancellationToken::new(),
+    );
+    assert!(found.predefined_items.is_none());
+    assert_eq!(found.diagnostics.len(), 1);
+    assert_eq!(
+        found.diagnostics[0].code,
+        crate::domain::metadata::MetaDiagnosticCode::UnsupportedKind
+    );
     fs::remove_dir_all(root).unwrap();
 }
 

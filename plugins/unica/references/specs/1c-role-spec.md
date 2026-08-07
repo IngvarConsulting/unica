@@ -174,6 +174,39 @@ Roles/
 | `right/restrictionByCondition` | нет | Ограничение на уровне записей (RLS) |
 | `restrictionByCondition/condition` | да | Текст условия на языке шаблонов ограничений |
 
+### Адресная правка одного права
+
+Для активного профиля writer принимает только корень
+`{http://v8.1c.ru/8.2/roles}Rights` с `xsi:type="Rights"` и точной версией
+`2.20`. Роль выбирается публично по `sourceSet + metadataPath` вида
+`Role.<Имя>`; путь `Roles/<Имя>/Ext/Rights.xml` является внутренней раскладкой,
+а не аргументом публичного инструмента.
+
+Цель ищется только среди прямых детей:
+
+1. прямой `<object>` корня выбирается по своему прямому `<name>`;
+2. прямой `<right>` этого объекта выбирается по своему прямому `<name>`;
+3. меняется или добавляется только прямой `<value>` выбранного права.
+
+Одноимённый узел внутри `restrictionByCondition`, шаблона или другой вложенной
+структуры целью не является. Повторяющиеся прямые `object`, `right`, `name` или
+`value` неоднозначны и должны привести к отказу до записи. Безымянные
+`<object/>` и `<right/>` не могут быть выбраны логической целью: для выбора
+обязателен прямой `<name>`. Поддержка самозакрывающихся элементов относится к
+`<value/>` выбранного именованного права; если именованного права нет, writer
+вставляет новый `<right>` с прямыми `name` и `value`, не заменяя соседние блоки.
+
+При замене значения сохраняются `restrictionByCondition` и другие неизвестные
+дети права. Writer также сохраняет остальные права и объекты, глобальные флаги,
+`restrictionTemplate`, XML declaration, BOM, стиль EOL, порядок узлов и
+завершающий перевод строки. Семантически эквивалентное значение не меняет файл.
+
+Перед построением XML проверяется допустимость права для полного имени объекта,
+включая матрицу вложенных объектов из разделов ниже. Платформенное исключение:
+для `DataProcessor.*` значение `Use=false` означает удаление всего прямого
+блока `<object>`, а не сохранение блока с запрещённым `Use`. Это правило не
+распространяется на другие виды объектов и права.
+
 ### Именование объектов (dot-нотация)
 
 Объекты адресуются иерархически через точку:
@@ -652,6 +685,10 @@ Subsystem.Администрирование.Subsystem.Пользователи
 | `Resource` | InformationRegister, AccumulationRegister, AccountingRegister | View, Edit |
 | `Command` | Catalog, Document, DataProcessor, Report, *Register, DocumentJournal, ExchangePlan, BusinessProcess, Task | View |
 | `AddressingAttribute` | Task | View, Edit |
+| `Operation` | WebService | Use |
+| `URLTemplate.*.Method` | HTTPService | Use |
+| `IntegrationServiceChannel` | IntegrationService | Use |
+| `Subsystem` | Subsystem | View |
 
 ---
 

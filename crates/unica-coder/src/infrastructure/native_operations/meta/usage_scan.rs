@@ -13,7 +13,10 @@
 //! object collects is a few dozen entries.
 
 use crate::domain::cancellation::CancellationToken;
-use crate::domain::metadata::{MetaPredefinedItemsData, MetaUsageData, MetadataKind};
+use crate::domain::metadata::{
+    MetaDiagnostic, MetaDiagnosticCode, MetaPredefinedItemsData, MetaUsageData, MetadataKind,
+};
+use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::infrastructure::metadata_kinds::{metadata_kind_value_types, metadata_layout};
 use crate::infrastructure::platform::secure_read::read_root_relative_regular_file;
 use roxmltree::Document;
@@ -38,6 +41,7 @@ const USAGE_SECTION_MAX_FILES: usize = 8192;
 pub(crate) struct LocalEnrichment {
     pub(crate) usage: MetaUsageData,
     pub(crate) predefined_items: Option<MetaPredefinedItemsData>,
+    pub(crate) diagnostics: Vec<MetaDiagnostic>,
 }
 
 /// Sections a local read can serve, named as the public contract names them.
@@ -69,7 +73,31 @@ pub(crate) fn scan_local_enrichment(
         enrichment.usage.subscriptions = Some(scan_subscriptions(source_root, kind, name));
     }
     if sections.contains(&LocalSection::PredefinedItems) && !cancellation.is_cancelled() {
-        enrichment.predefined_items = Some(read_predefined_items(source_root, kind, name, limit));
+        if !crate::domain::metadata::metadata_kind_collections(kind)
+            .contains(&crate::domain::metadata::MetaCollection::PredefinedItems)
+        {
+            let target = MetadataAddress::parse(
+                PLATFORM_XML_8_3_27_FORMAT_2_20,
+                &format!("{}.{name}", kind.as_str()),
+            )
+            .expect("metadata read owns a canonical top-level address");
+            enrichment.diagnostics.push(
+                MetaDiagnostic::error(
+                    MetaDiagnosticCode::UnsupportedKind,
+                    format!(
+                        "predefinedItems is not supported for metadata kind `{}`",
+                        kind.as_str()
+                    ),
+                )
+                .with_metadata_path(target)
+                .with_field("predefinedItems"),
+            );
+        } else {
+            match read_predefined_items(source_root, kind, name, limit) {
+                Ok(items) => enrichment.predefined_items = Some(items),
+                Err(diagnostic) => enrichment.diagnostics.push(diagnostic),
+            }
+        }
     }
     enrichment
 }
@@ -242,47 +270,42 @@ fn read_predefined_items(
     kind: MetadataKind,
     name: &str,
     limit: usize,
-) -> MetaPredefinedItemsData {
+) -> Result<MetaPredefinedItemsData, MetaDiagnostic> {
     let path = source_root
         .join(metadata_layout(kind).directory)
         .join(name)
         .join("Ext")
         .join("Predefined.xml");
-    let Some(text) = read_descriptor(source_root, &path)
-        .filter(|text| Document::parse(text.trim_start_matches('\u{feff}')).is_ok())
-    else {
-        return MetaPredefinedItemsData {
-            total: 0,
-            returned: 0,
-            truncated: false,
-            items: Vec::new(),
+    let target = MetadataAddress::parse(
+        PLATFORM_XML_8_3_27_FORMAT_2_20,
+        &format!("{}.{name}", kind.as_str()),
+    )
+    .expect("metadata read owns a canonical top-level address");
+    let bytes =
+        match read_root_relative_regular_file(source_root, &path, USAGE_FILE_MAX_BYTES, |_| {}) {
+            Ok(read) => read.bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(MetaPredefinedItemsData {
+                    total: 0,
+                    returned: 0,
+                    truncated: false,
+                    items: Vec::new(),
+                })
+            }
+            Err(_) => {
+                return Err(MetaDiagnostic::error(
+                    MetaDiagnosticCode::ProviderUnavailable,
+                    "predefined data cannot be read through the source-root boundary",
+                )
+                .with_metadata_path(target)
+                .with_field("predefinedItems"))
+            }
         };
-    };
-    let document = Document::parse(text.trim_start_matches('\u{feff}'))
-        .expect("descriptor was parsed during the guard above");
-    let names = document
-        .descendants()
-        .filter(|node| node.is_element() && node.tag_name().name() == "Item")
-        .filter_map(|item| {
-            item.children()
-                .find(|child| child.is_element() && child.tag_name().name() == "Name")
-                .and_then(|node| node.text())
-                .map(|value| value.trim().to_string())
-        })
-        .filter(|value| !value.is_empty())
-        .collect::<Vec<_>>();
-    let total = names.len();
-    let items = names
-        .into_iter()
-        .take(limit)
-        .map(|value| json!({"name": value}))
-        .collect::<Vec<_>>();
-    MetaPredefinedItemsData {
-        total,
-        returned: items.len(),
-        truncated: total > items.len(),
-        items,
-    }
+    super::predefined::read_predefined_items(&bytes, kind, limit).map_err(|message| {
+        MetaDiagnostic::error(MetaDiagnosticCode::ValidationFailed, message)
+            .with_metadata_path(target)
+            .with_field("predefinedItems")
+    })
 }
 
 /// `Kind.Name` itself, or anything nested beneath it.

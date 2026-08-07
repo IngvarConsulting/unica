@@ -266,9 +266,14 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     dry_run,
                     spec.mutating,
                 )
-                .map(|outcome| match outcome.data {
-                    Some(data) => HandlerOutcome::with_data(outcome.adapter, data),
-                    None => HandlerOutcome::plain(outcome.adapter),
+                .map(|outcome| {
+                    let mut handler = match outcome.data {
+                        Some(data) => HandlerOutcome::with_data(outcome.adapter, data),
+                        None => HandlerOutcome::plain(outcome.adapter),
+                    };
+                    handler.events = outcome.events;
+                    handler.recorded_cache = outcome.recorded_cache;
+                    handler
                 })
             }
             ToolHandler::ProjectStatus => {

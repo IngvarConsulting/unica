@@ -47,7 +47,7 @@ class DocumentedContractTests(unittest.TestCase):
         documents = (
             ROOT / "spec/acceptance/format-profile-8-3-27.md",
             ROOT
-            / "docs/design/2026-07-23-platform-8-3-27-format-2-20-design.md",
+            / "docs/design/2026-08-07-typed-predefined-items-and-role-edit-design.md",
         )
 
         for path in documents:
@@ -904,6 +904,18 @@ class SemanticDirectoryTests(unittest.TestCase):
 
 
 class CorpusAdapterTests(unittest.TestCase):
+    def test_xdto_package_bin_is_classified_as_platform_xml(self):
+        verifier = load_verifier()
+
+        package = Path("src/XDTOPackages/Sample/Ext/Package.bin")
+        unrelated = Path("src/Catalogs/Sample/Ext/Package.bin")
+        self.assertTrue(verifier._is_platform_xml_payload_path(package))
+        self.assertFalse(verifier._is_platform_xml_payload_path(unrelated))
+        self.assertEqual(
+            verifier.XML_FAMILY_BY_ROOT_QNAME["{http://v8.1c.ru/8.1/xdto}package"],
+            "xdto-package",
+        )
+
     def test_mandatory_corpus_includes_order_sensitive_dcs_edits(self):
         verifier = load_verifier()
 
@@ -953,7 +965,7 @@ class CorpusAdapterTests(unittest.TestCase):
     def test_mandatory_corpus_includes_every_cfe_patch_module_layout(self):
         verifier = load_verifier()
 
-        self.assertEqual(len(verifier.MANDATORY_CASE_IDS), 64)
+        self.assertEqual(len(verifier.MANDATORY_CASE_IDS), 66)
         self.assertTrue(
             {
                 "cfe-patch-method-bsl-only",
@@ -962,6 +974,9 @@ class CorpusAdapterTests(unittest.TestCase):
                 "cfe-patch-method-information-register-record-set-module",
                 "cfe-patch-method-catalog-form-module",
                 "cfe-patch-method-constant-value-manager-module",
+                "meta-edit-predefined-items",
+                "role-edit-set-right",
+                "xdto-add-nested-property",
             }.issubset(verifier.MANDATORY_CASE_IDS)
         )
 

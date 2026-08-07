@@ -82,6 +82,7 @@ impl MetadataOperations {
         let LocalEnrichment {
             usage,
             predefined_items,
+            diagnostics,
         } = if local_sections.is_empty() {
             LocalEnrichment::default()
         } else {
@@ -98,6 +99,7 @@ impl MetadataOperations {
         MetaEnrichment {
             predefined_items,
             usage,
+            diagnostics,
         }
     }
 

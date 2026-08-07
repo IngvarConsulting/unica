@@ -36,6 +36,30 @@ allowed-tools:
 опубликованной схемы операции. Общие прикладные правила находятся в
 [соглашениях по метаданным](../../references/platform/metadata-conventions.md).
 
+Коллекция `predefinedItems` доступна только для `Catalog`,
+`ChartOfAccounts`, `ChartOfCharacteristicTypes` и
+`ChartOfCalculationTypes`. Для неё `add` и `update` принимают typed
+`elements`, а `remove` — массив `ids`; отдельная операция не нужна.
+Общие поля элемента: `id`, `name`, `code`, `description`. Дополнительные поля
+закрыты видом владельца:
+
+- `Catalog`: `isFolder`;
+- `ChartOfCharacteristicTypes`: `isFolder` и структурный `type` из
+  опубликованной схемы, не строка и не QName;
+- `ChartOfAccounts`: `accountType`, `offBalance`, `order`,
+  `accountingFlags`, `extDimensionTypes`;
+- `ChartOfCalculationTypes`: `actionPeriodIsBase`.
+
+`type` использует общий структурный `metadataType`. Для плана счетов
+`accountType` допускает `Active`, `Passive`, `ActivePassive`;
+`accountingFlags` — закрытый объект `имя: boolean`; `extDimensionTypes` —
+массив объектов с `name` и необязательными `turnover`, `accountingFlags`.
+
+`add` создаёт только корневой элемент. Совпадающий UUID даёт no-op только при
+эквивалентном образе, иначе `already_exists`. `update` и `remove` находят UUID
+на любой глубине; удаление родителя удаляет всё его поддерево. Неуказанные поля
+и неизвестные XML-узлы сохраняются.
+
 Не переносите поля снятого Meta JSON DSL по сходству имён. В частности:
 
 - один вызов изменяет один объект; batch нескольких объектов разбивается на
@@ -168,6 +192,53 @@ PascalCase-именем и с enum-значением, опубликованн�
           "targets": [
             {"metadataPath": "Document.СчетПокупателю"}
           ]
+        }
+      ],
+      "dryRun": true
+    }
+  }
+}
+```
+
+### Добавить, изменить и удалить предопределённые элементы
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.meta.edit",
+    "arguments": {
+      "sourceSet": "main",
+      "metadataPath": "Catalog.Валюты",
+      "operations": [
+        {
+          "op": "add",
+          "collection": "predefinedItems",
+          "elements": [
+            {
+              "id": "c7d2e6fc-3824-4b56-b4be-ae6be4944c0e",
+              "name": "ОсновнаяВалюта",
+              "code": "643",
+              "description": "Рубль",
+              "isFolder": false
+            }
+          ]
+        },
+        {
+          "op": "update",
+          "collection": "predefinedItems",
+          "elements": [
+            {
+              "id": "c7d2e6fc-3824-4b56-b4be-ae6be4944c0e",
+              "description": "Российский рубль"
+            }
+          ]
+        },
+        {
+          "op": "remove",
+          "collection": "predefinedItems",
+          "ids": ["8ed9f480-f17d-4dc8-95c4-b7887e2f918a"]
         }
       ],
       "dryRun": true

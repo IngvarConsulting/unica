@@ -418,6 +418,114 @@ class UnicaMcpSmokeTests(unittest.TestCase):
                 )
                 self.assertTrue(invalid_result["isError"])
 
+    def test_role_edit_preview_publishes_only_typed_logical_data(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            rights = root / "src/Roles/Demo/Ext/Rights.xml"
+            rights.parent.mkdir(parents=True)
+            (root / "v8project.yaml").write_text(
+                "format: DESIGNER\nsource-set:\n"
+                "  - name: main\n    type: CONFIGURATION\n    path: src\n",
+                encoding="utf-8",
+            )
+            (root / "src/Configuration.xml").write_text(
+                '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" '
+                'version="2.20"><Configuration '
+                'uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa">'
+                "<Properties><Name>Main</Name></Properties>"
+                "<ChildObjects><Role>Demo</Role></ChildObjects>"
+                "</Configuration></MetaDataObject>",
+                encoding="utf-8",
+            )
+            (root / "src/Roles/Demo.xml").write_text(
+                '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" '
+                'version="2.20"><Role '
+                'uuid="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb">'
+                "<Properties><Name>Demo</Name></Properties>"
+                "</Role></MetaDataObject>",
+                encoding="utf-8",
+            )
+            body = (
+                '<?xml version="1.0" encoding="UTF-8"?>\r\n'
+                '<Rights xmlns="http://v8.1c.ru/8.2/roles" '
+                'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+                'xsi:type="Rights" version="2.20">\r\n'
+                "\t<setForNewObjects>false</setForNewObjects>\r\n"
+                "\t<setForAttributesByDefault>true</setForAttributesByDefault>\r\n"
+                "\t<independentRightsOfChildObjects>false</independentRightsOfChildObjects>\r\n"
+                "\t<object>\r\n"
+                "\t\t<name>Catalog.Demo</name>\r\n"
+                "\t\t<right><name>Delete</name><value>true</value></right>\r\n"
+                "\t</object>\r\n"
+                "</Rights>\r\n"
+            )
+            before = b"\xef\xbb\xbf" + body.encode("utf-8")
+            rights.write_bytes(before)
+
+            with self.mcp_session(
+                cache_dir=Path(tmp) / "cache", workdir=root
+            ) as request:
+                response = request(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "unica.role.edit",
+                            "arguments": {
+                                "sourceSet": "main",
+                                "metadataPath": "Role.Demo",
+                                "operations": [
+                                    {
+                                        "op": "setRight",
+                                        "objectName": "Catalog.Demo",
+                                        "right": "Delete",
+                                        "value": False,
+                                    }
+                                ],
+                                "dryRun": True,
+                            },
+                        },
+                    }
+                )
+
+            self.assertNotIn("error", response, response)
+            result = response["result"]
+            payload = result["structuredContent"]
+            self.assertEqual(json.loads(result["content"][0]["text"]), payload)
+            self.assertTrue(payload["ok"])
+            self.assertFalse(result["isError"])
+            self.assertNotIn("stdout", payload)
+            self.assertNotIn("stderr", payload)
+            self.assertNotIn("command", payload)
+            data = payload["data"]
+            self.assertEqual(
+                set(data),
+                {"metadataPath", "changed", "effects", "validation", "diagnostics"},
+            )
+            self.assertEqual(data["metadataPath"], "Role.Demo")
+            self.assertTrue(data["changed"])
+            self.assertEqual(data["validation"], {"status": "passed"})
+            self.assertEqual(data["diagnostics"], [])
+            self.assertEqual(len(data["effects"]), 1)
+            self.assertEqual(
+                data["effects"][0],
+                {
+                    "operationIndex": 0,
+                    "operation": "setRight",
+                    "objectName": "Catalog.Demo",
+                    "right": "Delete",
+                    "before": True,
+                    "after": False,
+                    "action": "setRight",
+                    "changed": True,
+                },
+            )
+            encoded_data = json.dumps(data, ensure_ascii=False)
+            self.assertNotIn("Rights.xml", encoded_data)
+            self.assertNotIn(str(root), encoded_data)
+            self.assertEqual(rights.read_bytes(), before)
+
     def test_source_resources_cover_configuration_and_extension_through_one_jsonrpc_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             temp = Path(tmp)

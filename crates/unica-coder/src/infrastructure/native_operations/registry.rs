@@ -11,6 +11,7 @@ use super::{
 pub(crate) enum TypedMutationHandler {
     CodePatch,
     FormEdit,
+    RoleEdit,
     XdtoEdit,
 }
 
@@ -87,7 +88,7 @@ pub(crate) fn native_mutation_file_input_contract(
         },
         "code-patch" | "xdto-edit" | "cf-init" | "support-edit" | "cfe-borrow" | "cfe-init"
         | "epf-init" | "erf-init" | "cfe-patch-method" | "help-add" | "form-add"
-        | "form-remove" | "template-add" | "template-remove" => NO_FILE_INPUT,
+        | "form-remove" | "template-add" | "template-remove" | "role-edit" => NO_FILE_INPUT,
         _ => return None,
     };
     Some(contract)
@@ -97,6 +98,7 @@ pub(crate) fn typed_mutation_handler(operation: &str) -> Option<TypedMutationHan
     match operation {
         "code-patch" => Some(TypedMutationHandler::CodePatch),
         "form-edit" => Some(TypedMutationHandler::FormEdit),
+        "role-edit" => Some(TypedMutationHandler::RoleEdit),
         "xdto-edit" => Some(TypedMutationHandler::XdtoEdit),
         _ => None,
     }

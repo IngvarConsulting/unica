@@ -636,6 +636,7 @@ pub(super) struct TypedChildResourcePlan {
     pub(super) validation_resources: Vec<MetadataResourceImage>,
     pub(super) validation_footprints: Vec<MetadataChildFootprintEvidence>,
     pub(super) relation_dependencies: Vec<TypedRelationDependency>,
+    pub(super) expected_post_images: Vec<(PathBuf, Vec<u8>)>,
 }
 
 #[derive(Debug)]
@@ -705,12 +706,70 @@ pub(super) fn build_typed_operation_post_image(
         operations,
         &xml,
     )?;
+    let owner_kind = MetadataKind::parse(&object_kind).map_err(|_| {
+        MetaFailure::from(
+            typed_diagnostic(
+                MetaDiagnosticCode::UnsupportedKind,
+                format!("metadata kind `{object_kind}` has no typed operation profile"),
+                None,
+            )
+            .with_metadata_path(target.clone()),
+        )
+    })?;
+    let source_root =
+        crate::infrastructure::source_roots::resolve_named_source_set(context, source_set)
+            .map_err(|_| {
+                MetaFailure::from(
+                    typed_diagnostic(
+                        MetaDiagnosticCode::ProviderUnavailable,
+                        "metadata source set cannot be resolved for predefined data",
+                        None,
+                    )
+                    .with_metadata_path(target.clone()),
+                )
+            })?
+            .path;
+    let planned_predefined = super::predefined::plan_predefined_resource(
+        &source_root,
+        descriptor_path,
+        target,
+        owner_kind,
+        operations,
+    )?;
+    let predefined_resources = planned_predefined.resources;
+    child_resources
+        .file_mutations
+        .extend(predefined_resources.file_mutations);
+    child_resources
+        .exact_file_guards
+        .extend(predefined_resources.exact_file_guards);
+    child_resources
+        .directory_guards
+        .extend(predefined_resources.directory_guards);
+    child_resources
+        .publication_plan
+        .extend(predefined_resources.publication_plan);
+    child_resources
+        .validation_resources
+        .extend(predefined_resources.validation_resources);
+    child_resources
+        .validation_footprints
+        .extend(predefined_resources.validation_footprints);
+    child_resources
+        .relation_dependencies
+        .extend(predefined_resources.relation_dependencies);
+    child_resources
+        .expected_post_images
+        .extend(predefined_resources.expected_post_images);
     child_resources.relation_dependencies =
         resolve_typed_relation_dependencies(source_set, target, operations, context, &xml)?;
+    let mut effects = applied.effects;
+    effects.extend(planned_predefined.effects);
+    effects.sort_by_key(|effect| effect.operation_index);
     Ok(TypedOperationPostImage {
         descriptor: meta_edit_preserve_source_format(&xml, source_format),
         child_resources,
-        effects: applied.effects,
+        effects,
     })
 }
 
@@ -1643,6 +1702,9 @@ fn typed_child_logical_address(
         MetaCollection::Forms => "Form",
         MetaCollection::Templates => "Template",
         MetaCollection::Commands => "Command",
+        MetaCollection::PredefinedItems => {
+            unreachable!("predefined items are not descriptor child objects")
+        }
         _ => unreachable!(),
     };
     MetadataAddress::parse(
@@ -2300,6 +2362,14 @@ pub(crate) fn apply_typed_operations(
     let mut working = xml_text.clone();
     let mut counts = MetaEditCounts::default();
     for (operation_index, operation) in operations.iter().enumerate() {
+        if matches!(
+            operation,
+            MetaEditOperation::AddPredefinedItems { .. }
+                | MetaEditOperation::UpdatePredefinedItems { .. }
+                | MetaEditOperation::RemovePredefinedItems { .. }
+        ) {
+            continue;
+        }
         // Capture before applying, but let the writer own invalid-operation
         // diagnostics. A missing remove/update target must stay target_not_found
         // rather than being replaced by an effect-projection failure.
@@ -2369,6 +2439,9 @@ fn typed_operation_name(operation: &MetaEditOperation) -> &'static str {
         MetaEditOperation::Update { .. } => "update",
         MetaEditOperation::Remove { .. } => "remove",
         MetaEditOperation::EditRelations { .. } => "editRelations",
+        MetaEditOperation::AddPredefinedItems { .. } => "add",
+        MetaEditOperation::UpdatePredefinedItems { .. } => "update",
+        MetaEditOperation::RemovePredefinedItems { .. } => "remove",
     }
 }
 
@@ -2401,6 +2474,11 @@ fn typed_operation_target(xml: &str, operation: &MetaEditOperation) -> Result<St
         },
         MetaEditOperation::EditRelations { relation, .. } => {
             format!("{base}.relations.{}", relation.as_str())
+        }
+        MetaEditOperation::AddPredefinedItems { .. }
+        | MetaEditOperation::UpdatePredefinedItems { .. }
+        | MetaEditOperation::RemovePredefinedItems { .. } => {
+            format!("{base}.collections.predefinedItems")
         }
     })
 }
@@ -2554,6 +2632,15 @@ fn typed_operation_effect_value(
                     Some("relation"),
                 )
             })?
+        }
+        MetaEditOperation::AddPredefinedItems { .. }
+        | MetaEditOperation::UpdatePredefinedItems { .. }
+        | MetaEditOperation::RemovePredefinedItems { .. } => {
+            return Err(typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "predefined effects are projected by the predefined resource writer",
+                None,
+            ))
         }
     };
     Ok(Some(value))
@@ -2737,6 +2824,11 @@ fn apply_typed_operation(
             apply_typed_relations(xml_text, *relation, *mode, targets)?;
             counts.modified += 1;
         }
+        MetaEditOperation::AddPredefinedItems { .. }
+        | MetaEditOperation::UpdatePredefinedItems { .. }
+        | MetaEditOperation::RemovePredefinedItems { .. } => {
+            unreachable!("predefined operations are applied by their companion-resource writer")
+        }
     }
     Ok(())
 }
@@ -2899,6 +2991,9 @@ fn collection_tag(collection: MetaCollection) -> &'static str {
         MetaCollection::Forms => "Form",
         MetaCollection::Templates => "Template",
         MetaCollection::Commands => "Command",
+        MetaCollection::PredefinedItems => {
+            unreachable!("predefined items are not descriptor child objects")
+        }
     }
 }
 
@@ -3060,6 +3155,9 @@ fn render_typed_element(
             &element.name,
             &mut next_uuid,
         ),
+        MetaCollection::PredefinedItems => {
+            unreachable!("predefined items are rendered in Ext/Predefined.xml")
+        }
     }
     let mut rendered = lines.join("\n");
     if collection == MetaCollection::Forms {

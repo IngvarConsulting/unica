@@ -243,8 +243,8 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
         tool: "unica.meta.edit",
         operation: "meta-edit",
         impact: XmlImpactClass::CreateOrModify,
-        case_ids: &["meta-edit-property"],
-        required_branches: &["modify-property"],
+        case_ids: &["meta-edit-predefined-items", "meta-edit-property"],
+        required_branches: &["predefined-items", "modify-property"],
     },
     MutatorRegistryEntry {
         tool: "unica.meta.remove",
@@ -266,6 +266,13 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
         impact: XmlImpactClass::CreateOrModify,
         case_ids: &["role-compile-name-field"],
         required_branches: &["name-field"],
+    },
+    MutatorRegistryEntry {
+        tool: "unica.role.edit",
+        operation: "role-edit",
+        impact: XmlImpactClass::CreateOrModify,
+        case_ids: &["role-edit-set-right"],
+        required_branches: &["set-right"],
     },
     MutatorRegistryEntry {
         tool: "unica.subsystem.compile",
@@ -573,6 +580,11 @@ static EXECUTABLE_CASES: &[ExecutableCase] = &[
         branch: "DefinedType",
     },
     ExecutableCase {
+        id: "meta-edit-predefined-items",
+        tool: "unica.meta.edit",
+        branch: "predefined-items",
+    },
+    ExecutableCase {
         id: "meta-edit-property",
         tool: "unica.meta.edit",
         branch: "modify-property",
@@ -591,6 +603,11 @@ static EXECUTABLE_CASES: &[ExecutableCase] = &[
         id: "role-compile-name-field",
         tool: "unica.role.compile",
         branch: "name-field",
+    },
+    ExecutableCase {
+        id: "role-edit-set-right",
+        tool: "unica.role.edit",
+        branch: "set-right",
     },
     ExecutableCase {
         id: "subsystem-compile-child",
@@ -729,7 +746,7 @@ fn call_public_tool(tool: &str, args: &Map<String, Value>) -> Result<String, Str
     let app = UnicaApplication::new();
     let result = if matches!(
         tool,
-        "unica.meta.add" | "unica.meta.edit" | "unica.meta.remove"
+        "unica.meta.add" | "unica.meta.edit" | "unica.meta.remove" | "unica.role.edit"
     ) {
         static PROCESS_CWD_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         let _guard = PROCESS_CWD_LOCK
@@ -2143,7 +2160,10 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
         return Ok(args);
     }
 
-    if matches!(case.id, "meta-edit-property" | "meta-remove-object") {
+    if matches!(
+        case.id,
+        "meta-edit-predefined-items" | "meta-edit-property" | "meta-remove-object"
+    ) {
         seed_catalog(workspace)?;
         let mut args = common_args(workspace);
         args.insert("sourceSet".to_string(), Value::String("main".to_string()));
@@ -2151,7 +2171,22 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
             "metadataPath".to_string(),
             Value::String("Catalog.CorpusCatalog".to_string()),
         );
-        if case.id == "meta-edit-property" {
+        if case.id == "meta-edit-predefined-items" {
+            args.insert(
+                "operations".to_string(),
+                json!([{
+                    "op": "add",
+                    "collection": "predefinedItems",
+                    "elements": [{
+                        "id": "a7d2e6fc-3824-4b56-b4be-ae6be4944c0e",
+                        "name": "CorpusMain",
+                        "code": "001",
+                        "description": "Corpus predefined item",
+                        "isFolder": false
+                    }]
+                }]),
+            );
+        } else if case.id == "meta-edit-property" {
             args.insert(
                 "operations".to_string(),
                 json!([{"op": "setProperties", "values": {"Comment": "Corpus edited"}}]),
@@ -2448,6 +2483,40 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
         return Ok(args);
     }
 
+    if case.id == "role-edit-set-right" {
+        seed_catalog(workspace)?;
+        let path = write_json_input(
+            workspace,
+            "role-edit-seed",
+            &json!({
+                "name": "CorpusReader",
+                "synonym": "Corpus reader",
+                "objects": ["Catalog.CorpusCatalog: @view"]
+            }),
+        )?;
+        let mut compile = common_args(workspace);
+        compile.insert("JsonPath".to_string(), Value::String(path));
+        compile.insert("OutputDir".to_string(), Value::String("src".to_string()));
+        call_public_tool("unica.role.compile", &compile)?;
+
+        let mut args = common_args(workspace);
+        args.insert("sourceSet".to_string(), Value::String("main".to_string()));
+        args.insert(
+            "metadataPath".to_string(),
+            Value::String("Role.CorpusReader".to_string()),
+        );
+        args.insert(
+            "operations".to_string(),
+            json!([{
+                "op": "setRight",
+                "objectName": "Catalog.CorpusCatalog",
+                "right": "View",
+                "value": false
+            }]),
+        );
+        return Ok(args);
+    }
+
     Err(format!("no executable preparation for case {}", case.id))
 }
 
@@ -2662,6 +2731,7 @@ fn family_for_root(namespace: &str, local_name: &str, label: &str) -> Result<Str
             "client-application-interface"
         }
         ("http://v8.1c.ru/8.2/roles", "Rights") => "roles",
+        ("http://v8.1c.ru/8.3/xcf/predef", "PredefinedData") => "predefined-data",
         ("http://v8.1c.ru/8.1/xdto", "package") => "xdto-package",
         _ => {
             return Err(format!(

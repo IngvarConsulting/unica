@@ -1,17 +1,44 @@
 #![allow(dead_code, unused_imports)]
 
 use crate::application::AdapterOutcome;
+use crate::domain::cache::{CacheAccess, CacheReport};
+use crate::domain::events::{DomainEvent, DomainEventKind};
+use crate::domain::role::{
+    known_role_rights, parse_role_edit_request, validate_nested_right, RoleEditData,
+    RoleEditEffect, RoleEditEffectAction,
+};
+use crate::domain::source_target::{
+    MetadataAddress, SourceTarget, SourceTargetErrorCode, TargetKind,
+    PLATFORM_XML_8_3_27_FORMAT_2_20,
+};
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::path_policy::WorkspacePathPolicy;
+use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
+use crate::infrastructure::platform_xml_roots::{
+    platform_xml_root_versioning, PlatformXmlRootVersioning,
+};
+use crate::infrastructure::platform_xml_source_targets::{
+    platform_xml_resource_evidence, resolve_platform_xml_target, ClosedPlatformXmlTarget,
+    PlatformXmlResourceEvidence, TargetKindPolicy,
+};
+use crate::infrastructure::source_roots::normalize_path_identity;
+use crate::infrastructure::support_guard::{
+    bind_resolved_support_guard_evidence, evaluate_resolved_support_guard,
+    ResolvedSupportGuardCheck,
+};
+use crate::infrastructure::workspace_state::WorkspaceStateRepository;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::common::*;
-use super::compile_transaction::{CompileTransaction, RegistrationStatus};
+use super::compile_transaction::{
+    CommitFailure, CommitFailureKind, CompileTransaction, RegistrationStatus,
+};
 use super::{
     cf::*, cfe::*, dcs::*, form::*, interface::*, meta::*, mxl::*, subsystem::*, template::*,
 };
@@ -24,6 +51,85 @@ thread_local! {
     static ROLE_COMPILE_AFTER_CONFIGURATION_PROBE_HOOK:
         std::cell::RefCell<Option<RoleCompileAfterConfigurationProbeHook>> =
         const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+thread_local! {
+    static ROLE_EDIT_BEFORE_NATIVE_GUARD_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static ROLE_EDIT_BEFORE_PUBLISH_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static ROLE_EDIT_POST_VALIDATION_FAILURE: std::cell::Cell<bool> = const {
+        std::cell::Cell::new(false)
+    };
+}
+
+#[cfg(test)]
+fn with_role_edit_before_native_guard_hook<T>(
+    hook: impl FnOnce() + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<Box<dyn FnOnce()>>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            ROLE_EDIT_BEFORE_NATIVE_GUARD_HOOK.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+    let previous =
+        ROLE_EDIT_BEFORE_NATIVE_GUARD_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
+    let _reset = Reset(previous);
+    action()
+}
+
+#[cfg(test)]
+fn run_role_edit_before_native_guard_hook() {
+    ROLE_EDIT_BEFORE_NATIVE_GUARD_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(test)]
+fn with_role_edit_before_publish_hook<T>(
+    hook: impl FnOnce() + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<Box<dyn FnOnce()>>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            ROLE_EDIT_BEFORE_PUBLISH_HOOK.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+    let previous = ROLE_EDIT_BEFORE_PUBLISH_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
+    let _reset = Reset(previous);
+    action()
+}
+
+#[cfg(test)]
+fn run_role_edit_before_publish_hook() {
+    ROLE_EDIT_BEFORE_PUBLISH_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(test)]
+fn with_role_edit_post_validation_failure<T>(action: impl FnOnce() -> T) -> T {
+    struct Reset(bool);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            ROLE_EDIT_POST_VALIDATION_FAILURE.with(|slot| slot.set(self.0));
+        }
+    }
+    let previous = ROLE_EDIT_POST_VALIDATION_FAILURE.with(|slot| slot.replace(true));
+    let _reset = Reset(previous);
+    action()
 }
 
 #[cfg(test)]
@@ -672,27 +778,8 @@ pub(crate) fn validate_role(
 
                 right_count += 1;
                 if is_nested {
-                    let valid = if obj_name.contains(".Command.") {
-                        &["View"][..]
-                    } else if obj_name.contains(".IntegrationServiceChannel.") {
-                        &["Use"][..]
-                    } else {
-                        &["View", "Edit"][..]
-                    };
-                    if !valid.contains(&right_name) {
-                        if obj_name.contains(".Command.") {
-                            report.warn(format!(
-                                "{obj_name}: '{right_name}' not valid for commands (only: View)"
-                            ));
-                        } else if obj_name.contains(".IntegrationServiceChannel.") {
-                            report.warn(format!(
-                                "{obj_name}: '{right_name}' not valid for channels (only: Use)"
-                            ));
-                        } else {
-                            report.warn(format!(
-                                "{obj_name}: '{right_name}' not valid for nested objects (only: View, Edit)"
-                            ));
-                        }
+                    if let Err(message) = validate_nested_right(obj_name, right_name) {
+                        report.warn(message);
                     }
                 } else {
                     let valid_rights = role_validate_known_rights(object_type);
@@ -925,254 +1012,7 @@ pub(crate) fn role_validate_find_similar(needle: &str, haystack: &[&str]) -> Vec
 }
 
 pub(crate) fn role_validate_known_rights(object_type: &str) -> &'static [&'static str] {
-    match object_type {
-        "Configuration" => &[
-            "Administration",
-            "DataAdministration",
-            "UpdateDataBaseConfiguration",
-            "ConfigurationExtensionsAdministration",
-            "ActiveUsers",
-            "EventLog",
-            "ExclusiveMode",
-            "ThinClient",
-            "ThickClient",
-            "WebClient",
-            "MobileClient",
-            "ExternalConnection",
-            "Automation",
-            "Output",
-            "SaveUserData",
-            "TechnicalSpecialistMode",
-            "InteractiveOpenExtDataProcessors",
-            "InteractiveOpenExtReports",
-            "AnalyticsSystemClient",
-            "CollaborationSystemInfoBaseRegistration",
-            "MainWindowModeNormal",
-            "MainWindowModeWorkplace",
-            "MainWindowModeEmbeddedWorkplace",
-            "MainWindowModeFullscreenWorkplace",
-            "MainWindowModeKiosk",
-        ],
-        "Catalog" => &[
-            "Read",
-            "Insert",
-            "Update",
-            "Delete",
-            "View",
-            "Edit",
-            "InputByString",
-            "InteractiveInsert",
-            "InteractiveSetDeletionMark",
-            "InteractiveClearDeletionMark",
-            "InteractiveDelete",
-            "InteractiveDeleteMarked",
-            "InteractiveDeletePredefinedData",
-            "InteractiveSetDeletionMarkPredefinedData",
-            "InteractiveClearDeletionMarkPredefinedData",
-            "InteractiveDeleteMarkedPredefinedData",
-            "ReadDataHistory",
-            "ViewDataHistory",
-            "UpdateDataHistory",
-            "UpdateDataHistoryOfMissingData",
-            "ReadDataHistoryOfMissingData",
-            "UpdateDataHistorySettings",
-            "UpdateDataHistoryVersionComment",
-            "EditDataHistoryVersionComment",
-            "SwitchToDataHistoryVersion",
-        ],
-        "Document" => &[
-            "Read",
-            "Insert",
-            "Update",
-            "Delete",
-            "View",
-            "Edit",
-            "InputByString",
-            "Posting",
-            "UndoPosting",
-            "InteractiveInsert",
-            "InteractiveSetDeletionMark",
-            "InteractiveClearDeletionMark",
-            "InteractiveDelete",
-            "InteractiveDeleteMarked",
-            "InteractivePosting",
-            "InteractivePostingRegular",
-            "InteractiveUndoPosting",
-            "InteractiveChangeOfPosted",
-            "ReadDataHistory",
-            "ViewDataHistory",
-            "UpdateDataHistory",
-            "UpdateDataHistoryOfMissingData",
-            "ReadDataHistoryOfMissingData",
-            "UpdateDataHistorySettings",
-            "UpdateDataHistoryVersionComment",
-            "EditDataHistoryVersionComment",
-            "SwitchToDataHistoryVersion",
-        ],
-        "InformationRegister" => &[
-            "Read",
-            "Update",
-            "View",
-            "Edit",
-            "TotalsControl",
-            "ReadDataHistory",
-            "ViewDataHistory",
-            "UpdateDataHistory",
-            "UpdateDataHistoryOfMissingData",
-            "ReadDataHistoryOfMissingData",
-            "UpdateDataHistorySettings",
-            "UpdateDataHistoryVersionComment",
-            "EditDataHistoryVersionComment",
-            "SwitchToDataHistoryVersion",
-        ],
-        "AccumulationRegister" | "AccountingRegister" => {
-            &["Read", "Update", "View", "Edit", "TotalsControl"]
-        }
-        "CalculationRegister" => &["Read", "View"],
-        "Constant" => &[
-            "Read",
-            "Update",
-            "View",
-            "Edit",
-            "ReadDataHistory",
-            "ViewDataHistory",
-            "UpdateDataHistory",
-            "UpdateDataHistorySettings",
-            "UpdateDataHistoryVersionComment",
-            "EditDataHistoryVersionComment",
-            "SwitchToDataHistoryVersion",
-        ],
-        "ChartOfAccounts" => &[
-            "Read",
-            "Insert",
-            "Update",
-            "Delete",
-            "View",
-            "Edit",
-            "InputByString",
-            "InteractiveInsert",
-            "InteractiveSetDeletionMark",
-            "InteractiveClearDeletionMark",
-            "InteractiveDelete",
-            "InteractiveDeletePredefinedData",
-            "InteractiveSetDeletionMarkPredefinedData",
-            "InteractiveClearDeletionMarkPredefinedData",
-            "InteractiveDeleteMarkedPredefinedData",
-            "ReadDataHistory",
-            "ReadDataHistoryOfMissingData",
-            "UpdateDataHistory",
-            "UpdateDataHistoryOfMissingData",
-            "UpdateDataHistorySettings",
-            "UpdateDataHistoryVersionComment",
-        ],
-        "ChartOfCharacteristicTypes" => &[
-            "Read",
-            "Insert",
-            "Update",
-            "Delete",
-            "View",
-            "Edit",
-            "InputByString",
-            "InteractiveInsert",
-            "InteractiveSetDeletionMark",
-            "InteractiveClearDeletionMark",
-            "InteractiveDelete",
-            "InteractiveDeleteMarked",
-            "InteractiveDeletePredefinedData",
-            "InteractiveSetDeletionMarkPredefinedData",
-            "InteractiveClearDeletionMarkPredefinedData",
-            "InteractiveDeleteMarkedPredefinedData",
-            "ReadDataHistory",
-            "ViewDataHistory",
-            "UpdateDataHistory",
-            "ReadDataHistoryOfMissingData",
-            "UpdateDataHistoryOfMissingData",
-            "UpdateDataHistorySettings",
-            "UpdateDataHistoryVersionComment",
-            "EditDataHistoryVersionComment",
-            "SwitchToDataHistoryVersion",
-        ],
-        "ChartOfCalculationTypes" => &[
-            "Read",
-            "Insert",
-            "Update",
-            "Delete",
-            "View",
-            "Edit",
-            "InputByString",
-            "InteractiveInsert",
-            "InteractiveSetDeletionMark",
-            "InteractiveClearDeletionMark",
-            "InteractiveDelete",
-            "InteractiveDeletePredefinedData",
-            "InteractiveSetDeletionMarkPredefinedData",
-            "InteractiveClearDeletionMarkPredefinedData",
-            "InteractiveDeleteMarkedPredefinedData",
-        ],
-        "ExchangePlan" => &[
-            "Read",
-            "Insert",
-            "Update",
-            "Delete",
-            "View",
-            "Edit",
-            "InputByString",
-            "InteractiveInsert",
-            "InteractiveSetDeletionMark",
-            "InteractiveClearDeletionMark",
-            "InteractiveDelete",
-            "InteractiveDeleteMarked",
-            "ReadDataHistory",
-            "ViewDataHistory",
-            "UpdateDataHistory",
-            "ReadDataHistoryOfMissingData",
-            "UpdateDataHistoryOfMissingData",
-            "UpdateDataHistorySettings",
-            "UpdateDataHistoryVersionComment",
-            "EditDataHistoryVersionComment",
-            "SwitchToDataHistoryVersion",
-        ],
-        "BusinessProcess" => &[
-            "Read",
-            "Insert",
-            "Update",
-            "Delete",
-            "View",
-            "Edit",
-            "InputByString",
-            "Start",
-            "InteractiveInsert",
-            "InteractiveSetDeletionMark",
-            "InteractiveClearDeletionMark",
-            "InteractiveDelete",
-            "InteractiveActivate",
-            "InteractiveStart",
-        ],
-        "Task" => &[
-            "Read",
-            "Insert",
-            "Update",
-            "Delete",
-            "View",
-            "Edit",
-            "InputByString",
-            "Execute",
-            "InteractiveInsert",
-            "InteractiveSetDeletionMark",
-            "InteractiveClearDeletionMark",
-            "InteractiveDelete",
-            "InteractiveActivate",
-            "InteractiveExecute",
-        ],
-        "DataProcessor" | "Report" => &["Use", "View"],
-        "CommonForm" | "CommonCommand" | "Subsystem" | "FilterCriterion" => &["View"],
-        "DocumentJournal" => &["Read", "View"],
-        "Sequence" => &["Read", "Update"],
-        "WebService" | "HTTPService" | "IntegrationService" => &["Use"],
-        "SessionParameter" => &["Get", "Set"],
-        "CommonAttribute" => &["View", "Edit"],
-        _ => &[],
-    }
+    known_role_rights(object_type)
 }
 
 struct RoleCompileResult {
@@ -1185,6 +1025,7 @@ struct RoleCompileResult {
 
 const ROLE_RIGHTS_NAMESPACE: &str = "http://v8.1c.ru/8.2/roles";
 const ROLE_METADATA_NAMESPACE: &str = "http://v8.1c.ru/8.3/MDClasses";
+const XSI_NAMESPACE: &str = "http://www.w3.org/2001/XMLSchema-instance";
 
 fn validate_role_compile_name(value: &str) -> Result<(), String> {
     let mut components = Path::new(value).components();
@@ -2048,6 +1889,1001 @@ pub(crate) fn invoke_read(
     }
 }
 
+pub(crate) struct RoleEditExecution {
+    pub(crate) outcome: AdapterOutcome,
+    pub(crate) data: Option<RoleEditData>,
+    pub(crate) events: Vec<DomainEvent>,
+    pub(crate) recorded_cache: Option<CacheReport>,
+}
+
+struct RoleEditTarget {
+    source_set: String,
+    metadata_path: String,
+    descriptor_path: PathBuf,
+    descriptor_preimage: Vec<u8>,
+    registration_path: PathBuf,
+    registration_preimage: Vec<u8>,
+    rights_path: PathBuf,
+    rights_preimage: Vec<u8>,
+    support_warning: Option<String>,
+}
+
+struct RoleEditPlan {
+    target: RoleEditTarget,
+    postimage: Vec<u8>,
+    data: RoleEditData,
+}
+
+struct RoleEditPublication {
+    warnings: Vec<String>,
+    event: DomainEvent,
+    cache: CacheReport,
+}
+
+fn role_support_warning() -> String {
+    "support_guard_warning: the role is protected by support policy; warn mode allows the mutation"
+        .to_string()
+}
+
+pub(crate) fn resolve_role_edit_guard_path(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<PathBuf, String> {
+    let request = parse_role_edit_request(args).map_err(|error| error.to_string())?;
+    resolve_role_descriptor(&request.source_set, &request.metadata_path, context)
+        .map(|(_, evidence)| evidence.target_path)
+}
+
+fn resolve_role_descriptor(
+    source_set: &str,
+    metadata_path: &crate::domain::source_target::MetadataAddress,
+    context: &WorkspaceContext,
+) -> Result<(ClosedPlatformXmlTarget, PlatformXmlResourceEvidence), String> {
+    if !metadata_path.as_str().starts_with("Role.") {
+        return Err("not_a_role: metadataPath must identify a Role".to_string());
+    }
+    let target = SourceTarget {
+        source_set: source_set.to_string(),
+        metadata_path: Some(metadata_path.clone()),
+    };
+    let resolution = resolve_platform_xml_target(context, &target, TargetKindPolicy::Any)
+        .map_err(|error| role_target_resolution_error(error.code))?;
+    if resolution.resolved.target_kind != TargetKind::MetadataObject {
+        return Err("not_a_role: metadataPath must identify a role object".to_string());
+    }
+    let evidence = platform_xml_resource_evidence(context, &resolution.handle).map_err(|_| {
+        "provider_unavailable: the role descriptor evidence is unavailable".to_string()
+    })?;
+    Ok((resolution.handle, evidence))
+}
+
+fn role_target_resolution_error(code: SourceTargetErrorCode) -> String {
+    let (code, message) = match code {
+        SourceTargetErrorCode::SourceSetRequired | SourceTargetErrorCode::SourceSetNotFound => (
+            "source_set_unknown",
+            "the requested source set is unavailable",
+        ),
+        SourceTargetErrorCode::MetadataAddressNotFound => {
+            ("target_not_found", "the logical role target was not found")
+        }
+        SourceTargetErrorCode::TargetKindMismatch
+        | SourceTargetErrorCode::MetadataAddressInvalid => {
+            ("not_a_role", "metadataPath does not identify a role")
+        }
+        SourceTargetErrorCode::ContainmentDenied => (
+            "containment_denied",
+            "the logical role target failed containment checks",
+        ),
+        SourceTargetErrorCode::AddressProfileUnsupported => (
+            "profile_unsupported",
+            "the logical address profile is unsupported",
+        ),
+        SourceTargetErrorCode::SourceRootNotAddressable => (
+            "provider_unavailable",
+            "the logical source provider is unavailable",
+        ),
+    };
+    format!("{code}: {message}")
+}
+
+fn classify_role_resolution_failure(message: &str) -> (&'static str, &str) {
+    for code in [
+        "source_set_unknown",
+        "target_not_found",
+        "not_a_role",
+        "provider_unavailable",
+        "containment_denied",
+        "profile_unsupported",
+    ] {
+        if let Some(reason) = message
+            .strip_prefix(code)
+            .and_then(|value| value.strip_prefix(": "))
+        {
+            return (code, reason);
+        }
+    }
+    (
+        "provider_unavailable",
+        "the logical role target is unavailable",
+    )
+}
+
+pub(crate) fn preview_edit_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> RoleEditExecution {
+    edit_with_data(args, context, true)
+}
+
+pub(crate) fn apply_edit_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> RoleEditExecution {
+    edit_with_data(args, context, false)
+}
+
+fn edit_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+    preview: bool,
+) -> RoleEditExecution {
+    let request = match parse_role_edit_request(args) {
+        Ok(request) => request,
+        Err(error) => {
+            let failed_data = RoleEditData::failed(
+                args.get("metadataPath")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Role.Invalid"),
+                error.code,
+                error.message.clone(),
+                error.operation_index,
+            );
+            return role_edit_failure(
+                if preview {
+                    "dry run: unica.role.edit rejected invalid arguments"
+                } else {
+                    "unica.role.edit rejected invalid arguments"
+                },
+                error.code,
+                &error.message,
+                Some(failed_data),
+            );
+        }
+    };
+    let metadata_path = request.metadata_path.as_str().to_string();
+    let planned = plan_role_edit(&request, context);
+    let RoleEditPlan {
+        target,
+        postimage,
+        data,
+    } = match planned {
+        Ok(plan) => plan,
+        Err((code, message, operation_index)) => {
+            let failed_data =
+                RoleEditData::failed(metadata_path, code, message.clone(), operation_index);
+            return role_edit_failure(
+                if preview {
+                    "dry run: unica.role.edit rejected role mutation"
+                } else {
+                    "unica.role.edit rejected role mutation"
+                },
+                code,
+                &message,
+                Some(failed_data),
+            );
+        }
+    };
+
+    let mut warnings = target
+        .support_warning
+        .clone()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let mut events = Vec::new();
+    let mut recorded_cache = None;
+    if !preview && data.changed {
+        #[cfg(test)]
+        run_role_edit_before_native_guard_hook();
+        match publish_role_edit(&target, &postimage, context) {
+            Ok(publication) => {
+                for warning in publication.warnings {
+                    if !warnings.contains(&warning) {
+                        warnings.push(warning);
+                    }
+                }
+                events.push(publication.event);
+                recorded_cache = Some(publication.cache);
+            }
+            Err((code, warning)) => {
+                if let Some(warning) = warning {
+                    warnings.push(warning);
+                }
+                let failed = RoleEditData::failed(
+                    target.metadata_path.clone(),
+                    code,
+                    "the role mutation could not be published atomically",
+                    None,
+                );
+                return RoleEditExecution {
+                    outcome: AdapterOutcome {
+                        ok: false,
+                        summary: "unica.role.edit could not publish role mutation".to_string(),
+                        changes: Vec::new(),
+                        warnings,
+                        errors: vec![format!(
+                            "{code}: the role mutation could not be published atomically"
+                        )],
+                        artifacts: Vec::new(),
+                        stdout: None,
+                        stderr: None,
+                        command: None,
+                    },
+                    data: Some(failed),
+                    events: Vec::new(),
+                    recorded_cache: None,
+                };
+            }
+        }
+    }
+
+    let changed = data.changed;
+    let logical_target = format!("{} + {}", target.source_set, target.metadata_path);
+    RoleEditExecution {
+        outcome: AdapterOutcome {
+            ok: true,
+            summary: if !changed {
+                "unica.role.edit is already applied"
+            } else if preview {
+                "dry run: unica.role.edit planned role mutation"
+            } else {
+                "unica.role.edit applied role mutation"
+            }
+            .to_string(),
+            changes: changed
+                .then(|| {
+                    format!(
+                        "{}: role rights {}",
+                        logical_target,
+                        if preview { "would change" } else { "changed" }
+                    )
+                })
+                .into_iter()
+                .collect(),
+            warnings,
+            errors: Vec::new(),
+            artifacts: vec![logical_target],
+            stdout: None,
+            stderr: None,
+            command: None,
+        },
+        data: Some(data),
+        events,
+        recorded_cache,
+    }
+}
+
+fn role_edit_failure(
+    summary: &str,
+    code: &str,
+    message: &str,
+    data: Option<RoleEditData>,
+) -> RoleEditExecution {
+    RoleEditExecution {
+        outcome: AdapterOutcome {
+            ok: false,
+            summary: summary.to_string(),
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: vec![format!("{code}: {message}")],
+            artifacts: Vec::new(),
+            stdout: None,
+            stderr: None,
+            command: None,
+        },
+        data,
+        events: Vec::new(),
+        recorded_cache: None,
+    }
+}
+
+fn plan_role_edit(
+    request: &crate::domain::role::RoleEditRequest,
+    context: &WorkspaceContext,
+) -> Result<RoleEditPlan, (&'static str, String, Option<usize>)> {
+    let (_handle, evidence) =
+        resolve_role_descriptor(&request.source_set, &request.metadata_path, context).map_err(
+            |message| {
+                let (code, reason) = classify_role_resolution_failure(&message);
+                (code, reason.to_string(), None)
+            },
+        )?;
+    let role_name = request
+        .metadata_path
+        .as_str()
+        .strip_prefix("Role.")
+        .expect("the domain parser accepts only Role metadata paths");
+    let descriptor_preimage = read_regular_file(&evidence.target_path)
+        .map_err(|message| ("target_unavailable", message, None))?;
+    validate_role_edit_descriptor(&descriptor_preimage, role_name)
+        .map_err(|message| ("format_incompatible", message, None))?;
+    let registration_preimage = read_regular_file(&evidence.registration_path)
+        .map_err(|message| ("target_unavailable", message, None))?;
+    let rights_path = prove_role_rights_path(&evidence, role_name, context)
+        .map_err(|message| ("containment_denied", message, None))?;
+    let rights_preimage =
+        read_regular_file(&rights_path).map_err(|message| ("target_unavailable", message, None))?;
+    let (bom, mut body) = decode_role_xml(&rights_preimage)
+        .map_err(|message| ("format_incompatible", message, None))?;
+    validate_role_rights_document(&body, false)
+        .map_err(|message| ("role_validation_failed", message, None))?;
+
+    let support_warning = match evaluate_resolved_support_guard(
+        &evidence.target_path,
+        crate::application::SupportGuardRequirement::Editable,
+        context,
+    ) {
+        ResolvedSupportGuardCheck::Allow => None,
+        ResolvedSupportGuardCheck::Warn(_) => Some(role_support_warning()),
+        ResolvedSupportGuardCheck::Block(_) => {
+            return Err((
+                "support_locked",
+                "the logical role target is protected by support policy".to_string(),
+                None,
+            ));
+        }
+    };
+
+    let mut effects = Vec::with_capacity(request.operations.len());
+    for (operation_index, operation) in request.operations.iter().enumerate() {
+        let (updated, effect) = apply_role_edit_operation(&body, operation, operation_index)
+            .map_err(|message| ("role_validation_failed", message, Some(operation_index)))?;
+        body = updated;
+        effects.push(effect);
+    }
+    validate_role_rights_document(&body, true)
+        .map_err(|message| ("role_validation_failed", message, None))?;
+    let postimage = encode_role_xml(bom, &body);
+    let changed = rights_preimage != postimage;
+    let metadata_path = request.metadata_path.as_str().to_string();
+
+    Ok(RoleEditPlan {
+        target: RoleEditTarget {
+            source_set: request.source_set.clone(),
+            metadata_path: metadata_path.clone(),
+            descriptor_path: evidence.target_path,
+            descriptor_preimage,
+            registration_path: evidence.registration_path,
+            registration_preimage,
+            rights_path,
+            rights_preimage,
+            support_warning,
+        },
+        postimage,
+        data: RoleEditData::passed(metadata_path, changed, effects),
+    })
+}
+
+fn publish_role_edit(
+    target: &RoleEditTarget,
+    postimage: &[u8],
+    context: &WorkspaceContext,
+) -> Result<RoleEditPublication, (&'static str, Option<String>)> {
+    let address = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &target.metadata_path)
+        .map_err(|_| ("concurrent_modification", None))?;
+    let (current_handle, current_evidence) =
+        resolve_role_descriptor(&target.source_set, &address, context).map_err(|message| {
+            let (code, _) = classify_role_resolution_failure(&message);
+            if code == "containment_denied" {
+                ("containment_denied", None)
+            } else {
+                ("concurrent_modification", None)
+            }
+        })?;
+    if current_evidence.target_path != target.descriptor_path
+        || current_evidence.registration_path != target.registration_path
+    {
+        return Err(("concurrent_modification", None));
+    }
+    let role_name = target
+        .metadata_path
+        .strip_prefix("Role.")
+        .expect("planned role address stays canonical");
+    let current_rights = prove_role_rights_path(&current_evidence, role_name, context)
+        .map_err(|_| ("containment_denied", None))?;
+    let current_rights_preimage =
+        read_regular_file(&current_rights).map_err(|_| ("concurrent_modification", None))?;
+    if current_rights != target.rights_path || current_rights_preimage != target.rights_preimage {
+        return Err(("concurrent_modification", None));
+    }
+
+    let mut transaction = CompileTransaction::new();
+    transaction
+        .replace_bytes(
+            &target.rights_path,
+            &target.rights_preimage,
+            postimage.to_vec(),
+        )
+        .map_err(|_| ("provider_unavailable", None))?;
+    transaction
+        .guard_or_verify_exact_preimage(&target.descriptor_path, &target.descriptor_preimage)
+        .map_err(|_| ("concurrent_modification", None))?;
+    transaction
+        .guard_or_verify_exact_preimage(&target.registration_path, &target.registration_preimage)
+        .map_err(|_| ("concurrent_modification", None))?;
+    bind_resolved_support_guard_evidence(&mut transaction, &target.descriptor_path, context)
+        .map_err(|_| ("concurrent_modification", None))?;
+    let current_descriptor =
+        guard_resolved_platform_xml_target_dependencies(&mut transaction, &current_handle, context)
+            .map_err(|_| ("concurrent_modification", None))?;
+    if current_descriptor != target.descriptor_path {
+        return Err(("concurrent_modification", None));
+    }
+    let mut publication_warnings = Vec::new();
+    match evaluate_resolved_support_guard(
+        &target.descriptor_path,
+        crate::application::SupportGuardRequirement::Editable,
+        context,
+    ) {
+        ResolvedSupportGuardCheck::Allow => {}
+        ResolvedSupportGuardCheck::Warn(_) => publication_warnings.push(role_support_warning()),
+        ResolvedSupportGuardCheck::Block(_) => return Err(("support_locked", None)),
+    }
+
+    let event = DomainEvent::new(DomainEventKind::RoleChanged, "unica.role.edit");
+    let cache = WorkspaceStateRepository::new(context)
+        .stage_report_in_transaction(
+            &mut transaction,
+            context,
+            std::slice::from_ref(&event),
+            false,
+            CacheAccess {
+                reads: &[],
+                writes: &["metadata_graph", "rights_graph"],
+            },
+        )
+        .map_err(|_| ("cache_publication_failed", None))?;
+
+    let expected = postimage.to_vec();
+    let handle = current_handle;
+    let descriptor = target.descriptor_path.clone();
+    let rights = target.rights_path.clone();
+    let role_name = role_name.to_string();
+    #[cfg(test)]
+    run_role_edit_before_publish_hook();
+    let report = transaction.commit_with_classified_post_validation(|| {
+        #[cfg(test)]
+        if ROLE_EDIT_POST_VALIDATION_FAILURE.with(|slot| slot.get()) {
+            return Err(CommitFailure::provider(
+                "injected role.edit post-validation failure",
+            ));
+        }
+        let current =
+            crate::infrastructure::platform_xml_source_targets::revalidate_platform_xml_target(
+                context, &handle,
+            )
+            .map_err(|_| CommitFailure::concurrent("logical role target changed"))?;
+        if current.path != descriptor {
+            return Err(CommitFailure::concurrent("logical role target changed"));
+        }
+        let descriptor_bytes = fs::read(&descriptor)
+            .map_err(|_| CommitFailure::provider("role descriptor is unavailable"))?;
+        validate_role_edit_descriptor(&descriptor_bytes, &role_name)
+            .map_err(CommitFailure::provider)?;
+        let published =
+            fs::read(&rights).map_err(|_| CommitFailure::provider("Rights.xml is unavailable"))?;
+        if published != expected {
+            return Err(CommitFailure::concurrent(
+                "published Rights.xml differs from the planned postimage",
+            ));
+        }
+        let (_, body) = decode_role_xml(&published).map_err(CommitFailure::provider)?;
+        validate_role_rights_document(&body, true).map_err(CommitFailure::provider)
+    });
+    match report {
+        Ok(report) => {
+            if !report.cleanup_warnings.is_empty() {
+                publication_warnings.push(
+                    "publication_cleanup_incomplete: role rights were committed; private recovery cleanup is incomplete"
+                        .to_string(),
+                );
+            }
+            Ok(RoleEditPublication {
+                warnings: publication_warnings,
+                event,
+                cache,
+            })
+        }
+        Err(error) => Err((
+            match error.kind() {
+                CommitFailureKind::ConcurrentModification => "concurrent_modification",
+                CommitFailureKind::ProviderUnavailable => "provider_unavailable",
+                CommitFailureKind::RollbackFailed => "rollback_failed",
+            },
+            None,
+        )),
+    }
+}
+
+fn read_regular_file(path: &Path) -> Result<Vec<u8>, String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|_| "required role resource is unavailable".to_string())?;
+    if metadata_is_link_or_reparse_point(&metadata) || !metadata.is_file() {
+        return Err("required role resource is not a direct regular file".to_string());
+    }
+    fs::read(path).map_err(|_| "required role resource is unavailable".to_string())
+}
+
+fn prove_role_rights_path(
+    evidence: &PlatformXmlResourceEvidence,
+    role_name: &str,
+    context: &WorkspaceContext,
+) -> Result<PathBuf, String> {
+    let stem = evidence
+        .target_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| *value == role_name)
+        .ok_or_else(|| "role descriptor identity does not match metadataPath".to_string())?;
+    let parent = evidence
+        .target_path
+        .parent()
+        .ok_or_else(|| "role descriptor has no containing directory".to_string())?;
+    let candidate = WorkspacePathPolicy::new(context)
+        .resolve_write(parent.join(stem).join("Ext").join("Rights.xml"))
+        .map_err(|_| "role Rights.xml is outside the workspace boundary".to_string())?;
+    ensure_role_no_link_components(&evidence.source_root, &candidate)?;
+    let normalized_root = normalize_path_identity(&evidence.source_root)
+        .map_err(|_| "source root identity is unavailable".to_string())?;
+    let normalized_candidate = normalize_path_identity(&candidate)
+        .map_err(|_| "Rights.xml identity is unavailable".to_string())?;
+    if !normalized_candidate.starts_with(&normalized_root) {
+        return Err("role Rights.xml escaped the selected source set".to_string());
+    }
+    Ok(candidate)
+}
+
+fn ensure_role_no_link_components(source_root: &Path, target: &Path) -> Result<(), String> {
+    let relative = target
+        .strip_prefix(source_root)
+        .map_err(|_| "role Rights.xml escaped the selected source set".to_string())?;
+    let mut current = source_root.to_path_buf();
+    for component in relative.components() {
+        let std::path::Component::Normal(component) = component else {
+            return Err("role Rights.xml contains a non-normal path component".to_string());
+        };
+        current.push(component);
+        let metadata = match fs::symlink_metadata(&current) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                return Err("required role resource is unavailable".to_string());
+            }
+            Err(_) => return Err("required role resource cannot be inspected".to_string()),
+        };
+        if metadata_is_link_or_reparse_point(&metadata) {
+            return Err("role resource path contains a symbolic link or reparse point".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn validate_role_edit_descriptor(raw: &[u8], role_name: &str) -> Result<(), String> {
+    let (_, text) = decode_role_xml(raw)?;
+    let document =
+        Document::parse(&text).map_err(|_| "role descriptor is not well-formed XML".to_string())?;
+    let root = document.root_element();
+    if root.tag_name().name() != "MetaDataObject"
+        || root.tag_name().namespace() != Some(ROLE_METADATA_NAMESPACE)
+        || root.attribute("version") != Some("2.20")
+    {
+        return Err("role descriptor must use exact MDClasses format 2.20".to_string());
+    }
+    let roles = direct_role_children(root, "Role", ROLE_METADATA_NAMESPACE);
+    if roles.len() != 1 {
+        return Err("role descriptor must contain exactly one direct Role".to_string());
+    }
+    let properties = direct_role_children(roles[0], "Properties", ROLE_METADATA_NAMESPACE);
+    if properties.len() != 1 {
+        return Err("Role must contain exactly one direct Properties element".to_string());
+    }
+    let names = direct_role_children(properties[0], "Name", ROLE_METADATA_NAMESPACE);
+    if names.len() != 1 || names[0].text() != Some(role_name) {
+        return Err("Role.Properties.Name does not match metadataPath".to_string());
+    }
+    Ok(())
+}
+
+fn decode_role_xml(raw: &[u8]) -> Result<(bool, String), String> {
+    let (bom, body) = if raw.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        (true, &raw[3..])
+    } else {
+        (false, raw)
+    };
+    let text = std::str::from_utf8(body)
+        .map_err(|_| "role XML must be UTF-8 with an optional BOM".to_string())?;
+    Ok((bom, text.to_string()))
+}
+
+fn encode_role_xml(bom: bool, body: &str) -> Vec<u8> {
+    let mut output = Vec::with_capacity(body.len() + usize::from(bom) * 3);
+    if bom {
+        output.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
+    }
+    output.extend_from_slice(body.as_bytes());
+    output
+}
+
+fn direct_role_children<'a, 'input>(
+    node: roxmltree::Node<'a, 'input>,
+    name: &str,
+    namespace: &str,
+) -> Vec<roxmltree::Node<'a, 'input>> {
+    node.children()
+        .filter(|child| {
+            child.is_element()
+                && child.tag_name().name() == name
+                && child.tag_name().namespace() == Some(namespace)
+        })
+        .collect()
+}
+
+fn validate_role_rights_document(text: &str, require_boolean_values: bool) -> Result<(), String> {
+    let document =
+        Document::parse(text).map_err(|_| "Rights.xml is not well-formed XML".to_string())?;
+    let root = document.root_element();
+    let namespace = root.tag_name().namespace().unwrap_or("");
+    if (namespace, root.tag_name().name()) != (ROLE_RIGHTS_NAMESPACE, "Rights")
+        || platform_xml_root_versioning(namespace, root.tag_name().name())
+            != Some(PlatformXmlRootVersioning::ExactRootVersion)
+        || root.attribute("version") != Some("2.20")
+        || root.attribute((XSI_NAMESPACE, "type")) != Some("Rights")
+    {
+        return Err("Rights.xml must use exact roles format 2.20".to_string());
+    }
+    for flag in [
+        "setForNewObjects",
+        "setForAttributesByDefault",
+        "independentRightsOfChildObjects",
+    ] {
+        let nodes = direct_role_children(root, flag, ROLE_RIGHTS_NAMESPACE);
+        if nodes.len() != 1 || !matches!(nodes[0].text(), Some("true" | "false")) {
+            return Err(format!(
+                "Rights.xml must contain one direct boolean `{flag}` element"
+            ));
+        }
+    }
+
+    let mut seen_objects = HashSet::new();
+    for object in direct_role_children(root, "object", ROLE_RIGHTS_NAMESPACE) {
+        let names = direct_role_children(object, "name", ROLE_RIGHTS_NAMESPACE);
+        if names.len() > 1 {
+            return Err("a direct role object must not have duplicate direct names".to_string());
+        }
+        let Some(name) = names.first() else {
+            continue;
+        };
+        let Some(object_name) = name.text().filter(|value| !value.is_empty()) else {
+            continue;
+        };
+        if !seen_objects.insert(object_name.to_string()) {
+            return Err(format!("duplicate role object `{object_name}`"));
+        }
+        let mut seen_rights = HashSet::new();
+        for right in direct_role_children(object, "right", ROLE_RIGHTS_NAMESPACE) {
+            let names = direct_role_children(right, "name", ROLE_RIGHTS_NAMESPACE);
+            if names.len() > 1 {
+                return Err(format!(
+                    "a right of `{object_name}` must not have duplicate direct names"
+                ));
+            }
+            let Some(name) = names.first() else {
+                continue;
+            };
+            let Some(right_name) = name.text().filter(|value| !value.is_empty()) else {
+                continue;
+            };
+            if !seen_rights.insert(right_name.to_string()) {
+                return Err(format!(
+                    "duplicate right `{right_name}` for object `{object_name}`"
+                ));
+            }
+            let values = direct_role_children(right, "value", ROLE_RIGHTS_NAMESPACE);
+            if values.len() != 1 {
+                return Err(format!(
+                    "right `{right_name}` of `{object_name}` must have one direct value"
+                ));
+            }
+            if require_boolean_values && !matches!(values[0].text(), Some("true" | "false")) {
+                return Err(format!(
+                    "right `{right_name}` of `{object_name}` must have a boolean value"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+enum RoleTextEdit {
+    Replace(std::ops::Range<usize>, String),
+    Insert(usize, String),
+    Remove(std::ops::Range<usize>),
+    None,
+}
+
+fn apply_role_edit_operation(
+    text: &str,
+    operation: &crate::domain::role::RoleEditOperation,
+    operation_index: usize,
+) -> Result<(String, RoleEditEffect), String> {
+    let document =
+        Document::parse(text).map_err(|_| "Rights.xml is not well-formed XML".to_string())?;
+    let root = document.root_element();
+    let mut objects = direct_role_children(root, "object", ROLE_RIGHTS_NAMESPACE)
+        .into_iter()
+        .filter(|object| {
+            let names = direct_role_children(*object, "name", ROLE_RIGHTS_NAMESPACE);
+            names.len() == 1 && names[0].text() == Some(operation.object_name.as_str())
+        })
+        .collect::<Vec<_>>();
+    if objects.len() > 1 {
+        return Err(format!(
+            "role object `{}` is ambiguous",
+            operation.object_name
+        ));
+    }
+    let data_processor_cascade = !operation.value
+        && operation.right == "Use"
+        && operation
+            .object_name
+            .split('.')
+            .collect::<Vec<_>>()
+            .as_slice()
+            .first()
+            .is_some_and(|kind| *kind == "DataProcessor")
+        && operation.object_name.split('.').count() == 2;
+    let Some(object) = objects.pop() else {
+        if data_processor_cascade {
+            return Ok((
+                text.to_string(),
+                RoleEditEffect {
+                    operation_index,
+                    operation: "setRight",
+                    object_name: operation.object_name.clone(),
+                    right: operation.right.clone(),
+                    before: None,
+                    after: false,
+                    action: RoleEditEffectAction::RemoveObject,
+                    changed: false,
+                },
+            ));
+        }
+        return Err(format!(
+            "role object `{}` was not found",
+            operation.object_name
+        ));
+    };
+
+    let matching_rights = direct_role_children(object, "right", ROLE_RIGHTS_NAMESPACE)
+        .into_iter()
+        .filter(|right| {
+            let names = direct_role_children(*right, "name", ROLE_RIGHTS_NAMESPACE);
+            names.len() == 1 && names[0].text() == Some(operation.right.as_str())
+        })
+        .collect::<Vec<_>>();
+    if matching_rights.len() > 1 {
+        return Err(format!(
+            "right `{}` of `{}` is ambiguous",
+            operation.right, operation.object_name
+        ));
+    }
+    let before = matching_rights.first().and_then(|right| {
+        let values = direct_role_children(*right, "value", ROLE_RIGHTS_NAMESPACE);
+        (values.len() == 1).then(|| match values[0].text() {
+            Some("true") => Some(true),
+            Some("false") => Some(false),
+            _ => None,
+        })?
+    });
+
+    let action = if data_processor_cascade {
+        RoleEditEffectAction::RemoveObject
+    } else {
+        RoleEditEffectAction::SetRight
+    };
+    let edit = if data_processor_cascade {
+        RoleTextEdit::Remove(line_aware_removal_range(text, object.range()))
+    } else if let Some(right) = matching_rights.first() {
+        let values = direct_role_children(*right, "value", ROLE_RIGHTS_NAMESPACE);
+        if values.len() != 1 {
+            return Err(format!(
+                "right `{}` of `{}` must have one direct value",
+                operation.right, operation.object_name
+            ));
+        }
+        let value = values[0];
+        if before == Some(operation.value) {
+            RoleTextEdit::None
+        } else {
+            let range = value.range();
+            let raw = &text[range.clone()];
+            if raw.trim_end().ends_with("/>") {
+                let trimmed_end = raw.trim_end().len();
+                let slash = raw[..trimmed_end]
+                    .rfind("/>")
+                    .ok_or_else(|| "role value self-closing tag is malformed".to_string())?;
+                let name_start = raw
+                    .find('<')
+                    .map(|offset| offset + 1)
+                    .ok_or_else(|| "role value opening tag is malformed".to_string())?;
+                let name_end = raw[name_start..]
+                    .find(|character: char| {
+                        character.is_whitespace() || matches!(character, '/' | '>')
+                    })
+                    .map(|offset| name_start + offset)
+                    .ok_or_else(|| "role value QName is malformed".to_string())?;
+                let qualified_name = &raw[name_start..name_end];
+                RoleTextEdit::Replace(
+                    range,
+                    format!(
+                        "{}>{}</{}>{}",
+                        raw[..slash].trim_end(),
+                        operation.value,
+                        qualified_name,
+                        &raw[trimmed_end..]
+                    ),
+                )
+            } else {
+                let text_nodes = value
+                    .children()
+                    .filter(|child| child.is_text())
+                    .collect::<Vec<_>>();
+                if text_nodes.len() != 1 || !matches!(text_nodes[0].text(), Some("true" | "false"))
+                {
+                    return Err(format!(
+                        "right `{}` of `{}` must have one direct boolean text value",
+                        operation.right, operation.object_name
+                    ));
+                }
+                RoleTextEdit::Replace(text_nodes[0].range(), operation.value.to_string())
+            }
+        }
+    } else {
+        let (offset, insertion) = right_insertion(text, object, &operation.right, operation.value)?;
+        RoleTextEdit::Insert(offset, insertion)
+    };
+    drop(document);
+
+    let mut updated = text.to_string();
+    let changed = !matches!(edit, RoleTextEdit::None);
+    match edit {
+        RoleTextEdit::Replace(range, replacement) => updated.replace_range(range, &replacement),
+        RoleTextEdit::Insert(offset, insertion) => updated.insert_str(offset, &insertion),
+        RoleTextEdit::Remove(range) => updated.replace_range(range, ""),
+        RoleTextEdit::None => {}
+    }
+    Ok((
+        updated,
+        RoleEditEffect {
+            operation_index,
+            operation: "setRight",
+            object_name: operation.object_name.clone(),
+            right: operation.right.clone(),
+            before,
+            after: operation.value,
+            action,
+            changed,
+        },
+    ))
+}
+
+fn line_aware_removal_range(text: &str, range: std::ops::Range<usize>) -> std::ops::Range<usize> {
+    let line_start = text[..range.start]
+        .rfind('\n')
+        .map(|offset| offset + 1)
+        .unwrap_or(0);
+    let start = if text[line_start..range.start]
+        .chars()
+        .all(|character| character == ' ' || character == '\t' || character == '\r')
+    {
+        line_start
+    } else {
+        range.start
+    };
+    let end = if text[range.end..].starts_with("\r\n") {
+        range.end + 2
+    } else if text[range.end..].starts_with('\n') {
+        range.end + 1
+    } else {
+        range.end
+    };
+    start..end
+}
+
+fn right_insertion(
+    text: &str,
+    object: roxmltree::Node<'_, '_>,
+    right_name: &str,
+    value: bool,
+) -> Result<(usize, String), String> {
+    let range = object.range();
+    let raw = &text[range.clone()];
+    let direct_rights = direct_role_children(object, "right", ROLE_RIGHTS_NAMESPACE);
+    let object_prefix = lexical_role_prefix(text, object)?;
+    // The object's own QName binding is necessarily in scope for inserted
+    // descendants. A prefix copied from an existing right can be declared on
+    // that sibling only and would be unbound on the newly emitted element.
+    let right_prefix = object_prefix.clone();
+    let name_prefix = object_prefix.clone();
+    let value_prefix = object_prefix;
+    let close_relative = raw
+        .rfind("</")
+        .ok_or_else(|| "role object closing tag is malformed".to_string())?;
+    let close = range.start + close_relative;
+    let line_start = text[..close]
+        .rfind('\n')
+        .map(|offset| offset + 1)
+        .unwrap_or(close);
+    let has_line_layout = line_start < close
+        && text[line_start..close]
+            .chars()
+            .all(|character| character == ' ' || character == '\t' || character == '\r');
+    if !has_line_layout {
+        return Ok((
+            close,
+            format!(
+                "<{right_prefix}right><{name_prefix}name>{right_name}</{name_prefix}name><{value_prefix}value>{value}</{value_prefix}value></{right_prefix}right>"
+            ),
+        ));
+    }
+    let closing_indent = text[line_start..close].trim_end_matches('\r');
+    let eol = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let right_indent = direct_rights
+        .first()
+        .map(|right| line_indent(text, right.range().start))
+        .or_else(|| {
+            direct_role_children(object, "name", ROLE_RIGHTS_NAMESPACE)
+                .first()
+                .map(|name| line_indent(text, name.range().start))
+        })
+        .filter(|indent| !indent.is_empty())
+        .unwrap_or_else(|| format!("{closing_indent}\t"));
+    let child_indent = format!("{right_indent}\t");
+    Ok((
+        line_start,
+        format!(
+            "{right_indent}<{right_prefix}right>{eol}{child_indent}<{name_prefix}name>{right_name}</{name_prefix}name>{eol}{child_indent}<{value_prefix}value>{value}</{value_prefix}value>{eol}{right_indent}</{right_prefix}right>{eol}"
+        ),
+    ))
+}
+
+fn lexical_role_prefix(text: &str, node: roxmltree::Node<'_, '_>) -> Result<String, String> {
+    let raw = &text[node.range()];
+    let name_start = raw
+        .find('<')
+        .map(|offset| offset + 1)
+        .ok_or_else(|| "role element opening tag is malformed".to_string())?;
+    let name_end = raw[name_start..]
+        .find(|character: char| character.is_whitespace() || matches!(character, '/' | '>'))
+        .map(|offset| name_start + offset)
+        .ok_or_else(|| "role element QName is malformed".to_string())?;
+    let qname = &raw[name_start..name_end];
+    Ok(qname
+        .rsplit_once(':')
+        .map(|(prefix, _)| format!("{prefix}:"))
+        .unwrap_or_default())
+}
+
+fn line_indent(text: &str, offset: usize) -> String {
+    let start = text[..offset]
+        .rfind('\n')
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    text[start..offset]
+        .chars()
+        .take_while(|character| matches!(character, ' ' | '\t' | '\r'))
+        .filter(|character| *character != '\r')
+        .collect()
+}
+
 pub(crate) fn invoke_mutation(
     operation: &str,
     _tool_name: &str,
@@ -2057,6 +2893,656 @@ pub(crate) fn invoke_mutation(
     match operation {
         "role-compile" => Some(compile_role(args, context)),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod role_edit_contract_tests {
+    use super::super::single_file_publisher::{with_publish_failpoints, PublishCheckpoint};
+    use super::*;
+    use crate::infrastructure::platform::testing::{
+        create_dir_symlink_for_test, remove_dir_symlink_for_test,
+    };
+    use serde_json::json;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NONCE: AtomicU64 = AtomicU64::new(0);
+
+    fn operation(
+        object_name: &str,
+        right: &str,
+        value: bool,
+    ) -> crate::domain::role::RoleEditOperation {
+        crate::domain::role::RoleEditOperation {
+            object_name: object_name.to_string(),
+            right: right.to_string(),
+            value,
+        }
+    }
+
+    fn rights_xml(eol: &str, self_closing: &str) -> String {
+        [
+            r#"<Rights xmlns="http://v8.1c.ru/8.2/roles" xmlns:r="http://v8.1c.ru/8.2/roles" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="Rights" version="2.20">"#,
+            "\t<setForNewObjects>false</setForNewObjects>",
+            "\t<setForAttributesByDefault>true</setForAttributesByDefault>",
+            "\t<independentRightsOfChildObjects>false</independentRightsOfChildObjects>",
+            "\t<object>",
+            "\t\t<name>Catalog.Demo</name>",
+            "\t\t<future><name>Delete</name><value>false</value></future>",
+            "\t\t<right>",
+            "\t\t\t<name>Delete</name>",
+            &format!("\t\t\t{self_closing}"),
+            "\t\t\t<restrictionByCondition><condition>WHERE false</condition></restrictionByCondition>",
+            "\t\t</right>",
+            "\t\t<right><name>FuturePlatformRight</name><value>true</value><future/></right>",
+            "\t</object>",
+            "\t<object>",
+            "\t\t<name>DataProcessor.Worker</name>",
+            "\t\t<right><name>Use</name><value>true</value></right>",
+            "\t\t<right><name>View</name><value>true</value></right>",
+            "\t</object>",
+            "\t<restrictionTemplate><name>Keep</name><condition>TRUE</condition></restrictionTemplate>",
+            "</Rights>",
+        ]
+        .join(eol)
+    }
+
+    #[test]
+    fn rights_profile_requires_registered_root_and_unprefixed_rights_xsi_type() {
+        let valid = rights_xml("\n", "<value>true</value>");
+        validate_role_rights_document(&valid, true).unwrap();
+
+        let alias = valid
+            .replace("xmlns:xsi=", "xmlns:schemaInstance=")
+            .replace("xsi:type=", "schemaInstance:type=");
+        validate_role_rights_document(&alias, true).unwrap();
+
+        for invalid in [
+            valid.replace(" xsi:type=\"Rights\"", ""),
+            valid.replace("xsi:type=\"Rights\"", "xsi:type=\"Role\""),
+            valid.replace(
+                "xsi:type=\"Rights\"",
+                "xmlns:roles=\"http://v8.1c.ru/8.2/roles\" xsi:type=\"roles:Rights\"",
+            ),
+            valid
+                .replace(
+                    "<Rights xmlns=\"http://v8.1c.ru/8.2/roles\"",
+                    "<PredefinedData xmlns=\"http://v8.1c.ru/8.3/xcf/predef\"",
+                )
+                .replace("</Rights>", "</PredefinedData>"),
+        ] {
+            assert!(
+                validate_role_rights_document(&invalid, true).is_err(),
+                "accepted incompatible root contract: {invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn range_writer_uses_direct_children_and_preserves_unknown_xml_bom_and_eol() {
+        for (self_closing, expected_value) in [
+            ("<value/>", "<value>false</value>"),
+            ("<value />", "<value>false</value>"),
+            (
+                "<r:value future=\"x\"/>",
+                "<r:value future=\"x\">false</r:value>",
+            ),
+        ] {
+            let body = rights_xml("\r\n", self_closing);
+            let (updated, effect) =
+                apply_role_edit_operation(&body, &operation("Catalog.Demo", "Delete", false), 0)
+                    .unwrap();
+            assert_eq!(effect.before, None);
+            assert!(effect.changed);
+            assert!(updated.contains(expected_value), "{updated}");
+            assert!(updated.contains("<future><name>Delete</name><value>false</value></future>"));
+            assert!(updated.contains("restrictionByCondition"));
+            assert!(updated.contains("FuturePlatformRight"));
+            assert!(updated.contains("restrictionTemplate"));
+            assert!(!updated.replace("\r\n", "").contains('\n'));
+            validate_role_rights_document(&updated, true).unwrap();
+
+            let encoded = encode_role_xml(true, &updated);
+            assert!(encoded.starts_with(&[0xEF, 0xBB, 0xBF]));
+        }
+    }
+
+    #[test]
+    fn range_writer_replaces_only_boolean_text_and_preserves_value_markup() {
+        let body = rights_xml(
+            "\n",
+            r#"<r:value future=">">true<!--future-value-marker--></r:value>"#,
+        );
+
+        let (updated, effect) =
+            apply_role_edit_operation(&body, &operation("Catalog.Demo", "Delete", false), 0)
+                .unwrap();
+
+        assert!(effect.changed);
+        assert!(
+            updated.contains(r#"<r:value future=">">false<!--future-value-marker--></r:value>"#)
+        );
+        validate_role_rights_document(&updated, true).unwrap();
+    }
+
+    #[test]
+    fn writer_ignores_and_preserves_unnamed_forward_compatible_blocks() {
+        let unnamed_right = "<right future=\"unnamed-right\"><value>true</value><future/></right>";
+        let unnamed_object =
+            "<object future=\"unnamed-object\"><right><value>false</value></right></object>";
+        let body = rights_xml("\n", "<value>true</value>")
+            .replacen(
+                "\t\t<right>",
+                &format!("\t\t{unnamed_right}\n\t\t<right>"),
+                1,
+            )
+            .replace("\n</Rights>", &format!("\n\t{unnamed_object}\n</Rights>"));
+
+        let (updated, effect) =
+            apply_role_edit_operation(&body, &operation("Catalog.Demo", "Delete", false), 0)
+                .unwrap();
+
+        assert!(effect.changed);
+        assert!(updated.contains(unnamed_right));
+        assert!(updated.contains(unnamed_object));
+        validate_role_rights_document(&updated, true).unwrap();
+    }
+
+    #[test]
+    fn writer_inserts_with_existing_eol_and_data_processor_false_removes_whole_object() {
+        let body = rights_xml("\r\n", "<value>true</value>");
+        let (inserted, effect) =
+            apply_role_edit_operation(&body, &operation("Catalog.Demo", "View", false), 0).unwrap();
+        assert!(effect.changed);
+        assert_eq!(effect.before, None);
+        assert!(inserted.contains("<name>View</name>\r\n"));
+        assert!(!inserted.replace("\r\n", "").contains('\n'));
+
+        let (removed, effect) = apply_role_edit_operation(
+            &inserted,
+            &operation("DataProcessor.Worker", "Use", false),
+            1,
+        )
+        .unwrap();
+        assert_eq!(effect.action, RoleEditEffectAction::RemoveObject);
+        assert_eq!(effect.before, Some(true));
+        assert!(!removed.contains("DataProcessor.Worker"));
+        assert!(removed.contains("Catalog.Demo"));
+        assert!(removed.contains("restrictionTemplate"));
+    }
+
+    #[test]
+    fn missing_right_inherits_prefix_only_roles_qnames() {
+        let body = concat!(
+            "<r:Rights xmlns:r=\"http://v8.1c.ru/8.2/roles\" ",
+            "xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" ",
+            "xsi:type=\"Rights\" version=\"2.20\">\n",
+            "\t<r:setForNewObjects>false</r:setForNewObjects>\n",
+            "\t<r:setForAttributesByDefault>true</r:setForAttributesByDefault>\n",
+            "\t<r:independentRightsOfChildObjects>false</r:independentRightsOfChildObjects>\n",
+            "\t<r:object>\n",
+            "\t\t<r:name>Catalog.Demo</r:name>\n",
+            "\t\t<r:right><r:name>Delete</r:name><r:value>true</r:value></r:right>\n",
+            "\t</r:object>\n",
+            "</r:Rights>"
+        );
+        let (updated, effect) =
+            apply_role_edit_operation(body, &operation("Catalog.Demo", "View", false), 0).unwrap();
+        assert!(effect.changed);
+        assert!(updated.contains("<r:right>"), "{updated}");
+        assert!(updated.contains("<r:name>View</r:name>"), "{updated}");
+        assert!(updated.contains("<r:value>false</r:value>"), "{updated}");
+        assert!(!updated.contains("<right>"), "{updated}");
+        validate_role_rights_document(&updated, true).unwrap();
+    }
+
+    #[test]
+    fn missing_right_does_not_copy_a_sibling_local_namespace_prefix() {
+        let local_right = concat!(
+            "<x:right xmlns:x=\"http://v8.1c.ru/8.2/roles\" future=\"keep\">",
+            "<x:name>Delete</x:name><x:value>true</x:value><x:future/>",
+            "</x:right>"
+        );
+        let body = concat!(
+            "<Rights xmlns=\"http://v8.1c.ru/8.2/roles\" ",
+            "xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" ",
+            "xsi:type=\"Rights\" version=\"2.20\">",
+            "<setForNewObjects>false</setForNewObjects>",
+            "<setForAttributesByDefault>true</setForAttributesByDefault>",
+            "<independentRightsOfChildObjects>false</independentRightsOfChildObjects>",
+            "<object><name>Catalog.Demo</name>",
+            "<x:right xmlns:x=\"http://v8.1c.ru/8.2/roles\" future=\"keep\">",
+            "<x:name>Delete</x:name><x:value>true</x:value><x:future/>",
+            "</x:right></object></Rights>"
+        );
+
+        let (updated, effect) =
+            apply_role_edit_operation(body, &operation("Catalog.Demo", "View", false), 0).unwrap();
+
+        assert!(effect.changed);
+        assert!(updated.contains(local_right));
+        assert!(updated.contains("<right><name>View</name><value>false</value></right>"));
+        assert_eq!(updated.matches("xmlns:x=").count(), 1);
+        validate_role_rights_document(&updated, true).unwrap();
+    }
+
+    #[test]
+    fn missing_object_is_error_except_absent_data_processor_use_false_noop() {
+        let body = rights_xml("\n", "<value>true</value>");
+
+        let missing =
+            apply_role_edit_operation(&body, &operation("Catalog.Missing", "Delete", false), 0)
+                .unwrap_err();
+        assert!(missing.contains("was not found"), "{missing}");
+
+        let (without_processor, first) =
+            apply_role_edit_operation(&body, &operation("DataProcessor.Worker", "Use", false), 1)
+                .unwrap();
+        assert!(first.changed);
+        assert_eq!(first.action, RoleEditEffectAction::RemoveObject);
+        assert!(!without_processor.contains("DataProcessor.Worker"));
+
+        let (repeated, second) = apply_role_edit_operation(
+            &without_processor,
+            &operation("DataProcessor.Worker", "Use", false),
+            2,
+        )
+        .unwrap();
+        assert_eq!(repeated, without_processor);
+        assert!(!second.changed);
+        assert_eq!(second.before, None);
+        assert_eq!(second.action, RoleEditEffectAction::RemoveObject);
+    }
+
+    fn fixture(name: &str) -> (WorkspaceContext, Map<String, Value>, PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "unica-role-edit-{name}-{}-{}",
+            std::process::id(),
+            NONCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let rights = root.join("src/Roles/Demo/Ext/Rights.xml");
+        fs::create_dir_all(rights.parent().unwrap()).unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"><Properties><Name>Main</Name></Properties><ChildObjects><Role>Demo</Role></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/Roles/Demo.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Role uuid="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"><Properties><Name>Demo</Name></Properties></Role></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            &rights,
+            encode_role_xml(true, &rights_xml("\r\n", "<value>true</value>")),
+        )
+        .unwrap();
+        let context = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let args = json!({
+            "sourceSet": "main",
+            "metadataPath": "Role.Demo",
+            "operations": [
+                {"op":"setRight", "objectName":"Catalog.Demo", "right":"Delete", "value":false},
+                {"op":"setRight", "objectName":"DataProcessor.Worker", "right":"Use", "value":false}
+            ]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        (context, args, rights)
+    }
+
+    fn replace_format_version(raw: &[u8], replacement: Option<&str>) -> Vec<u8> {
+        let marker = b" version=\"2.20\"";
+        let offset = raw
+            .windows(marker.len())
+            .position(|window| window == marker)
+            .expect("fixture carries exact format version");
+        let mut updated = raw.to_vec();
+        let replacement = replacement
+            .map(|version| format!(" version=\"{version}\""))
+            .unwrap_or_default();
+        updated.splice(
+            offset..offset + marker.len(),
+            replacement.as_bytes().iter().copied(),
+        );
+        updated
+    }
+
+    #[test]
+    fn preview_apply_repeat_are_typed_logical_and_idempotent() {
+        let (context, args, rights) = fixture("roundtrip");
+        let before = fs::read(&rights).unwrap();
+        let preview = preview_edit_with_data(&args, &context);
+        assert!(preview.outcome.ok, "{:?}", preview.outcome);
+        assert!(preview.outcome.stdout.is_none());
+        assert!(preview.outcome.stderr.is_none());
+        assert_eq!(preview.outcome.artifacts, ["main + Role.Demo"]);
+        let preview_data = preview.data.unwrap();
+        assert!(preview_data.changed);
+        assert_eq!(preview_data.effects.len(), 2);
+        assert_eq!(preview_data.effects[0].operation_index, 0);
+        assert_eq!(preview_data.effects[1].operation_index, 1);
+        assert_eq!(fs::read(&rights).unwrap(), before);
+
+        let applied = apply_edit_with_data(&args, &context);
+        assert!(applied.outcome.ok, "{:?}", applied.outcome);
+        assert_eq!(applied.events.len(), 1);
+        assert_eq!(applied.events[0].kind, DomainEventKind::RoleChanged);
+        let cache = applied
+            .recorded_cache
+            .as_ref()
+            .expect("applied source and cache state commit together");
+        assert_eq!(cache.events, ["RoleChanged"]);
+        assert!(cache.invalidated.contains(&"rights_graph".to_string()));
+        assert!(cache.refreshed.contains(&"rights_graph".to_string()));
+        assert!(applied.data.unwrap().changed);
+        let after = fs::read(&rights).unwrap();
+        assert_ne!(after, before);
+        assert!(after.starts_with(&[0xEF, 0xBB, 0xBF]));
+        assert!(!String::from_utf8_lossy(&after).contains("DataProcessor.Worker"));
+
+        let repeated = apply_edit_with_data(&args, &context);
+        assert!(repeated.outcome.ok, "{:?}", repeated.outcome);
+        assert!(repeated.events.is_empty());
+        assert!(repeated.recorded_cache.is_none());
+        assert!(!repeated.data.unwrap().changed);
+        assert_eq!(fs::read(&rights).unwrap(), after);
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn exact_profile_rejects_rights_and_descriptor_versions_outside_2_20() {
+        let (context, args, rights) = fixture("exact-profile");
+        let original = fs::read(&rights).unwrap();
+
+        for version in [Some("2.19"), Some("2.21"), None] {
+            let incompatible = replace_format_version(&original, version);
+            fs::write(&rights, &incompatible).unwrap();
+            let rejected = apply_edit_with_data(&args, &context);
+            assert!(!rejected.outcome.ok, "version={version:?}");
+            assert_eq!(fs::read(&rights).unwrap(), incompatible);
+        }
+
+        fs::write(&rights, &original).unwrap();
+        let descriptor = context.workspace_root.join("src/Roles/Demo.xml");
+        let original_descriptor = fs::read(&descriptor).unwrap();
+        for version in [Some("2.19"), Some("2.21"), None] {
+            let incompatible = replace_format_version(&original_descriptor, version);
+            fs::write(&descriptor, &incompatible).unwrap();
+            let rejected = apply_edit_with_data(&args, &context);
+            assert!(!rejected.outcome.ok, "descriptor version={version:?}");
+            assert_eq!(fs::read(&rights).unwrap(), original);
+            assert_eq!(fs::read(&descriptor).unwrap(), incompatible);
+        }
+        fs::write(&descriptor, original_descriptor).unwrap();
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn descriptor_configuration_and_rights_preimage_drift_and_post_validation_are_failure_atomic() {
+        let (context, args, rights) = fixture("transaction-guards");
+        let original = fs::read(&rights).unwrap();
+
+        let concurrent = {
+            let rights = rights.clone();
+            with_role_edit_before_publish_hook(
+                move || {
+                    let mut changed = fs::read(&rights).unwrap();
+                    changed.extend_from_slice(b"<!-- concurrent -->");
+                    fs::write(&rights, changed).unwrap();
+                },
+                || apply_edit_with_data(&args, &context),
+            )
+        };
+        assert!(!concurrent.outcome.ok);
+        let concurrent_bytes = fs::read(&rights).unwrap();
+        assert!(concurrent_bytes.ends_with(b"<!-- concurrent -->"));
+
+        fs::write(&rights, &original).unwrap();
+        let descriptor = context.workspace_root.join("src/Roles/Demo.xml");
+        let descriptor_before = fs::read(&descriptor).unwrap();
+        let descriptor_drift = {
+            let descriptor = descriptor.clone();
+            with_role_edit_before_publish_hook(
+                move || {
+                    let mut changed = fs::read(&descriptor).unwrap();
+                    changed.extend_from_slice(b"<!-- descriptor drift -->");
+                    fs::write(&descriptor, changed).unwrap();
+                },
+                || apply_edit_with_data(&args, &context),
+            )
+        };
+        assert!(!descriptor_drift.outcome.ok);
+        assert_eq!(fs::read(&rights).unwrap(), original);
+        assert_ne!(fs::read(&descriptor).unwrap(), descriptor_before);
+        fs::write(&descriptor, descriptor_before).unwrap();
+
+        let owner = context.workspace_root.join("src/Configuration.xml");
+        let owner_before = fs::read(&owner).unwrap();
+        let owner_drift = {
+            let owner = owner.clone();
+            with_role_edit_before_publish_hook(
+                move || {
+                    let mut changed = fs::read(&owner).unwrap();
+                    changed.extend_from_slice(b"<!-- owner drift -->");
+                    fs::write(&owner, changed).unwrap();
+                },
+                || apply_edit_with_data(&args, &context),
+            )
+        };
+        assert!(!owner_drift.outcome.ok);
+        assert_eq!(fs::read(&rights).unwrap(), original);
+        assert_ne!(fs::read(&owner).unwrap(), owner_before);
+        fs::write(&owner, owner_before).unwrap();
+
+        fs::write(&rights, &original).unwrap();
+        let rolled_back =
+            with_role_edit_post_validation_failure(|| apply_edit_with_data(&args, &context));
+        assert!(!rolled_back.outcome.ok);
+        assert_eq!(fs::read(&rights).unwrap(), original);
+        assert!(!context.cache_root.join("state.json").exists());
+        assert!(!context
+            .cache_root
+            .join("caches/metadata_graph.json")
+            .exists());
+        assert!(!context.cache_root.join("caches/rights_graph.json").exists());
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn cache_planning_failure_leaves_role_source_unchanged() {
+        let (context, args, rights) = fixture("cache-planning-failure");
+        let before = fs::read(&rights).unwrap();
+        fs::create_dir_all(context.cache_root.join("state.json")).unwrap();
+        let rejected = apply_edit_with_data(&args, &context);
+        assert!(!rejected.outcome.ok, "{:?}", rejected.outcome);
+        assert!(rejected.outcome.errors[0].contains("cache_publication_failed"));
+        assert_eq!(fs::read(&rights).unwrap(), before);
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn support_deny_and_invalid_nested_matrix_leave_rights_unchanged() {
+        let (context, args, rights) = fixture("deny-and-matrix");
+        let before = fs::read(&rights).unwrap();
+
+        let mut nested = args.clone();
+        nested.insert(
+            "operations".to_string(),
+            json!([{
+                "op":"setRight",
+                "objectName":"DataProcessor.Worker.Command.Run",
+                "right":"Use",
+                "value":false
+            }]),
+        );
+        let invalid = apply_edit_with_data(&nested, &context);
+        assert!(!invalid.outcome.ok);
+        assert_eq!(fs::read(&rights).unwrap(), before);
+
+        fs::create_dir_all(context.workspace_root.join("src/Ext")).unwrap();
+        fs::write(
+            context
+                .workspace_root
+                .join("src/Ext/ParentConfigurations.bin"),
+            concat!(
+                "\u{feff}{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,",
+                "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",",
+                "\"VendorConf\",3,1,0,aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,",
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,0,0,",
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb,",
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb,2,0,",
+                "cccccccc-cccc-cccc-cccc-cccccccccccc,",
+                "cccccccc-cccc-cccc-cccc-cccccccccccc}"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        let denied = apply_edit_with_data(&args, &context);
+        assert!(!denied.outcome.ok, "{:?}", denied.outcome);
+        assert!(denied.outcome.errors[0].contains("support_locked"));
+        assert_eq!(fs::read(&rights).unwrap(), before);
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn publish_time_allow_to_warn_transition_is_reported_once() {
+        let (context, args, _rights) = fixture("allow-to-warn");
+        let workspace = context.workspace_root.clone();
+        let changed = with_role_edit_before_native_guard_hook(
+            move || {
+                fs::create_dir_all(workspace.join("src/Ext")).unwrap();
+                fs::write(
+                    workspace.join("src/Ext/ParentConfigurations.bin"),
+                    concat!(
+                        "\u{feff}{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,",
+                        "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",",
+                        "\"VendorConf\",3,1,0,aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,",
+                        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,0,0,",
+                        "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb,",
+                        "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb,2,0,",
+                        "cccccccc-cccc-cccc-cccc-cccccccccccc,",
+                        "cccccccc-cccc-cccc-cccc-cccccccccccc}"
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+                fs::write(
+                    workspace.join(".v8-project.json"),
+                    r#"{"editingAllowedCheck":"warn"}"#,
+                )
+                .unwrap();
+            },
+            || apply_edit_with_data(&args, &context),
+        );
+
+        assert!(changed.outcome.ok, "{:?}", changed.outcome);
+        assert_eq!(
+            changed
+                .outcome
+                .warnings
+                .iter()
+                .filter(|warning| warning.contains("support_guard_warning"))
+                .count(),
+            1
+        );
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn cleanup_warning_is_success_after_validated_committed_bytes() {
+        let (context, args, rights) = fixture("cleanup-warning");
+        let before = fs::read(&rights).unwrap();
+        let result = with_publish_failpoints(&[PublishCheckpoint::Cleanup], || {
+            apply_edit_with_data(&args, &context)
+        });
+        assert!(result.outcome.ok, "{:?}", result.outcome);
+        assert!(result
+            .outcome
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("publication_cleanup_incomplete")));
+        assert_ne!(fs::read(&rights).unwrap(), before);
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn role_resource_symlink_swap_after_planning_is_rejected_before_publication() {
+        let (context, args, rights) = fixture("symlink-swap");
+        let role_dir = rights.parent().unwrap().parent().unwrap().to_path_buf();
+        let saved_role = context.workspace_root.join("saved-role");
+        let outside = context.workspace_root.join("outside-role");
+        let outside_rights = outside.join("Ext/Rights.xml");
+        fs::create_dir_all(outside_rights.parent().unwrap()).unwrap();
+        let before = fs::read(&rights).unwrap();
+        fs::write(&outside_rights, &before).unwrap();
+        let probe_source = context.workspace_root.join("link-probe-source");
+        let probe_link = context.workspace_root.join("link-probe");
+        fs::create_dir(&probe_source).unwrap();
+        let Some(probe_result) = create_dir_symlink_for_test(&probe_source, &probe_link) else {
+            fs::remove_dir_all(context.workspace_root).unwrap();
+            return;
+        };
+        if probe_result.is_err() {
+            fs::remove_dir_all(context.workspace_root).unwrap();
+            return;
+        }
+        remove_dir_symlink_for_test(&probe_link).unwrap();
+
+        let swapped_role = role_dir.clone();
+        let swapped_outside = outside.clone();
+        let swapped_saved = saved_role.clone();
+        let rejected = with_role_edit_before_publish_hook(
+            move || {
+                fs::rename(&swapped_role, &swapped_saved).unwrap();
+                create_dir_symlink_for_test(&swapped_outside, &swapped_role)
+                    .expect("directory links are available on supported hosts")
+                    .expect("test host must permit a directory link");
+            },
+            || apply_edit_with_data(&args, &context),
+        );
+        assert!(!rejected.outcome.ok, "{:?}", rejected.outcome);
+        assert_eq!(fs::read(&outside_rights).unwrap(), before);
+        assert_eq!(fs::read(saved_role.join("Ext/Rights.xml")).unwrap(), before);
+        remove_dir_symlink_for_test(&role_dir).unwrap();
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn symlinked_role_resource_is_rejected_without_following_it() {
+        let (context, args, rights) = fixture("symlink");
+        let role_dir = rights.parent().unwrap().parent().unwrap().to_path_buf();
+        let outside = context.workspace_root.join("outside-role");
+        fs::create_dir_all(outside.join("Ext")).unwrap();
+        let outside_rights = outside.join("Ext/Rights.xml");
+        let before = fs::read(&rights).unwrap();
+        fs::write(&outside_rights, &before).unwrap();
+        fs::remove_dir_all(&role_dir).unwrap();
+        let Some(link_result) = create_dir_symlink_for_test(&outside, &role_dir) else {
+            fs::remove_dir_all(context.workspace_root).unwrap();
+            return;
+        };
+        if link_result.is_err() {
+            fs::remove_dir_all(context.workspace_root).unwrap();
+            return;
+        }
+
+        let rejected = apply_edit_with_data(&args, &context);
+        assert!(!rejected.outcome.ok);
+        assert_eq!(fs::read(&outside_rights).unwrap(), before);
+        remove_dir_symlink_for_test(&role_dir).unwrap();
+        fs::remove_dir_all(context.workspace_root).unwrap();
     }
 }
 

@@ -5,6 +5,10 @@ use super::{
     SourceResourceOperation, ToolHandler, ToolSpec,
 };
 use crate::domain::form_edit::{form_edit_definition_schema, validate_form_edit_definition};
+use crate::domain::role::{
+    all_role_right_names, parse_role_edit_request, ROLE_METADATA_PATH_PATTERN,
+    ROLE_OBJECT_NAME_PATTERN,
+};
 use crate::domain::source_resources::{SOURCE_READ_LIMIT_MAX, SOURCE_RESOURCE_PAGE_LIMIT_MAX};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
@@ -26,6 +30,7 @@ const CF_INFO_ARGS: &[&str] = &["ConfigPath", "configPath", "Path", "path"];
 /// `role.info` answers with typed data: `ShowDenied` selected nothing once the
 /// denied list is always present, and pagination cut printed lines.
 const ROLE_INFO_ARGS: &[&str] = &["RightsPath", "rightsPath", "Path", "path"];
+const ROLE_EDIT_ARGS: &[&str] = &["sourceSet", "metadataPath", "operations", "dryRun"];
 /// `subsystem.info` answers with typed data: its `Mode` picked which slice of
 /// one subsystem to print, and the tree projection belongs to a separate ask.
 const SUBSYSTEM_INFO_ARGS: &[&str] = &["SubsystemPath", "subsystemPath", "Path", "path"];
@@ -816,6 +821,7 @@ pub fn validate_tool_arguments(
     validate_external_init_arguments(tool, args)?;
     validate_cfe_patch_method_arguments(tool, args)?;
     validate_xdto_arguments(tool, args)?;
+    validate_role_edit_arguments(tool, args)?;
 
     if !dry_run || is_external_init_tool(tool) {
         for required in required_args(&tool) {
@@ -826,6 +832,15 @@ pub fn validate_tool_arguments(
     }
 
     Ok(())
+}
+
+fn validate_role_edit_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Result<(), String> {
+    if tool.name != "unica.role.edit" {
+        return Ok(());
+    }
+    parse_role_edit_request(args)
+        .map(|_| ())
+        .map_err(|error| format!("{} invalid arguments: {error}", tool.name))
 }
 
 fn validate_xdto_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Result<(), String> {
@@ -2048,6 +2063,10 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
                 "xdto-edit" => names.extend(XDTO_EDIT_ARGS),
                 "cf-info" => names.extend(CF_INFO_ARGS),
                 "role-info" => names.extend(ROLE_INFO_ARGS),
+                "role-edit" => {
+                    names.clear();
+                    names.extend(ROLE_EDIT_ARGS);
+                }
                 "subsystem-info" => names.extend(SUBSYSTEM_INFO_ARGS),
                 "mxl-info" => names.extend(MXL_INFO_ARGS),
                 "cfe-diff" => names.extend(CFE_DIFF_ARGS),
@@ -2091,6 +2110,7 @@ fn native_args_for(operation: &str) -> &'static [&'static str] {
         "epf-init" | "erf-init" => EXTERNAL_INIT_ARGS,
         "xdto-info" => XDTO_INFO_ARGS,
         "xdto-edit" => XDTO_EDIT_ARGS,
+        "role-edit" => ROLE_EDIT_ARGS,
         _ => NATIVE_XML_DSL_ARGS,
     }
 }
@@ -3046,6 +3066,47 @@ fn description_for_arg(name: &str) -> Option<&'static str> {
 }
 
 fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
+    if tool.name == "unica.role.edit" {
+        return match name {
+            "sourceSet" => json!({
+                "type": "string",
+                "minLength": 1,
+                "pattern": r"^\S(?:.*\S)?$",
+                "description": "Exact configured source-set name; physical source paths are not accepted."
+            }),
+            "metadataPath" => json!({
+                "type": "string",
+                "minLength": 6,
+                "pattern": ROLE_METADATA_PATH_PATTERN,
+                "description": "Canonical logical role address in the form Role.<name>."
+            }),
+            "operations" => json!({
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "op": {"const": "setRight"},
+                        "objectName": {
+                            "type": "string",
+                            "minLength": 3,
+                            "pattern": ROLE_OBJECT_NAME_PATTERN
+                        },
+                        "right": {
+                            "type": "string",
+                            "enum": all_role_right_names().into_iter().collect::<Vec<_>>()
+                        },
+                        "value": {"type": "boolean"}
+                    },
+                    "required": ["op", "objectName", "right", "value"]
+                },
+                "description": "Ordered closed setRight operations; each effect is reported by operationIndex."
+            }),
+            "dryRun" => json!({"type": "boolean", "default": true}),
+            _ => property_schema(name),
+        };
+    }
     if matches!(tool.name, "unica.xdto.info" | "unica.xdto.edit") {
         return match name {
             "sourceSet" => json!({
@@ -3458,6 +3519,7 @@ fn expected_scalar_type(key: &str) -> Option<&'static str> {
             | "rawKeys"
             | "scenarioFilters"
             | "sourceSets"
+            | "operations"
     ) {
         Some("array")
     } else {
@@ -3624,7 +3686,7 @@ mod tests {
         );
         let item = metadata_operation_union(&edit);
         let variants = item["oneOf"].as_array().expect("closed operation union");
-        assert_eq!(variants.len(), 5);
+        assert_eq!(variants.len(), 8);
         for (variant, tag, required, properties) in [
             (
                 &variants[0],
@@ -3652,6 +3714,24 @@ mod tests {
             ),
             (
                 &variants[4],
+                "add",
+                json!(["op", "collection", "elements"]),
+                vec!["collection", "elements", "op"],
+            ),
+            (
+                &variants[5],
+                "update",
+                json!(["op", "collection", "elements"]),
+                vec!["collection", "elements", "op"],
+            ),
+            (
+                &variants[6],
+                "remove",
+                json!(["op", "collection", "ids"]),
+                vec!["collection", "ids", "op"],
+            ),
+            (
+                &variants[7],
                 "editRelations",
                 json!(["op", "relation", "mode", "targets"]),
                 vec!["mode", "op", "relation", "targets"],
@@ -3690,7 +3770,13 @@ mod tests {
                 "templates",
             ]
         );
-        let mut relations = variants[4]["properties"]["relation"]["enum"]
+        for variant in &variants[4..=6] {
+            assert_eq!(
+                variant["properties"]["collection"]["enum"],
+                json!(["predefinedItems"])
+            );
+        }
+        let mut relations = variants[7]["properties"]["relation"]["enum"]
             .as_array()
             .expect("the relation branch publishes a closed relation domain")
             .iter()
@@ -3702,7 +3788,7 @@ mod tests {
             vec!["basedOn", "inputByString", "owners", "registerRecords"]
         );
         assert_eq!(
-            variants[4]["properties"]["mode"]["enum"],
+            variants[7]["properties"]["mode"]["enum"],
             json!(["add", "remove", "replace"])
         );
 
@@ -5174,15 +5260,17 @@ mod tests {
         let schema = input_schema_for_tool(&tool);
         assert!(schema["properties"].get("Operation").is_none());
         assert!(schema["properties"].get("DefinitionFile").is_none());
-        let operation_tags = metadata_operation_union(&schema)["oneOf"]
+        let mut operation_tags = metadata_operation_union(&schema)["oneOf"]
             .as_array()
             .expect("closed operation union")
             .iter()
             .map(|variant| variant["properties"]["op"]["enum"][0].clone())
             .collect::<Vec<_>>();
+        operation_tags.sort_by(|left, right| left.as_str().cmp(&right.as_str()));
+        operation_tags.dedup();
         assert_eq!(
             Value::Array(operation_tags),
-            json!(["setProperties", "add", "update", "remove", "editRelations"])
+            json!(["add", "editRelations", "remove", "setProperties", "update"])
         );
 
         let mut args = Map::from_iter([
@@ -6056,5 +6144,83 @@ mod tests {
             args.insert("timeoutSeconds".to_string(), timeout);
             assert!(validate_tool_arguments(diagnostics, &args, false).is_err());
         }
+    }
+
+    #[test]
+    fn role_edit_schema_and_runtime_share_the_closed_logical_contract() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.role.edit")
+            .expect("role.edit is registered");
+        let schema = input_schema_for_tool(&tool);
+        assert_eq!(schema["additionalProperties"], false);
+        let properties = schema["properties"].as_object().unwrap();
+        assert_eq!(
+            properties
+                .keys()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["dryRun", "metadataPath", "operations", "sourceSet"])
+        );
+        assert_eq!(
+            schema["required"],
+            json!(["sourceSet", "metadataPath", "operations"])
+        );
+        assert_eq!(
+            schema["properties"]["operations"]["items"]["additionalProperties"],
+            false
+        );
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let valid = json!({
+            "sourceSet": "main",
+            "metadataPath": "Role.Δοκιμή",
+            "operations": [{
+                "op": "setRight",
+                "objectName": "Catalog.Δοκιμή",
+                "right": "Delete",
+                "value": false
+            }]
+        });
+        assert!(validator.is_valid(&valid), "schema rejected {valid}");
+        validate_tool_arguments(tool, valid.as_object().unwrap(), true).unwrap();
+        let mut cyrillic = valid.clone();
+        cyrillic["metadataPath"] = json!("Role.Демо");
+        cyrillic["operations"][0]["objectName"] = json!("Catalog.Товары");
+        assert!(validator.is_valid(&cyrillic), "schema rejected {cyrillic}");
+        validate_tool_arguments(tool, cyrillic.as_object().unwrap(), true).unwrap();
+
+        for (field, invalid) in [("metadataPath", "Role.123"), ("objectName", "Catalog.123")] {
+            let mut call = valid.clone();
+            if field == "metadataPath" {
+                call[field] = json!(invalid);
+            } else {
+                call["operations"][0][field] = json!(invalid);
+            }
+            assert!(!validator.is_valid(&call), "schema accepted `{invalid}`");
+            assert!(validate_tool_arguments(tool, call.as_object().unwrap(), true).is_err());
+        }
+
+        for legacy in ["RightsPath", "Path", "ObjectName", "Name", "Value"] {
+            let mut call = valid.clone();
+            call[legacy] = json!("legacy");
+            assert!(!validator.is_valid(&call), "schema accepted `{legacy}`");
+            let error = validate_tool_arguments(tool, call.as_object().unwrap(), true).unwrap_err();
+            assert!(error.contains(legacy), "{error}");
+        }
+        let physical = json!({
+            "sourceSet": "main",
+            "metadataPath": "src/Roles/Demo/Ext/Rights.xml",
+            "operations": valid["operations"].clone()
+        });
+        assert!(!validator.is_valid(&physical));
+        assert!(validate_tool_arguments(tool, physical.as_object().unwrap(), true).is_err());
+
+        let mut unknown_operation_field = valid.clone();
+        unknown_operation_field["operations"][0]["Path"] = json!("legacy");
+        assert!(!validator.is_valid(&unknown_operation_field));
+        assert!(
+            validate_tool_arguments(tool, unknown_operation_field.as_object().unwrap(), true)
+                .is_err()
+        );
     }
 }

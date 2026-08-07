@@ -6,13 +6,13 @@
 
 ## Итог
 
-- Инструментов: **71**
-- Отвечают типизированным `data`: **45**
+- Инструментов: **72**
+- Отвечают типизированным `data`: **46**
 - Типизированы частично: часть результата всё ещё текст: **1**
 - Отвечают снимком задания в `job`: **6**
 - Отвечают прозой в `stdout`: **19**
 
-- В границах типизации: **45**
+- В границах типизации: **46**
 - Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`): **14**
 - Вне границ: семейство runtime и build изучается отдельно: **12**
 - Осталось перевести на типизированный `data` в границах работы: **0**
@@ -808,6 +808,7 @@ Create one metadata object from a typed internal template and optionally configu
 
 - Создать минимальный справочник по логическому sourceSet
 - Одним вызовом создать и настроить объект через общий типизированный `operations` union
+- Создать поддерживаемый объект вместе с корневым предопределённым элементом
 - Предварительно проверить план создания объекта без записи файлов
 
 ### `unica.meta.edit`
@@ -821,7 +822,7 @@ Apply ordered typed metadata edit operations atomically.
 | `operations` | array | да | Ordered typed edit operations applied as one atomic change. |
 | `sourceSet` | string | да | Exact Configuration source-set name from v8project.yaml. |
 
-**Результат сейчас:** `structuredContent.data`: логический адрес, валидация, семантические `effects` по `operationIndex` и план атомарной публикации пяти вариантов typed-операций (отвечают типизированным `data`)
+**Результат сейчас:** `structuredContent.data`: логический адрес, валидация, семантические `effects` по `operationIndex` и план атомарной публикации пяти вариантов typed-операций, включая коллекцию `predefinedItems` в `add`, `update`, `remove` (отвечают типизированным `data`)
 
 **Целевой контракт:** достигнут
 
@@ -829,6 +830,7 @@ Apply ordered typed metadata edit operations atomically.
 
 - Добавить реквизит существующему документу
 - Назначить владельцев подчинённому справочнику
+- Добавить, изменить или удалить предопределённый элемент по UUID
 
 ### `unica.meta.info`
 
@@ -841,7 +843,7 @@ Inspect one metadata object with validation and source-tree usage.
 | `sections` | array | нет | Extra sections to compute, all read from the source tree: `roles`, `subscriptions` and `functionalOptions` land in `usage`, `predefinedItems` in its own field. Omit or pass [] to inspect the object alone. |
 | `sourceSet` | string | да | Exact Configuration source-set name from v8project.yaml. |
 
-**Результат сейчас:** `structuredContent.data`: локальная структура и валидация объекта; явно выбранные секции читаются из дерева исходников в `usage` и `predefinedItems`, обращения к RLM нет ни при каких аргументах (отвечают типизированным `data`)
+**Результат сейчас:** `structuredContent.data`: локальная структура и валидация объекта; явно выбранные секции читаются из дерева исходников, а `predefinedItems.items` возвращает плоский документный порядок, UUID, `parentId` и typed-поля владельца; обращения к RLM нет ни при каких аргументах (отвечают типизированным `data`)
 
 **Целевой контракт:** достигнут
 
@@ -850,6 +852,7 @@ Inspect one metadata object with validation and source-tree usage.
 - Изучить структуру справочника перед написанием запроса
 - Сравнить два объекта по подчинению и составу реквизитов
 - Уточнить длину кода и основное представление перед генерацией формы
+- Прочитать предопределённые элементы в документном порядке вместе с их parentId
 
 ### `unica.meta.remove`
 
@@ -1014,6 +1017,26 @@ Compile role metadata and Rights.xml from JSON DSL.
 **Сценарии:**
 
 - Создать роль из описания прав
+
+### `unica.role.edit`
+
+Edit role rights through a closed logical typed contract.
+
+| Аргумент | Тип | Обяз. | Описание |
+| --- | --- | --- | --- |
+| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
+| `metadataPath` | string | да | Canonical logical role address in the form Role.<name>. |
+| `operations` | array | да | Ordered closed setRight operations; each effect is reported by operationIndex. |
+| `sourceSet` | string | да | Exact configured source-set name; physical source paths are not accepted. |
+
+**Результат сейчас:** `structuredContent.data`: канонический `metadataPath`, `changed`, семантические `effects` по `operationIndex`, `validation` и `diagnostics` без stdout, diff и физических путей (отвечают типизированным `data`)
+
+**Целевой контракт:** достигнут
+
+**Сценарии:**
+
+- Запретить удаление для одного справочника, сохранив остальные права, RLS и шаблоны роли
+- Проверить последовательность прав в предпросмотре до атомарного применения
 
 ### `unica.role.info`
 

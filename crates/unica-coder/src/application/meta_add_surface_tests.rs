@@ -258,6 +258,73 @@ fn add_applies_operations_atomically() {
 }
 
 #[test]
+fn meta_add_predefined_items_preview_apply_noop_effects_and_cache_event() {
+    let workspace = create_configuration_workspace("predefined-create");
+    let source = workspace.path().join("src");
+    let predefined = source.join("Catalogs/TypedPredefined/Ext/Predefined.xml");
+    let item_id = "a7d2e6fc-3824-4b56-b4be-ae6be4944c0e";
+    let operations = json!([
+        {
+            "op": "add",
+            "collection": "predefinedItems",
+            "elements": [{"id": item_id, "name": "Main"}]
+        },
+        {
+            "op": "add",
+            "collection": "predefinedItems",
+            "elements": [{"id": item_id, "name": "Main"}]
+        }
+    ]);
+    let mut preview_args = add_args(workspace.path(), "Catalog", "TypedPredefined", true);
+    preview_args.insert("operations".to_string(), operations.clone());
+
+    let preview = call_add_with_args(workspace.path(), &preview_args);
+
+    assert!(preview.ok, "{:?}", preview.errors);
+    assert_eq!(preview.cache.mode, "dry-run");
+    assert_eq!(preview.cache.events, ["MetadataChanged"]);
+    assert!(!predefined.exists(), "preview published Predefined.xml");
+    let preview_data = preview.data.as_ref().unwrap();
+    assert_eq!(preview_data["metadataPath"], "Catalog.TypedPredefined");
+    assert_eq!(preview_data["changed"], true);
+    let preview_effects = preview_data["effects"].as_array().unwrap();
+    assert_eq!(
+        preview_effects
+            .iter()
+            .map(|effect| effect["operation"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["createTemplate", "add", "add"]
+    );
+    assert_eq!(preview_effects[1]["operationIndex"], 0);
+    assert_eq!(preview_effects[2]["operationIndex"], 1);
+    assert_eq!(
+        preview_effects[2]["before"], preview_effects[2]["after"],
+        "the equivalent second operation must be a semantic no-op"
+    );
+    assert!(preview_data["publicationPlan"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["resource"] == "predefined_data"));
+
+    let mut apply_args = add_args(workspace.path(), "Catalog", "TypedPredefined", false);
+    apply_args.insert("operations".to_string(), operations);
+    let applied = call_add_with_args(workspace.path(), &apply_args);
+
+    assert!(applied.ok, "{:?}", applied.errors);
+    assert_eq!(applied.cache.mode, "applied");
+    assert_eq!(applied.cache.events, ["MetadataChanged"]);
+    let applied_data = applied.data.as_ref().unwrap();
+    assert_eq!(applied_data["effects"], preview_data["effects"]);
+    let bytes = std::fs::read(&predefined).expect("applied Predefined.xml");
+    let xml = std::str::from_utf8(&bytes)
+        .unwrap()
+        .trim_start_matches('\u{feff}');
+    assert_eq!(xml.matches(item_id).count(), 1);
+    assert!(xml.contains("<Name>Main</Name>"));
+}
+
+#[test]
 fn failed_add_operation_leaves_no_object() {
     let workspace = create_configuration_workspace("failed-configured-create");
     let source = workspace.path().join("src");
