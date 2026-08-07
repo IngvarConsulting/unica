@@ -109,6 +109,13 @@ pub(crate) enum MetadataChildResourceKind {
         part: MetadataTemplateResourcePart,
     },
     Module,
+    /// A payload member the platform writes beside a child but Unica never
+    /// interprets — form help, help assets, form item pictures, HTML template
+    /// assets. It is carried verbatim; the closed guard still names the exact
+    /// path shapes that may appear, so a mutation can never clobber bytes the
+    /// contract does not recognise. Its relative path lives in the child's
+    /// [`MetadataChildFootprintEvidence::retained`] at the resource's ordinal.
+    Retained,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,6 +158,11 @@ pub(crate) enum MetadataChildDirectoryKind {
     Root,
     Extension,
     HtmlPages,
+    /// A directory the contract does not name on its own — it exists only
+    /// because a payload file sits under it, such as `Ext/Form` around a form
+    /// module or `Ext/Help` around help pages. It repeats once per directory
+    /// instead of naming one.
+    Nested,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -158,6 +170,11 @@ pub(crate) struct MetadataChildFootprintEvidence {
     pub(crate) child: MetadataAddress,
     pub(crate) profile: MetadataChildProfile,
     pub(crate) directories: Vec<MetadataChildDirectoryKind>,
+    /// Relative paths of the retained payload members, sorted. A resource with
+    /// [`MetadataChildResourceKind::Retained`] and ordinal `n` is this list's
+    /// `n`-th entry, which is how the validator recovers the paths it needs to
+    /// re-derive the directory topology.
+    pub(crate) retained: Vec<PathBuf>,
 }
 
 #[allow(dead_code)] // Concrete providers land after this orchestration seam.
