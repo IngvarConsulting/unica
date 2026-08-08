@@ -1933,6 +1933,10 @@ pub(crate) struct ClosedPlatformXmlTarget {
     target_kind: TargetKind,
     target_path: PathBuf,
     module_owner: Option<String>,
+    /// Whether this handle was issued under a policy that tolerates a module
+    /// file the platform never exported. Revalidation reproduces the same
+    /// decision, so a handle can neither gain nor lose that tolerance.
+    module_absence_allowed: bool,
 }
 
 /// Closed provider handle for creation in one Platform XML source set. Public
@@ -2067,6 +2071,12 @@ impl ClosedPlatformXmlTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TargetKindPolicy {
     ModuleOnly,
+    /// Like `ModuleOnly`, but a module whose `*.bsl` does not exist yet still
+    /// resolves. The platform omits that file when the module is empty, so its
+    /// absence is a fact about the export, not about the address: whether the
+    /// role is legitimate is already decided by the kind registry. Only a
+    /// writer that materialises the file may ask for this.
+    ModuleOnlyAllowingAbsent,
     Any,
 }
 
@@ -2168,7 +2178,9 @@ pub(crate) fn resolve_platform_xml_target(
     }
     let address = target.metadata_path.as_ref().expect("checked above");
     match (address.target_kind(), policy) {
-        (TargetKind::Module, _) => resolve_platform_xml_module(context, target, selected, address),
+        (TargetKind::Module, _) => {
+            resolve_platform_xml_module(context, target, selected, address, policy)
+        }
         (TargetKind::MetadataObject, TargetKindPolicy::Any) => {
             resolve_platform_xml_object(context, target, selected, address)
         }
@@ -2184,6 +2196,7 @@ fn resolve_platform_xml_module(
     target: &SourceTarget,
     selected: ResolvedNamedSourceSet,
     address: &MetadataAddress,
+    policy: TargetKindPolicy,
 ) -> Result<PlatformXmlResolution, SourceTargetError> {
     let relative_path = module_path_for_address(address).map_err(|error| {
         SourceTargetError::new(SourceTargetErrorCode::MetadataAddressNotFound, error)
@@ -2206,7 +2219,11 @@ fn resolve_platform_xml_module(
         .map_err(|_| target_containment_error(&target.source_set))?;
     ensure_no_link_components(&selected.path, &target_path)
         .map_err(|_| target_containment_error(&target.source_set))?;
-    validate_regular_module(&target_path, &target.source_set)?;
+    validate_regular_module(
+        &target_path,
+        &target.source_set,
+        matches!(policy, TargetKindPolicy::ModuleOnlyAllowingAbsent),
+    )?;
     let target_identity = normalize_path_identity(&target_path)
         .map_err(|_| target_containment_error(&target.source_set))?;
     if !target_identity.starts_with(&selected.path) {
@@ -2228,6 +2245,7 @@ fn resolve_platform_xml_module(
             target_kind: TargetKind::Module,
         },
         handle: ClosedPlatformXmlTarget {
+            module_absence_allowed: matches!(policy, TargetKindPolicy::ModuleOnlyAllowingAbsent),
             source_target: target.clone(),
             workspace_root,
             source_root_lexical: selected.lexical_path,
@@ -2315,6 +2333,7 @@ fn resolve_platform_xml_object(
             target_kind: TargetKind::MetadataObject,
         },
         handle: ClosedPlatformXmlTarget {
+            module_absence_allowed: false,
             source_target: target.clone(),
             workspace_root,
             source_root_lexical: selected.lexical_path,
@@ -2470,6 +2489,7 @@ fn resolve_platform_xml_root(
             target_kind: TargetKind::SourceRoot,
         },
         handle: ClosedPlatformXmlTarget {
+            module_absence_allowed: false,
             source_target: target.clone(),
             workspace_root,
             source_root_lexical: selected.lexical_path,
@@ -2506,6 +2526,9 @@ pub(crate) fn revalidate_platform_xml_target(
     // handle can never widen into a module write target, and a module handle
     // never accepts an object in its place.
     let policy = match handle.target_kind {
+        TargetKind::Module if handle.module_absence_allowed => {
+            TargetKindPolicy::ModuleOnlyAllowingAbsent
+        }
         TargetKind::Module => TargetKindPolicy::ModuleOnly,
         TargetKind::MetadataObject | TargetKind::SourceRoot => TargetKindPolicy::Any,
     };
@@ -2702,13 +2725,23 @@ fn validate_source_set(selected: &ResolvedNamedSourceSet) -> Result<(), SourceTa
     Ok(())
 }
 
-fn validate_regular_module(path: &Path, source_set: &str) -> Result<(), SourceTargetError> {
-    let metadata = fs::symlink_metadata(path).map_err(|_| {
-        SourceTargetError::new(
-            SourceTargetErrorCode::MetadataAddressNotFound,
-            format!("module target is unavailable in sourceSet `{source_set}`"),
-        )
-    })?;
+fn validate_regular_module(
+    path: &Path,
+    source_set: &str,
+    allow_absent: bool,
+) -> Result<(), SourceTargetError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        // Absent is not malformed: nothing exists to be a link, a directory or
+        // the wrong kind of file, so the remaining checks have no subject.
+        Err(error) if allow_absent && error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => {
+            return Err(SourceTargetError::new(
+                SourceTargetErrorCode::MetadataAddressNotFound,
+                format!("module target is unavailable in sourceSet `{source_set}`"),
+            ))
+        }
+    };
     if metadata_is_link_or_reparse_point(&metadata) {
         return Err(target_containment_error(source_set));
     }

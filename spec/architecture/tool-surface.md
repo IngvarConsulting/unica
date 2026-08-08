@@ -457,18 +457,18 @@ Read compact BSL module outline from the current source file.
 
 ### `unica.code.patch`
 
-Insert content into one logically addressed existing Platform XML Configuration or Extension BSL module.
+Insert or replace BSL in one logically addressed Platform XML Configuration or Extension module.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
-| `content` | string | да | BSL text for unica.code.patch: inserted at the selector for operation insert, or written over the selected method or anchor for operation replace |
+| `content` | string | да | BSL text for unica.code.patch: inserted at the selector for operation insert, appended to the end of the module when insert names no selector, or written over the selected method or anchor for operation replace |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
 | `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 | `metadataPath` | string | да | Canonical logical module address inside sourceSet, for example CommonModule.Service.Module or Catalog.Items.ObjectModule. |
 | `operation` | string | да | Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; `add-value-type`, `add-object-type`, `add-property`, `remove-type` or `remove-property` for `unica.xdto.edit` — read the enum published in the tool's own schema. |
-| `position` | string | нет | Where unica.code.patch places the content relative to the selector: before or after |
-| `selector` | object | да | Object naming the unica.code.patch insertion point: exactly one of {"method": "Name"} for a whole procedure or function, or {"anchor": "text"} for a fragment that occurs once inside one method |
+| `position` | string | нет | Where unica.code.patch places the content relative to the selector: before or after. Accepted only when insert names a selector |
+| `selector` | object | нет | Optional object naming the unica.code.patch edit point: exactly one of {"method": "Name"} for a whole procedure or function, or {"anchor": "text"} for a fragment that occurs once inside one method. Required by replace; when insert omits it the content goes to the end of the module |
 | `sourceSet` | string | да | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 
 **Результат сейчас:** типизированный `data` (отвечают типизированным `data`)
@@ -479,6 +479,7 @@ Insert content into one logically addressed existing Platform XML Configuration 
 
 - Вставить обработчик после существующего метода в модуле конфигурации
 - Заменить тело метода целиком, сохранив соседей побайтово
+- Дописать метод в конец модуля, не называя соседа
 
 ### `unica.code.search`
 

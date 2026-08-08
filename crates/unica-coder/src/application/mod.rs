@@ -476,7 +476,7 @@ pub fn tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.code.patch",
             description:
-                "Insert content into one logically addressed existing Platform XML Configuration or Extension BSL module.",
+                "Insert or replace BSL in one logically addressed Platform XML Configuration or Extension module.",
             mutating: true,
             cache_access: cache_access_for("code-patch", Some(DomainEventKind::ModuleChanged)),
             handler: ToolHandler::NativeOperation {
@@ -2648,6 +2648,54 @@ mod tests {
             "failed"
         );
         assert_eq!(std::fs::read(&module).unwrap(), before_invalid);
+
+        let empty_module = src.join("CommonModules/Empty/Ext/Module.bsl");
+        std::fs::create_dir_all(empty_module.parent().unwrap()).unwrap();
+        std::fs::write(
+            src.join("CommonModules/Empty.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule><Properties><Name>Empty</Name></Properties></CommonModule></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(&empty_module, b"\xef\xbb\xbf").unwrap();
+        // A module holding no method yet takes a selector-less insert: the end
+        // of the module is the one place it already has.
+        let mut first_body = json!({
+            "cwd": workspace,
+            "sourceSet": "main",
+            "metadataPath": "CommonModule.Empty.Module",
+            "operation": "insert",
+            "content": "Procedure Run()\nEndProcedure"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let first_preview = app.call_tool("unica.code.patch", &first_body).unwrap();
+        assert!(first_preview.ok, "{:?}", first_preview.errors);
+        assert!(first_preview.cache.events.is_empty());
+        assert_eq!(
+            first_preview.data.as_ref().unwrap()["validation"]["status"],
+            "passed"
+        );
+        assert_eq!(std::fs::read(&empty_module).unwrap(), b"\xef\xbb\xbf");
+
+        first_body.insert("dryRun".to_string(), json!(false));
+        let written = app.call_tool("unica.code.patch", &first_body).unwrap();
+        assert!(written.ok, "{:?}", written.errors);
+        assert_eq!(written.cache.events, vec!["ModuleChanged"]);
+        assert_eq!(
+            std::fs::read(&empty_module).unwrap(),
+            b"\xef\xbb\xbfProcedure Run()\nEndProcedure\n"
+        );
+
+        // Unlike a dedicated initialize operation, the repeat stays a proven
+        // no-op instead of failing after the write already landed.
+        let repeat = app.call_tool("unica.code.patch", &first_body).unwrap();
+        assert!(repeat.ok, "{:?}", repeat.errors);
+        assert!(repeat.cache.events.is_empty());
+        assert_eq!(
+            std::fs::read(&empty_module).unwrap(),
+            b"\xef\xbb\xbfProcedure Run()\nEndProcedure\n"
+        );
 
         std::fs::remove_dir_all(root).unwrap();
     }

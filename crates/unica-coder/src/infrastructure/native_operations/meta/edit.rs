@@ -1,3 +1,4 @@
+use super::integrity_check::check_meta_object_integrity;
 use crate::application::metadata::{MetaEditRequest, MetaFailure};
 use crate::application::ports::{
     MetadataChildDirectoryKind, MetadataChildFootprintEvidence, MetadataChildProfile,
@@ -691,6 +692,15 @@ pub(super) fn build_typed_operation_post_image(
     )?;
     child_resources.relation_dependencies =
         resolve_typed_relation_dependencies(source_set, target, operations, context, &xml)?;
+    // Итоговое состояние вызова, а не каждая операция по отдельности: замена
+    // единственного измерения через `remove` вместе с `add` остаётся законной,
+    // потому что промежуточная пустота здесь не наблюдается (ADR-0030). Вид,
+    // которого нет в закрытом наборе, условий не имеет и проверку пропускает.
+    if let Ok(object_kind) = MetadataKind::parse(&object_kind) {
+        check_meta_object_integrity(object_kind, xml.as_bytes()).map_err(|diagnostic| {
+            MetaFailure::from(diagnostic.with_metadata_path(target.clone()))
+        })?;
+    }
     Ok(TypedOperationPostImage {
         descriptor: meta_edit_preserve_source_format(&xml, source_format),
         child_resources,
@@ -965,6 +975,7 @@ pub(super) fn plan_typed_child_resources(
                 &final_payload,
                 &final_payload_directories,
             )?;
+            let retained = footprint.retained.clone();
             plan.validation_footprints.push(footprint);
             let payload_root = collection_dir.join(final_name);
             for relative in &final_payload_directories {
@@ -978,6 +989,7 @@ pub(super) fn plan_typed_child_resources(
                         &child_address,
                         relative,
                         template_type,
+                        &retained,
                     )?,
                     bytes: bytes.clone(),
                 });
@@ -1196,7 +1208,6 @@ struct TypedChildFootprintProfile {
     logical_profile: MetadataChildProfile,
     required_files: BTreeSet<PathBuf>,
     optional_files: BTreeSet<PathBuf>,
-    required_directories: BTreeSet<PathBuf>,
 }
 
 fn typed_child_footprint_profile(
@@ -1208,15 +1219,13 @@ fn typed_child_footprint_profile(
     match collection {
         MetaCollection::Forms => Ok(TypedChildFootprintProfile {
             logical_profile: MetadataChildProfile::Form,
-            required_files: paths(&["Ext/Form.xml"]),
-            optional_files: paths(&["Ext/Module.bsl"]),
-            required_directories: paths(&["", "Ext"]),
+            required_files: paths(&[TYPED_FORM_CONTENT_PATH]),
+            optional_files: paths(&[TYPED_FORM_MODULE_PATH]),
         }),
         MetaCollection::Commands => Ok(TypedChildFootprintProfile {
             logical_profile: MetadataChildProfile::Command,
             required_files: BTreeSet::new(),
-            optional_files: paths(&["Ext/CommandModule.bsl"]),
-            required_directories: BTreeSet::new(),
+            optional_files: paths(&[TYPED_COMMAND_MODULE_PATH]),
         }),
         MetaCollection::Templates => {
             let template_type = template_type.ok_or_else(|| {
@@ -1225,30 +1234,120 @@ fn typed_child_footprint_profile(
                     "template payload has no closed TemplateType evidence",
                 )
             })?;
-            let (required_files, required_directories) = match template_type {
-                MetadataTemplateType::HtmlDocument => (
-                    paths(&["Ext/Template.xml"]),
-                    paths(&["", "Ext", "Ext/Template"]),
-                ),
-                MetadataTemplateType::TextDocument => {
-                    (paths(&["Ext/Template.txt"]), paths(&["", "Ext"]))
-                }
-                MetadataTemplateType::SpreadsheetDocument
-                | MetadataTemplateType::DataCompositionSchema => {
-                    (paths(&["Ext/Template.xml"]), paths(&["", "Ext"]))
-                }
-                MetadataTemplateType::BinaryData => {
-                    (paths(&["Ext/Template.bin"]), paths(&["", "Ext"]))
-                }
-            };
             Ok(TypedChildFootprintProfile {
                 logical_profile: MetadataChildProfile::Template(template_type),
-                required_files,
+                required_files: paths(&[typed_template_primary_path(template_type)]),
                 optional_files: BTreeSet::new(),
-                required_directories,
             })
         }
         _ => unreachable!(),
+    }
+}
+
+pub(super) const TYPED_FORM_CONTENT_PATH: &str = "Ext/Form.xml";
+/// A managed form's module. Designer nests it one level below the other `Ext`
+/// members — `Ext/Form/Module.bsl`, not `Ext/Module.bsl`, which is where an
+/// *object* module lives. Every other reader in the crate already uses this
+/// path; the footprint contract used to disagree with them (issue #360).
+pub(super) const TYPED_FORM_MODULE_PATH: &str = "Ext/Form/Module.bsl";
+pub(super) const TYPED_COMMAND_MODULE_PATH: &str = "Ext/CommandModule.bsl";
+
+pub(super) fn typed_template_primary_path(template_type: MetadataTemplateType) -> &'static str {
+    match template_type {
+        MetadataTemplateType::HtmlDocument
+        | MetadataTemplateType::SpreadsheetDocument
+        | MetadataTemplateType::DataCompositionSchema => "Ext/Template.xml",
+        MetadataTemplateType::TextDocument => "Ext/Template.txt",
+        MetadataTemplateType::BinaryData => "Ext/Template.bin",
+    }
+}
+
+pub(super) fn typed_template_page_path(page: &str) -> PathBuf {
+    PathBuf::from(format!("Ext/Template/{page}.html"))
+}
+
+/// The payload members Unica models for a child: the ones it parses, rewrites
+/// and can address. Everything else a real payload holds is retained instead
+/// (see [`typed_child_retained_payload`]). Both the planner and the validator
+/// derive their expectations from here, so neither can drift from the other.
+pub(super) fn typed_child_modelled_payload(
+    profile: MetadataChildProfile,
+    has_module: bool,
+    html_pages: &[String],
+) -> BTreeSet<PathBuf> {
+    let mut files = BTreeSet::new();
+    match profile {
+        MetadataChildProfile::Form => {
+            files.insert(PathBuf::from(TYPED_FORM_CONTENT_PATH));
+            if has_module {
+                files.insert(PathBuf::from(TYPED_FORM_MODULE_PATH));
+            }
+        }
+        MetadataChildProfile::Command => {
+            if has_module {
+                files.insert(PathBuf::from(TYPED_COMMAND_MODULE_PATH));
+            }
+        }
+        MetadataChildProfile::Template(template_type) => {
+            files.insert(PathBuf::from(typed_template_primary_path(template_type)));
+            if template_type == MetadataTemplateType::HtmlDocument {
+                files.extend(html_pages.iter().map(|page| typed_template_page_path(page)));
+            }
+        }
+    }
+    files
+}
+
+/// Payload members the platform writes beside a child that Unica carries
+/// verbatim instead of interpreting. Measured against a real 8.3.27 Designer
+/// dump: form help and its assets, per-item pictures, HTML template assets.
+///
+/// The shapes stay closed so a mutation still refuses to touch a child whose
+/// directory holds bytes this contract does not recognise.
+pub(super) fn typed_child_retained_payload(profile: MetadataChildProfile, relative: &Path) -> bool {
+    match profile {
+        MetadataChildProfile::Form => {
+            relative == Path::new("Ext/Help.xml")
+                || relative.starts_with("Ext/Help")
+                || relative.starts_with("Ext/Form/Items")
+        }
+        MetadataChildProfile::Template(MetadataTemplateType::HtmlDocument) => {
+            relative.starts_with("Ext/Template/_files")
+        }
+        MetadataChildProfile::Command | MetadataChildProfile::Template(_) => false,
+    }
+}
+
+/// The directory topology of a child payload is exactly the parent closure of
+/// its files: every directory holds something, and nothing holds nothing. That
+/// single rule reproduces each shape the platform writes and still rejects a
+/// stray empty directory.
+pub(super) fn typed_child_payload_directories<'a>(
+    files: impl IntoIterator<Item = &'a PathBuf>,
+) -> BTreeSet<PathBuf> {
+    let mut directories = BTreeSet::new();
+    for file in files {
+        let mut next = file.parent();
+        while let Some(directory) = next {
+            directories.insert(directory.to_path_buf());
+            if directory.as_os_str().is_empty() {
+                break;
+            }
+            next = directory.parent();
+        }
+    }
+    directories
+}
+
+pub(super) fn typed_child_directory_kind(relative: &Path) -> MetadataChildDirectoryKind {
+    if relative.as_os_str().is_empty() {
+        MetadataChildDirectoryKind::Root
+    } else if relative == Path::new("Ext") {
+        MetadataChildDirectoryKind::Extension
+    } else if relative == Path::new("Ext/Template") {
+        MetadataChildDirectoryKind::HtmlPages
+    } else {
+        MetadataChildDirectoryKind::Nested
     }
 }
 
@@ -1280,13 +1379,19 @@ fn validate_typed_child_footprint(
         .iter()
         .map(|(relative, _)| relative.clone())
         .collect::<BTreeSet<_>>();
-    let allowed_files = required_files
+    let modelled_files = required_files
         .union(&profile.optional_files)
         .cloned()
         .collect::<BTreeSet<_>>();
+    let retained = observed_files
+        .difference(&modelled_files)
+        .cloned()
+        .collect::<Vec<_>>();
     if !required_files.is_subset(&observed_files)
-        || !observed_files.is_subset(&allowed_files)
         || observed_files.len() != files.len()
+        || !retained
+            .iter()
+            .all(|relative| typed_child_retained_payload(profile.logical_profile, relative))
     {
         return Err(typed_child_resource_failure(
             child,
@@ -1295,15 +1400,7 @@ fn validate_typed_child_footprint(
     }
 
     let observed_directories = directories.iter().cloned().collect::<BTreeSet<_>>();
-    let expected_directories = if collection == MetaCollection::Commands
-        && observed_files.contains(Path::new("Ext/CommandModule.bsl"))
-    {
-        [PathBuf::new(), PathBuf::from("Ext")]
-            .into_iter()
-            .collect::<BTreeSet<_>>()
-    } else {
-        profile.required_directories.clone()
-    };
+    let expected_directories = typed_child_payload_directories(&observed_files);
     if observed_directories != expected_directories
         || observed_directories.len() != directories.len()
     {
@@ -1313,24 +1410,14 @@ fn validate_typed_child_footprint(
         ));
     }
 
-    let directories = observed_directories
-        .iter()
-        .map(|relative| {
-            if relative.as_os_str().is_empty() {
-                MetadataChildDirectoryKind::Root
-            } else if relative == Path::new("Ext") {
-                MetadataChildDirectoryKind::Extension
-            } else if relative == Path::new("Ext/Template") {
-                MetadataChildDirectoryKind::HtmlPages
-            } else {
-                unreachable!("closed directory footprint was checked above")
-            }
-        })
-        .collect();
     Ok(MetadataChildFootprintEvidence {
         child: child.clone(),
         profile: profile.logical_profile,
-        directories,
+        directories: observed_directories
+            .iter()
+            .map(|relative| typed_child_directory_kind(relative))
+            .collect(),
+        retained,
     })
 }
 
@@ -1361,12 +1448,23 @@ fn typed_child_payload_role(
     child: &MetadataAddress,
     relative_path: &Path,
     template_type: Option<MetadataTemplateType>,
+    retained: &[PathBuf],
 ) -> Result<MetadataResourceRole, MetaFailure> {
+    if let Some(ordinal) = retained
+        .iter()
+        .position(|candidate| candidate == relative_path)
+    {
+        return Ok(MetadataResourceRole::ChildResource {
+            child: child.clone(),
+            kind: MetadataChildResourceKind::Retained,
+            ordinal,
+        });
+    }
     let kind = match collection {
         MetaCollection::Forms if relative_path == Path::new("Ext/Form.xml") => {
             MetadataChildResourceKind::FormContent
         }
-        MetaCollection::Forms if relative_path == Path::new("Ext/Module.bsl") => {
+        MetaCollection::Forms if relative_path == Path::new(TYPED_FORM_MODULE_PATH) => {
             MetadataChildResourceKind::Module
         }
         MetaCollection::Commands if relative_path == Path::new("Ext/CommandModule.bsl") => {
@@ -4383,6 +4481,37 @@ mod tests {
     }
 
     #[test]
+    fn typed_resource_add_keeps_digits_apart_in_the_generated_synonym() {
+        let mut xml = object_xml("InformationRegister", "PaymentTerms", "");
+        apply_typed_operations(
+            &mut xml,
+            &[MetaEditOperation::add(
+                MetaCollection::Resources,
+                None,
+                vec![
+                    MetaElementInput::named("СуммаЗакупокЗа30Дней"),
+                    MetaElementInput {
+                        name: "СуммаПродажЗа30Дней".into(),
+                        synonym: Some("Сумма продаж за месяц".into()),
+                        ..MetaElementInput::default()
+                    },
+                ],
+            )
+            .unwrap()],
+        )
+        .unwrap();
+
+        assert!(
+            xml.contains("<v8:content>Сумма закупок за 30 дней</v8:content>"),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("<v8:content>Сумма продаж за месяц</v8:content>"),
+            "{xml}"
+        );
+    }
+
+    #[test]
     fn typed_child_tree_rejects_excessive_depth_before_capture() {
         let root = std::env::temp_dir().join(format!(
             "unica-meta-edit-child-depth-{}",
@@ -6534,5 +6663,173 @@ mod tests {
         assert!(resources.file_mutations.is_empty());
         assert!(resources.publication_plan.is_empty());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Every payload member the platform actually writes beside a managed form,
+    /// measured over a real 8.3.27 Designer dump. `Ext/Form/Module.bsl` is the
+    /// module (not `Ext/Module.bsl`); `Ext/Help*` is form help; the pictures
+    /// under `Ext/Form/Items` belong to individual form items.
+    const REAL_FORM_PAYLOADS: &[(&str, &[&str])] = &[
+        ("bare", &[]),
+        ("module", &["Ext/Form/Module.bsl"]),
+        (
+            "module-and-help",
+            &["Ext/Form/Module.bsl", "Ext/Help.xml", "Ext/Help/ru.html"],
+        ),
+        (
+            "help-assets",
+            &[
+                "Ext/Help.xml",
+                "Ext/Help/ru.html",
+                "Ext/Help/_files/note.png",
+            ],
+        ),
+        (
+            "item-pictures",
+            &[
+                "Ext/Form/Module.bsl",
+                "Ext/Form/Items/Список/Picture.png",
+                "Ext/Form/Items/Список/RowsPicture.png",
+            ],
+        ),
+    ];
+
+    fn write_designer_form_object(root: &Path, extra_payload: &[&str]) -> String {
+        let owner_image = object_xml("Catalog", "Users", "").replace(
+            "<ChildObjects/>",
+            "<ChildObjects><Form>ItemForm</Form></ChildObjects>",
+        );
+        let forms = root.join("Catalogs/Users/Forms");
+        std::fs::create_dir_all(forms.join("ItemForm/Ext")).unwrap();
+        std::fs::write(root.join("Catalogs/Users.xml"), &owner_image).unwrap();
+        std::fs::write(
+            forms.join("ItemForm.xml"),
+            object_xml("Form", "ItemForm", "<FormType>Managed</FormType>")
+                .replace("\n\t\t<ChildObjects/>", ""),
+        )
+        .unwrap();
+        std::fs::write(
+            forms.join("ItemForm/Ext/Form.xml"),
+            concat!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+                "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" version=\"2.20\">\n",
+                "\t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>\n",
+                "</Form>"
+            ),
+        )
+        .unwrap();
+        for relative in extra_payload {
+            let path = forms.join("ItemForm").join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"payload").unwrap();
+        }
+        owner_image
+    }
+
+    fn designer_form_child_diagnostics(root: &Path, owner_image: &str) -> Vec<String> {
+        let owner = metadata_reference("Catalog.Users").metadata_path;
+        let plan = match plan_typed_child_resources(
+            &root.join("Catalogs/Users.xml"),
+            &owner,
+            "Catalog",
+            "Users",
+            &[],
+            owner_image,
+        ) {
+            Ok(plan) => plan,
+            Err(failure) => {
+                return failure
+                    .diagnostics
+                    .iter()
+                    .map(|diagnostic| diagnostic.message.clone())
+                    .collect()
+            }
+        };
+        let mut resources = vec![
+            crate::application::ports::MetadataResourceImage {
+                role: MetadataResourceRole::Descriptor,
+                bytes: owner_image.as_bytes().to_vec(),
+            },
+            crate::application::ports::MetadataResourceImage {
+                role: MetadataResourceRole::Registration,
+                bytes: br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+<Configuration uuid="22222222-2222-4222-8222-222222222222">
+<Properties><Name>Owner</Name></Properties><ChildObjects><Catalog>Users</Catalog></ChildObjects>
+</Configuration></MetaDataObject>"#
+                    .to_vec(),
+            },
+        ];
+        resources.extend(plan.validation_resources);
+        let subject = crate::application::ports::MetadataValidationSubject {
+            target: owner,
+            resources,
+            child_footprints: plan.validation_footprints,
+            registrar_evidence: Default::default(),
+        };
+        let context = WorkspaceContext {
+            cwd: root.to_path_buf(),
+            workspace_root: root.to_path_buf(),
+            cache_root: root.join(".unica/cache"),
+            workspace_epoch: 1,
+        };
+
+        // Keep only what this regression is about: the object itself is a
+        // hand-written stub, so its own completeness diagnostics are noise.
+        super::super::validation::MetadataValidator
+            .validate(&subject, &context)
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic
+                    .metadata_path
+                    .as_ref()
+                    .is_some_and(|path| path.as_str().contains(".Form."))
+            })
+            .map(|diagnostic| diagnostic.message.clone())
+            .collect()
+    }
+
+    /// Regression for #360. A Designer dump registers a form in the owner's
+    /// `ChildObjects` as a bare `<Form>Name</Form>` element and keeps the real
+    /// descriptor in `Forms/Name.xml`. Reading such an object must succeed for
+    /// every payload shape the platform actually writes.
+    #[test]
+    fn real_designer_form_payloads_validate_without_child_diagnostics() {
+        for (label, extra_payload) in REAL_FORM_PAYLOADS {
+            let root = std::env::temp_dir().join(format!(
+                "unica-meta-issue-360-{label}-{}",
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::create_dir_all(&root).unwrap();
+            let owner_image = write_designer_form_object(&root, extra_payload);
+
+            let diagnostics = designer_form_child_diagnostics(&root, &owner_image);
+
+            let _ = std::fs::remove_dir_all(&root);
+            assert_eq!(diagnostics, Vec::<String>::new(), "{label}");
+        }
+    }
+
+    /// The closed payload guard still has to reject bytes the platform never
+    /// writes, otherwise a mutation would silently clobber them.
+    #[test]
+    fn unmodelled_form_payload_members_are_still_rejected() {
+        for (label, extra_payload) in [
+            ("stray-root-file", "stray.txt"),
+            ("legacy-module-path", "Ext/Module.bsl"),
+            ("stray-ext-file", "Ext/Unexpected.xml"),
+        ] {
+            let root = std::env::temp_dir().join(format!(
+                "unica-meta-issue-360-reject-{label}-{}",
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::create_dir_all(&root).unwrap();
+            let owner_image = write_designer_form_object(&root, &[extra_payload]);
+
+            let diagnostics = designer_form_child_diagnostics(&root, &owner_image);
+
+            let _ = std::fs::remove_dir_all(&root);
+            assert!(!diagnostics.is_empty(), "{label} was accepted");
+        }
     }
 }

@@ -320,6 +320,151 @@ fn meta_remove_reauthorizes_every_planned_subsystem_cleanup_before_mutations() {
     assert_eq!(tree_snapshot(&source), expected);
 }
 
+/// Every neighbouring non-owner document at its dump-relative path. The
+/// reference scan reads and binds each file, but none contributes an independent
+/// format owner or applies its publication syntax to removal of another object.
+const NEIGHBOURING_NON_OWNER_DOCUMENTS: &[(&str, &str, &str)] = &[
+    (
+        "predefined-data",
+        "src/Catalogs/Sibling/Ext/Predefined.xml",
+        concat!(
+            r#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" "#,
+            r#"xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" "#,
+            "xsi:type=\"CatalogPredefinedItems\" version=\"2.20\"/>",
+        ),
+    ),
+    (
+        "ext-picture",
+        "src/CommonPictures/Logo/Ext/Picture.xml",
+        concat!(
+            r#"<ExtPicture xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" "#,
+            "version=\"2.20\"/>",
+        ),
+    ),
+    (
+        "job-schedule",
+        "src/ScheduledJobs/Nightly/Ext/Schedule.xml",
+        concat!(
+            r#"<JobSchedule xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" "#,
+            "version=\"2.20\"/>",
+        ),
+    ),
+    (
+        "version-bearing-dcs-dependency",
+        "src/Catalogs/Sibling/Templates/Schema/Ext/Template.xml",
+        concat!(
+            r#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" "#,
+            "version=\"2.21\"/>",
+        ),
+    ),
+    // `ConfigDumpInfo` is deliberately absent. It has the same exact publication
+    // policy, but a removal never reads it, so a case here
+    // would pass with the root registered and without it — proving nothing. Its
+    // registration is guarded where it is observable: the registry's own
+    // coverage tests and the staged-dump validator.
+];
+
+#[test]
+fn meta_remove_reads_every_neighbouring_non_owner_document_without_blocking() {
+    // Publication validates each document's own syntax. This unrelated read
+    // resolves compatibility from Configuration.xml instead.
+    for (label, relative, xml) in NEIGHBOURING_NON_OWNER_DOCUMENTS {
+        let workspace = create_remove_workspace(label);
+        let document = workspace.path().join(relative);
+        std::fs::create_dir_all(document.parent().unwrap()).unwrap();
+        std::fs::write(&document, xml).unwrap();
+
+        let preview = call_remove(workspace.path(), true);
+
+        assert!(preview.ok, "{relative}: {:?}", preview.errors);
+        assert_eq!(
+            preview.data.as_ref().unwrap()["validation"]["status"],
+            "passed",
+            "{relative}"
+        );
+        assert!(
+            preview.diagnostics.is_none(),
+            "{relative}: {:?}",
+            preview.diagnostics
+        );
+        assert_eq!(
+            preview.data.as_ref().unwrap()["effects"][0]["target"],
+            "Catalog.Removable",
+            "{relative}: preview must still plan the requested removal"
+        );
+    }
+}
+
+#[test]
+fn meta_remove_does_not_infer_format_from_unrelated_predefined_data() {
+    for (label, version) in [
+        ("supported", Some("2.20")),
+        ("missing", None),
+        ("newer", Some("2.21")),
+    ] {
+        let workspace = create_remove_workspace(&format!("{label}-predefined-data"));
+        let source = workspace.path().join("src");
+        let predefined = source.join("Catalogs/Sibling/Ext/Predefined.xml");
+        std::fs::create_dir_all(predefined.parent().unwrap()).unwrap();
+        let version = version
+            .map(|value| format!(r#" version="{value}""#))
+            .unwrap_or_default();
+        std::fs::write(
+            &predefined,
+            format!(
+                r#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CatalogPredefinedItems"{version}/>"#,
+            ),
+        )
+        .unwrap();
+        let before = tree_snapshot(&source);
+
+        let result = call_remove(workspace.path(), true);
+
+        assert!(result.ok, "{label}: {:?}", result.errors);
+        assert_eq!(
+            result.data.as_ref().unwrap()["validation"]["status"],
+            "passed",
+            "{label}"
+        );
+        assert_eq!(
+            result.data.as_ref().unwrap()["effects"][0]["target"],
+            "Catalog.Removable",
+            "{label}: preview must still plan the requested removal"
+        );
+        assert_eq!(tree_snapshot(&source), before, "{label}");
+    }
+}
+
+#[test]
+fn meta_remove_still_binds_container_scoped_predefined_data_as_a_preimage() {
+    let workspace = create_remove_workspace("predefined-preimage-drift");
+    let source = workspace.path().join("src");
+    let descriptor = source.join("Catalogs/Removable.xml");
+    let owner = source.join("Configuration.xml");
+    let predefined = source.join("Catalogs/Sibling/Ext/Predefined.xml");
+    std::fs::create_dir_all(predefined.parent().unwrap()).unwrap();
+    let initial = br#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" version="2.21"/>"#;
+    let concurrent = br#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" version="2.22"/>"#;
+    std::fs::write(&predefined, initial).unwrap();
+    let descriptor_before = std::fs::read(&descriptor).unwrap();
+    let owner_before = std::fs::read(&owner).unwrap();
+    let predefined_for_hook = predefined.clone();
+
+    let result = with_meta_remove_before_reauthorization_hook(
+        move || std::fs::write(predefined_for_hook, concurrent).unwrap(),
+        || call_remove(workspace.path(), false),
+    );
+
+    assert!(
+        !result.ok,
+        "stale dependency unexpectedly published: {result:?}"
+    );
+    assert!(result.cache.events.is_empty());
+    assert_eq!(std::fs::read(descriptor).unwrap(), descriptor_before);
+    assert_eq!(std::fs::read(owner).unwrap(), owner_before);
+    assert_eq!(std::fs::read(predefined).unwrap(), concurrent);
+}
+
 #[test]
 fn meta_remove_rejects_descriptor_identity_mismatch_before_effect_projection() {
     let workspace = create_remove_workspace("identity-mismatch");

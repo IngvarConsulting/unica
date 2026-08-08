@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="docs/visual-kit/index.html">
+  <a href="https://ingvar.pro/products/unica">
     <img src="docs/visual-kit/logos/unica-logo-letter-transparent-blue.svg" alt="Unica" width="420">
   </a>
 </p>

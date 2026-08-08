@@ -394,4 +394,58 @@ mod tests {
         );
         assert!(metadata_kind_value_types(MetadataKind::CommonModule).is_empty());
     }
+
+    /// Which module roles a kind owns is a fact about the platform, not about
+    /// what happens to be on disk. Measured against an 8.3.27 vendor-class dump
+    /// of 12290 BSL files: every role below occurs there for the kinds listed,
+    /// and the refusals below never occur. The empty modules the platform omits
+    /// on export are exactly why this cannot be inferred from the filesystem.
+    #[test]
+    fn direct_module_roles_match_the_platform_rather_than_the_filesystem() {
+        for (kind, role) in [
+            ("Catalog", "ObjectModule"),
+            ("Catalog", "ManagerModule"),
+            ("Document", "ObjectModule"),
+            ("Document", "ManagerModule"),
+            ("DataProcessor", "ObjectModule"),
+            ("Report", "ObjectModule"),
+            ("BusinessProcess", "ObjectModule"),
+            ("Task", "ObjectModule"),
+            ("ExchangePlan", "ObjectModule"),
+            ("ChartOfCharacteristicTypes", "ObjectModule"),
+            ("InformationRegister", "RecordSetModule"),
+            ("AccumulationRegister", "RecordSetModule"),
+            ("AccountingRegister", "RecordSetModule"),
+            ("CalculationRegister", "RecordSetModule"),
+            ("InformationRegister", "ManagerModule"),
+            ("Constant", "ValueManagerModule"),
+            ("Constant", "ManagerModule"),
+            ("Enum", "ManagerModule"),
+            ("DocumentJournal", "ManagerModule"),
+        ] {
+            assert!(
+                supports_direct_module_role(kind, role),
+                "{kind} must own {role}"
+            );
+        }
+
+        // The distinctions a filesystem scan cannot make: these kinds have no
+        // object module at all, so an absent file is not an omitted empty one.
+        for (kind, role) in [
+            ("Enum", "ObjectModule"),
+            ("DocumentJournal", "ObjectModule"),
+            ("InformationRegister", "ObjectModule"),
+            ("Constant", "ObjectModule"),
+            ("Catalog", "RecordSetModule"),
+            ("Catalog", "ValueManagerModule"),
+            ("Document", "RecordSetModule"),
+            ("CommonModule", "ObjectModule"),
+            ("Enum", "RecordSetModule"),
+        ] {
+            assert!(
+                !supports_direct_module_role(kind, role),
+                "{kind} must not own {role}"
+            );
+        }
+    }
 }

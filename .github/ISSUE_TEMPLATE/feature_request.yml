@@ -1,0 +1,37 @@
+name: Доработка
+description: Предложить новую возможность или изменение поведения
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Для ошибки в существующем поведении используйте форму «Дефект» — там
+        собирается версия и способ установки.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Задача
+      description: >-
+        Какую работу сейчас нельзя выполнить или приходится делать в обход.
+        Опишите ситуацию, а не желаемую реализацию.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Предложение
+      description: >-
+        Ожидаемое поведение. Если затрагивается публичная поверхность `unica.*`,
+        назовите инструменты и аргументы.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Обходные пути
+      description: Чем пользуетесь сейчас и почему это не решает задачу.
+    validations:
+      required: false

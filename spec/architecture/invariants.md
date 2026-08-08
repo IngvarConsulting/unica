@@ -726,6 +726,21 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_resources.rs`
 - **Scope:** runtime
 
+### INV-SOURCE-TAIL-INSERT — Вставка без селектора идёт в конец и доказывает повтор
+
+- **Rule:** Операция `insert` инструмента `unica.code.patch` принимает
+  необязательный `selector`. Без селектора содержимое дописывается в конец
+  канонического BSL-модуля, `position` не принимается, маркер порядка байтов
+  содержимым не считается и сохраняется, а повтор идентичного вызова до записи
+  распознаётся как семантически пустой. Отдельной операции инициализации нет.
+  Отсутствующий файл модуля создаётся только при применении записи и только
+  когда роль допустима для вида метаданных по реестру, а дескриптор владельца
+  доказан; предпросмотр файл не создаёт.
+- **Decision:** ADR-0026
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/code.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
+- **Scope:** runtime
+
 ### INV-SOURCE-ATOMIC-PUBLISH — Мутация источника публикуется атомарно после проверки
 
 - **Rule:** Изменяющая операция сначала собирает точный образ файла после записи
@@ -781,6 +796,20 @@ Unica. Каждая запись формулирует одно нормати�
 - **Decision:** ADR-0016
 - **Check:** `ci-test` — `crates/unica-coder/src/domain/format_profile.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/format_guard.rs`
+- **Scope:** runtime, source
+
+### INV-SOURCE-ROOT-POLICIES — Публикация и владение форматом задаются независимо
+
+- **Rule:** Один закрытый каталог точных QName платформенного XML задаёт две
+  независимые явные политики: допустимое написание версии при публикации и роль
+  документа в разрешении владельца формата. Версионированный при публикации
+  подчинённый документ не становится самостоятельным владельцем только из-за
+  атрибута `version`; публикация неизвестного QName и чтение неизвестного корня
+  с объявленной версией по-прежнему отказывают закрыто.
+- **Decision:** ADR-0031
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_roots.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_owner.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs`
 - **Scope:** runtime, source
 
 ### INV-SOURCE-OWNER-VERSION-GATE — Версию решает корень-владелец, отказ наступает до первой записи
@@ -1224,4 +1253,5 @@ Unica. Каждая запись формулирует одно нормати�
 поэтому примеры в прозе неуместны: их подхватит
 `tests/ci/test_architecture_registry.py`.
 
-Выведенных из обращения идентификаторов пока нет.
+- `INV-SOURCE-ROOT-REGISTRY`, `2026-08-07` — публикационное версионирование
+  больше не определяет роль владельца; правило заменено новым по ADR-0031.

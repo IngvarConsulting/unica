@@ -623,6 +623,26 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
             {"required": ["definition"]}
         ]);
     }
+    if tool.name == "unica.code.patch" {
+        schema["oneOf"] = json!([
+            {
+                "properties": {"operation": {"const": "insert"}},
+                "required": ["selector", "position"]
+            },
+            {
+                "properties": {"operation": {"const": "insert"}},
+                "not": {"anyOf": [
+                    {"required": ["selector"]},
+                    {"required": ["position"]}
+                ]}
+            },
+            {
+                "properties": {"operation": {"const": "replace"}},
+                "required": ["selector"],
+                "not": {"required": ["position"]}
+            }
+        ]);
+    }
     if tool.name == "unica.source.resources" {
         schema["oneOf"] = json!([
             {
@@ -1235,23 +1255,31 @@ fn validate_code_patch_arguments(tool: ToolSpec, args: &Map<String, Value>) -> R
             tool.name
         ));
     }
-    // `position` places an insertion; a replacement overwrites the selected span
-    // and has nowhere to place anything, so accepting it would be meaningless.
-    if operation == "insert" {
+    // `position` places content relative to a selector. A replacement overwrites
+    // the selected span and has nowhere to place anything; a selector-less
+    // insertion goes to the end of the module, which is not a relative place
+    // either. Both refuse `position` rather than ignoring it.
+    let has_selector = args.contains_key("selector");
+    if operation == "insert" && has_selector {
         if !matches!(
             args.get("position").and_then(Value::as_str),
             Some("before" | "after")
         ) {
             return Err(format!(
-                "{} argument `position` must be `before` or `after` for operation `insert`",
+                "{} argument `position` must be `before` or `after` when `insert` names a selector",
                 tool.name
             ));
         }
     } else if args.contains_key("position") {
         return Err(format!(
-            "{} does not accept `position` for operation `replace`; the selector names the replaced span",
+            "{} does not accept `position` here; only `insert` with a `selector` places content relative to it",
             tool.name
         ));
+    }
+    // A selector-less insertion has nothing left to validate: the end of the
+    // module is not addressed, it is implied.
+    if operation == "insert" && !has_selector {
+        return Ok(());
     }
     let selector = args
         .get("selector")
@@ -2409,7 +2437,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "content",
-        "BSL text for unica.code.patch: inserted at the selector for operation insert, or written over the selected method or anchor for operation replace",
+        "BSL text for unica.code.patch: inserted at the selector for operation insert, appended to the end of the module when insert names no selector, or written over the selected method or anchor for operation replace",
     ),
     (
         "context",
@@ -2748,7 +2776,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "position",
-        "Where unica.code.patch places the content relative to the selector: before or after",
+        "Where unica.code.patch places the content relative to the selector: before or after. Accepted only when insert names a selector",
     ),
     (
         "preset",
@@ -2812,7 +2840,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "selector",
-        "Object naming the unica.code.patch insertion point: exactly one of {\"method\": \"Name\"} for a whole procedure or function, or {\"anchor\": \"text\"} for a fragment that occurs once inside one method",
+        "Optional object naming the unica.code.patch edit point: exactly one of {\"method\": \"Name\"} for a whole procedure or function, or {\"anchor\": \"text\"} for a fragment that occurs once inside one method. Required by replace; when insert omits it the content goes to the end of the module",
     ),
     (
         "server",
@@ -4027,6 +4055,25 @@ mod tests {
         assert!(validate_tool_arguments(tool, &args, false).is_err());
         args.insert("rawArgs".to_string(), json!(["--unsafe"]));
         assert!(validate_tool_arguments(tool, &args, false).is_err());
+
+        // `insert` without a selector is complete on its own: the end of the
+        // module is implied, so `position` would have nothing to be relative to.
+        let tail = Map::from_iter([
+            ("sourceSet".to_string(), json!("main")),
+            ("metadataPath".to_string(), json!("CommonModule.X.Module")),
+            ("operation".to_string(), json!("insert")),
+            (
+                "content".to_string(),
+                json!("Procedure Run()\nEndProcedure"),
+            ),
+        ]);
+        validate_tool_arguments(tool, &tail, false).unwrap();
+        let mut tail_with_position = tail.clone();
+        tail_with_position.insert("position".to_string(), json!("after"));
+        assert!(validate_tool_arguments(tool, &tail_with_position, false).is_err());
+        let mut selector_without_position = tail;
+        selector_without_position.insert("selector".to_string(), json!({"method": "Run"}));
+        assert!(validate_tool_arguments(tool, &selector_without_position, false).is_err());
     }
 
     #[test]
@@ -4668,6 +4715,20 @@ mod tests {
             instance["selector"] = selector;
             assert!(validator.is_valid(&instance), "{instance}");
         }
+
+        let tail = json!({
+            "sourceSet": "main",
+            "metadataPath": "CommonModule.X.Module",
+            "operation": "insert",
+            "content": "Procedure Run()\nEndProcedure"
+        });
+        assert!(validator.is_valid(&tail), "{tail}");
+        let mut tail_with_position = tail.clone();
+        tail_with_position["position"] = json!("after");
+        assert!(!validator.is_valid(&tail_with_position));
+        let mut selector_without_position = tail;
+        selector_without_position["selector"] = json!({"method": "Run"});
+        assert!(!validator.is_valid(&selector_without_position));
 
         let mut invalid = base;
         invalid["selector"] = json!({"method": "A", "anchor": "B"});
@@ -5619,19 +5680,13 @@ mod tests {
         assert_eq!(selector["properties"]["method"]["type"], "string");
         assert_eq!(selector["properties"]["anchor"]["type"], "string");
         assert_eq!(selector["oneOf"].as_array().map(Vec::len), Some(2));
-        for required in [
-            "sourceSet",
-            "metadataPath",
-            "operation",
-            "selector",
-            "content",
-        ] {
+        for required in ["sourceSet", "metadataPath", "operation", "content"] {
             assert!(schema["required"]
                 .as_array()
                 .is_some_and(|items| { items.iter().any(|value| value == required) }));
         }
-        // `position` belongs to operation `insert` only, so it is offered but
-        // not demanded of every call.
+        // `position` belongs to a selector-bearing `insert` only, so it is
+        // offered but not demanded of every call.
         assert_eq!(
             schema["properties"]["operation"]["enum"],
             serde_json::json!(["insert", "replace"])

@@ -139,7 +139,11 @@ fn invoke_info(
         .diagnostics
         .extend(read.local.diagnostics.iter().cloned());
     let failed = validation.status == MetaValidationStatus::Failed;
-    let enrichment = if failed || request.sections.is_empty() {
+    // The enrichment sections are read from the source tree and answer on their
+    // own evidence, so a descriptor that failed validation says nothing about
+    // whether they are correct. Withholding them made an unrelated failure cost
+    // the caller data that was never in question (ADR-0028).
+    let enrichment = if request.sections.is_empty() {
         Default::default()
     } else {
         ports.read_metadata_related(request, &read.local, context, cancellation)
@@ -2347,8 +2351,7 @@ mod tests {
             "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
         )
         .unwrap();
-        let previous = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&workspace).unwrap();
+        let cwd = crate::test_support::ProcessCwdGuard::enter(&workspace).unwrap();
         let application = crate::application::UnicaApplication::new();
         for name in ["Owner", "Subject"] {
             let added = application
@@ -2425,7 +2428,7 @@ mod tests {
                 })),
             )
             .unwrap();
-        std::env::set_current_dir(previous).unwrap();
+        drop(cwd);
         let _ = std::fs::remove_dir_all(&workspace);
 
         assert!(preview.ok, "{:?}", preview.errors);
@@ -2543,8 +2546,12 @@ mod tests {
         }
     }
 
+    /// ADR-0028: the enrichment sections stand on their own evidence from the
+    /// source tree, so a failed descriptor validation must not withhold them.
+    /// The call still reports the failure — it just does not also drop data
+    /// that the failure says nothing about.
     #[test]
-    fn coordinator_info_validation_failure_skips_enrichment() {
+    fn coordinator_info_validation_failure_still_enriches() {
         let (mut ports, state) = info_ports();
         ports.validation = MetaValidationData {
             status: MetaValidationStatus::Failed,
@@ -2552,6 +2559,15 @@ mod tests {
                 MetaDiagnosticCode::ValidationFailed,
                 "local metadata validation failed",
             )],
+        };
+        ports.related = crate::application::ports::MetaEnrichment {
+            predefined_items: Some(crate::domain::metadata::MetaPredefinedItemsData {
+                total: 1,
+                returned: 1,
+                truncated: false,
+                items: vec![json!({"name": "Kept"})],
+            }),
+            ..Default::default()
         };
 
         let outcome = invoke(
@@ -2568,8 +2584,11 @@ mod tests {
         .unwrap();
 
         assert!(!outcome.adapter.ok);
-        assert!(outcome.data.as_ref().unwrap().get("related").is_none());
-        assert_eq!(state.lock().unwrap().calls, ["read", "validate"]);
+        assert_eq!(
+            outcome.data.as_ref().unwrap()["predefinedItems"]["items"][0]["name"],
+            json!("Kept")
+        );
+        assert_eq!(state.lock().unwrap().calls, ["read", "validate", "related"]);
     }
 
     #[test]

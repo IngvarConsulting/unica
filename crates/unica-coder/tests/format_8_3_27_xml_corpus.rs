@@ -777,9 +777,23 @@ fn sha256_file(path: &Path) -> Result<String, String> {
 }
 
 fn is_xml_payload_path(path: &Path) -> bool {
-    path.extension()
+    if path
+        .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
-        || path.file_name().is_some_and(|name| name == "Package.bin")
+    {
+        return true;
+    }
+    // ADR-0024 grants `Package.bin` its XML reading through the XDTO package
+    // layout, not through the file name. Mirrored by `_is_xml_payload_path` in
+    // scripts/dev/verify-8-3-27-platform.py.
+    let components = path
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    let [.., collection, _package, ext, name] = components.as_slice() else {
+        return false;
+    };
+    collection == "XDTOPackages" && ext == "Ext" && name == "Package.bin"
 }
 
 fn visit_xml_files(
@@ -1297,6 +1311,38 @@ fn write_json_input(workspace: &Path, name: &str, value: &Value) -> Result<Strin
     Ok(relative)
 }
 
+/// Минимальные `operations`, делающие объект целостным по ADR-0030.
+///
+/// Виды без записи в таблице условий ничего не требуют, и инструмент за них
+/// ничего не придумывает, поэтому здесь для них пусто.
+fn meta_operations(kind: &str) -> Option<Value> {
+    let string50 =
+        json!({"variants": [{"kind": "string", "length": 50, "allowedLength": "variable"}]});
+    let number = |digits: u32, fraction: u32| json!({"variants": [{"kind": "number", "digits": digits, "fraction": fraction, "sign": "any"}]});
+    match kind {
+        "InformationRegister" => Some(json!([
+            {"op": "add", "collection": "dimensions",
+             "elements": [{"name": "Item", "type": string50}]},
+            {"op": "add", "collection": "resources",
+             "elements": [{"name": "Price", "type": number(15, 2)}]}
+        ])),
+        "AccumulationRegister" => Some(json!([
+            {"op": "add", "collection": "dimensions",
+             "elements": [{"name": "Warehouse", "type": string50}]},
+            {"op": "add", "collection": "resources",
+             "elements": [{"name": "Quantity", "type": number(15, 3)}]}
+        ])),
+        "AccountingRegister" => Some(json!([
+            {"op": "add", "collection": "resources",
+             "elements": [{"name": "Amount", "type": number(15, 2)}]}
+        ])),
+        "WebService" => Some(json!([
+            {"op": "setProperties", "values": {"Namespace": "urn:corpus"}}
+        ])),
+        _ => None,
+    }
+}
+
 fn seed_metadata(workspace: &Path, input_name: &str, definition: Value) -> Result<(), String> {
     let kind = definition
         .get("type")
@@ -1310,6 +1356,9 @@ fn seed_metadata(workspace: &Path, input_name: &str, definition: Value) -> Resul
     args.insert("sourceSet".to_string(), Value::String("main".to_string()));
     args.insert("kind".to_string(), Value::String(kind.to_string()));
     args.insert("name".to_string(), Value::String(name.to_string()));
+    if let Some(operations) = meta_operations(kind) {
+        args.insert("operations".to_string(), operations);
+    }
     call_public_tool("unica.meta.add", &args)?;
     Ok(())
 }
@@ -2126,6 +2175,9 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
                     .to_string(),
             ),
         );
+        if let Some(operations) = meta_operations(case.branch) {
+            args.insert("operations".to_string(), operations);
+        }
         return Ok(args);
     }
 
@@ -2248,7 +2300,7 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
         args.insert("JsonPath".to_string(), Value::String(path));
         args.insert(
             "OutputPath".to_string(),
-            Value::String("src/Reports/CorpusReport/Forms/CorpusForm.xml".to_string()),
+            Value::String("src/Reports/CorpusReport/Forms/CorpusForm/Ext/Form.xml".to_string()),
         );
         return Ok(args);
     }
@@ -2259,7 +2311,9 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
         if case.id == "form-edit-managed" {
             args.insert(
                 "FormPath".to_string(),
-                Value::String("src/Catalogs/CorpusCatalog/Forms/CorpusForm.xml".to_string()),
+                Value::String(
+                    "src/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml".to_string(),
+                ),
             );
             args.insert(
                 "definition".to_string(),
@@ -4120,6 +4174,51 @@ fn non_xml_inventory_covers_every_xml_none_impact_case() {
     }
 }
 
+#[test]
+fn managed_form_cases_address_logform_content_and_spare_the_descriptor() {
+    let expectations = [
+        ("form-compile-managed", "src/Reports/CorpusReport"),
+        ("form-edit-managed", "src/Catalogs/CorpusCatalog"),
+    ];
+    for (case_id, owner) in expectations {
+        let root = unique_temp_dir(case_id);
+        let case = EXECUTABLE_CASES
+            .iter()
+            .find(|case| case.id == case_id)
+            .unwrap();
+        let mut gate = SequentialCallGate::default();
+
+        let generated = run_corpus_case(&root, case, &mut gate).unwrap();
+
+        let prefix = manifest_case_prefix(case_id);
+        let content = format!("{prefix}/{owner}/Forms/CorpusForm/Ext/Form.xml");
+        let descriptor = format!("{prefix}/{owner}/Forms/CorpusForm.xml");
+        let families = generated
+            .files
+            .iter()
+            .map(|file| (file.path.as_str(), file.family.as_str()))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            families.get(descriptor.as_str()).copied(),
+            Some("metadata"),
+            "{case_id} rewrote the managed form descriptor"
+        );
+        let changed = generated
+            .files
+            .iter()
+            .filter(|file| matches!(file.delta.as_str(), "created" | "modified"))
+            .map(|file| (file.path.as_str(), file.family.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            changed,
+            [(content.as_str(), "managed-form")],
+            "{case_id} did not change exactly the managed form content"
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
 fn assert_exact_extended_property_state(path: &Path, expected_property: &str) {
     let xml = fs::read_to_string(path).unwrap();
     let document = Document::parse(xml.trim_start_matches('\u{feff}'))
@@ -4783,6 +4882,35 @@ fn cfe_patch_method_corpus_covers_every_supported_module_layout_family() {
             "Constant.ValueManagerModule",
         ]
     );
+}
+
+#[test]
+fn xml_payload_rule_grants_the_bin_exception_only_to_the_xdto_layout() {
+    // ADR-0024 names `XDTOPackages/<Name>/Ext/Package.bin` as text XML. The
+    // exception belongs to that layout, not to the file name, and this rule
+    // mirrors `_is_xml_payload_path` in scripts/dev/verify-8-3-27-platform.py.
+    for granted in [
+        "src/XDTOPackages/CorpusPackage/Ext/Package.bin",
+        "XDTOPackages/CorpusPackage/Ext/Package.bin",
+        "src/Catalogs/CorpusCatalog.xml",
+        "src/Catalogs/CorpusCatalog.XML",
+    ] {
+        assert!(
+            is_xml_payload_path(Path::new(granted)),
+            "expected XML payload: {granted}"
+        );
+    }
+    for refused in [
+        "src/Ext/Package.bin",
+        "src/XDTOPackages/CorpusPackage/Package.bin",
+        "src/XDTOPackages/Ext/Package.bin",
+        "src/Ext/ParentConfigurations.bin",
+    ] {
+        assert!(
+            !is_xml_payload_path(Path::new(refused)),
+            "expected non-XML payload: {refused}"
+        );
+    }
 }
 
 #[test]

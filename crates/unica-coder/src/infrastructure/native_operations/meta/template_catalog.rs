@@ -547,6 +547,25 @@ fn emit_meta_catalog_xml(
     Ok((format!("{}\n", lines.join("\n")), obj_uuid))
 }
 
+/// Whether 8.3.27 declares a `ChildObjects` collection for the kind.
+///
+/// The platform refuses the import outright when a childless kind carries the
+/// element: `document format error: unexpected read property. Current property:
+/// ChildObjects, expected property: <Kind>`. The set below is measured against a
+/// real 8.3.27 dump, where the split is total — every kind either always carries
+/// the element or never does — and confirmed by the exact platform gate.
+fn kind_declares_child_objects(kind: crate::domain::metadata::MetadataKind) -> bool {
+    use crate::domain::metadata::MetadataKind;
+    !matches!(
+        kind,
+        MetadataKind::CommonModule
+            | MetadataKind::Constant
+            | MetadataKind::DefinedType
+            | MetadataKind::EventSubscription
+            | MetadataKind::ScheduledJob
+    )
+}
+
 fn minimal_metadata_xml(
     kind: crate::domain::metadata::MetadataKind,
     obj_name: &str,
@@ -661,27 +680,9 @@ fn minimal_metadata_xml(
         }
     }
     lines.push("\t\t</Properties>".to_string());
-    if matches!(
-        kind,
-        crate::domain::metadata::MetadataKind::AccountingRegister
-            | crate::domain::metadata::MetadataKind::CalculationRegister
-    ) {
-        lines.push("\t\t<ChildObjects>".to_string());
-        let field = MetadataAttributeTemplate {
-            name: "Value".to_string(),
-            synonym: "Value".to_string(),
-            required: false,
-        };
-        emit_meta_register_field(
-            &mut lines,
-            "\t\t\t",
-            "Resource",
-            &field,
-            kind.as_str(),
-            &mut next_uuid,
-        );
-        lines.push("\t\t</ChildObjects>".to_string());
-    } else {
+    // Содержимое объекта задаёт вызывающий через `operations`: инструмент не
+    // придумывает ресурсы, измерения и значения свойств за него (ADR-0030).
+    if kind_declares_child_objects(kind) {
         lines.push("\t\t<ChildObjects/>".to_string());
     }
     lines.push(format!("\t</{object_type}>"));
@@ -2936,19 +2937,32 @@ pub(super) fn split_meta_camel_case(name: &str) -> String {
         return String::new();
     }
     let mut result = String::new();
-    let mut previous_lower = false;
+    let mut previous: Option<char> = None;
     for ch in name.chars() {
-        if previous_lower && ch.is_uppercase() {
+        if previous.is_some_and(|previous| meta_synonym_word_boundary(previous, ch)) {
             result.push(' ');
         }
         result.push(ch);
-        previous_lower = ch.is_lowercase();
+        previous = Some(ch);
     }
     let mut chars = result.chars();
     match chars.next() {
         Some(first) => format!("{}{}", first, chars.as_str().to_lowercase()),
         None => result,
     }
+}
+
+/// A generated synonym breaks a word where the platform name itself changes
+/// class: after a lowercase letter before an uppercase one, and on both sides of
+/// a digit run. A digit is neither uppercase nor lowercase, so without the
+/// second rule `SumFor30Days` would keep its digits glued to the words around
+/// them once the tail is lowercased.
+fn meta_synonym_word_boundary(previous: char, current: char) -> bool {
+    if previous.is_lowercase() && current.is_uppercase() {
+        return true;
+    }
+    (previous.is_alphabetic() && current.is_ascii_digit())
+        || (previous.is_ascii_digit() && current.is_alphabetic())
 }
 
 #[cfg(test)]
