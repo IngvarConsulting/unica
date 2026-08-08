@@ -806,7 +806,7 @@ Unica. Каждая запись формулирует одно нормати�
   подчинённый документ не становится самостоятельным владельцем только из-за
   атрибута `version`; публикация неизвестного QName и чтение неизвестного корня
   с объявленной версией по-прежнему отказывают закрыто.
-- **Decision:** ADR-0029
+- **Decision:** ADR-0031
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_roots.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_owner.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs`
@@ -1254,4 +1254,4 @@ Unica. Каждая запись формулирует одно нормати�
 `tests/ci/test_architecture_registry.py`.
 
 - `INV-SOURCE-ROOT-REGISTRY`, `2026-08-07` — публикационное версионирование
-  больше не определяет роль владельца; правило заменено новым по ADR-0029.
+  больше не определяет роль владельца; правило заменено новым по ADR-0031.
