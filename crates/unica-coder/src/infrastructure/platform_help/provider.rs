@@ -149,7 +149,11 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
                     hits: Vec::new(),
                 }]
             }
-            Err(InstallationError::NotFound | InstallationError::VersionUndetermined) => {
+            // NotFound и VersionUndetermined и раньше давали один и тот же
+            // `reason`, но обязаны различаться текстом: иначе вызывающий не
+            // отличит «каталога нет» от «версию не вывести из пути» ни по
+            // чему, кроме кода, а не по ответу.
+            Err(InstallationError::VersionUndetermined) => {
                 return vec![DocumentationSection {
                     provider: id,
                     corpus: "syntax-context".to_string(),
@@ -157,13 +161,37 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
                     authority: Authority::Vendor,
                     status: DocumentationSectionStatus::Unavailable {
                         reason: UnavailableReason::NotConfigured,
-                        detail: "каталог установки недоступен".to_string(),
+                        detail: format!(
+                            "версия не выводится из корня установки: {}",
+                            root.display()
+                        ),
+                    },
+                    hits: Vec::new(),
+                }]
+            }
+            Err(InstallationError::NotFound) => {
+                return vec![DocumentationSection {
+                    provider: id,
+                    corpus: "syntax-context".to_string(),
+                    source_kind: SourceKind::PlatformHelp,
+                    authority: Authority::Vendor,
+                    status: DocumentationSectionStatus::Unavailable {
+                        reason: UnavailableReason::NotConfigured,
+                        detail: format!("каталог установки недоступен: {}", root.display()),
                     },
                     hits: Vec::new(),
                 }]
             }
         };
-        let mut cache = self.cache.lock().expect("кеш корпусов");
+        // Восстановление после отравления, как в `workspace_services`: паника в
+        // разборе одного контейнера не должна навсегда ронять каждый следующий
+        // вызов. Состояние кеша перезаписывается целиком в конце перестройки
+        // (см. ниже), поэтому отравленный страж видит либо прежнее целое
+        // состояние, либо чистую перестройку — рваной записи не бывает.
+        let mut cache = self
+            .cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if cache.version.as_deref() != Some(corpora.version.as_str()) {
             let mut syntax = Vec::new();
             for path in &corpora.syntax_context {
@@ -455,7 +483,11 @@ mod tests {
     #[test]
     fn nonexistent_installation_root_reports_not_configured() {
         let dir = tempfile::tempdir().expect("каталог");
-        let root = dir.path().join("8.3.27.2074"); // не создаём
+        // Каталог не создаём — `discover` должен вернуть `NotFound`.
+        let root = dir.path().join("8.3.27.2074");
+        // Захватываем текст ДО перемещения `root` в контекст: он должен
+        // войти в diagnostic-текст секции дословно.
+        let expected_detail = format!("каталог установки недоступен: {}", root.display());
         let provider = PlatformSyntaxHelpProvider::new("ru");
         let context = DocumentationContext {
             platform_version: Some("8.3.27.2074".to_string()),
@@ -463,13 +495,19 @@ mod tests {
         };
         let sections = provider.search(&request("что-нибудь"), &context);
         assert_eq!(sections.len(), 1);
-        assert!(matches!(
-            sections[0].status,
-            DocumentationSectionStatus::Unavailable {
-                reason: UnavailableReason::NotConfigured,
-                ..
+        match &sections[0].status {
+            DocumentationSectionStatus::Unavailable { reason, detail } => {
+                assert_eq!(*reason, UnavailableReason::NotConfigured);
+                // Точное совпадение, не `contains`: ревью потребовало, чтобы
+                // NotFound и VersionUndetermined давали РАЗНЫЙ текст. Общая
+                // фраза без пути (как было до правки) сюда не попадёт.
+                assert_eq!(
+                    *detail, expected_detail,
+                    "NotFound обязан называть путь и не совпадать текстом с VersionUndetermined"
+                );
             }
-        ));
+            other => panic!("ожидался Unavailable, получено {other:?}"),
+        }
     }
 
     /// У корня файловой системы нет последнего сегмента, значит версию из
@@ -478,19 +516,147 @@ mod tests {
     /// `installation.rs::root_without_a_last_segment_reports_version_undetermined`.
     #[test]
     fn root_without_last_segment_reports_not_configured() {
+        let root = std::path::PathBuf::from("/");
+        let expected_detail = format!("версия не выводится из корня установки: {}", root.display());
         let provider = PlatformSyntaxHelpProvider::new("ru");
         let context = DocumentationContext {
             platform_version: None,
-            installation_root: Some(std::path::PathBuf::from("/")),
+            installation_root: Some(root),
         };
         let sections = provider.search(&request("что-нибудь"), &context);
         assert_eq!(sections.len(), 1);
-        assert!(matches!(
-            sections[0].status,
-            DocumentationSectionStatus::Unavailable {
-                reason: UnavailableReason::NotConfigured,
-                ..
+        match &sections[0].status {
+            DocumentationSectionStatus::Unavailable { reason, detail } => {
+                assert_eq!(*reason, UnavailableReason::NotConfigured);
+                // Точное совпадение, не `contains`: тот же аргумент, что и в
+                // `nonexistent_installation_root_reports_not_configured` —
+                // текст обязан отличаться от NotFound, а не просто содержать
+                // общее слово.
+                assert_eq!(
+                    *detail, expected_detail,
+                    "VersionUndetermined обязан называть путь и не совпадать текстом с NotFound"
+                );
             }
+            other => panic!("ожидался Unavailable, получено {other:?}"),
+        }
+    }
+
+    /// Поставщик живёт весь процесс: паника, случившаяся под замком кеша
+    /// (например, в разборе одного повреждённого контейнера), не должна
+    /// отравлять мьютекс навсегда — иначе КАЖДЫЙ следующий `search()` для
+    /// любого запроса и любой установки начнёт падать до конца жизни
+    /// процесса. Тот же приём восстановления, что и в
+    /// `workspace_services.rs::analyzer_lane_recovers_from_poison_without_losing_progress`:
+    /// поток берёт замок и паникует, не отпуская его; `join()` результат
+    /// игнорируется (нам важен сам факт отравления, не то, что вернул поток).
+    #[test]
+    fn search_recovers_from_poisoned_cache_mutex() {
+        let dir = tempfile::tempdir().expect("каталог");
+        let root = dir.path().join("8.3.27.2074");
+        std::fs::create_dir_all(&root).expect("каталог версии");
+        let page = "<html><body><h1>Alpha</h1><p>текст</p></body></html>";
+        std::fs::write(
+            root.join("shcntx_ru.hbk"),
+            hbk_bytes(&[("alpha.html", page)]),
+        )
+        .expect("контейнер синтакс-помощника");
+
+        let provider = PlatformSyntaxHelpProvider::new("ru");
+        let poisoned = provider.cache.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoned.lock().unwrap();
+            panic!("намеренное отравление кеша корпусов (тест)");
+        })
+        .join();
+
+        let context = DocumentationContext {
+            platform_version: Some("8.3.27.2074".to_string()),
+            installation_root: Some(root),
+        };
+        // Не должно паниковать: отравленный мьютекс обязан восстанавливаться
+        // и отвечать, а не ронять вызывающего.
+        let sections = provider.search(&request("Alpha"), &context);
+        assert_eq!(
+            sections.len(),
+            2,
+            "поставщик отвечает двумя секциями, а не падает после отравления"
+        );
+        let syntax_section = sections
+            .iter()
+            .find(|section| section.corpus == "syntax-context")
+            .expect("секция syntax-context");
+        assert!(matches!(
+            syntax_section.status,
+            DocumentationSectionStatus::Ok
         ));
+        assert_eq!(syntax_section.hits.len(), 1);
+    }
+
+    /// `cache.version.as_deref() != Some(corpora.version.as_str())` — это
+    /// единственная строка, не позволяющая смешать корпуса разных версий
+    /// платформы в памяти одного процесса (между 8.3.27 и 8.5.4 расходятся
+    /// сотни имён API). Остальные тесты создают новый экземпляр и зовут
+    /// `search` один раз, поэтому кеш всегда пуст и ветка перестройки всегда
+    /// берётся — эта строка ими не проверяется. Здесь один и тот же
+    /// экземпляр опрашивает две РАЗНЫЕ установленные версии подряд.
+    #[test]
+    fn reused_provider_does_not_mix_corpora_across_versions() {
+        let dir = tempfile::tempdir().expect("каталог");
+
+        let first_root = dir.path().join("8.3.27.2074");
+        std::fs::create_dir_all(&first_root).expect("каталог версии 1");
+        std::fs::write(
+            first_root.join("shcntx_ru.hbk"),
+            hbk_bytes(&[(
+                "first.html",
+                "<html><body><h1>ОбщийРеквизитПервойВерсии</h1><p>текст</p></body></html>",
+            )]),
+        )
+        .expect("контейнер версии 1");
+
+        let second_root = dir.path().join("8.5.4.1306");
+        std::fs::create_dir_all(&second_root).expect("каталог версии 2");
+        std::fs::write(
+            second_root.join("shcntx_ru.hbk"),
+            hbk_bytes(&[(
+                "second.html",
+                "<html><body><h1>ОбщийРеквизитВторойВерсии</h1><p>текст</p></body></html>",
+            )]),
+        )
+        .expect("контейнер версии 2");
+
+        let provider = PlatformSyntaxHelpProvider::new("ru");
+
+        let first_context = DocumentationContext {
+            platform_version: Some("8.3.27.2074".to_string()),
+            installation_root: Some(first_root),
+        };
+        let first_sections = provider.search(&request("ОбщийРеквизит"), &first_context);
+        let first_syntax = first_sections
+            .iter()
+            .find(|section| section.corpus == "syntax-context")
+            .expect("секция syntax-context (версия 1)");
+        assert_eq!(first_syntax.hits.len(), 1);
+        assert_eq!(first_syntax.hits[0].applicable_version, "8.3.27.2074");
+
+        let second_context = DocumentationContext {
+            platform_version: Some("8.5.4.1306".to_string()),
+            installation_root: Some(second_root),
+        };
+        let second_sections = provider.search(&request("ОбщийРеквизит"), &second_context);
+        let second_syntax = second_sections
+            .iter()
+            .find(|section| section.corpus == "syntax-context")
+            .expect("секция syntax-context (версия 2)");
+        assert_eq!(
+            second_syntax.hits.len(),
+            1,
+            "второй ответ обязан содержать только страницы второй версии"
+        );
+        assert_eq!(
+            second_syntax.hits[0].document_id, "platform-syntax-help:syntax-context:second.html",
+            "попадание не должно быть страницей первой версии"
+        );
+        assert_eq!(second_syntax.hits[0].applicable_version, "8.5.4.1306");
     }
 }
