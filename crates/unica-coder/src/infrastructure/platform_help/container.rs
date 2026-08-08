@@ -121,15 +121,12 @@ impl V8Container {
     }
 }
 
-/// Синтетические фикстуры контейнера для тестов этого модуля и — в
-/// следующей задаче — тестов соседнего модуля. Объявлен вне `#[cfg(test)]`,
-/// потому что должен собираться и для тех тестовых бинарей, где `container`
-/// сам по себе не является объектом тестирования; скрыт из документации, так
-/// как не входит в публичный API продукта.
-#[doc(hidden)]
-pub mod tests_support {
+/// Фикстуры контейнера. Под `cfg(test)`, чтобы вспомогательный код не попадал
+/// в релизный бинарник; `pub(crate)` — чтобы их видели тесты соседних модулей.
+#[cfg(test)]
+pub(crate) mod tests_support {
     /// Собирает блок в формате контейнера: заголовок 31 байт, затем данные.
-    pub fn block(data: &[u8], next: u32) -> Vec<u8> {
+    pub(crate) fn block(data: &[u8], next: u32) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(b"\r\n");
         out.extend_from_slice(
@@ -141,7 +138,7 @@ pub mod tests_support {
     }
 
     /// Заголовок записи: 20 байт служебных, затем имя в UTF-16LE и нулевой разделитель.
-    pub fn entry_header(name: &str) -> Vec<u8> {
+    pub(crate) fn entry_header(name: &str) -> Vec<u8> {
         let mut out = vec![0u8; 20];
         for unit in name.encode_utf16() {
             out.extend_from_slice(&unit.to_le_bytes());
@@ -150,11 +147,18 @@ pub mod tests_support {
         out
     }
 
-    pub fn container_with(entries: &[(&str, &[u8])], trailing_terminator_entry: bool) -> Vec<u8> {
+    /// `terminator_at` — индекс в таблице, куда вставить запись-ограничитель.
+    /// Тест на пропуск обязан ставить её ПЕРЕД реальной записью: в конце
+    /// таблицы `continue` и `break` дают одинаковый результат, и тест
+    /// перестаёт различать исправление и дефект.
+    pub(crate) fn container_with(
+        entries: &[(&str, &[u8])],
+        terminator_at: Option<usize>,
+    ) -> Vec<u8> {
         let mut body = Vec::new();
         let mut addresses = Vec::new();
         // Резервируем место под заголовок файла и блок таблицы.
-        let toc_len = 12 * (entries.len() + usize::from(trailing_terminator_entry));
+        let toc_len = 12 * (entries.len() + usize::from(terminator_at.is_some()));
         let toc_block_len = 31 + toc_len;
         let mut cursor = 16 + toc_block_len;
         for (name, data) in entries {
@@ -165,18 +169,24 @@ pub mod tests_support {
             body.extend_from_slice(&header);
             body.extend_from_slice(&payload);
         }
+        let terminator_record = [0x7FFF_FFFFu32; 3];
         let mut toc = Vec::new();
-        for (head, data) in &addresses {
+        for (index, (head, data)) in addresses.iter().enumerate() {
+            if terminator_at == Some(index) {
+                // Запись, у которой адрес тела равен ограничителю: встречается в
+                // семи контейнерах установки и не является концом таблицы.
+                for field in terminator_record {
+                    toc.extend_from_slice(&field.to_le_bytes());
+                }
+            }
             toc.extend_from_slice(&head.to_le_bytes());
             toc.extend_from_slice(&data.to_le_bytes());
             toc.extend_from_slice(&0x7FFF_FFFFu32.to_le_bytes());
         }
-        if trailing_terminator_entry {
-            // Запись, у которой адрес тела равен ограничителю: встречается в
-            // семи контейнерах установки и не является концом таблицы.
-            toc.extend_from_slice(&0x7FFF_FFFFu32.to_le_bytes());
-            toc.extend_from_slice(&0x7FFF_FFFFu32.to_le_bytes());
-            toc.extend_from_slice(&0x7FFF_FFFFu32.to_le_bytes());
+        if terminator_at.is_some_and(|index| index >= addresses.len()) {
+            for field in terminator_record {
+                toc.extend_from_slice(&field.to_le_bytes());
+            }
         }
         let mut out = Vec::new();
         out.extend_from_slice(&0x7FFF_FFFFu32.to_le_bytes());
@@ -186,6 +196,12 @@ pub mod tests_support {
         out.extend_from_slice(&block(&toc, 0x7FFF_FFFF));
         out.extend_from_slice(&body);
         out
+    }
+
+    /// Контейнер с единственной записью `Book`, без `FileStorage`: нужен
+    /// тестам следующей задачи.
+    pub(crate) fn container_without_file_storage() -> Vec<u8> {
+        container_with(&[("Book", b"book-body")], None)
     }
 }
 
@@ -198,7 +214,7 @@ mod tests {
     fn parses_named_entries() {
         let bytes = container_with(
             &[("Book", b"book-body"), ("FileStorage", b"zip-body")],
-            false,
+            None,
         );
         let container = V8Container::parse(&bytes).expect("контейнер разобран");
         assert_eq!(container.entry("Book"), Some(&b"book-body"[..]));
@@ -208,17 +224,25 @@ mod tests {
 
     #[test]
     fn terminator_entry_is_skipped_not_treated_as_end_of_table() {
+        // Ограничитель стоит ПЕРЕД `FileStorage`: с `break` эта запись стала бы
+        // недостижимой, и тест бы упал. С ограничителем в конце таблицы тест
+        // прошёл бы при любом поведении и ничего не доказывал.
         let bytes = container_with(
             &[("Book", b"book-body"), ("FileStorage", b"zip-body")],
-            true,
+            Some(1),
         );
         let container = V8Container::parse(&bytes).expect("контейнер разобран");
-        assert_eq!(container.entry("FileStorage"), Some(&b"zip-body"[..]));
+        assert_eq!(container.entry("Book"), Some(&b"book-body"[..]));
+        assert_eq!(
+            container.entry("FileStorage"),
+            Some(&b"zip-body"[..]),
+            "запись после ограничителя обязана остаться достижимой"
+        );
     }
 
     #[test]
     fn wrong_signature_is_rejected() {
-        let mut bytes = container_with(&[("Book", b"x")], false);
+        let mut bytes = container_with(&[("Book", b"x")], None);
         bytes[0] = 0;
         bytes[1] = 0;
         bytes[2] = 0;
