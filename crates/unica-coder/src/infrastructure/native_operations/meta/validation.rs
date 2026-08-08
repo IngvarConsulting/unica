@@ -2256,15 +2256,23 @@ fn meta_validate_warn_long_command_text(
     language: Option<&String>,
 ) {
     let length = text.chars().count();
-    if length <= 38 {
+    if length <= 30 {
         return;
     }
     let language_suffix = language
         .map(|language| format!(", language '{language}'"))
         .unwrap_or_default();
-    report.warn(format!(
-        "3. Properties: {source} '{text}' is longer than 38 characters ({length}) for the command interface{language_suffix}"
-    ));
+    // 38 is the hard ceiling; 30 is the recommended target. A value over the
+    // ceiling reports only the ceiling so the stricter message is not doubled.
+    if length > 38 {
+        report.warn(format!(
+            "3. Properties: {source} '{text}' is longer than 38 characters ({length}) for the command interface{language_suffix}"
+        ));
+    } else {
+        report.warn(format!(
+            "3. Properties: {source} '{text}' is longer than the recommended 30 characters ({length}) for the command interface{language_suffix}"
+        ));
+    }
 }
 
 pub(super) fn meta_validate_check_property_values(
