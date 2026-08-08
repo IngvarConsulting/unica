@@ -1959,13 +1959,10 @@ git commit -m "feat(platform-help): маршрутизировать вопро�
         self.assertNotIn("docs-local/1ci/8.3.27/en/", agents)
         self.assertNotIn("kb.1ci.com/bin/download", agents)
 
-    def test_vendor_help_never_enters_the_package(self) -> None:
-        """Материалы вендора читаются на машине пользователя и не пакуются."""
-        package_script = (
-            REPO_ROOT / "scripts" / "ci" / "package-unica-plugin.py"
-        ).read_text(encoding="utf-8")
-        self.assertNotIn("docs-local", package_script)
-        self.assertNotIn(".hbk", package_script)
+    def test_local_corpus_directory_stays_ignored(self) -> None:
+        """Каталог остаётся игнорируемым: снят контракт корпуса, а не каталог."""
+        ignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
+        self.assertIn("docs-local/", ignore.splitlines())
 ```
 
 - [ ] **Step 2: Запустить тест и убедиться, что он падает**
@@ -2135,3 +2132,23 @@ fn numeric_version_key(path: &std::path::Path) -> Vec<u32> {
 Реализовано это внутри `select_platform_version` через `max_by_key`, а не
 сортировкой в вызывающей функции: там логика поддаётся юнит-тесту требуемой
 фикстурой, и сортировка у вызывающего становится не нужна.
+
+
+## Поправка к Task 8: проверка упаковки была тавтологичной
+
+Ревью показало, что `test_vendor_help_never_enters_the_package` не удерживал
+ничего: строк `docs-local` и `.hbk` в `scripts/ci/package-unica-plugin.py`
+никогда и не было, поэтому обе проверки истинны независимо от того, работает ли
+заявленное свойство. Расширь кто-нибудь `plugin_src` до корня репозитория —
+проверка осталась бы зелёной.
+
+Настоящая гарантия структурна: `git_tracked_plugin_files` и
+`copy_tracked_plugin_source` копируют только отслеживаемые пути под
+`plugins/unica/`. Проверять надо её, а не отсутствие подстроки. Тест строится
+на временном дереве с приманкой `docs-local/1ci/...` вне `plugins/unica/`,
+вызывает настоящую функцию копирования и убеждается, что приманка в назначение
+не попала. Образец соседнего устройства —
+`tests/ci/test_package_unica_plugin.py::test_plugin_source_copy_uses_git_tracked_files_only`.
+
+Заодно вернулась потерянная при переписывании проверка, что `docs-local/`
+остаётся в `.gitignore`: её не удерживал больше никто во всём наборе.
