@@ -398,13 +398,22 @@ mod tests {
         }
 
         fn add_object(&self, kind: MetadataKind, name: &str) -> MetadataAddress {
+            self.add_object_with_operations(kind, name, Vec::new())
+        }
+
+        fn add_object_with_operations(
+            &self,
+            kind: MetadataKind,
+            name: &str,
+            operations: Vec<MetaEditOperation>,
+        ) -> MetadataAddress {
             let cancellation = CancellationToken::new();
             MetadataOperations::prepare_mutation(
                 &MetadataRequest::Add(MetaAddRequest {
                     source_set: "main".into(),
                     kind,
                     name: name.into(),
-                    operations: Vec::new(),
+                    operations,
                     dry_run: false,
                 }),
                 &self.context,
@@ -600,28 +609,18 @@ mod tests {
     #[test]
     fn typed_resource_append_and_position_after_preserve_the_source_format() {
         let fixture = Fixture::new("resource-preview-apply-source-format");
-        let cancellation = CancellationToken::new();
-        let target = fixture.add_object(MetadataKind::InformationRegister, "Facts");
+        let first_resource = MetaEditOperation::add(
+            MetaCollection::Resources,
+            None,
+            vec![MetaElementInput::named("First")],
+        )
+        .unwrap();
+        let target = fixture.add_object_with_operations(
+            MetadataKind::InformationRegister,
+            "Facts",
+            vec![first_resource],
+        );
         let descriptor = fixture.root.join("src/InformationRegisters/Facts.xml");
-
-        let request = |name: &str| {
-            MetadataRequest::Edit(MetaEditRequest {
-                source_set: "main".into(),
-                metadata_path: target.clone(),
-                operations: vec![MetaEditOperation::add(
-                    MetaCollection::Resources,
-                    None,
-                    vec![MetaElementInput::named(name)],
-                )
-                .unwrap()],
-                dry_run: false,
-            })
-        };
-        MetadataOperations::prepare_mutation(&request("First"), &fixture.context, &cancellation)
-            .unwrap()
-            .publish(&cancellation)
-            .unwrap();
-
         let generated = fs::read(&descriptor).unwrap();
         let source_without_bom = generated
             .strip_prefix(b"\xef\xbb\xbf")
@@ -646,10 +645,7 @@ mod tests {
         }));
         let dry_run_args = Map::from_iter([
             ("sourceSet".to_string(), json!("main")),
-            (
-                "metadataPath".to_string(),
-                json!("InformationRegister.Facts"),
-            ),
+            ("metadataPath".to_string(), json!(target.as_str())),
             (
                 "operations".to_string(),
                 json!([{
