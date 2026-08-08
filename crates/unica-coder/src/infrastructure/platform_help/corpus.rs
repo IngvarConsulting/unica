@@ -30,6 +30,28 @@ fn looks_like_markup(bytes: &[u8]) -> bool {
     head.contains(&b'<')
 }
 
+/// Заголовок страницы — содержимое первого `<h1>`. Измерено на установке
+/// 8.3.27: у Синтакс-помощника это `<h1 class="V8SH_pagetitle">`, у контейнеров
+/// подсистем — `<H1>` в верхнем регистре, поэтому сопоставление
+/// регистронезависимо. Заголовок есть у 385 из 401 страницы `1cv8_ru.hbk` и у
+/// 146 из 151 в `mngbase_ru.hbk`; для остальных вызывающий берёт начало текста.
+///
+/// Брать «первую фразу» текста нельзя: на реальной странице до первого «. »
+/// укладываются заголовок, владелец, имя члена и строка «Доступен, начиная с
+/// версии 8.2» — сто тридцать символов вместо заголовка.
+fn page_title(raw: &str) -> Option<String> {
+    let lower = raw.to_lowercase();
+    let open = lower.find("<h1")?;
+    let content_start = open + lower[open..].find('>')? + 1;
+    let close = lower[content_start..].find("</h1")? + content_start;
+    let inner = strip_markup(&raw[content_start..close]);
+    if inner.is_empty() {
+        None
+    } else {
+        Some(inner)
+    }
+}
+
 fn strip_markup(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut inside = false;
@@ -116,18 +138,14 @@ pub fn read_corpus_from_archive(archive: &[u8]) -> Result<Vec<CorpusPage>, Corpu
         }
         let raw = String::from_utf8_lossy(body);
         let text = strip_markup(&raw);
-        let title = text.split(". ").next().unwrap_or(&text).trim().to_string();
+        let title = page_title(&raw).unwrap_or_else(|| text.chars().take(120).collect());
         let stem = name
             .rsplit_once('.')
             .map(|(head, _)| head)
             .unwrap_or(name.as_str());
         pages.push(CorpusPage {
             path: name.clone(),
-            title: if title.is_empty() {
-                name.clone()
-            } else {
-                title
-            },
+            title,
             text,
             signature: signatures.get(stem).cloned(),
         });
@@ -155,54 +173,65 @@ mod tests {
         buffer.into_inner()
     }
 
-    // `br#"..."#` (сырой *байтовый* строковый литерал) не допускает не-ASCII
-    // символы в исходном тексте, а кириллическое значение локали ниже как раз
-    // такой символ содержит; `r#"..."#.as_bytes()` даёт тот же набор байт без
-    // этого ограничения — так же, как `PAGE` ниже получает `&[u8]` из
-    // литерала с кириллицей.
-    const ST: &[u8] = r#"{1,
+    /// Сигнатура с угловой скобкой в параметре — не редкость, а норма: на
+    /// установке 8.3.27 такие `<` в первых 200 байтах имеют 5518 файлов `.st`
+    /// из 22751, то есть 24,3%. Поэтому `.st` исключается по расширению, а не
+    /// по признаку разметки: без этого четверть сигнатур стала бы «страницами».
+    const ST: &str = r#"{1,
 {2,
 {"",1,0,"",""},
 {0,
-{"ru",0,0,"","ПолучитьНавигационнуюСсылку()"}
+{"ru",0,0,"","ПолучитьНавигационнуюСсылку(<Объект>)"}
 },
 {0,
-{"en",0,0,"","GetURL()"}
+{"en",0,0,"","GetURL(<Object>)"}
 }
 }
-}"#
-    .as_bytes();
+}"#;
 
-    const PAGE: &[u8] = "<html><body><p>Глобальный контекст.ПолучитьНавигационнуюСсылку (Global context.GetURL)</p><p>Синтаксис: ПолучитьНавигационнуюСсылку()</p></body></html>".as_bytes();
+    const PAGE: &str = "<html><body><h1 class=\"V8SH_pagetitle\">Глобальный контекст.ПолучитьНавигационнуюСсылку (Global context.GetURL)</h1><p>Доступен, начиная с версии 8.2. Синтаксис: ПолучитьНавигационнуюСсылку()</p></body></html>";
 
     #[test]
     fn reads_html_page_with_bilingual_signature() {
         let archive = zip_with(&[
-            ("objects/Global context/methods/GetURL3758.html", PAGE),
-            ("objects/Global context/methods/GetURL3758.st", ST),
+            (
+                "objects/Global context/methods/GetURL3758.html",
+                PAGE.as_bytes(),
+            ),
+            (
+                "objects/Global context/methods/GetURL3758.st",
+                ST.as_bytes(),
+            ),
         ]);
         let pages = read_corpus_from_archive(&archive).expect("корпус прочитан");
+        // Сигнатура содержит `<Объект>`, поэтому признак разметки её не отсеет:
+        // отсеивает именно расширение. Уберите проверку `.st` — станет две
+        // страницы, и тест упадёт.
         assert_eq!(pages.len(), 1, "файл .st страницей не считается");
         let page = &pages[0];
         assert_eq!(page.path, "objects/Global context/methods/GetURL3758.html");
-        assert!(page
-            .title
-            .starts_with("Глобальный контекст.ПолучитьНавигационнуюСсылку"));
+        // Точное равенство: заголовок обязан быть содержимым <h1>, а не началом
+        // текста страницы. Первая фраза текста дотянулась бы до «версии 8.2».
+        assert_eq!(
+            page.title,
+            "Глобальный контекст.ПолучитьНавигационнуюСсылку (Global context.GetURL)"
+        );
         assert!(page.text.contains("Синтаксис"));
         let signature = page.signature.as_ref().expect("сигнатура найдена");
         assert_eq!(
             signature.ru.as_deref(),
-            Some("ПолучитьНавигационнуюСсылку()")
+            Some("ПолучитьНавигационнуюСсылку(<Объект>)")
         );
-        assert_eq!(signature.en.as_deref(), Some("GetURL()"));
+        assert_eq!(signature.en.as_deref(), Some("GetURL(<Object>)"));
     }
 
     #[test]
     fn reads_extensionless_page_by_markup() {
         let archive = zip_with(&[
+            // Верхний регистр тегов — как в реальных контейнерах подсистем.
             (
                 "WebServices",
-                "<html><body><p>Web-сервисы</p></body></html>".as_bytes(),
+                "<HTML><BODY><H1>Web-сервисы</H1></BODY></HTML>".as_bytes(),
             ),
             ("navIcon", &[0x89, 0x50, 0x4e, 0x47]),
         ]);
