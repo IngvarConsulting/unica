@@ -773,27 +773,9 @@ fn minimal_metadata_xml(
         }
     }
     lines.push("\t\t</Properties>".to_string());
-    if matches!(
-        kind,
-        crate::domain::metadata::MetadataKind::AccountingRegister
-            | crate::domain::metadata::MetadataKind::CalculationRegister
-    ) {
-        lines.push("\t\t<ChildObjects>".to_string());
-        let field = MetadataAttributeTemplate {
-            name: "Value".to_string(),
-            synonym: "Value".to_string(),
-            required: false,
-        };
-        emit_meta_register_field(
-            &mut lines,
-            "\t\t\t",
-            "Resource",
-            &field,
-            kind.as_str(),
-            &mut next_uuid,
-        );
-        lines.push("\t\t</ChildObjects>".to_string());
-    } else if kind_declares_child_objects(kind) {
+    // Содержимое объекта задаёт вызывающий через `operations`: инструмент не
+    // придумывает ресурсы, измерения и значения свойств за него (ADR-0030).
+    if kind_declares_child_objects(kind) {
         lines.push("\t\t<ChildObjects/>".to_string());
     }
     lines.push(format!("\t</{object_type}>"));

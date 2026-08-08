@@ -1465,6 +1465,38 @@ fn write_json_input(workspace: &Path, name: &str, value: &Value) -> Result<Strin
     Ok(relative)
 }
 
+/// Минимальные `operations`, делающие объект целостным по ADR-0030.
+///
+/// Виды без записи в таблице условий ничего не требуют, и инструмент за них
+/// ничего не придумывает, поэтому здесь для них пусто.
+fn meta_operations(kind: &str) -> Option<Value> {
+    let string50 =
+        json!({"variants": [{"kind": "string", "length": 50, "allowedLength": "variable"}]});
+    let number = |digits: u32, fraction: u32| json!({"variants": [{"kind": "number", "digits": digits, "fraction": fraction, "sign": "any"}]});
+    match kind {
+        "InformationRegister" => Some(json!([
+            {"op": "add", "collection": "dimensions",
+             "elements": [{"name": "Item", "type": string50}]},
+            {"op": "add", "collection": "resources",
+             "elements": [{"name": "Price", "type": number(15, 2)}]}
+        ])),
+        "AccumulationRegister" => Some(json!([
+            {"op": "add", "collection": "dimensions",
+             "elements": [{"name": "Warehouse", "type": string50}]},
+            {"op": "add", "collection": "resources",
+             "elements": [{"name": "Quantity", "type": number(15, 3)}]}
+        ])),
+        "AccountingRegister" => Some(json!([
+            {"op": "add", "collection": "resources",
+             "elements": [{"name": "Amount", "type": number(15, 2)}]}
+        ])),
+        "WebService" => Some(json!([
+            {"op": "setProperties", "values": {"Namespace": "urn:corpus"}}
+        ])),
+        _ => None,
+    }
+}
+
 fn seed_metadata(workspace: &Path, input_name: &str, definition: Value) -> Result<(), String> {
     let kind = definition
         .get("type")
@@ -1478,6 +1510,9 @@ fn seed_metadata(workspace: &Path, input_name: &str, definition: Value) -> Resul
     args.insert("sourceSet".to_string(), Value::String("main".to_string()));
     args.insert("kind".to_string(), Value::String(kind.to_string()));
     args.insert("name".to_string(), Value::String(name.to_string()));
+    if let Some(operations) = meta_operations(kind) {
+        args.insert("operations".to_string(), operations);
+    }
     call_public_tool("unica.meta.add", &args)?;
     Ok(())
 }
@@ -2294,6 +2329,9 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
                     .to_string(),
             ),
         );
+        if let Some(operations) = meta_operations(case.branch) {
+            args.insert("operations".to_string(), operations);
+        }
         return Ok(args);
     }
 
