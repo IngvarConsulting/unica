@@ -9,6 +9,11 @@ use std::path::{Path, PathBuf};
 
 const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
+/// Предельная вложенность подсистем, которую обходят оба пути чтения состава.
+/// Владелец бюджета один, чтобы обход по каталогу и типизированный сбор
+/// доказательств не расходились в том, что считают доказанным.
+pub(crate) const SUBSYSTEM_SCAN_MAX_NESTING: usize = 8;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MetaValidationImageIdentity {
     pub(crate) object_type: String,
@@ -185,8 +190,12 @@ pub(crate) fn meta_validate_subsystem_command_interface_scan(
     object_reference: &str,
 ) -> Result<(Vec<PathBuf>, bool), String> {
     let mut dependencies = Vec::new();
-    let found =
-        subsystem_command_interface_scan(subsystems_dir, object_reference, &mut dependencies)?;
+    let found = subsystem_command_interface_scan(
+        subsystems_dir,
+        object_reference,
+        &mut dependencies,
+        SUBSYSTEM_SCAN_MAX_NESTING,
+    )?;
     Ok((dependencies, found))
 }
 
@@ -194,6 +203,7 @@ fn subsystem_command_interface_scan(
     subsystems_dir: &Path,
     object_reference: &str,
     dependencies: &mut Vec<PathBuf>,
+    remaining_nesting: usize,
 ) -> Result<bool, String> {
     let mut entries = fs::read_dir(subsystems_dir)
         .map_err(|error| format!("failed to read {}: {error}", subsystems_dir.display()))?
@@ -208,7 +218,16 @@ fn subsystem_command_interface_scan(
     let mut nested = Vec::new();
     for entry in entries {
         let path = entry.path();
-        if path.is_dir() {
+        // The entry type comes from the directory read, so a symlink is never
+        // followed: a subsystem tree holds no links, and following one could
+        // leave the scanned tree.
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("failed to inspect {}: {error}", path.display()))?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
             // Subsystems nest as Subsystems/<Parent>/Subsystems/<Child>.xml.
             let child_dir = path.join("Subsystems");
             if child_dir.is_dir() {
@@ -225,8 +244,21 @@ fn subsystem_command_interface_scan(
             return Ok(true);
         }
     }
+    if !nested.is_empty() && remaining_nesting == 0 {
+        // Absence cannot be proved past the budget, so the scan says so instead
+        // of reporting a listing it never reached.
+        return Err(format!(
+            "subsystem nesting under {} exceeds {SUBSYSTEM_SCAN_MAX_NESTING} levels",
+            subsystems_dir.display()
+        ));
+    }
     for child_dir in nested {
-        if subsystem_command_interface_scan(&child_dir, object_reference, dependencies)? {
+        if subsystem_command_interface_scan(
+            &child_dir,
+            object_reference,
+            dependencies,
+            remaining_nesting - 1,
+        )? {
             return Ok(true);
         }
     }
@@ -362,6 +394,60 @@ mod tests {
         let (_, found) = meta_validate_subsystem_command_interface_scan(&root, reference).unwrap();
 
         assert!(found, "the scan must recurse into nested subsystems");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn subsystem_scan_terminates_on_a_symlinked_directory_loop() {
+        let root = temp_subsystems("symlink-loop");
+        write_subsystem(&root, "Sales", Some("true"), "");
+        fs::create_dir_all(root.join("Sales/Subsystems")).unwrap();
+        // Sales/Subsystems/Loop -> .. resolves back to Sales, so Loop/Subsystems
+        // is Sales/Subsystems again and a scan that follows the link never
+        // reaches a bottom.
+        std::os::unix::fs::symlink("..", root.join("Sales/Subsystems/Loop")).unwrap();
+
+        let (_, found) =
+            meta_validate_subsystem_command_interface_scan(&root, "InformationRegister.Ledger")
+                .unwrap();
+
+        assert!(!found, "a symlinked loop holds no listing");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn nest_subsystems(root: &Path, levels: usize, reference: &str) {
+        let mut dir = root.to_path_buf();
+        for level in 0..levels {
+            write_subsystem(&dir, &format!("S{level}"), Some("true"), "");
+            dir = dir.join(format!("S{level}")).join("Subsystems");
+        }
+        fs::create_dir_all(&dir).unwrap();
+        write_subsystem(&dir, "Deepest", Some("true"), &content_item(reference));
+    }
+
+    #[test]
+    fn subsystem_scan_reaches_the_deepest_level_within_the_budget() {
+        let root = temp_subsystems("within-budget");
+        let reference = "InformationRegister.Ledger";
+        nest_subsystems(&root, SUBSYSTEM_SCAN_MAX_NESTING, reference);
+
+        let (_, found) = meta_validate_subsystem_command_interface_scan(&root, reference).unwrap();
+
+        assert!(found, "the budget must cover its own nesting depth");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn subsystem_scan_refuses_to_prove_absence_past_the_nesting_budget() {
+        let root = temp_subsystems("past-budget");
+        let reference = "InformationRegister.Ledger";
+        nest_subsystems(&root, SUBSYSTEM_SCAN_MAX_NESTING + 1, reference);
+
+        let error = meta_validate_subsystem_command_interface_scan(&root, reference)
+            .expect_err("a tree past the budget is not scannable to the bottom");
+
+        assert!(error.contains("exceeds"), "{error}");
         fs::remove_dir_all(root).unwrap();
     }
 

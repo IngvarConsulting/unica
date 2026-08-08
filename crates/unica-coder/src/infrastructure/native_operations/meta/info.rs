@@ -24,8 +24,9 @@ use crate::infrastructure::platform::secure_read::{
 const REGISTRAR_SCAN_MAX_ENTRIES: usize = 20_000;
 const REGISTRAR_SCAN_MAX_FILES: usize = 20_000;
 const REGISTRAR_SCAN_MAX_BYTES: usize = 64 * 1024 * 1024;
-// Subsystems nest, so the walk needs depth; two path levels per nesting level.
-const SUBSYSTEM_SCAN_MAX_DEPTH: usize = 16;
+// Subsystems nest as <Name>/Subsystems, so one nesting level costs two path
+// levels. The nesting budget itself is owned by validation_context.
+const SUBSYSTEM_SCAN_MAX_DEPTH: usize = super::validation_context::SUBSYSTEM_SCAN_MAX_NESTING * 2;
 const SUBSYSTEM_SCAN_MAX_ENTRIES: usize = 20_000;
 const SUBSYSTEM_SCAN_MAX_FILES: usize = 20_000;
 const SUBSYSTEM_SCAN_MAX_BYTES: usize = 64 * 1024 * 1024;
