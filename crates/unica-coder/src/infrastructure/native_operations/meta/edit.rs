@@ -477,27 +477,11 @@ pub(super) fn meta_edit_insert_lines_into_child_objects(
         .chars()
         .all(|ch| ch == '\t' || ch == ' ');
     if insert_at_closing_indent {
-        let insert_pos = meta_edit_mark_lxml_append_tail(xml_text, line_start);
-        xml_text.insert_str(insert_pos, &format!("{content}\n"));
+        xml_text.insert_str(line_start, &format!("{content}\n"));
     } else {
         xml_text.insert_str(close_pos, &format!("{content}\n{close_indent}"));
     }
     Ok(())
-}
-
-pub(super) fn meta_edit_mark_lxml_append_tail(xml_text: &mut String, insert_pos: usize) -> usize {
-    if insert_pos == 0 || xml_text[..insert_pos].ends_with("&#13;\n") {
-        return insert_pos;
-    }
-    if insert_pos >= 2 && &xml_text[insert_pos - 2..insert_pos] == "\r\n" {
-        xml_text.replace_range(insert_pos - 2..insert_pos, "&#13;\n");
-        return insert_pos + 4;
-    }
-    if insert_pos >= 1 && &xml_text[insert_pos - 1..insert_pos] == "\n" {
-        xml_text.replace_range(insert_pos - 1..insert_pos, "&#13;\n");
-        return insert_pos + 5;
-    }
-    insert_pos
 }
 
 pub(super) fn meta_edit_insert_lines_near_node(
@@ -510,7 +494,7 @@ pub(super) fn meta_edit_insert_lines_near_node(
     if after {
         if let Some(relative_newline) = xml_text[range.end..].find('\n') {
             let insert_pos = range.end + relative_newline + 1;
-            xml_text.insert_str(insert_pos, &format!("{content}&#13;\n"));
+            xml_text.insert_str(insert_pos, &format!("{content}\n"));
         } else {
             xml_text.insert_str(range.end, &format!("\n{content}"));
         }
@@ -4606,6 +4590,97 @@ mod tests {
         assert!(xml.contains("<v8:Type>cfg:CatalogRef.Items</v8:Type>"));
         assert!(xml.contains("<v8:TypeSet>cfg:DefinedType.ExternalCode</v8:TypeSet>"));
         assert!(xml.contains("<FillChecking>ShowError</FillChecking>"));
+    }
+
+    fn information_register_xml_with_data_cr() -> String {
+        object_xml(
+            "InformationRegister",
+            "Sample",
+            "<InformationRegisterPeriodicity>Nonperiodical</InformationRegisterPeriodicity>",
+        )
+        .replace("<Comment/>", "<Comment>First&#13;Second</Comment>")
+    }
+
+    fn rendered_resource(name: &str) -> String {
+        let element = MetaElementDefinition::convert(
+            MetaCollection::Resources,
+            MetaElementInput::named(name),
+        )
+        .unwrap();
+        render_typed_element(
+            "InformationRegister",
+            "Sample",
+            MetaCollection::Resources,
+            &element,
+        )
+        .unwrap()
+        .join("\n")
+    }
+
+    fn assert_structural_resource_separators(xml: &str, expected: usize) {
+        assert!(
+            xml.contains("<Comment>First&#13;Second</Comment>"),
+            "data CR entity was not preserved: {xml}"
+        );
+        assert!(
+            !xml.contains("</Resource>&#13;"),
+            "structural CR entity was emitted: {xml}"
+        );
+        assert_eq!(
+            xml.matches("</Resource>\n\t\t\t<Resource").count(),
+            expected,
+            "resource elements are not separated by newlines: {xml}"
+        );
+        Document::parse(xml).unwrap_or_else(|error| panic!("{error}\n{xml}"));
+    }
+
+    #[test]
+    fn typed_child_append_uses_a_newline_instead_of_a_carriage_return_entity() {
+        let first_resource = rendered_resource("First");
+        let mut xml = information_register_xml_with_data_cr().replace(
+            "<ChildObjects/>",
+            &format!("<ChildObjects>\n{first_resource}\n\t\t</ChildObjects>"),
+        );
+        let operation = MetaEditOperation::add(
+            MetaCollection::Resources,
+            None,
+            vec![MetaElementInput::named("Second")],
+        )
+        .unwrap();
+
+        apply_typed_operations(&mut xml, &[operation]).unwrap();
+
+        assert_structural_resource_separators(&xml, 1);
+        let first = xml.find("<Name>First</Name>").unwrap();
+        let second = xml.find("<Name>Second</Name>").unwrap();
+        assert!(first < second, "{xml}");
+    }
+
+    #[test]
+    fn typed_child_position_after_uses_a_newline_instead_of_a_carriage_return_entity() {
+        let resources = [rendered_resource("First"), rendered_resource("Last")].join("\n");
+        let mut xml = information_register_xml_with_data_cr().replace(
+            "<ChildObjects/>",
+            &format!("<ChildObjects>\n{resources}\n\t\t</ChildObjects>"),
+        );
+        let operation = MetaEditOperation::add(
+            MetaCollection::Resources,
+            None,
+            vec![MetaElementInput {
+                name: "Second".into(),
+                position: Some(MetaPosition::new(None, Some("First".into())).unwrap()),
+                ..MetaElementInput::default()
+            }],
+        )
+        .unwrap();
+
+        apply_typed_operations(&mut xml, &[operation]).unwrap();
+
+        assert_structural_resource_separators(&xml, 2);
+        let first = xml.find("<Name>First</Name>").unwrap();
+        let second = xml.find("<Name>Second</Name>").unwrap();
+        let last = xml.find("<Name>Last</Name>").unwrap();
+        assert!(first < second && second < last, "{xml}");
     }
 
     #[test]
