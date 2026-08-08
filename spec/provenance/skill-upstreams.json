@@ -106,6 +106,17 @@
       "contractPaths": [
         "tests/ci/test_unica_skills.py"
       ]
+    },
+    {
+      "skill": "object-locks",
+      "notes": "Unica-owned guidance skill covering concurrency between users editing the same object. Prose is written for Unica. Unlike the rest of this layer the primary source is platform behaviour, not a standards cluster: the mechanism is taken from the official 1C:Enterprise 8.3.27 Developer Guide, chapter 9.2.2 Object locking (sections 9.2.2.1-9.2.2.4, public at https://kb.1ci.com/1C_Enterprise_Platform/Guides/Developer_Guides/), and the one normative rule about taking an object lock from code is std490 through public unica.standards.*. The document states which half rests on which source and tells the reader to re-verify behaviour for the target platform version. Transactional locking stays in transactions-locks, which now carries the qualifier that a failed object lock does not require a rollback. No donor expression was copied or adapted.",
+      "localPaths": [
+        "plugins/unica/skills/object-locks",
+        "plugins/unica/references/platform/object-locks.md"
+      ],
+      "contractPaths": [
+        "tests/ci/test_unica_skills.py"
+      ]
     }
   ],
   "upstreams": [

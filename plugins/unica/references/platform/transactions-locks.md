@@ -37,7 +37,8 @@ shape hides behind any read-decide-write pair.
   (`АПК:1327`); data that is read as part of the decision needs at least a shared
   one (`АПК:1328`).
 - For reference objects, take object locks in addition before modifying the data
-  (`#std490`).
+  (`#std490`). Object locks are a separate mechanism with their own lifetime and
+  their own failure mode; `object-locks.md` owns them.
 
 ## Transaction Shape
 
@@ -74,7 +75,9 @@ The shape follows from those:
   sits between it and `Исключение` (`АПК:330`).
 - `ОтменитьТранзакцию` is the first statement of the `Исключение` block
   (`АПК:332`, `АПК:478`), and no branch leaves the block without finishing the
-  transaction (`АПК:521`).
+  transaction (`АПК:521`). This governs the transaction's own exception block. A
+  nested `Попытка` around an object lock is a different thing: a failed object
+  lock does not require rolling the transaction back — see `object-locks.md`.
 - `Заблокировать()` belongs inside the `Попытка` (`АПК:1320`,
   `v8cs:lock-out-of-try`), and a lock object built but never locked is
   `АПК:1319`.

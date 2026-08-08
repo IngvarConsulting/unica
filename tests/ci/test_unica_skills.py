@@ -320,6 +320,15 @@ SCENARIO_SKILLS = {
         "unica.meta.info",
         "unica.runtime.execute",
     ],
+    "object-locks": [
+        "unica.project.map",
+        "unica.code.search",
+        "unica.code.graph",
+        "unica.code.patch",
+        "unica.form.info",
+        "unica.code.diagnostics",
+        "unica.runtime.execute",
+    ],
 }
 
 SCENARIO_REQUIRED_TOKENS = {
@@ -468,6 +477,23 @@ SCENARIO_REQUIRED_TOKENS = {
         "АПК:1319",
         "АПК:1327",
         "Scope boundary",
+        # A failed object lock is the documented exception to the rollback
+        # reflex, so the two owners must keep pointing at each other.
+        "object-locks",
+    ],
+    # Unlike the rest of this layer, the behaviour here is platform behaviour,
+    # not a standards cluster: v8std carries one rule (std490) and the 8.3.27
+    # Developer Guide carries the mechanism. Two facts are load-bearing and
+    # counter-intuitive: the pessimistic lock stops other *locks*, not other
+    # writes, and a failed object lock does not require a rollback.
+    "object-locks": [
+        "std490",
+        "cooperative",
+        "ЗаблокироватьДанныеДляРедактирования",
+        "form id",
+        "Optimistic locking guarantees only non-overwriting",
+        "does not prevent the object in the database",
+        "transactions-locks",
     ],
     "release-support": ["сравнение/объединение", "Поставка", "поддержка", "совместимость"],
     "source-access": [

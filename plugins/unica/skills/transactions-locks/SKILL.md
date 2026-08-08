@@ -15,6 +15,8 @@ description: "Транзакции, блокировки и ответствен
 
 This skill owns transaction shape, managed locks, and responsible reading wherever they appear. Skills that touch the subject defer here: `document-posting` keeps only the balance-control order, `register-design` only the parallelism that follows from the dimension set, `background-jobs` only job restartability, `db-performance` only the evidence side of a deadlock.
 
+Concurrency between users editing the same object is a different mechanism and belongs to `object-locks`. A failed object lock, in particular, does not require rolling this transaction back.
+
 ## References
 
 - Read `../../references/platform/transactions-locks.md` for the responsible-read definition, the transaction shape, managed locks, and lock order.
