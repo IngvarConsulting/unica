@@ -1767,7 +1767,8 @@ fn resolve_platform_installation_root(requested: Option<&str>) -> Option<std::pa
             .map(|child| child.path())
             .filter(|path| path.is_dir())
             .collect();
-        versions.sort_by_key(|path| numeric_version_key(path));
+        // Порядок здесь не нужен: выбор версии делает select_platform_version
+        // через max_by_key по числовому ключу.
         if let Some(version) = requested {
             if let Some(hit) = versions.iter().find(|path| {
                 path.file_name().and_then(|name| name.to_str()) == Some(version)
@@ -2130,3 +2131,7 @@ fn numeric_version_key(path: &std::path::Path) -> Vec<u32> {
 
 Тест обязан различать: фикстура с `8.3.9.100` и `8.3.10.50` при
 лексикографическом сравнении выберет первую, при числовом — вторую.
+
+Реализовано это внутри `select_platform_version` через `max_by_key`, а не
+сортировкой в вызывающей функции: там логика поддаётся юнит-тесту требуемой
+фикстурой, и сортировка у вызывающего становится не нужна.
