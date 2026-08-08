@@ -13,3 +13,9 @@ pub mod container;
 // снимется само собой.
 #[allow(dead_code)]
 pub mod corpus;
+// `#[allow(dead_code)]` здесь по той же причине, что и на `container`/`corpus`
+// выше: discover/InstallationCorpora/InstallationError ещё не вызываются
+// production-кодом — провайдер справки подключит их в одной из следующих
+// задач плана, предупреждение снимется само собой.
+#[allow(dead_code)]
+pub mod installation;

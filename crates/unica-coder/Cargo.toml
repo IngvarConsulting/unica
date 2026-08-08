@@ -40,3 +40,4 @@ cap-fs-ext.workspace = true
 
 [dev-dependencies]
 jsonschema.workspace = true
+tempfile.workspace = true
