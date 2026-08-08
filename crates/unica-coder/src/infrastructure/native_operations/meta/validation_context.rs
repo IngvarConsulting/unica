@@ -397,22 +397,36 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    #[cfg(unix)]
     #[test]
-    fn subsystem_scan_terminates_on_a_symlinked_directory_loop() {
+    fn subsystem_scan_does_not_follow_a_symlinked_directory() {
         let root = temp_subsystems("symlink-loop");
         write_subsystem(&root, "Sales", Some("true"), "");
         fs::create_dir_all(root.join("Sales/Subsystems")).unwrap();
-        // Sales/Subsystems/Loop -> .. resolves back to Sales, so Loop/Subsystems
-        // is Sales/Subsystems again and a scan that follows the link never
-        // reaches a bottom.
-        std::os::unix::fs::symlink("..", root.join("Sales/Subsystems/Loop")).unwrap();
+        // Sales/Subsystems/Loop -> .. resolves back to Sales, so a scan that
+        // followed the link would keep re-entering the same directory. Windows
+        // agents without the privilege report None instead of failing.
+        let Some(symlink_result) =
+            crate::infrastructure::platform::filesystem::create_dir_symlink_for_test(
+                "..",
+                root.join("Sales/Subsystems/Loop"),
+            )
+        else {
+            fs::remove_dir_all(root).unwrap();
+            return;
+        };
+        symlink_result.unwrap();
 
-        let (_, found) =
+        let (visited, found) =
             meta_validate_subsystem_command_interface_scan(&root, "InformationRegister.Ledger")
                 .unwrap();
 
         assert!(!found, "a symlinked loop holds no listing");
+        assert!(
+            visited
+                .iter()
+                .all(|path| !path.to_string_lossy().contains("Loop")),
+            "{visited:?}"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
