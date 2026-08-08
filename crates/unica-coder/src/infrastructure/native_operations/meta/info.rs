@@ -303,7 +303,7 @@ pub(crate) fn read_typed_meta_info(
         resources: validation_resources,
         child_footprints: child_resources.validation_footprints,
         registrar_evidence,
-        subsystem_evidence,
+        subsystem_evidence: Some(subsystem_evidence),
     };
     Ok((local, validation_subject))
 }

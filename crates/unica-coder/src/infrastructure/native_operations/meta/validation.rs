@@ -125,7 +125,8 @@ impl MetadataValidator {
         {
             completeness.extend(diagnostics.clone());
         }
-        if let MetadataEvidenceAvailability::Unavailable(diagnostics) = &subject.subsystem_evidence
+        if let Some(MetadataEvidenceAvailability::Unavailable(diagnostics)) =
+            &subject.subsystem_evidence
         {
             completeness.extend(diagnostics.clone());
         }
@@ -2990,11 +2991,13 @@ pub(super) fn meta_validate_check_register_command_interface(
     }
     let object_ref = format!("{md_type}.{obj_name}");
     let shown_in_command_interface = if let Some(subject) = proof_subject {
-        // Only a complete scan can prove the absence of a listing; an incomplete
-        // one is reported through the evidence channel instead.
+        // Absence is only provable from a scan that actually ran and finished.
+        // A subject that gathered no subsystem evidence says nothing about
+        // membership, so the rule stays silent rather than reading the missing
+        // resources as proof.
         if !matches!(
             subject.subsystem_evidence,
-            MetadataEvidenceAvailability::Complete
+            Some(MetadataEvidenceAvailability::Complete)
         ) {
             return;
         }
@@ -3007,10 +3010,16 @@ pub(super) fn meta_validate_check_register_command_interface(
         })
     } else if let Some(config_dir) = config_dir {
         let subsystems_dir = config_dir.join("Subsystems");
-        subsystems_dir.is_dir()
-            && meta_validate_subsystem_command_interface_scan(&subsystems_dir, &object_ref)
-                .map(|(_, found)| found)
-                .unwrap_or(false)
+        if !subsystems_dir.is_dir() {
+            false
+        } else {
+            // A scan that could not reach the bottom proves nothing, so its
+            // failure must not be read as an absent membership.
+            match meta_validate_subsystem_command_interface_scan(&subsystems_dir, &object_ref) {
+                Ok((_, found)) => found,
+                Err(_) => return,
+            }
+        }
     } else {
         return;
     };

@@ -5,6 +5,7 @@ use super::validation::{
 use super::xml_model::parse_metadata_image;
 use super::{meta_info_child, meta_info_inner_text};
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
@@ -229,9 +230,19 @@ fn subsystem_command_interface_scan(
         }
         if file_type.is_dir() {
             // Subsystems nest as Subsystems/<Parent>/Subsystems/<Child>.xml.
+            // The nested directory is inspected without following a link too:
+            // a real parent may still hold a linked `Subsystems`.
             let child_dir = path.join("Subsystems");
-            if child_dir.is_dir() {
-                nested.push(child_dir);
+            match fs::symlink_metadata(&child_dir) {
+                Ok(metadata) if metadata.is_dir() => nested.push(child_dir),
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(format!(
+                        "failed to inspect {}: {error}",
+                        child_dir.display()
+                    ));
+                }
             }
             continue;
         }
@@ -428,6 +439,41 @@ mod tests {
             "{visited:?}"
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn subsystem_scan_does_not_follow_a_linked_nested_directory() {
+        let outside = temp_subsystems("outside-tree");
+        let reference = "InformationRegister.Ledger";
+        write_subsystem(
+            &outside,
+            "Elsewhere",
+            Some("true"),
+            &content_item(reference),
+        );
+
+        let root = temp_subsystems("linked-nested");
+        write_subsystem(&root, "Parent", Some("true"), "");
+        fs::create_dir_all(root.join("Parent")).unwrap();
+        // Parent is a real directory, but its Subsystems is a link out of the
+        // tree — checking only the parent entry would still follow it.
+        let Some(symlink_result) =
+            crate::infrastructure::platform::filesystem::create_dir_symlink_for_test(
+                &outside,
+                root.join("Parent/Subsystems"),
+            )
+        else {
+            fs::remove_dir_all(root).unwrap();
+            fs::remove_dir_all(outside).unwrap();
+            return;
+        };
+        symlink_result.unwrap();
+
+        let (_, found) = meta_validate_subsystem_command_interface_scan(&root, reference).unwrap();
+
+        assert!(!found, "a linked directory outside the tree proves nothing");
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
     }
 
     fn nest_subsystems(root: &Path, levels: usize, reference: &str) {
