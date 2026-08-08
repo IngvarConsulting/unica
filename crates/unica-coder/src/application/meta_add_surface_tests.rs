@@ -909,6 +909,45 @@ fn meta_edit_warning_is_derived_from_late_support_authorization() {
     );
 }
 
+#[test]
+fn add_does_not_judge_subsystem_membership() {
+    let workspace = create_configuration_workspace("register-add-membership");
+    let mut args = add_args(workspace.path(), "AccumulationRegister", "Fresh", false);
+    args.insert(
+        "operations".to_string(),
+        json!([{
+            "op": "add",
+            "collection": "dimensions",
+            "elements": [{
+                "name": "Period",
+                "type": {"variants": [{
+                    "kind": "string",
+                    "length": 9,
+                    "allowedLength": "variable"
+                }]}
+            }]
+        }]),
+    );
+    let result = call_add_with_args(workspace.path(), &args);
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.expect("typed mutation data");
+    // A mutation gathers no subsystem evidence, and the subsystem may well be
+    // created by the next call, so creation says nothing about membership.
+    let warnings = data["validation"]["diagnostics"]
+        .as_array()
+        .expect("validation diagnostics")
+        .iter()
+        .filter_map(|diagnostic| diagnostic["message"].as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        !warnings
+            .iter()
+            .any(|warning| warning.contains("IncludeInCommandInterface")),
+        "{warnings:?}"
+    );
+}
+
 fn assert_partial_is_stable(workspace: &TempWorkspace, kind: &str, name: &str) {
     let before = tree_snapshot(&workspace.path().join("src"));
     let result = call_add(workspace.path(), kind, name, false);
