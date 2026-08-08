@@ -250,6 +250,13 @@ fn add_refuses_an_incoherent_object_and_names_what_the_platform_requires() {
         !preview.ok,
         "dryRun must report the same refusal: {preview:?}"
     );
+    assert!(
+        !workspace
+            .path()
+            .join("src/InformationRegisters/Prices.xml")
+            .exists(),
+        "dryRun must not create metadata files"
+    );
 }
 
 #[test]
@@ -274,6 +281,8 @@ fn edit_judges_the_final_state_of_the_call_not_each_operation() {
     );
 
     assert!(replaced.ok, "{replaced:?}");
+    let descriptor = workspace.path().join("src/InformationRegisters/Prices.xml");
+    let before_refusal = std::fs::read(&descriptor).unwrap();
 
     let emptied = call_edit(
         workspace.path(),
@@ -285,6 +294,11 @@ fn edit_judges_the_final_state_of_the_call_not_each_operation() {
     assert!(
         !emptied.ok,
         "emptying the register must be refused: {emptied:?}"
+    );
+    assert_eq!(
+        std::fs::read(&descriptor).unwrap(),
+        before_refusal,
+        "a refused edit must leave the descriptor byte-identical"
     );
 }
 
