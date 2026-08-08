@@ -6,3 +6,10 @@
 //    тестов следующей задачи; в тестах этой задачи не вызывается.
 #[allow(dead_code)]
 pub mod container;
+// `#[allow(dead_code)]` здесь по той же причине, что и на `container` выше:
+// CorpusPage/Signature/CorpusError/read_corpus/read_corpus_from_archive и их
+// внутренние помощники ещё не вызываются production-кодом — провайдер
+// справки подключит их в одной из следующих задач плана, предупреждение
+// снимется само собой.
+#[allow(dead_code)]
+pub mod corpus;

@@ -27,6 +27,7 @@ tokio.workspace = true
 roxmltree.workspace = true
 ureq.workspace = true
 uuid.workspace = true
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
