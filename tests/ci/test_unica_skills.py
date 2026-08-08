@@ -96,6 +96,8 @@ class UniqueKeySafeLoader(yaml.SafeLoader):
 
 
 def prompt_frontmatter_body(document: str) -> str | None:
+    """Return the raw YAML frontmatter body when the document has one."""
+
     match = PROMPT_FRONTMATTER_PATTERN.match(document.removeprefix("\ufeff"))
     return None if match is None else match.group("body")
 
