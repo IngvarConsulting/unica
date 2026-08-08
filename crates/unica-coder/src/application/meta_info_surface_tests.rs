@@ -1092,6 +1092,23 @@ fn register_command_interface_warnings(workspace: &Path, name: &str) -> Vec<Stri
                         Value::String("InformationRegister".to_string()),
                     ),
                     ("name".to_string(), Value::String(name.to_string())),
+                    (
+                        // Object integrity (ADR-0030) requires a register to
+                        // carry at least one dimension, resource or attribute.
+                        "operations".to_string(),
+                        serde_json::json!([{
+                            "op": "add",
+                            "collection": "dimensions",
+                            "elements": [{
+                                "name": "Period",
+                                "type": {"variants": [{
+                                    "kind": "string",
+                                    "length": 9,
+                                    "allowedLength": "variable"
+                                }]}
+                            }]
+                        }]),
+                    ),
                     ("dryRun".to_string(), Value::Bool(false)),
                 ]),
             )
