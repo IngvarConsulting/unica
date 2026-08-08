@@ -331,7 +331,7 @@ mod tests {
         buffer.into_inner()
     }
 
-    /// Сигнатура с угловой скобкой в параметре — не редкость, а norma: на
+    /// Сигнатура с угловой скобкой в параметре — не редкость, а норма: на
     /// установке 8.3.27 такие `<` в первых 200 байтах имеют 5518 файлов `.st`
     /// из 22751, то есть 24,3%. Поэтому `.st` исключается по расширению, а не
     /// по признаку разметки: без этого четверть сигнатур стала бы «страницами».
@@ -568,7 +568,7 @@ pub fn read_corpus_from_archive(archive: &[u8]) -> Result<Vec<CorpusPage>, Corpu
         let stem = name.rsplit_once('.').map(|(head, _)| head).unwrap_or(name.as_str());
         pages.push(CorpusPage {
             path: name.clone(),
-            title: if title.is_empty() { name.clone() } else { title },
+            title,
             text,
             signature: signatures.get(stem).cloned(),
         });
