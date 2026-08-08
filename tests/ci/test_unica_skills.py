@@ -249,6 +249,67 @@ SCENARIO_SKILLS = {
         "unica.source.read",
         "unica.source.locate",
     ],
+    "document-posting": [
+        "unica.project.map",
+        "unica.meta.info",
+        "unica.meta.edit",
+        "unica.code.definition",
+        "unica.code.outline",
+        "unica.code.patch",
+        "unica.code.diagnostics",
+        "unica.runtime.execute",
+    ],
+    "register-design": [
+        "unica.project.map",
+        "unica.meta.info",
+        "unica.meta.add",
+        "unica.meta.edit",
+        "unica.code.search",
+        "unica.dcs.info",
+        "unica.code.diagnostics",
+        "unica.runtime.execute",
+    ],
+    "object-events": [
+        "unica.project.map",
+        "unica.meta.info",
+        "unica.code.search",
+        "unica.code.definition",
+        "unica.code.outline",
+        "unica.code.graph",
+        "unica.code.patch",
+        "unica.code.diagnostics",
+        "unica.runtime.execute",
+    ],
+    "form-events": [
+        "unica.project.map",
+        "unica.form.info",
+        "unica.form.edit",
+        "unica.meta.info",
+        "unica.code.outline",
+        "unica.code.patch",
+        "unica.code.diagnostics",
+        "unica.runtime.execute",
+    ],
+    "module-placement": [
+        "unica.project.map",
+        "unica.meta.info",
+        "unica.meta.add",
+        "unica.subsystem.info",
+        "unica.code.graph",
+        "unica.code.patch",
+        "unica.code.diagnostics",
+        "unica.runtime.execute",
+    ],
+    "metadata-modeling": [
+        "unica.project.map",
+        "unica.cf.info",
+        "unica.meta.info",
+        "unica.meta.add",
+        "unica.meta.edit",
+        "unica.subsystem.info",
+        "unica.code.diagnostics",
+        "unica.runtime.execute",
+    ],
 }
 
 SCENARIO_REQUIRED_TOKENS = {
@@ -283,6 +344,101 @@ SCENARIO_REQUIRED_TOKENS = {
     "db-performance": ["SQL/DBMS trace", "индексы", "блокировки", "TEMPDB/WAL"],
     "security-auth-crypto": ["OpenID", "сертификаты", "CryptoPro", "секреты"],
     "data-separation": ["tenant-boundaries", "RLS", "разделители", "безопасные запросы"],
+    # v8std governs posting shape, and the two rules an agent gets wrong by
+    # default are std450 (the platform writes the sets, not the handler) and
+    # std661 (control queries run *after* the controlled write, not before).
+    # Guidance that drops either one reproduces the textbook antipattern.
+    "document-posting": [
+        "RegisterRecords",
+        "RealTimePosting",
+        "RegisterRecordsDeletion",
+        "РежимПроведенияДокумента.Оперативный",
+        "БлокироватьДляИзменения",
+        "lock order",
+        "std450",
+        "std661",
+        "АПК:105",
+        "АПК:226",
+    ],
+    # std664 (separate totals for write concurrency) and std733 (no separation
+    # for the cheapest balance read) pull opposite ways. Guidance that names
+    # only one of them turns a trade-off into a false rule, so both ids and the
+    # dimension/resource split they hang off stay pinned here.
+    "register-design": [
+        "RegisterType",
+        "EnableTotalsSplitting",
+        "EnableTotalsSliceLast",
+        "WriteMode",
+        "DenyIncompleteValues",
+        "std664",
+        "std733",
+        "std708",
+        "std792",
+        "АПК:229",
+    ],
+    # Both cross-cutting rules are ones a handler silently violates: std773
+    # (the exchange guard, which subscriptions forget as often as modules) and
+    # std686 (assigning anything but Истина to Отказ clears another
+    # subscriber's refusal). std463's remove-from-ПроверяемыеРеквизиты shape is
+    # pinned because the inverse reads as correct and hides the condition.
+    "object-events": [
+        "ОбменДанными.Загрузка",
+        "ПроверяемыеРеквизиты",
+        "std773",
+        "std686",
+        "std463",
+        "std465",
+        "АПК:75",
+        "АПК:144",
+    ],
+    # The form module is the one place directives are mandatory (std439) and
+    # the one place a careless line costs a round trip (std487). Both are
+    # invisible in review without being named. `Подключаемый_` is pinned
+    # because nothing else in the surface mentions it.
+    "form-events": [
+        "&НаСервереБезКонтекста",
+        "Подключаемый_",
+        "Параметры.Свойство()",
+        "std439",
+        "std487",
+        "std492",
+        "std741",
+        "АПК:547",
+        "АПК:1410",
+    ],
+    # std469 admits exactly four flag combinations and std679 makes `Вызов
+    # сервера` an exposure decision rather than a convenience — the flag gets
+    # set to make a call compile otherwise. The scope line is pinned because
+    # this skill and api-design describe adjacent halves of one subject.
+    "module-placement": [
+        "ВызовСервера",
+        "КлиентСервер",
+        "ПовтИсп",
+        "Вызов сервера",
+        "std469",
+        "std486",
+        "std679",
+        "std724",
+        "std746",
+        "АПК:125",
+        "api-design",
+    ],
+    # The class choice hangs on who may change the value set, and the
+    # enumeration-versus-characteristic-types mistake is the one that costs a
+    # migration later. std728's two composite rules are pinned because
+    # `ЛюбаяСсылка` and a mixed type set both read as convenient shortcuts.
+    "metadata-modeling": [
+        "ЛюбаяСсылка",
+        "ХранилищеЗначения",
+        "ОбновлениеПредопределенныхДанных",
+        "std432",
+        "std697",
+        "std704",
+        "std728",
+        "АПК:1329",
+        "АПК:1330",
+        "register-design",
+    ],
     "release-support": ["сравнение/объединение", "Поставка", "поддержка", "совместимость"],
     "source-access": [
         "предметн",
