@@ -503,24 +503,32 @@ fn strip_markup(raw: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Сигнатура из `.st`: пары вида {"ru",0,0,"","Имя()"} для каждой локали.
+/// Сигнатура из `.st`: запись локали имеет вид {"ru",0,0,"","Имя()"} —
+/// последнее поле записи и есть сигнатура. Границей записи служит `}`: без неё
+/// поиск ушёл бы в запись следующей локали и вернул её значение.
 fn parse_signature(raw: &str) -> Option<Signature> {
     let mut signature = Signature { ru: None, en: None };
     for locale in ["ru", "en"] {
         let needle = format!("\"{locale}\",");
-        if let Some(start) = raw.find(&needle) {
-            let tail = &raw[start + needle.len()..];
-            let mut fields = tail.split(",\"");
-            fields.next();
-            if let Some(last) = tail.rsplit(",\"").next() {
-                let value = last.trim_end_matches(['}', '\r', '\n', ' ']).trim_end_matches('"');
-                if !value.is_empty() {
-                    match locale {
-                        "ru" => signature.ru = Some(value.to_string()),
-                        _ => signature.en = Some(value.to_string()),
-                    }
-                }
-            }
+        let Some(start) = raw.find(&needle) else {
+            continue;
+        };
+        let tail = &raw[start + needle.len()..];
+        let record = tail.split('}').next().unwrap_or(tail);
+        let Some(open) = record.rfind('"') else {
+            continue;
+        };
+        let before = &record[..open];
+        let Some(value_start) = before.rfind('"') else {
+            continue;
+        };
+        let value = &before[value_start + 1..];
+        if value.is_empty() {
+            continue;
+        }
+        match locale {
+            "ru" => signature.ru = Some(value.to_string()),
+            _ => signature.en = Some(value.to_string()),
         }
     }
     if signature.ru.is_none() && signature.en.is_none() {
@@ -732,7 +740,7 @@ git commit -m "feat(platform-help): различать полную и клие�
 - Test: внутри `documentation.rs`, модуль `#[cfg(test)]`
 
 **Interfaces:**
-- Produces: `pub struct DocumentationProviderId(String)`; `pub enum SourceKind { PlatformHelp, DevelopmentStandard }`; `pub enum Authority { Vendor, Community }`; `pub enum DocumentationSectionStatus { Ok, Empty, Unavailable { reason: UnavailableReason, detail: String }, Failed { diagnostic: String } }`; `pub enum UnavailableReason { NotConfigured, VersionMissing, PolicyDenied, Timeout }`; `pub struct DocumentationHit`; `pub struct DocumentationSection`; `pub struct DocumentationSearchRequest`; `pub struct DocumentationContext`; `pub trait DocumentationProvider`; `pub struct DocumentationRegistry` с `new(...) -> Result<Self, String>` и `providers()`.
+- Produces: `pub struct DocumentationProviderId(String)`; `pub enum SourceKind { PlatformHelp, DevelopmentStandard }`; `pub enum Authority { Vendor, Community }`; `pub enum DocumentationSectionStatus { Ok, Empty, Unavailable { reason: UnavailableReason, detail: String }, Failed { diagnostic: String } }`; `pub enum UnavailableReason { NotConfigured, VersionMissing, PolicyDenied, Timeout }`; `pub struct DocumentationHit`; `pub struct DocumentationSection`; `pub struct DocumentationSearchRequest`; `pub struct DocumentationContext`; `pub trait DocumentationProvider` с `search(...) -> Vec<DocumentationSection>`; `pub struct DocumentationRegistry` с `new(...) -> Result<Self, String>` и `providers()`.
 
 - [ ] **Step 1: Написать падающий тест**
 
@@ -760,8 +768,8 @@ mod tests {
         fn needs_network(&self) -> bool {
             false
         }
-        fn search(&self, _: &DocumentationSearchRequest, _: &DocumentationContext) -> DocumentationSection {
-            DocumentationSection::empty(self.id(), "corpus", SourceKind::PlatformHelp, Authority::Vendor)
+        fn search(&self, _: &DocumentationSearchRequest, _: &DocumentationContext) -> Vec<DocumentationSection> {
+            vec![DocumentationSection::empty(self.id(), "corpus", SourceKind::PlatformHelp, Authority::Vendor)]
         }
     }
 
@@ -950,11 +958,14 @@ pub trait DocumentationProvider: Send + Sync {
     fn id(&self) -> DocumentationProviderId;
     fn corpora(&self) -> Vec<DocumentationCorpus>;
     fn needs_network(&self) -> bool;
+    /// По одной секции на каждый объявленный корпус: поля секции обязаны
+    /// описывать именно её содержимое, поэтому поставщик с двумя корпусами
+    /// возвращает две секции.
     fn search(
         &self,
         request: &DocumentationSearchRequest,
         context: &DocumentationContext,
-    ) -> DocumentationSection;
+    ) -> Vec<DocumentationSection>;
 }
 
 pub struct DocumentationRegistry {
@@ -1005,7 +1016,7 @@ git commit -m "feat(documentation): ввести нейтральный к ис�
 
 **Interfaces:**
 - Consumes: `read_corpus` из Task 2, `discover` из Task 3, доменные типы из Task 4.
-- Produces: `pub struct PlatformSyntaxHelpProvider` с `pub fn new(language: &str) -> Self`, реализующий `DocumentationProvider`.
+- Produces: `pub struct PlatformSyntaxHelpProvider` с `pub fn new(language: &str) -> Self`, реализующий `DocumentationProvider` и возвращающий по секции на каждый из двух корпусов; `pub fn rank_pages(pages: &[CorpusPage], query: &str, limit: usize, version: &str, corpus: &str) -> Vec<DocumentationHit>`.
 
 - [ ] **Step 1: Написать падающий тест на поведение поставщика**
 
@@ -1028,7 +1039,9 @@ mod tests {
     fn missing_installation_is_unavailable_not_failed() {
         let provider = PlatformSyntaxHelpProvider::new("ru");
         let context = DocumentationContext { platform_version: None, installation_root: None };
-        let section = provider.search(&request("ПолучитьНавигационнуюСсылку"), &context);
+        let sections = provider.search(&request("ПолучитьНавигационнуюСсылку"), &context);
+        assert_eq!(sections.len(), 1, "без установки — одна диагностичная секция");
+        let section = &sections[0];
         assert!(matches!(
             section.status,
             DocumentationSectionStatus::Unavailable { reason: UnavailableReason::NotConfigured, .. }
@@ -1047,7 +1060,9 @@ mod tests {
             platform_version: Some("8.5.1.1451".to_string()),
             installation_root: Some(root),
         };
-        let section = provider.search(&request("что-нибудь"), &context);
+        let sections = provider.search(&request("что-нибудь"), &context);
+        assert_eq!(sections.len(), 1, "без Синтакс-помощника — одна диагностичная секция");
+        let section = &sections[0];
         assert!(matches!(
             section.status,
             DocumentationSectionStatus::Unavailable { reason: UnavailableReason::VersionMissing, .. }
@@ -1192,10 +1207,10 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
         &self,
         request: &DocumentationSearchRequest,
         context: &DocumentationContext,
-    ) -> DocumentationSection {
+    ) -> Vec<DocumentationSection> {
         let id = self.id();
         let Some(root) = context.installation_root.as_ref() else {
-            return DocumentationSection {
+            return vec![DocumentationSection {
                 provider: id,
                 corpus: "syntax-context".to_string(),
                 source_kind: SourceKind::PlatformHelp,
@@ -1205,12 +1220,12 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
                     detail: "установка платформы не разрешена для рабочего пространства".to_string(),
                 },
                 hits: Vec::new(),
-            };
+            }];
         };
         let corpora = match discover(root, &self.language) {
             Ok(value) => value,
             Err(InstallationError::HelpMissingForVersion { version }) => {
-                return DocumentationSection {
+                return vec![DocumentationSection {
                     provider: id,
                     corpus: "syntax-context".to_string(),
                     source_kind: SourceKind::PlatformHelp,
@@ -1222,10 +1237,10 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
                         ),
                     },
                     hits: Vec::new(),
-                }
+                }]
             }
             Err(InstallationError::NotFound) => {
-                return DocumentationSection {
+                return vec![DocumentationSection {
                     provider: id,
                     corpus: "syntax-context".to_string(),
                     source_kind: SourceKind::PlatformHelp,
@@ -1235,7 +1250,7 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
                         detail: "каталог установки недоступен".to_string(),
                     },
                     hits: Vec::new(),
-                }
+                }]
             }
         };
         let mut cache = self.cache.lock().expect("кеш корпусов");
@@ -1260,35 +1275,30 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
             cache.syntax_context = syntax;
             cache.platform_guides = guides;
         }
-        let mut hits = rank_pages(
-            &cache.syntax_context,
-            &request.query,
-            request.limit,
-            &corpora.version,
-            "syntax-context",
-        );
-        if hits.len() < request.limit {
-            hits.extend(rank_pages(
-                &cache.platform_guides,
-                &request.query,
-                request.limit - hits.len(),
-                &corpora.version,
-                "platform-guides",
-            ));
-        }
-        let status = if hits.is_empty() {
-            DocumentationSectionStatus::Empty
-        } else {
-            DocumentationSectionStatus::Ok
-        };
-        DocumentationSection {
-            provider: id,
-            corpus: "syntax-context".to_string(),
-            source_kind: SourceKind::PlatformHelp,
-            authority: Authority::Vendor,
-            status,
-            hits,
-        }
+        // По секции на корпус: поле `corpus` обязано описывать именно свои
+        // попадания, поэтому корпуса не смешиваются в одну секцию.
+        [
+            ("syntax-context", &cache.syntax_context),
+            ("platform-guides", &cache.platform_guides),
+        ]
+        .into_iter()
+        .map(|(corpus, pages)| {
+            let hits = rank_pages(pages, &request.query, request.limit, &corpora.version, corpus);
+            let status = if hits.is_empty() {
+                DocumentationSectionStatus::Empty
+            } else {
+                DocumentationSectionStatus::Ok
+            };
+            DocumentationSection {
+                provider: id.clone(),
+                corpus: corpus.to_string(),
+                source_kind: SourceKind::PlatformHelp,
+                authority: Authority::Vendor,
+                status,
+                hits,
+            }
+        })
+        .collect()
     }
 }
 ```
@@ -1319,8 +1329,12 @@ fn real_installation_answers_navigation_link_question() {
         platform_version: None,
         installation_root: Some(std::path::PathBuf::from(root)),
     };
-    let section = <unica_coder::infrastructure::platform_help::provider::PlatformSyntaxHelpProvider
+    let sections = <unica_coder::infrastructure::platform_help::provider::PlatformSyntaxHelpProvider
         as unica_coder::domain::documentation::DocumentationProvider>::search(&provider, &request, &context);
+    let section = sections
+        .iter()
+        .find(|section| section.corpus == "syntax-context")
+        .expect("секция Синтакс-помощника");
     assert!(matches!(
         section.status,
         unica_coder::domain::documentation::DocumentationSectionStatus::Ok
@@ -1390,8 +1404,8 @@ mod tests {
         fn needs_network(&self) -> bool {
             false
         }
-        fn search(&self, _: &DocumentationSearchRequest, _: &DocumentationContext) -> DocumentationSection {
-            self.section.clone()
+        fn search(&self, _: &DocumentationSearchRequest, _: &DocumentationContext) -> Vec<DocumentationSection> {
+            vec![self.section.clone()]
         }
     }
 
@@ -1512,7 +1526,7 @@ pub fn search(
     let mut sections = Vec::new();
     let mut any_usable = false;
     for provider in registry.providers() {
-        let section = provider.search(request, context);
+        for section in provider.search(request, context) {
         let (status, diagnostic) = status_fields(&section.status);
         if matches!(
             section.status,
@@ -1544,6 +1558,7 @@ pub fn search(
             "diagnostic": diagnostic,
             "hits": hits,
         }));
+        }
     }
     if !any_usable {
         return Err("ни один поставщик документации не дал результата".to_string());
@@ -1602,12 +1617,10 @@ pub fn search(
                         .unwrap_or("ru")
                         .to_string(),
                 };
+                let requested_version = args.get("platformVersion").and_then(Value::as_str);
                 let context = crate::domain::documentation::DocumentationContext {
-                    platform_version: args
-                        .get("platformVersion")
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                    installation_root: resolve_platform_installation_root(),
+                    platform_version: requested_version.map(str::to_string),
+                    installation_root: resolve_platform_installation_root(requested_version),
                 };
                 let registry = documentation_registry()?;
                 let data = crate::application::documentation::search(&registry, &request, &context)?;
@@ -1635,16 +1648,44 @@ fn documentation_registry() -> Result<crate::domain::documentation::Documentatio
         as Arc<dyn crate::domain::documentation::DocumentationProvider>])
 }
 
-/// Корень установки платформы берётся из уже существующего разрешения runtime;
-/// пока оно недоступно, поставщик честно сообщает `not-configured`.
-fn resolve_platform_installation_root() -> Option<std::path::PathBuf> {
-    std::env::var("UNICA_PLATFORM_HELP_DIR")
-        .ok()
-        .map(std::path::PathBuf::from)
+/// Корень установки платформы берётся из того же перечня корней, которым уже
+/// пользуется публикация полной выгрузки: `default_platform_roots()` в
+/// `infrastructure::platform::full_dump_publication`. Второго механизма поиска
+/// установки в проекте не появляется.
+///
+/// Из корня выбирается подкаталог версии: явная версия из аргумента вызова,
+/// иначе — старшая по лексикографическому порядку среди присутствующих. Полный
+/// порядок с версией проекта приходит во втором плане вместе с `unica.toml`.
+fn resolve_platform_installation_root(requested: Option<&str>) -> Option<std::path::PathBuf> {
+    for root in crate::infrastructure::platform::full_dump_publication::default_platform_roots() {
+        let Ok(children) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        let mut versions: Vec<std::path::PathBuf> = children
+            .flatten()
+            .map(|child| child.path())
+            .filter(|path| path.is_dir())
+            .collect();
+        versions.sort();
+        if let Some(version) = requested {
+            if let Some(hit) = versions.iter().find(|path| {
+                path.file_name().and_then(|name| name.to_str()) == Some(version)
+            }) {
+                return Some(hit.clone());
+            }
+            continue;
+        }
+        if let Some(latest) = versions.last() {
+            return Some(latest.clone());
+        }
+    }
+    None
 }
 ```
 
-Замечание для исполнителя: `resolve_platform_installation_root` — временная связка. Полное разрешение установки по версии проекта относится ко второму плану вместе с `unica.toml`; до тех пор отсутствие переменной даёт корректный диагностичный отказ, а не ложный ответ.
+Функция `default_platform_roots` сейчас приватная — сделайте её `pub(crate)` в `full_dump_publication.rs` и ничего в ней не меняйте: перечень корней остаётся один на проект.
+
+Переменная `UNICA_PLATFORM_HELP_DIR` остаётся исключительно тестовой и в рабочий путь разрешения не входит.
 
 - [ ] **Step 5: Обновить ведомость поверхности**
 
