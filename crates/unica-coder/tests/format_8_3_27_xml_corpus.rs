@@ -1320,17 +1320,21 @@ fn meta_operations(kind: &str) -> Option<Value> {
         json!({"variants": [{"kind": "string", "length": 50, "allowedLength": "variable"}]});
     let number = |digits: u32, fraction: u32| json!({"variants": [{"kind": "number", "digits": digits, "fraction": fraction, "sign": "any"}]});
     match kind {
+        // Платформа выпускает ресурсы перед измерениями: на 773 регистрах
+        // сведений и 99 регистрах накопления дампа 8.3.27 нет ни одного файла с
+        // обратным порядком. Writer сохраняет порядок операций, поэтому корпус
+        // задаёт их так же и остаётся побайтово каноничным.
         "InformationRegister" => Some(json!([
-            {"op": "add", "collection": "dimensions",
-             "elements": [{"name": "Item", "type": string50}]},
             {"op": "add", "collection": "resources",
-             "elements": [{"name": "Price", "type": number(15, 2)}]}
+             "elements": [{"name": "Price", "type": number(15, 2)}]},
+            {"op": "add", "collection": "dimensions",
+             "elements": [{"name": "Item", "type": string50}]}
         ])),
         "AccumulationRegister" => Some(json!([
-            {"op": "add", "collection": "dimensions",
-             "elements": [{"name": "Warehouse", "type": string50}]},
             {"op": "add", "collection": "resources",
-             "elements": [{"name": "Quantity", "type": number(15, 3)}]}
+             "elements": [{"name": "Quantity", "type": number(15, 3)}]},
+            {"op": "add", "collection": "dimensions",
+             "elements": [{"name": "Warehouse", "type": string50}]}
         ])),
         "AccountingRegister" => Some(json!([
             {"op": "add", "collection": "resources",
