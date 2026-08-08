@@ -318,13 +318,10 @@ class ProductContractTests(unittest.TestCase):
         self.assertNotIn("docs-local/1ci/8.3.27/en/", agents)
         self.assertNotIn("kb.1ci.com/bin/download", agents)
 
-    def test_vendor_help_never_enters_the_package(self) -> None:
-        """Материалы вендора читаются на машине пользователя и не пакуются."""
-        package_script = (
-            REPO_ROOT / "scripts" / "ci" / "package-unica-plugin.py"
-        ).read_text(encoding="utf-8")
-        self.assertNotIn("docs-local", package_script)
-        self.assertNotIn(".hbk", package_script)
+    def test_local_corpus_directory_stays_ignored(self) -> None:
+        """Каталог остаётся игнорируемым: снят контракт корпуса, а не каталог."""
+        ignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
+        self.assertIn("docs-local/", ignore.splitlines())
 
     def test_marketplace_card_uses_unica_product_legal_links(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
