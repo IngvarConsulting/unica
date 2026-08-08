@@ -597,20 +597,21 @@ fn documentation_registry() -> Result<crate::domain::documentation::Documentatio
 /// search mechanism must not appear in the project.
 ///
 /// The version subdirectory is either the explicit version from the call
-/// argument, or the lexicographically last one present. `UNICA_PLATFORM_HELP_DIR`
-/// is a test-only switch (see `platform_help::installation`) and does not feed
+/// argument, or the numerically newest one present — picking is entirely
+/// `select_platform_version`'s job, so this loop passes the unordered
+/// directory listing straight through. `UNICA_PLATFORM_HELP_DIR` is a
+/// test-only switch (see `platform_help::installation`) and does not feed
 /// into this resolver.
 fn resolve_platform_installation_root(requested: Option<&str>) -> Option<std::path::PathBuf> {
     for root in crate::infrastructure::platform::full_dump_publication::default_platform_roots() {
         let Ok(children) = std::fs::read_dir(&root) else {
             continue;
         };
-        let mut versions: Vec<std::path::PathBuf> = children
+        let versions: Vec<std::path::PathBuf> = children
             .flatten()
             .map(|child| child.path())
             .filter(|path| path.is_dir())
             .collect();
-        versions.sort();
         if let Some(selected) = select_platform_version(&versions, requested) {
             return Some(selected);
         }
@@ -618,12 +619,34 @@ fn resolve_platform_installation_root(requested: Option<&str>) -> Option<std::pa
     None
 }
 
+/// Version-directory name as a numeric sort key: dot-separated components
+/// compared as integers, not bytes. Byte/lexicographic comparison breaks the
+/// moment a component's width changes — `"8.3.9.100"` sorts *after*
+/// `"8.3.10.50"` under `str`/`PathBuf` ordering because `'1' < '9'` — and a
+/// build-number digit rollover is a routine event over a machine's lifetime,
+/// not a corner case. Silently answering from the wrong version is exactly
+/// the "neighbouring version substituted" failure ADR-0029 point 4 forbids.
+/// A non-numeric or missing component parses as 0; that only matters for a
+/// directory name that is not a version at all, and the platform-root
+/// listing this feeds from does not contain those.
+fn numeric_version_key(path: &std::path::Path) -> Vec<u32> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| {
+            name.split('.')
+                .map(|part| part.parse::<u32>().unwrap_or(0))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Pure version pick, split out of `resolve_platform_installation_root` so it
 /// can be tested without touching the filesystem or the hard-coded platform
 /// roots: an explicit version must match a directory name exactly (a
 /// three-component prefix like `8.3.27` must not silently resolve to
 /// `8.3.27.2074`, since a patch mismatch changes hundreds of API names), and
-/// without one the lexicographically last (newest) already-sorted entry wins.
+/// without one the numerically newest entry wins — order-independent, so the
+/// caller does not need to pre-sort.
 fn select_platform_version(
     versions: &[std::path::PathBuf],
     requested: Option<&str>,
@@ -633,7 +656,10 @@ fn select_platform_version(
             .iter()
             .find(|path| path.file_name().and_then(|name| name.to_str()) == Some(version))
             .cloned(),
-        None => versions.last().cloned(),
+        None => versions
+            .iter()
+            .max_by_key(|path| numeric_version_key(path))
+            .cloned(),
     }
 }
 
@@ -884,16 +910,24 @@ mod tests {
     }
 
     #[test]
-    fn select_platform_version_without_a_request_picks_the_lexicographically_last_entry() {
-        // The caller pre-sorts; this proves the function takes `.last()`, not
-        // `.first()` or some other rule, and does not itself resort.
+    fn select_platform_version_without_a_request_picks_the_numerically_newest_entry() {
+        // Byte/lexicographic order breaks the moment a dot-separated
+        // component's width changes: "8.3.10.50" < "8.3.9.100" as raw
+        // strings ('1' < '9' at the third component, the first place they
+        // differ), even though 10 > 9 numerically. A build-number digit
+        // rollover is a routine event over a machine's lifetime, not a
+        // corner case. Fed in the order a byte sort would actually produce
+        // (ascending lexicographically: "8.3.10.50" sorts first), a
+        // `.last()`-over-byte-order pick would silently return the OLDER
+        // version here — exactly the "neighbouring version substituted"
+        // failure ADR-0029 point 4 forbids.
         let versions = vec![
-            PathBuf::from("/opt/1cv8/8.3.24.1234"),
-            PathBuf::from("/opt/1cv8/8.3.27.2074"),
+            PathBuf::from("/opt/1cv8/8.3.10.50"),
+            PathBuf::from("/opt/1cv8/8.3.9.100"),
         ];
         assert_eq!(
             select_platform_version(&versions, None),
-            Some(PathBuf::from("/opt/1cv8/8.3.27.2074"))
+            Some(PathBuf::from("/opt/1cv8/8.3.10.50"))
         );
     }
 
