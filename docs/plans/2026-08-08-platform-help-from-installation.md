@@ -1755,7 +1755,7 @@ fn documentation_registry() -> Result<crate::domain::documentation::Documentatio
 /// установки в проекте не появляется.
 ///
 /// Из корня выбирается подкаталог версии: явная версия из аргумента вызова,
-/// иначе — старшая по лексикографическому порядку среди присутствующих. Полный
+/// иначе — старшая по числовому сравнению точечных составляющих. Полный
 /// порядок с версией проекта приходит во втором плане вместе с `unica.toml`.
 fn resolve_platform_installation_root(requested: Option<&str>) -> Option<std::path::PathBuf> {
     for root in crate::infrastructure::platform::full_dump_publication::default_platform_roots() {
@@ -1767,7 +1767,7 @@ fn resolve_platform_installation_root(requested: Option<&str>) -> Option<std::pa
             .map(|child| child.path())
             .filter(|path| path.is_dir())
             .collect();
-        versions.sort();
+        versions.sort_by_key(|path| numeric_version_key(path));
         if let Some(version) = requested {
             if let Some(hit) = versions.iter().find(|path| {
                 path.file_name().and_then(|name| name.to_str()) == Some(version)
@@ -2100,3 +2100,33 @@ git commit -m "docs(spec): принять ADR-0029 и вывести прове�
 - `unica.documentation.get` — за задачей #242.
 
 До второго плана `unica.documentation.search` возвращает одну секцию, и это корректное состояние: контракт секционный с самого начала, поставщик в реестре пока один.
+
+
+## Поправка к Task 6: сравнение версий числовое, а не лексикографическое
+
+Ревью Task 6 нашло, что выбор «старшей» установки по `sort()` строк неверен:
+`8.3.9.100` оказывается после `8.3.10.50`, потому что байт `'1'` меньше байта
+`'9'`. Переход через разряд в номере сборки — обычное дело за время жизни
+машины, а последствие — справка не той версии без единой диагностики, то есть
+ровно тот отказ, ради предотвращения которого написан ADR-0029.
+
+Сравнение ведётся по числовым составляющим:
+
+```rust
+/// Ключ сортировки версии: точечные составляющие сравниваются числами, а не
+/// байтами. Иначе `8.3.9.100` оказывается «старше» `8.3.10.50`, потому что
+/// `'1' < '9'` — и Unica молча отдаёт справку не той платформы.
+fn numeric_version_key(path: &std::path::Path) -> Vec<u32> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| {
+            name.split('.')
+                .map(|part| part.parse::<u32>().unwrap_or(0))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+```
+
+Тест обязан различать: фикстура с `8.3.9.100` и `8.3.10.50` при
+лексикографическом сравнении выберет первую, при числовом — вторую.
