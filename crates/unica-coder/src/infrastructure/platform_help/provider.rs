@@ -409,6 +409,13 @@ mod tests {
             "platform-syntax-help:platform-guides:alpha/from-guides.html",
             "попадание секции platform-guides обязано прийти из корпуса platform-guides"
         );
+        // `both_name_collisions_are_returned` вызывает `rank_pages` напрямую и
+        // проверяет только то, что она копирует переданную версию — не то,
+        // что `search` передаёт именно версию ПРОЧИТАННОЙ установки
+        // (`corpora.version`), а не что-то другое. Здесь версия читается из
+        // реального каталога через `discover`, поэтому проверка настоящая.
+        assert_eq!(syntax_section.hits[0].applicable_version, "8.3.27.2074");
+        assert_eq!(guides_section.hits[0].applicable_version, "8.3.27.2074");
     }
 
     /// `Unreadable` — это «установка сломана» (права, не каталог), а не
