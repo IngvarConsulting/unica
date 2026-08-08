@@ -35,6 +35,7 @@ XML formats, DSL contracts, and reusable layout patterns live in
 - `platform/form-events.md` — form module client/server split, compilation directives, server-call budget, form parameters, and attached handlers.
 - `platform/module-placement.md` — object versus manager versus common modules, common module contexts and flags, cached modules, presentation handlers, and first launch.
 - `platform/metadata-modeling.md` — which object class holds the data, attribute typing, composite and defined types, predefined items, names and presentations.
+- `platform/transactions-locks.md` — transaction shape, managed locks, responsible reading, lock order; the owner other platform documents defer to.
 - `platform/integration-contracts.md` — HTTP/SOAP/OData/JSON/XML/file-exchange contracts and error semantics.
 - `platform/platform-mechanics.md` — background jobs, temp storage, auth/crypto, data separation, and platform runtime boundaries.
 - `tooling/v8project.md` — project configuration contract.

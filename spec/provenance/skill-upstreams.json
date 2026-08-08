@@ -95,6 +95,17 @@
         "plugins/unica/references/specs/1c-config-objects-spec.md",
         "tests/ci/test_unica_skills.py"
       ]
+    },
+    {
+      "skill": "transactions-locks",
+      "notes": "Unica-owned guidance skill owning transaction shape, managed locks and responsible reading across the surface. Prose is written for Unica. Normative rules are taken from v8std through public unica.standards.* (std460, std490, std648, std659, std661, std783, and diagnostics acc:66, acc:67, acc:325-332, acc:415, acc:478, acc:521, acc:1319, acc:1320, acc:1327, acc:1328, bslls:PairingBrokenTransaction, bslls:BeginTransactionBeforeTryCatch, bslls:CommitTransactionOutsideTryCatch, bslls:WrongUseOfRollbackTransactionMethod, v8cs:lock-out-of-try, v8cs:ql-using-for-update). Introducing it removed the duplicated lock guidance from references/platform/platform-mechanics.md and document-posting.md; document-posting keeps only the std661 posting order, register-design only dimension-driven parallelism, background-jobs only restartability, db-performance only the evidence side. No donor expression was copied or adapted.",
+      "localPaths": [
+        "plugins/unica/skills/transactions-locks",
+        "plugins/unica/references/platform/transactions-locks.md"
+      ],
+      "contractPaths": [
+        "tests/ci/test_unica_skills.py"
+      ]
     }
   ],
   "upstreams": [

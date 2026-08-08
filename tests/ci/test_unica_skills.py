@@ -310,6 +310,16 @@ SCENARIO_SKILLS = {
         "unica.code.diagnostics",
         "unica.runtime.execute",
     ],
+    "transactions-locks": [
+        "unica.project.map",
+        "unica.code.search",
+        "unica.code.outline",
+        "unica.code.graph",
+        "unica.code.patch",
+        "unica.code.diagnostics",
+        "unica.meta.info",
+        "unica.runtime.execute",
+    ],
 }
 
 SCENARIO_REQUIRED_TOKENS = {
@@ -354,7 +364,9 @@ SCENARIO_REQUIRED_TOKENS = {
         "RegisterRecordsDeletion",
         "РежимПроведенияДокумента.Оперативный",
         "БлокироватьДляИзменения",
-        "lock order",
+        # Lock order itself is owned by transactions-locks; what this skill
+        # must not lose is the deferral to it.
+        "transactions-locks",
         "std450",
         "std661",
         "АПК:105",
@@ -438,6 +450,24 @@ SCENARIO_REQUIRED_TOKENS = {
         "АПК:1329",
         "АПК:1330",
         "register-design",
+    ],
+    # This skill is the owner four others defer to, so the deferral is pinned
+    # alongside the rules. std783's "an exception does not roll back" is the
+    # single most load-bearing fact here: code written without it looks correct
+    # and leaves the transaction open. std648's definition of a responsible
+    # read is what decides whether a lock is needed at all.
+    "transactions-locks": [
+        "std648",
+        "std783",
+        "std460",
+        "std659",
+        "Заблокировать()",
+        "ОтменитьТранзакцию",
+        "lock order",
+        "does not roll the transaction back",
+        "АПК:1319",
+        "АПК:1327",
+        "Scope boundary",
     ],
     "release-support": ["сравнение/объединение", "Поставка", "поддержка", "совместимость"],
     "source-access": [

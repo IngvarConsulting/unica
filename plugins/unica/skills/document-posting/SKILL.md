@@ -15,7 +15,7 @@ description: "Проведение документов 1С. Используй 
 ## References
 
 - Read `../../references/platform/document-posting.md` for the posting model, real-time versus regular branches, register choice, lock shape, and stop rules.
-- Read `../../references/platform/platform-mechanics.md` for managed locks, transaction boundaries, and logging inside write handlers.
+- Read `../../references/platform/transactions-locks.md` for the transaction shape, managed lock modes, and what makes the balance read responsible; this skill adds only the ordering specific to posting.
 - Read `../../references/platform/db-performance.md` when posting is slow, contends on locks, or produces deadlocks.
 
 ## Core model
@@ -49,7 +49,7 @@ By default the handler writes nothing itself: the platform writes the record set
 - Read row-level referential data with one query; take document-level data from the object. Dotted access to a reference attribute inside a row loop is one database read per row.
 - Control balances after writing the controlled registers, at the end of the transaction — not in `ПередЗаписью` of the record set module, where the developer does not control the platform's write order and the lock is held while every other register is written.
 - An explicit `ДЛЯ ИЗМЕНЕНИЯ` lock is normally unnecessary in the control step: the write already locked what the control query reads.
-- Keep one lock order across registers and objects. A deadlock between posting handlers is a violated ordering contract.
+- Lock order, lock modes, and the transaction shape around all of this are owned by `transactions-locks`; apply them here rather than restating them.
 
 ## Review checklist
 
@@ -63,7 +63,7 @@ By default the handler writes nothing itself: the platform writes the record set
 - The real-time branch is reachable and the regular branch is correct on its own.
 - Refusal sets `Отказ` and reports the failing rows, not only a generic message.
 - Re-posting an already posted document is idempotent for the resulting movements.
-- No explicit nested transaction, user prompt, or network call inside the handlers.
+- The `transactions-locks` checklist has been applied to the handler as a whole.
 
 ## Stop rules
 
@@ -71,7 +71,6 @@ By default the handler writes nothing itself: the platform writes the record set
 - Do not write record sets explicitly inside the handler unless the handler needs that data afterwards.
 - Do not change `Posting`, `RealTimePosting`, `RegisterRecordsDeletion`, or the declared register list without checking movements already recorded by existing documents.
 - Do not claim a posting performance win without a before/after measurement on comparable data.
-- Do not resolve a deadlock by adding retries before the lock order is stated.
 
 ## Contract gaps
 

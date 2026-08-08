@@ -162,11 +162,10 @@ Two consequences worth stating out loud:
   into one, so parallelism drops to the unseparated level unless the check sits
   at the end of the transaction (`#std664`).
 
-Beyond that ordering: keep one lock order across registers and objects in every
-handler that touches them — a deadlock between posting handlers is a violated
-ordering contract, not a reason for blind retries. Do not open explicit nested
-transactions inside the handlers, and do not wait for user input or a network
-call while the posting transaction is open.
+Everything else about this transaction — what makes the balance read responsible
+in the first place, lock order, lock modes, and the transaction shape itself —
+is owned by `transactions-locks.md`. This document adds only the ordering that is
+specific to posting.
 
 ## Rights During Posting
 

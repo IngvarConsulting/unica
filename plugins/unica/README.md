@@ -155,8 +155,9 @@ rather than how to write it: choosing the object class and typing its attributes
 (`metadata-modeling`), designing registers (`register-design`), what a document
 records and under which locks (`document-posting`), which event handler owns a
 piece of logic (`object-events`), the managed form module and its client/server
-boundary (`form-events`), and which module hosts a procedure
-(`module-placement`).
+boundary (`form-events`), which module hosts a procedure
+(`module-placement`), and the transaction, lock and responsible-read rules the
+others defer to (`transactions-locks`).
 
 ## Local development
 
