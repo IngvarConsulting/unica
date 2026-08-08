@@ -1367,45 +1367,57 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
 
 - [ ] **Step 4: Написать проверку против реальной установки, включаемую переменной окружения**
 
-Create: `crates/unica-coder/tests/platform_syntax_help.rs`
+Create: `crates/unica-coder/src/infrastructure/platform_help/real_installation.rs`
+
+Проверка живёт внутри крейта, а не в `crates/unica-coder/tests/`: библиотека
+объявляет `pub(crate) mod infrastructure`, поэтому внешнему интеграционному
+крейту поставщик не виден, а расширять публичную видимость ради теста нельзя —
+это изменило бы поверхность библиотеки, чего задача не предусматривает.
 
 ```rust
 //! Проверка против реальной установки платформы. Пропускается, когда
 //! `UNICA_PLATFORM_HELP_DIR` не задан: материалы вендора в репозиторий не
 //! попадают и в CI не требуются.
 
-#[test]
-fn real_installation_answers_navigation_link_question() {
-    let Ok(root) = std::env::var("UNICA_PLATFORM_HELP_DIR") else {
-        eprintln!("UNICA_PLATFORM_HELP_DIR не задан — проверка пропущена");
-        return;
+#[cfg(test)]
+mod tests {
+    use crate::domain::documentation::{
+        DocumentationContext, DocumentationProvider, DocumentationSearchRequest,
+        DocumentationSectionStatus, SourceKind,
     };
-    let provider = unica_coder::infrastructure::platform_help::provider::PlatformSyntaxHelpProvider::new("ru");
-    let request = unica_coder::domain::documentation::DocumentationSearchRequest {
-        query: "ПолучитьНавигационнуюСсылку".to_string(),
-        source_kinds: vec![unica_coder::domain::documentation::SourceKind::PlatformHelp],
-        limit: 10,
-        language: "ru".to_string(),
-    };
-    let context = unica_coder::domain::documentation::DocumentationContext {
-        platform_version: None,
-        installation_root: Some(std::path::PathBuf::from(root)),
-    };
-    let sections = <unica_coder::infrastructure::platform_help::provider::PlatformSyntaxHelpProvider
-        as unica_coder::domain::documentation::DocumentationProvider>::search(&provider, &request, &context);
-    let section = sections
-        .iter()
-        .find(|section| section.corpus == "syntax-context")
-        .expect("секция Синтакс-помощника");
-    assert!(matches!(
-        section.status,
-        unica_coder::domain::documentation::DocumentationSectionStatus::Ok
-    ));
-    let hit = section.hits.first().expect("попадание найдено");
-    assert!(hit.title.contains("ПолучитьНавигационнуюСсылку"));
-    assert!(!hit.applicable_version.is_empty());
+    use crate::infrastructure::platform_help::provider::PlatformSyntaxHelpProvider;
+
+    #[test]
+    fn real_installation_answers_navigation_link_question() {
+        let Ok(root) = std::env::var("UNICA_PLATFORM_HELP_DIR") else {
+            eprintln!("UNICA_PLATFORM_HELP_DIR не задан — проверка пропущена");
+            return;
+        };
+        let provider = PlatformSyntaxHelpProvider::new("ru");
+        let request = DocumentationSearchRequest {
+            query: "ПолучитьНавигационнуюСсылку".to_string(),
+            source_kinds: vec![SourceKind::PlatformHelp],
+            limit: 10,
+            language: "ru".to_string(),
+        };
+        let context = DocumentationContext {
+            platform_version: None,
+            installation_root: Some(std::path::PathBuf::from(root)),
+        };
+        let sections = provider.search(&request, &context);
+        let section = sections
+            .iter()
+            .find(|section| section.corpus == "syntax-context")
+            .expect("секция Синтакс-помощника");
+        assert!(matches!(section.status, DocumentationSectionStatus::Ok));
+        let hit = section.hits.first().expect("попадание найдено");
+        assert!(hit.title.contains("ПолучитьНавигационнуюСсылку"));
+        assert!(!hit.applicable_version.is_empty());
+    }
 }
 ```
+
+Объявите модуль в `platform_help.rs` рядом с остальными.
 
 - [ ] **Step 5: Запустить тесты**
 
