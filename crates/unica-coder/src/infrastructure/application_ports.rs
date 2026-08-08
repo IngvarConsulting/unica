@@ -391,6 +391,41 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     None => HandlerOutcome::plain(standards.outcome),
                 })
             }
+            ToolHandler::Documentation { operation } => {
+                if operation != "search" {
+                    return Err(format!("unknown documentation operation: {operation}"));
+                }
+                let request = crate::domain::documentation::DocumentationSearchRequest {
+                    query: args
+                        .get("query")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "unica.documentation.search requires query".to_string())?
+                        .to_string(),
+                    source_kinds: Vec::new(),
+                    limit: args
+                        .get("limit")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(20)
+                        .min(200) as usize,
+                    language: args
+                        .get("language")
+                        .and_then(Value::as_str)
+                        .unwrap_or("ru")
+                        .to_string(),
+                };
+                let requested_version = args.get("platformVersion").and_then(Value::as_str);
+                let context = crate::domain::documentation::DocumentationContext {
+                    platform_version: requested_version.map(str::to_string),
+                    installation_root: resolve_platform_installation_root(requested_version),
+                };
+                let registry = documentation_registry()?;
+                let data =
+                    crate::application::documentation::search(&registry, &request, &context)?;
+                Ok(HandlerOutcome::with_data(
+                    AdapterOutcome::ok("unica.documentation.search completed"),
+                    data,
+                ))
+            }
         }
     }
 
@@ -543,9 +578,71 @@ fn typed_read(read: TypedReadOutcome) -> HandlerOutcome {
     }
 }
 
+/// Composition root: the registry of documentation providers. Declaration
+/// order here is the section order of the public result (ADR-0029 point 8),
+/// and it is assembled here rather than in the domain layer so tests can
+/// inject stand-in providers instead.
+fn documentation_registry() -> Result<crate::domain::documentation::DocumentationRegistry, String> {
+    use std::sync::Arc;
+
+    crate::domain::documentation::DocumentationRegistry::new(vec![Arc::new(
+        crate::infrastructure::platform_help::provider::PlatformSyntaxHelpProvider::new("ru"),
+    )
+        as Arc<dyn crate::domain::documentation::DocumentationProvider>])
+}
+
+/// The platform installation root comes from the same root list the full-dump
+/// publication adapter already uses: `default_platform_roots()` in
+/// `infrastructure::platform::full_dump_publication`. A second installation
+/// search mechanism must not appear in the project.
+///
+/// The version subdirectory is either the explicit version from the call
+/// argument, or the lexicographically last one present. `UNICA_PLATFORM_HELP_DIR`
+/// is a test-only switch (see `platform_help::installation`) and does not feed
+/// into this resolver.
+fn resolve_platform_installation_root(requested: Option<&str>) -> Option<std::path::PathBuf> {
+    for root in crate::infrastructure::platform::full_dump_publication::default_platform_roots() {
+        let Ok(children) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        let mut versions: Vec<std::path::PathBuf> = children
+            .flatten()
+            .map(|child| child.path())
+            .filter(|path| path.is_dir())
+            .collect();
+        versions.sort();
+        if let Some(selected) = select_platform_version(&versions, requested) {
+            return Some(selected);
+        }
+    }
+    None
+}
+
+/// Pure version pick, split out of `resolve_platform_installation_root` so it
+/// can be tested without touching the filesystem or the hard-coded platform
+/// roots: an explicit version must match a directory name exactly (a
+/// three-component prefix like `8.3.27` must not silently resolve to
+/// `8.3.27.2074`, since a patch mismatch changes hundreds of API names), and
+/// without one the lexicographically last (newest) already-sorted entry wins.
+fn select_platform_version(
+    versions: &[std::path::PathBuf],
+    requested: Option<&str>,
+) -> Option<std::path::PathBuf> {
+    match requested {
+        Some(version) => versions
+            .iter()
+            .find(|path| path.file_name().and_then(|name| name.to_str()) == Some(version))
+            .cloned(),
+        None => versions.last().cloned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{normalize_code_intelligence_read_request, verified_full_dump_invocation};
+    use super::{
+        documentation_registry, normalize_code_intelligence_read_request, select_platform_version,
+        verified_full_dump_invocation,
+    };
     use crate::application::{RuntimeJobAction, ToolHandler, ToolSpec};
     use crate::domain::cache::CacheAccess;
     use crate::domain::code_intelligence::{CodeIntelligenceContext, CodeIntelligenceReadRequest};
@@ -740,5 +837,69 @@ mod tests {
             );
         }
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn documentation_registry_wires_the_platform_syntax_help_provider() {
+        // The composition root is the only place a documentation provider is
+        // constructed; a registry left empty (forgot to wire the provider) or
+        // wired to the wrong provider must fail this, not merely compile.
+        let registry = documentation_registry().expect("registry constructs");
+        let providers: Vec<_> = registry.providers().collect();
+        assert_eq!(providers.len(), 1, "exactly one provider is wired today");
+        assert_eq!(providers[0].id().to_string(), "platform-syntax-help");
+        assert_eq!(
+            providers[0].corpora().len(),
+            2,
+            "syntax-context and platform-guides"
+        );
+    }
+
+    #[test]
+    fn select_platform_version_matches_the_requested_directory_name_exactly() {
+        let versions = vec![
+            PathBuf::from("/opt/1cv8/8.3.24.1234"),
+            PathBuf::from("/opt/1cv8/8.3.27.2074"),
+            PathBuf::from("/opt/1cv8/8.5.1.1451"),
+        ];
+        assert_eq!(
+            select_platform_version(&versions, Some("8.3.27.2074")),
+            Some(PathBuf::from("/opt/1cv8/8.3.27.2074"))
+        );
+    }
+
+    #[test]
+    fn select_platform_version_requires_an_exact_directory_name_match() {
+        // A three-component prefix of a real directory must not resolve: a
+        // substring/starts_with implementation would wrongly accept it, and a
+        // patch mismatch changes hundreds of API names (ADR-0029 point 4).
+        let versions = vec![PathBuf::from("/opt/1cv8/8.3.27.2074")];
+        assert_eq!(select_platform_version(&versions, Some("8.3.27")), None);
+    }
+
+    #[test]
+    fn select_platform_version_returns_none_when_the_requested_version_is_absent() {
+        let versions = vec![PathBuf::from("/opt/1cv8/8.3.24.1234")];
+        assert_eq!(select_platform_version(&versions, Some("9.9.9.9999")), None);
+    }
+
+    #[test]
+    fn select_platform_version_without_a_request_picks_the_lexicographically_last_entry() {
+        // The caller pre-sorts; this proves the function takes `.last()`, not
+        // `.first()` or some other rule, and does not itself resort.
+        let versions = vec![
+            PathBuf::from("/opt/1cv8/8.3.24.1234"),
+            PathBuf::from("/opt/1cv8/8.3.27.2074"),
+        ];
+        assert_eq!(
+            select_platform_version(&versions, None),
+            Some(PathBuf::from("/opt/1cv8/8.3.27.2074"))
+        );
+    }
+
+    #[test]
+    fn select_platform_version_returns_none_for_an_empty_list() {
+        assert_eq!(select_platform_version(&[], None), None);
+        assert_eq!(select_platform_version(&[], Some("8.3.27.2074")), None);
     }
 }

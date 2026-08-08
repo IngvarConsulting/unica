@@ -580,6 +580,7 @@ const STANDARDS_ARGS: &[&str] = &[
     "snippet",
     "types",
 ];
+const DOCUMENTATION_ARGS: &[&str] = &["language", "limit", "platformVersion", "query"];
 
 pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
     if let ToolHandler::Metadata { operation } = tool.handler {
@@ -2076,6 +2077,7 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
         }),
         ToolHandler::CodeAdapter { .. } => names.extend(code_args_for(tool.name)),
         ToolHandler::StandardsAdapter { .. } => names.extend(STANDARDS_ARGS),
+        ToolHandler::Documentation { .. } => names.extend(DOCUMENTATION_ARGS),
         ToolHandler::ProjectStatus | ToolHandler::ProjectMap => {}
     }
     if tool.name == "unica.mxl.decompile" {
@@ -2105,6 +2107,10 @@ fn required_args(tool: &ToolSpec) -> Vec<&'static str> {
             .map(|descriptor| descriptor.required_args.to_vec())
             .unwrap_or_default(),
         ToolHandler::StandardsAdapter {
+            operation: "search",
+            ..
+        } => vec!["query"],
+        ToolHandler::Documentation {
             operation: "search",
             ..
         } => vec!["query"],
@@ -2773,6 +2779,10 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "path",
         "Workspace-relative file path whose meaning is tool-scoped: the required .cf or .cfe artifact for unica.runtime.execute operation load (.epf and .erf are rejected there), a module-relative file for the path-based unica.code.* tools — on unica.code.diagnostics only mode `file` reads one file, so every other mode rejects `path` instead of ignoring it — the canonical alias of the object/config path argument on the native XML tools, and a plain --path passthrough on unica.build.*.",
+    ),
+    (
+        "platformVersion",
+        "Requested platform installation version for unica.documentation.search, for example 8.3.27.2074; when omitted, the newest version found under the configured platform installation root is used.",
     ),
     (
         "position",

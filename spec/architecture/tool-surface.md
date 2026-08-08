@@ -6,13 +6,13 @@
 
 ## Итог
 
-- Инструментов: **71**
-- Отвечают типизированным `data`: **45**
+- Инструментов: **72**
+- Отвечают типизированным `data`: **46**
 - Типизированы частично: часть результата всё ещё текст: **1**
 - Отвечают снимком задания в `job`: **6**
 - Отвечают прозой в `stdout`: **19**
 
-- В границах типизации: **45**
+- В границах типизации: **46**
 - Вне границ: снимается отдельной фичей (`*.validate`, `*.compile`, `*.decompile`): **14**
 - Вне границ: семейство runtime и build изучается отдельно: **12**
 - Осталось перевести на типизированный `data` в границах работы: **0**
@@ -574,6 +574,32 @@ Validate Data Composition Schema Template.xml.
 **Сценарии:**
 
 - Проверить СКД после правки текста запроса
+
+## documentation — справка платформы и стандарты разработки
+
+### `unica.documentation.search`
+
+Search platform help and development standards across documentation providers.
+
+| Аргумент | Тип | Обяз. | Описание |
+| --- | --- | --- | --- |
+| `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
+| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
+| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
+| `language` | string | нет | Alias of `lang` for `unica.help.add`; on `unica.standards.explain` the same key instead names the language of the `snippet` being explained |
+| `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results). |
+| `platformVersion` | string | нет | Requested platform installation version for unica.documentation.search, for example 8.3.27.2074; when omitted, the newest version found under the configured platform installation root is used. |
+| `query` | string | да | Search text: provider-neutral query for unica.code.search, node-lookup text for unica.code.graph mode=resolve, the required unica.standards.search string, and explain's last-resort fallback |
+
+**Результат сейчас:** `data`: секции поставщиков документации с происхождением и версией (ADR-0023) (отвечают типизированным `data`)
+
+**Целевой контракт:** достигнут
+
+**Сценарии:**
+
+- Уточнить сигнатуру и доступность метода платформы до написания кода
+- Проверить поведение механизма платформы для конкретной версии установки
+- Отличить справку платформы от стандарта разработки в одном ответе
 
 ## epf — внешние обработки
 
