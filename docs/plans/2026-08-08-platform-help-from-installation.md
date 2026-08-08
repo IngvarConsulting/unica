@@ -1301,7 +1301,7 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
                     hits: Vec::new(),
                 }]
             }
-            Err(InstallationError::NotFound | InstallationError::VersionUndetermined) => {
+            Err(InstallationError::VersionUndetermined) => {
                 return vec![DocumentationSection {
                     provider: id,
                     corpus: "syntax-context".to_string(),
@@ -1309,13 +1309,40 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
                     authority: Authority::Vendor,
                     status: DocumentationSectionStatus::Unavailable {
                         reason: UnavailableReason::NotConfigured,
-                        detail: "каталог установки недоступен".to_string(),
+                        detail: format!(
+                            "версия не выводится из корня установки: {}",
+                            root.display()
+                        ),
+                    },
+                    hits: Vec::new(),
+                }]
+            }
+            Err(InstallationError::NotFound) => {
+                return vec![DocumentationSection {
+                    provider: id,
+                    corpus: "syntax-context".to_string(),
+                    source_kind: SourceKind::PlatformHelp,
+                    authority: Authority::Vendor,
+                    status: DocumentationSectionStatus::Unavailable {
+                        reason: UnavailableReason::NotConfigured,
+                        detail: format!(
+                            "каталог установки недоступен: {}",
+                            root.display()
+                        ),
                     },
                     hits: Vec::new(),
                 }]
             }
         };
-        let mut cache = self.cache.lock().expect("кеш корпусов");
+        // Восстановление после отравления, как в `workspace_services`: паника в
+        // разборе одного контейнера не должна навсегда ронять каждый следующий
+        // вызов. Состояние кеша перезаписывается целиком в конце перестройки,
+        // поэтому отравленный страж видит либо прежнее целое состояние, либо
+        // чистую перестройку — рваной записи не бывает.
+        let mut cache = self
+            .cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if cache.version.as_deref() != Some(corpora.version.as_str()) {
             let mut syntax = Vec::new();
             for path in &corpora.syntax_context {
