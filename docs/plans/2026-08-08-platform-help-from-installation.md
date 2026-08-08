@@ -65,11 +65,15 @@ mod tests {
         out
     }
 
-    fn container_with(entries: &[(&str, &[u8])], trailing_terminator_entry: bool) -> Vec<u8> {
+    /// `terminator_at` — индекс в таблице, куда вставить запись-ограничитель.
+    /// Тест на пропуск обязан ставить её ПЕРЕД реальной записью: в конце
+    /// таблицы `continue` и `break` дают одинаковый результат, и тест
+    /// перестаёт различать исправление и дефект.
+    fn container_with(entries: &[(&str, &[u8])], terminator_at: Option<usize>) -> Vec<u8> {
         let mut body = Vec::new();
         let mut addresses = Vec::new();
         // Резервируем место под заголовок файла и блок таблицы.
-        let toc_len = 12 * (entries.len() + usize::from(trailing_terminator_entry));
+        let toc_len = 12 * (entries.len() + usize::from(terminator_at.is_some()));
         let toc_block_len = 31 + toc_len;
         let mut cursor = 16 + toc_block_len;
         for (name, data) in entries {
@@ -80,18 +84,24 @@ mod tests {
             body.extend_from_slice(&header);
             body.extend_from_slice(&payload);
         }
+        let terminator_record = [0x7FFF_FFFFu32; 3];
         let mut toc = Vec::new();
-        for (head, data) in &addresses {
+        for (index, (head, data)) in addresses.iter().enumerate() {
+            if terminator_at == Some(index) {
+                // Запись, у которой адрес тела равен ограничителю: встречается в
+                // семи контейнерах установки и не является концом таблицы.
+                for field in terminator_record {
+                    toc.extend_from_slice(&field.to_le_bytes());
+                }
+            }
             toc.extend_from_slice(&head.to_le_bytes());
             toc.extend_from_slice(&data.to_le_bytes());
             toc.extend_from_slice(&0x7FFF_FFFFu32.to_le_bytes());
         }
-        if trailing_terminator_entry {
-            // Запись, у которой адрес тела равен ограничителю: встречается в
-            // семи контейнерах установки и не является концом таблицы.
-            toc.extend_from_slice(&0x7FFF_FFFFu32.to_le_bytes());
-            toc.extend_from_slice(&0x7FFF_FFFFu32.to_le_bytes());
-            toc.extend_from_slice(&0x7FFF_FFFFu32.to_le_bytes());
+        if terminator_at.is_some_and(|index| index >= addresses.len()) {
+            for field in terminator_record {
+                toc.extend_from_slice(&field.to_le_bytes());
+            }
         }
         let mut out = Vec::new();
         out.extend_from_slice(&0x7FFF_FFFFu32.to_le_bytes());
@@ -105,7 +115,7 @@ mod tests {
 
     #[test]
     fn parses_named_entries() {
-        let bytes = container_with(&[("Book", b"book-body"), ("FileStorage", b"zip-body")], false);
+        let bytes = container_with(&[("Book", b"book-body"), ("FileStorage", b"zip-body")], None);
         let container = V8Container::parse(&bytes).expect("контейнер разобран");
         assert_eq!(container.entry("Book"), Some(&b"book-body"[..]));
         assert_eq!(container.entry("FileStorage"), Some(&b"zip-body"[..]));
@@ -114,14 +124,22 @@ mod tests {
 
     #[test]
     fn terminator_entry_is_skipped_not_treated_as_end_of_table() {
-        let bytes = container_with(&[("Book", b"book-body"), ("FileStorage", b"zip-body")], true);
+        // Ограничитель стоит ПЕРЕД `FileStorage`: с `break` эта запись стала бы
+        // недостижимой, и тест бы упал. С ограничителем в конце таблицы тест
+        // прошёл бы при любом поведении и ничего не доказывал.
+        let bytes = container_with(&[("Book", b"book-body"), ("FileStorage", b"zip-body")], Some(1));
         let container = V8Container::parse(&bytes).expect("контейнер разобран");
-        assert_eq!(container.entry("FileStorage"), Some(&b"zip-body"[..]));
+        assert_eq!(container.entry("Book"), Some(&b"book-body"[..]));
+        assert_eq!(
+            container.entry("FileStorage"),
+            Some(&b"zip-body"[..]),
+            "запись после ограничителя обязана остаться достижимой"
+        );
     }
 
     #[test]
     fn wrong_signature_is_rejected() {
-        let mut bytes = container_with(&[("Book", b"x")], false);
+        let mut bytes = container_with(&[("Book", b"x")], None);
         bytes[0] = 0;
         bytes[1] = 0;
         bytes[2] = 0;
@@ -359,92 +377,34 @@ mod tests {
 
     #[test]
     fn missing_file_storage_is_reported() {
-        let bytes = super::super::container::tests_support::container_without_file_storage();
+        let bytes = crate::infrastructure::platform_help::container::tests_support::container_without_file_storage();
         assert!(matches!(read_corpus(&bytes), Err(CorpusError::MissingFileStorage)));
     }
 }
 ```
 
-Чтобы третий тест собрался, добавьте в `container.rs` рядом с модулем тестов:
+Третий тест опирается на фикстуру из Task 1. Модуль `tests_support` в
+`container.rs` уже существует и объявлен так:
 
 ```rust
-#[doc(hidden)]
-pub mod tests_support {
-    /// Минимальный контейнер без записи `FileStorage` — нужен соседним тестам.
-    pub fn container_without_file_storage() -> Vec<u8> {
-        super::tests::container_with(&[("Book", b"book-body")], false)
+#[cfg(test)]
+pub(crate) mod tests_support {
+    pub(crate) fn block(data: &[u8], next: u32) -> Vec<u8> { /* из Task 1 */ }
+    pub(crate) fn entry_header(name: &str) -> Vec<u8> { /* из Task 1 */ }
+    pub(crate) fn container_with(entries: &[(&str, &[u8])], terminator_at: Option<usize>) -> Vec<u8> { /* из Task 1 */ }
+    pub(crate) fn container_without_file_storage() -> Vec<u8> {
+        container_with(&[("Book", b"book-body")], None)
     }
 }
 ```
 
-Чтобы фикстура была видна и тестам `container.rs`, и тестам `corpus.rs`, перенесите сборку в `tests_support` целиком, а модуль тестов пусть её переиспользует. В `container.rs` объявите модуль вне `#[cfg(test)]`:
+Ничего в нём не переобъявляйте. Если `container_without_file_storage` там ещё
+нет — добавьте только её, ровно в показанном виде. В тестах `corpus.rs`
+обращайтесь так:
 
 ```rust
-#[doc(hidden)]
-pub mod tests_support {
-    use super::BLOCK_HEADER;
-
-    pub fn block(data: &[u8], next: u32) -> Vec<u8> {
-        let mut out = Vec::new();
-        out.extend_from_slice(b"\r\n");
-        out.extend_from_slice(
-            format!("{:08x} {:08x} {:08x} ", data.len(), data.len(), next).as_bytes(),
-        );
-        out.extend_from_slice(b"\r\n");
-        out.extend_from_slice(data);
-        out
-    }
-
-    pub fn entry_header(name: &str) -> Vec<u8> {
-        let mut out = vec![0u8; 20];
-        for unit in name.encode_utf16() {
-            out.extend_from_slice(&unit.to_le_bytes());
-        }
-        out.extend_from_slice(&[0, 0, 0, 0]);
-        out
-    }
-
-    pub fn container_with(entries: &[(&str, &[u8])], trailing_terminator_entry: bool) -> Vec<u8> {
-        let mut body = Vec::new();
-        let mut addresses = Vec::new();
-        let toc_len = 12 * (entries.len() + usize::from(trailing_terminator_entry));
-        let mut cursor = 16 + BLOCK_HEADER + toc_len;
-        for (name, data) in entries {
-            let header = block(&entry_header(name), 0x7FFF_FFFF);
-            let payload = block(data, 0x7FFF_FFFF);
-            addresses.push((cursor as u32, (cursor + header.len()) as u32));
-            cursor += header.len() + payload.len();
-            body.extend_from_slice(&header);
-            body.extend_from_slice(&payload);
-        }
-        let mut toc = Vec::new();
-        for (head, data) in &addresses {
-            toc.extend_from_slice(&head.to_le_bytes());
-            toc.extend_from_slice(&data.to_le_bytes());
-            toc.extend_from_slice(&0x7FFF_FFFFu32.to_le_bytes());
-        }
-        if trailing_terminator_entry {
-            for _ in 0..3 {
-                toc.extend_from_slice(&0x7FFF_FFFFu32.to_le_bytes());
-            }
-        }
-        let mut out = Vec::new();
-        out.extend_from_slice(&0x7FFF_FFFFu32.to_le_bytes());
-        out.extend_from_slice(&512u32.to_le_bytes());
-        out.extend_from_slice(&0u32.to_le_bytes());
-        out.extend_from_slice(&0u32.to_le_bytes());
-        out.extend_from_slice(&block(&toc, 0x7FFF_FFFF));
-        out.extend_from_slice(&body);
-        out
-    }
-
-    pub fn container_without_file_storage() -> Vec<u8> {
-        container_with(&[("Book", b"book-body")], false)
-    }
-}
+use crate::infrastructure::platform_help::container::tests_support::container_without_file_storage;
 ```
-
-В `mod tests` файла `container.rs` замените локальные копии вспомогательных функций на `use super::tests_support::{block, container_with, entry_header};`, а в тестах `corpus.rs` используйте `crate::infrastructure::platform_help::container::tests_support::container_without_file_storage()`.
 
 - [ ] **Step 3: Запустить тест и убедиться, что он падает**
 
