@@ -15,9 +15,19 @@
 
 use std::path::{Path, PathBuf};
 
+/// Режимы отказа разделены намеренно. Задача поставщика — говорить, что именно
+/// не так, а не отвечать одинаково на «каталога нет», «каталог не читается» и
+/// «версию не вывести из пути»: вызывающий по-разному их сообщает.
 #[derive(Debug)]
 pub enum InstallationError {
+    /// Каталога установки нет.
     NotFound,
+    /// Из пути не выводится версия — у корня нет последнего сегмента.
+    VersionUndetermined,
+    /// Каталог существует, но перечислить его не вышло: права, не каталог,
+    /// ошибка ввода-вывода. Текст ошибки сохраняется для диагностики.
+    Unreadable { detail: String },
+    /// Установка есть, но Синтакс-помощника в ней нет — клиентская поставка.
     HelpMissingForVersion { version: String },
 }
 
@@ -33,12 +43,17 @@ pub struct InstallationCorpora {
 /// языка. Признак разделения — префикс имени файла `shcntx_`, а не что-либо
 /// ещё: это единственный контейнер Синтакс-помощника.
 pub fn discover(root: &Path, language: &str) -> Result<InstallationCorpora, InstallationError> {
+    if !root.exists() {
+        return Err(InstallationError::NotFound);
+    }
     let version = root
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or(InstallationError::NotFound)?
+        .ok_or(InstallationError::VersionUndetermined)?
         .to_string();
-    let entries = std::fs::read_dir(root).map_err(|_| InstallationError::NotFound)?;
+    let entries = std::fs::read_dir(root).map_err(|error| InstallationError::Unreadable {
+        detail: error.to_string(),
+    })?;
     let suffix = format!("_{language}.hbk");
     let mut syntax_context = Vec::new();
     let mut platform_guides = Vec::new();
@@ -147,5 +162,50 @@ mod tests {
             discover(&dir.path().join("missing"), "ru"),
             Err(InstallationError::NotFound)
         ));
+    }
+
+    #[test]
+    fn root_without_a_last_segment_reports_version_undetermined() {
+        // У корня файловой системы нет последнего сегмента, значит версию из
+        // пути не вывести. Это не то же самое, что отсутствие каталога, и
+        // сообщается отдельно.
+        assert!(matches!(
+            discover(std::path::Path::new("/"), "ru"),
+            Err(InstallationError::VersionUndetermined)
+        ));
+    }
+
+    #[test]
+    fn path_that_is_a_file_is_reported_as_unreadable() {
+        // Каталог существует по имени, но перечислить его нельзя: это не
+        // «установки нет», а «с установкой что-то не так».
+        let dir = tempfile::tempdir().expect("временный каталог");
+        let path = dir.path().join("8.3.27.2074");
+        std::fs::write(&path, b"not a directory").expect("файл вместо каталога");
+        let error = discover(&path, "ru").expect_err("отказ");
+        assert!(
+            matches!(error, InstallationError::Unreadable { ref detail } if !detail.is_empty()),
+            "ожидался Unreadable с текстом ошибки, получено {error:?}"
+        );
+    }
+
+    #[test]
+    fn mixed_language_installation_filters_by_language() {
+        // Фильтр по языку — часть контракта: расширение суффикса до любого
+        // `.hbk` втянуло бы чужую локаль, и этот тест обязан это поймать.
+        let dir = install(
+            "8.3.27.2074",
+            &[
+                "shcntx_ru.hbk",
+                "shcntx_en.hbk",
+                "1cv8_ru.hbk",
+                "1cv8_en.hbk",
+            ],
+        );
+        let corpora = discover(&dir.path().join("8.3.27.2074"), "ru").expect("корпуса найдены");
+        assert_eq!(corpora.syntax_context.len(), 1);
+        assert!(corpora.syntax_context[0].ends_with("shcntx_ru.hbk"));
+        assert_eq!(corpora.platform_guides.len(), 1);
+        assert!(corpora.platform_guides[0].ends_with("1cv8_ru.hbk"));
     }
 }
