@@ -37,7 +37,7 @@ use super::info::resolve_meta_info_path;
 use super::validation_context::{
     inspect_metadata_image_identity, inspect_metadata_language_image,
     inspect_metadata_registration_image, meta_validate_registrar_document_scan,
-    meta_validate_types_with_list_presentation,
+    meta_validate_subsystem_command_interface_scan, meta_validate_types_with_list_presentation,
 };
 use super::xml_model::{
     meta_info_child, meta_info_child_text, meta_info_children, meta_info_inner_text,
@@ -122,6 +122,11 @@ impl MetadataValidator {
         let mut result = self.validate(subject, context);
         let mut completeness = complete_read_proof_diagnostics(subject);
         if let MetadataEvidenceAvailability::Unavailable(diagnostics) = &subject.registrar_evidence
+        {
+            completeness.extend(diagnostics.clone());
+        }
+        if let Some(MetadataEvidenceAvailability::Unavailable(diagnostics)) =
+            &subject.subsystem_evidence
         {
             completeness.extend(diagnostics.clone());
         }
@@ -608,6 +613,51 @@ pub(super) fn document_registers(bytes: &[u8], expected: &str) -> bool {
                 .into_iter()
                 .any(|item| meta_info_inner_text(item).trim() == expected)
         })
+}
+
+/// Names the subsystem when it shows `expected` in the command interface.
+/// `Subsystem` is not a validatable metadata type, so the name is read here
+/// rather than through the shared image-identity inspector.
+pub(super) fn subsystem_command_interface_listing(
+    bytes: &[u8],
+    expected: &str,
+) -> Result<Option<String>, String> {
+    let (_, document) = parse_metadata_image(bytes)?;
+    let Some(properties) = document
+        .root_element()
+        .children()
+        .find(|node| {
+            node.is_element()
+                && node.tag_name().namespace() == Some(MD_CLASSES_NS)
+                && node.tag_name().name() == "Subsystem"
+        })
+        .and_then(|object| meta_info_child(object, "Properties"))
+    else {
+        return Err("image is not a Subsystem descriptor".to_string());
+    };
+    // An absent IncludeInCommandInterface is the platform default: included.
+    if meta_info_child_text(properties, "IncludeInCommandInterface").as_deref() == Some("false") {
+        return Ok(None);
+    }
+    let lists_expected = meta_info_child(properties, "Content").is_some_and(|content| {
+        meta_info_children(content, "Item")
+            .into_iter()
+            .any(|item| meta_info_inner_text(item).trim() == expected)
+    });
+    if !lists_expected {
+        return Ok(None);
+    }
+    meta_info_child_text(properties, "Name")
+        .filter(|name| !name.is_empty())
+        .map(Some)
+        .ok_or_else(|| "Subsystem Name is missing".to_string())
+}
+
+pub(super) fn subsystem_shows_in_command_interface(bytes: &[u8], expected: &str) -> bool {
+    matches!(
+        subsystem_command_interface_listing(bytes, expected),
+        Ok(Some(_))
+    )
 }
 
 fn complete_read_missing(
@@ -2790,6 +2840,15 @@ pub(super) fn meta_validate_check_cross_properties(
         obj_name,
         &mut issues,
     );
+    meta_validate_check_register_command_interface(
+        report,
+        md_type,
+        props_node,
+        config_dir,
+        proof_subject,
+        obj_name,
+        &mut issues,
+    );
     if check_ok && issues == 0 {
         report.ok("10. Cross-property consistency");
     }
@@ -2896,6 +2955,77 @@ pub(super) fn meta_validate_check_register_registrar(
     if !has_registrar {
         report.warn(format!(
             "10. {md_type}: no registrar document found (none references '{reg_ref}' in RegisterRecords)"
+        ));
+        *issues += 1;
+    }
+}
+
+pub(super) fn meta_validate_check_register_command_interface(
+    report: &mut MetaValidationReporter,
+    md_type: &str,
+    props_node: roxmltree::Node<'_, '_>,
+    config_dir: Option<&Path>,
+    proof_subject: Option<&MetadataValidationSubject>,
+    obj_name: &str,
+    issues: &mut usize,
+) {
+    if !matches!(
+        md_type,
+        "AccumulationRegister"
+            | "AccountingRegister"
+            | "CalculationRegister"
+            | "InformationRegister"
+    ) || obj_name == "(unknown)"
+    {
+        return;
+    }
+    if meta_info_child_text(props_node, "UseStandardCommands").as_deref() != Some("true") {
+        return;
+    }
+    // A subordinate information register is not shown in the command interface at
+    // all, so subsystem membership is not required — that pairing has its own rule.
+    if md_type == "InformationRegister"
+        && meta_info_child_text(props_node, "WriteMode").as_deref() == Some("RecorderSubordinate")
+    {
+        return;
+    }
+    let object_ref = format!("{md_type}.{obj_name}");
+    let shown_in_command_interface = if let Some(subject) = proof_subject {
+        // Absence is only provable from a scan that actually ran and finished.
+        // A subject that gathered no subsystem evidence says nothing about
+        // membership, so the rule stays silent rather than reading the missing
+        // resources as proof.
+        if !matches!(
+            subject.subsystem_evidence,
+            Some(MetadataEvidenceAvailability::Complete)
+        ) {
+            return;
+        }
+        subject.resources.iter().any(|resource| {
+            matches!(
+                &resource.role,
+                MetadataResourceRole::Dependency { target }
+                    if target.segments().next() == Some("Subsystem")
+            ) && subsystem_shows_in_command_interface(&resource.bytes, &object_ref)
+        })
+    } else if let Some(config_dir) = config_dir {
+        let subsystems_dir = config_dir.join("Subsystems");
+        if !subsystems_dir.is_dir() {
+            false
+        } else {
+            // A scan that could not reach the bottom proves nothing, so its
+            // failure must not be read as an absent membership.
+            match meta_validate_subsystem_command_interface_scan(&subsystems_dir, &object_ref) {
+                Ok((_, found)) => found,
+                Err(_) => return,
+            }
+        }
+    } else {
+        return;
+    };
+    if !shown_in_command_interface {
+        report.warn(format!(
+            "10. {md_type}: UseStandardCommands=true but '{object_ref}' belongs to no subsystem with IncludeInCommandInterface (a register shown in the command interface must belong to at least one such subsystem)"
         ));
         *issues += 1;
     }
@@ -3750,6 +3880,7 @@ mod tests {
             resources,
             child_footprints: Vec::new(),
             registrar_evidence: Default::default(),
+            subsystem_evidence: Default::default(),
         }
     }
 
@@ -3841,6 +3972,7 @@ mod tests {
                 )],
                 child_footprints: Vec::new(),
                 registrar_evidence: Default::default(),
+            subsystem_evidence: Default::default(),
             };
 
             let result = MetadataValidator.validate(&subject, &context());
@@ -4008,6 +4140,7 @@ mod tests {
                 retained: Vec::new(),
             }],
             registrar_evidence: Default::default(),
+            subsystem_evidence: Default::default(),
         }
     }
 
@@ -5315,6 +5448,7 @@ mod tests {
             )],
             child_footprints: Vec::new(),
             registrar_evidence: Default::default(),
+            subsystem_evidence: Default::default(),
         };
 
         let result = MetadataValidator.validate(&incomplete, &context());
@@ -5412,6 +5546,7 @@ mod tests {
             resources,
             child_footprints: Vec::new(),
             registrar_evidence: Default::default(),
+            subsystem_evidence: Default::default(),
         };
 
         let result = MetadataValidator.validate(&inaccessible, &context());
@@ -5766,6 +5901,7 @@ mod tests {
                 ],
                 child_footprints: Vec::new(),
                 registrar_evidence: Default::default(),
+                subsystem_evidence: Default::default(),
             };
 
             let result = MetadataValidator.validate(&invalid, &context());

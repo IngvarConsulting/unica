@@ -224,6 +224,10 @@ pub(crate) struct MetadataValidationSubject {
     pub(crate) resources: Vec<MetadataResourceImage>,
     pub(crate) child_footprints: Vec<MetadataChildFootprintEvidence>,
     pub(crate) registrar_evidence: MetadataEvidenceAvailability,
+    /// `None` — подсистемы не просматривались: субъект ничего не утверждает о
+    /// принадлежности регистра командному интерфейсу. Полнота по умолчанию
+    /// сделала бы несобранное доказанным.
+    pub(crate) subsystem_evidence: Option<MetadataEvidenceAvailability>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
