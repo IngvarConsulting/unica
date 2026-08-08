@@ -9,7 +9,8 @@ use crate::infrastructure::native_operations::compile_transaction::{
 };
 use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
 use crate::infrastructure::platform_xml_roots::{
-    platform_xml_root_versioning, PlatformXmlRootVersioning,
+    platform_xml_owner_policy, platform_xml_publication_policy, PlatformXmlOwnerPolicy,
+    PlatformXmlPublicationPolicy,
 };
 use crate::infrastructure::project_sources::{
     discover_project_source_map_with_provenance, ProjectSourceMapProvenance,
@@ -94,9 +95,7 @@ impl PlatformXmlOwnerProvenance {
         for (path, input) in &self.candidates {
             match input {
                 PlatformXmlOwnerCandidateInput::ExactFile(raw) => {
-                    if !transaction.protects_path(path)? {
-                        transaction.guard_or_verify_exact_preimage(path, raw)?;
-                    }
+                    transaction.guard_or_verify_exact_preimage(path, raw)?;
                 }
                 PlatformXmlOwnerCandidateInput::Absent => {
                     if !transaction.protects_path(path)? {
@@ -609,24 +608,42 @@ fn read_version_owning_target(
             );
         }
     }
-    let is_supported_version_root =
-        root_qname == (Some(MD_CLASSES_NS), "MetaDataObject") || known_standalone_root(root_qname);
-    if root_version_literal(source, root).is_none()
-        && (!is_supported_version_root || version_is_inherited_when_missing(root_qname))
+    let owner_policy = root_qname
+        .0
+        .and_then(|namespace| platform_xml_owner_policy(namespace, root_qname.1));
+    let raw_version = root_version_literal(source, root);
+    if expected_root.is_some()
+        && raw_version.is_some()
+        && root_qname.0.is_some_and(|namespace| {
+            platform_xml_publication_policy(namespace, root_qname.1)
+                == Some(PlatformXmlPublicationPolicy::Versionless)
+        })
     {
-        return Ok(None);
-    }
-    if !is_supported_version_root {
         return invalid_owner(
+            &path,
+            &format!(
+                "registered versionless platform XML root {{{}}}{} must not carry a version attribute",
+                root_qname.0.unwrap_or(""),
+                root_qname.1
+            ),
+        );
+    }
+    match owner_policy {
+        Some(
+            PlatformXmlOwnerPolicy::MetadataDescriptor
+            | PlatformXmlOwnerPolicy::StandaloneVersionOwner,
+        ) => parse_platform_xml_owner(&path, raw, OwnerExpectation::Standalone).map(Some),
+        Some(PlatformXmlOwnerPolicy::ContainerScoped | PlatformXmlOwnerPolicy::NoOwner) => Ok(None),
+        None if raw_version.is_none() => Ok(None),
+        None => invalid_owner(
             &path,
             &format!(
                 "unsupported version-owning platform XML root {{{}}}{}",
                 root_qname.0.unwrap_or(""),
                 root_qname.1
             ),
-        );
+        ),
     }
-    parse_platform_xml_owner(&path, raw, OwnerExpectation::Standalone).map(Some)
 }
 
 fn snapshot_candidate_file(
@@ -1009,38 +1026,15 @@ fn is_supported_metadata_artifact(tag: &str) -> bool {
 /// Returns whether the qualified root is supported as a standalone Platform XML
 /// owner.
 ///
-/// Derived from [`PLATFORM_XML_ROOTS`] rather than listed again here: the same
-/// roots decide what full-dump publication may write, and a second hand-kept
-/// list is exactly what drifted in issue #327. `MetaDataObject` is registered
-/// there too but is not standalone — callers classify it as the metadata owner
-/// before reaching this predicate.
+/// Derived from the explicit owner axis of the shared QName profile. Publication
+/// syntax is deliberately not enough to make a container-scoped sidecar an
+/// independent format owner.
 fn known_standalone_root(qname: (Option<&str>, &str)) -> bool {
     let (Some(namespace), local_name) = qname else {
         return false;
     };
-    if (namespace, local_name) == (MD_CLASSES_NS, "MetaDataObject") {
-        return false;
-    }
-    matches!(
-        platform_xml_root_versioning(namespace, local_name),
-        Some(PlatformXmlRootVersioning::ExactRootVersion)
-            | Some(PlatformXmlRootVersioning::InheritedRootVersion)
-    )
-}
-
-/// Returns whether a registered root without a `version` attribute inherits the
-/// format of its container instead of owning one.
-///
-/// Only [`PlatformXmlRootVersioning::InheritedRootVersion`] roots do. A root the
-/// platform always versions — predefined data among them — is anomalous without
-/// the attribute and must fail closed as the default format rather than
-/// silently adopt the configuration's.
-fn version_is_inherited_when_missing(qname: (Option<&str>, &str)) -> bool {
-    let (Some(namespace), local_name) = qname else {
-        return false;
-    };
-    platform_xml_root_versioning(namespace, local_name)
-        == Some(PlatformXmlRootVersioning::InheritedRootVersion)
+    platform_xml_owner_policy(namespace, local_name)
+        == Some(PlatformXmlOwnerPolicy::StandaloneVersionOwner)
 }
 
 fn invalid_owner<T>(path: &Path, reason: &str) -> Result<T, PlatformXmlOwnerError> {
@@ -1056,7 +1050,6 @@ mod tests {
     use crate::infrastructure::platform::testing::{
         create_file_link_fixture_for_test, FileLinkFixtureOutcome,
     };
-    use crate::infrastructure::platform_xml_roots::PLATFORM_XML_ROOTS;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_context(name: &str) -> WorkspaceContext {
@@ -1078,22 +1071,24 @@ mod tests {
     }
 
     #[test]
-    fn shared_registry_derives_the_complete_standalone_owner_family() {
-        for root in PLATFORM_XML_ROOTS {
-            let expected = (root.namespace, root.local_name) != (MD_CLASSES_NS, "MetaDataObject")
-                && matches!(
-                    root.versioning,
-                    PlatformXmlRootVersioning::ExactRootVersion
-                        | PlatformXmlRootVersioning::InheritedRootVersion
-                );
-
-            assert_eq!(
-                known_standalone_root((Some(root.namespace), root.local_name)),
-                expected,
-                "{{{}}}{} must derive its owner classification from the shared versioning policy",
-                root.namespace,
-                root.local_name
-            );
+    fn standalone_ownership_is_independent_from_publication_versioning() {
+        for (namespace, local_name) in [
+            ("http://v8.1c.ru/8.3/xcf/logform", "Form"),
+            ("http://v8.1c.ru/8.2/roles", "Rights"),
+        ] {
+            assert!(known_standalone_root((Some(namespace), local_name)));
+        }
+        for (namespace, local_name) in [
+            ("http://v8.1c.ru/8.3/xcf/predef", "PredefinedData"),
+            ("http://v8.1c.ru/8.3/xcf/extrnprops", "ExtPicture"),
+            ("http://v8.1c.ru/8.3/xcf/extrnprops", "JobSchedule"),
+            ("http://v8.1c.ru/8.3/xcf/dumpinfo", "ConfigDumpInfo"),
+            (
+                "http://v8.1c.ru/8.2/managed-application/core",
+                "ClientApplicationInterface",
+            ),
+        ] {
+            assert!(!known_standalone_root((Some(namespace), local_name)));
         }
     }
 
@@ -1176,6 +1171,48 @@ mod tests {
             .expect("an absent declared output must be accepted");
         assert!(owners.is_empty(), "{owners:?}");
 
+        let invalid = context.cwd.join("VersionedSpreadsheet.xml");
+        fs::write(
+            &invalid,
+            r#"<document xmlns="http://v8.1c.ru/8.2/data/spreadsheet" version="2.20"/>"#,
+        )
+        .unwrap();
+        let error = resolve_platform_xml_owners_for_exact_root(&invalid, &context, MXL_ROOT)
+            .expect_err("a declared versionless target must reject a version attribute");
+        assert!(error.message.contains("must not carry a version attribute"));
+
+        let owners = resolve_platform_xml_owners(&invalid, &context)
+            .expect("an unrelated dependency does not apply publication syntax");
+        assert!(owners.is_empty(), "{owners:?}");
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn exact_root_provenance_must_match_an_existing_replacement_preimage() {
+        let context = temp_context("exact-root-replacement-preimage");
+        let target = context.cwd.join("CompositionSchema");
+        let original = br#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" version="2.21"/>"#;
+        let planned = br#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"><dataSources/></DataCompositionSchema>"#;
+        let concurrent = br#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"/>"#;
+        fs::write(&target, original).unwrap();
+
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .replace_bytes(&target, original, planned.to_vec())
+            .expect("the original bytes must register the replacement preimage");
+        fs::write(&target, concurrent).unwrap();
+
+        let resolution =
+            resolve_platform_xml_owners_for_exact_root_with_provenance(&target, &context, DCS_ROOT)
+                .expect("the concurrent image is a valid exact DCS root");
+        let error = resolution
+            .provenance
+            .bind_to(&mut transaction)
+            .expect_err("semantic authorization must match the replacement preimage");
+
+        assert!(error.contains("changed while planning"), "{error}");
+        assert_eq!(fs::read(&target).unwrap(), concurrent);
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
@@ -1201,44 +1238,44 @@ mod tests {
     }
 
     #[test]
-    fn predefined_data_is_a_version_owning_standalone_root() {
-        let context = temp_context("predefined-data-owner");
-        let path = context.cwd.join("Predefined.xml");
-        fs::write(
-            &path,
-            br#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CatalogPredefinedItems" version="2.20"/>"#,
-        )
-        .unwrap();
+    fn container_scoped_versioned_roots_never_become_standalone_owners() {
+        let cases = [
+            (
+                "predefined-supported",
+                br#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" version="2.20"/>"#
+                    .as_slice(),
+            ),
+            (
+                "predefined-versionless",
+                br#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef"/>"#.as_slice(),
+            ),
+            (
+                "predefined-newer",
+                br#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" version="2.21"/>"#
+                    .as_slice(),
+            ),
+            (
+                "ext-picture",
+                br#"<ExtPicture xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"/>"#
+                    .as_slice(),
+            ),
+            (
+                "job-schedule",
+                br#"<JobSchedule xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"/>"#
+                    .as_slice(),
+            ),
+        ];
 
-        let owners = resolve_platform_xml_owners(&path, &context).unwrap();
+        for (label, xml) in cases {
+            let context = temp_context(label);
+            let path = context.cwd.join("Sidecar.xml");
+            fs::write(&path, xml).unwrap();
 
-        assert_eq!(owners.len(), 1);
-        assert_eq!(owners[0].path, normalized_path(&path));
-        assert_eq!(owners[0].version.as_deref(), Some("2.20"));
-        assert_eq!(owners[0].kind, PlatformXmlOwnerKind::Standalone);
-        let _ = fs::remove_dir_all(&context.cwd);
-    }
+            let owners = resolve_platform_xml_owners(&path, &context).unwrap();
 
-    #[test]
-    fn predefined_data_without_a_version_owns_the_default_format_instead_of_being_ignored() {
-        let context = temp_context("predefined-data-versionless");
-        let path = context.cwd.join("Predefined.xml");
-        fs::write(
-            &path,
-            br#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xsi:type="CatalogPredefinedItems" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>"#,
-        )
-        .unwrap();
-
-        let owners = resolve_platform_xml_owners(&path, &context).unwrap();
-
-        // Registering the root also decides what a missing attribute means. The
-        // platform always writes it here, so such a document is anomalous and
-        // owns the default format rather than inheriting the configuration's.
-        assert_eq!(owners.len(), 1);
-        assert_eq!(owners[0].path, normalized_path(&path));
-        assert_eq!(owners[0].version, None);
-        assert_eq!(owners[0].kind, PlatformXmlOwnerKind::Standalone);
-        let _ = fs::remove_dir_all(&context.cwd);
+            assert!(owners.is_empty(), "{label}: {owners:?}");
+            let _ = fs::remove_dir_all(&context.cwd);
+        }
     }
 
     #[test]

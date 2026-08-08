@@ -150,6 +150,16 @@ performance, security, data separation, release support, autonomous runtime,
 platform help, and logical source-resource inspection with a guarded BSL
 replacement fallback.
 
+It also covers applied-solution design, where the question is what to build
+rather than how to write it: choosing the object class and typing its attributes
+(`metadata-modeling`), designing registers (`register-design`), what a document
+records and under which locks (`document-posting`), which event handler owns a
+piece of logic (`object-events`), the managed form module and its client/server
+boundary (`form-events`), which module hosts a procedure
+(`module-placement`), the transaction, lock and responsible-read rules the
+others defer to (`transactions-locks`), and concurrent editing of one object by
+several users (`object-locks`).
+
 ## Local development
 
 The source tree intentionally contains no generated tool binaries. Source

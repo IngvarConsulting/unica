@@ -81,38 +81,52 @@ pub(crate) fn evaluate_format_guard(
     deduplicate_targets(&mut targets);
     let mut owners = Vec::new();
     let mut owner_paths = HashSet::new();
+    let mut invalid_expected_root = None;
     for (target, new_output) in targets {
         let expected_root =
             declared_output_root_expectation(descriptor.operation, args, context, &target);
         let resolved = if let Some(expected_root) = expected_root {
-            resolve_platform_xml_owners_for_exact_root(&target, context, expected_root)
+            vec![
+                resolve_platform_xml_owners(&target, context),
+                resolve_platform_xml_owners_for_exact_root(&target, context, expected_root),
+            ]
         } else if new_output {
-            resolve_existing_platform_xml_owners_for_new_output(&target, context)
+            vec![resolve_existing_platform_xml_owners_for_new_output(
+                &target, context,
+            )]
         } else {
-            resolve_platform_xml_owners(&target, context)
+            vec![resolve_platform_xml_owners(&target, context)]
         };
-        let resolved_owners = match resolved {
-            Ok(resolved_owners) => resolved_owners,
-            Err(error) => {
-                let warning = format!(
-                    "Некорректный корневой файл формата выгрузки {}: {}",
-                    error.path.display(),
-                    error.message
-                );
-                let diagnostic = json!({
-                    "code": "formatVersionInvalid",
-                    "actualFormat": Value::Null,
-                    "targetFormat": ACTIVE_FORMAT_PROFILE.export_format,
-                    "targetPlatform": ACTIVE_FORMAT_PROFILE.platform_line,
-                    "compatibility": "invalid",
-                    "root": error.path.display().to_string(),
-                });
-                return Ok(format_check(spec, warning, diagnostic));
-            }
-        };
-        for owner in resolved_owners {
-            if owner_paths.insert(owner.path.clone()) {
-                owners.push(owner);
+        for resolved_owners in resolved {
+            let resolved_owners = match resolved_owners {
+                Ok(resolved_owners) => resolved_owners,
+                Err(error) if expected_root.is_some() => {
+                    if invalid_expected_root.is_none() {
+                        invalid_expected_root = Some(error);
+                    }
+                    continue;
+                }
+                Err(error) => {
+                    let warning = format!(
+                        "Некорректный корневой файл формата выгрузки {}: {}",
+                        error.path.display(),
+                        error.message
+                    );
+                    let diagnostic = json!({
+                        "code": "formatVersionInvalid",
+                        "actualFormat": Value::Null,
+                        "targetFormat": ACTIVE_FORMAT_PROFILE.export_format,
+                        "targetPlatform": ACTIVE_FORMAT_PROFILE.platform_line,
+                        "compatibility": "invalid",
+                        "root": error.path.display().to_string(),
+                    });
+                    return Ok(format_check(spec, warning, diagnostic));
+                }
+            };
+            for owner in resolved_owners {
+                if owner_paths.insert(owner.path.clone()) {
+                    owners.push(owner);
+                }
             }
         }
     }
@@ -187,6 +201,22 @@ pub(crate) fn evaluate_format_guard(
         });
         return Ok(format_check(spec, warning, diagnostic));
     }
+    if let Some(error) = invalid_expected_root {
+        let warning = format!(
+            "Некорректный корневой файл формата выгрузки {}: {}",
+            error.path.display(),
+            error.message
+        );
+        let diagnostic = json!({
+            "code": "formatVersionInvalid",
+            "actualFormat": Value::Null,
+            "targetFormat": ACTIVE_FORMAT_PROFILE.export_format,
+            "targetPlatform": ACTIVE_FORMAT_PROFILE.platform_line,
+            "compatibility": "invalid",
+            "root": error.path.display().to_string(),
+        });
+        return Ok(format_check(spec, warning, diagnostic));
+    }
     Ok(FormatGuardCheck::Allow)
 }
 
@@ -198,7 +228,9 @@ fn declared_output_root_expectation(
 ) -> Option<PlatformXmlRootExpectation> {
     let (output, expected_root) = match operation {
         "dcs-compile" => (output_path_arg(args, context), DCS_ROOT),
+        "dcs-edit" | "dcs-validate" => (resolve_dcs_validate_path(args, context).ok(), DCS_ROOT),
         "mxl-compile" => (output_path_arg(args, context), MXL_ROOT),
+        "mxl-validate" => (resolve_mxl_validate_path(args, context).ok(), MXL_ROOT),
         "form-compile" => (
             form_compile_format_paths(args, context).into_iter().next(),
             MANAGED_FORM_ROOT,
@@ -2966,6 +2998,79 @@ mod tests {
         };
         assert_eq!(diagnostic["actualFormat"], "2.19");
         assert_platform_reexport_warning(&outcome.warnings.join("\n"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn dcs_edit_blocks_a_version_attribute_on_the_versionless_schema_root() {
+        for file_name in ["Template.xml", "Template"] {
+            let root = std::env::temp_dir().join(format!(
+                "unica-format-guard-versioned-dcs-{}",
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::create_dir_all(&root).unwrap();
+            let target = root.join(file_name);
+            let source = r#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" version="2.21"/>"#;
+            std::fs::write(&target, source).unwrap();
+            let args = Map::from_iter([(
+                "TemplatePath".to_string(),
+                Value::String(target.display().to_string()),
+            )]);
+
+            let check =
+                evaluate_format_guard(spec("unica.dcs.edit"), &args, &context(&root)).unwrap();
+            let FormatGuardCheck::Block {
+                outcome,
+                diagnostic,
+            } = check
+            else {
+                panic!("a version-bearing versionless DCS root must block edit: {file_name}");
+            };
+            assert_eq!(diagnostic["code"], "formatVersionInvalid");
+            assert!(
+                outcome
+                    .errors
+                    .join("\n")
+                    .contains("must not carry a version attribute"),
+                "{outcome:?}"
+            );
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), source);
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn mxl_validate_warns_for_a_version_attribute_on_the_versionless_document_root() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-format-guard-versioned-mxl-validate-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let target = root.join("Template/Ext/Template.xml");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(
+            &target,
+            r#"<document xmlns="http://v8.1c.ru/8.2/data/spreadsheet" version="2.20"/>"#,
+        )
+        .unwrap();
+        let args = Map::from_iter([(
+            "TemplatePath".to_string(),
+            Value::String(root.join("Template").display().to_string()),
+        )]);
+
+        let check =
+            evaluate_format_guard(spec("unica.mxl.validate"), &args, &context(&root)).unwrap();
+        let FormatGuardCheck::Warn {
+            warning,
+            diagnostic,
+        } = check
+        else {
+            panic!("a version-bearing versionless MXL root must warn during validation");
+        };
+        assert_eq!(diagnostic["code"], "formatVersionInvalid");
+        assert!(
+            warning.contains("must not carry a version attribute"),
+            "{warning}"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

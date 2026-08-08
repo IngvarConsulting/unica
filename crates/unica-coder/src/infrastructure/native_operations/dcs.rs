@@ -5601,6 +5601,12 @@ pub(crate) fn edit_dcs_with_data(
                 utf8_bom_bytes(&xml_text),
             )?;
             guard_active_format_owner(&mut transaction, &template_path, context)?;
+            guard_active_format_owner_with_exact_root(
+                &mut transaction,
+                &template_path,
+                context,
+                DCS_ROOT,
+            )?;
             let mut validation_stdout = None;
             let report = transaction.commit_with_post_validation(|| {
                 let validation = require_dcs_post_validation(&template_path, context)?;
@@ -10339,6 +10345,39 @@ mod tests {
                 data.validated,
                 "post-write validation runs whatever NoValidate says: {data:?}"
             );
+            fs::remove_dir_all(&context.cwd).unwrap();
+        }
+    }
+
+    #[test]
+    fn dcs_edit_rejects_a_version_attribute_on_the_versionless_root_without_writing() {
+        for file_name in ["Template.xml", "Template"] {
+            let context = temp_context(&format!(
+                "dcs-edit-versionless-root-policy-{}",
+                file_name.replace('.', "-")
+            ));
+            let template_path = context.cwd.join(file_name);
+            let source = base_dcs_xml().replacen(
+                "<DataCompositionSchema ",
+                "<DataCompositionSchema version=\"2.21\" ",
+                1,
+            );
+            let original = exact_dcs_bytes(&source);
+            fs::write(&template_path, &original).unwrap();
+            let mut args = dcs_edit_args("add-total", "Amount: SUM(Amount)", false);
+            args.insert("TemplatePath".to_string(), json!(file_name));
+
+            let outcome = edit_dcs(&args, &context);
+
+            assert!(!outcome.ok, "{outcome:?}");
+            assert!(
+                outcome
+                    .errors
+                    .join("\n")
+                    .contains("must not carry a version attribute"),
+                "{outcome:?}"
+            );
+            assert_eq!(fs::read(&template_path).unwrap(), original);
             fs::remove_dir_all(&context.cwd).unwrap();
         }
     }
