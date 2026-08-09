@@ -415,14 +415,17 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
                     continue;
                 }
             };
-            let pages = match read_corpus(&bytes) {
-                Ok(pages) => pages,
+            // Точечное чтение одной записи, а не разбор корпуса: `get`
+            // платил 4.4 секунды за инфлейт всех 25 тысяч страниц ради
+            // одной, а битый поток соседней записи валил весь контейнер.
+            let page = match super::corpus::read_page_from_container(&bytes, path) {
+                Ok(page) => page,
                 Err(error) => {
                     unreadable.push(format!("{name}: {}", corpus_failure(&error)));
                     continue;
                 }
             };
-            if let Some(page) = pages.into_iter().find(|page| page.path == path) {
+            if let Some(page) = page {
                 return Some(Ok(crate::domain::documentation::DocumentationDocument {
                     provider: self.id(),
                     corpus: corpus_id.to_string(),
@@ -1554,6 +1557,84 @@ mod tests {
             error.contains("objects/Missing.html"),
             "отказ обязан назвать страницу, получено {error}"
         );
+    }
+
+    /// `get` читает ОДНУ запись контейнера, а не разбирает корпус: битый
+    /// deflate-поток соседней страницы не мешает отдать запрошенную. До
+    /// правки полный `read_corpus` спотыкался о соседа, контейнер попадал в
+    /// «неразобравшиеся», и страница объявлялась недоступной — а заодно
+    /// каждый вызов платил 4.4 секунды за разбор всех 25 тысяч страниц.
+    #[test]
+    fn get_reads_only_the_requested_entry_and_survives_a_corrupted_sibling() {
+        let _serial = index_test_lock();
+        let dir = tempfile::tempdir().expect("каталог");
+        let root = dir.path().join("8.3.27.2074");
+        std::fs::create_dir_all(&root).expect("каталог версии");
+
+        // Архив с хорошей и битой записями — тем же приёмом, что и в
+        // corpus::tests: порча второго локального заголовка.
+        let mut archive = {
+            use std::io::Write;
+            let mut buffer = std::io::Cursor::new(Vec::new());
+            {
+                let mut writer = zip::ZipWriter::new(&mut buffer);
+                let options: zip::write::FileOptions<()> = zip::write::FileOptions::default()
+                    .compression_method(zip::CompressionMethod::Deflated);
+                for (name, html) in [
+                    (
+                        "objects/Good.html",
+                        "<html><body><h1>Хорошая страница</h1><p>Текст хорошей страницы.</p></body></html>",
+                    ),
+                    (
+                        "objects/Broken.html",
+                        "<html><body><h1>Сосед</h1><p>Поток будет испорчен.</p></body></html>",
+                    ),
+                ] {
+                    writer.start_file(name, options).expect("запись открыта");
+                    writer.write_all(html.as_bytes()).expect("запись записана");
+                }
+                writer.finish().expect("архив закрыт");
+            }
+            buffer.into_inner()
+        };
+        let signature = [0x50, 0x4B, 0x03, 0x04];
+        let mut headers = Vec::new();
+        for start in 0..archive.len().saturating_sub(4) {
+            if archive[start..start + 4] == signature {
+                headers.push(start);
+            }
+        }
+        let second = headers[1];
+        let name_len = u16::from_le_bytes([archive[second + 26], archive[second + 27]]) as usize;
+        let extra_len = u16::from_le_bytes([archive[second + 28], archive[second + 29]]) as usize;
+        let data = second + 30 + name_len + extra_len;
+        for byte in archive[data..data + 8].iter_mut() {
+            *byte = 0xFF;
+        }
+        std::fs::write(
+            root.join("shcntx_ru.hbk"),
+            crate::infrastructure::platform_help::container::tests_support::container_with(
+                &[("FileStorage", archive.as_slice())],
+                None,
+            ),
+        )
+        .expect("контейнер");
+
+        let provider = PlatformSyntaxHelpProvider::new();
+        let context = DocumentationContext {
+            platform_version: Some("8.3.27.2074".to_string()),
+            installation_root: Some(root),
+        };
+        let document = provider
+            .get(
+                "platform-syntax-help:syntax-context:objects/Good.html",
+                "ru",
+                &context,
+            )
+            .expect("локатор наш")
+            .expect("страница обязана читаться точечно, не спотыкаясь о соседа");
+        assert_eq!(document.title, "Хорошая страница");
+        assert!(document.text.contains("Текст хорошей страницы."));
     }
 
     /// Корпус из одного битого контейнера: «страницы нет» здесь неправда —
