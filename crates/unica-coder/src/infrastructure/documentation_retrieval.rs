@@ -125,9 +125,312 @@ pub(crate) fn bounded_damerau_levenshtein(a: &str, b: &str, cap: usize) -> Optio
     (distance <= cap).then_some(distance)
 }
 
+/// Поля документа для индексации. Веса полей фиксированы контрактом ядра:
+/// заголовок 4.0, сигнатура 2.0, текст 1.0 — заголовок у справочных корпусов
+/// несёт имя API и потому решает.
+pub(crate) struct RetrievalFields<'a> {
+    pub title: &'a str,
+    pub signature: &'a str,
+    pub body: &'a str,
+}
+
+/// Попадание запроса: номер документа в порядке подачи в `build` и локальная
+/// BM25F-оценка. Порядок при равных оценках — по возрастанию номера, поэтому
+/// выдача детерминирована при неизменном корпусе.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RetrievalHit {
+    pub document: usize,
+    pub score: f32,
+}
+
+/// Инвертированный индекс в памяти: термы — стемы токенов, TF взвешен полями
+/// на этапе построения (BM25F с простой схемой weighted-field). Ключевание и
+/// время жизни индекса — забота вызывающего (ADR-0029 п.11).
+pub(crate) struct RetrievalIndex {
+    vocabulary: std::collections::BTreeMap<String, usize>,
+    postings: Vec<Vec<(u32, f32)>>,
+    weighted_lengths: Vec<f32>,
+    average_weighted_length: f32,
+    raw_title_tokens: Vec<Vec<String>>,
+}
+
+const TITLE_WEIGHT: f32 = 4.0;
+const SIGNATURE_WEIGHT: f32 = 2.0;
+const BODY_WEIGHT: f32 = 1.0;
+const BM25_K1: f32 = 1.2;
+const BM25_B: f32 = 0.75;
+/// Точный (нестеммированный) токен запроса среди сырых токенов заголовка —
+/// признак, что спрошено именно это имя; ADR-0035 требует ранжировать точное
+/// выше стеммированного и нечёткого.
+const EXACT_TITLE_BONUS: f32 = 1.2;
+const EXPANSION_DISCOUNT: f32 = 0.9;
+const FUZZY_DISCOUNT_ONE_EDIT: f32 = 0.7;
+const FUZZY_DISCOUNT_TWO_EDITS: f32 = 0.5;
+
+impl RetrievalIndex {
+    pub fn build<'a>(documents: impl IntoIterator<Item = RetrievalFields<'a>>) -> RetrievalIndex {
+        let mut vocabulary = std::collections::BTreeMap::new();
+        let mut postings: Vec<Vec<(u32, f32)>> = Vec::new();
+        let mut weighted_lengths = Vec::new();
+        let mut raw_title_tokens = Vec::new();
+        for (document, fields) in documents.into_iter().enumerate() {
+            // BTreeMap, а не HashMap: идентификаторы термов и порядок
+            // суммирования оценок обязаны не зависеть от случайности хешей,
+            // иначе близкие оценки меняли бы порядок от процесса к процессу.
+            let mut weighted_tf: std::collections::BTreeMap<String, f32> =
+                std::collections::BTreeMap::new();
+            let mut weighted_length = 0.0f32;
+            for (text, weight) in [
+                (fields.title, TITLE_WEIGHT),
+                (fields.signature, SIGNATURE_WEIGHT),
+                (fields.body, BODY_WEIGHT),
+            ] {
+                for token in tokenize(text) {
+                    weighted_length += weight;
+                    *weighted_tf.entry(stem_token(&token)).or_insert(0.0) += weight;
+                }
+            }
+            raw_title_tokens.push(tokenize(fields.title));
+            weighted_lengths.push(weighted_length);
+            for (term, term_frequency) in weighted_tf {
+                let term_id = match vocabulary.get(&term) {
+                    Some(&term_id) => term_id,
+                    None => {
+                        let term_id = postings.len();
+                        vocabulary.insert(term, term_id);
+                        postings.push(Vec::new());
+                        term_id
+                    }
+                };
+                postings[term_id].push((document as u32, term_frequency));
+            }
+        }
+        let document_count = weighted_lengths.len();
+        let average_weighted_length = if document_count == 0 {
+            1.0
+        } else {
+            (weighted_lengths.iter().sum::<f32>() / document_count as f32).max(1.0)
+        };
+        RetrievalIndex {
+            vocabulary,
+            postings,
+            weighted_lengths,
+            average_weighted_length,
+            raw_title_tokens,
+        }
+    }
+
+    /// `expansions[i]` — дополнительные термы-синонимы i-го токена запроса
+    /// (уже стеммированные, например английские имена из двуязычного
+    /// лексикона). Они прибавляют оценку документам, где найдены, и не
+    /// штрафуют документы, где их нет.
+    pub fn query(&self, query: &str, limit: usize, expansions: &[Vec<String>]) -> Vec<RetrievalHit> {
+        let document_count = self.weighted_lengths.len();
+        if document_count == 0 || limit == 0 {
+            return Vec::new();
+        }
+        let raw_tokens = tokenize(query);
+        if raw_tokens.is_empty() {
+            return Vec::new();
+        }
+        // Вклады термов, слитые по максимальному множителю: повтор слова в
+        // запросе не должен удваивать его вес.
+        let mut contributions: std::collections::BTreeMap<usize, f32> =
+            std::collections::BTreeMap::new();
+        let mut merge = |contributions: &mut std::collections::BTreeMap<usize, f32>,
+                         term_id: usize,
+                         multiplier: f32| {
+            let entry = contributions.entry(term_id).or_insert(0.0);
+            if multiplier > *entry {
+                *entry = multiplier;
+            }
+        };
+        for (position, raw_token) in raw_tokens.iter().enumerate() {
+            let stem = stem_token(raw_token);
+            if let Some(&term_id) = self.vocabulary.get(&stem) {
+                merge(&mut contributions, term_id, 1.0);
+            } else {
+                let cap = fuzzy_cap(raw_token.chars().count());
+                if cap > 0 {
+                    let stem_chars = stem.chars().count();
+                    let mut best: Option<(usize, Vec<usize>)> = None;
+                    for (candidate, &term_id) in &self.vocabulary {
+                        if candidate.chars().count().abs_diff(stem_chars) > cap {
+                            continue;
+                        }
+                        let Some(distance) = bounded_damerau_levenshtein(&stem, candidate, cap)
+                        else {
+                            continue;
+                        };
+                        match &mut best {
+                            Some((best_distance, term_ids)) => {
+                                if distance < *best_distance {
+                                    *best_distance = distance;
+                                    term_ids.clear();
+                                    term_ids.push(term_id);
+                                } else if distance == *best_distance {
+                                    term_ids.push(term_id);
+                                }
+                            }
+                            None => best = Some((distance, vec![term_id])),
+                        }
+                    }
+                    if let Some((distance, term_ids)) = best {
+                        let multiplier = if distance <= 1 {
+                            FUZZY_DISCOUNT_ONE_EDIT
+                        } else {
+                            FUZZY_DISCOUNT_TWO_EDITS
+                        };
+                        for term_id in term_ids {
+                            merge(&mut contributions, term_id, multiplier);
+                        }
+                    }
+                }
+            }
+            if let Some(extra_terms) = expansions.get(position) {
+                for expansion in extra_terms {
+                    if let Some(&term_id) = self.vocabulary.get(expansion) {
+                        merge(&mut contributions, term_id, EXPANSION_DISCOUNT);
+                    }
+                }
+            }
+        }
+        let mut scores: std::collections::BTreeMap<u32, f32> = std::collections::BTreeMap::new();
+        for (term_id, multiplier) in contributions {
+            let posting = &self.postings[term_id];
+            let document_frequency = posting.len() as f32;
+            let idf = (1.0
+                + (document_count as f32 - document_frequency + 0.5) / (document_frequency + 0.5))
+                .ln();
+            for &(document, weighted_tf) in posting {
+                let length_ratio =
+                    self.weighted_lengths[document as usize] / self.average_weighted_length;
+                let denominator = weighted_tf + BM25_K1 * (1.0 - BM25_B + BM25_B * length_ratio);
+                let contribution = multiplier * idf * weighted_tf * (BM25_K1 + 1.0) / denominator;
+                *scores.entry(document).or_insert(0.0) += contribution;
+            }
+        }
+        let mut hits: Vec<RetrievalHit> = scores
+            .into_iter()
+            .map(|(document, mut score)| {
+                let title_tokens = &self.raw_title_tokens[document as usize];
+                if raw_tokens
+                    .iter()
+                    .any(|raw| title_tokens.iter().any(|title| title == raw))
+                {
+                    score *= EXACT_TITLE_BONUS;
+                }
+                RetrievalHit {
+                    document: document as usize,
+                    score,
+                }
+            })
+            .collect();
+        hits.sort_by(|left, right| {
+            right
+                .score
+                .partial_cmp(&left.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.document.cmp(&right.document))
+        });
+        hits.truncate(limit);
+        hits
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn corpus(pairs: &[(&'static str, &'static str)]) -> RetrievalIndex {
+        RetrievalIndex::build(pairs.iter().map(|(title, body)| RetrievalFields {
+            title,
+            signature: "",
+            body,
+        }))
+    }
+
+    #[test]
+    fn word_order_and_morphology_do_not_matter() {
+        let index = corpus(&[
+            (
+                "ТаблицаЗначений.Свернуть (ValueTable.GroupBy)",
+                "Группирует строки таблицы значений по колонкам.",
+            ),
+            ("Массив.Удалить (Array.Delete)", "Удаляет элемент массива по индексу."),
+        ]);
+        let hits = index.query("свернуть таблицу значений", 5, &[]);
+        assert_eq!(hits[0].document, 0, "{hits:?}");
+        let hits = index.query("как удалить элемент массива", 5, &[]);
+        assert_eq!(hits[0].document, 1, "{hits:?}");
+    }
+
+    #[test]
+    fn title_match_outranks_body_match() {
+        let index = corpus(&[
+            ("Сочетания клавиш", "Команда Свернуть доступна в меню окна."),
+            ("Свернуть (GroupBy)", "Группирует строки."),
+        ]);
+        let hits = index.query("Свернуть", 5, &[]);
+        assert_eq!(hits[0].document, 1, "{hits:?}");
+        assert!(hits[0].score > hits[1].score, "{hits:?}");
+    }
+
+    #[test]
+    fn typo_falls_back_to_fuzzy_with_discount() {
+        let index = corpus(&[(
+            "Глобальный контекст.СтрНайти (Global context.StrFind)",
+            "Ищет подстроку в строке.",
+        )]);
+        let exact = index.query("СтрНайти", 5, &[]);
+        let typo = index.query("СтрНайтти", 5, &[]);
+        assert_eq!(typo[0].document, 0, "{typo:?}");
+        assert!(typo[0].score < exact[0].score, "{typo:?} против {exact:?}");
+    }
+
+    #[test]
+    fn shorter_page_outranks_long_enumeration_for_equal_field() {
+        let long_enumeration = "Свернуть окно раздел приложение команда список действие \
+             панель клавиша сочетание переход навигация закладка история буфер обмена \
+             копирование вставка удаление отмена повтор поиск замена печать предварительный \
+             просмотр масштаб сетка линейка ориентация поля колонтитул страница разрыв";
+        let index = corpus(&[
+            ("Первая", "Свернуть группирует строки таблицы."),
+            ("Вторая", long_enumeration),
+        ]);
+        let hits = index.query("Свернуть", 5, &[]);
+        assert_eq!(hits[0].document, 0, "{hits:?}");
+    }
+
+    #[test]
+    fn expansions_add_terms_without_penalizing_originals() {
+        let index = corpus(&[
+            ("Working with value tables", "How to group rows of a value table."),
+            ("Working with arrays", "How to delete an element."),
+        ]);
+        let without = index.query("свернуть таблицу значений", 5, &[]);
+        assert!(without.is_empty(), "{without:?}");
+        let expansions = vec![
+            vec![stem_token("group")],
+            vec![stem_token("table")],
+            vec![stem_token("value")],
+        ];
+        let with = index.query("свернуть таблицу значений", 5, &expansions);
+        assert_eq!(with[0].document, 0, "{with:?}");
+    }
+
+    #[test]
+    fn ties_break_by_document_index_deterministically() {
+        let index = corpus(&[
+            ("Свернуть", "Одинаковый текст."),
+            ("Свернуть", "Одинаковый текст."),
+        ]);
+        let hits = index.query("Свернуть", 5, &[]);
+        assert_eq!(
+            hits.iter().map(|hit| hit.document).collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+    }
 
     #[test]
     fn bounded_distance_respects_cap_and_transposition() {
