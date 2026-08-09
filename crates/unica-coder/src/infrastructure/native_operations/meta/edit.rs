@@ -40,7 +40,7 @@ use super::super::compile_transaction::{
     snapshot_directory_membership, DirectoryMembershipSelector, DirectoryMembershipSnapshot,
 };
 use super::super::text_snapshot::{
-    resolve_line_ending, EolPolicy, LineEnding, LineEndingProfile, SourceTextSnapshot, Utf8Bom,
+    resolve_observed_line_ending, LineEnding, SourceTextSnapshot, Utf8Bom,
 };
 use super::format_contract::{
     validate_metadata_8_3_27_boolean_contract, validate_metadata_8_3_27_enum_contract,
@@ -687,14 +687,13 @@ pub(super) fn build_typed_operation_post_image(
             .with_metadata_path(target.clone()),
         )
     })?;
-    let eol_policy = match snapshot.line_endings() {
-        LineEndingProfile::None => EolPolicy::Lf,
-        LineEndingProfile::Uniform(_) | LineEndingProfile::Mixed { .. } => EolPolicy::Preserve,
-    };
-    let eol = resolve_line_ending(eol_policy, &snapshot, None).map_err(|error| {
+    // Смешанный профиль — дефект содержимого источника, а не отказ провайдера:
+    // байты прочитаны и декодированы, но их вид не проходит проверку writer-а,
+    // как и неканоничные fill-значения ниже по файлу.
+    let eol = resolve_observed_line_ending(&snapshot, None).map_err(|error| {
         MetaFailure::from(
             typed_diagnostic(
-                MetaDiagnosticCode::ProviderUnavailable,
+                MetaDiagnosticCode::ValidationFailed,
                 format!("metadata descriptor EOL policy failed: {error}"),
                 None,
             )

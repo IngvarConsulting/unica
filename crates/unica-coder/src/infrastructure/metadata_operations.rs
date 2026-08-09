@@ -662,7 +662,7 @@ mod tests {
                         .and_then(|items| items.first())
                         .and_then(|item| item.get("code"))
                         .and_then(serde_json::Value::as_str),
-                    Some("provider_unavailable"),
+                    Some("validation_failed"),
                     "{label} dryRun={dry_run}: {:?}",
                     result.diagnostics
                 );
@@ -839,6 +839,54 @@ mod tests {
             prepared.publish(&cancellation).unwrap();
             assert_eq!(fs::read(&fixture.descriptor).unwrap(), post_image);
         }
+    }
+
+    #[test]
+    fn typed_edit_republishes_double_bom_preamble_as_single_bom() {
+        // Патологическая двойная преамбула чинится до одной, и больше ничего
+        // не сдвигается: пост-образ от двух-BOM источника побайтово равен
+        // пост-образу той же правки над одно-BOM источником.
+        let fixture = Fixture::new("double-bom");
+        let body = String::from_utf8(fs::read(&fixture.descriptor).unwrap())
+            .unwrap()
+            .trim_start_matches('\u{feff}')
+            .to_string();
+        let cancellation = CancellationToken::new();
+
+        let mut post_images = Vec::new();
+        let mut prepared_double = None;
+        for bom_count in [1usize, 2] {
+            let mut source = Vec::new();
+            for _ in 0..bom_count {
+                source.extend_from_slice(b"\xef\xbb\xbf");
+            }
+            source.extend_from_slice(body.as_bytes());
+            fs::write(&fixture.descriptor, source).unwrap();
+            let request = fixture.edit(
+                "Comment",
+                MetaPropertyValue::String("single bom preamble".into()),
+            );
+            let prepared =
+                MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+                    .unwrap();
+            post_images.push(
+                prepared
+                    .validation_subject()
+                    .resources
+                    .iter()
+                    .find(|resource| matches!(resource.role, MetadataResourceRole::Descriptor))
+                    .unwrap()
+                    .bytes
+                    .clone(),
+            );
+            prepared_double = Some(prepared);
+        }
+
+        assert_eq!(post_images[0], post_images[1]);
+        assert!(post_images[1].starts_with(b"\xef\xbb\xbf"));
+        assert!(!post_images[1].starts_with(b"\xef\xbb\xbf\xef\xbb\xbf"));
+        prepared_double.unwrap().publish(&cancellation).unwrap();
+        assert_eq!(fs::read(&fixture.descriptor).unwrap(), post_images[1]);
     }
 
     #[test]
