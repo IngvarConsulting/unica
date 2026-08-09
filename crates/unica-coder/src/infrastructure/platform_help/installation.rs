@@ -82,27 +82,18 @@ fn resolve_language(available: &BTreeSet<String>, requested: &str) -> Option<Str
     available.iter().next().cloned()
 }
 
-/// Разбирает каталог одной установленной версии (`root` — сам каталог версии,
-/// например `.../8.3.27.2074`) на два корпуса контейнеров `.hbk`. Признак
-/// разделения — префикс имени файла `shcntx_`, а не что-либо ещё: это
-/// единственный контейнер Синтакс-помощника.
-pub fn discover(root: &Path, language: &str) -> Result<InstallationCorpora, InstallationError> {
-    if !root.exists() {
-        return Err(InstallationError::NotFound);
-    }
-    let version = root
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or(InstallationError::VersionUndetermined)?
-        .to_string();
-    let entries = std::fs::read_dir(root).map_err(|error| InstallationError::Unreadable {
+/// Контейнеры `.hbk` одного каталога, разложенные на Синтакс-помощник и
+/// справку подсистем. Имя контейнера — `<основа>_<локаль>.hbk`, и локаль
+/// отделяется по ПЕРВОМУ подчёркиванию: подчёркивание есть в локали
+/// (`1cv8_pt_BR.hbk`), но ни в одной из 38 основ установки его нет, поэтому
+/// `rsplit_once` дал бы там локаль `BR` и потерял бы бразильский корпус в
+/// пользу несуществующей локали `BR` с основой `1cv8_pt`.
+type LocalizedContainers = (Vec<(String, PathBuf)>, Vec<(String, PathBuf)>);
+
+fn hbk_containers(directory: &Path) -> Result<LocalizedContainers, InstallationError> {
+    let entries = std::fs::read_dir(directory).map_err(|error| InstallationError::Unreadable {
         detail: error.to_string(),
     })?;
-    // Имя контейнера — `<основа>_<локаль>.hbk`, и локаль отделяется по ПЕРВОМУ
-    // подчёркиванию: подчёркивание есть в локали (`1cv8_pt_BR.hbk`), но ни в
-    // одной из 38 основ установки его нет, поэтому `rsplit_once` дал бы там
-    // локаль `BR` и потерял бы бразильский корпус в пользу несуществующей
-    // локали `BR` с основой `1cv8_pt`.
     let mut syntax: Vec<(String, PathBuf)> = Vec::new();
     let mut guides: Vec<(String, PathBuf)> = Vec::new();
     for entry in entries.flatten() {
@@ -120,6 +111,36 @@ pub fn discover(root: &Path, language: &str) -> Result<InstallationCorpora, Inst
             syntax.push((locale.to_string(), path));
         } else {
             guides.push((locale.to_string(), path));
+        }
+    }
+    Ok((syntax, guides))
+}
+
+/// Разбирает каталог одной установленной версии (`root` — сам каталог версии,
+/// например `.../8.3.27.2074`) на два корпуса контейнеров `.hbk`. Признак
+/// разделения — префикс имени файла `shcntx_`, а не что-либо ещё: это
+/// единственный контейнер Синтакс-помощника. Контейнеры ищутся в корне
+/// версии, а при его пустоте — в подкаталоге `bin` (раскладка Windows).
+pub fn discover(root: &Path, language: &str) -> Result<InstallationCorpora, InstallationError> {
+    if !root.exists() {
+        return Err(InstallationError::NotFound);
+    }
+    let version = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(InstallationError::VersionUndetermined)?
+        .to_string();
+    let (mut syntax, mut guides) = hbk_containers(root)?;
+    // Раскладка Windows кладёт контейнеры в `bin` каталога версии, рядом с
+    // исполняемыми файлами, а не в его корень, как Linux и macOS. Запасной
+    // взгляд в `bin` — только когда корень не нёс НИ ОДНОГО `.hbk`: смешение
+    // двух раскладок в одной установке не встречается, а объединение списков
+    // удвоило бы контейнеры на гипотетическом гибриде. Нечитаемый `bin` при
+    // пустом корне — та же поломка установки, что и нечитаемый корень.
+    if syntax.is_empty() && guides.is_empty() {
+        let bin = root.join("bin");
+        if bin.is_dir() {
+            (syntax, guides) = hbk_containers(&bin)?;
         }
     }
     let syntax_languages: BTreeSet<String> =
@@ -410,6 +431,28 @@ mod tests {
         let corpora = discover(&dir.path().join("8.3.27.2074"), "pt_BR").expect("корпуса найдены");
         assert_eq!(names(&corpora.platform_guides), vec!["1cv8_pt_BR.hbk"]);
         assert_eq!(corpora.platform_guides.language, "pt_BR");
+    }
+
+    /// Раскладка Windows: исполняемые файлы и контейнеры справки лежат в
+    /// подкаталоге `bin` каталога версии (`C:\Program Files\1cv8\<версия>\bin`),
+    /// а не в его корне, как на Linux и macOS. Перечисление одного лишь корня
+    /// версии на такой установке не находит ни одного `.hbk`, и полная
+    /// поставка отвечала бы ложным «Синтакс-помощника нет ни в одной локали».
+    #[test]
+    fn containers_in_the_bin_subdirectory_are_discovered() {
+        let dir = tempfile::tempdir().expect("временный каталог");
+        let root = dir.path().join("8.3.27.2074");
+        std::fs::create_dir_all(root.join("bin")).expect("каталог bin");
+        for name in ["shcntx_ru.hbk", "1cv8_ru.hbk"] {
+            std::fs::write(root.join("bin").join(name), b"stub").expect("файл");
+        }
+        // Рядом с bin лежат служебные каталоги установки — они не корпуса.
+        std::fs::create_dir_all(root.join("docs")).expect("служебный каталог");
+
+        let corpora = discover(&root, "ru").expect("корпуса найдены в bin");
+        assert_eq!(corpora.version, "8.3.27.2074");
+        assert_eq!(names(&corpora.syntax_context), vec!["shcntx_ru.hbk"]);
+        assert_eq!(names(&corpora.platform_guides), vec!["1cv8_ru.hbk"]);
     }
 
     /// Клиентская поставка не несёт Синтакс-помощника ВОВСЕ, ни в одной
