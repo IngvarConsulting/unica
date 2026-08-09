@@ -2945,6 +2945,7 @@ pub(super) fn meta_validate_check_register_command_interface(
     }
     let Some(MetadataSubsystemEvidence::Complete {
         interface_subsystems,
+        ..
     }) = proof_subject.and_then(|subject| subject.subsystem_evidence.as_ref())
     else {
         return;
@@ -3847,6 +3848,7 @@ mod tests {
     #[test]
     fn command_interface_rule_distinguishes_absence_presence_and_uncollected_evidence() {
         let missing = command_interface_subject(Some(MetadataSubsystemEvidence::Complete {
+            functional_subsystems: Vec::new(),
             interface_subsystems: Vec::new(),
         }));
         assert!(command_interface_rule_warnings(&missing)
@@ -3854,6 +3856,7 @@ mod tests {
             .any(|warning| warning.contains("reaches no command interface section")));
 
         let present = command_interface_subject(Some(MetadataSubsystemEvidence::Complete {
+            functional_subsystems: Vec::new(),
             interface_subsystems: vec![SubsystemAddress::parse("Sales.Registers").unwrap()],
         }));
         assert!(!command_interface_rule_warnings(&present)
@@ -3891,6 +3894,7 @@ mod tests {
     #[test]
     fn generic_dependency_does_not_stand_in_for_subsystem_evidence() {
         let mut subject = command_interface_subject(Some(MetadataSubsystemEvidence::Complete {
+            functional_subsystems: Vec::new(),
             interface_subsystems: Vec::new(),
         }));
         subject.resources.push(image(

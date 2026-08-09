@@ -148,9 +148,27 @@ fn invoke_info(
     } else {
         ports.read_metadata_related(request, &read.local, context, cancellation)
     };
+    let (functional_subsystems, interface_subsystems) =
+        match &read.validation_subject.subsystem_evidence {
+            Some(crate::application::ports::MetadataSubsystemEvidence::Complete {
+                functional_subsystems,
+                interface_subsystems,
+            }) => (
+                Some(functional_subsystems.clone()),
+                Some(interface_subsystems.clone()),
+            ),
+            Some(crate::application::ports::MetadataSubsystemEvidence::Unavailable(_)) | None => {
+                (None, None)
+            }
+        };
     let diagnostics = validation.diagnostics.clone();
-    let data = serde_json::to_value(read.local.into_info(validation, enrichment))
-        .map_err(|error| format!("cannot serialize metadata info result: {error}"))?;
+    let data = serde_json::to_value(read.local.into_info(
+        validation,
+        enrichment,
+        functional_subsystems,
+        interface_subsystems,
+    ))
+    .map_err(|error| format!("cannot serialize metadata info result: {error}"))?;
     if failed {
         return Ok(metadata_failure(
             "metadata validation failed",

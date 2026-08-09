@@ -226,14 +226,16 @@ pub(crate) struct MetadataValidationSubject {
     pub(crate) child_footprints: Vec<MetadataChildFootprintEvidence>,
     pub(crate) registrar_evidence: MetadataEvidenceAvailability,
     /// `None` — подсистемы не просматривались: субъект ничего не утверждает о
-    /// принадлежности регистра командному интерфейсу. Полнота по умолчанию
-    /// сделала бы несобранное доказанным.
+    /// членствах объекта. `meta.info` собирает обе ролевые группы, а мутации
+    /// оставляют поле пустым; полнота по умолчанию сделала бы несобранное
+    /// доказанным.
     pub(crate) subsystem_evidence: Option<MetadataSubsystemEvidence>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum MetadataSubsystemEvidence {
     Complete {
+        functional_subsystems: Vec<SubsystemAddress>,
         interface_subsystems: Vec<SubsystemAddress>,
     },
     Unavailable(Vec<MetaDiagnostic>),
@@ -264,6 +266,8 @@ impl MetaLocalInfo {
         self,
         validation: MetaValidationData,
         enrichment: MetaEnrichment,
+        functional_subsystems: Option<Vec<SubsystemAddress>>,
+        interface_subsystems: Option<Vec<SubsystemAddress>>,
     ) -> MetaInfoData {
         MetaInfoData {
             metadata_path: self.metadata_path,
@@ -274,6 +278,8 @@ impl MetaLocalInfo {
             properties: self.properties,
             relations: self.relations,
             collections: self.collections,
+            functional_subsystems,
+            interface_subsystems,
             predefined_items: enrichment.predefined_items,
             usage: enrichment.usage,
             validation,

@@ -265,6 +265,8 @@ fn info_without_sections_is_local_only() {
     assert!(!data["properties"].as_array().unwrap().is_empty());
     assert!(data["relations"]["owners"].as_array().unwrap().is_empty());
     assert_eq!(data["validation"]["status"], "passed");
+    assert_eq!(data["functionalSubsystems"], serde_json::json!([]));
+    assert_eq!(data["interfaceSubsystems"], serde_json::json!([]));
     assert_eq!(
         data["collections"]["attributes"].as_array().unwrap().len(),
         2
@@ -296,6 +298,54 @@ fn info_without_sections_is_local_only() {
     assert!(data.get("related").is_none());
     assert_eq!(data["usage"], serde_json::json!({}));
     assert!(result.stdout.is_none());
+}
+
+#[test]
+fn info_groups_only_the_current_objects_subsystem_memberships() {
+    let workspace = create_info_workspace("object-subsystem-memberships");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Служебные",
+        "false",
+        &content_item("Catalog.Inspectable"),
+    );
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Продажи",
+        "true",
+        &content_item("Catalog.Inspectable"),
+    );
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems/Продажи/Subsystems",
+        "ОптовыеПродажи",
+        "true",
+        &content_item("Catalog.Inspectable"),
+    );
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Посторонняя",
+        "true",
+        &content_item("Catalog.Other"),
+    );
+
+    let result = call_info(workspace.path(), []);
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.expect("typed metadata info data");
+    assert_eq!(
+        data["functionalSubsystems"],
+        serde_json::json!(["Служебные"])
+    );
+    assert_eq!(
+        data["interfaceSubsystems"],
+        serde_json::json!(["Продажи", "Продажи.ОптовыеПродажи"])
+    );
+    let serialized = serde_json::to_string(&data).unwrap();
+    assert!(!serialized.contains("Посторонняя"), "{serialized}");
 }
 
 #[test]
@@ -1241,6 +1291,12 @@ fn info_reports_unavailable_when_a_registered_subsystem_descriptor_is_missing() 
 
     assert!(!result.ok, "{:?}", result.data);
     assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+    let data = result
+        .data
+        .as_ref()
+        .expect("local data survives validation failure");
+    assert!(data.get("functionalSubsystems").is_none());
+    assert!(data.get("interfaceSubsystems").is_none());
     assert!(!serde_json::to_string(&result.data)
         .unwrap()
         .contains(COMMAND_INTERFACE_RULE));

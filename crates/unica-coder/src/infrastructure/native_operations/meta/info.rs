@@ -319,8 +319,12 @@ pub(crate) fn read_typed_meta_info(
     let (registrar_resources, registrar_evidence) =
         typed_registrar_document_images(resolved, kind, properties, target, deadline, cancellation);
     validation_resources.extend(registrar_resources);
-    let subsystem_evidence =
-        typed_subsystem_evidence(resolved, kind, properties, target, deadline, cancellation);
+    let subsystem_evidence = Some(typed_subsystem_evidence(
+        resolved,
+        target,
+        deadline,
+        cancellation,
+    ));
     let child_resources = match super::edit::plan_typed_child_resources(
         &resolved.descriptor_path,
         target,
@@ -527,57 +531,59 @@ fn subsystem_evidence_unavailable(
     .with_field("subsystemEvidence")])
 }
 
-/// Collects registered interface subsystems that contain the register. Only a
-/// complete topology with no memberships lets the rule warn about absence.
+/// Collects all registered subsystem memberships of the current object. The
+/// same complete evidence is serialized by `meta.info` and consumed by the
+/// command-interface rule when the object is an eligible register.
 fn typed_subsystem_evidence(
     resolved: &ResolvedMetadataObject,
-    kind: MetadataKind,
-    properties: Option<roxmltree::Node<'_, '_>>,
     target: &MetadataAddress,
     deadline: ProviderDeadline,
     cancellation: &CancellationToken,
-) -> Option<MetadataSubsystemEvidence> {
-    let register_in_command_interface = matches!(
-        kind,
-        MetadataKind::AccumulationRegister
-            | MetadataKind::AccountingRegister
-            | MetadataKind::CalculationRegister
-            | MetadataKind::InformationRegister
-    ) && properties
-        .and_then(|node| meta_info_child_text(node, "UseStandardCommands"))
-        .as_deref()
-        == Some("true")
-        && !(kind == MetadataKind::InformationRegister
-            && properties
-                .and_then(|node| meta_info_child_text(node, "WriteMode"))
-                .as_deref()
-                == Some("RecorderSubordinate"));
-    if !register_in_command_interface {
-        return None;
+) -> MetadataSubsystemEvidence {
+    if resolved
+        .owner_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        != Some("Configuration.xml")
+    {
+        emit_subsystem_evidence_processing_phase(
+            SubsystemEvidenceProcessingPhase::BeforeCompleteReturn,
+        );
+        if registrar_scan_checkpoint(deadline, cancellation).is_err() {
+            return subsystem_evidence_unavailable(
+                target,
+                "registered subsystem topology processing was interrupted",
+            );
+        }
+        return MetadataSubsystemEvidence::Complete {
+            functional_subsystems: Vec::new(),
+            interface_subsystems: Vec::new(),
+        };
     }
     let topology = match capture_registered_subsystem_topology(&resolved.source_root, || {
         registrar_scan_checkpoint(deadline, cancellation)
     }) {
         Ok(topology) => topology,
         Err(_) => {
-            return Some(subsystem_evidence_unavailable(
+            return subsystem_evidence_unavailable(
                 target,
                 "registered subsystem topology cannot be proved completely",
-            ))
+            )
         }
     };
     emit_subsystem_evidence_processing_phase(
         SubsystemEvidenceProcessingPhase::BeforeCompleteReturn,
     );
     if registrar_scan_checkpoint(deadline, cancellation).is_err() {
-        return Some(subsystem_evidence_unavailable(
+        return subsystem_evidence_unavailable(
             target,
             "registered subsystem topology processing was interrupted",
-        ));
+        );
     }
-    Some(MetadataSubsystemEvidence::Complete {
+    MetadataSubsystemEvidence::Complete {
+        functional_subsystems: topology.functional_memberships(target.as_str()),
         interface_subsystems: topology.interface_memberships(target.as_str()),
-    })
+    }
 }
 
 fn typed_registered_language_images(

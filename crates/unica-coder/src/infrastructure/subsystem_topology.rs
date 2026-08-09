@@ -47,6 +47,14 @@ impl SubsystemTopology {
             Some(object_ref),
         )
     }
+
+    pub(crate) fn functional_memberships(&self, object_ref: &str) -> Vec<SubsystemAddress> {
+        collect_addresses(
+            &self.roots,
+            EffectiveSubsystemRole::Functional,
+            Some(object_ref),
+        )
+    }
 }
 
 pub(crate) fn functional_addresses_in(nodes: &[SubsystemTopologyNode]) -> Vec<SubsystemAddress> {
@@ -548,6 +556,14 @@ mod tests {
                 .map(|address| address.as_str())
                 .collect::<Vec<_>>(),
             ["Zeta.Child"]
+        );
+        assert_eq!(
+            topology
+                .functional_memberships("InformationRegister.Ledger")
+                .iter()
+                .map(|address| address.as_str())
+                .collect::<Vec<_>>(),
+            ["Alpha.Hidden"]
         );
     }
 
