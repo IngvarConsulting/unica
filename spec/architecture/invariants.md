@@ -710,6 +710,19 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs`
 - **Scope:** source, runtime
 
+### INV-SOURCE-SUBSYSTEM-TOPOLOGY — Публичные проекции подсистем выводятся из регистрации
+
+- **Rule:** Адреса, дерево, эффективные функциональные и интерфейсные роли и
+  доказательство членства объекта выводятся одним построителем только из полной
+  зарегистрированной топологии `Configuration/ChildObjects` и
+  `Subsystem/ChildObjects`; строка публичного адреса использует плоский диалект
+  БСП без токена вида, каждый доказанный узел принадлежит ровно одной роли, а
+  неполное чтение не публикуется как пустая доказанная проекция.
+- **Decision:** ADR-0033
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/subsystem.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/application/meta_info_surface_tests.rs`
+- **Scope:** source, runtime
+
 ### INV-SOURCE-WRITE-TARGET-KIND — Писатель принимает только терминал модуля
 
 - **Rule:** Разрешение цели выполняется под явной политикой вида: пишущая

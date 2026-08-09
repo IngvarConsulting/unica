@@ -117,6 +117,8 @@ runtime для операций платформы, поставляемый а�
   (INV-SOURCE-SINGLE-RESOLVED-ROOT).
 - `source_target` — `SourceTarget`, `MetadataAddress`, `ResolvedTarget` и
   профиль канонических адресов Platform XML (INV-SOURCE-LOGICAL-IDENTITY).
+- `subsystem` — `SubsystemAddress` в плоском диалекте БСП и эффективная роль
+  узла доказанной топологии (INV-SOURCE-SUBSYSTEM-TOPOLOGY).
 - `source_resources` — роли, полнота, публичные манифесты, результаты чтения и
   замены и стабильные коды ошибок ресурсного доступа
   (INV-SOURCE-SNAPSHOT-BINDING, INV-SOURCE-ROLE-ALLOWLIST).
@@ -241,6 +243,9 @@ runtime для операций платформы, поставляемый а�
   инвентаризации.
 - `source_roots` — `resolve_source_root` и `normalize_path_identity`,
   детерминированный выбор корня исходников для анализатора и индекса.
+- `subsystem_topology` — безопасный снимок зарегистрированного дерева подсистем,
+  проверка его цепочек и общие проекции для `subsystem.info` и `meta.info`
+  (INV-SOURCE-SUBSYSTEM-TOPOLOGY).
 - `platform_xml_source_targets` — отрисовка кандидата по логическому адресу,
   восстановление адреса по пути и закрытые ручки, которые каждый writer обязан
   повторно авторизовать (INV-SOURCE-LOGICAL-IDENTITY).
