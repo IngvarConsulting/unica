@@ -1890,7 +1890,7 @@ fn configuration_tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "unica.subsystem.info",
-            description: "Inspect subsystem XML and command interface.",
+            description: "Inspect subsystem XML, command interface, and registered topology.",
             mutating: false,
             cache_access: cache_access_for("subsystem-info", None),
             handler: ToolHandler::NativeOperation {

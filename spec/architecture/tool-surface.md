@@ -1422,7 +1422,7 @@ Edit subsystem XML content and hierarchy.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `SubsystemPath` | string | да | Path to a subsystem's XML, its directory, or the whole `Subsystems/` folder for `Mode=tree`, used by `unica.subsystem.info`/`edit`/`validate`, relative to `cwd` |
+| `SubsystemPath` | string | да | Path to a subsystem's XML, its directory, or the whole `Subsystems/` folder for a registered tree with flat functional/interface address lists, used by `unica.subsystem.info`/`edit`/`validate`, relative to `cwd` |
 
 Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -1436,16 +1436,16 @@ Edit subsystem XML content and hierarchy.
 
 ### `unica.subsystem.info`
 
-Inspect subsystem XML and command interface.
+Inspect subsystem XML, command interface, and registered topology.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `SubsystemPath` | string | да | Path to a subsystem's XML, its directory, or the whole `Subsystems/` folder for `Mode=tree`, used by `unica.subsystem.info`/`edit`/`validate`, relative to `cwd` |
+| `SubsystemPath` | string | да | Path to a subsystem's XML, its directory, or the whole `Subsystems/` folder for a registered tree with flat functional/interface address lists, used by `unica.subsystem.info`/`edit`/`validate`, relative to `cwd` |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
 | `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 
-**Результат сейчас:** `data`: состав, группы, дочерние подсистемы и командный интерфейс, либо дерево иерархии для каталога (ADR-0023) (отвечают типизированным `data`)
+**Результат сейчас:** `data`: состав, группы, дочерние подсистемы и командный интерфейс, либо зарегистрированное `tree` рядом с плоскими `functionalSubsystems` и `interfaceSubsystems` (ADR-0023, ADR-0033, INV-SOURCE-SUBSYSTEM-TOPOLOGY) (отвечают типизированным `data`)
 
 **Целевой контракт:** достигнут
 
@@ -1453,7 +1453,7 @@ Inspect subsystem XML and command interface.
 
 - Понять границы подсистемы перед добавлением объекта
 - Прочитать видимость и размещение команд подсистемы
-- Построить дерево подсистем конфигурации по каталогу `Subsystems`
+- Построить дерево и два плоских списка эффективных ролей по зарегистрированной топологии каталога `Subsystems`
 
 ### `unica.subsystem.validate`
 
@@ -1461,7 +1461,7 @@ Validate subsystem XML.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `SubsystemPath` | string | да | Path to a subsystem's XML, its directory, or the whole `Subsystems/` folder for `Mode=tree`, used by `unica.subsystem.info`/`edit`/`validate`, relative to `cwd` |
+| `SubsystemPath` | string | да | Path to a subsystem's XML, its directory, or the whole `Subsystems/` folder for a registered tree with flat functional/interface address lists, used by `unica.subsystem.info`/`edit`/`validate`, relative to `cwd` |
 
 Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 

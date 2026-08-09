@@ -2910,7 +2910,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "subsystemPath",
-        "Path to a subsystem's XML, its directory, or the whole `Subsystems/` folder for `Mode=tree`, used by `unica.subsystem.info`/`edit`/`validate`, relative to `cwd`",
+        "Path to a subsystem's XML, its directory, or the whole `Subsystems/` folder for a registered tree with flat functional/interface address lists, used by `unica.subsystem.info`/`edit`/`validate`, relative to `cwd`",
     ),
     (
         "synonym",

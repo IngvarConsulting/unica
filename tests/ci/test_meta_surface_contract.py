@@ -141,6 +141,28 @@ def registered_tool_blocks() -> dict[str, str]:
 
 
 class MetaSurfaceContractTests(unittest.TestCase):
+    def test_subsystem_membership_has_one_registered_topology_owner(self) -> None:
+        ports = (REPO_ROOT / "crates/unica-coder/src/application/ports.rs").read_text(
+            encoding="utf-8"
+        )
+        info = (META_RUNTIME / "info.rs").read_text(encoding="utf-8")
+        validation = (META_RUNTIME / "validation.rs").read_text(encoding="utf-8")
+        validation_context = (META_RUNTIME / "validation_context.rs").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("enum MetadataSubsystemEvidence", ports)
+        self.assertIn("Vec<SubsystemAddress>", ports)
+        self.assertIn("capture_registered_subsystem_topology", info)
+        self.assertIn("interface_memberships", info)
+        for retired in (
+            "typed_subsystem_images",
+            "subsystem_names_from_logical_path",
+            "meta_validate_subsystem_command_interface_scan",
+            "SubsystemDescriptorFacts",
+        ):
+            self.assertNotIn(retired, info + validation + validation_context)
+
     def test_retired_dsl_capabilities_are_accounted_for(self) -> None:
         donor = retired_meta_table_capabilities()
         self.assertTrue(donor, "retired Meta DSL type tables yielded no capabilities")
