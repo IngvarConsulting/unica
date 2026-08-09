@@ -88,6 +88,9 @@ pub fn search(
                 "language": section.language,
                 "status": status,
                 "diagnostic": diagnostic,
+                // Неполнота, не отменяющая успеха: непрочитавшийся контейнер
+                // при непустой выдаче. Пустой массив в норме.
+                "warnings": section.warnings,
                 "hits": hits,
             }));
         }
@@ -143,6 +146,7 @@ mod tests {
             // проекцию, подставляющую туда `request.language`.
             language: "root".to_string(),
             status: DocumentationSectionStatus::Ok,
+            warnings: Vec::new(),
             hits: vec![DocumentationHit {
                 rank: 1,
                 provider_score: 1.0,
@@ -319,6 +323,30 @@ mod tests {
             .as_array()
             .expect("попадания")
             .is_empty());
+    }
+
+    /// Предупреждения секции — неполнота, не отменяющая успеха: контейнер, не
+    /// прочитавшийся при непустой выдаче. Статус остаётся `ok`, но проекция
+    /// обязана донести предупреждения до публичного результата: молчание
+    /// выдавало бы частичный корпус за целый.
+    #[test]
+    fn warnings_reach_the_public_result_next_to_an_ok_status() {
+        let mut section = ok_section("partial");
+        section.warnings =
+            vec!["1cv8_ru.hbk: контейнер обрезан: в файле меньше данных".to_string()];
+        let registry = DocumentationRegistry::new(vec![Arc::new(Stub {
+            id: "partial",
+            section,
+        })
+            as Arc<dyn DocumentationProvider>])
+        .expect("реестр");
+        let value = search(&registry, &request(), &context()).expect("результат");
+        let sections = value["sections"].as_array().expect("массив секций");
+        assert_eq!(sections[0]["status"], "ok");
+        assert_eq!(
+            sections[0]["warnings"][0], "1cv8_ru.hbk: контейнер обрезан: в файле меньше данных",
+            "предупреждение обязано дойти до публичного результата"
+        );
     }
 
     #[test]

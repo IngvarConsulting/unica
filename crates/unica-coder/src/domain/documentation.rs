@@ -109,6 +109,11 @@ pub struct DocumentationSection {
     /// от русского.
     pub language: String,
     pub status: DocumentationSectionStatus,
+    /// Неполнота, не отменяющая успеха: например, контейнер корпуса, который
+    /// не прочитался, при том что остальные дали настоящие попадания. Статус
+    /// такой секции остаётся `Ok` — найденное найдено, — но молчание о
+    /// пропущенном выдавало бы частичный корпус за целый.
+    pub warnings: Vec<String>,
     pub hits: Vec<DocumentationHit>,
 }
 
@@ -127,6 +132,7 @@ impl DocumentationSection {
             authority,
             language: language.to_string(),
             status: DocumentationSectionStatus::Empty,
+            warnings: Vec::new(),
             hits: Vec::new(),
         }
     }

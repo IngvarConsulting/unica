@@ -334,6 +334,7 @@ impl PlatformSyntaxHelpProvider {
             // называется запрошенная — та, на которой ответа не получилось.
             language: language.to_string(),
             status,
+            warnings: Vec::new(),
             hits: Vec::new(),
         }]
     }
@@ -452,7 +453,9 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
                 // `Empty` означает «корпус прочитан, ничего не совпало». Если
                 // хоть один контейнер не разобрался, это неправда: совпадение
                 // могло лежать именно в нём. Найденные попадания при этом
-                // настоящие, поэтому непустая выдача остаётся `Ok`.
+                // настоящие, поэтому непустая выдача остаётся `Ok` — но
+                // непрочитавшиеся контейнеры называются предупреждениями:
+                // молчание выдавало бы частичный корпус за целый.
                 let status = if hits.is_empty() && !corpus.unreadable.is_empty() {
                     DocumentationSectionStatus::Failed {
                         diagnostic: format!(
@@ -465,6 +468,13 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
                 } else {
                     DocumentationSectionStatus::Ok
                 };
+                let warnings = if hits.is_empty() {
+                    // Failed уже несёт весь список диагностикой, Empty без
+                    // пропаж предупреждать не о чем.
+                    Vec::new()
+                } else {
+                    corpus.unreadable.clone()
+                };
                 DocumentationSection {
                     provider: self.id(),
                     corpus: spec.id.to_string(),
@@ -474,6 +484,7 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
                     // во всех локалях, и подмена обязана быть названа.
                     language: corpus.language.clone(),
                     status,
+                    warnings,
                     hits,
                 }
             })
@@ -845,6 +856,73 @@ mod tests {
             }
             other => panic!("ожидался Failed с именем контейнера, получено {other:?}"),
         }
+    }
+
+    /// Непустая выдача при частично неразобравшемся корпусе оставалась `Ok`
+    /// БЕЗ СЛЕДА пропажи: список unreadable молча выбрасывался, и частичный
+    /// корпус выдавался за целый. Найденные попадания настоящие, поэтому
+    /// статус — по-прежнему `Ok`, но непрочитавшийся контейнер обязан быть
+    /// назван предупреждением секции: совпадение могло лежать именно в нём.
+    #[test]
+    fn a_broken_container_next_to_a_readable_one_is_named_as_a_warning() {
+        // Слот индекса общий на процесс — тесты, которые его пишут, идут по одному.
+        let _serial = index_test_lock();
+        let dir = tempfile::tempdir().expect("каталог");
+        let root = dir.path().join("8.3.27.2074");
+        std::fs::create_dir_all(&root).expect("каталог версии");
+        std::fs::write(
+            root.join("shcntx_ru.hbk"),
+            hbk_bytes(&[(
+                "alpha.html",
+                "<html><body><h1>Alpha</h1><p>текст</p></body></html>",
+            )]),
+        )
+        .expect("целый контейнер");
+        // Руководства: один целый и один битый контейнер в ОДНОМ корпусе.
+        std::fs::write(
+            root.join("1cv8_ru.hbk"),
+            hbk_bytes(&[(
+                "guide.html",
+                "<html><body><h1>Alpha в руководстве</h1><p>текст</p></body></html>",
+            )]),
+        )
+        .expect("целый контейнер руководств");
+        std::fs::write(root.join("mngbase_ru.hbk"), vec![b'x'; 256])
+            .expect("битый контейнер руководств");
+
+        let provider = PlatformSyntaxHelpProvider::new();
+        let context = DocumentationContext {
+            platform_version: Some("8.3.27.2074".to_string()),
+            installation_root: Some(root),
+        };
+        let sections = provider.search(&request("Alpha"), &context);
+        let guides = sections
+            .iter()
+            .find(|section| section.corpus == "platform-guides")
+            .expect("секция platform-guides");
+        assert!(
+            matches!(guides.status, DocumentationSectionStatus::Ok),
+            "настоящие попадания остаются Ok, получено {:?}",
+            guides.status
+        );
+        assert_eq!(guides.hits.len(), 1, "попадание из целого контейнера");
+        assert_eq!(
+            guides.warnings.len(),
+            1,
+            "непрочитавшийся контейнер обязан быть назван предупреждением"
+        );
+        assert!(
+            guides.warnings[0].contains("mngbase_ru.hbk"),
+            "предупреждение обязано назвать контейнер, получено {}",
+            guides.warnings[0]
+        );
+        // Целый корпус рядом предупреждений не несёт.
+        let syntax = syntax_section(&sections);
+        assert!(
+            syntax.warnings.is_empty(),
+            "целый корпус не должен нести предупреждений, получено {:?}",
+            syntax.warnings
+        );
     }
 
     /// `Unreadable` — это «установка сломана» (права, не каталог), а не
