@@ -62,9 +62,85 @@ pub(crate) fn stem_token(token: &str) -> String {
     stemmer.stem(token).into_owned()
 }
 
+/// Порог нечёткости от длины токена: короткие имена не размываются вовсе,
+/// у средних допустима одна правка, у длинных — две.
+pub(crate) fn fuzzy_cap(token_chars: usize) -> usize {
+    match token_chars {
+        0..=3 => 0,
+        4..=8 => 1,
+        _ => 2,
+    }
+}
+
+/// Ограниченное расстояние Дамерау–Левенштейна (restricted: правки —
+/// вставка, удаление, замена, транспозиция соседних). `None`, когда
+/// расстояние заведомо больше `cap`: полоса ширины `2*cap+1` с ранним
+/// выходом держит промах дешёвым — сверка идёт со словарём термов, а не со
+/// страницами (#415).
+pub(crate) fn bounded_damerau_levenshtein(a: &str, b: &str, cap: usize) -> Option<usize> {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    if a.len().abs_diff(b.len()) > cap {
+        return None;
+    }
+    if a == b {
+        return Some(0);
+    }
+    if cap == 0 {
+        return None;
+    }
+    let infinity = cap + 1;
+    let width = b.len() + 1;
+    let mut two_back = vec![infinity; width];
+    let mut previous: Vec<usize> = (0..width)
+        .map(|j| if j <= cap { j } else { infinity })
+        .collect();
+    for i in 1..=a.len() {
+        let mut current = vec![infinity; width];
+        let low = i.saturating_sub(cap);
+        let high = (i + cap).min(b.len());
+        if low == 0 && i <= cap {
+            current[0] = i;
+        }
+        let mut row_minimum = current[0];
+        for j in low.max(1)..=high {
+            let substitution = usize::from(a[i - 1] != b[j - 1]);
+            let mut value = previous[j - 1].saturating_add(substitution);
+            value = value.min(previous[j].saturating_add(1));
+            value = value.min(current[j - 1].saturating_add(1));
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                value = value.min(two_back[j - 2].saturating_add(1));
+            }
+            let value = value.min(infinity);
+            current[j] = value;
+            row_minimum = row_minimum.min(value);
+        }
+        // Вся полоса выше порога — дальше расстояние только растёт.
+        if row_minimum > cap {
+            return None;
+        }
+        two_back = std::mem::replace(&mut previous, current);
+    }
+    let distance = previous[b.len()];
+    (distance <= cap).then_some(distance)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_distance_respects_cap_and_transposition() {
+        assert_eq!(bounded_damerau_levenshtein("стрнайтти", "стрнайти", 2), Some(1));
+        assert_eq!(bounded_damerau_levenshtein("свренуть", "свернуть", 2), Some(1));
+        assert_eq!(bounded_damerau_levenshtein("массив", "запрос", 2), None);
+        assert_eq!(bounded_damerau_levenshtein("одинаковый", "одинаковый", 1), Some(0));
+        assert_eq!(bounded_damerau_levenshtein("кот", "котлета", 2), None);
+        assert_eq!(fuzzy_cap(3), 0);
+        assert_eq!(fuzzy_cap(4), 1);
+        assert_eq!(fuzzy_cap(8), 1);
+        assert_eq!(fuzzy_cap(9), 2);
+    }
 
     #[test]
     fn stem_token_uses_script_matched_snowball() {
