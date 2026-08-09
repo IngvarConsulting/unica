@@ -29,6 +29,13 @@ sha2 = "0.10"
 tar = "0.4"
 roxmltree = "0.20"
 tempfile = "3"
+# Контейнеры справки платформы (`.hbk`) несут ZIP внутри записи FileStorage.
+# `deflate` целиком тянет в производственный граф сжиматель `zopfli`, который
+# здесь не нужен ничему: пишем мы только фикстуры тестов. `deflate-flate2` сам
+# по себе backend не выбирает — zip объявляет `flate2` как
+# `default-features = false`, — поэтому чистый Rust-backend включается явной
+# зависимостью `flate2` у крейта-потребителя.
+zip = { version = "2", default-features = false, features = ["deflate-flate2", "flate2"] }
 ureq = { version = "2.12", features = ["json"] }
 uuid = { version = "1", features = ["v4"] }
 windows-sys = { version = "0.59", features = [

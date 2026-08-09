@@ -591,7 +591,7 @@ fn typed_read(read: TypedReadOutcome) -> HandlerOutcome {
 }
 
 /// Composition root: the registry of documentation providers. Declaration
-/// order here is the section order of the public result (ADR-0029 point 8),
+/// order here is the section order of the public result (ADR-0029 point 5),
 /// and it is assembled here rather than in the domain layer so tests can
 /// inject stand-in providers instead.
 fn documentation_registry() -> Result<crate::domain::documentation::DocumentationRegistry, String> {
@@ -1009,7 +1009,7 @@ mod tests {
     fn select_platform_version_requires_an_exact_directory_name_match() {
         // A three-component prefix of a real directory must not resolve: a
         // substring/starts_with implementation would wrongly accept it, and a
-        // patch mismatch changes hundreds of API names (ADR-0029 point 4).
+        // patch mismatch changes hundreds of API names (ADR-0029 point 3).
         let versions = vec![PathBuf::from("/opt/1cv8/8.3.27.2074")];
         assert_eq!(select_platform_version(&versions, Some("8.3.27")), None);
     }
@@ -1031,7 +1031,7 @@ mod tests {
         // (ascending lexicographically: "8.3.10.50" sorts first), a
         // `.last()`-over-byte-order pick would silently return the OLDER
         // version here — exactly the "neighbouring version substituted"
-        // failure ADR-0029 point 4 forbids.
+        // failure ADR-0029 point 3 forbids.
         let versions = vec![
             PathBuf::from("/opt/1cv8/8.3.10.50"),
             PathBuf::from("/opt/1cv8/8.3.9.100"),

@@ -8,7 +8,7 @@ description: "Справка платформы 1С и объектной мод
 ## MCP routing
 
 - For platform API and mechanics, use MCP `unica` tool `unica.documentation.search`.
-- Каждая секция несёт `sourceKind` и `authority`, каждое попадание в ней — `applicableVersion`. Ответ обязан называть источник, версию установки и локатор страницы.
+- Каждая секция несёт `sourceKind` и `authority`, каждое попадание в ней — `applicableVersion` и `documentId`. Ответ обязан называть источник, версию установки и `documentId` страницы: без него читатель не может вернуться к той же странице.
 - Секция со смыслом источника `development-standard` не закрывает вопрос о сигнатуре или механике платформы, каким бы уместным ни выглядел её текст. Это правило чтения, а не правило вызова.
 - For project context, use `unica.code.search`, `unica.project.map`, and `unica.runtime.execute`.
 - Use object-specific `unica.*.info` tools when the API question depends on metadata structure.

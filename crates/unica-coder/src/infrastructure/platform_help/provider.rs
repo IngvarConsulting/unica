@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::domain::documentation::*;
 
-use super::corpus::{read_corpus, CorpusPage, Signature};
+use super::corpus::{read_corpus, CorpusError, CorpusPage, Signature};
 use super::installation::{discover, InstallationCorpora, InstallationError};
 
 /// Длина фрагмента выдачи. Вырезается один раз при индексировании: фрагмент
@@ -79,6 +79,11 @@ struct IndexKey {
     language: String,
 }
 
+struct CachedIndex {
+    key: IndexKey,
+    index: Arc<InstallationIndex>,
+}
+
 /// Разобранный корпус живёт один на процесс, а не один на вызов: реестр
 /// поставщиков собирается заново в каждой ветке диспетчера, поэтому кеш
 /// внутри экземпляра поставщика не переживал ни одного вызова — каждый
@@ -88,12 +93,7 @@ struct IndexKey {
 /// каждую версию, за которой сходил вызывающий, значит закрепить память по
 /// чужому вводу; один слот ограничивает её сверху и повторяет прежнюю
 /// семантику «сменилась версия — перестроились». На диск по-прежнему не
-/// пишется ничего (п.8 ADR-0029).
-struct CachedIndex {
-    key: IndexKey,
-    index: Arc<InstallationIndex>,
-}
-
+/// пишется ничего (п.11 ADR-0029).
 static INSTALLATION_INDEX: OnceLock<Mutex<Option<CachedIndex>>> = OnceLock::new();
 
 fn index_slot() -> &'static Mutex<Option<CachedIndex>> {
@@ -111,6 +111,18 @@ pub(crate) fn index_test_lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Причина, по которой контейнер не стал корпусом, — словами, а не отладочным
+/// представлением: этот текст уходит в диагностику секции и попадает
+/// пользователю. Обёрнутая ошибка разбора контейнера при этом называется: без
+/// неё «не разобрался» не отличает усечённый файл от чужого формата.
+fn corpus_failure(error: &CorpusError) -> String {
+    match error {
+        CorpusError::Container(inner) => format!("контейнер не разобрался ({inner:?})"),
+        CorpusError::MissingFileStorage => "в контейнере нет записи FileStorage".to_string(),
+        CorpusError::BadArchive => "запись FileStorage не читается как ZIP".to_string(),
+    }
+}
+
 fn index_corpus(containers: &[PathBuf]) -> IndexedCorpus {
     let mut pages = Vec::new();
     let mut unreadable = Vec::new();
@@ -123,7 +135,7 @@ fn index_corpus(containers: &[PathBuf]) -> IndexedCorpus {
         match std::fs::read(path) {
             Err(error) => unreadable.push(format!("{name}: {error}")),
             Ok(bytes) => match read_corpus(&bytes) {
-                Err(error) => unreadable.push(format!("{name}: {error:?}")),
+                Err(error) => unreadable.push(format!("{name}: {}", corpus_failure(&error))),
                 Ok(read) => pages.extend(read.into_iter().map(index_page)),
             },
         }
@@ -647,7 +659,7 @@ mod tests {
     /// Повреждённый контейнер исчезал молча, и секция сообщала `Empty` —
     /// «ничего не нашлось», — тогда как правда «контейнер не разобрался».
     /// Это ровно то смешение отказов, ради разделения которых прошёл
-    /// отдельный круг правок (п.8 и п.10 ADR-0029).
+    /// отдельный круг правок (п.10 и п.12 ADR-0029).
     #[test]
     fn unparsable_container_is_named_instead_of_looking_empty() {
         // Слот индекса общий на процесс — тесты, которые его пишут, идут по одному.
@@ -669,10 +681,16 @@ mod tests {
             .find(|section| section.corpus == "syntax-context")
             .expect("секция syntax-context");
         match &syntax_section.status {
-            DocumentationSectionStatus::Failed { diagnostic } => assert!(
-                diagnostic.contains("shcntx_ru.hbk"),
-                "диагностика обязана назвать контейнер, получено {diagnostic}"
-            ),
+            DocumentationSectionStatus::Failed { diagnostic } => {
+                assert!(
+                    diagnostic.contains("shcntx_ru.hbk"),
+                    "диагностика обязана назвать контейнер, получено {diagnostic}"
+                );
+                assert!(
+                    diagnostic.contains("BadSignature"),
+                    "диагностика обязана назвать причину, получено {diagnostic}"
+                );
+            }
             other => panic!("ожидался Failed с именем контейнера, получено {other:?}"),
         }
     }

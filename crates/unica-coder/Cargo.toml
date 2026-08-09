@@ -27,7 +27,11 @@ tokio.workspace = true
 roxmltree.workspace = true
 ureq.workspace = true
 uuid.workspace = true
-zip = { version = "2", default-features = false, features = ["deflate"] }
+# `flate2` кодом крейта не вызывается: она объявлена, чтобы `zip` получил
+# чистый Rust-backend для deflate вместо системного zlib и без `zopfli`
+# (см. комментарий у `zip` в корневом Cargo.toml).
+flate2.workspace = true
+zip.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
