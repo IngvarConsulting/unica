@@ -1005,8 +1005,7 @@ impl CompileTransaction {
             Err(error) => {
                 let primary = adapt_publish_error(&error, PublicationRole::Transaction);
                 record_publish_error_cleanup(&mut state, &error);
-                let mut cleanup_errors = retry_warned_artifacts(&mut state);
-                cleanup_errors.extend(finish_pending_recovery_cleanups(&mut state));
+                let mut cleanup_errors = retry_and_finish_recovery_cleanups(&mut state);
                 cleanup_errors.extend(cleanup_created_directories(&mut state.created_dirs));
                 cleanup_errors.extend(std::mem::take(&mut state.cleanup_warnings));
                 Err(with_cleanup_diagnostics(primary, cleanup_errors))
@@ -2947,6 +2946,18 @@ fn finish_retried_registration_recoveries(
     errors
 }
 
+/// Retries identity-bound files before advancing their recovery owners to
+/// directory cleanup. The order is load-bearing because both owner queues
+/// observe completion through the shared file-handle slot.
+fn retry_and_finish_recovery_cleanups(state: &mut PublishState) -> Vec<String> {
+    let mut errors = retry_warned_artifacts(state);
+    errors.extend(finish_pending_recovery_cleanups(state));
+    errors.extend(finish_retried_registration_recoveries(
+        &mut state.published_registrations,
+    ));
+    errors
+}
+
 fn cleanup_created_directories(created_dirs: &mut Vec<PathBuf>) -> Vec<String> {
     let mut errors = Vec::new();
     for directory in created_dirs.iter().rev() {
@@ -3507,11 +3518,7 @@ fn rollback(state: &mut PublishState) -> Vec<String> {
     for published in state.published_creates.iter().rev() {
         rollback_create(published, &mut errors);
     }
-    errors.extend(retry_warned_artifacts(state));
-    errors.extend(finish_pending_recovery_cleanups(state));
-    errors.extend(finish_retried_registration_recoveries(
-        &mut state.published_registrations,
-    ));
+    errors.extend(retry_and_finish_recovery_cleanups(state));
     errors.extend(cleanup_created_directories(&mut state.created_dirs));
     errors
 }
@@ -3621,10 +3628,7 @@ fn finalize_success(state: &mut PublishState) {
         }
     }
     record_cleanup_warnings(state, cleanup_warnings);
-    let retry_warnings = retry_warned_artifacts(state);
-    state.cleanup_warnings.extend(retry_warnings);
-    let recovery_warnings =
-        finish_retried_registration_recoveries(&mut state.published_registrations);
+    let recovery_warnings = retry_and_finish_recovery_cleanups(state);
     state.cleanup_warnings.extend(recovery_warnings);
 }
 

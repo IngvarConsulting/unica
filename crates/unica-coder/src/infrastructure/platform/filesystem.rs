@@ -3036,11 +3036,9 @@ fn unlink_child_at(
     name: &std::ffi::OsStr,
     flags: libc::c_int,
 ) -> io::Result<()> {
-    use std::ffi::CString;
     use std::os::fd::AsRawFd;
-    use std::os::unix::ffi::OsStrExt;
 
-    let name = CString::new(name.as_bytes())?;
+    let name = unix_child_name(name)?;
     // SAFETY: parent remains open and name is a live NUL-terminated string.
     let status = unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), flags) };
     if status == 0 {
@@ -3875,6 +3873,7 @@ mod tests {
         ))
     }
 
+    #[cfg(any(unix, windows))]
     #[test]
     fn identity_bound_regular_child_cleanup_preserves_same_name_replacement() {
         use crate::infrastructure::platform::filesystem::{
@@ -3963,6 +3962,7 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(any(unix, windows))]
     #[test]
     fn retained_parent_creation_cannot_be_redirected_to_a_replacement_route() {
         use crate::infrastructure::platform::filesystem::{
@@ -4003,6 +4003,7 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(any(unix, windows))]
     #[test]
     fn identity_bound_empty_directory_cleanup_preserves_same_name_replacement() {
         use crate::infrastructure::platform::filesystem::{

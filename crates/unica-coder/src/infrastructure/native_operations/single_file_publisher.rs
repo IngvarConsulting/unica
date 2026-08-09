@@ -81,6 +81,9 @@ pub(crate) struct CleanupArtifact {
     path: PathBuf,
     file_identity: FileIdentity,
     directory_identity: FileIdentity,
+    // This shared mutex is deliberately non-reentrant. A caller holding it
+    // must use helpers that operate on the supplied handle instead of helpers
+    // that acquire `file` again.
     file: Arc<Mutex<Option<File>>>,
     directory: Arc<File>,
 }
@@ -899,6 +902,8 @@ fn verify_cleanup_directory_route(artifact: &CleanupArtifact) -> io::Result<()> 
     Ok(())
 }
 
+/// Verifies the retained identity while holding the artifact file-handle lock.
+/// Callers that already hold that lock must use `open_cleanup_file_name`.
 fn open_cleanup_file(artifact: &CleanupArtifact, directory: &File) -> io::Result<Option<File>> {
     let retained = artifact.file.lock().map_err(|_| {
         io::Error::other(
@@ -927,6 +932,8 @@ fn open_cleanup_file(artifact: &CleanupArtifact, directory: &File) -> io::Result
     open_cleanup_file_name(artifact, directory)
 }
 
+/// Opens and verifies the named child without acquiring the artifact
+/// file-handle lock, so lock-holding cleanup paths can call it safely.
 fn open_cleanup_file_name(
     artifact: &CleanupArtifact,
     directory: &File,
@@ -1409,17 +1416,11 @@ fn create_stage_with_candidates(
                     error.kind(),
                     PublishErrorKind::Io { source, .. }
                         if source.kind() == ErrorKind::AlreadyExists
-                ) && attempt < STAGE_ATTEMPTS =>
-            {
-                continue;
-            }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    PublishErrorKind::Io { source, .. }
-                        if source.kind() == ErrorKind::AlreadyExists
                 ) =>
             {
+                if attempt < STAGE_ATTEMPTS {
+                    continue;
+                }
                 return Err(PublishError::new(
                     PublishErrorKind::StageCollisionsExhausted {
                         target: target.to_path_buf(),
@@ -1444,6 +1445,8 @@ fn initialize_new_exact_file(
     bytes: &[u8],
     final_permissions: Option<&PortablePermissions>,
 ) -> Result<StageGuard, PublishError> {
+    // Keep the non-reentrant handle guard inside this block: both match arms
+    // may call `attach_stage_cleanup`, which acquires the same mutex again.
     let result = {
         let retained = guard.artifact.file.lock().map_err(|_| {
             PublishError::io(
