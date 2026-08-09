@@ -413,6 +413,9 @@ fn registered_children(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infrastructure::platform::testing::{
+        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+    };
     use std::cell::Cell;
     use std::fs;
     use std::io;
@@ -734,21 +737,21 @@ mod tests {
         assert!(error.to_string().contains("cancelled"), "{error}");
     }
 
-    #[cfg(unix)]
     #[test]
     fn registered_descriptor_symlink_is_not_followed() {
-        use std::os::unix::fs::symlink;
-
         let root = tempfile::tempdir().unwrap();
         let external = tempfile::tempdir().unwrap();
         write_configuration(root.path(), &["Linked"]);
         write_subsystem(external.path(), &[], "Linked", "true", &[], &[]);
         fs::create_dir_all(root.path().join("Subsystems")).unwrap();
-        symlink(
+        let outcome = create_file_link_fixture_for_test(
             external.path().join("Subsystems/Linked.xml"),
             root.path().join("Subsystems/Linked.xml"),
         )
         .unwrap();
+        if outcome != FileLinkFixtureOutcome::Created {
+            return;
+        }
         let source_root = root.path().canonicalize().unwrap();
 
         let error = capture_registered_subsystem_topology(&source_root, checkpoint).unwrap_err();
