@@ -3,12 +3,10 @@
 use crate::application::operation_descriptors::SUBSYSTEM_PATH;
 use crate::application::AdapterOutcome;
 use crate::domain::format_profile::{classify_root_version, FormatCompatibility};
-use crate::domain::subsystem::SubsystemAddress;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform_xml_owner::root_version_literal;
 use crate::infrastructure::subsystem_topology::{
-    capture_registered_subsystem_topology, functional_addresses_in, interface_addresses_in,
-    SubsystemTopologyNode,
+    capture_registered_subsystem_topology, SubsystemTopologyNode,
 };
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
@@ -1521,7 +1519,7 @@ mod subsystem_info_typed_result_tests {
     /// `Mode=tree` answered the hierarchy question; typing must not drop the
     /// capability, only change how it is selected.
     #[test]
-    fn pointing_at_the_subsystems_folder_answers_with_tree_and_effective_role_lists() {
+    fn pointing_at_the_subsystems_folder_answers_only_with_tree() {
         let (context, root) = workspace("tree", false);
         fs::write(
             root.join("src/Configuration.xml"),
@@ -1573,11 +1571,6 @@ mod subsystem_info_typed_result_tests {
                             {"name": "ФоновыеЗадания", "content": 0, "children": []}
                         ]
                     }
-                ],
-                "functionalSubsystems": ["Служебные", "Служебные.ФоновыеЗадания"],
-                "interfaceSubsystems": [
-                    "СтандартныеПодсистемы",
-                    "СтандартныеПодсистемы.Обсуждения"
                 ]
             })
         );
@@ -1621,11 +1614,88 @@ mod subsystem_info_typed_result_tests {
             serde_json::json!({
                 "tree": [
                     {"name": "Обсуждения", "content": 0, "children": []}
-                ],
-                "functionalSubsystems": [],
-                "interfaceSubsystems": ["СтандартныеПодсистемы.Обсуждения"]
+                ]
             })
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn concrete_subsystem_contains_its_root_chain_and_complete_descendant_tree() {
+        let (context, root) = workspace("focused-tree", false);
+        fs::write(
+            root.join("src/Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Test</Name></Properties><ChildObjects><Subsystem>Корень</Subsystem><Subsystem>ДругойКорень</Subsystem></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/Subsystems/Корень.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Subsystem><Properties><Name>Корень</Name><IncludeInCommandInterface>true</IncludeInCommandInterface><Content/></Properties><ChildObjects><Subsystem>Родитель</Subsystem><Subsystem>Соседняя</Subsystem></ChildObjects></Subsystem></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/Subsystems/ДругойКорень.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Subsystem><Properties><Name>ДругойКорень</Name><IncludeInCommandInterface>true</IncludeInCommandInterface><Content/></Properties><ChildObjects/></Subsystem></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("src/Subsystems/Корень/Subsystems/Родитель/Subsystems"))
+            .unwrap();
+        fs::write(
+            root.join("src/Subsystems/Корень/Subsystems/Родитель.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Subsystem><Properties><Name>Родитель</Name><IncludeInCommandInterface>true</IncludeInCommandInterface><Content/></Properties><ChildObjects><Subsystem>Выбранная</Subsystem></ChildObjects></Subsystem></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/Subsystems/Корень/Subsystems/Соседняя.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Subsystem><Properties><Name>Соседняя</Name><IncludeInCommandInterface>true</IncludeInCommandInterface><Content/></Properties><ChildObjects/></Subsystem></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/Subsystems/Корень/Subsystems/Родитель/Subsystems/Выбранная.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Subsystem><Properties><Name>Выбранная</Name><IncludeInCommandInterface>true</IncludeInCommandInterface><Content/></Properties><ChildObjects><Subsystem>Потомок</Subsystem></ChildObjects></Subsystem></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::create_dir_all(
+            root.join("src/Subsystems/Корень/Subsystems/Родитель/Subsystems/Выбранная/Subsystems"),
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/Subsystems/Корень/Subsystems/Родитель/Subsystems/Выбранная/Subsystems/Потомок.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Subsystem><Properties><Name>Потомок</Name><IncludeInCommandInterface>true</IncludeInCommandInterface><Content/></Properties><ChildObjects/></Subsystem></MetaDataObject>"#,
+        )
+        .unwrap();
+        let args = Map::from_iter([(
+            "SubsystemPath".to_string(),
+            json!("src/Subsystems/Корень/Subsystems/Родитель/Subsystems/Выбранная.xml"),
+        )]);
+
+        let execution = analyze_subsystem_info(&args, &context);
+
+        assert!(execution.outcome.ok, "{:?}", execution.outcome);
+        let SubsystemInfoAnswer::Subsystem(data) =
+            execution.data.expect("a file answers with subsystem data")
+        else {
+            panic!("a file must not answer as a directory tree");
+        };
+        assert_eq!(
+            serde_json::to_value(&data.tree).unwrap(),
+            serde_json::json!([{
+                "name": "Корень",
+                "content": 0,
+                "children": [{
+                    "name": "Родитель",
+                    "content": 0,
+                    "children": [{
+                        "name": "Выбранная",
+                        "content": 0,
+                        "children": [{"name": "Потомок", "content": 0, "children": []}]
+                    }]
+                }]
+            }])
+        );
+        let serialized = serde_json::to_value(data).unwrap();
+        assert!(serialized.get("functionalSubsystems").is_none());
+        assert!(serialized.get("interfaceSubsystems").is_none());
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1644,6 +1714,7 @@ mod subsystem_info_typed_result_tests {
         };
         assert_eq!(data.name, "Продажи");
         assert_eq!(data.content, vec!["Catalog.Goods".to_string()]);
+        assert!(data.tree.is_none());
         let interface = data
             .command_interface
             .expect("the subsystem ships a command interface");
@@ -1666,6 +1737,7 @@ mod subsystem_info_typed_result_tests {
         else {
             panic!("a file must answer as one subsystem");
         };
+        assert!(data.tree.is_none());
         assert!(data.command_interface.is_none());
         let _ = fs::remove_dir_all(root);
     }
@@ -1686,24 +1758,15 @@ pub(crate) fn analyze_subsystem_info(
                 .map_err(|error| error.to_string())?;
             let nodes = scoped_subsystem_nodes(&topology.roots, &parent_address)?;
             let tree = nodes.iter().map(subsystem_tree_node).collect::<Vec<_>>();
-            let functional_subsystems = functional_addresses_in(nodes);
-            let interface_subsystems = interface_addresses_in(nodes);
             let summary = format!(
                 "unica.subsystem.info described {} subsystem(s) in the requested scope",
                 tree.len()
             );
-            return Ok((
-                SubsystemInfoAnswer::Tree {
-                    tree,
-                    functional_subsystems,
-                    interface_subsystems,
-                },
-                path,
-                summary,
-            ));
+            return Ok((SubsystemInfoAnswer::Tree { tree }, path, summary));
         }
         let xml_path = resolve_subsystem_info_xml(path, true)?;
         let (data, _) = load_subsystem_info_data(&xml_path)?;
+        let tree = focused_subsystem_context_tree(&xml_path, &data.name);
         // Overview, content, ci and full were slices of one subsystem chosen to
         // keep a printed report short. Data carries all of them at once.
         let result = SubsystemInfoResult {
@@ -1722,6 +1785,7 @@ pub(crate) fn analyze_subsystem_info(
                 .map(|(name, items)| SubsystemGroupData { name, items })
                 .collect(),
             children: data.child_names,
+            tree,
             command_interface: subsystem_command_interface_data(&xml_path)?,
         };
         let summary = format!(
@@ -1783,6 +1847,10 @@ pub(crate) struct SubsystemInfoResult {
     pub(crate) content: Vec<String>,
     pub(crate) groups: Vec<SubsystemGroupData>,
     pub(crate) children: Vec<String>,
+    /// A focused registered tree: one ancestor chain down to this subsystem,
+    /// then its complete descendant tree. Standalone XML has no proved tree.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) tree: Option<Vec<SubsystemTreeNode>>,
     /// `null` when the subsystem ships no `CommandInterface.xml`, which is a
     /// different fact from an interface that hides nothing.
     pub(crate) command_interface: Option<SubsystemCommandInterfaceData>,
@@ -1794,13 +1862,7 @@ pub(crate) struct SubsystemInfoResult {
 #[serde(rename_all = "camelCase", untagged)]
 pub(crate) enum SubsystemInfoAnswer {
     Subsystem(Box<SubsystemInfoResult>),
-    Tree {
-        tree: Vec<SubsystemTreeNode>,
-        #[serde(rename = "functionalSubsystems")]
-        functional_subsystems: Vec<SubsystemAddress>,
-        #[serde(rename = "interfaceSubsystems")]
-        interface_subsystems: Vec<SubsystemAddress>,
-    },
+    Tree { tree: Vec<SubsystemTreeNode> },
 }
 
 #[derive(serde::Serialize)]
@@ -1856,6 +1918,36 @@ fn subsystem_tree_node(node: &SubsystemTopologyNode) -> SubsystemTreeNode {
         content: node.content.len(),
         children: node.children.iter().map(subsystem_tree_node).collect(),
     }
+}
+
+fn focused_subsystem_context_tree(
+    descriptor: &Path,
+    subsystem_name: &str,
+) -> Option<Vec<SubsystemTreeNode>> {
+    let (source_root, mut address_names) = subsystem_tree_scope(descriptor.parent()?).ok()?;
+    address_names.push(subsystem_name.to_string());
+    let topology = capture_registered_subsystem_topology(&source_root, || Ok(())).ok()?;
+    Some(vec![focused_subsystem_tree_node(
+        &topology.roots,
+        &address_names,
+    )?])
+}
+
+fn focused_subsystem_tree_node(
+    nodes: &[SubsystemTopologyNode],
+    address_names: &[String],
+) -> Option<SubsystemTreeNode> {
+    let (name, descendants) = address_names.split_first()?;
+    let node = nodes.iter().find(|node| node.name == *name)?;
+    if descendants.is_empty() {
+        return Some(subsystem_tree_node(node));
+    }
+    let child = focused_subsystem_tree_node(&node.children, descendants)?;
+    Some(SubsystemTreeNode {
+        name: node.name.clone(),
+        content: node.content.len(),
+        children: vec![child],
+    })
 }
 
 fn subsystem_tree_scope(path: &Path) -> Result<(PathBuf, Vec<String>), String> {
