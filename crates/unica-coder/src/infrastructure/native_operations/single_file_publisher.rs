@@ -24,9 +24,11 @@ use std::sync::{
 };
 
 use crate::infrastructure::platform::filesystem::{
-    file_identity, hard_link_count, install_file_no_clobber, metadata_is_link_or_reparse_point,
-    path_lock_identity, portable_permissions, prepare_file_for_removal, replace_file_atomically,
-    restrict_stage_to_owner, FileIdentity, PortablePermissions,
+    create_new_regular_child, discard_created_regular_child, file_identity, hard_link_count,
+    install_file_no_clobber, metadata_is_link_or_reparse_point, open_directory_nofollow,
+    open_regular_child_nofollow, path_lock_identity, portable_permissions,
+    remove_identity_bound_regular_child, replace_file_atomically, restrict_stage_to_owner,
+    retain_regular_child_for_cleanup, FileIdentity, PortablePermissions,
 };
 
 const STAGE_ATTEMPTS: usize = 16;
@@ -70,7 +72,44 @@ pub(crate) struct PublishReport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CleanupWarning {
     pub(crate) path: PathBuf,
+    pub(crate) artifact: CleanupArtifact,
     pub(crate) message: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CleanupArtifact {
+    path: PathBuf,
+    file_identity: FileIdentity,
+    directory_identity: FileIdentity,
+    file: Arc<Mutex<Option<File>>>,
+    directory: Arc<File>,
+}
+
+impl PartialEq for CleanupArtifact {
+    fn eq(&self, other: &Self) -> bool {
+        self.path == other.path
+            && self.file_identity == other.file_identity
+            && self.directory_identity == other.directory_identity
+    }
+}
+
+impl Eq for CleanupArtifact {}
+
+impl CleanupArtifact {
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn directory_identity(&self) -> FileIdentity {
+        self.directory_identity
+    }
+
+    pub(crate) fn cleanup_completed(&self) -> io::Result<bool> {
+        self.file
+            .lock()
+            .map(|file| file.is_none())
+            .map_err(|_| io::Error::other("publication cleanup file-handle state is poisoned"))
+    }
 }
 
 impl fmt::Display for CleanupWarning {
@@ -310,9 +349,13 @@ struct PublicationLockPause {
 type BeforeCommitHook = Box<dyn FnOnce(&Path)>;
 
 #[cfg(test)]
+type BeforeBoundCleanupHook = Box<dyn FnOnce(&Path)>;
+
+#[cfg(test)]
 thread_local! {
     static TEST_PUBLISH_FAILPOINTS: RefCell<Vec<PublishCheckpoint>> = const { RefCell::new(Vec::new()) };
     static TEST_BEFORE_COMMIT_HOOK: RefCell<Option<BeforeCommitHook>> = const { RefCell::new(None) };
+    static TEST_BEFORE_BOUND_CLEANUP_HOOK: RefCell<Option<BeforeBoundCleanupHook>> = const { RefCell::new(None) };
     static TEST_PUBLICATION_LOCK_PAUSE: RefCell<Option<PublicationLockPause>> = const { RefCell::new(None) };
     static TEST_PUBLICATION_LOCK_CONTENDED: RefCell<Option<Sender<()>>> = const { RefCell::new(None) };
 }
@@ -351,6 +394,25 @@ pub(crate) fn with_before_commit_hook<T>(
     }
 
     let previous = TEST_BEFORE_COMMIT_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
+    let _reset = Reset(previous);
+    action()
+}
+
+#[cfg(test)]
+pub(crate) fn with_before_bound_cleanup_hook<T>(
+    hook: impl FnOnce(&Path) + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<BeforeBoundCleanupHook>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_BEFORE_BOUND_CLEANUP_HOOK.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+
+    let previous = TEST_BEFORE_BOUND_CLEANUP_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
     let _reset = Reset(previous);
     action()
 }
@@ -514,7 +576,7 @@ pub(crate) struct PreparedCreate<'request, 'lock, 'scope> {
 
 impl PreparedCreate<'_, '_, '_> {
     pub(crate) fn staged_file_identity(&self) -> Result<FileIdentity, PublishError> {
-        staged_file_identity(&self.stage.path)
+        Ok(self.stage.artifact.file_identity)
     }
 
     pub(crate) fn commit(mut self) -> Result<PublishReport, PublishError> {
@@ -564,7 +626,7 @@ pub(crate) struct PreparedReplace<'request, 'lock, 'scope> {
 
 impl PreparedReplace<'_, '_, '_> {
     pub(crate) fn staged_file_identity(&self) -> Result<FileIdentity, PublishError> {
-        staged_file_identity(&self.stage.path)
+        Ok(self.stage.artifact.file_identity)
     }
 
     pub(crate) fn portable_permissions(&self) -> &PortablePermissions {
@@ -602,12 +664,6 @@ impl PreparedReplace<'_, '_, '_> {
     pub(crate) fn discard(mut self) -> Vec<CleanupWarning> {
         self.stage.cleanup().err().into_iter().collect()
     }
-}
-
-fn staged_file_identity(path: &Path) -> Result<FileIdentity, PublishError> {
-    let file =
-        File::open(path).map_err(|source| PublishError::io(PublishPhase::Inspect, path, source))?;
-    file_identity(&file).map_err(|source| PublishError::io(PublishPhase::Inspect, path, source))
 }
 
 pub(crate) fn prepare<'request, 'lock, 'scope>(
@@ -661,29 +717,306 @@ pub(crate) fn publish(request: PublishRequest<'_>) -> Result<PublishReport, Publ
 /// Create one exact, private-until-complete file with authoritative portable
 /// permissions. The caller must already own a no-clobber reservation for
 /// `path`; failures remove the partial file or attach its cleanup warning.
+#[cfg(test)]
 pub(crate) fn write_exact_new_file(
     path: &Path,
     bytes: &[u8],
     permissions: &PortablePermissions,
-) -> Result<(), PublishError> {
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|source| PublishError::io(PublishPhase::Stage, path, source))?;
-    let mut guard = initialize_new_exact_file(file, path, bytes, Some(permissions))?;
+) -> Result<CleanupArtifact, PublishError> {
+    let guard = StageGuard::create(path)?;
+    let mut guard = initialize_new_exact_file(guard, bytes, Some(permissions))?;
+    let artifact = guard.artifact.clone();
     guard.disarm();
-    Ok(())
+    Ok(artifact)
+}
+
+/// Create one exact file relative to an already retained directory identity.
+/// This variant is used for transaction recovery so a lexical parent swap
+/// cannot redirect creation before the cleanup token is bound.
+pub(crate) fn write_exact_new_file_in_directory(
+    path: &Path,
+    directory: Arc<File>,
+    directory_identity: FileIdentity,
+    bytes: &[u8],
+    permissions: &PortablePermissions,
+) -> Result<CleanupArtifact, PublishError> {
+    let artifact = create_cleanup_artifact_in_directory(
+        absolute_lexical_path(path)?,
+        directory,
+        directory_identity,
+    )?;
+    let guard = StageGuard::from_artifact(artifact);
+    let mut guard = initialize_new_exact_file(guard, bytes, Some(permissions))?;
+    let artifact = guard.artifact.clone();
+    guard.disarm();
+    Ok(artifact)
 }
 
 /// Retry removal of a publication-owned artifact previously reported in a
 /// cleanup warning.
-pub(crate) fn cleanup_publication_artifact(path: &Path) -> Result<(), CleanupWarning> {
-    remove_stage(path).map_err(|error| CleanupWarning {
-        path: path.to_path_buf(),
+pub(crate) fn cleanup_publication_artifact(
+    artifact: &CleanupArtifact,
+) -> Result<(), CleanupWarning> {
+    remove_bound_publication_artifact(artifact).map_err(|error| CleanupWarning {
+        path: artifact.path.clone(),
+        artifact: artifact.clone(),
         message: error.to_string(),
     })
+}
+
+pub(crate) fn verify_publication_artifact(
+    artifact: &CleanupArtifact,
+) -> Result<bool, CleanupWarning> {
+    let result = (|| {
+        verify_cleanup_directory_route(artifact)?;
+        let present = open_cleanup_file(artifact, &artifact.directory)?.is_some();
+        verify_cleanup_directory_route(artifact)?;
+        Ok(present)
+    })();
+    result.map_err(|error: io::Error| CleanupWarning {
+        path: artifact.path.clone(),
+        artifact: artifact.clone(),
+        message: error.to_string(),
+    })
+}
+
+fn create_cleanup_artifact(path: &Path) -> Result<CleanupArtifact, PublishError> {
+    let absolute_path = absolute_lexical_path(path)?;
+    let lexical_parent = absolute_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let canonical_parent = fs::canonicalize(lexical_parent)
+        .map_err(|source| PublishError::io(PublishPhase::Inspect, lexical_parent, source))?;
+    let directory = open_directory_nofollow(&canonical_parent)
+        .map_err(|source| PublishError::io(PublishPhase::Inspect, &canonical_parent, source))?;
+    let directory_identity = file_identity(&directory)
+        .map_err(|source| PublishError::io(PublishPhase::Inspect, &canonical_parent, source))?;
+    create_cleanup_artifact_in_directory(absolute_path, Arc::new(directory), directory_identity)
+}
+
+fn create_cleanup_artifact_in_directory(
+    absolute_path: PathBuf,
+    directory: Arc<File>,
+    directory_identity: FileIdentity,
+) -> Result<CleanupArtifact, PublishError> {
+    let file_name = absolute_path
+        .file_name()
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| {
+            PublishError::new(PublishErrorKind::InvalidTarget {
+                target: absolute_path.clone(),
+            })
+        })?;
+    let retained_directory_identity = file_identity(&directory)
+        .map_err(|source| PublishError::io(PublishPhase::Inspect, &absolute_path, source))?;
+    if retained_directory_identity != directory_identity {
+        return Err(PublishError::io(
+            PublishPhase::Inspect,
+            &absolute_path,
+            io::Error::other("retained publication directory identity changed before creation"),
+        ));
+    }
+    let file = create_new_regular_child(&directory, file_name)
+        .map_err(|source| PublishError::io(PublishPhase::Stage, &absolute_path, source))?;
+    let expected_file_identity = match file_identity(&file) {
+        Ok(identity) => identity,
+        Err(primary) => {
+            let source = match discard_created_regular_child(&directory, file_name, &file) {
+                Ok(()) => primary,
+                Err(cleanup) => io::Error::new(
+                    primary.kind(),
+                    format!(
+                        "{primary}; failed to discard an unverified created publication artifact: {cleanup}"
+                    ),
+                ),
+            };
+            return Err(PublishError::io(
+                PublishPhase::Inspect,
+                &absolute_path,
+                source,
+            ));
+        }
+    };
+    Ok(CleanupArtifact {
+        path: absolute_path,
+        file_identity: expected_file_identity,
+        directory_identity,
+        file: Arc::new(Mutex::new(Some(file))),
+        directory,
+    })
+}
+
+fn verify_cleanup_directory_route(artifact: &CleanupArtifact) -> io::Result<()> {
+    let parent = artifact.path.parent().ok_or_else(|| {
+        io::Error::new(
+            ErrorKind::InvalidInput,
+            "publication cleanup artifact has no containing directory",
+        )
+    })?;
+    let canonical_parent = fs::canonicalize(parent).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "publication cleanup directory route could not be resolved; artifact left untouched: {error}"
+            ),
+        )
+    })?;
+    let directory = open_directory_nofollow(&canonical_parent).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "publication cleanup directory identity could not be proven; artifact left untouched: {error}"
+            ),
+        )
+    })?;
+    let identity = file_identity(&directory).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "failed to inspect publication cleanup directory identity; artifact left untouched: {error}"
+            ),
+        )
+    })?;
+    if identity != artifact.directory_identity {
+        return Err(io::Error::other(
+            "publication cleanup directory identity changed; replacement left untouched",
+        ));
+    }
+    let retained_identity = file_identity(&artifact.directory).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "failed to recheck retained publication cleanup directory identity; artifact left untouched: {error}"
+            ),
+        )
+    })?;
+    if retained_identity != artifact.directory_identity {
+        return Err(io::Error::other(
+            "retained publication cleanup directory identity changed; artifact left untouched",
+        ));
+    }
+    Ok(())
+}
+
+fn open_cleanup_file(artifact: &CleanupArtifact, directory: &File) -> io::Result<Option<File>> {
+    let retained = artifact.file.lock().map_err(|_| {
+        io::Error::other(
+            "publication cleanup file-handle state is poisoned; replacement left untouched",
+        )
+    })?;
+    let retained = retained.as_ref().ok_or_else(|| {
+        io::Error::new(
+            ErrorKind::NotFound,
+            "retained publication cleanup file handle is missing",
+        )
+    })?;
+    let retained_identity = file_identity(retained).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "failed to recheck retained publication cleanup file identity; replacement left untouched: {error}"
+            ),
+        )
+    })?;
+    if retained_identity != artifact.file_identity {
+        return Err(io::Error::other(
+            "retained publication cleanup file identity changed; replacement left untouched",
+        ));
+    }
+    open_cleanup_file_name(artifact, directory)
+}
+
+fn open_cleanup_file_name(
+    artifact: &CleanupArtifact,
+    directory: &File,
+) -> io::Result<Option<File>> {
+    let name = artifact.path.file_name().ok_or_else(|| {
+        io::Error::new(
+            ErrorKind::InvalidInput,
+            "publication cleanup artifact has no file name",
+        )
+    })?;
+    let file = match open_regular_child_nofollow(directory, name) {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(io::Error::new(
+                error.kind(),
+                format!(
+                    "publication cleanup file identity could not be proven; replacement left untouched: {error}"
+                ),
+            ));
+        }
+    };
+    let identity = file_identity(&file).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "failed to inspect publication cleanup file identity; replacement left untouched: {error}"
+            ),
+        )
+    })?;
+    if identity != artifact.file_identity {
+        return Err(io::Error::other(
+            "publication cleanup file identity changed; replacement left untouched",
+        ));
+    }
+    Ok(Some(file))
+}
+
+fn remove_bound_publication_artifact(artifact: &CleanupArtifact) -> io::Result<()> {
+    let mut retained = artifact.file.lock().map_err(|_| {
+        io::Error::other(
+            "publication cleanup file-handle state is poisoned; replacement left untouched",
+        )
+    })?;
+    let Some(retained_file) = retained.as_ref() else {
+        return Ok(());
+    };
+    verify_cleanup_directory_route(artifact)?;
+    let retained_identity = file_identity(retained_file).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "failed to recheck retained publication cleanup file identity; replacement left untouched: {error}"
+            ),
+        )
+    })?;
+    if retained_identity != artifact.file_identity {
+        return Err(io::Error::other(
+            "retained publication cleanup file identity changed; replacement left untouched",
+        ));
+    }
+    if open_cleanup_file_name(artifact, &artifact.directory)?.is_none() {
+        return Err(io::Error::new(
+            ErrorKind::NotFound,
+            "publication cleanup file identity is missing; artifact location is unverified",
+        ));
+    }
+
+    run_before_bound_cleanup(&artifact.path);
+    injected_failure(PublishCheckpoint::Cleanup, &artifact.path)?;
+    let name = artifact.path.file_name().ok_or_else(|| {
+        io::Error::new(
+            ErrorKind::InvalidInput,
+            "publication cleanup artifact has no file name",
+        )
+    })?;
+    remove_identity_bound_regular_child(
+        &artifact.directory,
+        name,
+        artifact.file_identity,
+        retained_file,
+    )
+    .map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("failed to remove identity-bound publication artifact: {error}"),
+        )
+    })?;
+    *retained = None;
+    Ok(())
 }
 
 fn publication_identity(target: &Path) -> Result<String, PublishError> {
@@ -769,7 +1102,7 @@ fn lock_only_publication_identity(target: &Path) -> Result<String, PublishError>
     Ok(path_lock_identity(&canonical_directory.join(suffix)))
 }
 
-fn absolute_lexical_path(path: &Path) -> Result<PathBuf, PublishError> {
+pub(crate) fn absolute_lexical_path(path: &Path) -> Result<PathBuf, PublishError> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -1069,19 +1402,24 @@ fn create_stage_with_candidates(
 ) -> Result<StageGuard, PublishError> {
     for attempt in 1..=STAGE_ATTEMPTS {
         let path = next_candidate();
-        let open = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(&path);
-        let file = match open {
-            Ok(file) => file,
-            Err(source)
-                if source.kind() == ErrorKind::AlreadyExists && attempt < STAGE_ATTEMPTS =>
+        let guard = match StageGuard::create(&path) {
+            Ok(guard) => guard,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    PublishErrorKind::Io { source, .. }
+                        if source.kind() == ErrorKind::AlreadyExists
+                ) && attempt < STAGE_ATTEMPTS =>
             {
                 continue;
             }
-            Err(source) if source.kind() == ErrorKind::AlreadyExists => {
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    PublishErrorKind::Io { source, .. }
+                        if source.kind() == ErrorKind::AlreadyExists
+                ) =>
+            {
                 return Err(PublishError::new(
                     PublishErrorKind::StageCollisionsExhausted {
                         target: target.to_path_buf(),
@@ -1089,9 +1427,9 @@ fn create_stage_with_candidates(
                     },
                 ));
             }
-            Err(source) => return Err(PublishError::io(PublishPhase::Stage, &path, source)),
+            Err(error) => return Err(error),
         };
-        return initialize_new_exact_file(file, &path, replacement, final_permissions);
+        return initialize_new_exact_file(guard, replacement, final_permissions);
     }
     Err(PublishError::new(
         PublishErrorKind::StageCollisionsExhausted {
@@ -1102,16 +1440,39 @@ fn create_stage_with_candidates(
 }
 
 fn initialize_new_exact_file(
-    mut file: File,
-    path: &Path,
+    mut guard: StageGuard,
     bytes: &[u8],
     final_permissions: Option<&PortablePermissions>,
 ) -> Result<StageGuard, PublishError> {
-    let mut guard = StageGuard::new(path.to_path_buf());
-    let result = initialize_stage(&mut file, path, bytes, final_permissions);
-    drop(file);
+    let result = {
+        let retained = guard.artifact.file.lock().map_err(|_| {
+            PublishError::io(
+                PublishPhase::Stage,
+                &guard.path,
+                io::Error::other("publication stage file-handle state is poisoned"),
+            )
+        })?;
+        let file = retained.as_ref().ok_or_else(|| {
+            PublishError::io(
+                PublishPhase::Stage,
+                &guard.path,
+                io::Error::new(
+                    ErrorKind::NotFound,
+                    "publication stage file handle is missing",
+                ),
+            )
+        })?;
+        initialize_stage(file, &guard.path, bytes, final_permissions)
+    };
     match result {
-        Ok(()) => Ok(guard),
+        Ok(()) => {
+            if let Err(mut error) = retain_minimal_cleanup_handle(&guard) {
+                attach_stage_cleanup(&mut error, &mut guard);
+                Err(error)
+            } else {
+                Ok(guard)
+            }
+        }
         Err(mut error) => {
             attach_stage_cleanup(&mut error, &mut guard);
             Err(error)
@@ -1119,12 +1480,36 @@ fn initialize_new_exact_file(
     }
 }
 
+fn retain_minimal_cleanup_handle(guard: &StageGuard) -> Result<(), PublishError> {
+    let name = guard.path.file_name().ok_or_else(|| {
+        PublishError::new(PublishErrorKind::InvalidTarget {
+            target: guard.path.clone(),
+        })
+    })?;
+    let retained = retain_regular_child_for_cleanup(
+        &guard.artifact.directory,
+        name,
+        guard.artifact.file_identity,
+    )
+    .map_err(|source| PublishError::io(PublishPhase::Inspect, &guard.path, source))?;
+    let mut handle = guard.artifact.file.lock().map_err(|_| {
+        PublishError::io(
+            PublishPhase::Inspect,
+            &guard.path,
+            io::Error::other("publication cleanup file-handle state is poisoned"),
+        )
+    })?;
+    *handle = Some(retained);
+    Ok(())
+}
+
 fn initialize_stage(
-    file: &mut File,
+    file: &File,
     path: &Path,
     replacement: &[u8],
     final_permissions: Option<&PortablePermissions>,
 ) -> Result<(), PublishError> {
+    let mut file = file;
     injected_failure(PublishCheckpoint::PermissionsBeforeWrite, path)
         .map_err(|source| PublishError::io(PublishPhase::Permissions, path, source))?;
     let process_default_permissions = file
@@ -1215,6 +1600,13 @@ fn run_before_commit_hook(_target: &Path) {
     }
 }
 
+fn run_before_bound_cleanup(_path: &Path) {
+    #[cfg(test)]
+    if let Some(hook) = TEST_BEFORE_BOUND_CLEANUP_HOOK.with(|slot| slot.borrow_mut().take()) {
+        hook(_path);
+    }
+}
+
 fn attach_stage_cleanup(error: &mut PublishError, stage: &mut StageGuard) {
     if let Err(warning) = stage.cleanup() {
         error.attach_cleanup_warning(warning);
@@ -1224,31 +1616,34 @@ fn attach_stage_cleanup(error: &mut PublishError, stage: &mut StageGuard) {
 #[derive(Debug)]
 struct StageGuard {
     path: PathBuf,
+    artifact: CleanupArtifact,
     armed: bool,
 }
 
 impl StageGuard {
-    fn new(path: PathBuf) -> Self {
-        Self { path, armed: true }
+    fn create(path: &Path) -> Result<Self, PublishError> {
+        let artifact = create_cleanup_artifact(path)?;
+        Ok(Self::from_artifact(artifact))
+    }
+
+    fn from_artifact(artifact: CleanupArtifact) -> Self {
+        Self {
+            path: artifact.path.clone(),
+            artifact,
+            armed: true,
+        }
     }
 
     fn cleanup(&mut self) -> Result<(), CleanupWarning> {
         if !self.armed {
             return Ok(());
         }
-        match remove_stage(&self.path) {
+        match cleanup_publication_artifact(&self.artifact) {
             Ok(()) => {
                 self.armed = false;
                 Ok(())
             }
-            Err(error) if error.kind() == ErrorKind::NotFound => {
-                self.armed = false;
-                Ok(())
-            }
-            Err(error) => Err(CleanupWarning {
-                path: self.path.clone(),
-                message: error.to_string(),
-            }),
+            Err(warning) => Err(warning),
         }
     }
 
@@ -1260,29 +1655,16 @@ impl StageGuard {
 impl Drop for StageGuard {
     fn drop(&mut self) {
         if self.armed {
-            let _ = remove_stage(&self.path);
+            let _ = cleanup_publication_artifact(&self.artifact);
         }
-    }
-}
-
-fn remove_stage(path: &Path) -> io::Result<()> {
-    match prepare_file_for_removal(path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
-    }
-    injected_failure(PublishCheckpoint::Cleanup, path)?;
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        create_stage_with_candidates, publish, remove_stage, with_before_commit_hook,
+        cleanup_publication_artifact, create_stage_with_candidates, publish,
+        with_before_bound_cleanup_hook, with_before_commit_hook,
         with_publication_lock_contention_signal, with_publication_lock_pause,
         with_publication_locks, with_publication_locks_mode_and_guard_targets,
         with_publish_failpoints, PublicationTreeLockMode, PublishCheckpoint, PublishEffect,
@@ -1750,7 +2132,8 @@ mod tests {
         let debris = publication_debris(&root);
         assert_eq!(debris, [error.cleanup_warnings()[0].path.clone()]);
         assert_eq!(fs::read(&debris[0]).unwrap(), b"");
-        remove_stage(&debris[0]).expect("manual cleanup after failpoint scope must succeed");
+        cleanup_publication_artifact(&error.cleanup_warnings()[0].artifact)
+            .expect("identity-bound cleanup after failpoint scope must succeed");
         assert!(publication_debris(&root).is_empty());
         fs::remove_dir_all(root).unwrap();
     }
@@ -1788,12 +2171,64 @@ mod tests {
             hard_link_count(&fs::File::open(&target).unwrap()).unwrap(),
             2
         );
-        remove_stage(&debris[0]).expect("manual cleanup after failpoint scope must succeed");
+        cleanup_publication_artifact(&report.cleanup_warnings[0].artifact)
+            .expect("identity-bound cleanup after failpoint scope must succeed");
         assert_eq!(
             hard_link_count(&fs::File::open(&target).unwrap()).unwrap(),
             1
         );
         assert!(publication_debris(&root).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bound_cleanup_cannot_be_redirected_after_the_last_route_check() {
+        let root = unique_temp_root("bound-cleanup-final-route-swap");
+        let active_parent = root.join("active");
+        let preserved_parent = root.join("preserved");
+        fs::create_dir(&active_parent).unwrap();
+        let target = active_parent.join("created.bin");
+        let report = with_publish_failpoints(&[PublishCheckpoint::Cleanup], || {
+            publish(PublishRequest {
+                target: &target,
+                replacement: b"committed bytes",
+                mode: PublishMode::CreateOnly,
+            })
+        })
+        .expect("committed create must retain one cleanup token");
+        let warning = report
+            .cleanup_warnings
+            .into_iter()
+            .next()
+            .expect("cleanup failpoint must report the staged artifact");
+        let stage_name = warning
+            .path
+            .file_name()
+            .expect("stage path must have a child name")
+            .to_os_string();
+        let active_for_hook = active_parent.clone();
+        let preserved_for_hook = preserved_parent.clone();
+        let stage_for_hook = stage_name.clone();
+
+        let cleanup = with_before_bound_cleanup_hook(
+            move |_| {
+                fs::rename(&active_for_hook, &preserved_for_hook).unwrap();
+                fs::create_dir(&active_for_hook).unwrap();
+                fs::write(active_for_hook.join(stage_for_hook), b"same-name decoy").unwrap();
+            },
+            || cleanup_publication_artifact(&warning.artifact),
+        );
+
+        cleanup.expect("retained parent handle must anchor the cleanup mutation");
+        assert_eq!(
+            fs::read(active_parent.join(&stage_name)).unwrap(),
+            b"same-name decoy"
+        );
+        assert!(!preserved_parent.join(&stage_name).exists());
+        assert_eq!(
+            fs::read(preserved_parent.join("created.bin")).unwrap(),
+            b"committed bytes"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

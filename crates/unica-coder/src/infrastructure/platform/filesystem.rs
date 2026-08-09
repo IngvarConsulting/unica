@@ -311,13 +311,8 @@ pub(crate) fn file_identity(_file: &fs::File) -> io::Result<FileIdentity> {
 }
 
 #[cfg(unix)]
-fn open_unix_child(
-    parent: &fs::File,
-    name: &std::ffi::OsStr,
-    flags: libc::c_int,
-) -> io::Result<fs::File> {
+fn unix_child_name(name: &std::ffi::OsStr) -> io::Result<std::ffi::CString> {
     use std::ffi::CString;
-    use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::ffi::OsStrExt;
     use std::path::Component;
 
@@ -330,7 +325,18 @@ fn open_unix_child(
             "child name must be exactly one normal relative component",
         ));
     }
-    let name = CString::new(name.as_bytes())?;
+    CString::new(name.as_bytes()).map_err(Into::into)
+}
+
+#[cfg(unix)]
+fn open_unix_child(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+    flags: libc::c_int,
+) -> io::Result<fs::File> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+
+    let name = unix_child_name(name)?;
     // SAFETY: parent owns a live descriptor, name is a NUL-terminated single component, and a
     // successful openat result transfers one newly owned descriptor to this function.
     let descriptor = unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), flags) };
@@ -339,6 +345,59 @@ fn open_unix_child(
     } else {
         // SAFETY: descriptor is a newly owned successful openat result.
         Ok(unsafe { fs::File::from_raw_fd(descriptor) })
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn create_new_regular_child(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+
+    let name = unix_child_name(name)?;
+    // SAFETY: parent owns a live descriptor, name is one NUL-terminated child component, and a
+    // successful openat result transfers one newly owned descriptor to this function. Mode 0666
+    // preserves the process-umask default captured by the publication protocol before the file is
+    // restricted to owner-only while its bytes are initialized.
+    let descriptor = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            0o666,
+        )
+    };
+    if descriptor < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        // SAFETY: descriptor is a newly owned successful openat result.
+        Ok(unsafe { fs::File::from_raw_fd(descriptor) })
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn create_new_directory_child(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    use std::os::fd::AsRawFd;
+
+    let name_c = unix_child_name(name)?;
+    // SAFETY: parent and the validated NUL-terminated child name remain live for the call. Mode
+    // 0777 matches std::fs::create_dir before the process umask is applied.
+    let status = unsafe { libc::mkdirat(parent.as_raw_fd(), name_c.as_ptr(), 0o777) };
+    if status != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    match open_directory_child_nofollow(parent, name) {
+        Ok(directory) => Ok(directory),
+        Err(primary) => Err(io::Error::new(
+            primary.kind(),
+            format!(
+                "{primary}; newly created directory identity could not be captured and was left untouched"
+            ),
+        )),
     }
 }
 
@@ -1719,12 +1778,14 @@ pub(crate) fn open_any_child_for_delete(
 ) -> io::Result<fs::File> {
     const FILE_OPEN: u32 = 0x0000_0001;
     const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-    use windows_sys::Win32::Storage::FileSystem::{DELETE, FILE_READ_ATTRIBUTES, SYNCHRONIZE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_READ_ATTRIBUTES, FILE_WRITE_ATTRIBUTES, SYNCHRONIZE,
+    };
 
     open_relative_child(
         parent,
         name,
-        DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        DELETE | FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE,
         0,
         FILE_OPEN,
         FILE_OPEN_REPARSE_POINT,
@@ -2141,6 +2202,86 @@ pub(crate) fn create_owner_only_file_child(
         FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
         Some(security.security_descriptor()),
     )
+}
+
+#[cfg(windows)]
+pub(crate) fn create_new_regular_child(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    const FILE_CREATE: u32 = 0x0000_0002;
+    const FILE_NON_DIRECTORY_FILE: u32 = 0x0000_0040;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
+    use windows_sys::Win32::Storage::FileSystem::{DELETE, FILE_ATTRIBUTE_NORMAL, SYNCHRONIZE};
+
+    open_relative_child(
+        parent,
+        name,
+        GENERIC_READ | GENERIC_WRITE | DELETE | SYNCHRONIZE,
+        FILE_ATTRIBUTE_NORMAL,
+        FILE_CREATE,
+        FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+        None,
+    )
+}
+
+#[cfg(windows)]
+pub(crate) fn create_new_directory_child(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    const FILE_CREATE: u32 = 0x0000_0002;
+    const FILE_DIRECTORY_FILE: u32 = 0x0000_0001;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, READ_CONTROL,
+        SYNCHRONIZE,
+    };
+
+    let created = open_relative_child(
+        parent,
+        name,
+        DELETE | FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
+        FILE_ATTRIBUTE_DIRECTORY,
+        FILE_CREATE,
+        FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+        None,
+    )?;
+    if let Err(primary) = validate_directory_handle(&created) {
+        return match discard_created_child(&created) {
+            Ok(()) => Err(primary),
+            Err(cleanup) => Err(io::Error::new(
+                primary.kind(),
+                format!(
+                    "{primary}; failed to remove invalid directory created through the retained parent: {cleanup}"
+                ),
+            )),
+        };
+    }
+    Ok(created)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn create_new_regular_child(
+    _parent: &fs::File,
+    _name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "descriptor-relative regular-file creation is unavailable on this host",
+    ))
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn create_new_directory_child(
+    _parent: &fs::File,
+    _name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "descriptor-relative directory creation is unavailable on this host",
+    ))
 }
 
 #[cfg(windows)]
@@ -2681,6 +2822,232 @@ pub(crate) fn prepare_file_for_removal(path: &Path) -> io::Result<()> {
         fs::set_permissions(path, permissions)?;
     }
     Ok(())
+}
+
+/// Best-effort cleanup for a just-created regular child whose stable identity
+/// could not be captured. The caller still retains both creation anchors.
+#[cfg(unix)]
+pub(crate) fn discard_created_regular_child(
+    _parent: &fs::File,
+    _name: &std::ffi::OsStr,
+    _file: &fs::File,
+) -> io::Result<()> {
+    Err(io::Error::other(
+        "created regular-file identity is unavailable; artifact left untouched",
+    ))
+}
+
+#[cfg(any(unix, windows))]
+pub(crate) fn retain_regular_child_for_cleanup(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+    expected_identity: FileIdentity,
+) -> io::Result<fs::File> {
+    let (retained, kind) = open_any_child_nofollow(parent, name)?;
+    if kind != OpenedChildKind::RegularFile || file_identity(&retained)? != expected_identity {
+        return Err(io::Error::other(
+            "cleanup retention target identity changed; replacement left untouched",
+        ));
+    }
+    Ok(retained)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn retain_regular_child_for_cleanup(
+    _parent: &fs::File,
+    _name: &std::ffi::OsStr,
+    _expected_identity: FileIdentity,
+) -> io::Result<fs::File> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "identity-only cleanup retention is unavailable on this host",
+    ))
+}
+
+#[cfg(windows)]
+pub(crate) fn discard_created_regular_child(
+    _parent: &fs::File,
+    _name: &std::ffi::OsStr,
+    file: &fs::File,
+) -> io::Result<()> {
+    discard_created_child(file)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn discard_created_regular_child(
+    _parent: &fs::File,
+    _name: &std::ffi::OsStr,
+    _file: &fs::File,
+) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "created regular-file cleanup is unavailable on this host",
+    ))
+}
+
+/// Removes the regular child only while its retained parent handle and file
+/// identity still name the object captured by the caller.
+///
+/// The parent handle is the mutation anchor, so replacing the lexical parent
+/// route cannot redirect cleanup into another directory. The child name is
+/// rechecked immediately before the descriptor-relative unlink used under the
+/// publication lock; Windows additionally deletes through the verified child
+/// handle.
+#[cfg(unix)]
+pub(crate) fn remove_identity_bound_regular_child(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+    expected_identity: FileIdentity,
+    retained: &fs::File,
+) -> io::Result<()> {
+    if file_identity(retained)? != expected_identity {
+        return Err(io::Error::other(
+            "retained regular child identity changed; replacement left untouched",
+        ));
+    }
+    let child = open_regular_child_nofollow(parent, name)?;
+    if file_identity(&child)? != expected_identity {
+        return Err(io::Error::other(
+            "regular child identity changed; replacement left untouched",
+        ));
+    }
+    unlink_child_at(parent, name, 0)
+}
+
+#[cfg(windows)]
+#[allow(
+    clippy::permissions_set_readonly_false,
+    reason = "the verified child handle changes only FILE_ATTRIBUTE_READONLY before deletion"
+)]
+pub(crate) fn remove_identity_bound_regular_child(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+    expected_identity: FileIdentity,
+    retained: &fs::File,
+) -> io::Result<()> {
+    let named = open_any_child_for_delete(parent, name)?;
+    if opened_child_kind(&named)? != OpenedChildKind::RegularFile
+        || file_identity(&named)? != expected_identity
+    {
+        return Err(io::Error::other(
+            "regular child identity changed; replacement left untouched",
+        ));
+    }
+    if opened_child_kind(retained)? != OpenedChildKind::RegularFile {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "identity-bound cleanup target is not a regular file",
+        ));
+    }
+    if file_identity(retained)? != expected_identity {
+        return Err(io::Error::other(
+            "regular child identity changed; replacement left untouched",
+        ));
+    }
+    let mut permissions = named.metadata()?.permissions();
+    if permissions.readonly() {
+        permissions.set_readonly(false);
+        named.set_permissions(permissions)?;
+    }
+    delete_open_child(&named)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn remove_identity_bound_regular_child(
+    _parent: &fs::File,
+    _name: &std::ffi::OsStr,
+    _expected_identity: FileIdentity,
+    _retained: &fs::File,
+) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "identity-bound regular-file cleanup is unavailable on this host",
+    ))
+}
+
+/// Removes an empty directory child through its retained parent handle after
+/// proving the exact directory identity.
+#[cfg(unix)]
+pub(crate) fn remove_identity_bound_empty_directory_child(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+    expected_identity: FileIdentity,
+    retained: &fs::File,
+) -> io::Result<()> {
+    if file_identity(retained)? != expected_identity {
+        return Err(io::Error::other(
+            "retained directory child identity changed; replacement left untouched",
+        ));
+    }
+    let child = open_directory_child_nofollow(parent, name)?;
+    if file_identity(&child)? != expected_identity {
+        return Err(io::Error::other(
+            "directory child identity changed; replacement left untouched",
+        ));
+    }
+    unlink_child_at(parent, name, libc::AT_REMOVEDIR)
+}
+
+#[cfg(windows)]
+pub(crate) fn remove_identity_bound_empty_directory_child(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+    expected_identity: FileIdentity,
+    retained: &fs::File,
+) -> io::Result<()> {
+    let named = open_any_child_for_delete(parent, name)?;
+    if opened_child_kind(&named)? != OpenedChildKind::Directory
+        || file_identity(&named)? != expected_identity
+    {
+        return Err(io::Error::other(
+            "directory child identity changed; replacement left untouched",
+        ));
+    }
+    if opened_child_kind(retained)? != OpenedChildKind::Directory {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "identity-bound cleanup target is not a directory",
+        ));
+    }
+    if file_identity(retained)? != expected_identity {
+        return Err(io::Error::other(
+            "directory child identity changed; replacement left untouched",
+        ));
+    }
+    delete_open_child(retained)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn remove_identity_bound_empty_directory_child(
+    _parent: &fs::File,
+    _name: &std::ffi::OsStr,
+    _expected_identity: FileIdentity,
+    _retained: &fs::File,
+) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "identity-bound directory cleanup is unavailable on this host",
+    ))
+}
+
+#[cfg(unix)]
+fn unlink_child_at(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+    flags: libc::c_int,
+) -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+
+    let name = CString::new(name.as_bytes())?;
+    // SAFETY: parent remains open and name is a live NUL-terminated string.
+    let status = unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), flags) };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
 }
 
 pub(crate) fn path_lock_identity(path: &Path) -> String {
@@ -3506,6 +3873,179 @@ mod tests {
             "unica-filesystem-{name}-{}-{nanos}",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn identity_bound_regular_child_cleanup_preserves_same_name_replacement() {
+        use crate::infrastructure::platform::filesystem::{
+            create_new_regular_child, file_identity, open_directory_nofollow,
+            remove_identity_bound_regular_child,
+        };
+        use std::ffi::OsStr;
+        use std::io::Write;
+
+        let root = unique_temp_root("identity-bound-file-cleanup");
+        fs::create_dir_all(&root).unwrap();
+        let parent = open_directory_nofollow(&root).unwrap();
+        let name = OsStr::new("stage.bin");
+        let route = root.join(name);
+        let displaced = root.join("displaced.bin");
+        let mut retained = create_new_regular_child(&parent, name).unwrap();
+        retained.write_all(b"owned").unwrap();
+        let expected = file_identity(&retained).unwrap();
+        fs::rename(&route, &displaced).unwrap();
+        fs::write(&route, b"decoy").unwrap();
+
+        let error =
+            remove_identity_bound_regular_child(&parent, name, expected, &retained).unwrap_err();
+
+        assert!(error.to_string().contains("identity changed"), "{error}");
+        assert_eq!(fs::read(&route).unwrap(), b"decoy");
+        assert_eq!(fs::read(&displaced).unwrap(), b"owned");
+
+        let removable_name = OsStr::new("removable.bin");
+        let removable = root.join(removable_name);
+        let mut removable_retained = create_new_regular_child(&parent, removable_name).unwrap();
+        removable_retained.write_all(b"remove me").unwrap();
+        let removable_identity = file_identity(&removable_retained).unwrap();
+        remove_identity_bound_regular_child(
+            &parent,
+            removable_name,
+            removable_identity,
+            &removable_retained,
+        )
+        .unwrap();
+        drop(removable_retained);
+        assert!(!removable.exists());
+
+        drop(retained);
+        drop(parent);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn identity_only_cleanup_handle_allows_a_restrictive_hardlink_reader() {
+        use crate::infrastructure::platform::filesystem::{
+            create_new_regular_child, file_identity, open_directory_nofollow,
+            retain_regular_child_for_cleanup,
+        };
+        use std::ffi::OsStr;
+        use std::io::{Read, Write};
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+
+        let root = unique_temp_root("identity-only-cleanup-handle");
+        fs::create_dir_all(&root).unwrap();
+        let parent = open_directory_nofollow(&root).unwrap();
+        let stage_name = OsStr::new("stage.bin");
+        let stage = root.join(stage_name);
+        let target = root.join("target.bin");
+        let mut creation = create_new_regular_child(&parent, stage_name).unwrap();
+        creation.write_all(b"published bytes").unwrap();
+        let identity = file_identity(&creation).unwrap();
+        let retained = retain_regular_child_for_cleanup(&parent, stage_name, identity).unwrap();
+        drop(creation);
+        fs::hard_link(&stage, &target).unwrap();
+
+        let mut reader = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&target)
+            .expect("identity-only cleanup handle must not require write/delete sharing");
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"published bytes");
+
+        drop(reader);
+        drop(retained);
+        drop(parent);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retained_parent_creation_cannot_be_redirected_to_a_replacement_route() {
+        use crate::infrastructure::platform::filesystem::{
+            create_new_directory_child, create_new_regular_child, open_directory_nofollow,
+        };
+        use std::ffi::OsStr;
+        use std::io::Write;
+
+        let root = unique_temp_root("retained-parent-create");
+        let active = root.join("active");
+        let displaced = root.join("displaced");
+        fs::create_dir_all(&active).unwrap();
+        let parent = open_directory_nofollow(&active).unwrap();
+        fs::rename(&active, &displaced).unwrap();
+        fs::create_dir(&active).unwrap();
+        fs::write(active.join("stage.bin"), b"same-name file decoy").unwrap();
+        fs::create_dir(active.join("recovery")).unwrap();
+
+        let mut created_file = create_new_regular_child(&parent, OsStr::new("stage.bin")).unwrap();
+        created_file.write_all(b"owned stage").unwrap();
+        let created_directory =
+            create_new_directory_child(&parent, OsStr::new("recovery")).unwrap();
+
+        assert_eq!(
+            fs::read(active.join("stage.bin")).unwrap(),
+            b"same-name file decoy"
+        );
+        assert_eq!(
+            fs::read(displaced.join("stage.bin")).unwrap(),
+            b"owned stage"
+        );
+        assert!(active.join("recovery").is_dir());
+        assert!(displaced.join("recovery").is_dir());
+
+        drop(created_directory);
+        drop(created_file);
+        drop(parent);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn identity_bound_empty_directory_cleanup_preserves_same_name_replacement() {
+        use crate::infrastructure::platform::filesystem::{
+            create_new_directory_child, file_identity, open_directory_nofollow,
+            remove_identity_bound_empty_directory_child,
+        };
+        use std::ffi::OsStr;
+
+        let root = unique_temp_root("identity-bound-directory-cleanup");
+        fs::create_dir_all(&root).unwrap();
+        let parent = open_directory_nofollow(&root).unwrap();
+        let name = OsStr::new("recovery");
+        let route = root.join(name);
+        let displaced = root.join("displaced-recovery");
+        let retained = create_new_directory_child(&parent, name).unwrap();
+        let expected = file_identity(&retained).unwrap();
+        fs::rename(&route, &displaced).unwrap();
+        fs::create_dir(&route).unwrap();
+
+        let error = remove_identity_bound_empty_directory_child(&parent, name, expected, &retained)
+            .unwrap_err();
+
+        assert!(error.to_string().contains("identity changed"), "{error}");
+        assert!(route.is_dir());
+        assert!(displaced.is_dir());
+
+        let removable_name = OsStr::new("removable-recovery");
+        let removable = root.join(removable_name);
+        let removable_retained = create_new_directory_child(&parent, removable_name).unwrap();
+        let removable_identity = file_identity(&removable_retained).unwrap();
+        remove_identity_bound_empty_directory_child(
+            &parent,
+            removable_name,
+            removable_identity,
+            &removable_retained,
+        )
+        .unwrap();
+        drop(removable_retained);
+        assert!(!removable.exists());
+
+        drop(retained);
+        drop(parent);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(unix)]
