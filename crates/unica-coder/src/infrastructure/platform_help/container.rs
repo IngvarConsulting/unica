@@ -58,6 +58,15 @@ fn read_block_header(bytes: &[u8], offset: usize) -> Result<BlockHeader, Contain
 /// одну страницу, и продолжение адресуется полем `next_page`.
 fn read_block(bytes: &[u8], offset: usize) -> Result<Vec<u8>, ContainerError> {
     let header = read_block_header(bytes, offset)?;
+    // Объявленная длина — восьмизначное шестнадцатеричное поле из файла, то
+    // есть до 4 ГиБ по неподтверждённому числу. Ни выделять по нему, ни
+    // выдавать найденный обрезок за целый блок нельзя: усечённый `.hbk` от
+    // прерванной установки — реалистичный повод, а отказ выделения прерывает
+    // процесс целиком, в отличие от паники, которую перехватывает
+    // `spawn_blocking`. Блок не может быть длиннее файла, в котором лежит.
+    if header.data_size > bytes.len() {
+        return Err(ContainerError::TruncatedBlock);
+    }
     let mut remaining = header.data_size;
     let mut out = Vec::with_capacity(remaining);
     let mut start = offset + BLOCK_HEADER;
@@ -76,6 +85,14 @@ fn read_block(bytes: &[u8], offset: usize) -> Result<Vec<u8>, ContainerError> {
         remaining -= take;
         if remaining == 0 || next == TERMINATOR {
             break;
+        }
+        // Страница, не несущая ни байта, не двигает `remaining`, поэтому
+        // цепочка `next` с нулевым `page_size` крутится вечно. Это
+        // единственный способ не завершиться: когда страница несёт хоть байт,
+        // `remaining` строго убывает, и любая, даже замкнутая, цепочка
+        // конечна.
+        if take == 0 {
+            return Err(ContainerError::TruncatedBlock);
         }
         let cont = read_block_header(bytes, next as usize)?;
         start = next as usize + BLOCK_HEADER;
@@ -237,6 +254,56 @@ mod tests {
             container.entry("FileStorage"),
             Some(&b"zip-body"[..]),
             "запись после ограничителя обязана остаться достижимой"
+        );
+    }
+
+    /// Заголовок блока с произвольными полями. `tests_support::block`
+    /// выводит `data_size` и `page_size` из длины данных и потому не умеет
+    /// собрать блок, который лжёт о своей длине, — а именно так выглядит
+    /// усечённый `.hbk` от прерванной установки.
+    fn raw_block_header(data_size: u32, page_size: u32, next: u32) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(b"\r\n");
+        out.extend_from_slice(format!("{data_size:08x} {page_size:08x} {next:08x} ").as_bytes());
+        out.extend_from_slice(b"\r\n");
+        out
+    }
+
+    /// Восьмизначное шестнадцатеричное поле длины из файла управляет
+    /// `Vec::with_capacity` — до 4 ГиБ по неподтверждённому числу, и отказ
+    /// выделения прерывает процесс, в отличие от паники, которую ловит
+    /// `spawn_blocking`. Наблюдаемое следствие того же доверия проверяется
+    /// здесь: блок, объявивший больше данных, чем весит весь файл, до правки
+    /// молча возвращал то немногое, что нашлось, выдавая обрезок за целое.
+    #[test]
+    fn block_claiming_more_data_than_the_file_holds_is_refused() {
+        let mut bytes = raw_block_header(0x0010_0000, 0x0000_0004, TERMINATOR);
+        bytes.extend_from_slice(b"data");
+        assert!(
+            bytes.len() < 0x0010_0000,
+            "фикстура обязана быть меньше объявленной длины"
+        );
+        assert_eq!(
+            read_block(&bytes, 0),
+            Err(ContainerError::TruncatedBlock),
+            "объявленная длина больше файла — отказ, а не обрезок"
+        );
+    }
+
+    /// Страница с нулевым `page_size` не несёт ни байта, поэтому `remaining`
+    /// не убывает; при нетерминальном `next_page` цикл `read_block`
+    /// возвращается к тому же заголовку навсегда. Это единственный способ не
+    /// завершиться: когда страница несёт хоть байт, `remaining` строго
+    /// убывает, и любая, даже циклическая, цепочка `next` конечна.
+    #[test]
+    fn a_page_that_carries_no_bytes_is_refused_instead_of_looping() {
+        // `next` указывает на этот же заголовок: цепочка замкнута на себя.
+        let bytes = raw_block_header(0x0000_000a, 0x0000_0000, 0);
+        assert_eq!(bytes.len(), BLOCK_HEADER);
+        assert_eq!(
+            read_block(&bytes, 0),
+            Err(ContainerError::TruncatedBlock),
+            "нулевая страница обязана давать отказ, а не вечный цикл"
         );
     }
 

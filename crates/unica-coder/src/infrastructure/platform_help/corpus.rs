@@ -39,8 +39,15 @@ fn looks_like_markup(bytes: &[u8]) -> bool {
 /// Брать «первую фразу» текста нельзя: на реальной странице до первого «. »
 /// укладываются заголовок, владелец, имя члена и строка «Доступен, начиная с
 /// версии 8.2» — сто тридцать символов вместо заголовка.
+///
+/// Приведение — именно ASCII: смещения ищутся в приведённой копии, а режется
+/// ими оригинал, поэтому копия обязана совпадать с оригиналом побайтово по
+/// длине. `to_lowercase()` этого не гарантирует (U+0130 растёт на байт), и
+/// срез оригинала попадает внутрь символа — паника уносит разбор всего
+/// корпуса. Все искомые подстроки (`<h1`, `>`, `</h1`) состоят из ASCII, так
+/// что `to_ascii_lowercase()` находит ровно то же самое.
 fn page_title(raw: &str) -> Option<String> {
-    let lower = raw.to_lowercase();
+    let lower = raw.to_ascii_lowercase();
     let open = lower.find("<h1")?;
     let content_start = open + lower[open..].find('>')? + 1;
     let close = lower[content_start..].find("</h1")? + content_start;
@@ -240,6 +247,46 @@ mod tests {
         assert_eq!(pages[0].path, "WebServices");
         assert_eq!(pages[0].title, "Web-сервисы");
         assert!(pages[0].signature.is_none());
+    }
+
+    /// `to_lowercase()` не сохраняет длину в байтах: `İ` (U+0130) в нижнем
+    /// регистре занимает на байт больше. Смещения, найденные в приведённой
+    /// копии, режут тогда оригинал не по границе символа, и `page_title`
+    /// паникует — унося разбор ВСЕГО корпуса, а не одной страницы. Здесь
+    /// шесть таких символов в заголовке сдвигают закрывающий `</h1` на шесть
+    /// байт, и срез оригинала попадает внутрь первой кириллической буквы.
+    #[test]
+    fn page_title_survives_a_case_fold_that_changes_byte_length() {
+        let archive = zip_with(&[(
+            "objects/Turkish.html",
+            "<h1>İİİİİİ</h1>Тексты страницы".as_bytes(),
+        )]);
+        let pages = read_corpus_from_archive(&archive).expect("корпус прочитан");
+        assert_eq!(pages.len(), 1, "страница обязана дожить до результата");
+        assert_eq!(
+            pages[0].title, "İİİİİİ",
+            "заголовок обязан быть содержимым <h1>, а разбор — не паниковать"
+        );
+    }
+
+    /// Заголовка нет у 16 из 401 страницы `1cv8_ru.hbk` и у 5 из 151 в
+    /// `mngbase_ru.hbk` — это измеренный путь, а не теоретический. Запасной
+    /// заголовок берётся из первых 120 символов ТЕКСТА (разметка снята), а не
+    /// из первых 120 байт исходника: иначе в заголовок попали бы теги.
+    #[test]
+    fn page_without_h1_falls_back_to_the_beginning_of_its_text() {
+        let body = "б".repeat(200);
+        let archive = zip_with(&[(
+            "objects/NoTitle",
+            format!("<HTML><BODY><p>{body}</p></BODY></HTML>").as_bytes(),
+        )]);
+        let pages = read_corpus_from_archive(&archive).expect("корпус прочитан");
+        assert_eq!(pages.len(), 1);
+        assert_eq!(
+            pages[0].title,
+            "б".repeat(120),
+            "запасной заголовок — первые 120 символов текста без разметки"
+        );
     }
 
     #[test]
