@@ -89,6 +89,7 @@ fn create_configuration_workspace(label: &str) -> TempWorkspace {
         ("Document", "MetaAddRegistrar"),
         ("ChartOfAccounts", "MetaAddAccounts"),
         ("ChartOfCalculationTypes", "MetaAddCalculationTypes"),
+        ("Task", "MetaAddTask"),
         ("CommonModule", "MetaAddHandlers"),
     ] {
         let added = call_add(workspace.path(), kind, name, false);

@@ -343,6 +343,26 @@ pub(super) fn meta_edit_ensure_tabular_child_name_free(
     Ok(())
 }
 
+/// The 8.3.27 export orders register children `Resource` before `Attribute`
+/// before `Dimension` (uniform across the reference dump), so appended
+/// collections must land in their canonical slot or the platform reorders the
+/// file on the first roundtrip.
+fn register_collection_slot(tag: &str) -> Option<u8> {
+    match tag {
+        "Resource" => Some(0),
+        "Attribute" => Some(1),
+        "Dimension" => Some(2),
+        _ => None,
+    }
+}
+
+fn inserted_tag(lines: &[String]) -> Option<String> {
+    let first = lines.first()?.trim_start();
+    let rest = first.strip_prefix('<')?;
+    let end = rest.find([' ', '>', '/'])?;
+    Some(rest[..end].to_string())
+}
+
 pub(super) fn meta_edit_insert_top_child_object(
     xml_text: &mut String,
     lines: &[String],
@@ -351,6 +371,24 @@ pub(super) fn meta_edit_insert_top_child_object(
         .map_err(|err| format!("XML parse error: {err}"))?;
     let object = meta_edit_object_node(&doc)?;
     if let Some(child_objects) = meta_info_child(object, "ChildObjects") {
+        if let Some(slot) = inserted_tag(lines)
+            .as_deref()
+            .and_then(register_collection_slot)
+        {
+            let anchor = child_objects
+                .children()
+                .filter(|child| child.is_element())
+                .find(|child| {
+                    register_collection_slot(child.tag_name().name())
+                        .is_some_and(|existing| existing > slot)
+                })
+                .map(|child| child.range());
+            if let Some(anchor_range) = anchor {
+                drop(doc);
+                meta_edit_insert_lines_near_node(xml_text, anchor_range, false, lines);
+                return Ok(());
+            }
+        }
         let range = child_objects.range();
         drop(doc);
         return meta_edit_insert_lines_into_child_objects(xml_text, range, "\t\t", lines);
@@ -3879,6 +3917,45 @@ mod tests {
         MetadataReference {
             metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, path).unwrap(),
         }
+    }
+
+    #[test]
+    fn register_collections_insert_into_their_canonical_platform_slot() {
+        // The 8.3.27 export orders register children Resource → Attribute →
+        // Dimension (773/773 registers in the reference dump). Appending in
+        // operation order makes the platform reorder the file on roundtrip,
+        // which the exact gate reports as accepted-normalized.
+        let mut xml = concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">\n",
+            "\t<InformationRegister uuid=\"11111111-1111-4111-8111-111111111111\">\n",
+            "\t\t<Properties><Name>Corpus</Name></Properties>\n",
+            "\t\t<ChildObjects>\n",
+            "\t\t\t<Dimension uuid=\"22222222-2222-4222-8222-222222222222\">\n",
+            "\t\t\t\t<Properties><Name>Item</Name></Properties>\n",
+            "\t\t\t</Dimension>\n",
+            "\t\t</ChildObjects>\n",
+            "\t</InformationRegister>\n",
+            "</MetaDataObject>\n",
+        )
+        .to_string();
+
+        meta_edit_insert_top_child_object(
+            &mut xml,
+            &[
+                "\t\t\t<Resource uuid=\"33333333-3333-4333-8333-333333333333\">".to_string(),
+                "\t\t\t\t<Properties><Name>Price</Name></Properties>".to_string(),
+                "\t\t\t</Resource>".to_string(),
+            ],
+        )
+        .unwrap();
+
+        let resource = xml.find("<Resource").unwrap();
+        let dimension = xml.find("<Dimension").unwrap();
+        assert!(
+            resource < dimension,
+            "Resource must land before Dimension: {xml}"
+        );
     }
 
     #[test]
