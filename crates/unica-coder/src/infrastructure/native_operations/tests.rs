@@ -49,6 +49,37 @@ fn code_patch_cannot_use_the_data_dropping_plain_dispatch_path() {
 }
 
 #[test]
+fn subsystem_info_cannot_use_the_uncontrolled_plain_dispatch_path() {
+    let root = temp_root("subsystem-info-plain-dispatch");
+    let descriptor = root.join("Sales.xml");
+    fs::write(
+        &descriptor,
+        crate::infrastructure::native_operations::subsystem::child_subsystem_stub_xml(
+            "Sales", "2.20",
+        ),
+    )
+    .unwrap();
+    let context = discover_workspace(Some(root.clone())).unwrap();
+    let args = serde_json::from_value(json!({
+        "SubsystemPath": descriptor.display().to_string()
+    }))
+    .unwrap();
+
+    let error = NativeOperationAdapter::invoke(
+        "subsystem-info",
+        "unica.subsystem.info",
+        &args,
+        &context,
+        false,
+        false,
+    )
+    .expect_err("subsystem.info must require the controlled prepared path");
+
+    assert!(error.contains("controlled prepared"), "{error}");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn subsystem_preview_with_unavailable_parent_uses_the_legacy_placeholder() {
     let root = temp_root("subsystem-preview-parent-fallback");
     let context = discover_workspace(Some(root.clone())).unwrap();

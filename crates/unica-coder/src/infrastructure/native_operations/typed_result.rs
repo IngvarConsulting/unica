@@ -33,6 +33,12 @@ impl<'a> NativeInvocationControl<'a> {
 }
 
 impl NativeOperationAdapter {
+    pub(crate) fn prepared_subsystem_info_with_data(
+        execution: subsystem::SubsystemInfoExecution,
+    ) -> Result<NativeOperationResult, String> {
+        typed_operation_result(execution.outcome, execution.data, "subsystem info")
+    }
+
     pub(crate) fn invoke_with_data(
         operation: &str,
         tool_name: &str,

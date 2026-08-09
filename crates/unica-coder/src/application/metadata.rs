@@ -1940,6 +1940,7 @@ mod tests {
     use crate::application::ToolSpec;
     use crate::domain::cache::{CacheAccess, CacheReport};
     use crate::domain::cancellation::CancellationToken;
+    use crate::domain::code_intelligence::ProviderDeadline;
     use crate::domain::events::{DomainEvent, DomainEventKind};
     use crate::domain::metadata::{
         metadata_fill_value_is_allowed, metadata_relation_specs, MetaCollectionsData,
@@ -1951,6 +1952,7 @@ mod tests {
     use std::collections::HashSet;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
 
     fn object(value: Value) -> Map<String, Value> {
         value
@@ -2733,6 +2735,7 @@ mod tests {
             &add_args(false),
             &ports,
             &CancellationToken::new(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),
         )
         .unwrap();
 

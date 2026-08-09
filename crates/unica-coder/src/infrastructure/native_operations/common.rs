@@ -745,6 +745,13 @@ pub(crate) fn load_subsystem_info_data(
 ) -> Result<(SubsystemInfoData, Vec<String>), String> {
     let text = fs::read_to_string(path)
         .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+    parse_subsystem_info_data(path, &text)
+}
+
+pub(crate) fn parse_subsystem_info_data(
+    path: &Path,
+    text: &str,
+) -> Result<(SubsystemInfoData, Vec<String>), String> {
     let doc = Document::parse(text.trim_start_matches('\u{feff}'))
         .map_err(|err| format!("XML parse error in {}: {err}", path.display()))?;
     let root = doc.root_element();

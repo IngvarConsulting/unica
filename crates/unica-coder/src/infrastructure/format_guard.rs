@@ -37,15 +37,15 @@ use crate::infrastructure::native_operations::mxl::resolve_mxl_validate_path;
 use crate::infrastructure::native_operations::role::role_read_format_dependency_paths;
 use crate::infrastructure::native_operations::subsystem::{
     subsystem_edit_operations, subsystem_read_format_dependency_paths,
-    subsystem_validation_format_dependency_paths,
+    subsystem_validation_format_dependency_paths, SubsystemInfoFormatDocument,
 };
 use crate::infrastructure::native_operations::support::support_edit_reads_uuid_dependency;
 use crate::infrastructure::native_operations::template::template_add_object_type_folders;
 use crate::infrastructure::native_operations::xdto::resolve_xdto_guard_path;
 use crate::infrastructure::platform_xml_owner::{
     resolve_existing_platform_xml_owners_for_new_output, resolve_platform_xml_owners,
-    resolve_platform_xml_owners_for_exact_root, PlatformXmlRootExpectation, DCS_ROOT,
-    MANAGED_FORM_ROOT, MXL_ROOT,
+    resolve_platform_xml_owners_for_exact_root, root_version_literal, PlatformXmlOwner,
+    PlatformXmlOwnerKind, PlatformXmlRootExpectation, DCS_ROOT, MANAGED_FORM_ROOT, MXL_ROOT,
 };
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
@@ -130,6 +130,65 @@ pub(crate) fn evaluate_format_guard(
             }
         }
     }
+    evaluate_resolved_format_owners(spec, owners, invalid_expected_root)
+}
+
+pub(crate) fn evaluate_prepared_subsystem_info_format_guard(
+    spec: ToolSpec,
+    documents: &[SubsystemInfoFormatDocument],
+) -> Result<FormatGuardCheck, FormatGuardError> {
+    let mut owners = Vec::with_capacity(documents.len());
+    let mut paths = HashSet::new();
+    for document in documents {
+        if !paths.insert(document.path.clone()) {
+            continue;
+        }
+        let source = std::str::from_utf8(&document.bytes).map_err(|error| {
+            FormatGuardError::internal(format!(
+                "failed to decode prepared subsystem format evidence {}: {error}",
+                document.path.display()
+            ))
+        })?;
+        let parsed = match Document::parse(source.trim_start_matches('\u{feff}')) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                let warning = format!(
+                    "Некорректный корневой файл формата выгрузки {}: {error}",
+                    document.path.display()
+                );
+                let diagnostic = json!({
+                    "code": "formatVersionInvalid",
+                    "actualFormat": Value::Null,
+                    "targetFormat": ACTIVE_FORMAT_PROFILE.export_format,
+                    "targetPlatform": ACTIVE_FORMAT_PROFILE.platform_line,
+                    "compatibility": "invalid",
+                    "root": document.path.display().to_string(),
+                });
+                return Ok(format_check(spec, warning, diagnostic));
+            }
+        };
+        let root = parsed.root_element();
+        owners.push(PlatformXmlOwner {
+            kind: if document.path.file_name().and_then(|name| name.to_str())
+                == Some("Configuration.xml")
+            {
+                PlatformXmlOwnerKind::Configuration
+            } else {
+                PlatformXmlOwnerKind::Standalone
+            },
+            path: document.path.clone(),
+            version: root_version_literal(source, root),
+            raw: document.bytes.clone(),
+        });
+    }
+    evaluate_resolved_format_owners(spec, owners, None)
+}
+
+fn evaluate_resolved_format_owners(
+    spec: ToolSpec,
+    owners: Vec<PlatformXmlOwner>,
+    invalid_expected_root: Option<crate::infrastructure::platform_xml_owner::PlatformXmlOwnerError>,
+) -> Result<FormatGuardCheck, FormatGuardError> {
     let mut older = None;
     let mut newer = None;
     for owner in owners {
@@ -1044,16 +1103,23 @@ fn absolutize(raw: &str, cwd: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{effective_format_paths, evaluate_format_guard};
+    use super::{
+        effective_format_paths, evaluate_format_guard,
+        evaluate_prepared_subsystem_info_format_guard,
+    };
     use crate::application::operation_descriptors::native_operation_descriptor;
     use crate::application::ports::{FormatGuardCheck, XdtoPublicErrorCode};
     use crate::application::tools;
+    use crate::domain::cancellation::CancellationToken;
+    use crate::domain::code_intelligence::ProviderDeadline;
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::native_operations::cfe::cfe_borrow_format_dependency_inspection;
     use crate::infrastructure::native_operations::dcs::analyze_dcs_info;
+    use crate::infrastructure::native_operations::subsystem::prepare_subsystem_info;
     use crate::infrastructure::source_roots::normalize_path_identity;
     use serde_json::{Map, Value};
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, Instant};
 
     static TEST_ROOT_NONCE: AtomicU64 = AtomicU64::new(0);
 
@@ -2718,7 +2784,24 @@ mod tests {
         for (tool, alias, path) in cases {
             let mut args = Map::new();
             args.insert(alias.into(), Value::String(path.display().to_string()));
-            let check = evaluate_format_guard(spec(tool), &args, &context(&root)).unwrap();
+            let tool_spec = spec(tool);
+            let check = if tool == "unica.subsystem.info" {
+                let normalized = crate::application::tool_contracts::normalize_native_path_aliases(
+                    tool_spec, &args,
+                )
+                .unwrap();
+                let prepared = prepare_subsystem_info(
+                    &normalized,
+                    &context(&root),
+                    &CancellationToken::new(),
+                    ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),
+                )
+                .unwrap();
+                evaluate_prepared_subsystem_info_format_guard(tool_spec, &prepared.format_documents)
+                    .unwrap()
+            } else {
+                evaluate_format_guard(tool_spec, &args, &context(&root)).unwrap()
+            };
             let FormatGuardCheck::Warn { diagnostic, .. } = check else {
                 panic!("{tool} alias {alias} must resolve the old owner and warn");
             };
@@ -3563,8 +3646,16 @@ mod tests {
             ("Mode".to_string(), Value::String("tree".to_string())),
         ]);
 
-        let check =
-            evaluate_format_guard(spec("unica.subsystem.info"), &args, &context(&root)).unwrap();
+        let tool = spec("unica.subsystem.info");
+        let prepared = prepare_subsystem_info(
+            &args,
+            &context(&root),
+            &CancellationToken::new(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),
+        )
+        .unwrap();
+        let check = evaluate_prepared_subsystem_info_format_guard(tool, &prepared.format_documents)
+            .unwrap();
         let FormatGuardCheck::Warn { diagnostic, .. } = check else {
             panic!("newer registered tree child must produce a read-only warning");
         };

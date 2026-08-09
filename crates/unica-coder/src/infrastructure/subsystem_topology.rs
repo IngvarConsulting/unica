@@ -23,6 +23,13 @@ const SUBSYSTEM_SCAN_MAX_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) struct SubsystemTopology {
     pub(crate) roots: Vec<SubsystemTopologyNode>,
     dependency_paths: Vec<PathBuf>,
+    dependency_documents: Vec<SubsystemTopologyDependencyDocument>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SubsystemTopologyDependencyDocument {
+    pub(crate) path: PathBuf,
+    pub(crate) bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +77,10 @@ pub(crate) struct MetadataObjectIdentity {
 impl SubsystemTopology {
     pub(crate) fn dependency_paths(&self) -> &[PathBuf] {
         &self.dependency_paths
+    }
+
+    pub(crate) fn dependency_documents(&self) -> &[SubsystemTopologyDependencyDocument] {
+        &self.dependency_documents
     }
 
     pub(crate) fn functional_addresses(&self) -> Vec<SubsystemAddress> {
@@ -239,18 +250,24 @@ pub(crate) fn capture_registered_subsystem_topology(
         })?;
     let root_registrations = parse_configuration_registrations(&configuration.bytes)?;
     let mut dependency_paths = vec![configuration_path];
+    let mut dependency_documents = vec![SubsystemTopologyDependencyDocument {
+        path: dependency_paths[0].clone(),
+        bytes: configuration.bytes,
+    }];
     let roots = build_registered_nodes(
         &root_registrations,
         &[],
         true,
         &mut reader,
         &mut dependency_paths,
+        &mut dependency_documents,
         &mut checkpoint,
     )?;
     reader.complete(&mut checkpoint)?;
     Ok(SubsystemTopology {
         roots,
         dependency_paths,
+        dependency_documents,
     })
 }
 
@@ -342,6 +359,7 @@ fn build_registered_nodes(
     ancestors_included: bool,
     reader: &mut RetainedRootSecureRead,
     dependency_paths: &mut Vec<PathBuf>,
+    dependency_documents: &mut Vec<SubsystemTopologyDependencyDocument>,
     checkpoint: &mut impl FnMut() -> io::Result<()>,
 ) -> Result<Vec<SubsystemTopologyNode>, SubsystemTopologyError> {
     reject_duplicate_names(names, ancestors)?;
@@ -366,6 +384,10 @@ fn build_registered_nodes(
             })?;
         dependency_paths.push(PathBuf::from(&logical_path));
         let facts = parse_subsystem_descriptor(&bytes.bytes, name, &logical_path)?;
+        dependency_documents.push(SubsystemTopologyDependencyDocument {
+            path: PathBuf::from(&logical_path),
+            bytes: bytes.bytes,
+        });
         let effective_include = ancestors_included && facts.include;
         let children = build_registered_nodes(
             &facts.children,
@@ -373,6 +395,7 @@ fn build_registered_nodes(
             effective_include,
             reader,
             dependency_paths,
+            dependency_documents,
             checkpoint,
         )?;
         nodes.push(SubsystemTopologyNode {

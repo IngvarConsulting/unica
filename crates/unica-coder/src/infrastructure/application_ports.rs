@@ -2,7 +2,7 @@ use crate::application::metadata::{MetaFailure, MetaInfoRequest, MetadataRequest
 use crate::application::ports::{
     ApplicationPorts, FormatGuardCheck, FormatGuardError, HandlerOutcome, MetaLocalInfo,
     MetaRelatedData, MetadataRead, MetadataValidationResult, MetadataValidationSubject,
-    PreparedMetadataMutation, SupportGuardCheck,
+    PreparedMetadataMutation, PreparedToolInvocation, SupportGuardCheck,
 };
 use crate::application::source_navigation::{
     SourceChildrenRequest, SourceChildrenResult, SourceLocateRequest, SourceLocateResult,
@@ -29,6 +29,7 @@ use crate::infrastructure::internal_adapters::{
     RuntimeJobAdapter, StandardsAdapter,
 };
 use crate::infrastructure::metadata_operations::MetadataOperations;
+use crate::infrastructure::native_operations::subsystem;
 use crate::infrastructure::native_operations::typed_result::NativeInvocationControl;
 use crate::infrastructure::native_operations::NativeOperationAdapter;
 use crate::infrastructure::platform::full_dump_publication::{
@@ -237,6 +238,59 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         crate::infrastructure::format_guard::evaluate_format_guard(spec, args, context)
     }
 
+    fn prepare_tool_invocation(
+        &self,
+        spec: ToolSpec,
+        args: &Map<String, Value>,
+        context: &WorkspaceContext,
+        _dry_run: bool,
+        cancellation: &CancellationToken,
+        deadline: ProviderDeadline,
+    ) -> Result<PreparedToolInvocation, String> {
+        let ToolHandler::NativeOperation {
+            operation: "subsystem-info",
+            ..
+        } = spec.handler
+        else {
+            return Ok(PreparedToolInvocation::empty());
+        };
+
+        let prepared =
+            match subsystem::prepare_subsystem_info(args, context, cancellation, deadline) {
+                Ok(prepared) => prepared,
+                Err(error) if subsystem::is_subsystem_info_control_error(&error) => {
+                    let native = NativeOperationAdapter::prepared_subsystem_info_with_data(
+                        subsystem::subsystem_info_failure(error),
+                    )?;
+                    return Ok(PreparedToolInvocation {
+                        format_guard: Some(FormatGuardCheck::Allow),
+                        handler: Some(native_handler_outcome(native)),
+                    });
+                }
+                Err(error) => return Err(error),
+            };
+        let format_guard =
+            crate::infrastructure::format_guard::evaluate_prepared_subsystem_info_format_guard(
+                spec,
+                &prepared.format_documents,
+            )
+            .map_err(|error| error.to_string())?;
+        if let Err(error) = subsystem::ensure_subsystem_info_control(cancellation, deadline) {
+            let native = NativeOperationAdapter::prepared_subsystem_info_with_data(
+                subsystem::subsystem_info_failure(error),
+            )?;
+            return Ok(PreparedToolInvocation {
+                format_guard: Some(format_guard),
+                handler: Some(native_handler_outcome(native)),
+            });
+        }
+        let native = NativeOperationAdapter::prepared_subsystem_info_with_data(prepared.execution)?;
+        Ok(PreparedToolInvocation {
+            format_guard: Some(format_guard),
+            handler: Some(native_handler_outcome(native)),
+        })
+    }
+
     fn invoke_handler(
         &self,
         spec: ToolSpec,
@@ -262,6 +316,12 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                 spec.name
             )),
             ToolHandler::NativeOperation { operation, .. } => {
+                if operation == "subsystem-info" {
+                    return Err(format!(
+                        "{} requires the controlled prepared invocation path",
+                        spec.name
+                    ));
+                }
                 NativeOperationAdapter::invoke_with_data(
                     operation,
                     spec.name,
@@ -607,6 +667,15 @@ fn typed_read(read: TypedReadOutcome) -> HandlerOutcome {
     }
 }
 
+fn native_handler_outcome(
+    outcome: crate::infrastructure::native_operations::typed_result::NativeOperationResult,
+) -> HandlerOutcome {
+    match outcome.data {
+        Some(data) => HandlerOutcome::with_data(outcome.adapter, data),
+        None => HandlerOutcome::plain(outcome.adapter),
+    }
+}
+
 /// Composition root: the registry of documentation providers. Declaration
 /// order here is the section order of the public result (ADR-0029 point 5),
 /// and it is assembled here rather than in the domain layer so tests can
@@ -897,7 +966,6 @@ mod tests {
         project_platform_version, select_installation_root, select_platform_version,
         verified_full_dump_invocation,
     };
-    use crate::application::ports::ApplicationPorts;
     use crate::application::{RuntimeJobAction, ToolHandler, ToolSpec};
     use crate::domain::cache::CacheAccess;
     use crate::domain::cancellation::CancellationToken;
@@ -907,6 +975,7 @@ mod tests {
     use crate::domain::source_roots::ResolvedSourceRoot;
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::native_operations::typed_result::NativeInvocationControl;
+    use crate::infrastructure::native_operations::NativeOperationAdapter;
     use crate::infrastructure::platform::full_dump_publication::FullDumpInvocation;
     use crate::infrastructure::platform::secure_read::{
         with_secure_tree_test_hook, SecureTreePhase,
@@ -965,15 +1034,6 @@ mod tests {
         let (_root, context, args) = subsystem_info_fixture("unica-subsystem-mid-read");
         let cancellation = CancellationToken::new();
         let hook_cancellation = cancellation.clone();
-        let mut tool = spec(
-            "unica.subsystem.info",
-            ToolHandler::NativeOperation {
-                operation: "subsystem-info",
-                event: None,
-            },
-        );
-        tool.mutating = false;
-
         let outcome = with_secure_tree_test_hook(
             move |phase| {
                 if phase == &SecureTreePhase::AfterRebindEntry(PathBuf::from("Configuration.xml")) {
@@ -981,12 +1041,17 @@ mod tests {
                 }
             },
             || {
-                super::InfrastructureApplicationPorts::new().invoke_handler(
-                    tool,
+                NativeOperationAdapter::invoke_with_data(
+                    "subsystem-info",
+                    "unica.subsystem.info",
                     &args,
                     &context,
                     false,
-                    &cancellation,
+                    false,
+                    NativeInvocationControl::new(
+                        &cancellation,
+                        ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),
+                    ),
                 )
             },
         )
@@ -1014,15 +1079,6 @@ mod tests {
         );
         let cancellation = CancellationToken::new();
         let hook_cancellation = cancellation.clone();
-        let mut tool = spec(
-            "unica.subsystem.info",
-            ToolHandler::NativeOperation {
-                operation: "subsystem-info",
-                event: None,
-            },
-        );
-        tool.mutating = false;
-
         let outcome = with_secure_tree_test_hook(
             move |phase| {
                 if phase == &SecureTreePhase::AfterFinalIdentityProofs {
@@ -1030,12 +1086,17 @@ mod tests {
                 }
             },
             || {
-                super::InfrastructureApplicationPorts::new().invoke_handler(
-                    tool,
+                NativeOperationAdapter::invoke_with_data(
+                    "subsystem-info",
+                    "unica.subsystem.info",
                     &args,
                     &context,
                     false,
-                    &cancellation,
+                    false,
+                    NativeInvocationControl::new(
+                        &cancellation,
+                        ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),
+                    ),
                 )
             },
         )
@@ -1057,6 +1118,81 @@ mod tests {
     #[test]
     fn subsystem_info_typed_invocation_rejects_an_exhausted_deadline() {
         let (_root, context, args) = subsystem_info_fixture("unica-subsystem-expired-deadline");
+        let cancellation = CancellationToken::new();
+
+        let outcome = super::NativeOperationAdapter::invoke_with_data(
+            "subsystem-info",
+            "unica.subsystem.info",
+            &args,
+            &context,
+            false,
+            false,
+            NativeInvocationControl::new(
+                &cancellation,
+                ProviderDeadline::new(Instant::now() - Duration::from_millis(1)),
+            ),
+        )
+        .unwrap();
+
+        assert!(!outcome.adapter.ok, "{:?}", outcome.adapter);
+        assert!(
+            outcome
+                .adapter
+                .errors
+                .iter()
+                .any(|error| error.contains("provider deadline exceeded")),
+            "{:?}",
+            outcome.adapter
+        );
+        assert!(outcome.data.is_none());
+    }
+
+    #[test]
+    fn standalone_subsystem_info_rejects_an_already_cancelled_invocation_before_read() {
+        let (_root, context, mut args) = subsystem_info_fixture("unica-standalone-cancelled");
+        std::fs::remove_file(context.cwd.join("Configuration.xml")).unwrap();
+        args.insert(
+            "SubsystemPath".to_string(),
+            serde_json::Value::String("Subsystems/Sales.xml".to_string()),
+        );
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        let outcome = super::NativeOperationAdapter::invoke_with_data(
+            "subsystem-info",
+            "unica.subsystem.info",
+            &args,
+            &context,
+            false,
+            false,
+            NativeInvocationControl::new(
+                &cancellation,
+                ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),
+            ),
+        )
+        .unwrap();
+
+        assert!(!outcome.adapter.ok, "{:?}", outcome.adapter);
+        assert!(
+            outcome
+                .adapter
+                .errors
+                .iter()
+                .any(|error| error.starts_with("cancelled:")),
+            "{:?}",
+            outcome.adapter
+        );
+        assert!(outcome.data.is_none());
+    }
+
+    #[test]
+    fn standalone_subsystem_info_rejects_an_exhausted_deadline_before_read() {
+        let (_root, context, mut args) = subsystem_info_fixture("unica-standalone-deadline");
+        std::fs::remove_file(context.cwd.join("Configuration.xml")).unwrap();
+        args.insert(
+            "SubsystemPath".to_string(),
+            serde_json::Value::String("Subsystems/Sales.xml".to_string()),
+        );
         let cancellation = CancellationToken::new();
 
         let outcome = super::NativeOperationAdapter::invoke_with_data(

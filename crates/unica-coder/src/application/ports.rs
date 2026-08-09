@@ -9,6 +9,7 @@ use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::{
     CodeIntelligenceContext, CodeIntelligenceReadRequest, CodeIntelligenceRegistry,
+    ProviderDeadline,
 };
 use crate::domain::events::DomainEvent;
 use crate::domain::metadata::{
@@ -91,6 +92,20 @@ impl HandlerOutcome {
             projected_events,
             recorded_cache: None,
             diagnostics: None,
+        }
+    }
+}
+
+pub(crate) struct PreparedToolInvocation {
+    pub(crate) format_guard: Option<FormatGuardCheck>,
+    pub(crate) handler: Option<HandlerOutcome>,
+}
+
+impl PreparedToolInvocation {
+    pub(crate) fn empty() -> Self {
+        Self {
+            format_guard: None,
+            handler: None,
         }
     }
 }
@@ -434,6 +449,18 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         dry_run: bool,
         context: &WorkspaceContext,
     ) -> Result<(), String>;
+
+    fn prepare_tool_invocation(
+        &self,
+        _spec: ToolSpec,
+        _args: &Map<String, Value>,
+        _context: &WorkspaceContext,
+        _dry_run: bool,
+        _cancellation: &CancellationToken,
+        _deadline: ProviderDeadline,
+    ) -> Result<PreparedToolInvocation, String> {
+        Ok(PreparedToolInvocation::empty())
+    }
 
     fn read_metadata_local(
         &self,

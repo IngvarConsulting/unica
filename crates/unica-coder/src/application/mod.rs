@@ -1,6 +1,8 @@
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
-use crate::domain::code_intelligence::{CodeIntelligenceReadRequest, SearchRequest};
+use crate::domain::code_intelligence::{
+    CodeIntelligenceReadRequest, ProviderDeadline, SearchRequest,
+};
 use crate::domain::events::{runtime_event_kind, DomainEvent, DomainEventKind};
 use crate::domain::workspace::WorkspaceContext;
 pub(crate) use operation_descriptors::SupportGuardRequirement;
@@ -10,6 +12,7 @@ use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 pub(crate) use tool_contracts::{
     DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS, DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
 };
@@ -24,6 +27,8 @@ pub(crate) mod source_navigation;
 pub(crate) mod source_resources;
 pub(crate) mod tool_contracts;
 pub use tool_contracts::input_schema_for_tool;
+
+const PUBLIC_INVOCATION_DEADLINE: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy)]
 pub struct ToolSpec {
@@ -210,6 +215,7 @@ impl UnicaApplication {
         args: &Map<String, Value>,
         cancellation: CancellationToken,
     ) -> Result<OperationResult, String> {
+        let deadline = ProviderDeadline::new(Instant::now() + PUBLIC_INVOCATION_DEADLINE);
         let spec = tools()
             .into_iter()
             .find(|tool| tool.name == name)
@@ -221,7 +227,7 @@ impl UnicaApplication {
                     format!("unknown unica tool: {name}")
                 }
             })?;
-        call_tool(spec, args, self.ports.as_ref(), &cancellation)
+        call_tool(spec, args, self.ports.as_ref(), &cancellation, deadline)
     }
 }
 
@@ -563,6 +569,7 @@ fn call_tool(
     args: &Map<String, Value>,
     ports: &dyn ApplicationPorts,
     cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
 ) -> Result<OperationResult, String> {
     let normalized_args = tool_contracts::normalize_native_path_aliases(spec, args)?;
     let args = &normalized_args;
@@ -574,12 +581,17 @@ fn call_tool(
     let cwd = args.get("cwd").and_then(Value::as_str).map(PathBuf::from);
     let context = ports.discover_workspace(cwd)?;
     ports.validate_tool_context(spec, args, dry_run, &context)?;
+    let mut prepared =
+        ports.prepare_tool_invocation(spec, args, &context, dry_run, cancellation, deadline)?;
     let xdto_target = XdtoLogicalTarget::from_call(spec, args);
     let mut format_guard_warning = None;
     let mut format_diagnostic = None;
-    let format_guard = ports
-        .evaluate_format_guard(spec, args, &context)
-        .map_err(|error| project_xdto_format_guard_error(xdto_target.as_ref(), error))?;
+    let format_guard = match prepared.format_guard.take() {
+        Some(check) => check,
+        None => ports
+            .evaluate_format_guard(spec, args, &context)
+            .map_err(|error| project_xdto_format_guard_error(xdto_target.as_ref(), error))?,
+    };
     match format_guard {
         FormatGuardCheck::Allow => {}
         FormatGuardCheck::Warn {
@@ -725,7 +737,10 @@ fn call_tool(
         ToolHandler::SourceResources { operation } => {
             source_resources::invoke(operation, ports, args, &context, dry_run, cancellation)?
         }
-        _ => ports.invoke_handler(spec, args, &context, dry_run, cancellation)?,
+        _ => match prepared.handler.take() {
+            Some(handler) => handler,
+            None => ports.invoke_handler(spec, args, &context, dry_run, cancellation)?,
+        },
     };
     let mut outcome = handler_outcome.adapter;
     let handler_events = handler_outcome.events;
@@ -2097,7 +2112,12 @@ mod tests {
         set_unix_mode_for_test, unix_mode_for_test, with_publication_lock_contention_signal,
         with_publication_lock_pause, CompileTransaction, FileLinkFixtureOutcome,
     };
+    use crate::infrastructure::platform::secure_read::{
+        with_secure_tree_test_hook, SecureTreePhase,
+    };
     use serde_json::Map;
+    use std::cell::Cell;
+    use std::rc::Rc;
     use std::sync::{mpsc, Arc, Barrier};
     use std::thread;
     use std::time::Duration;
@@ -6369,6 +6389,154 @@ mod tests {
 
         assert!(error.contains("registered subsystem descriptor"), "{error}");
         assert!(error.contains("Subsystems/Missing.xml"), "{error}");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn public_subsystem_info_cancellation_stops_the_preflight_registered_capture() {
+        let (root, workspace, _) =
+            subsystem_format_guard_workspace("unica-subsystem-public-preflight-cancel");
+        let args = Map::from_iter([
+            (
+                "cwd".to_string(),
+                Value::String(workspace.display().to_string()),
+            ),
+            (
+                "SubsystemPath".to_string(),
+                Value::String("src/Subsystems".to_string()),
+            ),
+        ]);
+        let cancellation = CancellationToken::new();
+        let hook_cancellation = cancellation.clone();
+        let read_after_cancellation = Rc::new(Cell::new(false));
+        let hook_read_after_cancellation = Rc::clone(&read_after_cancellation);
+
+        let result = with_secure_tree_test_hook(
+            move |phase| match phase {
+                SecureTreePhase::AfterRebindEntry(path)
+                    if path == std::path::Path::new("Configuration.xml") =>
+                {
+                    hook_cancellation.cancel();
+                }
+                SecureTreePhase::AfterRebindEntry(path)
+                    if path != std::path::Path::new("Configuration.xml") =>
+                {
+                    hook_read_after_cancellation.set(true);
+                }
+                _ => {}
+            },
+            || {
+                UnicaApplication::new().call_tool_cancellable(
+                    "unica.subsystem.info",
+                    &args,
+                    cancellation,
+                )
+            },
+        )
+        .unwrap();
+
+        assert!(!result.ok, "{result:?}");
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.starts_with("cancelled:")),
+            "{result:?}"
+        );
+        assert!(
+            !read_after_cancellation.get(),
+            "public preflight continued into registered descriptors after cancellation"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn public_subsystem_info_uses_one_registered_snapshot_for_guard_and_handler() {
+        let (root, workspace, child) =
+            subsystem_format_guard_workspace("unica-subsystem-single-public-snapshot");
+        let args = Map::from_iter([
+            (
+                "cwd".to_string(),
+                Value::String(workspace.display().to_string()),
+            ),
+            (
+                "SubsystemPath".to_string(),
+                Value::String("src/Subsystems".to_string()),
+            ),
+        ]);
+        let completed_snapshots = Rc::new(Cell::new(0usize));
+        let hook_completed_snapshots = Rc::clone(&completed_snapshots);
+        let child_during_capture = child.clone();
+
+        let result = with_secure_tree_test_hook(
+            move |phase| {
+                if phase == &SecureTreePhase::AfterFinalIdentityProofs {
+                    let completed = hook_completed_snapshots.get();
+                    hook_completed_snapshots.set(completed + 1);
+                    if completed == 0 {
+                        std::fs::write(
+                            &child_during_capture,
+                            crate::infrastructure::native_operations::subsystem::child_subsystem_stub_xml(
+                                "Child", "2.20",
+                            ),
+                        )
+                        .unwrap();
+                    }
+                }
+            },
+            || UnicaApplication::new().call_tool("unica.subsystem.info", &args),
+        )
+        .unwrap();
+
+        assert!(result.ok, "{result:?}");
+        assert_eq!(
+            completed_snapshots.get(),
+            1,
+            "format preflight and handler must consume one prepared registered snapshot"
+        );
+        assert_eq!(
+            result.diagnostics.as_ref().unwrap()["formatCompatibility"]["actualFormat"],
+            "2.21",
+            "format warning must use the exact bytes captured before the descriptor changed"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn public_subsystem_info_deadline_covers_registered_preflight() {
+        let (root, workspace, _) =
+            subsystem_format_guard_workspace("unica-subsystem-public-preflight-deadline");
+        let args = Map::from_iter([
+            (
+                "cwd".to_string(),
+                Value::String(workspace.display().to_string()),
+            ),
+            (
+                "SubsystemPath".to_string(),
+                Value::String("src/Subsystems".to_string()),
+            ),
+        ]);
+        let delayed = Rc::new(Cell::new(false));
+        let hook_delayed = Rc::clone(&delayed);
+
+        let result = with_secure_tree_test_hook(
+            move |phase| {
+                if phase == &SecureTreePhase::RootOpened && !hook_delayed.replace(true) {
+                    std::thread::sleep(Duration::from_millis(5_100));
+                }
+            },
+            || UnicaApplication::new().call_tool("unica.subsystem.info", &args),
+        )
+        .unwrap();
+
+        assert!(!result.ok, "{result:?}");
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.contains("provider deadline exceeded")),
+            "{result:?}"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
