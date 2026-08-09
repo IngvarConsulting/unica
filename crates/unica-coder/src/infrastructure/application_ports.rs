@@ -696,7 +696,12 @@ fn typed_read(read: TypedReadOutcome) -> HandlerOutcome {
 
 /// Идентификаторы поставщиков документации — единственный перечень, против
 /// которого политика `unica.toml` проверяет свои секции `[providers.*]`.
-const DOCUMENTATION_PROVIDER_IDS: &[&str] = &["platform-syntax-help", "kb-1ci", "v8std"];
+const DOCUMENTATION_PROVIDER_IDS: &[&str] = &[
+    "configuration-help",
+    "platform-syntax-help",
+    "kb-1ci",
+    "v8std",
+];
 
 /// Composition root: the registry of documentation providers. Declaration
 /// order here is the section order of the public result (ADR-0029 point 5):
@@ -722,9 +727,26 @@ fn documentation_registry(
     )?;
     let endpoint =
         crate::infrastructure::standards_documentation::resolve_standards_endpoint(&policy);
+    // Справка конфигурации читает source-set'ы рабочего пространства; битая
+    // настройка проекта — отказ вызова, как и битая политика: неясность — отказ.
+    let source_map = crate::infrastructure::project_sources::discover_project_source_map(
+        &context.workspace_root,
+    )?;
+    let source_sets = source_map
+        .source_sets
+        .iter()
+        .map(|source_set| {
+            (
+                source_set.name.clone(),
+                context.workspace_root.join(&source_set.path),
+            )
+        })
+        .collect();
     crate::domain::documentation::DocumentationRegistry::new(vec![
-        Arc::new(crate::infrastructure::platform_help::provider::PlatformSyntaxHelpProvider::new())
-            as Arc<dyn crate::domain::documentation::DocumentationProvider>,
+        Arc::new(
+            crate::infrastructure::configuration_help::ConfigurationHelpProvider { source_sets },
+        ) as Arc<dyn crate::domain::documentation::DocumentationProvider>,
+        Arc::new(crate::infrastructure::platform_help::provider::PlatformSyntaxHelpProvider::new()),
         Arc::new(crate::infrastructure::kb_1ci::Kb1ciProvider {
             base: crate::infrastructure::kb_1ci::KB_BASE.to_string(),
             network: policy.network("kb-1ci"),
@@ -1219,8 +1241,9 @@ mod tests {
         // The composition root is the only place documentation providers are
         // constructed; a registry left short (forgot to wire one) or ordered
         // differently must fail this, not merely compile. Порядок реестра —
-        // порядок секций публичного ответа: локальная справка платформы
-        // раньше сетевых поставщиков, справка раньше стандартов.
+        // порядок секций публичного ответа, специфичность убывает: справка
+        // самой конфигурации раньше справки платформы, локальные поставщики
+        // раньше сетевых, справка раньше стандартов.
         // Замок общий со стенд-тестами: без него параллельный прогон подменил
         // бы реестр на стенд прямо под этой проверкой.
         let _serial = documentation_registry_serial();
@@ -1244,6 +1267,7 @@ mod tests {
         assert_eq!(
             ids,
             vec![
+                "configuration-help".to_string(),
                 "platform-syntax-help".to_string(),
                 "kb-1ci".to_string(),
                 "v8std".to_string()
@@ -1251,21 +1275,79 @@ mod tests {
             "состав и порядок реестра"
         );
         let providers: Vec<_> = registry.providers().collect();
+        assert_eq!(providers[0].corpora().len(), 1, "configuration-help");
         assert_eq!(
-            providers[0].corpora().len(),
-            2,
-            "syntax-context and platform-guides"
+            providers[0].corpora()[0].source_kind,
+            crate::domain::documentation::SourceKind::ConfigurationDocumentation
         );
         assert_eq!(
             providers[1].corpora().len(),
             2,
+            "syntax-context and platform-guides"
+        );
+        assert_eq!(
+            providers[2].corpora().len(),
+            2,
             "kb-developer-guide and kb-administrator-guide"
         );
-        assert_eq!(providers[2].corpora().len(), 1, "public-standards");
+        assert_eq!(providers[3].corpora().len(), 1, "public-standards");
         assert_eq!(
-            providers[2].corpora()[0].source_kind,
+            providers[3].corpora()[0].source_kind,
             crate::domain::documentation::SourceKind::DevelopmentStandard
         );
+    }
+
+    /// Источник поставщика справки конфигурации — source-set'ы рабочего
+    /// пространства: выгрузка с `Configuration.xml` в корне обязана дать
+    /// секцию с попаданием без какой-либо настройки проекта.
+    #[test]
+    fn documentation_registry_feeds_configuration_help_with_workspace_sources() {
+        let _serial = documentation_registry_serial();
+        let dir = tempfile::tempdir().expect("каталог");
+        let workspace = dir.path().to_path_buf();
+        std::fs::write(
+            workspace.join("Configuration.xml"),
+            "<?xml version=\"1.0\"?><MetaDataObject><Configuration><Properties>\
+             <Version>1.0.0.1</Version></Properties></Configuration></MetaDataObject>",
+        )
+        .expect("configuration");
+        let help = workspace.join("Catalogs/Товары/Ext/Help");
+        std::fs::create_dir_all(&help).expect("help dir");
+        std::fs::write(
+            help.join("ru.html"),
+            "<html><body><h1>Товары</h1><p>Справочник товаров.</p></body></html>",
+        )
+        .expect("help page");
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let registry = documentation_registry(
+            &context,
+            &crate::domain::cancellation::CancellationToken::default(),
+        )
+        .expect("registry constructs");
+        let provider = registry.providers().next().expect("первый поставщик");
+        let sections = provider.search(
+            &crate::domain::documentation::DocumentationSearchRequest {
+                query: "Товары".to_string(),
+                source_kinds: Vec::new(),
+                limit: 5,
+                language: "ru".to_string(),
+            },
+            &crate::domain::documentation::DocumentationContext {
+                platform_version: None,
+                installation_root: None,
+            },
+        );
+        assert_eq!(
+            sections[0].hits[0].document_id,
+            "configuration-help:main:Catalogs/Товары/Ext/Help/ru.html",
+            "source-set найден автодетектом и назван в локаторе"
+        );
+        assert_eq!(sections[0].hits[0].applicable_version, "1.0.0.1");
     }
 
     /// Фасады `unica.standards.*` делят с поставщиком движок и политику

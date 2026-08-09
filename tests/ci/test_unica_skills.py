@@ -2665,6 +2665,14 @@ class PlatformHelpRoutingTests(unittest.TestCase):
                 "пример get обязан нести обязательный documentId",
             )
 
+    def test_routes_configuration_domain_questions_to_configuration_help(self) -> None:
+        # ADR-0034: доменный вопрос о самой конфигурации — назначение
+        # объекта, роль документа в учёте — закрывает её встроенная справка,
+        # а не справка платформы; скилл обязан назвать и фильтр, и формат
+        # локатора нового корпуса.
+        self.assertIn('"configuration-documentation"', self.text)
+        self.assertIn("configuration-help:", self.text)
+
     def test_requires_naming_the_answering_locale(self) -> None:
         # ADR-0029 п.3: подстановка соседней локали разрешена и обязана быть
         # названной в ответе. Данные называют её полем `language` секции, но

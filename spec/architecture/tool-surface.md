@@ -585,7 +585,7 @@ Fetch the full text of a documentation search hit by its documentId locator.
 | --- | --- | --- | --- |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `documentId` | string | да | Stable locator of a unica.documentation.search hit, passed verbatim to unica.documentation.get to fetch the full document text: platform-syntax-help:<corpus>:<path> for the installed platform's help, an absolute https://kb.1ci.com/... page address for the vendor knowledge base, and an https://v8std.ru/... address for a development standard; the provider that minted the locator is the only one that resolves it. |
+| `documentId` | string | да | Stable locator of a unica.documentation.search hit, passed verbatim to unica.documentation.get to fetch the full document text: configuration-help:<source-set>:<path> for the workspace configuration's embedded help, platform-syntax-help:<corpus>:<path> for the installed platform's help, an absolute https://kb.1ci.com/... page address for the vendor knowledge base, and an https://v8std.ru/... address for a development standard; the provider that minted the locator is the only one that resolves it. |
 | `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 | `language` | string | нет | Alias of `lang` for `unica.help.add`; on `unica.standards.explain` the same key instead names the language of the `snippet` being explained; on `unica.documentation.search` and `unica.documentation.get` it picks the locale of the platform help containers to read and of the signature returned with each hit, defaulting to ru, and each corpus falls back on its own to the installed locale (the English `root` container first) when the installation ships no containers in the requested one, so every section and document reports the locale that actually answered |
 | `platformVersion` | string | нет | Requested platform installation version for unica.documentation.search and unica.documentation.get, matched against an installation directory name exactly, for example 8.3.27.2074; when omitted the project's own tools.platform.version constrains the choice, and without that the numerically newest installation found under a configured platform root wins; a tools.platform.path pin names the installation directly instead of walking the roots, with the same version constraints applied to it. |
@@ -601,7 +601,7 @@ Fetch the full text of a documentation search hit by its documentId locator.
 
 ### `unica.documentation.search`
 
-Search platform help and development standards across documentation providers.
+Search the workspace configuration's embedded help, platform help, and development standards across documentation providers.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
@@ -612,7 +612,7 @@ Search platform help and development standards across documentation providers.
 | `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results). |
 | `platformVersion` | string | нет | Requested platform installation version for unica.documentation.search and unica.documentation.get, matched against an installation directory name exactly, for example 8.3.27.2074; when omitted the project's own tools.platform.version constrains the choice, and without that the numerically newest installation found under a configured platform root wins; a tools.platform.path pin names the installation directly instead of walking the roots, with the same version constraints applied to it. |
 | `query` | string | да | Search text: provider-neutral query for unica.code.search, node-lookup text for unica.code.graph mode=resolve, the required unica.standards.search string, and explain's last-resort fallback |
-| `sourceKinds` | array | нет | Optional filter of unica.documentation.search by source kind, not by provider id: an array of platform-help and/or development-standard; providers without a matching corpus are not polled and their sections are not published, an empty or omitted array means every kind, and an unknown value is refused rather than silently ignored. |
+| `sourceKinds` | array | нет | Optional filter of unica.documentation.search by source kind, not by provider id: an array of configuration-documentation, platform-help and/or development-standard; providers without a matching corpus are not polled and their sections are not published, an empty or omitted array means every kind, and an unknown value is refused rather than silently ignored. |
 
 **Результат сейчас:** `data`: секции поставщиков документации с происхождением, локалью ответа и версией (ADR-0023) (отвечают типизированным `data`)
 
@@ -624,6 +624,7 @@ Search platform help and development standards across documentation providers.
 - Проверить поведение механизма платформы для конкретной версии установки
 - Отличить справку платформы от стандарта разработки в одном ответе
 - Найти главу руководства площадки вендора для закреплённой версии
+- Найти встроенную справку объекта конфигурации рабочего пространства
 
 ## epf — внешние обработки
 

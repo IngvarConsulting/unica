@@ -2515,7 +2515,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "documentId",
-        "Stable locator of a unica.documentation.search hit, passed verbatim to unica.documentation.get to fetch the full document text: platform-syntax-help:<corpus>:<path> for the installed platform's help, an absolute https://kb.1ci.com/... page address for the vendor knowledge base, and an https://v8std.ru/... address for a development standard; the provider that minted the locator is the only one that resolves it.",
+        "Stable locator of a unica.documentation.search hit, passed verbatim to unica.documentation.get to fetch the full document text: configuration-help:<source-set>:<path> for the workspace configuration's embedded help, platform-syntax-help:<corpus>:<path> for the installed platform's help, an absolute https://kb.1ci.com/... page address for the vendor knowledge base, and an https://v8std.ru/... address for a development standard; the provider that minted the locator is the only one that resolves it.",
     ),
     (
         "distributiveModules",
@@ -2906,7 +2906,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "sourceKinds",
-        "Optional filter of unica.documentation.search by source kind, not by provider id: an array of platform-help and/or development-standard; providers without a matching corpus are not polled and their sections are not published, an empty or omitted array means every kind, and an unknown value is refused rather than silently ignored.",
+        "Optional filter of unica.documentation.search by source kind, not by provider id: an array of configuration-documentation, platform-help and/or development-standard; providers without a matching corpus are not polled and their sections are not published, an empty or omitted array means every kind, and an unknown value is refused rather than silently ignored.",
     ),
     (
         "sourceSet",
