@@ -28,11 +28,17 @@ fn status_fields(status: &DocumentationSectionStatus) -> (&'static str, Value) {
     }
 }
 
-/// Poll every provider in registry order and project their sections into the
+/// Poll every applicable provider and project their sections into the
 /// public `data` shape unchanged: no cross-section sorting, merging or
 /// deletion (ADR-0029 point 8). A provider's own failure stays inside its
 /// own section and never removes another provider's sections from the
 /// response (ADR-0029 point 10).
+///
+/// Опрос идёт параллельно: секции поставщиков независимы по контракту, и
+/// федеративный вызов стоит как самый медленный поставщик, а не как их
+/// сумма. Публикуются секции строго в порядке реестра — параллелен только
+/// опрос, а не порядок ответа. Паника поставщика всплывает как при
+/// последовательном опросе.
 ///
 /// Search is successful if at least one applicable provider answered `ok` or
 /// `empty`; if every section is `unavailable`/`failed`, the call reports an
@@ -51,21 +57,37 @@ pub fn search(
     if request.query.trim().is_empty() {
         return Err("unica.documentation.search requires a non-blank query".to_string());
     }
+    // Применимость по `sourceKinds` решается ДО опроса, по объявленным
+    // корпусам: сетевой поставщик стандартов иначе ходил бы в сеть на
+    // каждый вопрос о платформе. Пустой фильтр применим ко всем.
+    let applicable: Vec<_> = registry
+        .providers()
+        .filter(|provider| {
+            request.source_kinds.is_empty()
+                || provider
+                    .corpora()
+                    .iter()
+                    .any(|corpus| request.source_kinds.contains(&corpus.source_kind))
+        })
+        .collect();
+    let mut polled: Vec<Vec<DocumentationSection>> = Vec::with_capacity(applicable.len());
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = applicable
+            .iter()
+            .map(|provider| scope.spawn(move || provider.search(request, context)))
+            .collect();
+        for handle in handles {
+            polled.push(
+                handle
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+            );
+        }
+    });
     let mut sections = Vec::new();
     let mut any_usable = false;
-    for provider in registry.providers() {
-        // Применимость по `sourceKinds` решается ДО опроса, по объявленным
-        // корпусам: сетевой поставщик стандартов иначе ходил бы в сеть на
-        // каждый вопрос о платформе. Пустой фильтр применим ко всем.
-        if !request.source_kinds.is_empty()
-            && !provider
-                .corpora()
-                .iter()
-                .any(|corpus| request.source_kinds.contains(&corpus.source_kind))
-        {
-            continue;
-        }
-        for section in provider.search(request, context) {
+    for provider_sections in polled {
+        for section in provider_sections {
             // Поставщик с корпусами разных смыслов отвечает всеми секциями;
             // публикуются из них только подходящие фильтру.
             if !request.source_kinds.is_empty()
@@ -260,6 +282,84 @@ mod tests {
             platform_version: None,
             installation_root: None,
         }
+    }
+
+    /// Стаб рандеву: сигналит о своём старте и ждёт старта соседа с
+    /// таймаутом. При последовательном опросе рандеву не состоится — стаб
+    /// отвечает диагностичной секцией-маркером, и тест падает по значению,
+    /// а не зависает.
+    struct Rendezvous {
+        id: &'static str,
+        my_start: std::sync::mpsc::Sender<()>,
+        other_started: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl DocumentationProvider for Rendezvous {
+        fn id(&self) -> DocumentationProviderId {
+            DocumentationProviderId::new(self.id)
+        }
+        fn corpora(&self) -> Vec<DocumentationCorpus> {
+            Vec::new()
+        }
+        fn needs_network(&self) -> bool {
+            false
+        }
+        fn search(
+            &self,
+            _: &DocumentationSearchRequest,
+            _: &DocumentationContext,
+        ) -> Vec<DocumentationSection> {
+            let _ = self.my_start.send(());
+            let saw_the_other = self
+                .other_started
+                .lock()
+                .expect("замок рандеву")
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .is_ok();
+            let mut section = ok_section(self.id);
+            if !saw_the_other {
+                section.status = DocumentationSectionStatus::Unavailable {
+                    reason: UnavailableReason::NotConfigured,
+                    detail: "сосед не стартовал: опрос последовательный".to_string(),
+                };
+                section.hits = Vec::new();
+            }
+            vec![section]
+        }
+    }
+
+    /// Поставщики независимы (ADR-0029: без слияния и пересортировки секций),
+    /// поэтому опрашиваются параллельно: федеративный вызов стоит как самый
+    /// медленный поставщик, а не как их сумма.
+    #[test]
+    fn providers_are_polled_concurrently() {
+        let (first_start, first_started) = std::sync::mpsc::channel();
+        let (second_start, second_started) = std::sync::mpsc::channel();
+        let registry = DocumentationRegistry::new(vec![
+            Arc::new(Rendezvous {
+                id: "first",
+                my_start: first_start,
+                other_started: std::sync::Mutex::new(second_started),
+            }) as Arc<dyn DocumentationProvider>,
+            Arc::new(Rendezvous {
+                id: "second",
+                my_start: second_start,
+                other_started: std::sync::Mutex::new(first_started),
+            }),
+        ])
+        .expect("реестр");
+        let value = search(&registry, &request(), &context()).expect("результат");
+        let sections = value["sections"].as_array().expect("массив секций");
+        assert_eq!(sections.len(), 2);
+        for section in sections {
+            assert_eq!(
+                section["status"], "ok",
+                "рандеву обязано состояться у обоих: {section}"
+            );
+        }
+        // Порядок публикации — порядок реестра и при параллельном опросе.
+        assert_eq!(sections[0]["provider"], "first");
+        assert_eq!(sections[1]["provider"], "second");
     }
 
     #[test]
