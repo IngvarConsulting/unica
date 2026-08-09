@@ -1068,6 +1068,15 @@ git commit -m "feat(documentation): ввести нейтральный к ис�
 - Consumes: `read_corpus` из Task 2, `discover` из Task 3, доменные типы из Task 4.
 - Produces: `pub struct PlatformSyntaxHelpProvider` с `pub fn new(language: &str) -> Self`, реализующий `DocumentationProvider` и возвращающий по секции на каждый из двух корпусов; `pub fn rank_pages(pages: &[CorpusPage], query: &str, limit: usize, version: &str, corpus: &str) -> Vec<DocumentationHit>`.
 
+> **Итоговая форма отличается от заданной здесь — по итогам финального ревью
+> ветки.** Язык поставщик берёт из `DocumentationSearchRequest`, а не из
+> конструктора (`new()` без аргументов): план задавал и `new(language)`, и
+> `request.language`, и публичный аргумент `language`, нигде их не связывая, —
+> в результате аргумент принимался и игнорировался. Индекс корпусов вынесен из
+> экземпляра поставщика в общий на процесс слот с ключом (каталог установки,
+> язык): реестр собирается заново в каждой ветке диспетчера, поэтому кеш внутри
+> экземпляра не переживал вызова. Нормативная форма — п.2 и п.11 ADR-0029.
+
 - [ ] **Step 1: Написать падающий тест на поведение поставщика**
 
 ```rust
