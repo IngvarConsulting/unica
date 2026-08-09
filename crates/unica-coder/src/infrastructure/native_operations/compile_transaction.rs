@@ -27,8 +27,8 @@ use crate::infrastructure::platform::filesystem::{
     create_new_directory_child, file_identity, hard_link_count, metadata_is_link_or_reparse_point,
     open_directory_child_nofollow, open_directory_nofollow, open_regular_child_nofollow,
     prepare_file_for_removal, remove_identity_bound_empty_directory_child,
-    remove_identity_bound_regular_child, rename_no_replace, retain_regular_child_for_cleanup,
-    FileIdentity, PortablePermissions,
+    remove_identity_bound_regular_child, rename_identity_bound_regular_child_no_replace,
+    rename_no_replace, retain_regular_child_for_cleanup, FileIdentity, PortablePermissions,
 };
 use crate::infrastructure::source_roots::normalize_path_identity;
 
@@ -3277,7 +3277,16 @@ fn restore_quarantined_file_no_clobber(
     drop(current_quarantine_parent);
     drop(current_target_parent);
 
-    rename_no_replace(quarantine, target).map_err(|error| {
+    run_before_rollback_quarantine_restore_rename(quarantine, target);
+    rename_identity_bound_regular_child_no_replace(
+        quarantine_parent,
+        quarantine_name,
+        quarantine_identity,
+        &retained_quarantine,
+        target_parent,
+        target_name,
+    )
+    .map_err(|error| {
         format!(
             "failed to restore quarantined concurrent file {} to {} without clobbering: {error}",
             quarantine.display(),
@@ -3464,6 +3473,7 @@ fn rollback_registration(
         ));
         return;
     }
+    run_after_registration_rollback_restore(&published.target, &quarantined);
 
     let bytes_restored = match fs::read(&published.target) {
         Ok(bytes) if bytes == published.original => true,
@@ -3500,6 +3510,10 @@ fn rollback_registration(
         }
     };
     if !bytes_restored || !permissions_restored {
+        errors.push(format!(
+            "quarantined published bytes are preserved at {}",
+            quarantined.display()
+        ));
         preserve_rollback_recovery_copy(published, errors, cleanup_warnings);
         return;
     }
@@ -3975,6 +3989,12 @@ type BeforeCleanupRetryHook = Box<dyn FnOnce()>;
 type BeforeRollbackQuarantineCleanupHook = Box<dyn FnOnce(&Path)>;
 
 #[cfg(test)]
+type BeforeRollbackQuarantineRestoreRenameHook = Box<dyn FnOnce(&Path, &Path)>;
+
+#[cfg(test)]
+type AfterRegistrationRollbackRestoreHook = Box<dyn FnOnce(&Path, &Path)>;
+
+#[cfg(test)]
 thread_local! {
     static TEST_FAILPOINT: Cell<Option<CommitFailpoint>> = const { Cell::new(None) };
     static TEST_REGISTRATION_RECOVERY_PAUSE: RefCell<Option<RegistrationRecoveryPause>> = const { RefCell::new(None) };
@@ -3983,6 +4003,8 @@ thread_local! {
     static TEST_BEFORE_REMOVAL_ROLLBACK_RESTORE_HOOK: RefCell<Option<BeforeRemovalRollbackRestoreHook>> = const { RefCell::new(None) };
     static TEST_BEFORE_CLEANUP_RETRY_HOOK: RefCell<Option<BeforeCleanupRetryHook>> = const { RefCell::new(None) };
     static TEST_BEFORE_ROLLBACK_QUARANTINE_CLEANUP_HOOK: RefCell<Option<BeforeRollbackQuarantineCleanupHook>> = const { RefCell::new(None) };
+    static TEST_BEFORE_ROLLBACK_QUARANTINE_RESTORE_RENAME_HOOK: RefCell<Option<BeforeRollbackQuarantineRestoreRenameHook>> = const { RefCell::new(None) };
+    static TEST_AFTER_REGISTRATION_ROLLBACK_RESTORE_HOOK: RefCell<Option<AfterRegistrationRollbackRestoreHook>> = const { RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -4101,6 +4123,46 @@ fn with_before_rollback_quarantine_cleanup_hook<T>(
 }
 
 #[cfg(test)]
+fn with_before_rollback_quarantine_restore_rename_hook<T>(
+    hook: impl FnOnce(&Path, &Path) + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<BeforeRollbackQuarantineRestoreRenameHook>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_BEFORE_ROLLBACK_QUARANTINE_RESTORE_RENAME_HOOK.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+
+    let previous = TEST_BEFORE_ROLLBACK_QUARANTINE_RESTORE_RENAME_HOOK
+        .with(|slot| slot.replace(Some(Box::new(hook))));
+    let _reset = Reset(previous);
+    action()
+}
+
+#[cfg(test)]
+fn with_after_registration_rollback_restore_hook<T>(
+    hook: impl FnOnce(&Path, &Path) + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<AfterRegistrationRollbackRestoreHook>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_AFTER_REGISTRATION_ROLLBACK_RESTORE_HOOK.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+
+    let previous = TEST_AFTER_REGISTRATION_ROLLBACK_RESTORE_HOOK
+        .with(|slot| slot.replace(Some(Box::new(hook))));
+    let _reset = Reset(previous);
+    action()
+}
+
+#[cfg(test)]
 fn run_before_cleanup_retry() {
     if let Some(hook) = TEST_BEFORE_CLEANUP_RETRY_HOOK.with(|slot| slot.borrow_mut().take()) {
         hook();
@@ -4113,6 +4175,24 @@ fn run_before_rollback_quarantine_cleanup(_path: &Path) {
         TEST_BEFORE_ROLLBACK_QUARANTINE_CLEANUP_HOOK.with(|slot| slot.borrow_mut().take())
     {
         hook(_path);
+    }
+}
+
+fn run_before_rollback_quarantine_restore_rename(_quarantine: &Path, _target: &Path) {
+    #[cfg(test)]
+    if let Some(hook) =
+        TEST_BEFORE_ROLLBACK_QUARANTINE_RESTORE_RENAME_HOOK.with(|slot| slot.borrow_mut().take())
+    {
+        hook(_quarantine, _target);
+    }
+}
+
+fn run_after_registration_rollback_restore(_target: &Path, _quarantine: &Path) {
+    #[cfg(test)]
+    if let Some(hook) =
+        TEST_AFTER_REGISTRATION_ROLLBACK_RESTORE_HOOK.with(|slot| slot.borrow_mut().take())
+    {
+        hook(_target, _quarantine);
     }
 }
 
@@ -6048,8 +6128,8 @@ mod tests {
         let concurrent_for_mutation = concurrent.clone();
         let (paths_sender, paths_receiver) = mpsc::channel();
 
-        let error = with_before_rollback_quarantine_cleanup_hook(
-            move |quarantined| {
+        let error = with_before_rollback_quarantine_restore_rename_hook(
+            move |quarantined, _target| {
                 let displaced = quarantined.with_file_name("displaced-concurrent-registration");
                 fs::rename(quarantined, &displaced)
                     .expect("owned quarantine link must be displaced before cleanup");
@@ -6085,6 +6165,7 @@ mod tests {
             .expect("rollback restore hook must report quarantine paths");
 
         assert!(error.contains("rollback conflict"), "{error}");
+        assert!(error.contains("regular child identity changed"), "{error}");
         assert!(
             !config.exists(),
             "identity loss must not publish the same-name quarantine decoy"
@@ -6104,6 +6185,176 @@ mod tests {
         assert_eq!(
             fs::read(recovery_directory.join("original")).unwrap(),
             original
+        );
+        fs::remove_dir_all(root).expect("temporary root must be removed");
+    }
+
+    #[test]
+    fn registration_rollback_validation_reports_preserved_quarantine() {
+        let root = temp_root("registration-rollback-validation-quarantine-diagnostic");
+        let config = root.join("Configuration.xml");
+        let guard = root.join("Decision.bsl");
+        let original = configuration_bytes();
+        fs::write(&config, &original).expect("registration fixture must be written");
+        fs::write(&guard, b"stable").expect("guard fixture must be written");
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .register_canonical_child(&config, "Role", "Reader")
+            .expect("registration must plan");
+        transaction
+            .guard_exact_preimage(&guard, b"stable")
+            .expect("guard must plan");
+        let root_for_hook = root.clone();
+        let (path_sender, path_receiver) = mpsc::channel();
+
+        let error = with_after_registration_rollback_restore_hook(
+            move |target, quarantined| {
+                let replacement = root_for_hook.join("unexpected-restored-target.xml");
+                fs::write(&replacement, b"unexpected restored bytes")
+                    .expect("replacement target must be written");
+                replace_file_atomically(&replacement, target)
+                    .expect("restored target must be replaced before validation");
+                path_sender
+                    .send(quarantined.to_path_buf())
+                    .expect("quarantine path must be reported");
+            },
+            || {
+                transaction.commit_with_post_validation(|| {
+                    fs::write(&guard, b"changed").expect("guard must trigger rollback");
+                    Ok(())
+                })
+            },
+        )
+        .expect_err("restoration validation failure must be reported");
+        let quarantined = path_receiver
+            .recv()
+            .expect("rollback hook must report the quarantine path");
+
+        assert!(
+            error.contains(&format!(
+                "quarantined published bytes are preserved at {}",
+                quarantined.display()
+            )),
+            "{error}"
+        );
+        assert!(fs::read_to_string(&quarantined)
+            .expect("quarantined published bytes must remain readable")
+            .contains("<Role>Reader</Role>"));
+        let recovery_directory = quarantined
+            .parent()
+            .expect("quarantine must remain inside recovery");
+        assert_eq!(
+            fs::read(recovery_directory.join("original")).unwrap(),
+            original
+        );
+        fs::remove_dir_all(root).expect("temporary root must be removed");
+    }
+
+    #[test]
+    fn registration_rollback_restore_uses_retained_parent_handles_after_route_swap() {
+        if !testing::can_rename_parent_with_retained_cleanup_child_for_test() {
+            return;
+        }
+        let root = temp_root("registration-rollback-restore-parent-route-swap");
+        let active_parent = root.join("active");
+        let displaced_parent = root.join("displaced-active");
+        fs::create_dir(&active_parent).expect("active parent must be created");
+        let config = active_parent.join("Configuration.xml");
+        let guard = root.join("Decision.bsl");
+        let original = configuration_bytes();
+        fs::write(&config, &original).expect("registration fixture must be written");
+        fs::write(&guard, b"stable").expect("guard fixture must be written");
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .register_canonical_child(&config, "Role", "Reader")
+            .expect("registration must plan");
+        let diff = transaction
+            .registration_diffs()
+            .pop()
+            .expect("registration diff must exist");
+        let mut concurrent = original.clone();
+        concurrent.splice(diff.byte_range, diff.after);
+        transaction
+            .guard_exact_preimage(&guard, b"stable")
+            .expect("guard must plan");
+        let config_for_mutation = config.clone();
+        let root_for_mutation = root.clone();
+        let concurrent_for_mutation = concurrent.clone();
+        let active_for_swap = active_parent.clone();
+        let displaced_for_swap = displaced_parent.clone();
+        let config_for_swap = config.clone();
+        let (paths_sender, paths_receiver) = mpsc::channel();
+
+        let error = with_before_rollback_quarantine_restore_rename_hook(
+            move |quarantined, target| {
+                assert_eq!(target, config_for_swap);
+                let recovery_name = quarantined
+                    .parent()
+                    .and_then(Path::file_name)
+                    .expect("quarantine recovery name must exist")
+                    .to_os_string();
+                fs::rename(&active_for_swap, &displaced_for_swap)
+                    .expect("verified rollback parents must be displaced");
+                fs::create_dir(&active_for_swap).expect("replacement target parent must exist");
+                let replacement_recovery = active_for_swap.join(&recovery_name);
+                fs::create_dir(&replacement_recovery)
+                    .expect("replacement quarantine parent must exist");
+                let replacement_quarantine = replacement_recovery.join("published");
+                fs::write(&replacement_quarantine, b"same-name route decoy")
+                    .expect("same-name route decoy must be written");
+                paths_sender
+                    .send((
+                        replacement_quarantine,
+                        active_for_swap.join("Configuration.xml"),
+                        displaced_for_swap.join("Configuration.xml"),
+                        displaced_for_swap.join(recovery_name).join("published"),
+                    ))
+                    .expect("swapped rollback paths must be reported");
+            },
+            || {
+                with_before_rollback_mutation_hook(
+                    move |path| {
+                        assert_eq!(path, config_for_mutation);
+                        let external = root_for_mutation.join("external-registration.xml");
+                        fs::write(&external, &concurrent_for_mutation)
+                            .expect("concurrent registration must be written");
+                        replace_file_atomically(&external, &config_for_mutation)
+                            .expect("concurrent registration must replace the published target");
+                    },
+                    || {
+                        transaction.commit_with_post_validation(|| {
+                            fs::write(&guard, b"changed")
+                                .expect("guard mutation must trigger rollback");
+                            Ok(())
+                        })
+                    },
+                )
+            },
+        )
+        .expect_err("late guard failure must roll the registration back");
+        let (replacement_quarantine, replacement_target, restored_target, retained_quarantine) =
+            paths_receiver
+                .recv()
+                .expect("rollback route-swap hook must report paths");
+
+        assert!(error.contains("rollback conflict"), "{error}");
+        assert_eq!(
+            fs::read(&replacement_quarantine)
+                .expect("descriptor-relative restore must preserve the route decoy"),
+            b"same-name route decoy"
+        );
+        assert!(
+            !replacement_target.exists(),
+            "descriptor-relative restore must not publish through a replacement parent route"
+        );
+        assert_eq!(
+            fs::read(&restored_target)
+                .expect("concurrent target must be restored through its retained parent"),
+            concurrent
+        );
+        assert!(
+            !retained_quarantine.exists(),
+            "the retained quarantine link must move to the retained target parent"
         );
         fs::remove_dir_all(root).expect("temporary root must be removed");
     }

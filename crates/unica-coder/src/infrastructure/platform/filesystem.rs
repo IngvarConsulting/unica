@@ -2048,6 +2048,15 @@ pub(crate) fn rename_directory_handle_child_no_replace(
     destination_parent: &fs::File,
     destination_name: &std::ffi::OsStr,
 ) -> io::Result<()> {
+    rename_open_child_no_replace(source, destination_parent, destination_name)
+}
+
+#[cfg(windows)]
+fn rename_open_child_no_replace(
+    source: &fs::File,
+    destination_parent: &fs::File,
+    destination_name: &std::ffi::OsStr,
+) -> io::Result<()> {
     use std::mem::{offset_of, size_of};
     use std::os::windows::io::AsRawHandle;
     use std::ptr;
@@ -2098,7 +2107,7 @@ pub(crate) fn rename_directory_handle_child_no_replace(
         status: NtIoStatusStatus { status: 0 },
         information: 0,
     };
-    // SAFETY: source is an owned directory handle opened with DELETE access, destination_parent
+    // SAFETY: source is an owned child handle opened with DELETE access, destination_parent
     // remains live, and the initialized buffer describes one relative destination name.
     let result = unsafe {
         NtSetInformationFile(
@@ -2882,6 +2891,142 @@ pub(crate) fn retain_regular_child_for_cleanup(
         io::ErrorKind::Unsupported,
         "identity-only cleanup retention is unavailable on this host",
     ))
+}
+
+/// Moves an identity-bound regular child between retained parent directories
+/// without replacing an existing destination.
+///
+/// The child name is rechecked immediately before the descriptor-relative
+/// rename used under the publication lock, so replacing either lexical parent
+/// route cannot redirect the move. Windows additionally moves through the
+/// verified child handle.
+#[cfg(unix)]
+pub(crate) fn rename_identity_bound_regular_child_no_replace(
+    source_parent: &fs::File,
+    source_name: &std::ffi::OsStr,
+    expected_identity: FileIdentity,
+    retained: &fs::File,
+    destination_parent: &fs::File,
+    destination_name: &std::ffi::OsStr,
+) -> io::Result<()> {
+    if file_identity(retained)? != expected_identity {
+        return Err(io::Error::other(
+            "retained regular child identity changed; replacement left untouched",
+        ));
+    }
+    let named = open_regular_child_nofollow(source_parent, source_name)?;
+    if file_identity(&named)? != expected_identity {
+        return Err(io::Error::other(
+            "regular child identity changed; replacement left untouched",
+        ));
+    }
+    rename_regular_child_at_no_replace(
+        source_parent,
+        source_name,
+        destination_parent,
+        destination_name,
+    )
+}
+
+#[cfg(windows)]
+pub(crate) fn rename_identity_bound_regular_child_no_replace(
+    source_parent: &fs::File,
+    source_name: &std::ffi::OsStr,
+    expected_identity: FileIdentity,
+    retained: &fs::File,
+    destination_parent: &fs::File,
+    destination_name: &std::ffi::OsStr,
+) -> io::Result<()> {
+    let named = open_any_child_for_delete(source_parent, source_name)?;
+    if opened_child_kind(&named)? != OpenedChildKind::RegularFile
+        || file_identity(&named)? != expected_identity
+    {
+        return Err(io::Error::other(
+            "regular child identity changed; replacement left untouched",
+        ));
+    }
+    if opened_child_kind(retained)? != OpenedChildKind::RegularFile
+        || file_identity(retained)? != expected_identity
+    {
+        return Err(io::Error::other(
+            "retained regular child identity changed; replacement left untouched",
+        ));
+    }
+    rename_open_child_no_replace(&named, destination_parent, destination_name)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn rename_identity_bound_regular_child_no_replace(
+    _source_parent: &fs::File,
+    _source_name: &std::ffi::OsStr,
+    _expected_identity: FileIdentity,
+    _retained: &fs::File,
+    _destination_parent: &fs::File,
+    _destination_name: &std::ffi::OsStr,
+) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "identity-bound regular-file rename is unavailable on this host",
+    ))
+}
+
+#[cfg(unix)]
+fn rename_regular_child_at_no_replace(
+    source_parent: &fs::File,
+    source_name: &std::ffi::OsStr,
+    destination_parent: &fs::File,
+    destination_name: &std::ffi::OsStr,
+) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    let source_name = unix_child_name(source_name)?;
+    let destination_name = unix_child_name(destination_name)?;
+    #[cfg(target_os = "linux")]
+    let no_replace_flag = libc::RENAME_NOREPLACE;
+    #[cfg(target_os = "android")]
+    let no_replace_flag = libc::RENAME_NOREPLACE as libc::c_uint;
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    // SAFETY: both retained directory descriptors and both NUL-terminated child names remain
+    // live for the syscall. RENAME_NOREPLACE atomically protects destination absence.
+    let status = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            source_parent.as_raw_fd(),
+            source_name.as_ptr(),
+            destination_parent.as_raw_fd(),
+            destination_name.as_ptr(),
+            no_replace_flag,
+        )
+    };
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    // SAFETY: both retained directory descriptors and both NUL-terminated child names remain
+    // live for the syscall. RENAME_EXCL atomically protects destination absence.
+    let status = unsafe {
+        libc::renameatx_np(
+            source_parent.as_raw_fd(),
+            source_name.as_ptr(),
+            destination_parent.as_raw_fd(),
+            destination_name.as_ptr(),
+            libc::RENAME_EXCL,
+        )
+    };
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios"
+    )))]
+    let status = {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "descriptor-relative no-replace rename is unavailable on this host",
+        ));
+    };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
 }
 
 #[cfg(windows)]
