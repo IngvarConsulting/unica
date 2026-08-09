@@ -54,7 +54,25 @@ pub fn search(
     let mut sections = Vec::new();
     let mut any_usable = false;
     for provider in registry.providers() {
+        // Применимость по `sourceKinds` решается ДО опроса, по объявленным
+        // корпусам: сетевой поставщик стандартов иначе ходил бы в сеть на
+        // каждый вопрос о платформе. Пустой фильтр применим ко всем.
+        if !request.source_kinds.is_empty()
+            && !provider
+                .corpora()
+                .iter()
+                .any(|corpus| request.source_kinds.contains(&corpus.source_kind))
+        {
+            continue;
+        }
         for section in provider.search(request, context) {
+            // Поставщик с корпусами разных смыслов отвечает всеми секциями;
+            // публикуются из них только подходящие фильтру.
+            if !request.source_kinds.is_empty()
+                && !request.source_kinds.contains(&section.source_kind)
+            {
+                continue;
+            }
             let (status, diagnostic) = status_fields(&section.status);
             if matches!(
                 section.status,
@@ -288,6 +306,106 @@ mod tests {
                 "отказ обязан назвать аргумент, получено {error}"
             );
         }
+    }
+
+    /// Поставщик со счётчиком опросов и объявленным смыслом корпуса: фильтр
+    /// `sourceKinds` обязан решать применимость по `corpora()`, не опрашивая
+    /// неподходящего поставщика вовсе, — сетевой поставщик стандартов иначе
+    /// ходил бы в сеть на каждый вопрос о платформе.
+    struct KindStub {
+        id: &'static str,
+        kind: SourceKind,
+        section: DocumentationSection,
+        polled: std::sync::atomic::AtomicUsize,
+    }
+
+    impl DocumentationProvider for KindStub {
+        fn id(&self) -> DocumentationProviderId {
+            DocumentationProviderId::new(self.id)
+        }
+        fn corpora(&self) -> Vec<DocumentationCorpus> {
+            vec![DocumentationCorpus {
+                id: "corpus".to_string(),
+                source_kind: self.kind,
+                authority: Authority::Vendor,
+            }]
+        }
+        fn needs_network(&self) -> bool {
+            false
+        }
+        fn search(
+            &self,
+            _: &DocumentationSearchRequest,
+            _: &DocumentationContext,
+        ) -> Vec<DocumentationSection> {
+            self.polled
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            vec![self.section.clone()]
+        }
+    }
+
+    /// Фильтр по смыслу источника: секции неподходящего смысла не публикуются,
+    /// неподходящий поставщик не опрашивается, а правило успеха считает только
+    /// применимые секции — единственная применимая `Ok`-секция делает вызов
+    /// успешным, хотя неприменимый поставщик даже не отвечал.
+    #[test]
+    fn a_source_kind_filter_skips_non_matching_providers_and_sections() {
+        let platform = std::sync::Arc::new(KindStub {
+            id: "platform",
+            kind: SourceKind::PlatformHelp,
+            section: ok_section("platform"),
+            polled: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let standards_section = DocumentationSection {
+            source_kind: SourceKind::DevelopmentStandard,
+            ..ok_section("standards")
+        };
+        let standards = std::sync::Arc::new(KindStub {
+            id: "standards",
+            kind: SourceKind::DevelopmentStandard,
+            section: standards_section,
+            polled: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let registry = DocumentationRegistry::new(vec![
+            std::sync::Arc::clone(&platform) as Arc<dyn DocumentationProvider>,
+            std::sync::Arc::clone(&standards) as Arc<dyn DocumentationProvider>,
+        ])
+        .expect("реестр");
+
+        let filtered = DocumentationSearchRequest {
+            source_kinds: vec![SourceKind::DevelopmentStandard],
+            ..request()
+        };
+        let value = search(&registry, &filtered, &context()).expect("результат");
+        let sections = value["sections"].as_array().expect("массив секций");
+        assert_eq!(
+            sections.len(),
+            1,
+            "публикуются только секции подходящего смысла"
+        );
+        assert_eq!(sections[0]["provider"], "standards");
+        assert_eq!(sections[0]["sourceKind"], "development-standard");
+        assert_eq!(
+            platform.polled.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "неприменимый поставщик не должен опрашиваться вовсе"
+        );
+        assert_eq!(
+            standards.polled.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "применимый поставщик опрошен ровно раз"
+        );
+
+        // Пустой фильтр — прежнее поведение: обе секции, оба опроса.
+        let unfiltered = search(&registry, &request(), &context()).expect("результат");
+        assert_eq!(
+            unfiltered["sections"]
+                .as_array()
+                .expect("массив секций")
+                .len(),
+            2,
+            "без фильтра публикуются секции всех поставщиков"
+        );
     }
 
     #[test]

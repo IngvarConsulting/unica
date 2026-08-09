@@ -580,7 +580,13 @@ const STANDARDS_ARGS: &[&str] = &[
     "snippet",
     "types",
 ];
-const DOCUMENTATION_ARGS: &[&str] = &["language", "limit", "platformVersion", "query"];
+const DOCUMENTATION_ARGS: &[&str] = &[
+    "language",
+    "limit",
+    "platformVersion",
+    "query",
+    "sourceKinds",
+];
 
 pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
     if let ToolHandler::Metadata { operation } = tool.handler {
@@ -2293,6 +2299,7 @@ fn property_schema(name: &str) -> Value {
             | "projects"
             | "rawKeys"
             | "scenarioFilters"
+            | "sourceKinds"
             | "sourceSets"
     ) {
         "array"
@@ -2887,6 +2894,10 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "sourceDir",
         "Workspace-relative source root to work in: on path-based unica.code.* tools it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead.",
+    ),
+    (
+        "sourceKinds",
+        "Optional filter of unica.documentation.search by source kind, not by provider id: an array of platform-help and/or development-standard; providers without a matching corpus are not polled and their sections are not published, an empty or omitted array means every kind, and an unknown value is refused rather than silently ignored.",
     ),
     (
         "sourceSet",

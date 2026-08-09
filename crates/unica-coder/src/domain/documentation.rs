@@ -29,6 +29,18 @@ impl SourceKind {
             SourceKind::DevelopmentStandard => "development-standard",
         }
     }
+
+    /// Разбор публичного значения `sourceKinds` — зеркало `as_str`: та же
+    /// пара wire-строк, что и в поле `sourceKind` секции, точно и без
+    /// нормализации. Чужое значение не разбирается — вызывающий отказывает,
+    /// а не игнорирует фильтр молча.
+    pub fn parse(value: &str) -> Option<SourceKind> {
+        match value {
+            "platform-help" => Some(SourceKind::PlatformHelp),
+            "development-standard" => Some(SourceKind::DevelopmentStandard),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -327,6 +339,29 @@ mod tests {
     // "reason": reason.as_str()). Опечатка в строке (например, подчёркивание
     // вместо дефиса) молча ломает формат ответа `unica.documentation.search`
     // и осталась бы незамеченной без этого теста.
+    /// Разбор — зеркало `as_str`: публичный аргумент `sourceKinds` несёт те же
+    /// wire-строки, что и поле `sourceKind` секции, и никакие другие. Значение
+    /// не из перечня не разбирается: диспетчер обязан отказать, а не молча
+    /// проигнорировать фильтр.
+    #[test]
+    fn source_kind_parses_exactly_its_wire_identifiers() {
+        assert_eq!(
+            SourceKind::parse("platform-help"),
+            Some(SourceKind::PlatformHelp)
+        );
+        assert_eq!(
+            SourceKind::parse("development-standard"),
+            Some(SourceKind::DevelopmentStandard)
+        );
+        for alien in ["standards", "platform_help", "PLATFORM-HELP", ""] {
+            assert_eq!(
+                SourceKind::parse(alien),
+                None,
+                "чужое значение {alien:?} не должно разбираться"
+            );
+        }
+    }
+
     #[test]
     fn source_kind_authority_and_reason_expose_stable_wire_identifiers() {
         assert_eq!(SourceKind::PlatformHelp.as_str(), "platform-help");

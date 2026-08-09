@@ -395,13 +395,36 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                 if operation != "search" {
                     return Err(format!("unknown documentation operation: {operation}"));
                 }
+                // Фильтр по смыслу источника (ADR-0032 п.5). Чужое значение —
+                // отказ с перечнем допустимых: молча проигнорированный фильтр
+                // отвечал бы стандартами на просьбу «только справка платформы».
+                let source_kinds = match args.get("sourceKinds") {
+                    None => Vec::new(),
+                    Some(value) => value
+                        .as_array()
+                        .ok_or_else(|| {
+                            "unica.documentation.search: sourceKinds must be an array".to_string()
+                        })?
+                        .iter()
+                        .map(|entry| {
+                            let text = entry.as_str().unwrap_or_default();
+                            crate::domain::documentation::SourceKind::parse(text).ok_or_else(
+                                || {
+                                    format!(
+                                        "unica.documentation.search: unknown sourceKinds value {text:?}; allowed: platform-help, development-standard"
+                                    )
+                                },
+                            )
+                        })
+                        .collect::<Result<Vec<_>, String>>()?,
+                };
                 let request = crate::domain::documentation::DocumentationSearchRequest {
                     query: args
                         .get("query")
                         .and_then(Value::as_str)
                         .ok_or_else(|| "unica.documentation.search requires query".to_string())?
                         .to_string(),
-                    source_kinds: Vec::new(),
+                    source_kinds,
                     limit: args
                         .get("limit")
                         .and_then(Value::as_u64)
@@ -1375,7 +1398,13 @@ mod tests {
             crate::domain::documentation::DocumentationProviderId::new("recording")
         }
         fn corpora(&self) -> Vec<crate::domain::documentation::DocumentationCorpus> {
-            Vec::new()
+            // Смысл корпуса объявлен, чтобы фильтр sourceKinds считал стенд
+            // применимым и его опрос был наблюдаем.
+            vec![crate::domain::documentation::DocumentationCorpus {
+                id: "syntax-context".to_string(),
+                source_kind: crate::domain::documentation::SourceKind::PlatformHelp,
+                authority: crate::domain::documentation::Authority::Vendor,
+            }]
         }
         fn needs_network(&self) -> bool {
             false
@@ -1730,6 +1759,81 @@ mod tests {
         assert!(
             error.contains("query"),
             "отказ обязан назвать недостающий аргумент, получено {error}"
+        );
+    }
+
+    /// Аргумент `sourceKinds` (ADR-0032 п.5) фильтрует по смыслу источника, а
+    /// не по идентификатору поставщика. Разобранные значения обязаны дойти до
+    /// запроса, а чужое значение — отказ с перечнем допустимых: молча
+    /// проигнорированный фильтр отвечал бы стандартами на просьбу «только
+    /// справка платформы».
+    #[test]
+    fn the_documentation_branch_parses_source_kinds_and_refuses_unknown_values() {
+        use crate::application::ports::ApplicationPorts;
+
+        let recorder = std::sync::Arc::new(RecordingProvider::default());
+        let _stand_in = install_stand_in(std::sync::Arc::clone(&recorder));
+
+        let dir = tempfile::tempdir().expect("каталог");
+        let workspace = dir.path().to_path_buf();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        let mut args = Map::new();
+        args.insert("query".to_string(), json!("СтрНайти"));
+        args.insert("sourceKinds".to_string(), json!(["platform-help"]));
+        super::InfrastructureApplicationPorts::new()
+            .invoke_handler(
+                spec(
+                    "unica.documentation.search",
+                    ToolHandler::Documentation {
+                        operation: "search",
+                    },
+                ),
+                &args,
+                &context,
+                false,
+                &crate::domain::cancellation::CancellationToken::default(),
+            )
+            .expect("вызов с применимым фильтром обязан пройти");
+        {
+            let seen = recorder
+                .seen
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            assert_eq!(seen.len(), 1, "применимый стенд опрошен ровно раз");
+            assert_eq!(
+                seen[0].0.source_kinds,
+                vec![crate::domain::documentation::SourceKind::PlatformHelp],
+                "разобранный фильтр обязан дойти до запроса, а не подменяться пустым"
+            );
+        }
+
+        let mut alien = Map::new();
+        alien.insert("query".to_string(), json!("СтрНайти"));
+        alien.insert("sourceKinds".to_string(), json!(["standards"]));
+        let error = match super::InfrastructureApplicationPorts::new().invoke_handler(
+            spec(
+                "unica.documentation.search",
+                ToolHandler::Documentation {
+                    operation: "search",
+                },
+            ),
+            &alien,
+            &context,
+            false,
+            &crate::domain::cancellation::CancellationToken::default(),
+        ) {
+            Ok(_) => panic!("чужое значение sourceKinds обязано отклоняться"),
+            Err(error) => error,
+        };
+        assert!(
+            error.contains("standards") && error.contains("platform-help"),
+            "отказ обязан назвать чужое значение и допустимые, получено {error}"
         );
     }
 
