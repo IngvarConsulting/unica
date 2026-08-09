@@ -2,13 +2,34 @@ use super::{
     cf, cfe, code, external, form, help, mxl, registry, role, subsystem, template, xdto,
     NativeOperationAdapter,
 };
-use crate::{application::AdapterOutcome, domain::workspace::WorkspaceContext};
+use crate::{
+    application::AdapterOutcome,
+    domain::{
+        cancellation::CancellationToken, code_intelligence::ProviderDeadline,
+        workspace::WorkspaceContext,
+    },
+};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
 pub(crate) struct NativeOperationResult {
     pub(crate) adapter: AdapterOutcome,
     pub(crate) data: Option<Value>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct NativeInvocationControl<'a> {
+    pub(crate) cancellation: &'a CancellationToken,
+    pub(crate) deadline: ProviderDeadline,
+}
+
+impl<'a> NativeInvocationControl<'a> {
+    pub(crate) fn new(cancellation: &'a CancellationToken, deadline: ProviderDeadline) -> Self {
+        Self {
+            cancellation,
+            deadline,
+        }
+    }
 }
 
 impl NativeOperationAdapter {
@@ -19,6 +40,7 @@ impl NativeOperationAdapter {
         context: &WorkspaceContext,
         dry_run: bool,
         mutating: bool,
+        control: NativeInvocationControl<'_>,
     ) -> Result<NativeOperationResult, String> {
         if operation == "xdto-info" {
             let execution = xdto::info_with_data(args, context)?;
@@ -207,7 +229,12 @@ impl NativeOperationAdapter {
                     return typed_operation_result(execution.outcome, execution.data, "mxl info");
                 }
                 "subsystem-info" => {
-                    let execution = subsystem::analyze_subsystem_info(args, context);
+                    let execution = subsystem::analyze_subsystem_info_cancellable(
+                        args,
+                        context,
+                        control.cancellation,
+                        control.deadline,
+                    );
                     return typed_operation_result(
                         execution.outcome,
                         execution.data,

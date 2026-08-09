@@ -202,6 +202,13 @@ impl std::error::Error for SubsystemTopologyError {}
 
 impl From<io::Error> for SubsystemTopologyError {
     fn from(error: io::Error) -> Self {
+        if error.kind() == io::ErrorKind::Interrupted
+            && error
+                .to_string()
+                .starts_with(crate::domain::cancellation::CANCELLED_PREFIX)
+        {
+            return Self::new(error.to_string());
+        }
         Self::new(format!("subsystem topology snapshot failed: {error}"))
     }
 }
@@ -992,22 +999,18 @@ mod tests {
         write_configuration(root.path(), &["Registered"]);
         write_subsystem(root.path(), &[], "Registered", "true", &[], &[]);
         let source_root = root.path().canonicalize().unwrap();
-        let descriptor_captured = Rc::new(Cell::new(false));
-        let phase_flag = Rc::clone(&descriptor_captured);
+        let identity_proofs_completed = Rc::new(Cell::new(false));
+        let phase_flag = Rc::clone(&identity_proofs_completed);
 
         let error = with_secure_tree_test_hook(
             move |phase| {
-                if phase
-                    == &SecureTreePhase::AfterRebindEntry(PathBuf::from(
-                        "Subsystems/Registered.xml",
-                    ))
-                {
+                if phase == &SecureTreePhase::AfterFinalIdentityProofs {
                     phase_flag.set(true);
                 }
             },
             || {
                 capture_registered_subsystem_topology(&source_root, || {
-                    if descriptor_captured.get() {
+                    if identity_proofs_completed.get() {
                         Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"))
                     } else {
                         Ok(())

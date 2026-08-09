@@ -16,7 +16,7 @@ use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::{
     CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadRequest,
-    CodeIntelligenceRegistry,
+    CodeIntelligenceRegistry, ProviderDeadline,
 };
 use crate::domain::events::DomainEvent;
 use crate::domain::source_resources::{
@@ -29,6 +29,7 @@ use crate::infrastructure::internal_adapters::{
     RuntimeJobAdapter, StandardsAdapter,
 };
 use crate::infrastructure::metadata_operations::MetadataOperations;
+use crate::infrastructure::native_operations::typed_result::NativeInvocationControl;
 use crate::infrastructure::native_operations::NativeOperationAdapter;
 use crate::infrastructure::platform::full_dump_publication::{
     FullDumpInvocation, VerifiedFullDumpAdapter,
@@ -39,6 +40,9 @@ use serde_json::{Map, Value};
 use std::borrow::Cow;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+const NATIVE_TYPED_INVOCATION_DEADLINE: Duration = Duration::from_secs(5);
 pub(crate) struct InfrastructureApplicationPorts {
     source_resources: crate::infrastructure::platform_xml_resources::PlatformXmlResourceProvider,
 }
@@ -265,6 +269,10 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     context,
                     dry_run,
                     spec.mutating,
+                    NativeInvocationControl::new(
+                        cancellation,
+                        ProviderDeadline::new(Instant::now() + NATIVE_TYPED_INVOCATION_DEADLINE),
+                    ),
                 )
                 .map(|outcome| match outcome.data {
                     Some(data) => HandlerOutcome::with_data(outcome.adapter, data),
@@ -889,14 +897,23 @@ mod tests {
         project_platform_version, select_installation_root, select_platform_version,
         verified_full_dump_invocation,
     };
+    use crate::application::ports::ApplicationPorts;
     use crate::application::{RuntimeJobAction, ToolHandler, ToolSpec};
     use crate::domain::cache::CacheAccess;
-    use crate::domain::code_intelligence::{CodeIntelligenceContext, CodeIntelligenceReadRequest};
+    use crate::domain::cancellation::CancellationToken;
+    use crate::domain::code_intelligence::{
+        CodeIntelligenceContext, CodeIntelligenceReadRequest, ProviderDeadline,
+    };
     use crate::domain::source_roots::ResolvedSourceRoot;
     use crate::domain::workspace::WorkspaceContext;
+    use crate::infrastructure::native_operations::typed_result::NativeInvocationControl;
     use crate::infrastructure::platform::full_dump_publication::FullDumpInvocation;
+    use crate::infrastructure::platform::secure_read::{
+        with_secure_tree_test_hook, SecureTreePhase,
+    };
     use serde_json::{json, Map};
     use std::path::PathBuf;
+    use std::time::{Duration, Instant};
 
     fn spec(name: &'static str, handler: ToolHandler) -> ToolSpec {
         ToolSpec {
@@ -906,6 +923,167 @@ mod tests {
             cache_access: CacheAccess::default(),
             handler,
         }
+    }
+
+    fn subsystem_info_fixture(
+        label: &str,
+    ) -> (
+        tempfile::TempDir,
+        WorkspaceContext,
+        Map<String, serde_json::Value>,
+    ) {
+        let root = tempfile::Builder::new().prefix(label).tempdir().unwrap();
+        let physical_root = root.path().canonicalize().unwrap();
+        std::fs::create_dir_all(physical_root.join("Subsystems")).unwrap();
+        std::fs::write(
+            physical_root.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Test</Name></Properties><ChildObjects><Subsystem>Sales</Subsystem></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            physical_root.join("Subsystems/Sales.xml"),
+            crate::infrastructure::native_operations::subsystem::child_subsystem_stub_xml(
+                "Sales", "2.20",
+            ),
+        )
+        .unwrap();
+        let context = WorkspaceContext {
+            cwd: physical_root.clone(),
+            workspace_root: physical_root.clone(),
+            cache_root: physical_root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let args = Map::from_iter([(
+            "SubsystemPath".to_string(),
+            serde_json::Value::String("Subsystems".to_string()),
+        )]);
+        (root, context, args)
+    }
+
+    #[test]
+    fn subsystem_info_native_path_observes_mid_read_cancellation() {
+        let (_root, context, args) = subsystem_info_fixture("unica-subsystem-mid-read");
+        let cancellation = CancellationToken::new();
+        let hook_cancellation = cancellation.clone();
+        let mut tool = spec(
+            "unica.subsystem.info",
+            ToolHandler::NativeOperation {
+                operation: "subsystem-info",
+                event: None,
+            },
+        );
+        tool.mutating = false;
+
+        let outcome = with_secure_tree_test_hook(
+            move |phase| {
+                if phase == &SecureTreePhase::AfterRebindEntry(PathBuf::from("Configuration.xml")) {
+                    hook_cancellation.cancel();
+                }
+            },
+            || {
+                super::InfrastructureApplicationPorts::new().invoke_handler(
+                    tool,
+                    &args,
+                    &context,
+                    false,
+                    &cancellation,
+                )
+            },
+        )
+        .unwrap();
+
+        assert!(!outcome.adapter.ok, "{:?}", outcome.adapter);
+        assert!(
+            outcome
+                .adapter
+                .errors
+                .iter()
+                .any(|error| error.starts_with("cancelled:")),
+            "{:?}",
+            outcome.adapter
+        );
+        assert!(outcome.data.is_none());
+    }
+
+    #[test]
+    fn subsystem_info_native_path_observes_terminal_cancellation_after_identity_proofs() {
+        let (_root, context, mut args) = subsystem_info_fixture("unica-subsystem-terminal-cancel");
+        args.insert(
+            "SubsystemPath".to_string(),
+            serde_json::Value::String("Subsystems/Sales.xml".to_string()),
+        );
+        let cancellation = CancellationToken::new();
+        let hook_cancellation = cancellation.clone();
+        let mut tool = spec(
+            "unica.subsystem.info",
+            ToolHandler::NativeOperation {
+                operation: "subsystem-info",
+                event: None,
+            },
+        );
+        tool.mutating = false;
+
+        let outcome = with_secure_tree_test_hook(
+            move |phase| {
+                if phase == &SecureTreePhase::AfterFinalIdentityProofs {
+                    hook_cancellation.cancel();
+                }
+            },
+            || {
+                super::InfrastructureApplicationPorts::new().invoke_handler(
+                    tool,
+                    &args,
+                    &context,
+                    false,
+                    &cancellation,
+                )
+            },
+        )
+        .unwrap();
+
+        assert!(!outcome.adapter.ok, "{:?}", outcome.adapter);
+        assert!(
+            outcome
+                .adapter
+                .errors
+                .iter()
+                .any(|error| error.starts_with("cancelled:")),
+            "{:?}",
+            outcome.adapter
+        );
+        assert!(outcome.data.is_none());
+    }
+
+    #[test]
+    fn subsystem_info_typed_invocation_rejects_an_exhausted_deadline() {
+        let (_root, context, args) = subsystem_info_fixture("unica-subsystem-expired-deadline");
+        let cancellation = CancellationToken::new();
+
+        let outcome = super::NativeOperationAdapter::invoke_with_data(
+            "subsystem-info",
+            "unica.subsystem.info",
+            &args,
+            &context,
+            false,
+            false,
+            NativeInvocationControl::new(
+                &cancellation,
+                ProviderDeadline::new(Instant::now() - Duration::from_millis(1)),
+            ),
+        )
+        .unwrap();
+
+        assert!(!outcome.adapter.ok, "{:?}", outcome.adapter);
+        assert!(
+            outcome
+                .adapter
+                .errors
+                .iter()
+                .any(|error| error.contains("provider deadline exceeded")),
+            "{:?}",
+            outcome.adapter
+        );
+        assert!(outcome.data.is_none());
     }
 
     #[test]

@@ -2,7 +2,10 @@
 
 use crate::application::operation_descriptors::SUBSYSTEM_PATH;
 use crate::application::AdapterOutcome;
+use crate::domain::cancellation::{cancelled_error, CancellationToken};
+use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::format_profile::{classify_root_version, FormatCompatibility};
+use crate::domain::subsystem::SubsystemAddress;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform_xml_owner::root_version_literal;
 use crate::infrastructure::subsystem_topology::{
@@ -13,7 +16,7 @@ use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs;
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -297,24 +300,8 @@ pub(crate) fn subsystem_validation_format_dependency_paths(
     paths
 }
 
-fn collect_subsystem_tree_format_dependency_paths(
-    xml_path: &Path,
-    paths: &mut Vec<PathBuf>,
-) -> Result<(), String> {
-    paths.push(xml_path.to_path_buf());
-    let (data, _) = load_subsystem_info_data(xml_path)?;
-    let subsystems_dir = subsystem_dir_for_xml(xml_path).join("Subsystems");
-    for child_name in data.child_names {
-        let child_xml = subsystems_dir.join(format!("{child_name}.xml"));
-        if child_xml.is_file() {
-            collect_subsystem_tree_format_dependency_paths(&child_xml, paths)?;
-        }
-    }
-    Ok(())
-}
-
 /// Return the exact platform XML documents whose contents the public
-/// subsystem read handlers inspect for the requested mode.
+/// subsystem read handlers inspect for the requested path semantics.
 pub(crate) fn subsystem_read_format_dependency_paths(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -334,82 +321,35 @@ pub(crate) fn subsystem_read_format_dependency_paths(
         return Ok(Vec::new());
     }
 
-    let mode = string_arg(args, &["mode", "Mode"]).unwrap_or("overview");
-    match mode {
-        "tree" => {
-            let name_filter = string_arg(args, &["name", "Name"]).unwrap_or("");
-            let mut paths = Vec::new();
-            if path.is_dir() {
-                let mut files = fs::read_dir(&path)
-                    .map_err(|error| format!("failed to read {}: {error}", path.display()))?
-                    .filter_map(Result::ok)
-                    .map(|entry| entry.path())
-                    .filter(|entry| {
-                        entry.is_file()
-                            && entry
-                                .extension()
-                                .and_then(|value| value.to_str())
-                                .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
-                    })
-                    .collect::<Vec<_>>();
-                files.sort_by_key(|entry| {
-                    entry
-                        .file_name()
-                        .and_then(|value| value.to_str())
-                        .unwrap_or("")
-                        .to_lowercase()
-                });
-                if !name_filter.is_empty() {
-                    files.retain(|entry| {
-                        entry.file_stem().and_then(|value| value.to_str()) == Some(name_filter)
-                    });
-                    if files.is_empty() {
-                        return Err(format!(
-                            "[ERROR] Subsystem '{name_filter}' not found in {}",
-                            path.display()
-                        ));
-                    }
-                }
-                for file in files {
-                    if collect_subsystem_tree_format_dependency_paths(&file, &mut paths).is_err() {
-                        // The handler stops at this same malformed descriptor.
-                        // Retain the exact prefix already read so its versions
-                        // still reach the read-only format warning.
-                        break;
-                    }
-                }
-            } else {
-                if !path.is_file() {
-                    return Err(format!("[ERROR] File not found: {}", path.display()));
-                }
-                let _ = collect_subsystem_tree_format_dependency_paths(&path, &mut paths);
-            }
-            paths.sort();
-            paths.dedup();
-            Ok(paths)
-        }
-        "ci" => {
-            if path.is_dir() {
-                return Err(
-                    "[ERROR] ci mode requires a subsystem .xml file, not a directory".to_string(),
-                );
-            }
-            let descriptor = resolve_subsystem_info_xml(path, false)?;
-            Ok(vec![
-                descriptor.clone(),
-                subsystem_command_interface_path(&descriptor),
-            ])
-        }
-        "full" => {
-            let descriptor = resolve_subsystem_info_xml(path, true)?;
-            Ok(vec![
-                descriptor.clone(),
-                subsystem_command_interface_path(&descriptor),
-            ])
-        }
-        "overview" | "content" => Ok(vec![resolve_subsystem_info_xml(path, true)?]),
-        _ => Ok(Vec::new()),
+    if path.is_dir() && path.file_name().and_then(|name| name.to_str()) == Some("Subsystems") {
+        let (source_root, parent_address) = subsystem_tree_scope(&path)?;
+        let topology = capture_registered_subsystem_topology(&source_root, || Ok(()))
+            .map_err(|error| error.to_string())?;
+        scoped_subsystem_nodes(&topology.roots, &parent_address)?;
+        return Ok(topology
+            .dependency_paths()
+            .iter()
+            .map(|path| source_root.join(path))
+            .collect());
     }
+
+    let descriptor = resolve_subsystem_info_xml(path, true)?;
+    let mut paths = Vec::new();
+    if let Some((source_root, _, _)) = subsystem_descriptor_scope(&descriptor)? {
+        let topology = capture_registered_subsystem_topology(&source_root, || Ok(()))
+            .map_err(|error| error.to_string())?;
+        paths.extend(
+            topology
+                .dependency_paths()
+                .iter()
+                .map(|path| source_root.join(path)),
+        );
+    }
+    if !paths.contains(&descriptor) {
+        paths.push(descriptor.clone());
+    }
+    paths.push(subsystem_command_interface_path(&descriptor));
+    Ok(paths)
 }
 
 fn require_subsystem_validation(outcome: &AdapterOutcome) -> Result<(), String> {
@@ -1477,6 +1417,7 @@ pub(crate) fn validate_subsystem_owner_path(
 #[cfg(test)]
 mod subsystem_info_typed_result_tests {
     use super::*;
+    use crate::infrastructure::platform::testing::create_dir_symlink_for_test;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn workspace(name: &str, with_command_interface: bool) -> (WorkspaceContext, PathBuf) {
@@ -1500,10 +1441,11 @@ mod subsystem_info_typed_result_tests {
             )
             .unwrap();
         }
+        let physical_root = root.canonicalize().unwrap();
         let context = WorkspaceContext {
-            cwd: root.clone(),
-            workspace_root: root.clone(),
-            cache_root: root.join(".build/unica"),
+            cwd: physical_root.clone(),
+            workspace_root: physical_root.clone(),
+            cache_root: physical_root.join(".build/unica"),
             workspace_epoch: 1,
         };
         (context, root)
@@ -1514,6 +1456,29 @@ mod subsystem_info_typed_result_tests {
             "SubsystemPath".to_string(),
             json!("src/Subsystems/Продажи.xml"),
         )])
+    }
+
+    fn write_configuration(root: &Path, registrations: &[&str]) {
+        let registrations = registrations
+            .iter()
+            .map(|name| format!("<Subsystem>{name}</Subsystem>"))
+            .collect::<String>();
+        fs::write(
+            root.join("Configuration.xml"),
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Test</Name></Properties><ChildObjects>{registrations}</ChildObjects></Configuration></MetaDataObject>"#
+            ),
+        )
+        .unwrap();
+    }
+
+    fn create_directory_symlink_or_skip(target: &Path, link: &Path) -> bool {
+        match create_dir_symlink_for_test(target, link) {
+            Some(Ok(())) => true,
+            Some(Err(error)) if error.raw_os_error() == Some(1314) => false,
+            Some(Err(error)) => panic!("failed to create directory symlink fixture: {error}"),
+            None => false,
+        }
     }
 
     /// `Mode=tree` answered the hierarchy question; typing must not drop the
@@ -1700,6 +1665,115 @@ mod subsystem_info_typed_result_tests {
     }
 
     #[test]
+    fn unregistered_alias_keeps_local_data_without_borrowing_a_registered_tree() {
+        let (context, root) = workspace("unregistered-alias", false);
+        let source_root = root.join("src");
+        write_configuration(&source_root, &["Sales"]);
+        fs::write(
+            source_root.join("Subsystems/Sales.xml"),
+            child_subsystem_stub_xml("Sales", "2.20"),
+        )
+        .unwrap();
+        fs::write(
+            source_root.join("Subsystems/Copy.xml"),
+            child_subsystem_stub_xml("Sales", "2.20"),
+        )
+        .unwrap();
+        let args = Map::from_iter([(
+            "SubsystemPath".to_string(),
+            json!("src/Subsystems/Copy.xml"),
+        )]);
+
+        let execution = analyze_subsystem_info(&args, &context);
+
+        assert!(execution.outcome.ok, "{:?}", execution.outcome);
+        let SubsystemInfoAnswer::Subsystem(data) = execution
+            .data
+            .expect("the alias remains readable local data")
+        else {
+            panic!("a concrete XML must answer with local subsystem data");
+        };
+        assert_eq!(data.name, "Sales");
+        assert!(
+            data.tree.is_none(),
+            "an unregistered file stem cannot borrow the registered Sales identity"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn root_subsystems_symlink_is_not_followed_for_a_tree_answer() {
+        let (context, root) = workspace("root-symlink", false);
+        let source_root = root.join("src");
+        fs::remove_dir_all(source_root.join("Subsystems")).unwrap();
+        write_configuration(&source_root, &["Sales"]);
+
+        let external = root.join("external-root");
+        fs::create_dir_all(external.join("Subsystems")).unwrap();
+        write_configuration(&external, &["Sales"]);
+        fs::write(
+            external.join("Subsystems/Sales.xml"),
+            child_subsystem_stub_xml("Sales", "2.20"),
+        )
+        .unwrap();
+        if !create_directory_symlink_or_skip(
+            &external.join("Subsystems"),
+            &source_root.join("Subsystems"),
+        ) {
+            let _ = fs::remove_dir_all(root);
+            return;
+        }
+        let args = Map::from_iter([("SubsystemPath".to_string(), json!("src/Subsystems"))]);
+
+        let execution = analyze_subsystem_info(&args, &context);
+
+        assert!(!execution.outcome.ok, "{:?}", execution.outcome);
+        assert!(execution.data.is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn nested_subsystems_symlink_is_not_followed_for_a_tree_answer() {
+        let (context, root) = workspace("nested-symlink", false);
+        let source_root = root.join("src");
+        write_configuration(&source_root, &["Root"]);
+        fs::write(
+            source_root.join("Subsystems/Root.xml"),
+            child_subsystem_stub_xml("Root", "2.20").replacen(
+                "<ChildObjects/>",
+                "<ChildObjects><Subsystem>Child</Subsystem></ChildObjects>",
+                1,
+            ),
+        )
+        .unwrap();
+
+        let external = root.join("external-nested");
+        fs::create_dir_all(external.join("Subsystems")).unwrap();
+        write_configuration(&external, &["Child"]);
+        fs::write(
+            external.join("Subsystems/Child.xml"),
+            child_subsystem_stub_xml("Child", "2.20"),
+        )
+        .unwrap();
+        let nested = source_root.join("Subsystems/Root/Subsystems");
+        fs::create_dir_all(nested.parent().unwrap()).unwrap();
+        if !create_directory_symlink_or_skip(&external.join("Subsystems"), &nested) {
+            let _ = fs::remove_dir_all(root);
+            return;
+        }
+        let args = Map::from_iter([(
+            "SubsystemPath".to_string(),
+            json!("src/Subsystems/Root/Subsystems"),
+        )]);
+
+        let execution = analyze_subsystem_info(&args, &context);
+
+        assert!(!execution.outcome.ok, "{:?}", execution.outcome);
+        assert!(execution.data.is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn subsystem_info_answers_content_and_command_interface_at_once() {
         let (context, root) = workspace("full", true);
 
@@ -1747,6 +1821,44 @@ pub(crate) fn analyze_subsystem_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> SubsystemInfoExecution {
+    analyze_subsystem_info_with_checkpoint(args, context, || Ok(()))
+}
+
+pub(crate) fn analyze_subsystem_info_cancellable(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+    cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
+) -> SubsystemInfoExecution {
+    analyze_subsystem_info_with_checkpoint(args, context, || {
+        subsystem_info_checkpoint(cancellation, deadline)
+    })
+}
+
+fn subsystem_info_checkpoint(
+    cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
+) -> io::Result<()> {
+    if cancellation.is_cancelled() {
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            cancelled_error("unica.subsystem.info stopped during registered topology read"),
+        ));
+    }
+    if deadline.remaining().is_zero() {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "unica.subsystem.info provider deadline exceeded",
+        ));
+    }
+    Ok(())
+}
+
+fn analyze_subsystem_info_with_checkpoint(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+    mut checkpoint: impl FnMut() -> io::Result<()>,
+) -> SubsystemInfoExecution {
     let result = (|| -> Result<(SubsystemInfoAnswer, PathBuf, String), String> {
         let raw_path = required_path(args, SUBSYSTEM_PATH, "SubsystemPath")?;
         let path = absolutize(raw_path, &context.cwd);
@@ -1754,7 +1866,7 @@ pub(crate) fn analyze_subsystem_info(
         // directory resolves to its own XML like before.
         if path.is_dir() && path.file_name().and_then(|name| name.to_str()) == Some("Subsystems") {
             let (source_root, parent_address) = subsystem_tree_scope(&path)?;
-            let topology = capture_registered_subsystem_topology(&source_root, || Ok(()))
+            let topology = capture_registered_subsystem_topology(&source_root, &mut checkpoint)
                 .map_err(|error| error.to_string())?;
             let nodes = scoped_subsystem_nodes(&topology.roots, &parent_address)?;
             let tree = nodes.iter().map(subsystem_tree_node).collect::<Vec<_>>();
@@ -1766,7 +1878,7 @@ pub(crate) fn analyze_subsystem_info(
         }
         let xml_path = resolve_subsystem_info_xml(path, true)?;
         let (data, _) = load_subsystem_info_data(&xml_path)?;
-        let tree = focused_subsystem_context_tree(&xml_path, &data.name);
+        let tree = focused_subsystem_context_tree(&xml_path, &data.name, &mut checkpoint)?;
         // Overview, content, ci and full were slices of one subsystem chosen to
         // keep a printed report short. Data carries all of them at once.
         let result = SubsystemInfoResult {
@@ -1923,14 +2035,73 @@ fn subsystem_tree_node(node: &SubsystemTopologyNode) -> SubsystemTreeNode {
 fn focused_subsystem_context_tree(
     descriptor: &Path,
     subsystem_name: &str,
-) -> Option<Vec<SubsystemTreeNode>> {
-    let (source_root, mut address_names) = subsystem_tree_scope(descriptor.parent()?).ok()?;
-    address_names.push(subsystem_name.to_string());
-    let topology = capture_registered_subsystem_topology(&source_root, || Ok(())).ok()?;
-    Some(vec![focused_subsystem_tree_node(
-        &topology.roots,
-        &address_names,
-    )?])
+    mut checkpoint: impl FnMut() -> io::Result<()>,
+) -> Result<Option<Vec<SubsystemTreeNode>>, String> {
+    let Some((source_root, address_names, address)) = subsystem_descriptor_scope(descriptor)?
+    else {
+        return Ok(None);
+    };
+    let topology = capture_registered_subsystem_topology(&source_root, &mut checkpoint)
+        .map_err(|error| error.to_string())?;
+    let Some(registered) = subsystem_node_by_address(&topology.roots, &address) else {
+        return Ok(None);
+    };
+    let file_name = address_names
+        .last()
+        .expect("a subsystem address always has a leaf");
+    if file_name != subsystem_name || registered.name != *file_name {
+        return Err(format!(
+            "registered subsystem `{address}` declares Name `{subsystem_name}` instead of `{file_name}`"
+        ));
+    }
+    let tree = focused_subsystem_tree_node(&topology.roots, &address_names).ok_or_else(|| {
+        format!("registered subsystem `{address}` is missing from the captured topology")
+    })?;
+    Ok(Some(vec![tree]))
+}
+
+fn subsystem_node_by_address<'a>(
+    nodes: &'a [SubsystemTopologyNode],
+    address: &SubsystemAddress,
+) -> Option<&'a SubsystemTopologyNode> {
+    for node in nodes {
+        if node.address == *address {
+            return Some(node);
+        }
+        if let Some(found) = subsystem_node_by_address(&node.children, address) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn subsystem_descriptor_scope(
+    descriptor: &Path,
+) -> Result<Option<(PathBuf, Vec<String>, SubsystemAddress)>, String> {
+    let Some(parent) = descriptor.parent() else {
+        return Ok(None);
+    };
+    if parent.file_name().and_then(|name| name.to_str()) != Some("Subsystems") {
+        return Ok(None);
+    }
+    let (source_root, mut address_names) = subsystem_tree_scope(parent)?;
+    match fs::symlink_metadata(source_root.join("Configuration.xml")) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "failed to inspect Configuration.xml for subsystem scope: {error}"
+            ))
+        }
+    }
+    let file_name = descriptor
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "subsystem descriptor has a non-Unicode file name".to_string())?;
+    address_names.push(file_name.to_string());
+    let address = SubsystemAddress::from_names(address_names.iter().map(String::as_str))
+        .map_err(|error| error.to_string())?;
+    Ok(Some((source_root, address_names, address)))
 }
 
 fn focused_subsystem_tree_node(
@@ -1951,9 +2122,6 @@ fn focused_subsystem_tree_node(
 }
 
 fn subsystem_tree_scope(path: &Path) -> Result<(PathBuf, Vec<String>), String> {
-    let path = path
-        .canonicalize()
-        .map_err(|error| format!("failed to resolve Subsystems directory: {error}"))?;
     let subsystem_ancestors = path
         .ancestors()
         .filter(|ancestor| {

@@ -10593,6 +10593,8 @@ pub(crate) fn invoke_mutation(
 mod tests {
     use super::*;
     use crate::application::UnicaApplication;
+    use crate::domain::cancellation::CancellationToken;
+    use crate::domain::code_intelligence::ProviderDeadline;
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::native_operations::compile_transaction::{
         with_commit_failpoint, CommitFailpoint,
@@ -10600,11 +10602,12 @@ mod tests {
     use crate::infrastructure::native_operations::single_file_publisher::{
         with_before_commit_hook, with_publish_failpoints, PublishCheckpoint,
     };
+    use crate::infrastructure::native_operations::typed_result::NativeInvocationControl;
     use crate::infrastructure::native_operations::NativeOperationAdapter;
     use serde_json::{json, Map};
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     #[test]
     fn generated_form_module_uses_the_8_3_27_crlf_serialization() {
@@ -18599,6 +18602,7 @@ mod tests {
                 ),
             ]);
 
+            let cancellation = CancellationToken::new();
             let outcome = NativeOperationAdapter::invoke_with_data(
                 "form-edit",
                 "unica.form.edit",
@@ -18606,6 +18610,10 @@ mod tests {
                 &context,
                 true,
                 true,
+                NativeInvocationControl::new(
+                    &cancellation,
+                    ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),
+                ),
             )
             .unwrap()
             .adapter;

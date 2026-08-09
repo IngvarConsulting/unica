@@ -31,6 +31,7 @@ pub(crate) enum SecureTreePhase {
     BeforeReadEntry(PathBuf),
     BeforeRebindEntry(PathBuf),
     AfterRebindEntry(PathBuf),
+    AfterFinalIdentityProofs,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -232,6 +233,7 @@ impl RetainedRootSecureRead {
             )?;
         }
         prove_directory_path(&self.root, &mut checkpoint)?;
+        emit_tree_phase(SecureTreePhase::AfterFinalIdentityProofs);
         checkpoint()
     }
 

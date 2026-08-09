@@ -6243,6 +6243,135 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    fn subsystem_format_guard_workspace(
+        prefix: &str,
+    ) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        let root = test_workspace_root(prefix);
+        let workspace = root.join("workspace");
+        let source = workspace.join("src");
+        let child = source.join("Subsystems/Parent/Subsystems/Child.xml");
+        std::fs::create_dir_all(child.parent().unwrap()).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Test</Name></Properties><ChildObjects><Subsystem>Parent</Subsystem></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Subsystems/Parent.xml"),
+            crate::infrastructure::native_operations::subsystem::child_subsystem_stub_xml(
+                "Parent", "2.20",
+            )
+            .replacen(
+                "<ChildObjects/>",
+                "<ChildObjects><Subsystem>Child</Subsystem></ChildObjects>",
+                1,
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            &child,
+            crate::infrastructure::native_operations::subsystem::child_subsystem_stub_xml(
+                "Child", "2.21",
+            ),
+        )
+        .unwrap();
+        let physical_workspace = workspace.canonicalize().unwrap();
+        (root, physical_workspace, child)
+    }
+
+    fn assert_public_subsystem_format_warning(
+        workspace: &std::path::Path,
+        subsystem_path: &str,
+        child: &std::path::Path,
+    ) {
+        let args = Map::from_iter([
+            (
+                "cwd".to_string(),
+                Value::String(workspace.canonicalize().unwrap().display().to_string()),
+            ),
+            (
+                "SubsystemPath".to_string(),
+                Value::String(subsystem_path.to_string()),
+            ),
+        ]);
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.subsystem.info", &args)
+            .unwrap();
+
+        assert!(result.ok, "{result:?}");
+        assert!(!result.warnings.is_empty(), "{result:?}");
+        let diagnostic = &result.diagnostics.as_ref().unwrap()["formatCompatibility"];
+        assert_eq!(diagnostic["actualFormat"], "2.21", "{result:?}");
+        assert_eq!(
+            normalized_path(&std::path::PathBuf::from(
+                diagnostic["root"].as_str().unwrap()
+            )),
+            normalized_path(child)
+        );
+    }
+
+    #[test]
+    fn public_subsystem_format_guard_covers_registered_descendants_for_a_directory_without_mode() {
+        let (root, workspace, child) =
+            subsystem_format_guard_workspace("unica-subsystem-format-directory");
+
+        assert_public_subsystem_format_warning(&workspace, "src/Subsystems", &child);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn public_subsystem_format_guard_covers_registered_descendants_for_a_file_without_mode() {
+        let (root, workspace, child) =
+            subsystem_format_guard_workspace("unica-subsystem-format-file");
+
+        assert_public_subsystem_format_warning(&workspace, "src/Subsystems/Parent.xml", &child);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn public_subsystem_format_guard_propagates_registered_dependency_resolution_errors() {
+        let root = test_workspace_root("unica-subsystem-format-resolver-error");
+        let workspace = root.join("workspace");
+        let source = workspace.join("src");
+        std::fs::create_dir_all(source.join("Subsystems")).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Test</Name></Properties><ChildObjects><Subsystem>Missing</Subsystem></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        let args = Map::from_iter([
+            (
+                "cwd".to_string(),
+                Value::String(workspace.canonicalize().unwrap().display().to_string()),
+            ),
+            (
+                "SubsystemPath".to_string(),
+                Value::String("src/Subsystems".to_string()),
+            ),
+        ]);
+
+        let error = UnicaApplication::new()
+            .call_tool("unica.subsystem.info", &args)
+            .expect_err("format dependency resolution must fail before the handler");
+
+        assert!(error.contains("registered subsystem descriptor"), "{error}");
+        assert!(error.contains("Subsystems/Missing.xml"), "{error}");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn numeric_equivalent_noncanonical_format_warns_on_read_and_blocks_public_mutator() {
         for (index, raw) in ["2.20.0", "02.20", "2.020"].into_iter().enumerate() {

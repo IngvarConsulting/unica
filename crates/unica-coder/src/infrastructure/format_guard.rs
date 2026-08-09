@@ -428,11 +428,9 @@ fn add_operation_format_dependencies(
         }
         "interface-edit" => add_interface_format_dependencies(args, context, paths),
         "subsystem-info" | "subsystem-validate" => {
-            if let Ok(dependencies) =
-                subsystem_read_format_dependency_paths(args, context, operation)
-            {
-                paths.extend(dependencies);
-            }
+            paths.extend(subsystem_read_format_dependency_paths(
+                args, context, operation,
+            )?);
         }
         "subsystem-compile" => add_subsystem_compile_format_dependencies(args, context, paths)?,
         "subsystem-edit" => add_subsystem_edit_format_dependencies(args, context, paths)?,
@@ -2680,7 +2678,20 @@ mod tests {
             std::process::id()
         ));
         let config_path = config(&root, Some("2.19"));
-        let src = config_path.parent().unwrap();
+        let src = config_path.parent().unwrap().canonicalize().unwrap();
+        std::fs::write(
+            src.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.19"><Configuration><Properties><Name>Test</Name></Properties><ChildObjects><Subsystem>Sales</Subsystem></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(src.join("Subsystems")).unwrap();
+        std::fs::write(
+            src.join("Subsystems/Sales.xml"),
+            crate::infrastructure::native_operations::subsystem::child_subsystem_stub_xml(
+                "Sales", "2.19",
+            ),
+        )
+        .unwrap();
         let cases = [
             (
                 "unica.form.info",
@@ -3517,9 +3528,16 @@ mod tests {
             "unica-format-guard-subsystem-tree-child-{}",
             std::process::id()
         ));
-        let parent = root.join("Subsystems/Parent.xml");
-        let child = root.join("Subsystems/Parent/Subsystems/Child.xml");
+        std::fs::create_dir_all(&root).unwrap();
+        let physical_root = root.canonicalize().unwrap();
+        let parent = physical_root.join("Subsystems/Parent.xml");
+        let child = physical_root.join("Subsystems/Parent/Subsystems/Child.xml");
         std::fs::create_dir_all(child.parent().unwrap()).unwrap();
+        std::fs::write(
+            physical_root.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Test</Name></Properties><ChildObjects><Subsystem>Parent</Subsystem></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
         let parent_xml =
             crate::infrastructure::native_operations::subsystem::child_subsystem_stub_xml(
                 "Parent", "2.20",
