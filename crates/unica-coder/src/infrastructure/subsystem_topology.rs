@@ -31,11 +31,11 @@ pub(crate) struct SubsystemTopologyNode {
 
 impl SubsystemTopology {
     pub(crate) fn functional_addresses(&self) -> Vec<SubsystemAddress> {
-        collect_addresses(&self.roots, EffectiveSubsystemRole::Functional, None)
+        functional_addresses_in(&self.roots)
     }
 
     pub(crate) fn interface_addresses(&self) -> Vec<SubsystemAddress> {
-        collect_addresses(&self.roots, EffectiveSubsystemRole::Interface, None)
+        interface_addresses_in(&self.roots)
     }
 
     pub(crate) fn interface_memberships(&self, object_ref: &str) -> Vec<SubsystemAddress> {
@@ -45,6 +45,14 @@ impl SubsystemTopology {
             Some(object_ref),
         )
     }
+}
+
+pub(crate) fn functional_addresses_in(nodes: &[SubsystemTopologyNode]) -> Vec<SubsystemAddress> {
+    collect_addresses(nodes, EffectiveSubsystemRole::Functional, None)
+}
+
+pub(crate) fn interface_addresses_in(nodes: &[SubsystemTopologyNode]) -> Vec<SubsystemAddress> {
+    collect_addresses(nodes, EffectiveSubsystemRole::Interface, None)
 }
 
 fn collect_addresses(
