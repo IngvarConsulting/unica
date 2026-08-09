@@ -2,6 +2,7 @@ pub(crate) mod application_ports;
 pub(crate) mod bsl_outline;
 pub(crate) mod bundled_tools;
 pub(crate) mod code_intelligence;
+pub(crate) mod documentation_policy;
 pub(crate) mod format_guard;
 pub mod internal_adapters;
 pub(crate) mod metadata_kinds;
