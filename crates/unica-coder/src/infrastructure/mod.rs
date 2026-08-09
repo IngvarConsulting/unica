@@ -4,6 +4,10 @@ pub(crate) mod bundled_tools;
 pub(crate) mod code_intelligence;
 pub(crate) mod configuration_help;
 pub(crate) mod documentation_policy;
+// Ядро потребляется поставщиками документации в следующих слайсах этой же
+// серии (#415); до их приземления модуль жив только тестами.
+#[allow(dead_code)]
+pub(crate) mod documentation_retrieval;
 pub(crate) mod format_guard;
 pub mod internal_adapters;
 pub(crate) mod kb_1ci;
