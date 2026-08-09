@@ -1,5 +1,8 @@
 use super::{OperationResult, UnicaApplication};
-use crate::composition::testing::{with_registrar_processing_hook, RegistrarProcessingPhase};
+use crate::composition::testing::{
+    with_registrar_processing_hook, with_subsystem_evidence_processing_hook,
+    RegistrarProcessingPhase, SubsystemEvidenceProcessingPhase,
+};
 use crate::domain::cancellation::CancellationToken;
 use crate::test_support::ProcessCwdGuard;
 use serde_json::{Map, Value};
@@ -1046,11 +1049,55 @@ fn meta_info_post_capture_cancellation_before_complete_return_is_provider_unavai
 
 const COMMAND_INTERFACE_RULE: &str = "reaches no command interface section";
 
-fn write_subsystem(workspace: &Path, relative_dir: &str, name: &str, include: &str, content: &str) {
+fn append_subsystem_registration(path: &Path, name: &str) {
+    let xml = std::fs::read_to_string(path).unwrap();
+    let closing = xml
+        .rfind("</ChildObjects>")
+        .expect("registration owner has ChildObjects");
+    let mut updated = xml;
+    updated.insert_str(closing, &format!("<Subsystem>{name}</Subsystem>"));
+    std::fs::write(path, updated).unwrap();
+}
+
+fn register_subsystem(workspace: &Path, relative_dir: &str, name: &str) {
+    let directory = Path::new(relative_dir);
+    assert_eq!(
+        directory.file_name().and_then(|value| value.to_str()),
+        Some("Subsystems")
+    );
+    let owner = if directory == Path::new("src/Subsystems") {
+        workspace.join("src/Configuration.xml")
+    } else {
+        let relative_owner = directory
+            .parent()
+            .expect("nested Subsystems has a parent subsystem")
+            .with_extension("xml");
+        workspace.join(relative_owner)
+    };
+    append_subsystem_registration(&owner, name);
+}
+
+fn write_subsystem_file(
+    workspace: &Path,
+    relative_dir: &str,
+    file_name: &str,
+    descriptor_name: &str,
+    include: Option<&str>,
+    content: &str,
+    registered: bool,
+) {
+    if registered {
+        register_subsystem(workspace, relative_dir, file_name);
+    }
+    let include = include
+        .map(|value| {
+            format!("\t\t\t<IncludeInCommandInterface>{value}</IncludeInCommandInterface>\n")
+        })
+        .unwrap_or_default();
     let dir = workspace.join(relative_dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
-        dir.join(format!("{name}.xml")),
+        dir.join(format!("{file_name}.xml")),
         format!(
             concat!(
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
@@ -1061,25 +1108,38 @@ fn write_subsystem(workspace: &Path, relative_dir: &str, name: &str, include: &s
                 "\t<Subsystem uuid=\"77777777-7777-4777-8777-777777777777\">\n",
                 "\t\t<Properties>\n",
                 "\t\t\t<Name>{}</Name>\n",
-                "\t\t\t<IncludeInCommandInterface>{}</IncludeInCommandInterface>\n",
+                "{}",
                 "\t\t\t<Content>\n",
                 "{}",
                 "\t\t\t</Content>\n",
                 "\t\t</Properties>\n",
+                "\t\t<ChildObjects></ChildObjects>\n",
                 "\t</Subsystem>\n",
                 "</MetaDataObject>\n"
             ),
-            name, include, content
+            descriptor_name, include, content
         ),
     )
     .unwrap();
+}
+
+fn write_subsystem(workspace: &Path, relative_dir: &str, name: &str, include: &str, content: &str) {
+    write_subsystem_file(
+        workspace,
+        relative_dir,
+        name,
+        name,
+        Some(include),
+        content,
+        true,
+    );
 }
 
 fn content_item(reference: &str) -> String {
     format!("\t\t\t\t<xr:Item xsi:type=\"xr:MDObjectRef\">{reference}</xr:Item>\n")
 }
 
-fn register_command_interface_warnings(workspace: &Path, name: &str) -> Vec<String> {
+fn add_command_interface_register(workspace: &Path, name: &str) {
     {
         let _cwd = ProcessCwdGuard::enter(workspace).unwrap();
         let added = UnicaApplication::new()
@@ -1115,7 +1175,29 @@ fn register_command_interface_warnings(workspace: &Path, name: &str) -> Vec<Stri
             .unwrap();
         assert!(added.ok, "{name}: {:?}", added.errors);
     }
-    let result = call_info_path(workspace, &format!("InformationRegister.{name}"), []);
+}
+
+fn register_command_interface_result(workspace: &Path, name: &str) -> OperationResult {
+    add_command_interface_register(workspace, name);
+    call_info_path(workspace, &format!("InformationRegister.{name}"), [])
+}
+
+fn register_command_interface_result_cancellable(
+    workspace: &Path,
+    name: &str,
+    cancellation: CancellationToken,
+) -> OperationResult {
+    add_command_interface_register(workspace, name);
+    call_info_path_cancellable(
+        workspace,
+        &format!("InformationRegister.{name}"),
+        [],
+        cancellation,
+    )
+}
+
+fn register_command_interface_warnings(workspace: &Path, name: &str) -> Vec<String> {
+    let result = register_command_interface_result(workspace, name);
     assert!(result.ok, "{name}: {:?}", result.errors);
     let data = result.data.expect("typed meta.info data");
     data["validation"]["diagnostics"]
@@ -1125,6 +1207,152 @@ fn register_command_interface_warnings(workspace: &Path, name: &str) -> Vec<Stri
         .filter(|diagnostic| diagnostic["severity"] == "warning")
         .map(|diagnostic| diagnostic["message"].as_str().unwrap().to_string())
         .collect()
+}
+
+#[test]
+fn info_does_not_treat_an_unregistered_subsystem_file_as_membership() {
+    let workspace = create_info_workspace("unregistered-subsystem");
+    write_subsystem_file(
+        workspace.path(),
+        "src/Subsystems",
+        "Stray",
+        "Stray",
+        Some("true"),
+        &content_item("InformationRegister.Unregistered"),
+        false,
+    );
+
+    let warnings = register_command_interface_warnings(workspace.path(), "Unregistered");
+
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.contains(COMMAND_INTERFACE_RULE)),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn info_reports_unavailable_when_a_registered_subsystem_descriptor_is_missing() {
+    let workspace = create_info_workspace("missing-registered-subsystem");
+    register_subsystem(workspace.path(), "src/Subsystems", "Missing");
+
+    let result = register_command_interface_result(workspace.path(), "MissingDescriptor");
+
+    assert!(!result.ok, "{:?}", result.data);
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+    assert!(!serde_json::to_string(&result.data)
+        .unwrap()
+        .contains(COMMAND_INTERFACE_RULE));
+}
+
+#[test]
+fn info_reports_unavailable_for_missing_or_noncanonical_subsystem_boolean() {
+    for (label, include) in [("missing", None), ("noncanonical", Some("True"))] {
+        let workspace = create_info_workspace(&format!("{label}-subsystem-boolean"));
+        write_subsystem_file(
+            workspace.path(),
+            "src/Subsystems",
+            "Sales",
+            "Sales",
+            include,
+            &content_item(&format!("InformationRegister.{label}")),
+            true,
+        );
+
+        let result = register_command_interface_result(workspace.path(), label);
+
+        assert!(!result.ok, "{label}: {:?}", result.data);
+        assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+        assert!(!serde_json::to_string(&result.data)
+            .unwrap()
+            .contains(COMMAND_INTERFACE_RULE));
+    }
+}
+
+#[test]
+fn info_reports_unavailable_when_registration_and_descriptor_names_disagree() {
+    let workspace = create_info_workspace("renamed-registered-subsystem");
+    write_subsystem_file(
+        workspace.path(),
+        "src/Subsystems",
+        "Sales",
+        "Renamed",
+        Some("true"),
+        &content_item("InformationRegister.RenamedDescriptor"),
+        true,
+    );
+
+    let result = register_command_interface_result(workspace.path(), "RenamedDescriptor");
+
+    assert!(!result.ok, "{:?}", result.data);
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+    assert!(!serde_json::to_string(&result.data)
+        .unwrap()
+        .contains(COMMAND_INTERFACE_RULE));
+}
+
+#[test]
+fn subsystem_evidence_cancellation_after_registered_topology_is_unavailable() {
+    let workspace = create_info_workspace("subsystem-final-cancel");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Sales",
+        "true",
+        &content_item("InformationRegister.FinalCancel"),
+    );
+    let cancellation = CancellationToken::new();
+    let cancellation_for_hook = cancellation.clone();
+
+    let result = with_subsystem_evidence_processing_hook(
+        move |phase| {
+            if phase == &SubsystemEvidenceProcessingPhase::BeforeCompleteReturn {
+                cancellation_for_hook.cancel();
+            }
+        },
+        || {
+            register_command_interface_result_cancellable(
+                workspace.path(),
+                "FinalCancel",
+                cancellation,
+            )
+        },
+    );
+
+    assert!(!result.ok, "{:?}", result.data);
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+    assert!(!serde_json::to_string(&result.data)
+        .unwrap()
+        .contains(COMMAND_INTERFACE_RULE));
+}
+
+#[test]
+fn subsystem_evidence_cancellation_after_empty_topology_is_unavailable() {
+    let workspace = create_info_workspace("empty-subsystem-final-cancel");
+    let cancellation = CancellationToken::new();
+    let cancellation_for_hook = cancellation.clone();
+
+    let result = with_subsystem_evidence_processing_hook(
+        move |phase| {
+            if phase == &SubsystemEvidenceProcessingPhase::BeforeCompleteReturn {
+                cancellation_for_hook.cancel();
+            }
+        },
+        || {
+            register_command_interface_result_cancellable(
+                workspace.path(),
+                "EmptyFinalCancel",
+                cancellation,
+            )
+        },
+    );
+
+    assert!(!result.ok, "{:?}", result.data);
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+    assert!(!serde_json::to_string(&result.data)
+        .unwrap()
+        .contains(COMMAND_INTERFACE_RULE));
 }
 
 #[test]

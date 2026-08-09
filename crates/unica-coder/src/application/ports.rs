@@ -20,6 +20,7 @@ use crate::domain::source_resources::{
     ResourceManifestPage, SourceReadResult, SourceResourceError,
 };
 use crate::domain::source_target::MetadataAddress;
+use crate::domain::subsystem::SubsystemAddress;
 use crate::domain::workspace::WorkspaceContext;
 use serde_json::{Map, Value};
 use std::fmt;
@@ -227,7 +228,15 @@ pub(crate) struct MetadataValidationSubject {
     /// `None` — подсистемы не просматривались: субъект ничего не утверждает о
     /// принадлежности регистра командному интерфейсу. Полнота по умолчанию
     /// сделала бы несобранное доказанным.
-    pub(crate) subsystem_evidence: Option<MetadataEvidenceAvailability>,
+    pub(crate) subsystem_evidence: Option<MetadataSubsystemEvidence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MetadataSubsystemEvidence {
+    Complete {
+        interface_subsystems: Vec<SubsystemAddress>,
+    },
+    Unavailable(Vec<MetaDiagnostic>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
