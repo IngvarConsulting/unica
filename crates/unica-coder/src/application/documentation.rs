@@ -37,11 +37,20 @@ fn status_fields(status: &DocumentationSectionStatus) -> (&'static str, Value) {
 /// Search is successful if at least one applicable provider answered `ok` or
 /// `empty`; if every section is `unavailable`/`failed`, the call reports an
 /// error instead of an empty-looking success (ADR-0029 point 13).
+///
+/// A blank query is refused here, before any provider is polled: substring
+/// matching makes the empty needle match every page, so a blank query would
+/// be answered with arbitrary pages presented as confident hits. That is
+/// worse than an error, and it is provider-neutral, so it belongs on this
+/// side of the contract rather than in one provider.
 pub fn search(
     registry: &DocumentationRegistry,
     request: &DocumentationSearchRequest,
     context: &DocumentationContext,
 ) -> Result<Value, String> {
+    if request.query.trim().is_empty() {
+        return Err("unica.documentation.search requires a non-blank query".to_string());
+    }
     let mut sections = Vec::new();
     let mut any_usable = false;
     for provider in registry.providers() {
@@ -208,6 +217,10 @@ mod tests {
         assert_eq!(sections[1]["provider"], "alpha");
         assert_eq!(sections[0]["sourceKind"], "platform-help");
         assert_eq!(sections[0]["authority"], "vendor");
+        // `corpus` is named by the invariant as one of the four provenance
+        // fields, yet nothing asserted it: renaming or dropping the key in the
+        // projection above used to pass every test in this file.
+        assert_eq!(sections[0]["corpus"], "syntax-context");
         assert_eq!(sections[0]["hits"][0]["applicableVersion"], "8.3.27.2074");
     }
 
@@ -229,6 +242,36 @@ mod tests {
         assert_eq!(sections[0]["status"], "failed");
         assert_eq!(sections[1]["status"], "ok");
         assert_eq!(sections[1]["hits"].as_array().expect("попадания").len(), 1);
+    }
+
+    /// A blank `query` passes the port's `as_str` check, and
+    /// `title.contains("")` is true for every page, so every page scores 1.0
+    /// and the caller is handed the first twenty pages of each corpus by path
+    /// order, presented as confident matches. Refusing is the only honest
+    /// answer, and it has to happen before any provider runs: a provider that
+    /// answered `ok` would make the call succeed.
+    #[test]
+    fn blank_query_is_refused_before_any_provider_runs() {
+        let registry = DocumentationRegistry::new(vec![Arc::new(Stub {
+            id: "working",
+            section: ok_section("working"),
+        })
+            as Arc<dyn DocumentationProvider>])
+        .expect("реестр");
+        for blank in ["", "   ", "\t\n"] {
+            let request = DocumentationSearchRequest {
+                query: blank.to_string(),
+                ..request()
+            };
+            let error = match search(&registry, &request, &context()) {
+                Ok(value) => panic!("пустой запрос обязан быть отклонён, получено {value}"),
+                Err(error) => error,
+            };
+            assert!(
+                error.contains("query"),
+                "отказ обязан назвать аргумент, получено {error}"
+            );
+        }
     }
 
     #[test]
