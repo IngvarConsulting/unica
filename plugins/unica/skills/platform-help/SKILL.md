@@ -41,7 +41,7 @@ description: "Справка платформы 1С и объектной мод
 
 ## MCP examples
 
-```jsonc
+```json
 {
   "jsonrpc": "2.0",
   "method": "tools/call",
@@ -56,7 +56,7 @@ description: "Справка платформы 1С и объектной мод
 }
 ```
 
-```jsonc
+```json
 {
   "jsonrpc": "2.0",
   "method": "tools/call",

@@ -413,6 +413,18 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                         .unwrap_or("ru")
                         .to_string(),
                 };
+                // Предпросмотр — до разрешения установки и опроса реестра:
+                // parity-тест исполняет каждый пример скилла с dryRun, и
+                // «сухой» вызов не должен ни читать установку машины, ни
+                // зависеть от того, стоит ли на ней платформа
+                // (INV-SKILL-EXECUTABLE-EXAMPLES). Разбор аргументов выше
+                // остаётся настоящим, чтобы сломанный пример падал и всухую.
+                if dry_run {
+                    return Ok(HandlerOutcome::plain(AdapterOutcome::ok(format!(
+                        "dry run: {} would poll the documentation provider registry",
+                        spec.name
+                    ))));
+                }
                 let requested_version = args.get("platformVersion").and_then(Value::as_str);
                 let context = documentation_context(
                     &crate::infrastructure::platform::full_dump_publication::default_platform_roots(
@@ -1019,6 +1031,7 @@ mod tests {
         );
     }
 
+
     #[test]
     fn select_platform_version_matches_the_requested_directory_name_exactly() {
         let versions = vec![
@@ -1284,8 +1297,13 @@ mod tests {
     }
 
     /// Слот подмены один на процесс, поэтому тесты, которые его пишут, идут по
-    /// одному, и подмена снимается на выходе даже при панике теста.
-    struct StandInGuard;
+    /// одному: страж несёт замок сериализации и держит его до конца теста, а
+    /// подмена снимается на выходе даже при панике теста. Без замка два
+    /// стенд-теста под параллельным прогоном перезаписывали бы слот друг
+    /// друга — тот же приём, что и `index_test_lock` у поставщика.
+    struct StandInGuard {
+        _serial: std::sync::MutexGuard<'static, ()>,
+    }
 
     impl Drop for StandInGuard {
         fn drop(&mut self) {
@@ -1296,12 +1314,14 @@ mod tests {
     }
 
     fn install_stand_in(provider: std::sync::Arc<RecordingProvider>) -> StandInGuard {
+        static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let serial = SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         *super::DOCUMENTATION_REGISTRY_STAND_IN
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(
             provider as std::sync::Arc<dyn crate::domain::documentation::DocumentationProvider>,
         );
-        StandInGuard
+        StandInGuard { _serial: serial }
     }
 
     /// `the_dispatcher_constrains_the_installation_by_the_projects_own_platform_pin`
@@ -1381,6 +1401,111 @@ mod tests {
         assert_eq!(
             data["sections"][0]["language"], "en",
             "локаль ответа обязана дойти обратно до публичного результата"
+        );
+    }
+
+    /// Каждый пример `tools/call` скилла исполняется parity-тестом как сухой
+    /// прогон MCP (`INV-SKILL-EXECUTABLE-EXAMPLES`), и до правки ветка
+    /// `Documentation` игнорировала `dry_run`: «сухой» вызов читал и
+    /// индексировал настоящую установку машины, а на машине без платформы
+    /// падал отказом реестра. Ответ сухого прогона обязан быть предпросмотром
+    /// до опроса поставщиков — как у `CliAdapter`, — и не зависеть от того,
+    /// какие платформы стоят на машине.
+    #[test]
+    fn the_documentation_branch_previews_instead_of_searching_on_dry_run() {
+        use crate::application::ports::ApplicationPorts;
+
+        let recorder = std::sync::Arc::new(RecordingProvider::default());
+        let _stand_in = install_stand_in(std::sync::Arc::clone(&recorder));
+
+        let dir = tempfile::tempdir().expect("каталог");
+        let workspace = dir.path().to_path_buf();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        let mut args = Map::new();
+        args.insert("query".to_string(), json!("СтрНайти"));
+
+        let outcome = super::InfrastructureApplicationPorts::new()
+            .invoke_handler(
+                spec(
+                    "unica.documentation.search",
+                    ToolHandler::Documentation {
+                        operation: "search",
+                    },
+                ),
+                &args,
+                &context,
+                true,
+                &crate::domain::cancellation::CancellationToken::default(),
+            )
+            .expect("сухой прогон обязан ответить успехом");
+
+        let seen = recorder
+            .seen
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(
+            seen.is_empty(),
+            "сухой прогон не должен опрашивать поставщиков, опрошено {} раз",
+            seen.len()
+        );
+        assert!(outcome.adapter.ok, "предпросмотр — успешный ответ");
+        assert!(
+            outcome.adapter.summary.contains("dry run"),
+            "ответ обязан называться сухим прогоном, получено {}",
+            outcome.adapter.summary
+        );
+        assert!(
+            outcome.data.is_none(),
+            "предпросмотр не публикует секций: их никто не искал"
+        );
+    }
+
+    /// Сухой прогон остаётся честным к аргументам: пример без обязательного
+    /// `query` обязан падать и в предпросмотре, иначе parity-тест пропустит
+    /// сломанный пример скилла.
+    #[test]
+    fn the_documentation_dry_run_still_requires_the_query_argument() {
+        use crate::application::ports::ApplicationPorts;
+
+        let recorder = std::sync::Arc::new(RecordingProvider::default());
+        let _stand_in = install_stand_in(std::sync::Arc::clone(&recorder));
+
+        let dir = tempfile::tempdir().expect("каталог");
+        let workspace = dir.path().to_path_buf();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        // `HandlerOutcome` не несёт `Debug`, поэтому `expect_err` не
+        // компилируется — тот же приём, что и в
+        // `domain::documentation::tests::duplicate_provider_ids_are_rejected`.
+        let error = match super::InfrastructureApplicationPorts::new().invoke_handler(
+            spec(
+                "unica.documentation.search",
+                ToolHandler::Documentation {
+                    operation: "search",
+                },
+            ),
+            &Map::new(),
+            &context,
+            true,
+            &crate::domain::cancellation::CancellationToken::default(),
+        ) {
+            Ok(_) => panic!("сухой прогон без query обязан отказывать"),
+            Err(error) => error,
+        };
+        assert!(
+            error.contains("query"),
+            "отказ обязан назвать недостающий аргумент, получено {error}"
         );
     }
 }
