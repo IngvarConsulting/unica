@@ -245,7 +245,18 @@ impl AddressProfile {
                 "metadata address prefix contains an empty segment",
             ));
         }
-        if parts.len() > 5 {
+        let subsystem_root = parts
+            .first()
+            .is_some_and(|part| canonical_kind(part).is_ok_and(|kind| kind == "Subsystem"));
+        // A flat subsystem address nests deeper than the general grammar, so a
+        // prefix over it must allow the same depth; otherwise navigation reads a
+        // valid target as unroutable and silently falls back to an unscoped scan.
+        let max_segments = if subsystem_root {
+            SUBSYSTEM_ADDRESS_MAX_SEGMENTS
+        } else {
+            5
+        };
+        if parts.len() > max_segments {
             return Err(SourceTargetError::invalid(
                 "metadata address prefix has an unsupported segment count",
             ));
@@ -271,6 +282,13 @@ impl AddressProfile {
                 "unknown metadata address prefix root `{}`",
                 parts[0]
             )));
+        }
+
+        if subsystem_root {
+            let mut canonical = Vec::with_capacity(parts.len());
+            canonical.push(canonical_kind(parts[0])?);
+            canonical.extend(parts[1..].iter().copied());
+            return Ok(MetadataAddressPrefix(canonical.join(".")));
         }
 
         let mut canonical = Vec::with_capacity(parts.len());
@@ -898,5 +916,30 @@ mod tests {
                 "targetKind": "metadataObject"
             })
         );
+    }
+
+    #[test]
+    fn flat_subsystem_addresses_and_their_prefixes_share_one_depth() {
+        let deep = "Subsystem.A.B.C.D.E";
+        assert_eq!(
+            AddressProfile::new(PLATFORM_XML_8_3_27_FORMAT_2_20)
+                .unwrap()
+                .parse(deep)
+                .unwrap()
+                .as_str(),
+            deep
+        );
+        // A prefix over a valid flat address must stay routable, otherwise
+        // navigation falls back to an unscoped scan for a target it can address.
+        assert_eq!(
+            MetadataAddressPrefix::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, deep)
+                .unwrap()
+                .as_str(),
+            deep
+        );
+        assert!(AddressProfile::new(PLATFORM_XML_8_3_27_FORMAT_2_20)
+            .unwrap()
+            .parse("Subsystem.A.B.C.D.E.F.G.H")
+            .is_err());
     }
 }

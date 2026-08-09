@@ -942,7 +942,7 @@ fn add_does_not_judge_subsystem_membership() {
     assert!(
         !warnings
             .iter()
-            .any(|warning| warning.contains("IncludeInCommandInterface")),
+            .any(|warning| warning.contains("reaches no command interface section")),
         "{warnings:?}"
     );
 }
