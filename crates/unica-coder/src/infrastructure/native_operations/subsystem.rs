@@ -1536,7 +1536,7 @@ mod subsystem_info_typed_result_tests {
         fs::create_dir_all(root.join("src/Subsystems/СтандартныеПодсистемы/Subsystems")).unwrap();
         fs::write(
             root.join("src/Subsystems/СтандартныеПодсистемы/Subsystems/Обсуждения.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20"><Subsystem><Properties><Name>Обсуждения</Name><IncludeInCommandInterface>true</IncludeInCommandInterface><Content><xr:Item>CommonForm.Обсуждение</xr:Item></Content></Properties><ChildObjects/></Subsystem></MetaDataObject>"#,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20"><Subsystem><Properties><Name>Обсуждения</Name><IncludeInCommandInterface>true</IncludeInCommandInterface><Content><xr:Item xsi:type="xr:MDObjectRef">CommonForm.Обсуждение</xr:Item></Content></Properties><ChildObjects/></Subsystem></MetaDataObject>"#,
         )
         .unwrap();
         fs::write(
