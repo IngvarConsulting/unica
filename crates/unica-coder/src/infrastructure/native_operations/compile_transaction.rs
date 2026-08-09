@@ -3371,12 +3371,14 @@ fn rollback_registration(
         cleanup_warnings.push(warning);
     }
     run_before_rollback_quarantine_cleanup(&quarantined);
-    if let Err(error) = remove_identity_bound_regular_child(
+    let quarantine_cleanup = remove_identity_bound_regular_child(
         &quarantine_directory_handle,
         &quarantine_name,
         published.published.identity,
         &quarantined_file,
-    ) {
+    );
+    drop(quarantined_file);
+    if let Err(error) = quarantine_cleanup {
         errors.push(format!(
             "restored registration {}, but failed to remove identity-bound quarantined published bytes {}; quarantine is preserved: {error}",
             published.target.display(),
