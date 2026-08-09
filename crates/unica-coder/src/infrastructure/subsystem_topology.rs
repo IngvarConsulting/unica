@@ -1,14 +1,16 @@
+use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::domain::subsystem::{
     EffectiveSubsystemRole, SubsystemAddress, SUBSYSTEM_ADDRESS_MAX_DEPTH,
 };
 use crate::infrastructure::platform::secure_read::{
-    capture_root_relative_regular_files, SecureTreeCaptureLimits,
+    RetainedRootSecureRead, SecureTreeCaptureLimits,
 };
 use roxmltree::{Document, Node};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
 
 const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 const READABLE_NS: &str = "http://v8.1c.ru/8.3/xcf/readable";
@@ -20,6 +22,7 @@ const SUBSYSTEM_SCAN_MAX_BYTES: usize = 64 * 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SubsystemTopology {
     pub(crate) roots: Vec<SubsystemTopologyNode>,
+    dependency_paths: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,11 +30,48 @@ pub(crate) struct SubsystemTopologyNode {
     pub(crate) address: SubsystemAddress,
     pub(crate) name: String,
     pub(crate) role: EffectiveSubsystemRole,
-    pub(crate) content: Vec<String>,
+    pub(crate) content: Vec<ContentReference>,
     pub(crate) children: Vec<SubsystemTopologyNode>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ContentReference {
+    MetadataAddress(MetadataAddress),
+    Uuid(Uuid),
+}
+
+impl ContentReference {
+    fn parse(raw: &str, logical_path: &str) -> Result<Self, SubsystemTopologyError> {
+        if let Ok(address) = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw) {
+            return Ok(Self::MetadataAddress(address));
+        }
+        if let Ok(uuid) = Uuid::parse_str(raw) {
+            return Ok(Self::Uuid(uuid));
+        }
+        Err(SubsystemTopologyError::new(format!(
+            "registered subsystem `{logical_path}` has an invalid Content reference `{raw}`"
+        )))
+    }
+
+    fn matches(&self, identity: &MetadataObjectIdentity) -> bool {
+        match self {
+            Self::MetadataAddress(address) => address == &identity.address,
+            Self::Uuid(uuid) => uuid == &identity.uuid,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MetadataObjectIdentity {
+    pub(crate) address: MetadataAddress,
+    pub(crate) uuid: Uuid,
+}
+
 impl SubsystemTopology {
+    pub(crate) fn dependency_paths(&self) -> &[PathBuf] {
+        &self.dependency_paths
+    }
+
     pub(crate) fn functional_addresses(&self) -> Vec<SubsystemAddress> {
         functional_addresses_in(&self.roots)
     }
@@ -41,18 +81,48 @@ impl SubsystemTopology {
     }
 
     pub(crate) fn interface_memberships(&self, object_ref: &str) -> Vec<SubsystemAddress> {
-        collect_addresses(
-            &self.roots,
-            EffectiveSubsystemRole::Interface,
-            Some(object_ref),
-        )
+        self.memberships_by_metadata_address(object_ref, EffectiveSubsystemRole::Interface)
     }
 
     pub(crate) fn functional_memberships(&self, object_ref: &str) -> Vec<SubsystemAddress> {
+        self.memberships_by_metadata_address(object_ref, EffectiveSubsystemRole::Functional)
+    }
+
+    pub(crate) fn interface_memberships_for(
+        &self,
+        identity: &MetadataObjectIdentity,
+    ) -> Vec<SubsystemAddress> {
+        collect_addresses(
+            &self.roots,
+            EffectiveSubsystemRole::Interface,
+            Some(MembershipSelector::Identity(identity)),
+        )
+    }
+
+    pub(crate) fn functional_memberships_for(
+        &self,
+        identity: &MetadataObjectIdentity,
+    ) -> Vec<SubsystemAddress> {
         collect_addresses(
             &self.roots,
             EffectiveSubsystemRole::Functional,
-            Some(object_ref),
+            Some(MembershipSelector::Identity(identity)),
+        )
+    }
+
+    fn memberships_by_metadata_address(
+        &self,
+        object_ref: &str,
+        role: EffectiveSubsystemRole,
+    ) -> Vec<SubsystemAddress> {
+        let Ok(address) = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, object_ref)
+        else {
+            return Vec::new();
+        };
+        collect_addresses(
+            &self.roots,
+            role,
+            Some(MembershipSelector::MetadataAddress(&address)),
         )
     }
 }
@@ -68,17 +138,18 @@ pub(crate) fn interface_addresses_in(nodes: &[SubsystemTopologyNode]) -> Vec<Sub
 fn collect_addresses(
     nodes: &[SubsystemTopologyNode],
     role: EffectiveSubsystemRole,
-    content_item: Option<&str>,
+    content_item: Option<MembershipSelector<'_>>,
 ) -> Vec<SubsystemAddress> {
     fn visit(
         nodes: &[SubsystemTopologyNode],
         role: EffectiveSubsystemRole,
-        content_item: Option<&str>,
+        content_item: Option<MembershipSelector<'_>>,
         output: &mut Vec<SubsystemAddress>,
     ) {
         for node in nodes {
             if node.role == role
-                && content_item.is_none_or(|item| node.content.iter().any(|value| value == item))
+                && content_item
+                    .is_none_or(|item| node.content.iter().any(|value| item.matches(value)))
             {
                 output.push(node.address.clone());
             }
@@ -89,6 +160,23 @@ fn collect_addresses(
     let mut output = Vec::new();
     visit(nodes, role, content_item, &mut output);
     output
+}
+
+#[derive(Clone, Copy)]
+enum MembershipSelector<'a> {
+    Identity(&'a MetadataObjectIdentity),
+    MetadataAddress(&'a MetadataAddress),
+}
+
+impl MembershipSelector<'_> {
+    fn matches(self, reference: &ContentReference) -> bool {
+        match self {
+            Self::Identity(identity) => reference.matches(identity),
+            Self::MetadataAddress(expected) => {
+                matches!(reference, ContentReference::MetadataAddress(actual) if actual == expected)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,51 +210,41 @@ pub(crate) fn capture_registered_subsystem_topology(
     source_root: &Path,
     mut checkpoint: impl FnMut() -> io::Result<()>,
 ) -> Result<SubsystemTopology, SubsystemTopologyError> {
-    let snapshot = capture_root_relative_regular_files(
+    let mut reader = RetainedRootSecureRead::open(
         source_root,
-        Path::new(""),
         SecureTreeCaptureLimits {
             maximum_depth: SUBSYSTEM_ADDRESS_MAX_DEPTH * 2,
             maximum_entries: SUBSYSTEM_SCAN_MAX_ENTRIES,
             maximum_files: SUBSYSTEM_SCAN_MAX_FILES,
             maximum_bytes: SUBSYSTEM_SCAN_MAX_BYTES,
         },
-        should_descend,
-        should_capture,
         &mut checkpoint,
     )?;
-    let files = snapshot
-        .files
-        .iter()
-        .map(|entry| (entry.logical_path.as_str(), entry.bytes.as_slice()))
-        .collect::<HashMap<_, _>>();
-    let configuration = files
-        .get("Configuration.xml")
-        .copied()
-        .ok_or_else(|| SubsystemTopologyError::new("Configuration.xml is missing"))?;
-    let roots = parse_configuration_registrations(configuration)?;
-    let roots = build_registered_nodes(&roots, &[], true, &files, &mut checkpoint)?;
-    checkpoint()?;
-    Ok(SubsystemTopology { roots })
-}
-
-fn should_descend(path: &Path) -> bool {
-    path.file_name().and_then(|name| name.to_str()) == Some("Subsystems")
-        || path
-            .parent()
-            .and_then(Path::file_name)
-            .and_then(|name| name.to_str())
-            == Some("Subsystems")
-}
-
-fn should_capture(path: &Path) -> bool {
-    path == Path::new("Configuration.xml")
-        || (path.extension().and_then(|value| value.to_str()) == Some("xml")
-            && path
-                .parent()
-                .and_then(Path::file_name)
-                .and_then(|name| name.to_str())
-                == Some("Subsystems"))
+    let configuration_path = PathBuf::from("Configuration.xml");
+    let configuration = reader
+        .read_regular_file(&configuration_path, &mut checkpoint)
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                SubsystemTopologyError::new("Configuration.xml is missing")
+            } else {
+                SubsystemTopologyError::from(error)
+            }
+        })?;
+    let root_registrations = parse_configuration_registrations(&configuration.bytes)?;
+    let mut dependency_paths = vec![configuration_path];
+    let roots = build_registered_nodes(
+        &root_registrations,
+        &[],
+        true,
+        &mut reader,
+        &mut dependency_paths,
+        &mut checkpoint,
+    )?;
+    reader.complete(&mut checkpoint)?;
+    Ok(SubsystemTopology {
+        roots,
+        dependency_paths,
+    })
 }
 
 fn parse_configuration_registrations(bytes: &[u8]) -> Result<Vec<String>, SubsystemTopologyError> {
@@ -178,7 +256,7 @@ fn parse_configuration_registrations(bytes: &[u8]) -> Result<Vec<String>, Subsys
 
 struct DescriptorFacts {
     include: bool,
-    content: Vec<String>,
+    content: Vec<ContentReference>,
     children: Vec<String>,
 }
 
@@ -227,7 +305,7 @@ fn parse_subsystem_descriptor(
 fn content_items(
     content: Node<'_, '_>,
     logical_path: &str,
-) -> Result<Vec<String>, SubsystemTopologyError> {
+) -> Result<Vec<ContentReference>, SubsystemTopologyError> {
     content
         .children()
         .filter(Node::is_element)
@@ -246,7 +324,7 @@ fn content_items(
                     "registered subsystem `{logical_path}` has an empty Content item"
                 )));
             }
-            Ok(value.to_string())
+            ContentReference::parse(value, logical_path)
         })
         .collect()
 }
@@ -255,7 +333,8 @@ fn build_registered_nodes(
     names: &[String],
     ancestors: &[String],
     ancestors_included: bool,
-    files: &HashMap<&str, &[u8]>,
+    reader: &mut RetainedRootSecureRead,
+    dependency_paths: &mut Vec<PathBuf>,
     checkpoint: &mut impl FnMut() -> io::Result<()>,
 ) -> Result<Vec<SubsystemTopologyNode>, SubsystemTopologyError> {
     reject_duplicate_names(names, ancestors)?;
@@ -267,18 +346,26 @@ fn build_registered_nodes(
         let address = SubsystemAddress::from_names(address_names.iter().map(String::as_str))
             .map_err(|error| SubsystemTopologyError::new(error.to_string()))?;
         let logical_path = descriptor_logical_path(&address_names);
-        let bytes = files.get(logical_path.as_str()).copied().ok_or_else(|| {
-            SubsystemTopologyError::new(format!(
-                "registered subsystem descriptor `{logical_path}` is missing"
-            ))
-        })?;
-        let facts = parse_subsystem_descriptor(bytes, name, &logical_path)?;
+        let bytes = reader
+            .read_regular_file(Path::new(&logical_path), &mut *checkpoint)
+            .map_err(|error| {
+                if error.kind() == io::ErrorKind::NotFound {
+                    SubsystemTopologyError::new(format!(
+                        "registered subsystem descriptor `{logical_path}` is missing"
+                    ))
+                } else {
+                    SubsystemTopologyError::from(error)
+                }
+            })?;
+        dependency_paths.push(PathBuf::from(&logical_path));
+        let facts = parse_subsystem_descriptor(&bytes.bytes, name, &logical_path)?;
         let effective_include = ancestors_included && facts.include;
         let children = build_registered_nodes(
             &facts.children,
             &address_names,
             effective_include,
-            files,
+            reader,
+            dependency_paths,
             checkpoint,
         )?;
         nodes.push(SubsystemTopologyNode {
@@ -421,13 +508,19 @@ fn registered_children(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use crate::infrastructure::platform::secure_read::{
+        with_secure_tree_test_hook, SecureTreePhase,
+    };
     use crate::infrastructure::platform::testing::{
-        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+        create_dir_symlink_for_test, create_file_link_fixture_for_test, FileLinkFixtureOutcome,
     };
     use std::cell::Cell;
     use std::fs;
     use std::io;
     use std::path::Path;
+    use std::rc::Rc;
+    use uuid::Uuid;
 
     fn write_configuration(root: &Path, subsystem_names: &[&str]) {
         let registrations = subsystem_names
@@ -475,28 +568,6 @@ mod tests {
 
     fn checkpoint() -> io::Result<()> {
         Ok(())
-    }
-
-    fn capture_checkpoint_count(root: &Path) -> usize {
-        let count = Cell::new(0);
-        capture_root_relative_regular_files(
-            root,
-            Path::new(""),
-            SecureTreeCaptureLimits {
-                maximum_depth: SUBSYSTEM_ADDRESS_MAX_DEPTH * 2,
-                maximum_entries: SUBSYSTEM_SCAN_MAX_ENTRIES,
-                maximum_files: SUBSYSTEM_SCAN_MAX_FILES,
-                maximum_bytes: SUBSYSTEM_SCAN_MAX_BYTES,
-            },
-            should_descend,
-            should_capture,
-            || {
-                count.set(count.get() + 1);
-                Ok(())
-            },
-        )
-        .unwrap();
-        count.get()
     }
 
     #[test]
@@ -568,6 +639,107 @@ mod tests {
     }
 
     #[test]
+    fn registered_dependency_paths_follow_registration_order_exactly() {
+        let root = tempfile::tempdir().unwrap();
+        write_configuration(root.path(), &["Zeta", "Alpha"]);
+        write_subsystem(root.path(), &[], "Zeta", "true", &[], &["Child"]);
+        write_subsystem(root.path(), &["Zeta"], "Child", "true", &[], &[]);
+        write_subsystem(root.path(), &[], "Alpha", "true", &[], &[]);
+        fs::write(root.path().join("Subsystems/Unregistered.xml"), b"ignored").unwrap();
+        let source_root = root.path().canonicalize().unwrap();
+
+        let topology = capture_registered_subsystem_topology(&source_root, checkpoint).unwrap();
+
+        assert_eq!(
+            topology.dependency_paths(),
+            [
+                Path::new("Configuration.xml"),
+                Path::new("Subsystems/Zeta.xml"),
+                Path::new("Subsystems/Zeta/Subsystems/Child.xml"),
+                Path::new("Subsystems/Alpha.xml"),
+            ]
+        );
+    }
+
+    #[test]
+    fn content_references_are_typed_and_match_both_descriptor_identities() {
+        let root = tempfile::tempdir().unwrap();
+        let descriptor_uuid = Uuid::parse_str("11111111-2222-4333-8444-555555555555").unwrap();
+        write_configuration(root.path(), &["Sales"]);
+        write_subsystem(
+            root.path(),
+            &[],
+            "Sales",
+            "true",
+            &[
+                "InformationRegister.Ledger",
+                "11111111-2222-4333-8444-555555555555",
+            ],
+            &[],
+        );
+        let source_root = root.path().canonicalize().unwrap();
+
+        let topology = capture_registered_subsystem_topology(&source_root, checkpoint).unwrap();
+        let metadata_address = MetadataAddress::parse(
+            PLATFORM_XML_8_3_27_FORMAT_2_20,
+            "InformationRegister.Ledger",
+        )
+        .unwrap();
+        assert_eq!(
+            topology.roots[0].content,
+            vec![
+                ContentReference::MetadataAddress(metadata_address.clone()),
+                ContentReference::Uuid(descriptor_uuid),
+            ]
+        );
+
+        let target = MetadataObjectIdentity {
+            address: metadata_address,
+            uuid: descriptor_uuid,
+        };
+        assert_eq!(
+            topology
+                .interface_memberships_for(&target)
+                .iter()
+                .map(|address| address.as_str())
+                .collect::<Vec<_>>(),
+            ["Sales"]
+        );
+
+        let different_target = MetadataObjectIdentity {
+            address: MetadataAddress::parse(
+                PLATFORM_XML_8_3_27_FORMAT_2_20,
+                "InformationRegister.Other",
+            )
+            .unwrap(),
+            uuid: Uuid::parse_str("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee").unwrap(),
+        };
+        assert!(topology
+            .interface_memberships_for(&different_target)
+            .is_empty());
+    }
+
+    #[test]
+    fn arbitrary_nonempty_content_reference_rejects_the_topology() {
+        let root = tempfile::tempdir().unwrap();
+        write_configuration(root.path(), &["Sales"]);
+        write_subsystem(
+            root.path(),
+            &[],
+            "Sales",
+            "true",
+            &["broken-reference"],
+            &[],
+        );
+        let source_root = root.path().canonicalize().unwrap();
+
+        let error = capture_registered_subsystem_topology(&source_root, checkpoint)
+            .expect_err("an arbitrary string cannot become a third Content reference kind");
+
+        assert!(error.to_string().contains("Content"), "{error}");
+    }
+
+    #[test]
     fn unregistered_files_do_not_define_or_break_the_topology() {
         let root = tempfile::tempdir().unwrap();
         write_configuration(root.path(), &["Registered"]);
@@ -589,6 +761,90 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["Registered"]
         );
+    }
+
+    #[test]
+    fn unregistered_oversized_xml_does_not_spend_the_topology_byte_budget() {
+        let root = tempfile::tempdir().unwrap();
+        write_configuration(root.path(), &["Registered"]);
+        write_subsystem(root.path(), &[], "Registered", "true", &[], &[]);
+        let source_root = root.path().canonicalize().unwrap();
+        let expected = capture_registered_subsystem_topology(&source_root, checkpoint).unwrap();
+        let unrelated = fs::File::create(root.path().join("Subsystems/Unregistered.xml")).unwrap();
+        unrelated
+            .set_len((SUBSYSTEM_SCAN_MAX_BYTES as u64) + 1)
+            .unwrap();
+
+        let actual = capture_registered_subsystem_topology(&source_root, checkpoint)
+            .expect("an unregistered XML must not spend the registered byte budget");
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn unregistered_file_symlink_does_not_affect_the_topology() {
+        let root = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        write_configuration(root.path(), &["Registered"]);
+        write_subsystem(root.path(), &[], "Registered", "true", &[], &[]);
+        fs::write(external.path().join("Unregistered.xml"), b"outside").unwrap();
+        let source_root = root.path().canonicalize().unwrap();
+        let expected = capture_registered_subsystem_topology(&source_root, checkpoint).unwrap();
+        let outcome = create_file_link_fixture_for_test(
+            external.path().join("Unregistered.xml"),
+            root.path().join("Subsystems/Unregistered.xml"),
+        )
+        .unwrap();
+        if outcome != FileLinkFixtureOutcome::Created {
+            return;
+        }
+
+        let actual = capture_registered_subsystem_topology(&source_root, checkpoint)
+            .expect("an unregistered file symlink must not be classified");
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn unregistered_directory_symlink_branch_does_not_affect_the_topology() {
+        let root = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        write_configuration(root.path(), &["Registered"]);
+        write_subsystem(root.path(), &[], "Registered", "true", &[], &[]);
+        fs::write(external.path().join("Outside.xml"), b"outside").unwrap();
+        let source_root = root.path().canonicalize().unwrap();
+        let expected = capture_registered_subsystem_topology(&source_root, checkpoint).unwrap();
+        match create_dir_symlink_for_test(
+            external.path(),
+            root.path().join("Subsystems/Unregistered"),
+        ) {
+            Some(Ok(())) => {}
+            Some(Err(error)) if error.raw_os_error() == Some(1314) => return,
+            Some(Err(error)) => panic!("failed to create directory symlink fixture: {error}"),
+            None => return,
+        }
+
+        let actual = capture_registered_subsystem_topology(&source_root, checkpoint)
+            .expect("an unregistered directory symlink branch must not be classified");
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn registered_oversized_descriptor_fails_closed() {
+        let root = tempfile::tempdir().unwrap();
+        write_configuration(root.path(), &["Registered"]);
+        fs::create_dir_all(root.path().join("Subsystems")).unwrap();
+        let descriptor = fs::File::create(root.path().join("Subsystems/Registered.xml")).unwrap();
+        descriptor
+            .set_len((SUBSYSTEM_SCAN_MAX_BYTES as u64) + 1)
+            .unwrap();
+        let source_root = root.path().canonicalize().unwrap();
+
+        let error = capture_registered_subsystem_topology(&source_root, checkpoint)
+            .expect_err("a registered descriptor must spend the registered byte budget");
+
+        assert!(error.to_string().contains("byte"), "{error}");
     }
 
     #[test]
@@ -736,18 +992,29 @@ mod tests {
         write_configuration(root.path(), &["Registered"]);
         write_subsystem(root.path(), &[], "Registered", "true", &[], &[]);
         let source_root = root.path().canonicalize().unwrap();
-        let capture_calls = capture_checkpoint_count(&source_root);
-        let calls = Cell::new(0);
+        let descriptor_captured = Rc::new(Cell::new(false));
+        let phase_flag = Rc::clone(&descriptor_captured);
 
-        let error = capture_registered_subsystem_topology(&source_root, || {
-            let next = calls.get() + 1;
-            calls.set(next);
-            if next > capture_calls + 1 {
-                Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"))
-            } else {
-                Ok(())
-            }
-        })
+        let error = with_secure_tree_test_hook(
+            move |phase| {
+                if phase
+                    == &SecureTreePhase::AfterRebindEntry(PathBuf::from(
+                        "Subsystems/Registered.xml",
+                    ))
+                {
+                    phase_flag.set(true);
+                }
+            },
+            || {
+                capture_registered_subsystem_topology(&source_root, || {
+                    if descriptor_captured.get() {
+                        Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"))
+                    } else {
+                        Ok(())
+                    }
+                })
+            },
+        )
         .unwrap_err();
 
         assert!(error.to_string().contains("cancelled"), "{error}");
