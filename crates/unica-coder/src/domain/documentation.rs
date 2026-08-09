@@ -20,6 +20,7 @@ impl std::fmt::Display for DocumentationProviderId {
 pub enum SourceKind {
     PlatformHelp,
     DevelopmentStandard,
+    ConfigurationDocumentation,
 }
 
 impl SourceKind {
@@ -27,6 +28,7 @@ impl SourceKind {
         match self {
             SourceKind::PlatformHelp => "platform-help",
             SourceKind::DevelopmentStandard => "development-standard",
+            SourceKind::ConfigurationDocumentation => "configuration-documentation",
         }
     }
 
@@ -38,6 +40,7 @@ impl SourceKind {
         match value {
             "platform-help" => Some(SourceKind::PlatformHelp),
             "development-standard" => Some(SourceKind::DevelopmentStandard),
+            "configuration-documentation" => Some(SourceKind::ConfigurationDocumentation),
             _ => None,
         }
     }
@@ -387,6 +390,10 @@ mod tests {
             SourceKind::parse("development-standard"),
             Some(SourceKind::DevelopmentStandard)
         );
+        assert_eq!(
+            SourceKind::parse("configuration-documentation"),
+            Some(SourceKind::ConfigurationDocumentation)
+        );
         for alien in ["standards", "platform_help", "PLATFORM-HELP", ""] {
             assert_eq!(
                 SourceKind::parse(alien),
@@ -402,6 +409,10 @@ mod tests {
         assert_eq!(
             SourceKind::DevelopmentStandard.as_str(),
             "development-standard"
+        );
+        assert_eq!(
+            SourceKind::ConfigurationDocumentation.as_str(),
+            "configuration-documentation"
         );
         assert_eq!(Authority::Vendor.as_str(), "vendor");
         assert_eq!(Authority::Community.as_str(), "community");

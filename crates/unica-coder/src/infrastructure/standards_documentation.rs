@@ -174,9 +174,12 @@ impl DocumentationProvider for V8StdDocumentationProvider {
             source_kind: SourceKind::DevelopmentStandard,
             authority: Authority::Community,
             language: "ru".to_string(),
+            // Канонический адрес из ответа принимается только как локатор
+            // v8std: чужой адрес маршрутизировался бы другому поставщику.
             document_id: page
                 .get("url")
                 .and_then(Value::as_str)
+                .filter(|url| url.starts_with("https://v8std.ru/"))
                 .unwrap_or(document_id)
                 .to_string(),
             title: page
@@ -275,20 +278,27 @@ impl DocumentationProvider for V8StdDocumentationProvider {
                 Vec::new(),
             )];
         };
-        let hits: Vec<DocumentationHit> = results
-            .iter()
-            .enumerate()
-            .map(|(index, result)| DocumentationHit {
-                rank: index as u32 + 1,
+        // Локатор попадания — контракт владельца: чужой адрес из сетевого
+        // ответа маршрутизировался бы другому поставщику при получении.
+        // Такое попадание пропускается и называется предупреждением секции.
+        let mut warnings = Vec::new();
+        let mut hits: Vec<DocumentationHit> = Vec::new();
+        for result in results.iter() {
+            let url = result
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if !url.starts_with("https://v8std.ru/") {
+                warnings.push(format!("попадание с чужим адресом пропущено: {url:?}"));
+                continue;
+            }
+            hits.push(DocumentationHit {
+                rank: hits.len() as u32 + 1,
                 provider_score: result
                     .get("score")
                     .and_then(Value::as_f64)
                     .unwrap_or_default() as f32,
-                document_id: result
-                    .get("url")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
+                document_id: url.to_string(),
                 title: result
                     .get("title")
                     .and_then(Value::as_str)
@@ -303,8 +313,8 @@ impl DocumentationProvider for V8StdDocumentationProvider {
                 // У стандарта нет версии платформы: маркер, а не пустота и не
                 // выдуманная версия (обязательность поля — ADR-0029 п.8).
                 applicable_version: UNVERSIONED.to_string(),
-            })
-            .collect();
+            });
+        }
         let status = if hits.is_empty() {
             DocumentationSectionStatus::Empty
         } else {
@@ -312,7 +322,9 @@ impl DocumentationProvider for V8StdDocumentationProvider {
         };
         // Локаль секции — `ru`: вендор стандартов поставляет их по-русски,
         // и ответившая локаль называется, как того требует контракт секций.
-        vec![self.section("ru", status, hits)]
+        let mut section = self.section("ru", status, hits);
+        section.warnings = warnings;
+        vec![section]
     }
 }
 
@@ -421,6 +433,48 @@ mod tests {
             http.calls.load(Ordering::SeqCst),
             0,
             "запрещённый поставщик не должен трогать сеть"
+        );
+    }
+
+    /// Локатор попадания — контракт владельца: `unica.documentation.get`
+    /// маршрутизирует по префиксу, и чужой адрес из сетевого ответа создал
+    /// бы попадание, которое v8std отдать не может, а другой поставщик —
+    /// может, но не то. Ответные адреса проверяются: чужой в поиске
+    /// пропускается с предупреждением секции, чужой канонический адрес в
+    /// получении не подменяет запрошенный.
+    #[test]
+    fn foreign_urls_from_the_network_response_do_not_become_locators() {
+        let mixed = r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"results\": [{\"title\": \"Свой\", \"description\": \"д\", \"url\": \"https://v8std.ru/std/1/\", \"score\": 2.0}, {\"title\": \"Чужой\", \"description\": \"д\", \"url\": \"https://kb.1ci.com/x/\", \"score\": 1.0}]}"}]}}"#;
+        let (searcher, _http) = provider(NetworkAccess::Allow, Ok(mixed.to_string()));
+        let sections = searcher.search(&request(), &context());
+        let section = &sections[0];
+        assert_eq!(
+            section.hits.len(),
+            1,
+            "чужой адрес не становится локатором: {:?}",
+            section.hits
+        );
+        assert_eq!(section.hits[0].document_id, "https://v8std.ru/std/1/");
+        assert_eq!(
+            section.warnings.len(),
+            1,
+            "пропуск чужого адреса обязан быть назван предупреждением"
+        );
+        assert!(
+            section.warnings[0].contains("kb.1ci.com"),
+            "предупреждение обязано назвать адрес, получено {}",
+            section.warnings[0]
+        );
+
+        let foreign_canonical = r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"found\": true, \"page\": {\"title\": \"Т\", \"url\": \"https://kb.1ci.com/x/\", \"body_markdown\": \"Текст.\"}}"}]}}"#;
+        let (getter, _http) = provider(NetworkAccess::Allow, Ok(foreign_canonical.to_string()));
+        let document = getter
+            .get("https://v8std.ru/std/702/", "ru", &context())
+            .expect("локатор наш")
+            .expect("стандарт найден");
+        assert_eq!(
+            document.document_id, "https://v8std.ru/std/702/",
+            "чужой канонический адрес не подменяет запрошенный локатор"
         );
     }
 

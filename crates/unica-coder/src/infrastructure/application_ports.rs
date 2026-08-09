@@ -481,7 +481,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                                     // Нестроковое значение называется самим
                                     // JSON-значением, а не пустой строкой.
                                     format!(
-                                        "unica.documentation.search: unknown sourceKinds value {entry}; allowed: platform-help, development-standard"
+                                        "unica.documentation.search: unknown sourceKinds value {entry}; allowed: platform-help, development-standard, configuration-documentation"
                                     )
                                 })
                         })
@@ -732,6 +732,7 @@ fn documentation_registry(
             // Токен вызова: сетевой обход обязан отменяться вместе с вызовом
             // MCP, поэтому реестр собирается на вызов, а не на процесс.
             cancellation: cancellation.clone(),
+            cache_ttl: crate::infrastructure::kb_1ci::KB_CACHE_TTL,
         }),
         Arc::new(
             crate::infrastructure::standards_documentation::V8StdDocumentationProvider {

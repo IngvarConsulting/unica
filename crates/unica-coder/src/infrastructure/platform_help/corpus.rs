@@ -122,6 +122,12 @@ pub fn read_page_from_container(
     bytes: &[u8],
     path: &str,
 ) -> Result<Option<CorpusPage>, CorpusError> {
+    // `.st` — сигнатура, а не страница: полный разбор исключает её по
+    // расширению (24% сигнатур несут `<`, признак разметки не отсеет), и
+    // точечное чтение обязано исключать так же.
+    if path.ends_with(".st") {
+        return Ok(None);
+    }
     let container = V8Container::parse(bytes).map_err(CorpusError::Container)?;
     let storage = container
         .entry("FileStorage")
@@ -402,6 +408,34 @@ mod tests {
                 .expect("отсутствие страницы — не ошибка контейнера")
                 .is_none(),
             "чужого пути в контейнере нет"
+        );
+    }
+
+    /// Запись `.st` — сигнатура, а не страница: полный разбор исключает её
+    /// по расширению (24% сигнатур несут `<` и признак разметки их не
+    /// отсеивает), и точечное чтение обязано исключать так же — иначе
+    /// локатор с путём `.st` вернул бы сигнатурный файл как документ.
+    #[test]
+    fn a_direct_request_for_a_signature_file_is_not_a_page() {
+        let archive = zip_with(&[
+            (
+                "objects/Global context/methods/GetURL3758.html",
+                PAGE.as_bytes(),
+            ),
+            (
+                "objects/Global context/methods/GetURL3758.st",
+                ST.as_bytes(),
+            ),
+        ]);
+        let bytes = crate::infrastructure::platform_help::container::tests_support::container_with(
+            &[("FileStorage", archive.as_slice())],
+            None,
+        );
+        assert!(
+            read_page_from_container(&bytes, "objects/Global context/methods/GetURL3758.st")
+                .expect("контейнер читается")
+                .is_none(),
+            ".st — сигнатура, страницей не является"
         );
     }
 

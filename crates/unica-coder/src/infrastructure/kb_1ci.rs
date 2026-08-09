@@ -385,15 +385,16 @@ pub struct KbSearchEntry {
 
 /// Кеш каталога руководств: один на процесс, ключ — база площадки.
 /// Перестраивается при смене базы; на диск не пишется ничего.
-static KB_CATALOG: Mutex<Option<(String, std::sync::Arc<GuideCatalog>)>> = Mutex::new(None);
+static KB_CATALOG: Mutex<Option<(String, Instant, std::sync::Arc<GuideCatalog>)>> =
+    Mutex::new(None);
 
 /// Кеш оглавлений выбранных руководств: ключ — (база, узел руководства).
 /// Ключи приходят из дерева самой площадки, поэтому множество ограничено
 /// числом её руководств, а не чужим вводом.
 type EntriesKey = (String, String);
-static KB_ENTRIES: Mutex<
-    std::collections::BTreeMap<EntriesKey, std::sync::Arc<Vec<KbSearchEntry>>>,
-> = Mutex::new(std::collections::BTreeMap::new());
+type CachedEntries = (Instant, std::sync::Arc<Vec<KbSearchEntry>>);
+static KB_ENTRIES: Mutex<std::collections::BTreeMap<EntriesKey, CachedEntries>> =
+    Mutex::new(std::collections::BTreeMap::new());
 
 /// Кеши общие на процесс: тесты, которым важно их состояние, идут по одному.
 #[cfg(test)]
@@ -416,7 +417,15 @@ pub struct Kb1ciProvider {
     /// Токен вызова MCP: проверяется перед каждым сетевым запросом, отмена
     /// не публикует частичных секций поставщика.
     pub cancellation: crate::domain::cancellation::CancellationToken,
+    /// Срок жизни кешей дерева площадки: она переезжала четырежды за время
+    /// работы, и долгоживущий процесс сервера не должен требовать рестарта,
+    /// чтобы увидеть новую раскладку и не отдавать устаревшие локаторы.
+    pub cache_ttl: Duration,
 }
+
+/// Продовый срок жизни kb-кешей: часы держат цену обхода около нуля и
+/// позволяют пережить переезд площадки без перезапуска процесса.
+pub const KB_CACHE_TTL: Duration = Duration::from_secs(6 * 60 * 60);
 
 fn numeric_version(version: &str) -> Vec<u32> {
     version
@@ -459,8 +468,8 @@ impl Kb1ciProvider {
             let slot = KB_CATALOG
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if let Some((base, catalog)) = slot.as_ref() {
-                if *base == self.base {
+            if let Some((base, born, catalog)) = slot.as_ref() {
+                if *base == self.base && born.elapsed() < self.cache_ttl {
                     return Ok(std::sync::Arc::clone(catalog));
                 }
             }
@@ -469,7 +478,11 @@ impl Kb1ciProvider {
         let mut slot = KB_CATALOG
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *slot = Some((self.base.clone(), std::sync::Arc::clone(&catalog)));
+        *slot = Some((
+            self.base.clone(),
+            Instant::now(),
+            std::sync::Arc::clone(&catalog),
+        ));
         Ok(catalog)
     }
 
@@ -485,8 +498,10 @@ impl Kb1ciProvider {
             let cache = KB_ENTRIES
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if let Some(entries) = cache.get(&key) {
-                return Ok(std::sync::Arc::clone(entries));
+            if let Some((born, entries)) = cache.get(&key) {
+                if born.elapsed() < self.cache_ttl {
+                    return Ok(std::sync::Arc::clone(entries));
+                }
             }
         }
         let mut entries = Vec::new();
@@ -519,7 +534,7 @@ impl Kb1ciProvider {
         let mut cache = KB_ENTRIES
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        cache.insert(key, std::sync::Arc::clone(&entries));
+        cache.insert(key, (Instant::now(), std::sync::Arc::clone(&entries)));
         Ok(entries)
     }
 
@@ -1102,6 +1117,7 @@ mod provider_tests {
                 network,
                 transport: Arc::clone(&transport) as Arc<dyn KbTransport>,
                 cancellation: crate::domain::cancellation::CancellationToken::default(),
+                cache_ttl: Duration::from_secs(3600),
             },
             transport,
         )
@@ -1283,6 +1299,29 @@ mod provider_tests {
         );
     }
 
+    /// Кеши дерева стареют: площадка переезжала четырежды, и долгоживущий
+    /// сервер обязан увидеть новую раскладку без рестарта. Просроченный кеш
+    /// перечитывается — наблюдаемо новыми обращениями к дереву при нулевом
+    /// сроке жизни.
+    #[test]
+    fn an_expired_tree_cache_is_refetched() {
+        let _serial = kb_test_lock();
+        let base = "https://kb.ttl";
+        let (mut provider, transport) =
+            provider_over(base, standard_site(base), NetworkAccess::Allow);
+        provider.cache_ttl = Duration::ZERO;
+        let (first, context) = request("нет-такого-заголовка", Some("8.3.27"));
+        provider.search(&first, &context);
+        let after_first = transport.calls.load(Ordering::SeqCst);
+
+        let (second, context) = request("нет-такого-заголовка", Some("8.3.27"));
+        provider.search(&second, &context);
+        assert!(
+            transport.calls.load(Ordering::SeqCst) > after_first,
+            "просроченный кеш обязан перечитываться, обращений не прибавилось"
+        );
+    }
+
     /// Дерево выбранного руководства живёт в памяти процесса: второй запрос
     /// не перечитывает площадку. Запрос без совпадений не дочитывает страниц,
     /// поэтому ноль новых обращений — прямое наблюдение кеша.
@@ -1420,6 +1459,7 @@ mod provider_tests {
             network: NetworkAccess::Allow,
             transport: transport as Arc<dyn KbTransport>,
             cancellation: token,
+            cache_ttl: Duration::from_secs(3600),
         };
         // Запрос «URL» совпадает с двумя узлами: первое дочитывание гасит
         // токен, и второе уже не должно ни состояться, ни превратить секцию
@@ -1470,6 +1510,7 @@ mod provider_tests {
             network: NetworkAccess::Allow,
             transport: Arc::new(UreqKbTransport),
             cancellation: crate::domain::cancellation::CancellationToken::default(),
+            cache_ttl: Duration::from_secs(3600),
         };
         let (request, context) = request("URL formats", Some("8.3.27"));
         let sections = provider.search(&request, &context);
