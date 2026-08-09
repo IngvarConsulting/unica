@@ -385,7 +385,29 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     .map(HandlerOutcome::plain)
             }
             ToolHandler::StandardsAdapter { operation } => {
-                let standards = StandardsAdapter::invoke(operation, args);
+                // Фасады делят с поставщиком v8std движок И политику: запрет в
+                // unica.toml выключает оба маршрута одним файлом (ADR-0032
+                // п.4, следствие 2). Нечитаемая политика — жёсткий отказ, а не
+                // молчаливое разрешение: это файл запрета.
+                let policy =
+                    crate::infrastructure::documentation_policy::DocumentationPolicy::load(
+                        &context.workspace_root,
+                        DOCUMENTATION_PROVIDER_IDS,
+                    )
+                    .map_err(|error| format!("{}: {error}", spec.name))?;
+                if policy.network("v8std")
+                    == crate::infrastructure::documentation_policy::NetworkAccess::Deny
+                {
+                    return Err(format!(
+                        "{}: сетевой выход v8std запрещён политикой unica.toml (policy-denied)",
+                        spec.name
+                    ));
+                }
+                let endpoint =
+                    crate::infrastructure::standards_documentation::resolve_standards_endpoint(
+                        &policy,
+                    );
+                let standards = StandardsAdapter::invoke(operation, args, &endpoint);
                 Ok(match standards.data {
                     Some(data) => HandlerOutcome::with_data(standards.outcome, data),
                     None => HandlerOutcome::plain(standards.outcome),
@@ -455,6 +477,10 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                         spec.name
                     ))));
                 }
+                // Реестр собирается по рабочему пространству ДО того, как имя
+                // `context` затенит DocumentationContext: политика unica.toml —
+                // файлы проекта, и нечитаемая политика — отказ вызова.
+                let registry = documentation_registry(context)?;
                 let requested_version = args.get("platformVersion").and_then(Value::as_str);
                 let context = documentation_context(
                     &crate::infrastructure::platform::full_dump_publication::default_platform_roots(
@@ -462,7 +488,6 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     requested_version,
                     context,
                 );
-                let registry = documentation_registry()?;
                 let data =
                     crate::application::documentation::search(&registry, &request, &context)?;
                 Ok(HandlerOutcome::with_data(
@@ -622,21 +647,41 @@ fn typed_read(read: TypedReadOutcome) -> HandlerOutcome {
     }
 }
 
+/// Идентификаторы поставщиков документации — единственный перечень, против
+/// которого политика `unica.toml` проверяет свои секции `[providers.*]`.
+const DOCUMENTATION_PROVIDER_IDS: &[&str] = &["platform-syntax-help", "kb-1ci", "v8std"];
+
 /// Composition root: the registry of documentation providers. Declaration
-/// order here is the section order of the public result (ADR-0029 point 5),
-/// and it is assembled here rather than in the domain layer so tests can
-/// inject stand-in providers instead.
-fn documentation_registry() -> Result<crate::domain::documentation::DocumentationRegistry, String> {
+/// order here is the section order of the public result (ADR-0029 point 5):
+/// локальная справка платформы раньше сетевых поставщиков, справка раньше
+/// стандартов. Собирается здесь, а не в домене, чтобы тесты внедряли
+/// подмены; политика читается на каждый вызов — она из файлов проекта.
+fn documentation_registry(
+    context: &WorkspaceContext,
+) -> Result<crate::domain::documentation::DocumentationRegistry, String> {
     use std::sync::Arc;
 
     #[cfg(test)]
     if let Some(stand_in) = documentation_registry_stand_in() {
         return crate::domain::documentation::DocumentationRegistry::new(vec![stand_in]);
     }
-    crate::domain::documentation::DocumentationRegistry::new(vec![Arc::new(
-        crate::infrastructure::platform_help::provider::PlatformSyntaxHelpProvider::new(),
-    )
-        as Arc<dyn crate::domain::documentation::DocumentationProvider>])
+    let policy = crate::infrastructure::documentation_policy::DocumentationPolicy::load(
+        &context.workspace_root,
+        DOCUMENTATION_PROVIDER_IDS,
+    )?;
+    let endpoint =
+        crate::infrastructure::standards_documentation::resolve_standards_endpoint(&policy);
+    crate::domain::documentation::DocumentationRegistry::new(vec![
+        Arc::new(crate::infrastructure::platform_help::provider::PlatformSyntaxHelpProvider::new())
+            as Arc<dyn crate::domain::documentation::DocumentationProvider>,
+        Arc::new(
+            crate::infrastructure::standards_documentation::V8StdDocumentationProvider {
+                endpoint,
+                network: policy.network("v8std"),
+                http: crate::infrastructure::internal_adapters::shared_http_client(),
+            },
+        ),
+    ])
 }
 
 /// Подмена реестра для тестов — та самая, которую допускает п.5 ADR-0029
@@ -1109,21 +1154,107 @@ mod tests {
     }
 
     #[test]
-    fn documentation_registry_wires_the_platform_syntax_help_provider() {
-        // The composition root is the only place a documentation provider is
-        // constructed; a registry left empty (forgot to wire the provider) or
-        // wired to the wrong provider must fail this, not merely compile.
+    fn documentation_registry_wires_providers_in_the_declared_order() {
+        // The composition root is the only place documentation providers are
+        // constructed; a registry left short (forgot to wire one) or ordered
+        // differently must fail this, not merely compile. Порядок реестра —
+        // порядок секций публичного ответа: локальная справка платформы
+        // раньше сетевых поставщиков, справка раньше стандартов.
         // Замок общий со стенд-тестами: без него параллельный прогон подменил
         // бы реестр на стенд прямо под этой проверкой.
         let _serial = documentation_registry_serial();
-        let registry = documentation_registry().expect("registry constructs");
+        let dir = tempfile::tempdir().expect("каталог");
+        let workspace = dir.path().to_path_buf();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let registry = documentation_registry(&context).expect("registry constructs");
+        let ids: Vec<String> = registry
+            .providers()
+            .map(|provider| provider.id().to_string())
+            .collect();
+        assert_eq!(
+            ids,
+            vec!["platform-syntax-help".to_string(), "v8std".to_string()],
+            "состав и порядок реестра"
+        );
         let providers: Vec<_> = registry.providers().collect();
-        assert_eq!(providers.len(), 1, "exactly one provider is wired today");
-        assert_eq!(providers[0].id().to_string(), "platform-syntax-help");
         assert_eq!(
             providers[0].corpora().len(),
             2,
             "syntax-context and platform-guides"
+        );
+        assert_eq!(providers[1].corpora().len(), 1, "public-standards");
+        assert_eq!(
+            providers[1].corpora()[0].source_kind,
+            crate::domain::documentation::SourceKind::DevelopmentStandard
+        );
+    }
+
+    /// Фасады `unica.standards.*` делят с поставщиком движок и политику
+    /// (ADR-0032 п.4, следствие 2: «оба выключаются одним файлом настройки»).
+    /// Запрет в `unica.toml` обязан отказывать фасаду ДО транспорта, называя
+    /// политику; endpoint на закрытый локальный порт делает и красное
+    /// состояние герметичным — сеть за пределы машины не выходит.
+    /// Различающая сила доказана мутацией: со снятой проверкой запрета
+    /// (`if false`) тест падает.
+    #[test]
+    fn the_standards_facades_refuse_when_policy_denies_v8std() {
+        use crate::application::ports::ApplicationPorts;
+
+        struct EnvGuard {
+            previous: Option<String>,
+        }
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                match self.previous.take() {
+                    Some(value) => std::env::set_var("UNICA_STANDARDS_MCP_URL", value),
+                    None => std::env::remove_var("UNICA_STANDARDS_MCP_URL"),
+                }
+            }
+        }
+        let _env = EnvGuard {
+            previous: std::env::var("UNICA_STANDARDS_MCP_URL").ok(),
+        };
+        std::env::set_var("UNICA_STANDARDS_MCP_URL", "http://127.0.0.1:9/mcp");
+
+        let dir = tempfile::tempdir().expect("каталог");
+        let workspace = dir.path().to_path_buf();
+        std::fs::write(
+            workspace.join("unica.toml"),
+            "[providers.v8std]\nnetwork = \"deny\"\n",
+        )
+        .expect("политика");
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        let mut args = Map::new();
+        args.insert("query".to_string(), json!("ссылка"));
+        let error = match super::InfrastructureApplicationPorts::new().invoke_handler(
+            spec(
+                "unica.standards.search",
+                ToolHandler::StandardsAdapter {
+                    operation: "search",
+                },
+            ),
+            &args,
+            &context,
+            false,
+            &crate::domain::cancellation::CancellationToken::default(),
+        ) {
+            Ok(_) => panic!("запрет политики обязан отказывать фасаду"),
+            Err(error) => error,
+        };
+        assert!(
+            error.contains("unica.toml"),
+            "отказ обязан назвать политику, получено {error}"
         );
     }
 
@@ -1144,7 +1275,15 @@ mod tests {
             .description;
         // Замок общий со стенд-тестами: настоящий реестр, а не стенд соседа.
         let _serial = documentation_registry_serial();
-        let registry = documentation_registry().expect("реестр собран");
+        let dir = tempfile::tempdir().expect("каталог");
+        let workspace = dir.path().to_path_buf();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let registry = documentation_registry(&context).expect("реестр собран");
         let declares_standards = registry.providers().any(|provider| {
             provider.corpora().iter().any(|corpus| {
                 corpus.source_kind == crate::domain::documentation::SourceKind::DevelopmentStandard

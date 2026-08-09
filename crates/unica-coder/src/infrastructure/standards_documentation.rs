@@ -1,0 +1,376 @@
+//! Поставщик `v8std` за общим контрактом документации (ADR-0032 п.4).
+//!
+//! Движок один на поставщика и фасады: тот же endpoint, тот же JSON-RPC
+//! вызов `v8std_search` через `HttpClient`, что и у `unica.standards.*`.
+//! Секция несёт смысл источника «стандарт разработки» и авторитетность
+//! «сообщество» — это единственная секция реестра, не являющаяся справкой
+//! платформы, и именно поэтому она обязана быть помечена (проектная записка,
+//! «Поставщики и корпуса»).
+
+use std::sync::Arc;
+
+use serde_json::{json, Value};
+
+use crate::domain::documentation::*;
+use crate::infrastructure::documentation_policy::{DocumentationPolicy, NetworkAccess};
+use crate::infrastructure::internal_adapters::{HttpClient, StandardsAdapter};
+
+/// Встроенное умолчание endpoint сервера стандартов — то же, что всегда
+/// использовали фасады `unica.standards.*`.
+pub const BUILTIN_STANDARDS_ENDPOINT: &str = "https://ai.v8std.ru/mcp";
+
+/// Попадание стандарта не имеет версии платформы: стандарт говорит, как
+/// принято писать, и не свидетельствует о поведении платформы. Wire-маркер
+/// вместо пустой строки: обязательность применимой версии у попадания —
+/// ADR-0029 п.8, и «неверсионируемо» — честное значение, а пустота — нет.
+pub const UNVERSIONED: &str = "unversioned";
+
+/// Цепочка endpoint из проектной записки («Настройка»): `unica.local.toml`,
+/// затем `unica.toml` (оба уже сведены внутри политики), затем переменная
+/// окружения `UNICA_STANDARDS_MCP_URL`, затем встроенное умолчание.
+pub fn resolve_standards_endpoint(policy: &DocumentationPolicy) -> String {
+    resolve_standards_endpoint_with(policy, std::env::var("UNICA_STANDARDS_MCP_URL").ok())
+}
+
+/// Чистая половина цепочки: окружение приходит аргументом, чтобы порядок
+/// слоёв проверялся без гонок за глобальное состояние процесса.
+pub fn resolve_standards_endpoint_with(
+    policy: &DocumentationPolicy,
+    environment: Option<String>,
+) -> String {
+    policy
+        .endpoint("v8std")
+        .or(environment)
+        .unwrap_or_else(|| BUILTIN_STANDARDS_ENDPOINT.to_string())
+}
+
+pub struct V8StdDocumentationProvider {
+    pub endpoint: String,
+    pub network: NetworkAccess,
+    pub http: Arc<dyn HttpClient + Send + Sync>,
+}
+
+const CORPUS: &str = "public-standards";
+
+impl V8StdDocumentationProvider {
+    fn section(
+        &self,
+        language: &str,
+        status: DocumentationSectionStatus,
+        hits: Vec<DocumentationHit>,
+    ) -> DocumentationSection {
+        DocumentationSection {
+            provider: self.id(),
+            corpus: CORPUS.to_string(),
+            source_kind: SourceKind::DevelopmentStandard,
+            authority: Authority::Community,
+            language: language.to_string(),
+            status,
+            warnings: Vec::new(),
+            hits,
+        }
+    }
+}
+
+impl DocumentationProvider for V8StdDocumentationProvider {
+    fn id(&self) -> DocumentationProviderId {
+        DocumentationProviderId::new("v8std")
+    }
+
+    fn corpora(&self) -> Vec<DocumentationCorpus> {
+        vec![DocumentationCorpus {
+            id: CORPUS.to_string(),
+            source_kind: SourceKind::DevelopmentStandard,
+            authority: Authority::Community,
+        }]
+    }
+
+    fn needs_network(&self) -> bool {
+        true
+    }
+
+    fn search(
+        &self,
+        request: &DocumentationSearchRequest,
+        _context: &DocumentationContext,
+    ) -> Vec<DocumentationSection> {
+        // Запрет политики — отказ ДО транспорта: пользователь запретил
+        // обращение сам, и ответ называет это, а не выдаёт за сбой.
+        if self.network == NetworkAccess::Deny {
+            return vec![self.section(
+                &request.language,
+                DocumentationSectionStatus::Unavailable {
+                    reason: UnavailableReason::PolicyDenied,
+                    detail: "сетевой выход v8std запрещён политикой unica.toml".to_string(),
+                },
+                Vec::new(),
+            )];
+        }
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "v8std_search",
+                "arguments": { "query": request.query, "limit": request.limit },
+            }
+        });
+        let body = match self.http.post_json(&self.endpoint, &payload) {
+            Ok(body) => body,
+            Err(error) => {
+                return vec![self.section(
+                    "ru",
+                    DocumentationSectionStatus::Failed {
+                        diagnostic: format!("сервер стандартов недоступен: {error}"),
+                    },
+                    Vec::new(),
+                )];
+            }
+        };
+        // Конверт JSON-RPC разбирает тот же код, что и у фасадов: один
+        // разбор на движок, а не два расходящихся.
+        let outcome = StandardsAdapter::outcome_from_http_body(
+            "search",
+            &self.endpoint,
+            "v8std_search",
+            &body,
+        );
+        if !outcome.outcome.ok {
+            return vec![self.section(
+                "ru",
+                DocumentationSectionStatus::Failed {
+                    diagnostic: outcome.outcome.errors.join("; "),
+                },
+                Vec::new(),
+            )];
+        }
+        let hits = outcome
+            .data
+            .as_ref()
+            .and_then(|data| data.get("content"))
+            .and_then(Value::as_array)
+            .and_then(|content| content.first())
+            .and_then(|entry| entry.get("text"))
+            .and_then(Value::as_str)
+            .and_then(|text| serde_json::from_str::<Value>(text).ok())
+            .and_then(|inner| inner.get("results").cloned())
+            .and_then(|results| results.as_array().cloned());
+        let Some(results) = hits else {
+            return vec![self.section(
+                "ru",
+                DocumentationSectionStatus::Failed {
+                    diagnostic: "ответ v8std_search не несёт results".to_string(),
+                },
+                Vec::new(),
+            )];
+        };
+        let hits: Vec<DocumentationHit> = results
+            .iter()
+            .enumerate()
+            .map(|(index, result)| DocumentationHit {
+                rank: index as u32 + 1,
+                provider_score: result
+                    .get("score")
+                    .and_then(Value::as_f64)
+                    .unwrap_or_default() as f32,
+                document_id: result
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                title: result
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                signature: None,
+                snippet: result
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                // У стандарта нет версии платформы: маркер, а не пустота и не
+                // выдуманная версия (обязательность поля — ADR-0029 п.8).
+                applicable_version: UNVERSIONED.to_string(),
+            })
+            .collect();
+        let status = if hits.is_empty() {
+            DocumentationSectionStatus::Empty
+        } else {
+            DocumentationSectionStatus::Ok
+        };
+        // Локаль секции — `ru`: вендор стандартов поставляет их по-русски,
+        // и ответившая локаль называется, как того требует контракт секций.
+        vec![self.section("ru", status, hits)]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Канон ответа живого сервера (зонд 2026-08-09): JSON-RPC конверт, в
+    /// `result.content[0].text` — JSON-строка с массивом `results`.
+    const LIVE_BODY: &str = r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\n  \"query\": \"навигационная ссылка\",\n  \"results\": [\n    {\n      \"id\": \"std702\",\n      \"type\": \"standard\",\n      \"title\": \"Реквизит Ссылка #std702\",\n      \"description\": \"Через команду Еще пользователь может добавить реквизиты.\",\n      \"url\": \"https://v8std.ru/std/702/\",\n      \"markdown_url\": \"https://v8std.ru/std/702.md\",\n      \"score\": 3990.97\n    },\n    {\n      \"id\": \"std403\",\n      \"type\": \"standard\",\n      \"title\": \"Второй стандарт\",\n      \"description\": \"Описание второго.\",\n      \"url\": \"https://v8std.ru/std/403/\",\n      \"score\": 100.5\n    }\n  ]\n}"}]}}"#;
+
+    struct FakeHttp {
+        body: Result<String, String>,
+        calls: AtomicUsize,
+    }
+
+    impl HttpClient for FakeHttp {
+        fn post_json(&self, _endpoint: &str, _payload: &Value) -> Result<String, String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.body.clone()
+        }
+    }
+
+    fn provider(
+        network: NetworkAccess,
+        body: Result<String, String>,
+    ) -> (V8StdDocumentationProvider, Arc<FakeHttp>) {
+        let http = Arc::new(FakeHttp {
+            body,
+            calls: AtomicUsize::new(0),
+        });
+        (
+            V8StdDocumentationProvider {
+                endpoint: "http://stand.in/mcp".to_string(),
+                network,
+                http: Arc::clone(&http) as Arc<dyn HttpClient + Send + Sync>,
+            },
+            http,
+        )
+    }
+
+    fn request() -> DocumentationSearchRequest {
+        DocumentationSearchRequest {
+            query: "ссылка".to_string(),
+            source_kinds: Vec::new(),
+            limit: 20,
+            language: "ru".to_string(),
+        }
+    }
+
+    fn context() -> DocumentationContext {
+        DocumentationContext {
+            platform_version: None,
+            installation_root: None,
+        }
+    }
+
+    #[test]
+    fn v8std_provider_maps_results_into_a_development_standard_section() {
+        let (provider, _http) = provider(NetworkAccess::Allow, Ok(LIVE_BODY.to_string()));
+        let sections = provider.search(&request(), &context());
+        assert_eq!(sections.len(), 1, "один корпус — одна секция");
+        let section = &sections[0];
+        assert_eq!(section.corpus, "public-standards");
+        assert_eq!(section.source_kind, SourceKind::DevelopmentStandard);
+        assert_eq!(section.authority, Authority::Community);
+        assert_eq!(section.language, "ru", "стандарты поставляются по-русски");
+        assert!(matches!(section.status, DocumentationSectionStatus::Ok));
+        assert_eq!(section.hits.len(), 2);
+        let first = &section.hits[0];
+        assert_eq!(first.rank, 1);
+        assert_eq!(first.document_id, "https://v8std.ru/std/702/");
+        assert_eq!(first.title, "Реквизит Ссылка #std702");
+        assert_eq!(
+            first.snippet,
+            "Через команду Еще пользователь может добавить реквизиты."
+        );
+        assert_eq!(
+            first.applicable_version, UNVERSIONED,
+            "у стандарта нет версии платформы — маркер, а не пустота"
+        );
+        assert!(first.signature.is_none());
+        assert!(first.provider_score > section.hits[1].provider_score);
+    }
+
+    /// Запрет политики — отказ ДО транспорта: сам смысл `policy-denied` в том,
+    /// что пользователь запретил обращение, а не в том, что оно не удалось.
+    #[test]
+    fn v8std_denied_by_policy_answers_policy_denied_without_touching_the_network() {
+        let (provider, http) = provider(NetworkAccess::Deny, Ok(LIVE_BODY.to_string()));
+        let sections = provider.search(&request(), &context());
+        assert_eq!(sections.len(), 1);
+        match &sections[0].status {
+            DocumentationSectionStatus::Unavailable { reason, detail } => {
+                assert_eq!(*reason, UnavailableReason::PolicyDenied);
+                assert!(
+                    detail.contains("unica.toml"),
+                    "отказ обязан назвать файл политики, получено {detail}"
+                );
+            }
+            other => panic!("ожидался Unavailable{{PolicyDenied}}, получено {other:?}"),
+        }
+        assert_eq!(
+            http.calls.load(Ordering::SeqCst),
+            0,
+            "запрещённый поставщик не должен трогать сеть"
+        );
+    }
+
+    #[test]
+    fn v8std_transport_failure_is_failed_not_empty() {
+        let (provider, _http) =
+            provider(NetworkAccess::Allow, Err("connection refused".to_string()));
+        let sections = provider.search(&request(), &context());
+        assert_eq!(sections.len(), 1);
+        match &sections[0].status {
+            DocumentationSectionStatus::Failed { diagnostic } => assert!(
+                diagnostic.contains("connection refused"),
+                "диагностика обязана нести причину, получено {diagnostic}"
+            ),
+            other => panic!("ожидался Failed, получено {other:?}"),
+        }
+    }
+
+    #[test]
+    fn v8std_empty_results_are_empty_not_failed() {
+        let body = r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"results\": []}"}]}}"#;
+        let (provider, _http) = provider(NetworkAccess::Allow, Ok(body.to_string()));
+        let sections = provider.search(&request(), &context());
+        assert!(matches!(
+            sections[0].status,
+            DocumentationSectionStatus::Empty
+        ));
+        assert!(sections[0].hits.is_empty());
+    }
+
+    /// Порядок слоёв цепочки endpoint: файл политики (локальный оверлей уже
+    /// сведён внутри неё) старше окружения, окружение старше встроенного
+    /// умолчания.
+    #[test]
+    fn resolve_standards_endpoint_prefers_config_then_env_then_builtin() {
+        let dir = tempfile::tempdir().expect("каталог");
+        std::fs::write(
+            dir.path().join("unica.toml"),
+            "[providers.v8std]\nendpoint = \"http://from.config/mcp\"\n",
+        )
+        .expect("файл политики");
+        let configured =
+            DocumentationPolicy::load(dir.path(), &["v8std", "kb-1ci"]).expect("политика");
+        let empty = DocumentationPolicy::load(
+            tempfile::tempdir().expect("каталог").path(),
+            &["v8std", "kb-1ci"],
+        )
+        .expect("умолчания");
+
+        assert_eq!(
+            resolve_standards_endpoint_with(&configured, Some("http://from.env/mcp".to_string())),
+            "http://from.config/mcp",
+            "файл политики старше окружения"
+        );
+        assert_eq!(
+            resolve_standards_endpoint_with(&empty, Some("http://from.env/mcp".to_string())),
+            "http://from.env/mcp",
+            "окружение старше встроенного умолчания"
+        );
+        assert_eq!(
+            resolve_standards_endpoint_with(&empty, None),
+            BUILTIN_STANDARDS_ENDPOINT
+        );
+    }
+}
