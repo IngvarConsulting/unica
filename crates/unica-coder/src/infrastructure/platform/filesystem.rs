@@ -3595,6 +3595,73 @@ mod tests {
         }
 
         #[test]
+        fn generic_delete_child_open_does_not_require_attribute_write_access() {
+            use std::os::windows::ffi::OsStrExt;
+            use windows_sys::Win32::Security::{
+                GetAce, GetSecurityDescriptorDacl, SetFileSecurityW, ACCESS_ALLOWED_ACE,
+                DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+            };
+            use windows_sys::Win32::Storage::FileSystem::{FILE_READ_ATTRIBUTES, SYNCHRONIZE};
+
+            let root = unique_temp_root("delete-child-without-write-attributes");
+            fs::create_dir_all(&root).unwrap();
+            let child_path = root.join("cleanup.bin");
+            fs::write(&child_path, b"cleanup").unwrap();
+            let security = OwnerOnlySecurityAttributes::current_user().unwrap();
+            let mut dacl_present = 0;
+            let mut dacl = ptr::null_mut();
+            let mut dacl_defaulted = 0;
+            // SAFETY: the security owner retains a valid descriptor and all output pointers are
+            // writable for the duration of the call.
+            assert_ne!(
+                unsafe {
+                    GetSecurityDescriptorDacl(
+                        security.security_descriptor(),
+                        &mut dacl_present,
+                        &mut dacl,
+                        &mut dacl_defaulted,
+                    )
+                },
+                0
+            );
+            assert_ne!(dacl_present, 0);
+            let mut ace = ptr::null_mut();
+            // SAFETY: the owner-only descriptor contains exactly one access-allowed ACE.
+            assert_ne!(unsafe { GetAce(dacl, 0, &mut ace) }, 0);
+            // SAFETY: the owner-only descriptor creates an ACCESS_ALLOWED_ACE at index zero.
+            unsafe {
+                (*ace.cast::<ACCESS_ALLOWED_ACE>()).Mask =
+                    DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE | WRITE_DAC;
+            }
+            let mut wide_path = child_path.as_os_str().encode_wide().collect::<Vec<_>>();
+            wide_path.push(0);
+            // SAFETY: the path is NUL-terminated and the security descriptor stays live through
+            // the call. The reduced DACL deliberately grants deletion but not attribute writes.
+            assert_ne!(
+                unsafe {
+                    SetFileSecurityW(
+                        wide_path.as_ptr(),
+                        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                        security.security_descriptor(),
+                    )
+                },
+                0,
+                "{}",
+                io::Error::last_os_error()
+            );
+            let parent = open_directory_nofollow(&root).unwrap();
+
+            let child = open_any_child_for_delete(&parent, std::ffi::OsStr::new("cleanup.bin"))
+                .expect("generic delete-only callers must not require FILE_WRITE_ATTRIBUTES");
+            delete_open_child(&child).unwrap();
+
+            drop(child);
+            drop(parent);
+            assert!(!child_path.exists());
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
         fn windows_open_any_child_nofollow_classifies_a_reparse_point() {
             let root = unique_temp_root("open-any-reparse");
             fs::create_dir_all(&root).unwrap();
