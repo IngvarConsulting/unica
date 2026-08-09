@@ -332,6 +332,67 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `tests/ci/test_release_assessment.py`
 - **Scope:** runtime, packaged
 
+### INV-MCP-DOCUMENTATION-SECTIONS — Поиск по документации сохраняет независимые секции поставщиков
+
+- **Rule:** `unica.documentation.search` публикует секции поставщиков в порядке
+  реестра: доступный поставщик даёт по секции на каждый объявленный корпус,
+  недоступный — одну секцию с диагностичным статусом. Происхождение объявляет
+  секция — поставщик, корпус, смысл источника, авторитетность и локаль, на
+  которой секция ответила на самом деле, а не запрошенная; попадание внутри
+  секции несёт применимую версию и устойчивый локатор. Ранги и оценки
+  локальны для секции: Unica не объединяет, не пересортировывает и не удаляет
+  совпадения между секциями. Отказ одного поставщика остаётся в его секции, а
+  неполнота, не отменяющая успеха, называется предупреждениями секции.
+  Аргумент `sourceKinds` ограничивает выдачу смыслом источника, а не
+  идентификатором поставщика: неприменимый поставщик не опрашивается, его
+  секции не публикуются, а неизвестное значение аргумента отклоняется, а не
+  игнорируется. Вызов успешен, когда хотя бы одна применимая секция ответила
+  `ok` или `empty`; иначе он отвечает ошибкой, а не пустым на вид успехом, и
+  частичного результата не публикует.
+- **Decision:** ADR-0029
+- **Decision:** ADR-0032
+- **Check:** `ci-test` — `crates/unica-coder/src/application/documentation.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/domain/documentation.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_help/provider.rs`
+- **Scope:** source, runtime
+
+### INV-MCP-DOCUMENTATION-GET — Полный текст документа отдаёт владелец его локатора
+
+- **Rule:** `unica.documentation.get` возвращает полный текст одного документа
+  по `documentId` попадания, переданному дословно. Владелец локатора —
+  поставщик, выпустивший его; форматы локаторов поставщиков не пересекаются,
+  владельца находит первый непустой ответ в порядке реестра. Ответ несёт то же
+  происхождение, что и секция поиска, локаль фактического ответа, применимую
+  версию и полный текст — не фрагмент. Отказ владельца — отказ вызова, подмена
+  другой страницей или поставщиком запрещена; локатор без владельца — отказ,
+  называющий локатор; политика сетевого выхода и граница объявленных корней
+  действуют и на получение, а отмена вызова проверяется до сетевого
+  обращения и отвечает отказом, не результатом.
+- **Decision:** ADR-0033
+- **Check:** `ci-test` — `crates/unica-coder/src/application/documentation.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_help/provider.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/kb_1ci.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/standards_documentation.rs`
+- **Scope:** source, runtime
+
+### INV-APP-DOCUMENTATION-NETWORK-POLICY — Сетевой выход поставщиков документации управляется политикой проекта
+
+- **Rule:** Сетевой выход поставщиков документации задаётся файлом
+  `unica.toml` в корне проекта с машинным оверлеем `unica.local.toml`,
+  перекрывающим по-ключево. Политика разбирается по правилу «неясность —
+  отказ»: отсутствие файла даёт умолчания с разрешённой сетью, а
+  неразбираемый файл, неизвестная секция, ключ, идентификатор поставщика или
+  значение — жёсткий отказ вызова, не молчаливое разрешение. Запрещённый
+  поставщик отвечает секцией `unavailable` с причиной `policy-denied` до
+  единого обращения к сети; запрет `v8std` выключает и фасады
+  `unica.standards.*` — движок, адрес сервера и политика у них общие.
+  Поставщик, которому сеть не нужна, запретом не затрагивается.
+- **Decision:** ADR-0032
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/documentation_policy.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/standards_documentation.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/kb_1ci.rs`
+- **Scope:** source, runtime
+
 ### INV-MCP-OUTLINE-DATA — Outline возвращает типизированные данные
 
 - **Rule:** Успешный `unica.code.outline` публикует доказанную структуру модуля
@@ -498,6 +559,22 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/application/code_intelligence.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/code_intelligence.rs`
 - **Scope:** source, runtime
+
+### INV-APP-DOCUMENTATION-NO-DISK-STATE — Разбор корпуса справки не создаёт состояния на диске
+
+- **Rule:** Поставщик справки платформы читает контейнеры установки и
+  разбирает их в памяти. Разобранный индекс переживает вызов, ключуется
+  каталогом установки и отпечатком выбранных по запросу контейнеров и потому
+  не смешивает ни корпуса разных версий платформы, ни корпуса разных
+  локалей; запросы, разрешающиеся в одни и те же файлы, делят один индекс, а
+  контейнер, подменённый на диске, перечитывается без перезапуска процесса.
+  Индекс, кеш и распакованные страницы на диск не пишутся, в рабочее дерево
+  не попадают и в пакет не включаются.
+- **Decision:** ADR-0029
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_help/provider.rs`
+- **Check:** `ci-test` — `tests/ci/test_product_contracts.py`
+- **Check:** `ci-test` — `tests/ci/test_package_unica_plugin.py`
+- **Scope:** source, packaged, runtime
 
 ### INV-APP-OUTLINE-SOURCE — Структура модуля берётся из текущего файла
 
@@ -723,6 +800,8 @@ Unica. Каждая запись формулирует одно нормати�
 - **Decision:** n/a
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/text_snapshot.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/code.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/meta/edit.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/metadata_operations.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_resources.rs`
 - **Scope:** runtime
 

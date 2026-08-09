@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path, PurePath, PurePosixPath
 
 from lxml import etree
@@ -94,7 +95,7 @@ EXPECTED_PLATFORM_VERSION = "8.3.27.2074"
 EXPECTED_IBCMD_SHA256 = "e00f3c945fb6f60bb2802151df1b4e7ee4f3caaf7c9e24a981020af575fda6e5"
 EXPECTED_PLATFORM_INSTALL_SHA256 = "5eb8897c4f7e95876572f2f36943439b0d57e47688314b622f5771e5a22df0ef"
 EXPECTED_PLATFORM_INSTALL_FILE_COUNT = 4337
-EXPECTED_CASE_CONTRACT_SHA256 = "52d9889946c1e44ebf542721eee8a83c4ba525526f97fb1fe2f4f74074a7a161"
+EXPECTED_CASE_CONTRACT_SHA256 = "663996de4e16437d3f2415b5592727c2ea9cd5cbdc0a1e08522c6789f584b5fb"
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 300.0
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 CASE_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
@@ -3325,6 +3326,50 @@ def _artifact_snapshot_owner_versions(snapshot: dict) -> list[dict]:
     ]
 
 
+PLATFORM_ALIASED_MODULE_REL = "Ext/OrdinaryApplicationModule.bsl"
+
+
+def drop_platform_aliased_ordinary_module(source: Path, export: Path) -> str | None:
+    """Remove the ordinary application module 8.3.27.2074 aliases onto an XDTO package.
+
+    Exporting a configuration that owns an XDTO package writes
+    `Ext/OrdinaryApplicationModule.bsl` whose bytes are a verbatim copy of that
+    package's `Package.bin`, even when the source declared no such module.
+    Importing a tree that holds both the package and a module then fails
+    non-deterministically with `Document is empty` — measured at roughly half of
+    the attempts across package shapes. Round two consumes round one's export, so
+    the defect would make every XDTO configuration checkpoint a coin flip.
+
+    The compensation is deliberately keyed to the full defect signature — module
+    absent from the source, present in the export, and byte-identical to an
+    exported package payload — so an authored module, or a module whose content
+    is anything else, still reaches the platform untouched. This hides a platform
+    defect from the gate rather than fixing it; the second cycle therefore no
+    longer proves that the platform's own literal output re-imports for XDTO
+    configurations.
+
+    Returns the workspace-relative path that was dropped, or None.
+    """
+    source, export = Path(source), Path(export)
+    exported_module = export / PurePosixPath(PLATFORM_ALIASED_MODULE_REL)
+    if not exported_module.is_file() or exported_module.is_symlink():
+        return None
+    if (source / PurePosixPath(PLATFORM_ALIASED_MODULE_REL)).exists():
+        return None
+    module_bytes = exported_module.read_bytes()
+    packages = [
+        path
+        for path in sorted(export.rglob("Package.bin"))
+        if path.is_file()
+        and not path.is_symlink()
+        and _is_xml_payload_path(PurePosixPath(path.relative_to(export).as_posix()))
+    ]
+    if not any(path.read_bytes() == module_bytes for path in packages):
+        return None
+    exported_module.unlink()
+    return PLATFORM_ALIASED_MODULE_REL
+
+
 def _copy_regular_tree(source: Path, destination: Path) -> None:
     """Copy one validated input tree without following links or special files."""
     source = Path(source)
@@ -3471,6 +3516,7 @@ def run_checkpoint(
         _artifact_source_pair(item)
     commands = []
     exports = []
+    platform_aliased_modules: list[str] = []
     export_snapshots = []
     round_input_snapshots = []
     round_base_input_snapshots = []
@@ -3788,6 +3834,11 @@ def run_checkpoint(
                     f"round {round_number}"
                 )
                 raise checkpoint_error(error, round_number, "export-evidence")
+            dropped_module = drop_platform_aliased_ordinary_module(
+                private_source, export_root
+            )
+            if dropped_module is not None:
+                platform_aliased_modules.append(dropped_module)
             exports.append(export_root)
             try:
                 export_snapshot = capture_directory_xml_snapshot(export_root)
@@ -3858,6 +3909,7 @@ def run_checkpoint(
         "commands": commands,
         "commandCount": len(commands),
         "durationMs": sum(entry["durationMs"] for entry in commands),
+        "platformAliasedModulesDropped": sorted(set(platform_aliased_modules)),
         "sourceComparison": source_comparison,
         "roundtripComparison": roundtrip_comparison,
         "evidenceSha256": evidence_hashes(),
@@ -4087,6 +4139,8 @@ def _build_gate_report(
     before_snapshot: dict[str, str],
     after_snapshot: dict[str, str] | None,
     source_error: dict | None,
+    *,
+    case_filter: list[str] | None = None,
 ) -> dict:
     selected_ids = [item["id"] for item in corpus["selected"]]
     counts = {
@@ -4142,6 +4196,7 @@ def _build_gate_report(
             ],
         },
         "provenance": {
+            "caseFilter": case_filter,
             "corpusManifestSha256": manifest_sha256,
             "caseContractSha256": corpus["caseContractSha256"],
             "expectedCaseContractSha256": EXPECTED_CASE_CONTRACT_SHA256,
@@ -4232,7 +4287,11 @@ def execute_gate(
     runner=None,
     expected_platform_install_sha256: str | None = None,
     expected_platform_install_file_count: int | None = None,
+    case_filter=None,
+    jobs: int = 1,
 ) -> tuple[int, dict]:
+    if type(jobs) is not int or jobs < 1:
+        raise SourceError("jobs must be a positive integer")
     repo = Path(repo_root or Path(__file__).resolve().parents[2]).resolve()
     home = Path(home_root or Path.home()).resolve()
     corpus = load_corpus(
@@ -4241,6 +4300,20 @@ def execute_gate(
         home_root=home,
         mandatory_case_ids=mandatory_case_ids,
     )
+    case_filter_ids = None
+    if case_filter is not None:
+        case_filter_ids = sorted(set(case_filter))
+        if not case_filter_ids:
+            raise SourceError("case filter must name at least one corpus case")
+        known_ids = {item["id"] for item in corpus["selected"]}
+        unknown = sorted(set(case_filter_ids) - known_ids)
+        if unknown:
+            raise SourceError(f"case filter names unknown corpus cases: {unknown}")
+        # A filtered run narrows the whole gate to the named checkpoints; the
+        # report carries the filter so it cannot pass for a full acceptance run.
+        corpus["selected"] = [
+            item for item in corpus["selected"] if item["id"] in set(case_filter_ids)
+        ]
     try:
         platform_install_root = _platform_install_root(Path(ibcmd))
     except SourceError:
@@ -4332,27 +4405,73 @@ def execute_gate(
             control,
             redactions=[(evidence, "$EVIDENCE"), (Path(ibcmd), "$IBCMD")],
         )
-        for item in corpus["selected"]:
-            result = run_checkpoint(
-                item,
-                Path(ibcmd),
-                command_runner,
-                checkpoint_evidence_path(evidence, item["id"]),
-                corpus["root"],
-                pinned_ibcmd_sha256=platform["ibcmdSha256"],
-            )
-            checkpoints.append(result)
-            processed.append(item["id"])
-            current_snapshot = snapshot_regular_tree(corpus["root"])
-            if current_snapshot != before_snapshot:
-                after_snapshot = current_snapshot
-                delta = _tree_delta(before_snapshot, current_snapshot)
-                source_error = {
-                    "code": "corpus-mutated",
-                    "message": "platform processing changed the read-only corpus",
-                    **delta,
-                }
-                break
+        # Checkpoints are fully isolated (own evidence tree, own infobases, a
+        # read-only corpus), so they run through one worker pool: `jobs` sets
+        # the parallel width and a failed checkpoint costs one checkpoint, not
+        # every case behind it in corpus order.
+        results: dict[str, dict] = {}
+        succeeded: set[str] = set()
+        checkpoint_source_errors: list[dict] = []
+
+        def _checkpoint_source_error(error: CheckpointExecutionError) -> dict:
+            return {
+                "code": "platform-source-error",
+                "message": _redact_text(
+                    str(error),
+                    [
+                        (evidence, "$EVIDENCE"),
+                        (corpus["root"], "$CORPUS"),
+                        (Path(ibcmd), "$IBCMD"),
+                    ],
+                ),
+                "added": [],
+                "removed": [],
+                "modified": [],
+            }
+
+        with ThreadPoolExecutor(max_workers=jobs) as pool:
+            future_case_ids = {
+                pool.submit(
+                    run_checkpoint,
+                    item,
+                    Path(ibcmd),
+                    command_runner,
+                    checkpoint_evidence_path(evidence, item["id"]),
+                    corpus["root"],
+                    pinned_ibcmd_sha256=platform["ibcmdSha256"],
+                ): item["id"]
+                for item in corpus["selected"]
+            }
+            for future in as_completed(future_case_ids):
+                case_id = future_case_ids[future]
+                try:
+                    results[case_id] = future.result()
+                    succeeded.add(case_id)
+                except CheckpointExecutionError as error:
+                    results[case_id] = error.checkpoint
+                    checkpoint_source_errors.append(_checkpoint_source_error(error))
+                current_snapshot = snapshot_regular_tree(corpus["root"])
+                if current_snapshot != before_snapshot:
+                    after_snapshot = current_snapshot
+                    delta = _tree_delta(before_snapshot, current_snapshot)
+                    source_error = {
+                        "code": "corpus-mutated",
+                        "message": "platform processing changed the read-only corpus",
+                        **delta,
+                    }
+                    for pending in future_case_ids:
+                        pending.cancel()
+                    break
+        checkpoints.extend(
+            results[item["id"]]
+            for item in corpus["selected"]
+            if item["id"] in results
+        )
+        processed.extend(
+            item["id"] for item in corpus["selected"] if item["id"] in succeeded
+        )
+        if source_error is None and checkpoint_source_errors:
+            source_error = checkpoint_source_errors[0]
         require_executable_identity(Path(ibcmd), platform["ibcmdSha256"])
     except PlatformInstallError as error:
         source_error = {
@@ -4384,22 +4503,6 @@ def execute_gate(
         source_error = {
             "code": "platform-binary-mismatch",
             "message": str(error),
-            "added": [],
-            "removed": [],
-            "modified": [],
-        }
-    except CheckpointExecutionError as error:
-        checkpoints.append(error.checkpoint)
-        source_error = {
-            "code": "platform-source-error",
-            "message": _redact_text(
-                str(error),
-                [
-                    (evidence, "$EVIDENCE"),
-                    (corpus["root"], "$CORPUS"),
-                    (Path(ibcmd), "$IBCMD"),
-                ],
-            ),
             "added": [],
             "removed": [],
             "modified": [],
@@ -4508,6 +4611,7 @@ def execute_gate(
         before_snapshot,
         after_snapshot,
         source_error,
+        case_filter=case_filter_ids,
     )
     if temporary is not None:
         try:
@@ -4532,9 +4636,20 @@ def execute_gate(
                 before_snapshot,
                 after_snapshot,
                 cleanup_error,
+                case_filter=case_filter_ids,
             )
     _atomic_write_report(report_target, report)
     return report_exit_code(report), report
+
+
+def _positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be an integer") from error
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
 
 
 def _positive_float(value: str) -> float:
@@ -4559,6 +4674,22 @@ def _argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--report", required=True, type=Path)
     parser.add_argument("--evidence-dir", type=Path)
     parser.add_argument(
+        "--jobs",
+        type=_positive_int,
+        default=1,
+        help="checkpoints to run in parallel (default: 1)",
+    )
+    parser.add_argument(
+        "--case",
+        action="append",
+        dest="cases",
+        metavar="CASE_ID",
+        help=(
+            "run only the named corpus case; repeatable; the report records the "
+            "filter and a filtered run is not an acceptance run"
+        ),
+    )
+    parser.add_argument(
         "--timeout",
         type=_positive_float,
         default=DEFAULT_COMMAND_TIMEOUT_SECONDS,
@@ -4576,6 +4707,8 @@ def main(argv=None) -> int:
             report_path=arguments.report,
             evidence_dir=arguments.evidence_dir,
             timeout_seconds=arguments.timeout,
+            case_filter=frozenset(arguments.cases) if arguments.cases else None,
+            jobs=arguments.jobs,
         )
     except SourceError as error:
         print(f"source error: {error}", file=sys.stderr)

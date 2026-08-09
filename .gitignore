@@ -14,3 +14,5 @@ __pycache__/
 plugins/unica/bin/darwin-arm64/
 plugins/unica/bin/linux-x64/
 plugins/unica/bin/win-x64/
+# Машинная политика сетевого выхода документации (ADR-0032): не коммитится
+unica.local.toml

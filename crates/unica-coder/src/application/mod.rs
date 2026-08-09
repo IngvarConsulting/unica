@@ -15,6 +15,7 @@ pub(crate) use tool_contracts::{
 };
 
 pub(crate) mod code_intelligence;
+pub(crate) mod documentation;
 pub(crate) mod metadata;
 pub(crate) mod operation_descriptors;
 mod outcome;
@@ -68,6 +69,9 @@ pub enum ToolHandler {
         command: &'static [&'static str],
     },
     StandardsAdapter {
+        operation: &'static str,
+    },
+    Documentation {
         operation: &'static str,
     },
 }
@@ -540,6 +544,24 @@ pub fn tools() -> Vec<ToolSpec> {
             handler: ToolHandler::StandardsAdapter {
                 operation: "explain",
             },
+        },
+        ToolSpec {
+            name: "unica.documentation.search",
+            description:
+                "Search the workspace configuration's embedded help, platform help, and development standards across documentation providers.",
+            mutating: false,
+            cache_access: CacheAccess::default(),
+            handler: ToolHandler::Documentation {
+                operation: "search",
+            },
+        },
+        ToolSpec {
+            name: "unica.documentation.get",
+            description:
+                "Fetch the full text of a documentation search hit by its documentId locator.",
+            mutating: false,
+            cache_access: CacheAccess::default(),
+            handler: ToolHandler::Documentation { operation: "get" },
         },
     ]);
     specs

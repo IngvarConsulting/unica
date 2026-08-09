@@ -7427,7 +7427,10 @@ fn default_platform_candidates(utility: PlatformUtility) -> Vec<PathBuf> {
     candidates
 }
 
-fn default_platform_roots() -> Vec<PathBuf> {
+/// The one enumeration of platform installation roots in the project — reused
+/// by `documentation_registry`'s installation resolver in
+/// `infrastructure::application_ports` so a second such list never appears.
+pub(crate) fn default_platform_roots() -> Vec<PathBuf> {
     #[cfg(windows)]
     {
         vec![

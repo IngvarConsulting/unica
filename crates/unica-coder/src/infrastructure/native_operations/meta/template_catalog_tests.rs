@@ -6,8 +6,8 @@ use crate::domain::metadata::{
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 
 use super::template_catalog::{
-    metadata_generated_types_8_3_27, minimal_auxiliary_files, minimal_metadata_xml_for_tests,
-    split_meta_camel_case,
+    metadata_generated_types_8_3_27, minimal_auxiliary_files, minimal_metadata_xml,
+    minimal_metadata_xml_for_tests, split_meta_camel_case, MinimalTemplateContext,
 };
 use super::xml_model::{emit_meta_typed_value_type, meta_info_child, meta_info_child_text};
 
@@ -143,6 +143,53 @@ fn minimal_templates_emit_child_objects_only_where_the_kind_declares_them() {
             kind.as_str()
         );
     }
+}
+
+#[test]
+fn business_process_template_names_its_mandatory_task() {
+    // 8.3.27 refuses to import a business process without a task:
+    // `БизнесПроцесс.<Имя> - Business process task not selected`.
+    let context = MinimalTemplateContext {
+        chart_of_accounts: None,
+        chart_of_calculation_types: None,
+        task: Some("Task.CorpusTask".to_string()),
+        registered_documents: vec![],
+        method_name: None,
+        event_source: None,
+        event_handler: None,
+        dependencies: Vec::new(),
+    };
+    let (xml, _) =
+        minimal_metadata_xml(MetadataKind::BusinessProcess, "Evidence", "2.20", &context).unwrap();
+    assert!(
+        xml.contains("<Task>Task.CorpusTask</Task>"),
+        "business process template must reference the registered task: {xml}"
+    );
+}
+
+#[test]
+fn document_journal_template_registers_its_mandatory_document() {
+    // 8.3.27 refuses to import a journal with no registered documents:
+    // `ЖурналДокументов.<Имя> - No recorded documents specified for log`.
+    let context = MinimalTemplateContext {
+        chart_of_accounts: None,
+        chart_of_calculation_types: None,
+        task: None,
+        registered_documents: vec!["Document.CorpusDocument".to_string()],
+        method_name: None,
+        event_source: None,
+        event_handler: None,
+        dependencies: Vec::new(),
+    };
+    let (xml, _) =
+        minimal_metadata_xml(MetadataKind::DocumentJournal, "Evidence", "2.20", &context).unwrap();
+    assert!(
+        xml.contains(
+            "<RegisteredDocuments>\n\t\t\t\t<xr:Item xsi:type=\"xr:MDObjectRef\">Document.CorpusDocument</xr:Item>\n\t\t\t</RegisteredDocuments>"
+        ),
+        "journal template must register the document: {xml}"
+    );
+    assert!(!xml.contains("<RegisteredDocuments/>"), "{xml}");
 }
 
 #[test]

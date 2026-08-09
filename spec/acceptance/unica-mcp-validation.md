@@ -130,6 +130,7 @@ PY
 cargo fmt --all -- --check
 cargo clippy --package unica-coder --all-targets -- -D warnings
 cargo test --package unica-coder
+python3.12 -m pip install -r tests/ci/requirements.txt
 python3.12 -m unittest discover -s tests/ci
 git diff --check
 ```

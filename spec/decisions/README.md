@@ -47,8 +47,12 @@
 - [ADR-0026: `insert` без селектора пишет в конец модуля](0026-insert-bez-selektora-pishet-v-konec-modulya.md)
 - [ADR-0027: Корни платформенного XML имеют единый закрытый реестр версионирования](0027-edinyy-reestr-korney-platform-xml.md)
 - [ADR-0028: Чтение `unica.meta.info` не теряет данные из-за несвязанной проверки](0028-chtenie-meta-info-ne-teryaet-dannye.md)
+- [ADR-0029: Справка платформы приходит из установки, а поиск по документации нейтрален к поставщику](0029-dva-istochnika-spravki-platformy.md)
 - [ADR-0030: Объектную целостность требует вход `meta`, межобъектную — проверка над `cf`](0030-obektnaya-celostnost-na-vhode-meta.md)
 - [ADR-0031: Публикация корня и владение форматом задаются раздельно](0031-razdelnye-politiki-korney-platform-xml.md)
+- [ADR-0032: Сетевые источники документации — база знаний вендора, фасад стандартов и файл политики сетевого выхода](0032-setevye-istochniki-dokumentacii.md)
+- [ADR-0033: Полнотекстовое получение документа по локатору попадания](0033-polnotekstovoe-poluchenie-dokumenta.md)
+- [ADR-0034: Справка конфигурации рабочего пространства как корпус документации](0034-spravka-konfiguracii-rabochego-prostranstva.md)
 
 Заголовки записей ADR-0001…ADR-0006 приведены здесь дословно: индекс называет
 документ так, как он называется сам. Почему они выглядят иначе — в разделе
