@@ -1,6 +1,6 @@
 - Date: `2026-08-07`
 - Status: `approved`
-- Decision: `ADR-0033`
+- Decision: `ADR-0035`
 
 # Типизированные источники подписки на событие
 
