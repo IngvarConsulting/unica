@@ -186,13 +186,28 @@ fn indexed(key: IndexKey, corpora: &InstallationCorpora) -> Arc<InstallationInde
     index
 }
 
-/// Сигнатура на языке запроса. Хранятся обе локали, поэтому выбор — вопрос
-/// предпочтения, а не наличия: запрошенная идёт первой, вторая остаётся
+/// Сигнатура на локали КОРПУСА, а не запроса. `.st` хранит обе локали, поэтому
+/// выбор — вопрос предпочтения, а не наличия: одна идёт первой, вторая остаётся
 /// запасной, чтобы вопрос про член платформы не остался вовсе без сигнатуры.
+///
+/// Локаль берётся у корпуса, потому что сигнатура печатается рядом с
+/// заголовком и фрагментом ЕГО страницы. Измерено на 8.3.27.2074: запрос на
+/// любую из 22 локалей, кроме `ru` и `en`, разрешается в английский `root`, и
+/// при выборе по локали запроса пользователь получал «Global context.GetURL»
+/// рядом с сигнатурой `ПолучитьНавигационнуюСсылку()`. То же самое случалось с
+/// `root` — то есть со значением, которое инструмент сам возвращает в
+/// `section.language`: подставить его обратно значило получить ответ хуже, чем
+/// от неточного `en`.
+///
+/// Кириллица — только у `ru`: Синтакс-помощник вендор поставляет в двух
+/// локалях, `_ru` и английской `_root`, поэтому «не `ru` — значит английский»
+/// покрывает и `root`, и гипотетический `shcntx_<локаль>.hbk` любой другой
+/// локали, где английская сигнатура рядом с нерусской страницей всё равно
+/// уместнее русской.
 fn signature_in(signature: &Signature, language: &str) -> Option<String> {
     let (preferred, fallback) = match language {
-        "en" => (&signature.en, &signature.ru),
-        _ => (&signature.ru, &signature.en),
+        "ru" => (&signature.ru, &signature.en),
+        _ => (&signature.en, &signature.ru),
     };
     preferred.clone().or_else(|| fallback.clone())
 }
@@ -389,7 +404,9 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
                     request.limit,
                     &index.version,
                     spec.id,
-                    &request.language,
+                    // Локаль КОРПУСА, а не запроса: сигнатура печатается рядом
+                    // с заголовком и фрагментом его страницы (см. `signature_in`).
+                    &corpus.language,
                 );
                 // `Empty` означает «корпус прочитан, ничего не совпало». Если
                 // хоть один контейнер не разобрался, это неправда: совпадение
@@ -588,12 +605,14 @@ mod tests {
             .all(|hit| hit.applicable_version == "8.3.27.2074"));
     }
 
-    /// Аргумент `language` доходил до `DocumentationSearchRequest` и не
-    /// читался никем: локаль сигнатуры была зашита предпочтением русской.
-    /// Здесь одна и та же страница спрашивается дважды, и от языка запроса
-    /// обязана меняться выданная сигнатура.
+    /// Локаль корпуса выбирает локаль сигнатуры. `root` проверяется наравне с
+    /// `ru` и `en`, потому что именно им отвечает установка на 22 запрошенные
+    /// локали из 24 — и им же назван `section.language`, который вызывающий
+    /// может подставить обратно. Пока `root` не был английским, ответом на
+    /// `de` и на сам `root` была английская страница «Global context.GetURL»
+    /// рядом с кириллической сигнатурой `ПолучитьНавигационнуюСсылку()`.
     #[test]
-    fn requested_language_picks_the_signature_locale() {
+    fn the_corpus_locale_picks_the_signature_locale() {
         let pages: Vec<IndexedPage> = [crate::infrastructure::platform_help::corpus::CorpusPage {
             path: "objects/GetURL.html".to_string(),
             title: "ПолучитьНавигационнуюСсылку (GetURL)".to_string(),
@@ -606,17 +625,35 @@ mod tests {
         .into_iter()
         .map(index_page)
         .collect();
-        let ru = rank_pages(&pages, "GetURL", 20, "8.3.27.2074", "syntax-context", "ru");
-        let en = rank_pages(&pages, "GetURL", 20, "8.3.27.2074", "syntax-context", "en");
+        let signature_for = |locale: &str| {
+            rank_pages(
+                &pages,
+                "GetURL",
+                20,
+                "8.3.27.2074",
+                "syntax-context",
+                locale,
+            )[0]
+            .signature
+            .clone()
+        };
         assert_eq!(
-            ru[0].signature.as_deref(),
-            Some("ПолучитьНавигационнуюСсылку(<Объект>)")
+            signature_for("ru").as_deref(),
+            Some("ПолучитьНавигационнуюСсылку(<Объект>)"),
+            "кириллица — только у русского корпуса"
         );
         assert_eq!(
-            en[0].signature.as_deref(),
+            signature_for("en").as_deref(),
             Some("GetURL(<Object>)"),
-            "запрошенный язык обязан выбирать локаль сигнатуры"
+            "локаль корпуса обязана выбирать локаль сигнатуры"
         );
+        for locale in ["root", "de"] {
+            assert_eq!(
+                signature_for(locale).as_deref(),
+                Some("GetURL(<Object>)"),
+                "локаль {locale} — не русская, значит сигнатура английская, а не кириллическая рядом с нерусской страницей"
+            );
+        }
     }
 
     /// Прошлое ревью отметило, что решение «секция на корпус» до сих пор
@@ -1067,6 +1104,54 @@ mod tests {
         assert_eq!(
             syntax.language, "root",
             "секция обязана называть локаль, которая ответила, а не запрошенную"
+        );
+    }
+
+    /// Предыдущий тест зовёт `rank_pages` напрямую и не видит, ЧТО ей передаёт
+    /// `search`. Здесь установка несёт только английский `shcntx_root.hbk`, а
+    /// запрос идёт на `ru` — на локали по умолчанию, то есть без всякого
+    /// экзотического ввода. Локаль корпуса (`root`) и локаль запроса (`ru`)
+    /// расходятся, и подстановка второй вместо первой даёт кириллическую
+    /// сигнатуру рядом с английской страницей — ровно то, что ревьюер измерил
+    /// на реальной установке.
+    #[test]
+    fn the_answering_corpus_locale_not_the_request_picks_the_signature() {
+        // Слот индекса общий на процесс — тесты, которые его пишут, идут по одному.
+        let _serial = index_test_lock();
+        let dir = tempfile::tempdir().expect("каталог");
+        let root = dir.path().join("8.3.27.2074");
+        std::fs::create_dir_all(&root).expect("каталог версии");
+        std::fs::write(
+            root.join("shcntx_root.hbk"),
+            hbk_bytes(&[
+                (
+                    "objects/GetURL.html",
+                    "<html><body><h1>Global context.GetURL</h1><p>текст</p></body></html>",
+                ),
+                (
+                    "objects/GetURL.st",
+                    "{1,\n{2,\n{\"\",1,0,\"\",\"\"},\n{0,\n{\"ru\",0,0,\"\",\"ПолучитьНавигационнуюСсылку()\"}\n},\n{0,\n{\"en\",0,0,\"\",\"GetURL()\"}\n}\n}\n}",
+                ),
+            ]),
+        )
+        .expect("английский контейнер");
+
+        let provider = PlatformSyntaxHelpProvider::new();
+        let context = DocumentationContext {
+            platform_version: Some("8.3.27.2074".to_string()),
+            installation_root: Some(root),
+        };
+        let sections = provider.search(&request_in("GetURL", "ru"), &context);
+        let syntax = syntax_section(&sections);
+        assert_eq!(syntax.language, "root", "ответила английская локаль");
+        assert_eq!(
+            syntax.hits[0].title, "Global context.GetURL",
+            "страница английская"
+        );
+        assert_eq!(
+            syntax.hits[0].signature.as_deref(),
+            Some("GetURL()"),
+            "сигнатура обязана быть на локали ОТВЕТИВШЕГО корпуса, а не запроса"
         );
     }
 
