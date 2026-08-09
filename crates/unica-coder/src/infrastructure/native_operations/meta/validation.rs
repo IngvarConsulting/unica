@@ -228,7 +228,16 @@ impl MetadataValidator {
                     }
                     Ok(None) => match metadata_image_reference(&resource.bytes) {
                         Ok(actual) => {
-                            if target.as_str() != actual {
+                            // A subsystem is addressed by its path through the
+                            // tree, and a descriptor knows only its own name, so
+                            // the image can confirm the leaf and nothing above it.
+                            let matches_identity = if target.segments().next() == Some("Subsystem")
+                            {
+                                target.segments().last() == actual.rsplit('.').next()
+                            } else {
+                                target.as_str() == actual
+                            };
+                            if !matches_identity {
                                 diagnostics.push(provider_diagnostic(
                                     subject,
                                     index,
@@ -615,13 +624,27 @@ pub(super) fn document_registers(bytes: &[u8], expected: &str) -> bool {
         })
 }
 
-/// Names the subsystem when it shows `expected` in the command interface.
-/// `Subsystem` is not a validatable metadata type, so the name is read here
-/// rather than through the shared image-identity inspector.
-pub(super) fn subsystem_command_interface_listing(
+/// Пересказ дескриптора подсистемы без политики: имя, собственный флаг и то,
+/// есть ли объект в составе. Раньше эти три факта складывались в одно
+/// `Option`, из-за чего «флаг снят» и «объекта нет в составе» были неразличимы,
+/// а различать их необходимо: раздел командного интерфейса определяется всей
+/// цепочкой предков, а состав — только своим дескриптором.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SubsystemDescriptorFacts {
+    pub(super) name: String,
+    /// Собственный флаг подсистемы. Отсутствующий равен платформенному значению
+    /// по умолчанию; выгрузка конфигуратора пишет его всегда, поэтому ветка
+    /// живёт ради рукописных исходников.
+    pub(super) own_include: bool,
+    pub(super) lists_expected: bool,
+}
+
+/// `Subsystem` не входит в проверяемые виды, поэтому дескриптор разбирается
+/// здесь, а не общим инспектором личности образа.
+pub(super) fn subsystem_descriptor_facts(
     bytes: &[u8],
     expected: &str,
-) -> Result<Option<String>, String> {
+) -> Result<SubsystemDescriptorFacts, String> {
     let (_, document) = parse_metadata_image(bytes)?;
     let Some(properties) = document
         .root_element()
@@ -635,29 +658,21 @@ pub(super) fn subsystem_command_interface_listing(
     else {
         return Err("image is not a Subsystem descriptor".to_string());
     };
-    // An absent IncludeInCommandInterface is the platform default: included.
-    if meta_info_child_text(properties, "IncludeInCommandInterface").as_deref() == Some("false") {
-        return Ok(None);
-    }
+    let name = meta_info_child_text(properties, "Name")
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| "Subsystem Name is missing".to_string())?;
+    let own_include =
+        meta_info_child_text(properties, "IncludeInCommandInterface").as_deref() != Some("false");
     let lists_expected = meta_info_child(properties, "Content").is_some_and(|content| {
         meta_info_children(content, "Item")
             .into_iter()
             .any(|item| meta_info_inner_text(item).trim() == expected)
     });
-    if !lists_expected {
-        return Ok(None);
-    }
-    meta_info_child_text(properties, "Name")
-        .filter(|name| !name.is_empty())
-        .map(Some)
-        .ok_or_else(|| "Subsystem Name is missing".to_string())
-}
-
-pub(super) fn subsystem_shows_in_command_interface(bytes: &[u8], expected: &str) -> bool {
-    matches!(
-        subsystem_command_interface_listing(bytes, expected),
-        Ok(Some(_))
-    )
+    Ok(SubsystemDescriptorFacts {
+        name,
+        own_include,
+        lists_expected,
+    })
 }
 
 fn complete_read_missing(
@@ -3001,23 +3016,34 @@ pub(super) fn meta_validate_check_register_command_interface(
         ) {
             return;
         }
+        // The gatherer only records a subsystem that lists the register and
+        // whose whole chain reaches the command interface, so the presence of
+        // such evidence is the verdict; the policy is not applied twice.
         subject.resources.iter().any(|resource| {
             matches!(
                 &resource.role,
                 MetadataResourceRole::Dependency { target }
                     if target.segments().next() == Some("Subsystem")
-            ) && subsystem_shows_in_command_interface(&resource.bytes, &object_ref)
+            )
         })
     } else if let Some(config_dir) = config_dir {
         let subsystems_dir = config_dir.join("Subsystems");
         if !subsystems_dir.is_dir() {
             false
         } else {
-            // A scan that could not reach the bottom proves nothing, so its
-            // failure must not be read as an absent membership.
+            // A scan that could not reach the bottom proves nothing. The typed
+            // path reports that through its evidence channel; here the report is
+            // the only channel, so it says the check could not run instead of
+            // staying silent or passing the failure off as an absent section.
             match meta_validate_subsystem_command_interface_scan(&subsystems_dir, &object_ref) {
                 Ok((_, found)) => found,
-                Err(_) => return,
+                Err(error) => {
+                    report.warn(format!(
+                        "10. {md_type}: command interface sections of '{object_ref}' could not be established ({error})"
+                    ));
+                    *issues += 1;
+                    return;
+                }
             }
         }
     } else {
@@ -3025,7 +3051,7 @@ pub(super) fn meta_validate_check_register_command_interface(
     };
     if !shown_in_command_interface {
         report.warn(format!(
-            "10. {md_type}: UseStandardCommands=true but '{object_ref}' belongs to no subsystem with IncludeInCommandInterface (a register shown in the command interface must belong to at least one such subsystem)"
+            "10. {md_type}: UseStandardCommands=true but '{object_ref}' reaches no command interface section (a section is a subsystem whose whole chain to the root stays included; a service subsystem groups objects and is not made a section by its own flag)"
         ));
         *issues += 1;
     }

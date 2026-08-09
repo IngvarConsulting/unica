@@ -1,6 +1,11 @@
 use serde::Serialize;
 use std::fmt;
 
+/// Предел сегментов плоского адреса подсистемы: вид плюс путь вложенности.
+/// Самая глубокая подсистема наблюдённой конфигурации даёт шесть сегментов;
+/// запас оставлен небольшим, чтобы адрес не подменял собой обход дерева.
+const SUBSYSTEM_ADDRESS_MAX_SEGMENTS: usize = 8;
+
 pub const PLATFORM_XML_8_3_27_FORMAT_2_20: &str = "platform-xml-8.3.27-format-2.20";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
@@ -178,6 +183,25 @@ impl AddressProfile {
                     "metadata address must contain a kind and application name",
                 ))
             };
+        }
+
+        // A subsystem only ever contains subsystems, so its tail reads
+        // unambiguously as nesting and the address stays flat:
+        // `Subsystem.Родитель.Потомок`, not `Subsystem.Родитель.Subsystem.Потомок`.
+        // The flat form is Unica's internal one; the platform writes the
+        // repeating form in `Rights.xml`, in subsystem `Content` items and in the
+        // BSL object model, so a reader of those must convert at the edge rather
+        // than compare the two forms directly.
+        if canonical_kind(parts[0]).is_ok_and(|kind| kind == "Subsystem") {
+            if parts.len() > SUBSYSTEM_ADDRESS_MAX_SEGMENTS {
+                return Err(SourceTargetError::invalid(
+                    "subsystem address nests deeper than the supported depth",
+                ));
+            }
+            let mut canonical = Vec::with_capacity(parts.len());
+            canonical.push(canonical_kind(parts[0])?);
+            canonical.extend(parts[1..].iter().copied());
+            return Ok(MetadataAddress(canonical.join(".")));
         }
 
         if matches!(parts.len(), 3 | 5)

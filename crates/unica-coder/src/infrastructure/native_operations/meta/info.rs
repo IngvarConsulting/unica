@@ -13,6 +13,7 @@ use crate::domain::metadata::{
 };
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use roxmltree::Document;
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -477,6 +478,28 @@ fn registrar_evidence_unavailable(
     )
 }
 
+/// Читает путь вложенности из root-relative пути дескриптора:
+/// `Subsystems/A/Subsystems/B.xml` даёт `["A", "B"]`. Плоская форма адреса
+/// строится из него же, поэтому цепочка предков получается отбрасыванием
+/// хвостовых сегментов.
+fn subsystem_names_from_logical_path(logical_path: &str) -> Option<Vec<String>> {
+    let normalized = logical_path.replace('\\', "/");
+    let mut components = normalized.split('/').peekable();
+    let mut names = Vec::new();
+    loop {
+        if components.next()? != "Subsystems" {
+            return None;
+        }
+        let name = components.next()?;
+        if components.peek().is_none() {
+            let stem = name.strip_suffix(".xml").filter(|stem| !stem.is_empty())?;
+            names.push(stem.to_string());
+            return Some(names);
+        }
+        names.push(name.to_string());
+    }
+}
+
 fn subsystem_evidence_unavailable(
     target: &MetadataAddress,
     message: &str,
@@ -560,8 +583,10 @@ fn typed_subsystem_images(
     if entries.start_missing {
         return (Vec::new(), MetadataEvidenceAvailability::Complete);
     }
-    let mut resources = Vec::new();
     let register_reference = target.as_str().to_string();
+    // The capture keeps root-relative paths, so the ancestor chain is read off
+    // the path itself: Subsystems/A/Subsystems/B.xml sits under Subsystems/A.xml.
+    let mut facts_by_names = BTreeMap::new();
     for entry in entries.files {
         if checkpoint().is_err() {
             return subsystem_evidence_unavailable(
@@ -569,25 +594,43 @@ fn typed_subsystem_images(
                 "subsystem evidence processing was interrupted",
             );
         }
-        let bytes = entry.bytes;
-        let listing = match super::validation::subsystem_command_interface_listing(
-            &bytes,
-            &register_reference,
-        ) {
-            Ok(listing) => listing,
+        let Some(names) = subsystem_names_from_logical_path(&entry.logical_path) else {
+            return subsystem_evidence_unavailable(
+                target,
+                "subsystem evidence candidate is not addressable",
+            );
+        };
+        match super::validation::subsystem_descriptor_facts(&entry.bytes, &register_reference) {
+            Ok(facts) => {
+                facts_by_names.insert(names, (facts, entry.bytes));
+            }
             Err(_) => {
                 return subsystem_evidence_unavailable(
                     target,
                     "subsystem evidence candidate is malformed",
                 )
             }
-        };
-        let Some(subsystem_name) = listing else {
+        }
+    }
+
+    let mut resources = Vec::new();
+    for (names, (facts, bytes)) in &facts_by_names {
+        if !facts.lists_expected {
             continue;
-        };
+        }
+        // Being a command interface section is a property of the whole chain to
+        // the root: an excluded ancestor makes nothing below it a section.
+        let effective_include = (1..=names.len()).all(|depth| {
+            facts_by_names
+                .get(&names[..depth])
+                .is_some_and(|(ancestor, _)| ancestor.own_include)
+        });
+        if !effective_include {
+            continue;
+        }
         let Ok(dependency_target) = MetadataAddress::parse(
             PLATFORM_XML_8_3_27_FORMAT_2_20,
-            &format!("Subsystem.{subsystem_name}"),
+            &format!("Subsystem.{}", names.join(".")),
         ) else {
             return subsystem_evidence_unavailable(
                 target,
@@ -598,7 +641,7 @@ fn typed_subsystem_images(
             role: MetadataResourceRole::Dependency {
                 target: dependency_target,
             },
-            bytes,
+            bytes: bytes.clone(),
         });
     }
     (resources, MetadataEvidenceAvailability::Complete)

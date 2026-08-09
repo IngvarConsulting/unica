@@ -1,9 +1,10 @@
 use super::super::common::read_utf8_sig;
 use super::validation::{
-    document_registers, meta_validate_valid_types, subsystem_shows_in_command_interface,
+    document_registers, meta_validate_valid_types, subsystem_descriptor_facts,
 };
 use super::xml_model::parse_metadata_image;
 use super::{meta_info_child, meta_info_inner_text};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -196,15 +197,21 @@ pub(crate) fn meta_validate_subsystem_command_interface_scan(
         object_reference,
         &mut dependencies,
         SUBSYSTEM_SCAN_MAX_NESTING,
+        true,
     )?;
     Ok((dependencies, found))
 }
 
+/// Обходит уровень состава подсистем. `ancestors_included` несёт эффективную
+/// видимость родителей: раздел командного интерфейса — свойство всей цепочки до
+/// корня, поэтому подсистема со снятым флагом закрывает раздел и для всех своих
+/// потомков.
 fn subsystem_command_interface_scan(
     subsystems_dir: &Path,
     object_reference: &str,
     dependencies: &mut Vec<PathBuf>,
     remaining_nesting: usize,
+    ancestors_included: bool,
 ) -> Result<bool, String> {
     let mut entries = fs::read_dir(subsystems_dir)
         .map_err(|error| format!("failed to read {}: {error}", subsystems_dir.display()))?
@@ -217,6 +224,8 @@ fn subsystem_command_interface_scan(
         })?;
     entries.sort_by_key(|entry| entry.file_name());
     let mut nested = Vec::new();
+    let mut own_include_by_stem = BTreeMap::new();
+    let mut listed_here = false;
     for entry in entries {
         let path = entry.path();
         // The entry type comes from the directory read, so a symlink is never
@@ -234,7 +243,13 @@ fn subsystem_command_interface_scan(
             // a real parent may still hold a linked `Subsystems`.
             let child_dir = path.join("Subsystems");
             match fs::symlink_metadata(&child_dir) {
-                Ok(metadata) if metadata.is_dir() => nested.push(child_dir),
+                Ok(metadata) if metadata.is_dir() => nested.push((
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    child_dir,
+                )),
                 Ok(_) => {}
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                 Err(error) => {
@@ -251,9 +266,14 @@ fn subsystem_command_interface_scan(
         }
         dependencies.push(path.clone());
         let content = read_utf8_sig(&path)?;
-        if subsystem_shows_in_command_interface(content.as_bytes(), object_reference) {
-            return Ok(true);
+        let facts = subsystem_descriptor_facts(content.as_bytes(), object_reference)?;
+        own_include_by_stem.insert(facts.name.clone(), facts.own_include);
+        if ancestors_included && facts.own_include && facts.lists_expected {
+            listed_here = true;
         }
+    }
+    if listed_here {
+        return Ok(true);
     }
     if !nested.is_empty() && remaining_nesting == 0 {
         // Absence cannot be proved past the budget, so the scan says so instead
@@ -263,12 +283,21 @@ fn subsystem_command_interface_scan(
             subsystems_dir.display()
         ));
     }
-    for child_dir in nested {
+    for (parent_name, child_dir) in nested {
+        // The parent's flag lives in its sibling descriptor, not in its folder,
+        // so a folder without one leaves the chain unknown rather than assumed.
+        let Some(parent_include) = own_include_by_stem.get(&parent_name).copied() else {
+            return Err(format!(
+                "subsystem folder {parent_name} under {} has no descriptor",
+                subsystems_dir.display()
+            ));
+        };
         if subsystem_command_interface_scan(
             &child_dir,
             object_reference,
             dependencies,
             remaining_nesting - 1,
+            ancestors_included && parent_include,
         )? {
             return Ok(true);
         }
@@ -474,6 +503,65 @@ mod tests {
         assert!(!found, "a linked directory outside the tree proves nothing");
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn subsystem_scan_does_not_count_an_included_child_of_an_excluded_parent() {
+        let root = temp_subsystems("included-under-excluded");
+        let reference = "InformationRegister.Ledger";
+        write_subsystem(&root, "Library", Some("false"), "");
+        write_subsystem(
+            &root.join("Library/Subsystems"),
+            "Service",
+            Some("true"),
+            &content_item(reference),
+        );
+
+        let (_, found) = meta_validate_subsystem_command_interface_scan(&root, reference).unwrap();
+
+        assert!(
+            !found,
+            "an excluded ancestor makes nothing below it a section"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn subsystem_scan_counts_a_child_whose_whole_chain_stays_included() {
+        let root = temp_subsystems("chain-included");
+        let reference = "InformationRegister.Ledger";
+        write_subsystem(&root, "Top", Some("true"), "");
+        write_subsystem(
+            &root.join("Top/Subsystems"),
+            "Leaf",
+            Some("true"),
+            &content_item(reference),
+        );
+
+        let (_, found) = meta_validate_subsystem_command_interface_scan(&root, reference).unwrap();
+
+        assert!(found, "an unbroken chain reaches the command interface");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn subsystem_scan_reports_a_folder_without_its_descriptor() {
+        let root = temp_subsystems("folder-without-descriptor");
+        let reference = "InformationRegister.Ledger";
+        // The parent flag lives in the sibling descriptor, so without it the
+        // chain is unknown and absence cannot be proved.
+        write_subsystem(
+            &root.join("Orphan/Subsystems"),
+            "Leaf",
+            Some("true"),
+            &content_item(reference),
+        );
+
+        let error = meta_validate_subsystem_command_interface_scan(&root, reference)
+            .expect_err("an unknown chain is not a proved absence");
+
+        assert!(error.contains("no descriptor"), "{error}");
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn nest_subsystems(root: &Path, levels: usize, reference: &str) {
