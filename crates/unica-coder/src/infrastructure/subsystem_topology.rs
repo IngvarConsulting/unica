@@ -11,6 +11,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
+const READABLE_NS: &str = "http://v8.1c.ru/8.3/xcf/readable";
+const XSI_NS: &str = "http://www.w3.org/2001/XMLSchema-instance";
 const SUBSYSTEM_SCAN_MAX_ENTRIES: usize = 20_000;
 const SUBSYSTEM_SCAN_MAX_FILES: usize = 20_000;
 const SUBSYSTEM_SCAN_MAX_BYTES: usize = 64 * 1024 * 1024;
@@ -201,13 +203,10 @@ fn parse_subsystem_descriptor(
             )))
         }
     };
-    let content = single_child(properties, "Content", logical_path)?
-        .children()
-        .filter(Node::is_element)
-        .filter(|node| node.tag_name().name() == "Item")
-        .map(|node| node.text().unwrap_or_default().trim().to_string())
-        .filter(|value| !value.is_empty())
-        .collect();
+    let content = content_items(
+        single_child(properties, "Content", logical_path)?,
+        logical_path,
+    )?;
     let child_objects = single_child(subsystem, "ChildObjects", logical_path)?;
     let children = registered_children(child_objects, logical_path)?;
     Ok(DescriptorFacts {
@@ -215,6 +214,33 @@ fn parse_subsystem_descriptor(
         content,
         children,
     })
+}
+
+fn content_items(
+    content: Node<'_, '_>,
+    logical_path: &str,
+) -> Result<Vec<String>, SubsystemTopologyError> {
+    content
+        .children()
+        .filter(Node::is_element)
+        .map(|node| {
+            if node.tag_name().namespace() != Some(READABLE_NS)
+                || node.tag_name().name() != "Item"
+                || node.attribute((XSI_NS, "type")) != Some("xr:MDObjectRef")
+            {
+                return Err(SubsystemTopologyError::new(format!(
+                    "registered subsystem `{logical_path}` has an invalid Content item"
+                )));
+            }
+            let value = node.text().unwrap_or_default().trim();
+            if value.is_empty() {
+                return Err(SubsystemTopologyError::new(format!(
+                    "registered subsystem `{logical_path}` has an empty Content item"
+                )));
+            }
+            Ok(value.to_string())
+        })
+        .collect()
 }
 
 fn build_registered_nodes(
@@ -564,6 +590,32 @@ mod tests {
             error.to_string().contains("instead of `Registered`"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn registered_content_requires_the_platform_item_shape() {
+        let root = tempfile::tempdir().unwrap();
+        write_configuration(root.path(), &["Sales"]);
+        write_subsystem(
+            root.path(),
+            &[],
+            "Sales",
+            "true",
+            &["InformationRegister.Ledger"],
+            &[],
+        );
+        let descriptor = root.path().join("Subsystems/Sales.xml");
+        let malformed = fs::read_to_string(&descriptor)
+            .unwrap()
+            .replace("<xr:Item ", "<Item ")
+            .replace("</xr:Item>", "</Item>");
+        fs::write(&descriptor, malformed).unwrap();
+        let source_root = root.path().canonicalize().unwrap();
+
+        let error = capture_registered_subsystem_topology(&source_root, checkpoint)
+            .expect_err("a foreign Content item cannot prove membership");
+
+        assert!(error.to_string().contains("Content"), "{error}");
     }
 
     #[test]
