@@ -5,6 +5,7 @@ pub(crate) mod code_intelligence;
 pub(crate) mod documentation_policy;
 pub(crate) mod format_guard;
 pub mod internal_adapters;
+pub(crate) mod kb_1ci;
 pub(crate) mod metadata_kinds;
 pub(crate) mod metadata_operations;
 pub mod native_operations;
