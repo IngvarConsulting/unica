@@ -723,6 +723,8 @@ Unica. Каждая запись формулирует одно нормати�
 - **Decision:** n/a
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/text_snapshot.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/code.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/meta/edit.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/metadata_operations.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_resources.rs`
 - **Scope:** runtime
 

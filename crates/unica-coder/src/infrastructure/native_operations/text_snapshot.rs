@@ -51,9 +51,6 @@ impl SourceTextSnapshot {
         &self.decoded_text
     }
 
-    // Part of the shared writer contract; code.patch is intentionally the first
-    // consumer and does not need every observation yet.
-    #[allow(dead_code)]
     pub(crate) fn bom(&self) -> Utf8Bom {
         self.bom
     }
@@ -143,6 +140,21 @@ impl fmt::Display for EolPolicyError {
     }
 }
 
+/// Писательский контракт INV-SOURCE-OBSERVED-EOL в одной точке: источник без
+/// переводов строк обслуживается явной политикой `Lf`, любой наблюдённый
+/// профиль — политикой `Preserve` (для смешанного без локального контекста это
+/// отказ, а не выбор за автора файла).
+pub(crate) fn resolve_observed_line_ending(
+    snapshot: &SourceTextSnapshot,
+    local: Option<LineEnding>,
+) -> Result<LineEnding, EolPolicyError> {
+    let policy = match snapshot.line_endings() {
+        LineEndingProfile::None => EolPolicy::Lf,
+        LineEndingProfile::Uniform(_) | LineEndingProfile::Mixed { .. } => EolPolicy::Preserve,
+    };
+    resolve_line_ending(policy, snapshot, local)
+}
+
 pub(crate) fn resolve_line_ending(
     policy: EolPolicy,
     snapshot: &SourceTextSnapshot,
@@ -209,8 +221,8 @@ fn classify_line_endings(text: &str) -> (LineEndingProfile, Option<LineEnding>) 
 #[cfg(test)]
 mod tests {
     use super::{
-        resolve_line_ending, EolPolicy, EolPolicyError, LineEnding, LineEndingProfile,
-        SnapshotError, SourceTextSnapshot, Utf8Bom,
+        resolve_line_ending, resolve_observed_line_ending, EolPolicy, EolPolicyError, LineEnding,
+        LineEndingProfile, SnapshotError, SourceTextSnapshot, Utf8Bom,
     };
 
     #[test]
@@ -353,6 +365,41 @@ mod tests {
         assert_eq!(
             resolve_line_ending(EolPolicy::Preserve, &empty, None),
             Err(EolPolicyError::MissingPreserveContext)
+        );
+    }
+
+    #[test]
+    fn observed_resolution_serves_no_eol_source_with_explicit_lf() {
+        let snapshot = SourceTextSnapshot::from_bytes(b"A").unwrap();
+
+        assert_eq!(
+            resolve_observed_line_ending(&snapshot, None),
+            Ok(LineEnding::Lf)
+        );
+    }
+
+    #[test]
+    fn observed_resolution_preserves_uniform_profile_and_prefers_local() {
+        let uniform = SourceTextSnapshot::from_bytes(b"A\r\nB\r\n").unwrap();
+        assert_eq!(
+            resolve_observed_line_ending(&uniform, None),
+            Ok(LineEnding::CrLf)
+        );
+
+        let mixed = SourceTextSnapshot::from_bytes(b"A\r\nB\n").unwrap();
+        assert_eq!(
+            resolve_observed_line_ending(&mixed, Some(LineEnding::Lf)),
+            Ok(LineEnding::Lf)
+        );
+    }
+
+    #[test]
+    fn observed_resolution_rejects_mixed_profile_without_local_context() {
+        let mixed = SourceTextSnapshot::from_bytes(b"A\r\nB\n").unwrap();
+
+        assert_eq!(
+            resolve_observed_line_ending(&mixed, None),
+            Err(EolPolicyError::AmbiguousPreservePolicy)
         );
     }
 

@@ -39,6 +39,9 @@ use super::super::common::{escape_xml, is_1c_identifier};
 use super::super::compile_transaction::{
     snapshot_directory_membership, DirectoryMembershipSelector, DirectoryMembershipSnapshot,
 };
+use super::super::text_snapshot::{
+    resolve_observed_line_ending, LineEnding, SourceTextSnapshot, Utf8Bom,
+};
 use super::format_contract::{
     validate_metadata_8_3_27_boolean_contract, validate_metadata_8_3_27_enum_contract,
 };
@@ -62,32 +65,9 @@ pub(super) struct MetaEditCounts {
 }
 
 #[derive(Clone, Copy)]
-enum MetaEditEol {
-    Lf,
-    CrLf,
-    Cr,
-}
-
-#[derive(Clone, Copy)]
 struct MetaEditSourceFormat {
     has_bom: bool,
-    eol: MetaEditEol,
-}
-
-fn meta_edit_source_eol(text: &str) -> MetaEditEol {
-    let bytes = text.as_bytes();
-    if let Some(index) = bytes.iter().position(|byte| *byte == b'\n') {
-        return if index > 0 && bytes[index - 1] == b'\r' {
-            MetaEditEol::CrLf
-        } else {
-            MetaEditEol::Lf
-        };
-    }
-    if bytes.contains(&b'\r') {
-        MetaEditEol::Cr
-    } else {
-        MetaEditEol::Lf
-    }
+    eol: LineEnding,
 }
 
 fn meta_edit_preserve_source_format(text: &str, format: MetaEditSourceFormat) -> Vec<u8> {
@@ -95,11 +75,7 @@ fn meta_edit_preserve_source_format(text: &str, format: MetaEditSourceFormat) ->
         .trim_start_matches('\u{feff}')
         .replace("\r\n", "\n")
         .replace('\r', "\n");
-    let serialized = match format.eol {
-        MetaEditEol::Lf => normalized,
-        MetaEditEol::CrLf => normalized.replace('\n', "\r\n"),
-        MetaEditEol::Cr => normalized.replace('\n', "\r"),
-    };
+    let serialized = normalized.replace('\n', format.eol.as_str());
     let mut bytes = Vec::with_capacity(serialized.len() + usize::from(format.has_bom) * 3);
     if format.has_bom {
         bytes.extend_from_slice(b"\xef\xbb\xbf");
@@ -701,23 +677,34 @@ pub(super) fn build_typed_operation_post_image(
     operations: &[MetaEditOperation],
     context: &WorkspaceContext,
 ) -> Result<TypedOperationPostImage, MetaFailure> {
-    let mut xml = String::from_utf8(descriptor_preimage.to_vec()).map_err(|_| {
+    let snapshot = SourceTextSnapshot::from_bytes(descriptor_preimage).map_err(|error| {
         MetaFailure::from(
             typed_diagnostic(
                 MetaDiagnosticCode::ProviderUnavailable,
-                "metadata descriptor image is not UTF-8",
+                format!("metadata descriptor snapshot failed: {error}"),
+                None,
+            )
+            .with_metadata_path(target.clone()),
+        )
+    })?;
+    // Смешанный профиль — дефект содержимого источника, а не отказ провайдера:
+    // байты прочитаны и декодированы, но их вид не проходит проверку writer-а,
+    // как и неканоничные fill-значения ниже по файлу.
+    let eol = resolve_observed_line_ending(&snapshot, None).map_err(|error| {
+        MetaFailure::from(
+            typed_diagnostic(
+                MetaDiagnosticCode::ValidationFailed,
+                format!("metadata descriptor EOL policy failed: {error}"),
                 None,
             )
             .with_metadata_path(target.clone()),
         )
     })?;
     let source_format = MetaEditSourceFormat {
-        has_bom: descriptor_preimage.starts_with(b"\xef\xbb\xbf"),
-        eol: meta_edit_source_eol(&xml),
+        has_bom: snapshot.bom() == Utf8Bom::Present,
+        eol,
     };
-    if xml.starts_with('\u{feff}') {
-        xml = xml.trim_start_matches('\u{feff}').to_string();
-    }
+    let mut xml = snapshot.text().to_string();
     let normalized_preimage = xml.clone();
     let applied = apply_typed_operations(&mut xml, operations).map_err(|mut failure| {
         for diagnostic in &mut failure.diagnostics {

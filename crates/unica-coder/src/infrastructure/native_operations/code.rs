@@ -23,7 +23,7 @@ use crate::infrastructure::platform_xml_source_targets::platform_xml_module_iden
 use super::common::{code_patch_source_target, guard_code_patch_resolved_target};
 use super::compile_transaction::CompileTransaction;
 use super::text_snapshot::{
-    resolve_line_ending, EolPolicy, LineEnding, LineEndingProfile, SourceTextSnapshot,
+    resolve_observed_line_ending, LineEnding, LineEndingProfile, SourceTextSnapshot,
 };
 
 pub(crate) fn apply_with_data(
@@ -652,11 +652,7 @@ fn locate_selector(
         }
     };
     let local = local_line_ending_at(text, offset, position);
-    let policy = match snapshot.line_endings() {
-        LineEndingProfile::None => EolPolicy::Lf,
-        LineEndingProfile::Uniform(_) | LineEndingProfile::Mixed { .. } => EolPolicy::Preserve,
-    };
-    let eol = resolve_line_ending(policy, snapshot, local)
+    let eol = resolve_observed_line_ending(snapshot, local)
         .map_err(|error| format!("resolve code.patch EOL: {error}"))?;
     let leading_separator = if position == Position::After
         && offset == text.len()
@@ -690,11 +686,7 @@ fn locate_module_tail(snapshot: &SourceTextSnapshot) -> Result<InsertionSite, St
     let text = snapshot.decoded_text();
     let offset = text.len();
     let local = local_line_ending_at(text, offset, Position::Before);
-    let policy = match snapshot.line_endings() {
-        LineEndingProfile::None => EolPolicy::Lf,
-        LineEndingProfile::Uniform(_) | LineEndingProfile::Mixed { .. } => EolPolicy::Preserve,
-    };
-    let eol = resolve_line_ending(policy, snapshot, local)
+    let eol = resolve_observed_line_ending(snapshot, local)
         .map_err(|error| format!("resolve code.patch EOL: {error}"))?;
     // The separator question is about content, not bytes: a module holding only
     // a byte order mark has nothing to be separated from, so it owes no blank
@@ -752,12 +744,8 @@ fn locate_replacement(
             (selected.start, selected.end)
         }
     };
-    let policy = match snapshot.line_endings() {
-        LineEndingProfile::None => EolPolicy::Lf,
-        LineEndingProfile::Uniform(_) | LineEndingProfile::Mixed { .. } => EolPolicy::Preserve,
-    };
     let local = local_line_ending_at(text, start, Position::Before);
-    let eol = resolve_line_ending(policy, snapshot, local)
+    let eol = resolve_observed_line_ending(snapshot, local)
         .map_err(|error| format!("resolve code.patch EOL: {error}"))?;
     // The replacement keeps a trailing newline only where the span it overwrites
     // had one, so replacing an inline anchor does not break the line.
