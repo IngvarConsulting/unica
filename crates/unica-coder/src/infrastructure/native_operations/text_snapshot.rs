@@ -51,9 +51,6 @@ impl SourceTextSnapshot {
         &self.decoded_text
     }
 
-    // Part of the shared writer contract; code.patch is intentionally the first
-    // consumer and does not need every observation yet.
-    #[allow(dead_code)]
     pub(crate) fn bom(&self) -> Utf8Bom {
         self.bom
     }
