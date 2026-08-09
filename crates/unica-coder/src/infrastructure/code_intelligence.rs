@@ -407,6 +407,9 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
         }
         let readiness = match readiness_result {
             Ok(readiness) => readiness,
+            Err(error) if error.starts_with(CANCELLED_PREFIX) => {
+                return failed_section(ProviderId::Rlm, error);
+            }
             Err(error) => return unavailable_section(ProviderId::Rlm, error),
         };
         match readiness {
@@ -1726,6 +1729,30 @@ mod tests {
         }
     }
 
+    struct CancelledReadinessRlmSearchClient;
+
+    impl RlmSearchClient for CancelledReadinessRlmSearchClient {
+        fn readiness(
+            &self,
+            _context: &CodeIntelligenceContext,
+            _timeout: Duration,
+            _cancellation: &CancellationToken,
+        ) -> Result<IndexReadiness, String> {
+            Err("cancelled: readiness transport stopped".to_string())
+        }
+
+        fn search(
+            &self,
+            _context: &CodeIntelligenceContext,
+            _query: &str,
+            _limit: usize,
+            _timeout: Duration,
+            _cancellation: &CancellationToken,
+        ) -> Result<String, String> {
+            panic!("cancelled readiness must stop before RLM search")
+        }
+    }
+
     #[test]
     fn rlm_provider_requires_ready_index_and_shares_the_upstream_deadline() {
         let client = FakeRlmClient {
@@ -1848,6 +1875,25 @@ mod tests {
         );
         assert_eq!(client.readiness_calls.lock().unwrap().len(), 1);
         assert!(client.search_calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn rlm_search_preserves_prefixed_readiness_cancellation_without_a_set_token() {
+        let section = RlmProvider::with_client(&CancelledReadinessRlmSearchClient).search(
+            &SearchRequest {
+                query: "Post".to_string(),
+                limit: 20,
+            },
+            &context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
+            &CancellationToken::new(),
+        );
+
+        assert_eq!(section.status, ProviderSectionStatus::Failed);
+        assert_eq!(
+            section.diagnostics,
+            vec!["cancelled: readiness transport stopped"]
+        );
     }
 
     #[test]

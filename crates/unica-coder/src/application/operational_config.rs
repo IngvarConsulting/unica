@@ -25,12 +25,11 @@ pub(crate) fn resolve_for_call(
 
 pub(crate) fn requires_snapshot(spec: ToolSpec, args: &Map<String, Value>) -> bool {
     match spec.handler {
-        ToolHandler::CodeIntelligence {
-            operation:
-                CodeIntelligenceOperation::Search
-                | CodeIntelligenceOperation::Definition
-                | CodeIntelligenceOperation::Outline,
-        } => true,
+        ToolHandler::CodeIntelligence { operation } => match operation {
+            CodeIntelligenceOperation::Search
+            | CodeIntelligenceOperation::Definition
+            | CodeIntelligenceOperation::Outline => true,
+        },
         ToolHandler::CodeAdapter { .. } if spec.name == "unica.code.diagnostics" => {
             args.get("mode")
                 .and_then(Value::as_str)

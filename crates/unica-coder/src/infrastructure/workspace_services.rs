@@ -965,10 +965,12 @@ fn remaining_or_timeout(
 }
 
 fn workspace_service_request_timeout_error(budget: Duration) -> String {
-    format!(
-        "timeout: workspace service request exceeded {} seconds",
-        budget.as_secs()
-    )
+    let rendered_budget = if budget.subsec_nanos() == 0 {
+        format!("{} seconds", budget.as_secs())
+    } else {
+        format!("{} milliseconds", duration_timeout_millis(budget))
+    };
+    format!("timeout: workspace service request exceeded {rendered_budget}")
 }
 
 fn remaining_or_control_timeout(
@@ -7197,15 +7199,23 @@ fn main() {
     #[test]
     fn workspace_service_deadline_reports_actual_request_budget() {
         let deadline = WorkspaceServiceCallDeadline {
-            started: Instant::now() - Duration::from_secs(31),
-            budget: Duration::from_secs(30),
+            started: Instant::now(),
+            budget: Duration::ZERO,
         };
 
         let error = deadline.remaining(&CancellationToken::new()).unwrap_err();
 
         assert_eq!(
             error,
-            "timeout: workspace service request exceeded 30 seconds"
+            "timeout: workspace service request exceeded 0 seconds"
+        );
+    }
+
+    #[test]
+    fn workspace_service_timeout_reports_a_subsecond_budget_in_milliseconds() {
+        assert_eq!(
+            workspace_service_request_timeout_error(Duration::from_millis(750)),
+            "timeout: workspace service request exceeded 750 milliseconds"
         );
     }
 

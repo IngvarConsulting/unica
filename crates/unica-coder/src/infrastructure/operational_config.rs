@@ -820,7 +820,7 @@ analyze_timeout_seconds = 30
             diagnostic.code(),
             OperationalConfigDiagnosticCode::ReadFailed
         );
-        assert_eq!(diagnostic.field_path(), "$ ".trim());
+        assert_eq!(diagnostic.field_path(), "$");
         assert!(rendered.contains(SHARED_CONFIG_FILENAME));
         assert!(!rendered.contains(&workspace.path().display().to_string()));
     }

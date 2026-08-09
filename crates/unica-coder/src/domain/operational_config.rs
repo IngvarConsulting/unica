@@ -463,6 +463,37 @@ mod tests {
     }
 
     #[test]
+    fn same_layer_relationship_failure_is_attributed_to_the_provider_field() {
+        let mut shared = OperationalConfigLayer::default();
+        shared
+            .set_timeout_seconds(
+                OperationalConfigField::SearchTotal,
+                10,
+                OperationalConfigDiagnosticSource::Shared,
+            )
+            .unwrap();
+        shared
+            .set_timeout_seconds(
+                OperationalConfigField::SearchRlm,
+                20,
+                OperationalConfigDiagnosticSource::Shared,
+            )
+            .unwrap();
+
+        let diagnostic = OperationalConfig::from_layers(Some(&shared), None)
+            .expect_err("provider deadline above total must fail");
+
+        assert_eq!(
+            diagnostic.source(),
+            OperationalConfigDiagnosticSource::Shared
+        );
+        assert_eq!(
+            diagnostic.field_path(),
+            "operational.code_intelligence.search_rlm_timeout_seconds"
+        );
+    }
+
+    #[test]
     fn explicit_diagnostics_timeout_is_validated_and_overlaid_immutably() {
         let defaults = OperationalConfig::compiled_defaults();
         let configured = defaults

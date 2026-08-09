@@ -571,6 +571,8 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         cancellation: &CancellationToken,
     ) -> Result<HandlerOutcome, String>;
 
+    /// Config-aware adapters override this entry point; `invoke_handler`
+    /// remains the compatibility path for handlers that consume no snapshot.
     fn invoke_handler_with_operational_config(
         &self,
         spec: ToolSpec,
