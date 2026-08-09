@@ -587,10 +587,34 @@ fn typed_read(read: TypedReadOutcome) -> HandlerOutcome {
 fn documentation_registry() -> Result<crate::domain::documentation::DocumentationRegistry, String> {
     use std::sync::Arc;
 
+    #[cfg(test)]
+    if let Some(stand_in) = documentation_registry_stand_in() {
+        return crate::domain::documentation::DocumentationRegistry::new(vec![stand_in]);
+    }
     crate::domain::documentation::DocumentationRegistry::new(vec![Arc::new(
         crate::infrastructure::platform_help::provider::PlatformSyntaxHelpProvider::new(),
     )
         as Arc<dyn crate::domain::documentation::DocumentationProvider>])
+}
+
+/// Подмена реестра для тестов — та самая, которую допускает п.5 ADR-0029
+/// («реестр собирается в корне композиции и допускает внедрение подмен для
+/// тестов»). Без неё ветку диспетчера `unica.documentation.search` не
+/// проверить: настоящий поставщик отвечает по установкам МАШИНЫ, и тест не
+/// выбирает ни их состав, ни их наличие, поэтому наблюдать через него, что
+/// аргументы вызова дошли до запроса и контекста, нельзя.
+#[cfg(test)]
+static DOCUMENTATION_REGISTRY_STAND_IN: std::sync::Mutex<
+    Option<std::sync::Arc<dyn crate::domain::documentation::DocumentationProvider>>,
+> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn documentation_registry_stand_in(
+) -> Option<std::sync::Arc<dyn crate::domain::documentation::DocumentationProvider>> {
+    DOCUMENTATION_REGISTRY_STAND_IN
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
 }
 
 /// The platform version the project pins itself to: `tools.platform.version`
@@ -1215,5 +1239,148 @@ mod tests {
             Some(machine.path().join("8.5.4.1306"))
         );
         assert_eq!(requested.platform_version.as_deref(), Some("8.5.4.1306"));
+    }
+
+    /// Записывающий поставщик: единственный способ увидеть, ЧТО именно ветка
+    /// диспетчера передала слою application. Возвращает `Empty`, чтобы вызов
+    /// завершался успехом и проверялся заодно и его результат.
+    #[derive(Default)]
+    struct RecordingProvider {
+        seen: std::sync::Mutex<
+            Vec<(
+                crate::domain::documentation::DocumentationSearchRequest,
+                crate::domain::documentation::DocumentationContext,
+            )>,
+        >,
+    }
+
+    impl crate::domain::documentation::DocumentationProvider for RecordingProvider {
+        fn id(&self) -> crate::domain::documentation::DocumentationProviderId {
+            crate::domain::documentation::DocumentationProviderId::new("recording")
+        }
+        fn corpora(&self) -> Vec<crate::domain::documentation::DocumentationCorpus> {
+            Vec::new()
+        }
+        fn needs_network(&self) -> bool {
+            false
+        }
+        fn search(
+            &self,
+            request: &crate::domain::documentation::DocumentationSearchRequest,
+            context: &crate::domain::documentation::DocumentationContext,
+        ) -> Vec<crate::domain::documentation::DocumentationSection> {
+            self.seen
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push((request.clone(), context.clone()));
+            vec![crate::domain::documentation::DocumentationSection::empty(
+                self.id(),
+                "syntax-context",
+                crate::domain::documentation::SourceKind::PlatformHelp,
+                crate::domain::documentation::Authority::Vendor,
+                &request.language,
+            )]
+        }
+    }
+
+    /// Слот подмены один на процесс, поэтому тесты, которые его пишут, идут по
+    /// одному, и подмена снимается на выходе даже при панике теста.
+    struct StandInGuard;
+
+    impl Drop for StandInGuard {
+        fn drop(&mut self) {
+            *super::DOCUMENTATION_REGISTRY_STAND_IN
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        }
+    }
+
+    fn install_stand_in(provider: std::sync::Arc<RecordingProvider>) -> StandInGuard {
+        *super::DOCUMENTATION_REGISTRY_STAND_IN
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(
+            provider as std::sync::Arc<dyn crate::domain::documentation::DocumentationProvider>,
+        );
+        StandInGuard
+    }
+
+    /// `the_dispatcher_constrains_the_installation_by_the_projects_own_platform_pin`
+    /// проверяет ПОМОЩНИКА, а не ветку, и три мутации самой ветки оставляли
+    /// всё дерево зелёным: игнорировать аргумент `language`, игнорировать
+    /// `platformVersion` и обойти `documentation_context` пустым контекстом.
+    /// Вторая кусает пользователя молча наполовину: ответ приходит из другой
+    /// установки, чем спросили. Здесь прогоняется сама ветка
+    /// `ToolHandler::Documentation`, а поставщик записывает то, что до него
+    /// дошло.
+    ///
+    /// Версия намеренно невозможная: она не разрешается ни в какую установку
+    /// ни на одной машине, поэтому проверка не зависит от того, какие
+    /// платформы стоят на машине сборки.
+    #[test]
+    fn the_documentation_branch_carries_its_arguments_into_the_request_and_the_context() {
+        use crate::application::ports::ApplicationPorts;
+
+        let recorder = std::sync::Arc::new(RecordingProvider::default());
+        let _stand_in = install_stand_in(std::sync::Arc::clone(&recorder));
+
+        let dir = tempfile::tempdir().expect("каталог");
+        let workspace = dir.path().to_path_buf();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        let mut args = Map::new();
+        args.insert("query".to_string(), json!("GetURL"));
+        args.insert("language".to_string(), json!("en"));
+        args.insert("platformVersion".to_string(), json!("9.9.9.9999"));
+        args.insert("limit".to_string(), json!(7));
+
+        let outcome = super::InfrastructureApplicationPorts::new()
+            .invoke_handler(
+                spec(
+                    "unica.documentation.search",
+                    ToolHandler::Documentation {
+                        operation: "search",
+                    },
+                ),
+                &args,
+                &context,
+                false,
+                &crate::domain::cancellation::CancellationToken::default(),
+            )
+            .expect("ветка обязана ответить");
+
+        let seen = recorder
+            .seen
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(seen.len(), 1, "поставщик обязан быть опрошен ровно раз");
+        let (request, documentation_context) = &seen[0];
+        assert_eq!(request.query, "GetURL");
+        assert_eq!(
+            request.language, "en",
+            "аргумент language обязан дойти до запроса, а не подменяться константой"
+        );
+        assert_eq!(request.limit, 7, "аргумент limit обязан дойти до запроса");
+        assert_eq!(
+            documentation_context.platform_version.as_deref(),
+            Some("9.9.9.9999"),
+            "аргумент platformVersion обязан дойти до контекста: иначе ответ придёт из другой установки, чем спросили"
+        );
+        assert_eq!(
+            documentation_context.installation_root, None,
+            "несуществующая версия не разрешается ни в какую установку"
+        );
+
+        let data = outcome
+            .data
+            .expect("ветка обязана отвечать типизированным data");
+        assert_eq!(
+            data["sections"][0]["language"], "en",
+            "локаль ответа обязана дойти обратно до публичного результата"
+        );
     }
 }
