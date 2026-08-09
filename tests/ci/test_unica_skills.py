@@ -114,7 +114,17 @@ def prompt_frontmatter(document: str) -> dict[str, str]:
         # arbitrary Python objects.
         values = yaml.load(frontmatter, Loader=UniqueKeySafeLoader)
         syntax = yaml.compose(frontmatter, Loader=yaml.SafeLoader)
+        # An alias reprints a value written somewhere else, so the text a reader
+        # sees next to the key is `*anchor` rather than the value this helper
+        # would return. Frontmatter has no use for that indirection, so one
+        # alias anywhere disqualifies the whole document.
+        aliased = any(
+            isinstance(event, yaml.AliasEvent)
+            for event in yaml.parse(frontmatter, Loader=yaml.SafeLoader)
+        )
     except yaml.YAMLError:
+        return {}
+    if aliased:
         return {}
     if not isinstance(values, dict) or not isinstance(syntax, yaml.MappingNode):
         return {}
@@ -136,9 +146,9 @@ def prompt_frontmatter(document: str) -> dict[str, str]:
             continue
         if value_node.style not in (None, "'", '"'):
             continue
-        # PyYAML represents an alias with the anchored node and therefore with
-        # the anchor definition's source mark. Requiring the key and value to
-        # begin on the same physical line rejects that indirection.
+        # A plain scalar may open on the line below its key, which puts the
+        # text somewhere the reader does not look for it. Requiring the key and
+        # value to begin on the same physical line rejects that.
         if key_node.start_mark.line != value_node.start_mark.line:
             continue
         if value_node.start_mark.line != value_node.end_mark.line:
@@ -969,6 +979,13 @@ class PromptFrontmatterParsingTests(unittest.TestCase):
                 "description: *description\n"
                 "argument-hint: insert replace\n---\n"
             ),
+            # A flow mapping puts the anchor on the key's own physical line, so
+            # the line comparison alone would read the anchored text as if it
+            # stood next to `description`.
+            "flow-mapping": (
+                "---\n{default: &description insert replace, "
+                "description: *description}\n---\n"
+            ),
         }
 
         for style, document in documents.items():
@@ -1059,6 +1076,10 @@ class PromptFrontmatterParsingTests(unittest.TestCase):
             ),
             "multiline-plain-scalar": (
                 "---\ndescription: insert\n  replace\n"
+                "argument-hint: insert replace\n---\n"
+            ),
+            "value-below-its-key": (
+                "---\ndescription:\n  insert replace\n"
                 "argument-hint: insert replace\n---\n"
             ),
             "escaped-line-break": (
