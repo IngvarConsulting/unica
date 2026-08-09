@@ -1441,9 +1441,13 @@ mod tests {
             workspace_epoch: 1,
         };
 
+        // Одинарные кавычки YAML: путь Windows несёт обратные слэши, а в
+        // двойных кавычках `\U` и `\8` — невалидные escape-последовательности,
+        // и конфигурация молча не разбиралась бы именно на той ОС, ради
+        // которой пример в references и хранит путь в локальном файле.
         std::fs::write(
             workspace.join("v8project.local.yaml"),
-            format!("tools:\n  platform:\n    path: \"{}\"\n", install.display()),
+            format!("tools:\n  platform:\n    path: '{}'\n", install.display()),
         )
         .expect("локальное закрепление пути");
 
@@ -1457,7 +1461,7 @@ mod tests {
         std::fs::write(
             workspace.join("v8project.local.yaml"),
             format!(
-                "tools:\n  platform:\n    path: \"{}\"\n",
+                "tools:\n  platform:\n    path: '{}'\n",
                 install.join("bin").display()
             ),
         )
@@ -1494,9 +1498,10 @@ mod tests {
             cache_root: workspace.join(".build/unica"),
             workspace_epoch: 1,
         };
+        // Одинарные кавычки: см. соседний тест — двойные ломают Windows-пути.
         std::fs::write(
             workspace.join("v8project.yaml"),
-            format!("tools:\n  platform:\n    path: \"{}\"\n", install.display()),
+            format!("tools:\n  platform:\n    path: '{}'\n", install.display()),
         )
         .expect("закрепление пути");
 
