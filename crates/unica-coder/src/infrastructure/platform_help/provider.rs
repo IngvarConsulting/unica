@@ -83,14 +83,30 @@ struct InstallationIndex {
 /// контейнеров детерминированы (`discover` сортирует их) и совпадают ровно
 /// тогда, когда оба вызова читали бы одни и те же файлы; абсолютные пути
 /// заодно различают одноимённые каталоги версий под разными корнями.
+/// Отпечаток выбранного контейнера: путь, длина и время изменения. Второй и
+/// третий элементы — то, что меняет переустановка платформы в тот же каталог:
+/// имена файлов при ней те же, и ключ из одних путей отдавал бы устаревшую
+/// справку до перезапуска процесса. Отпечаток собирается одним `stat` без
+/// чтения содержимого, поэтому неизменная установка по-прежнему отвечает из
+/// индекса, не перечитывая ни байта корпусов. Файл, пропавший между
+/// `discover` и `stat`, несёт `None`: ключ остаётся детерминированным, а
+/// чтение назовёт пропажу своей диагностикой.
+type ContainerFingerprint = (PathBuf, Option<(u64, std::time::SystemTime)>);
+
 #[derive(PartialEq, Eq)]
 struct IndexKey {
     root: PathBuf,
-    containers: Vec<PathBuf>,
+    containers: Vec<ContainerFingerprint>,
 }
 
 impl IndexKey {
     fn for_corpora(root: &Path, corpora: &InstallationCorpora) -> IndexKey {
+        let fingerprint = |path: &PathBuf| -> ContainerFingerprint {
+            let stamp = std::fs::metadata(path)
+                .ok()
+                .and_then(|meta| meta.modified().ok().map(|mtime| (meta.len(), mtime)));
+            (path.clone(), stamp)
+        };
         IndexKey {
             root: root.to_path_buf(),
             containers: corpora
@@ -98,7 +114,7 @@ impl IndexKey {
                 .containers
                 .iter()
                 .chain(corpora.platform_guides.containers.iter())
-                .cloned()
+                .map(fingerprint)
                 .collect(),
         }
     }
@@ -494,6 +510,27 @@ mod tests {
             .iter()
             .find(|section| section.corpus == "syntax-context")
             .expect("секция syntax-context")
+    }
+
+    /// Подменяет содержимое контейнера мусором, сохраняя его отпечаток —
+    /// длину и время изменения. Тесты «ответ приходит из индекса» различают
+    /// перестройку именно так: перечитать файл осмысленно уже нельзя, а ключ
+    /// индекса не изменился, потому что не изменился отпечаток.
+    fn corrupt_preserving_fingerprint(container: &std::path::Path) {
+        let length = std::fs::metadata(container)
+            .expect("метаданные контейнера")
+            .len() as usize;
+        let mtime = std::fs::metadata(container)
+            .expect("метаданные контейнера")
+            .modified()
+            .expect("время изменения");
+        std::fs::write(container, vec![b'x'; length]).expect("контейнер испорчен");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(container)
+            .expect("контейнер открыт")
+            .set_modified(mtime)
+            .expect("время изменения возвращено");
     }
 
     /// Собирает `.hbk`-контейнер: zip с HTML-страницами внутри записи
@@ -1253,8 +1290,9 @@ mod tests {
         assert_eq!(first_syntax.hits.len(), 1, "первый вызов строит индекс");
 
         // Перестройка прочитала бы мусор и ответила Failed; ответ из индекса
-        // остаётся Ok.
-        std::fs::write(&container, b"not a container at all").expect("контейнер испорчен");
+        // остаётся Ok. Отпечаток сохраняется, чтобы перепроверка ключа не
+        // приняла порчу за переустановку.
+        corrupt_preserving_fingerprint(&container);
 
         let second =
             PlatformSyntaxHelpProvider::new().search(&request_in("Alpha", "root"), &context);
@@ -1271,10 +1309,72 @@ mod tests {
         assert_eq!(second_syntax.language, "root");
     }
 
+    /// Платформа, переустановленная в тот же каталог, — не экзотика, а
+    /// штатное обновление сборки на месте. Индекс без перепроверки отдавал
+    /// устаревшую справку до перезапуска процесса: имена файлов те же, ключ
+    /// совпадает, и подменённый контейнер никто не перечитывал. Отпечаток
+    /// выбранных контейнеров (длина и время изменения) входит в ключ, поэтому
+    /// подмена файла на диске обязана перестроить индекс.
+    #[test]
+    fn a_replaced_container_is_reindexed_instead_of_answering_stale_help() {
+        // Слот индекса общий на процесс — тесты, которые его пишут, идут по одному.
+        let _serial = index_test_lock();
+        let dir = tempfile::tempdir().expect("каталог");
+        let root = dir.path().join("8.3.27.2074");
+        std::fs::create_dir_all(&root).expect("каталог версии");
+        let container = root.join("shcntx_ru.hbk");
+        std::fs::write(
+            &container,
+            hbk_bytes(&[(
+                "old.html",
+                "<html><body><h1>СтароеИмяЧлена</h1><p>текст</p></body></html>",
+            )]),
+        )
+        .expect("контейнер прежней сборки");
+
+        let context = DocumentationContext {
+            platform_version: Some("8.3.27.2074".to_string()),
+            installation_root: Some(root),
+        };
+        let first = PlatformSyntaxHelpProvider::new().search(&request("СтароеИмяЧлена"), &context);
+        assert_eq!(
+            syntax_section(&first).hits.len(),
+            1,
+            "первый вызов строит индекс прежней сборки"
+        );
+
+        // Переустановка на месте: то же имя файла, другое содержимое. Текст
+        // новой страницы заметно длиннее, чтобы отличие отпечатка не
+        // зависело от гранулярности времени изменения файловой системы.
+        std::fs::write(
+            &container,
+            hbk_bytes(&[(
+                "new.html",
+                "<html><body><h1>НовоеИмяЧлена</h1><p>текст новой сборки, заметно длиннее прежнего, чтобы длина контейнера гарантированно изменилась</p></body></html>",
+            )]),
+        )
+        .expect("контейнер новой сборки");
+
+        let second = PlatformSyntaxHelpProvider::new().search(&request("НовоеИмяЧлена"), &context);
+        let syntax = syntax_section(&second);
+        assert_eq!(
+            syntax.hits.len(),
+            1,
+            "подменённый контейнер обязан быть перечитан, получено {:?}",
+            syntax.status
+        );
+        assert_eq!(
+            syntax.hits[0].document_id, "platform-syntax-help:syntax-context:new.html",
+            "ответ обязан прийти из новой сборки, а не из устаревшего индекса"
+        );
+    }
+
     /// Индекс переживает вызов: второй `search` по той же установке обязан
     /// отвечать из уже построенного индекса, а не читать установку заново.
-    /// Наблюдаемо это так — контейнер удаляется между вызовами: заново
-    /// прочитать его уже нельзя, и ответ из индекса отличим от перестройки.
+    /// Наблюдаемо это так — содержимое контейнера подменяется мусором ТОЙ ЖЕ
+    /// длины с возвращённым временем изменения: отпечаток не меняется, заново
+    /// прочитать файл осмысленно уже нельзя, и ответ из индекса отличим от
+    /// перестройки.
     #[test]
     fn a_second_call_answers_from_the_index_instead_of_rereading_the_installation() {
         // Слот индекса общий на процесс — тесты, которые его пишут, идут по одному.
@@ -1302,9 +1402,11 @@ mod tests {
         let first = PlatformSyntaxHelpProvider::new().search(&request("Alpha"), &context);
         assert_eq!(first[0].hits.len(), 1, "первый вызов строит индекс");
 
-        // Содержимое контейнера подменяется на мусор: перестройка увидела бы
-        // неразобравшийся контейнер и ответила `Failed` без попаданий.
-        std::fs::write(&container, b"not a container at all").expect("контейнер испорчен");
+        // Содержимое контейнера подменяется мусором той же длины с
+        // возвращённым временем изменения: перестройка увидела бы
+        // неразобравшийся контейнер и ответила `Failed` без попаданий, а
+        // неизменный отпечаток удерживает ответ из индекса.
+        corrupt_preserving_fingerprint(&container);
 
         let second = PlatformSyntaxHelpProvider::new().search(&request("Alpha"), &context);
         let syntax = second
