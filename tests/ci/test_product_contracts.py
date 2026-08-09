@@ -317,6 +317,18 @@ class ProductContractTests(unittest.TestCase):
         self.assertNotIn("download-1ci-guides.py", agents)
         self.assertNotIn("docs-local/1ci/8.3.27/en/", agents)
         self.assertNotIn("kb.1ci.com/bin/download", agents)
+        # Активный слой spec/ — не только AGENTS.md: указание на локальный
+        # корпус в нём отправляет читателя к пути, который больше ничем не
+        # создаётся. Исторические docs/design и docs/plans сюда не входят.
+        for spec_path in sorted((REPO_ROOT / "spec").rglob("*")):
+            if not spec_path.is_file():
+                continue
+            with self.subTest(path=spec_path.relative_to(REPO_ROOT).as_posix()):
+                self.assertNotIn(
+                    "docs-local/1ci",
+                    spec_path.read_text(encoding="utf-8"),
+                    "активный слой spec не должен ссылаться на снятый корпус",
+                )
 
     def test_local_corpus_directory_stays_ignored(self) -> None:
         """Каталог остаётся игнорируемым: снят контракт корпуса, а не каталог."""
