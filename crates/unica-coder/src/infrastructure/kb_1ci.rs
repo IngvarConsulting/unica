@@ -436,8 +436,14 @@ fn numeric_version(version: &str) -> Vec<u32> {
 
 /// Семейство сравнивается по числовым составляющим: `8.3.27` покрывает
 /// `8.3.27` и любую его сборку, но не `8.3.2`.
+/// Руководство подходит закреплению, когда одно из имён — числовой префикс
+/// другого: запрос семейства выбирает его руководства, а пин сборки
+/// (`8.3.27.2074`) усекается до семейства площадки (`8.3.27`). Чужое
+/// семейство префиксом не является и не подставляется.
 fn matches_family(version: &str, family: &str) -> bool {
-    numeric_version(version).starts_with(&numeric_version(family))
+    let version = numeric_version(version);
+    let family = numeric_version(family);
+    version.starts_with(&family) || family.starts_with(&version)
 }
 
 impl Kb1ciProvider {
@@ -790,6 +796,27 @@ impl crate::domain::documentation::DocumentationProvider for Kb1ciProvider {
                 }
                 matched.truncate(request.limit);
                 let mut warnings = Vec::new();
+                // Усечение пина сборки до семейства — не молчаливая
+                // подстановка: секция называет и сборку, и семейство.
+                if let Some(requested) = family {
+                    let mut families: Vec<&str> = selected
+                        .iter()
+                        .filter(|guide| {
+                            guide.version != requested
+                                && numeric_version(requested)
+                                    .starts_with(&numeric_version(&guide.version))
+                        })
+                        .map(|guide| guide.version.as_str())
+                        .collect();
+                    families.sort_unstable();
+                    families.dedup();
+                    if !families.is_empty() {
+                        warnings.push(format!(
+                            "сборка {requested} отвечена руководством семейства {}: площадка ведёт руководства по семействам",
+                            families.join(", ")
+                        ));
+                    }
+                }
                 let mut cancelled_mid_ranking = false;
                 let hits: Vec<DocumentationHit> = matched
                     .iter()
@@ -1206,6 +1233,55 @@ mod provider_tests {
             tree_calls + 2,
             "страницы читаются только для совпадений"
         );
+    }
+
+    /// Пин сборки отвечается руководством её семейства: площадка ведёт
+    /// руководства по семействам, и «8.3.27.2074» — усечение до «8.3.27»,
+    /// а не подстановка соседней версии. Усечение называется предупреждением
+    /// секции, а попадание несёт версию площадки.
+    #[test]
+    fn kb_a_build_pin_is_answered_by_its_family_guide_with_a_disclosure() {
+        let _serial = kb_test_lock();
+        let base = "https://kb.build-pin";
+        let (provider, _transport) = provider_over(base, standard_site(base), NetworkAccess::Allow);
+        let (request, context) = request("URL", Some("8.3.27.2074"));
+
+        let sections = provider.search(&request, &context);
+        let developer = corpus_section(&sections, "kb-developer-guide");
+        assert!(
+            matches!(developer.status, DocumentationSectionStatus::Ok),
+            "семейство 8.3.27 обязано ответить на сборку 8.3.27.2074: {:?}",
+            developer.status
+        );
+        assert_eq!(developer.hits[0].applicable_version, "8.3.27");
+        assert!(
+            developer
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("8.3.27.2074") && warning.contains("8.3.27")),
+            "усечение сборки до семейства называется предупреждением: {:?}",
+            developer.warnings
+        );
+    }
+
+    /// Чужое семейство не подставляется и для пина сборки: усечение — не
+    /// разрешение брать соседнее руководство.
+    #[test]
+    fn kb_a_build_pin_of_an_absent_family_is_still_refused() {
+        let _serial = kb_test_lock();
+        let base = "https://kb.build-foreign";
+        let (provider, _transport) = provider_over(base, standard_site(base), NetworkAccess::Allow);
+        let (request, context) = request("URL", Some("8.4.1.100"));
+
+        let sections = provider.search(&request, &context);
+        let developer = corpus_section(&sections, "kb-developer-guide");
+        match &developer.status {
+            DocumentationSectionStatus::Unavailable { reason, detail } => {
+                assert_eq!(*reason, UnavailableReason::VersionMissing);
+                assert!(detail.contains("8.4.1.100"), "{detail}");
+            }
+            other => panic!("ожидался Unavailable{{VersionMissing}}, получено {other:?}"),
+        }
     }
 
     /// Версии, которых нет, называются поимённо: «подстановка соседней версии
