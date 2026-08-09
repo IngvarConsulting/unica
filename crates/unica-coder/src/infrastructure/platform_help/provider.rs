@@ -1,25 +1,199 @@
-use std::sync::{Arc, Mutex};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::domain::documentation::*;
 
-use super::corpus::{read_corpus, CorpusPage};
-use super::installation::{discover, InstallationError};
+use super::corpus::{read_corpus, CorpusPage, Signature};
+use super::installation::{discover, InstallationCorpora, InstallationError};
 
-pub fn rank_pages(
-    pages: &[CorpusPage],
+/// Длина фрагмента выдачи. Вырезается один раз при индексировании: фрагмент
+/// не зависит от запроса, и держать ради него полный текст страницы незачем.
+const SNIPPET_CHARS: usize = 400;
+
+/// Единственное объявление корпусов поставщика. И `corpora()`, и `search()`
+/// читают эту таблицу, поэтому разойтись молча они не могут, а имена корпусов
+/// не повторяются литералом в каждой ветке.
+struct CorpusSpec {
+    id: &'static str,
+    source_kind: SourceKind,
+    authority: Authority,
+}
+
+const CORPUS_SPECS: [CorpusSpec; 2] = [
+    CorpusSpec {
+        id: "syntax-context",
+        source_kind: SourceKind::PlatformHelp,
+        authority: Authority::Vendor,
+    },
+    CorpusSpec {
+        id: "platform-guides",
+        source_kind: SourceKind::PlatformHelp,
+        authority: Authority::Vendor,
+    },
+];
+
+/// Страница в индексе: только то, что нужно `rank_pages`. Текст лежит уже
+/// приведённым к нижнему регистру, а фрагмент выдачи — уже вырезанным,
+/// поэтому исходный текст страницы не удерживается вовсе и не копируется в
+/// нижний регистр на каждый запрос (около 43 МБ мусора на вызов до правки).
+struct IndexedPage {
+    path: String,
+    title: String,
+    title_lower: String,
+    text_lower: String,
+    snippet: String,
+    signature: Option<Signature>,
+}
+
+fn index_page(page: CorpusPage) -> IndexedPage {
+    IndexedPage {
+        title_lower: page.title.to_lowercase(),
+        text_lower: page.text.to_lowercase(),
+        snippet: page.text.chars().take(SNIPPET_CHARS).collect(),
+        path: page.path,
+        title: page.title,
+        signature: page.signature,
+    }
+}
+
+struct IndexedCorpus {
+    pages: Vec<IndexedPage>,
+    /// Контейнеры, которые не прочитались или не разобрались. Молчаливый
+    /// пропуск превращал повреждённый `.hbk` в «ничего не нашлось».
+    unreadable: Vec<String>,
+}
+
+struct InstallationIndex {
+    version: String,
+    /// Параллелен `CORPUS_SPECS` по порядку и длине: длину держит компилятор
+    /// (см. `build_index`), порядок задан там же одним местом.
+    corpora: Vec<IndexedCorpus>,
+}
+
+/// Ключ индекса — каталог установки и язык, а не одна лишь версия: под
+/// разными корнями встречаются одноимённые каталоги версий, и справка у них
+/// своя. Язык входит в ключ, потому что им отбираются сами контейнеры.
+#[derive(PartialEq, Eq)]
+struct IndexKey {
+    root: PathBuf,
+    language: String,
+}
+
+/// Разобранный корпус живёт один на процесс, а не один на вызов: реестр
+/// поставщиков собирается заново в каждой ветке диспетчера, поэтому кеш
+/// внутри экземпляра поставщика не переживал ни одного вызова — каждый
+/// `unica.documentation.search` заново читал и разбирал всю установку.
+///
+/// Слот ровно один и перестраивается при смене ключа. Держать по индексу на
+/// каждую версию, за которой сходил вызывающий, значит закрепить память по
+/// чужому вводу; один слот ограничивает её сверху и повторяет прежнюю
+/// семантику «сменилась версия — перестроились». На диск по-прежнему не
+/// пишется ничего (п.8 ADR-0029).
+struct CachedIndex {
+    key: IndexKey,
+    index: Arc<InstallationIndex>,
+}
+
+static INSTALLATION_INDEX: OnceLock<Mutex<Option<CachedIndex>>> = OnceLock::new();
+
+fn index_slot() -> &'static Mutex<Option<CachedIndex>> {
+    INSTALLATION_INDEX.get_or_init(|| Mutex::new(None))
+}
+
+/// Слот один на процесс, поэтому тест, которому важно состояние слота МЕЖДУ
+/// вызовами, обязан идти в одиночку: соседний тест с другой установкой
+/// вытеснит индекс. Тот же приём, что и `test_support::process_cwd_lock`.
+#[cfg(test)]
+pub(crate) fn index_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn index_corpus(containers: &[PathBuf]) -> IndexedCorpus {
+    let mut pages = Vec::new();
+    let mut unreadable = Vec::new();
+    for path in containers {
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("<без имени>")
+            .to_string();
+        match std::fs::read(path) {
+            Err(error) => unreadable.push(format!("{name}: {error}")),
+            Ok(bytes) => match read_corpus(&bytes) {
+                Err(error) => unreadable.push(format!("{name}: {error:?}")),
+                Ok(read) => pages.extend(read.into_iter().map(index_page)),
+            },
+        }
+    }
+    IndexedCorpus { pages, unreadable }
+}
+
+fn build_index(corpora: &InstallationCorpora) -> InstallationIndex {
+    // Соответствие с `CORPUS_SPECS` позиционное: компилятор держит длину
+    // массива, а порядок объявлен здесь. Добавленный корпус не соберётся,
+    // пока его контейнеры не названы.
+    let sources: [&[PathBuf]; CORPUS_SPECS.len()] =
+        [&corpora.syntax_context, &corpora.platform_guides];
+    InstallationIndex {
+        version: corpora.version.clone(),
+        corpora: sources.into_iter().map(index_corpus).collect(),
+    }
+}
+
+/// Индекс установки под ключом. Перестройка идёт под замком: одновременные
+/// поиски (`MCP_MAX_TOOL_WORKERS` = 32) должны ждать одну перестройку, а не
+/// строить по своей.
+///
+/// Восстановление после отравления — как в `workspace_services`: паника в
+/// разборе одного контейнера не должна навсегда ронять каждый следующий
+/// вызов. Слот перезаписывается целиком, поэтому отравленный страж видит
+/// либо прежнее целое состояние, либо чистую перестройку.
+fn indexed(key: IndexKey, corpora: &InstallationCorpora) -> Arc<InstallationIndex> {
+    let mut slot = index_slot()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(cached) = slot.as_ref() {
+        if cached.key == key {
+            return Arc::clone(&cached.index);
+        }
+    }
+    let index = Arc::new(build_index(corpora));
+    *slot = Some(CachedIndex {
+        key,
+        index: Arc::clone(&index),
+    });
+    index
+}
+
+/// Сигнатура на языке запроса. Хранятся обе локали, поэтому выбор — вопрос
+/// предпочтения, а не наличия: запрошенная идёт первой, вторая остаётся
+/// запасной, чтобы вопрос про член платформы не остался вовсе без сигнатуры.
+fn signature_in(signature: &Signature, language: &str) -> Option<String> {
+    let (preferred, fallback) = match language {
+        "en" => (&signature.en, &signature.ru),
+        _ => (&signature.ru, &signature.en),
+    };
+    preferred.clone().or_else(|| fallback.clone())
+}
+
+fn rank_pages(
+    pages: &[IndexedPage],
     query: &str,
     limit: usize,
     version: &str,
     corpus: &str,
+    language: &str,
 ) -> Vec<DocumentationHit> {
     let needle = query.to_lowercase();
-    let mut scored: Vec<(f32, &CorpusPage)> = pages
+    let mut scored: Vec<(f32, &IndexedPage)> = pages
         .iter()
         .filter_map(|page| {
-            let title = page.title.to_lowercase();
-            let score = if title.contains(&needle) {
+            let score = if page.title_lower.contains(&needle) {
                 1.0
-            } else if page.text.to_lowercase().contains(&needle) {
+            } else if page.text_lower.contains(&needle) {
                 0.5
             } else {
                 return None;
@@ -46,33 +220,35 @@ pub fn rank_pages(
             signature: page
                 .signature
                 .as_ref()
-                .and_then(|value| value.ru.clone().or_else(|| value.en.clone())),
-            snippet: page.text.chars().take(400).collect(),
+                .and_then(|value| signature_in(value, language)),
+            snippet: page.snippet.clone(),
             applicable_version: version.to_string(),
         })
         .collect()
 }
 
-/// Карта корпусов строится лениво один раз на процесс на версию и живёт в
-/// памяти. На диск не пишется ничего.
 #[derive(Default)]
-struct CorpusCache {
-    version: Option<String>,
-    syntax_context: Vec<CorpusPage>,
-    platform_guides: Vec<CorpusPage>,
-}
-
-pub struct PlatformSyntaxHelpProvider {
-    language: String,
-    cache: Arc<Mutex<CorpusCache>>,
-}
+pub struct PlatformSyntaxHelpProvider;
 
 impl PlatformSyntaxHelpProvider {
-    pub fn new(language: &str) -> Self {
-        Self {
-            language: language.to_string(),
-            cache: Arc::new(Mutex::new(CorpusCache::default())),
-        }
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Источник недоступен целиком — одна диагностичная секция (п.5
+    /// ADR-0029). Её происхождение берётся у первого объявленного корпуса:
+    /// секция описывает поставщика, а не какой-то один его корпус, и четыре
+    /// почти одинаковых литерала повторять для этого незачем.
+    fn diagnostic(&self, status: DocumentationSectionStatus) -> Vec<DocumentationSection> {
+        let spec = &CORPUS_SPECS[0];
+        vec![DocumentationSection {
+            provider: self.id(),
+            corpus: spec.id.to_string(),
+            source_kind: spec.source_kind,
+            authority: spec.authority,
+            status,
+            hits: Vec::new(),
+        }]
     }
 }
 
@@ -82,18 +258,14 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
     }
 
     fn corpora(&self) -> Vec<DocumentationCorpus> {
-        vec![
-            DocumentationCorpus {
-                id: "syntax-context".to_string(),
-                source_kind: SourceKind::PlatformHelp,
-                authority: Authority::Vendor,
-            },
-            DocumentationCorpus {
-                id: "platform-guides".to_string(),
-                source_kind: SourceKind::PlatformHelp,
-                authority: Authority::Vendor,
-            },
-        ]
+        CORPUS_SPECS
+            .iter()
+            .map(|spec| DocumentationCorpus {
+                id: spec.id.to_string(),
+                source_kind: spec.source_kind,
+                authority: spec.authority,
+            })
+            .collect()
     }
 
     fn needs_network(&self) -> bool {
@@ -105,144 +277,104 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
         request: &DocumentationSearchRequest,
         context: &DocumentationContext,
     ) -> Vec<DocumentationSection> {
-        let id = self.id();
         let Some(root) = context.installation_root.as_ref() else {
-            return vec![DocumentationSection {
-                provider: id,
-                corpus: "syntax-context".to_string(),
-                source_kind: SourceKind::PlatformHelp,
-                authority: Authority::Vendor,
-                status: DocumentationSectionStatus::Unavailable {
-                    reason: UnavailableReason::NotConfigured,
-                    detail: "установка платформы не разрешена для рабочего пространства"
-                        .to_string(),
-                },
-                hits: Vec::new(),
-            }];
+            // Ограничение, по которому установку искали, названо в отказе:
+            // «не разрешена» без версии не отличает «платформа не
+            // установлена» от «проект закреплён за версией, которой нет».
+            let detail = match context.platform_version.as_deref() {
+                Some(version) => {
+                    format!("установка платформы {version} не разрешена для рабочего пространства")
+                }
+                None => "установка платформы не разрешена для рабочего пространства".to_string(),
+            };
+            return self.diagnostic(DocumentationSectionStatus::Unavailable {
+                reason: UnavailableReason::NotConfigured,
+                detail,
+            });
         };
-        let corpora = match discover(root, &self.language) {
+        let corpora = match discover(root, &request.language) {
             Ok(value) => value,
             Err(InstallationError::HelpMissingForVersion { version }) => {
-                return vec![DocumentationSection {
-                    provider: id,
-                    corpus: "syntax-context".to_string(),
-                    source_kind: SourceKind::PlatformHelp,
-                    authority: Authority::Vendor,
-                    status: DocumentationSectionStatus::Unavailable {
-                        reason: UnavailableReason::VersionMissing,
-                        detail: format!(
-                            "установка {version} не содержит Синтакс-помощника; нужна полная поставка"
-                        ),
-                    },
-                    hits: Vec::new(),
-                }]
+                // Язык назван: у нерусской установки Синтакс-помощник лежит в
+                // `shcntx_<язык>.hbk`, и «нужна полная поставка» без языка
+                // отправляло бы читателя чинить не то.
+                return self.diagnostic(DocumentationSectionStatus::Unavailable {
+                    reason: UnavailableReason::VersionMissing,
+                    detail: format!(
+                        "установка {version} не содержит Синтакс-помощника на языке {}; нужна полная поставка",
+                        request.language
+                    ),
+                });
             }
             Err(InstallationError::Unreadable { detail }) => {
-                return vec![DocumentationSection {
-                    provider: id,
-                    corpus: "syntax-context".to_string(),
-                    source_kind: SourceKind::PlatformHelp,
-                    authority: Authority::Vendor,
-                    status: DocumentationSectionStatus::Failed {
-                        diagnostic: format!("каталог установки не читается: {detail}"),
-                    },
-                    hits: Vec::new(),
-                }]
+                return self.diagnostic(DocumentationSectionStatus::Failed {
+                    diagnostic: format!("каталог установки не читается: {detail}"),
+                });
             }
             // NotFound и VersionUndetermined и раньше давали один и тот же
             // `reason`, но обязаны различаться текстом: иначе вызывающий не
             // отличит «каталога нет» от «версию не вывести из пути» ни по
             // чему, кроме кода, а не по ответу.
             Err(InstallationError::VersionUndetermined) => {
-                return vec![DocumentationSection {
-                    provider: id,
-                    corpus: "syntax-context".to_string(),
-                    source_kind: SourceKind::PlatformHelp,
-                    authority: Authority::Vendor,
-                    status: DocumentationSectionStatus::Unavailable {
-                        reason: UnavailableReason::NotConfigured,
-                        detail: format!(
-                            "версия не выводится из корня установки: {}",
-                            root.display()
-                        ),
-                    },
-                    hits: Vec::new(),
-                }]
+                return self.diagnostic(DocumentationSectionStatus::Unavailable {
+                    reason: UnavailableReason::NotConfigured,
+                    detail: format!("версия не выводится из корня установки: {}", root.display()),
+                });
             }
             Err(InstallationError::NotFound) => {
-                return vec![DocumentationSection {
-                    provider: id,
-                    corpus: "syntax-context".to_string(),
-                    source_kind: SourceKind::PlatformHelp,
-                    authority: Authority::Vendor,
-                    status: DocumentationSectionStatus::Unavailable {
-                        reason: UnavailableReason::NotConfigured,
-                        detail: format!("каталог установки недоступен: {}", root.display()),
-                    },
-                    hits: Vec::new(),
-                }]
+                return self.diagnostic(DocumentationSectionStatus::Unavailable {
+                    reason: UnavailableReason::NotConfigured,
+                    detail: format!("каталог установки недоступен: {}", root.display()),
+                });
             }
         };
-        // Восстановление после отравления, как в `workspace_services`: паника в
-        // разборе одного контейнера не должна навсегда ронять каждый следующий
-        // вызов. Состояние кеша перезаписывается целиком в конце перестройки
-        // (см. ниже), поэтому отравленный страж видит либо прежнее целое
-        // состояние, либо чистую перестройку — рваной записи не бывает.
-        let mut cache = self
-            .cache
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if cache.version.as_deref() != Some(corpora.version.as_str()) {
-            let mut syntax = Vec::new();
-            for path in &corpora.syntax_context {
-                if let Ok(bytes) = std::fs::read(path) {
-                    if let Ok(pages) = read_corpus(&bytes) {
-                        syntax.extend(pages);
-                    }
-                }
-            }
-            let mut guides = Vec::new();
-            for path in &corpora.platform_guides {
-                if let Ok(bytes) = std::fs::read(path) {
-                    if let Ok(pages) = read_corpus(&bytes) {
-                        guides.extend(pages);
-                    }
-                }
-            }
-            cache.version = Some(corpora.version.clone());
-            cache.syntax_context = syntax;
-            cache.platform_guides = guides;
-        }
+        let index = indexed(
+            IndexKey {
+                root: root.clone(),
+                language: request.language.clone(),
+            },
+            &corpora,
+        );
         // По секции на корпус: поле `corpus` обязано описывать именно свои
         // попадания, поэтому корпуса не смешиваются в одну секцию.
-        [
-            ("syntax-context", &cache.syntax_context),
-            ("platform-guides", &cache.platform_guides),
-        ]
-        .into_iter()
-        .map(|(corpus, pages)| {
-            let hits = rank_pages(
-                pages,
-                &request.query,
-                request.limit,
-                &corpora.version,
-                corpus,
-            );
-            let status = if hits.is_empty() {
-                DocumentationSectionStatus::Empty
-            } else {
-                DocumentationSectionStatus::Ok
-            };
-            DocumentationSection {
-                provider: id.clone(),
-                corpus: corpus.to_string(),
-                source_kind: SourceKind::PlatformHelp,
-                authority: Authority::Vendor,
-                status,
-                hits,
-            }
-        })
-        .collect()
+        CORPUS_SPECS
+            .iter()
+            .zip(index.corpora.iter())
+            .map(|(spec, corpus)| {
+                let hits = rank_pages(
+                    &corpus.pages,
+                    &request.query,
+                    request.limit,
+                    &index.version,
+                    spec.id,
+                    &request.language,
+                );
+                // `Empty` означает «корпус прочитан, ничего не совпало». Если
+                // хоть один контейнер не разобрался, это неправда: совпадение
+                // могло лежать именно в нём. Найденные попадания при этом
+                // настоящие, поэтому непустая выдача остаётся `Ok`.
+                let status = if hits.is_empty() && !corpus.unreadable.is_empty() {
+                    DocumentationSectionStatus::Failed {
+                        diagnostic: format!(
+                            "контейнеры корпуса не разобрались: {}",
+                            corpus.unreadable.join("; ")
+                        ),
+                    }
+                } else if hits.is_empty() {
+                    DocumentationSectionStatus::Empty
+                } else {
+                    DocumentationSectionStatus::Ok
+                };
+                DocumentationSection {
+                    provider: self.id(),
+                    corpus: spec.id.to_string(),
+                    source_kind: spec.source_kind,
+                    authority: spec.authority,
+                    status,
+                    hits,
+                }
+            })
+            .collect()
     }
 }
 
@@ -291,7 +423,7 @@ mod tests {
 
     #[test]
     fn missing_installation_is_unavailable_not_failed() {
-        let provider = PlatformSyntaxHelpProvider::new("ru");
+        let provider = PlatformSyntaxHelpProvider::new();
         let context = DocumentationContext {
             platform_version: None,
             installation_root: None,
@@ -313,13 +445,34 @@ mod tests {
         assert!(section.hits.is_empty());
     }
 
+    /// Разрешение установки может не найти версию, за которой закреплён
+    /// проект, — и тогда отказ обязан назвать её. Общий текст «установка
+    /// платформы не разрешена» не отличает «платформы на машине нет» от
+    /// «есть, но не та», а именно это различие и оплачивает п.3 ADR-0029.
+    #[test]
+    fn refusal_names_the_version_the_installation_was_resolved_for() {
+        let provider = PlatformSyntaxHelpProvider::new();
+        let context = DocumentationContext {
+            platform_version: Some("8.3.27".to_string()),
+            installation_root: None,
+        };
+        let sections = provider.search(&request("что-нибудь"), &context);
+        match &sections[0].status {
+            DocumentationSectionStatus::Unavailable { detail, .. } => assert!(
+                detail.contains("8.3.27"),
+                "отказ обязан назвать искомую версию, получено {detail}"
+            ),
+            other => panic!("ожидался Unavailable, получено {other:?}"),
+        }
+    }
+
     #[test]
     fn client_only_installation_reports_version_missing() {
         let dir = tempfile::tempdir().expect("каталог");
         let root = dir.path().join("8.5.1.1451");
         std::fs::create_dir_all(&root).expect("каталог версии");
         std::fs::write(root.join("chartui_ru.hbk"), b"stub").expect("файл");
-        let provider = PlatformSyntaxHelpProvider::new("ru");
+        let provider = PlatformSyntaxHelpProvider::new();
         let context = DocumentationContext {
             platform_version: Some("8.5.1.1451".to_string()),
             installation_root: Some(root),
@@ -343,8 +496,10 @@ mod tests {
     #[test]
     fn both_name_collisions_are_returned() {
         // «ЭлементыФормы» встречается в корпусе дважды — как коллекция и как
-        // тип. Правило «первый побеждает» дало бы тихую потерю.
-        let pages = vec![
+        // тип. Правило «первый побеждает» дало бы тихую потерю. Страницы
+        // проходят через `index_page`, а не собираются полем-в-поле: иначе
+        // тест мог бы задать `title_lower`, не совпадающий с `title`.
+        let pages: Vec<IndexedPage> = [
             crate::infrastructure::platform_help::corpus::CorpusPage {
                 path: "objects/a/FormItems.html".to_string(),
                 title: "ЭлементыФормы (FormItems)".to_string(),
@@ -357,14 +512,55 @@ mod tests {
                 text: "Тип элементов формы".to_string(),
                 signature: None,
             },
-        ];
-        let hits = rank_pages(&pages, "ЭлементыФормы", 20, "8.3.27.2074", "syntax-context");
+        ]
+        .into_iter()
+        .map(index_page)
+        .collect();
+        let hits = rank_pages(
+            &pages,
+            "ЭлементыФормы",
+            20,
+            "8.3.27.2074",
+            "syntax-context",
+            "ru",
+        );
         assert_eq!(hits.len(), 2, "оба попадания сохраняются");
         assert_eq!(hits[0].rank, 1);
         assert_eq!(hits[1].rank, 2);
         assert!(hits
             .iter()
             .all(|hit| hit.applicable_version == "8.3.27.2074"));
+    }
+
+    /// Аргумент `language` доходил до `DocumentationSearchRequest` и не
+    /// читался никем: локаль сигнатуры была зашита предпочтением русской.
+    /// Здесь одна и та же страница спрашивается дважды, и от языка запроса
+    /// обязана меняться выданная сигнатура.
+    #[test]
+    fn requested_language_picks_the_signature_locale() {
+        let pages: Vec<IndexedPage> = [crate::infrastructure::platform_help::corpus::CorpusPage {
+            path: "objects/GetURL.html".to_string(),
+            title: "ПолучитьНавигационнуюСсылку (GetURL)".to_string(),
+            text: "текст".to_string(),
+            signature: Some(crate::infrastructure::platform_help::corpus::Signature {
+                ru: Some("ПолучитьНавигационнуюСсылку(<Объект>)".to_string()),
+                en: Some("GetURL(<Object>)".to_string()),
+            }),
+        }]
+        .into_iter()
+        .map(index_page)
+        .collect();
+        let ru = rank_pages(&pages, "GetURL", 20, "8.3.27.2074", "syntax-context", "ru");
+        let en = rank_pages(&pages, "GetURL", 20, "8.3.27.2074", "syntax-context", "en");
+        assert_eq!(
+            ru[0].signature.as_deref(),
+            Some("ПолучитьНавигационнуюСсылку(<Объект>)")
+        );
+        assert_eq!(
+            en[0].signature.as_deref(),
+            Some("GetURL(<Object>)"),
+            "запрошенный язык обязан выбирать локаль сигнатуры"
+        );
     }
 
     /// Прошлое ревью отметило, что решение «секция на корпус» до сих пор
@@ -375,6 +571,8 @@ mod tests {
     /// этот тест.
     #[test]
     fn full_installation_returns_two_sections_scoped_to_their_own_corpus() {
+        // Слот индекса общий на процесс — тесты, которые его пишут, идут по одному.
+        let _serial = index_test_lock();
         let dir = tempfile::tempdir().expect("каталог");
         let root = dir.path().join("8.3.27.2074");
         std::fs::create_dir_all(&root).expect("каталог версии");
@@ -395,7 +593,7 @@ mod tests {
         )
         .expect("контейнер руководств платформы");
 
-        let provider = PlatformSyntaxHelpProvider::new("ru");
+        let provider = PlatformSyntaxHelpProvider::new();
         let context = DocumentationContext {
             platform_version: Some("8.3.27.2074".to_string()),
             installation_root: Some(root),
@@ -446,6 +644,39 @@ mod tests {
         assert_eq!(guides_section.hits[0].applicable_version, "8.3.27.2074");
     }
 
+    /// Повреждённый контейнер исчезал молча, и секция сообщала `Empty` —
+    /// «ничего не нашлось», — тогда как правда «контейнер не разобрался».
+    /// Это ровно то смешение отказов, ради разделения которых прошёл
+    /// отдельный круг правок (п.8 и п.10 ADR-0029).
+    #[test]
+    fn unparsable_container_is_named_instead_of_looking_empty() {
+        // Слот индекса общий на процесс — тесты, которые его пишут, идут по одному.
+        let _serial = index_test_lock();
+        let dir = tempfile::tempdir().expect("каталог");
+        let root = dir.path().join("8.3.27.2074");
+        std::fs::create_dir_all(&root).expect("каталог версии");
+        std::fs::write(root.join("shcntx_ru.hbk"), b"not a container at all")
+            .expect("повреждённый контейнер");
+
+        let provider = PlatformSyntaxHelpProvider::new();
+        let context = DocumentationContext {
+            platform_version: Some("8.3.27.2074".to_string()),
+            installation_root: Some(root),
+        };
+        let sections = provider.search(&request("Alpha"), &context);
+        let syntax_section = sections
+            .iter()
+            .find(|section| section.corpus == "syntax-context")
+            .expect("секция syntax-context");
+        match &syntax_section.status {
+            DocumentationSectionStatus::Failed { diagnostic } => assert!(
+                diagnostic.contains("shcntx_ru.hbk"),
+                "диагностика обязана назвать контейнер, получено {diagnostic}"
+            ),
+            other => panic!("ожидался Failed с именем контейнера, получено {other:?}"),
+        }
+    }
+
     /// `Unreadable` — это «установка сломана» (права, не каталог), а не
     /// «установка не настроена». Секция обязана нести `Failed`, а не
     /// `Unavailable`: смешение этих двух статусов замаскировало бы поломку
@@ -455,7 +686,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("каталог");
         let root = dir.path().join("8.3.27.2074");
         std::fs::write(&root, b"not a directory").expect("файл вместо каталога версии");
-        let provider = PlatformSyntaxHelpProvider::new("ru");
+        let provider = PlatformSyntaxHelpProvider::new();
         let context = DocumentationContext {
             platform_version: Some("8.3.27.2074".to_string()),
             installation_root: Some(root),
@@ -488,7 +719,7 @@ mod tests {
         // Захватываем текст ДО перемещения `root` в контекст: он должен
         // войти в diagnostic-текст секции дословно.
         let expected_detail = format!("каталог установки недоступен: {}", root.display());
-        let provider = PlatformSyntaxHelpProvider::new("ru");
+        let provider = PlatformSyntaxHelpProvider::new();
         let context = DocumentationContext {
             platform_version: Some("8.3.27.2074".to_string()),
             installation_root: Some(root),
@@ -518,7 +749,7 @@ mod tests {
     fn root_without_last_segment_reports_not_configured() {
         let root = std::path::PathBuf::from("/");
         let expected_detail = format!("версия не выводится из корня установки: {}", root.display());
-        let provider = PlatformSyntaxHelpProvider::new("ru");
+        let provider = PlatformSyntaxHelpProvider::new();
         let context = DocumentationContext {
             platform_version: None,
             installation_root: Some(root),
@@ -541,16 +772,18 @@ mod tests {
         }
     }
 
-    /// Поставщик живёт весь процесс: паника, случившаяся под замком кеша
-    /// (например, в разборе одного повреждённого контейнера), не должна
-    /// отравлять мьютекс навсегда — иначе КАЖДЫЙ следующий `search()` для
-    /// любого запроса и любой установки начнёт падать до конца жизни
-    /// процесса. Тот же приём восстановления, что и в
+    /// Индекс общий на процесс: паника, случившаяся под его замком (например,
+    /// в разборе одного повреждённого контейнера), не должна отравлять
+    /// мьютекс навсегда — иначе КАЖДЫЙ следующий `search()` для любого
+    /// запроса и любой установки начнёт падать до конца жизни процесса. Тот
+    /// же приём восстановления, что и в
     /// `workspace_services.rs::analyzer_lane_recovers_from_poison_without_losing_progress`:
     /// поток берёт замок и паникует, не отпуская его; `join()` результат
     /// игнорируется (нам важен сам факт отравления, не то, что вернул поток).
     #[test]
-    fn search_recovers_from_poisoned_cache_mutex() {
+    fn search_recovers_from_poisoned_index_mutex() {
+        // Слот индекса общий на процесс — тесты, которые его пишут, идут по одному.
+        let _serial = index_test_lock();
         let dir = tempfile::tempdir().expect("каталог");
         let root = dir.path().join("8.3.27.2074");
         std::fs::create_dir_all(&root).expect("каталог версии");
@@ -561,14 +794,18 @@ mod tests {
         )
         .expect("контейнер синтакс-помощника");
 
-        let provider = PlatformSyntaxHelpProvider::new("ru");
-        let poisoned = provider.cache.clone();
-        let _ = std::thread::spawn(move || {
-            let _guard = poisoned.lock().unwrap();
-            panic!("намеренное отравление кеша корпусов (тест)");
+        let _ = std::thread::spawn(|| {
+            // `unwrap_or_else`, а не `unwrap`: если слот отравил уже другой
+            // тест, `unwrap` паниковал бы ДО намеренной паники, и тест перестал
+            // бы отличать восстановление от совпадения.
+            let _guard = index_slot()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            panic!("намеренное отравление индекса корпусов (тест)");
         })
         .join();
 
+        let provider = PlatformSyntaxHelpProvider::new();
         let context = DocumentationContext {
             platform_version: Some("8.3.27.2074".to_string()),
             installation_root: Some(root),
@@ -592,15 +829,15 @@ mod tests {
         assert_eq!(syntax_section.hits.len(), 1);
     }
 
-    /// `cache.version.as_deref() != Some(corpora.version.as_str())` — это
-    /// единственная строка, не позволяющая смешать корпуса разных версий
-    /// платформы в памяти одного процесса (между 8.3.27 и 8.5.4 расходятся
-    /// сотни имён API). Остальные тесты создают новый экземпляр и зовут
-    /// `search` один раз, поэтому кеш всегда пуст и ветка перестройки всегда
-    /// берётся — эта строка ими не проверяется. Здесь один и тот же
-    /// экземпляр опрашивает две РАЗНЫЕ установленные версии подряд.
+    /// Сравнение ключа индекса — единственное, что не позволяет смешать
+    /// корпуса разных версий платформы в памяти одного процесса (между
+    /// 8.3.27 и 8.5.4 расходятся сотни имён API). Остальные тесты обращаются
+    /// к одной установке, поэтому ветку перестройки не различают. Здесь две
+    /// РАЗНЫЕ установленные версии опрашиваются подряд через общий индекс.
     #[test]
-    fn reused_provider_does_not_mix_corpora_across_versions() {
+    fn second_installation_does_not_answer_from_the_first_ones_index() {
+        // Слот индекса общий на процесс — тесты, которые его пишут, идут по одному.
+        let _serial = index_test_lock();
         let dir = tempfile::tempdir().expect("каталог");
 
         let first_root = dir.path().join("8.3.27.2074");
@@ -625,7 +862,7 @@ mod tests {
         )
         .expect("контейнер версии 2");
 
-        let provider = PlatformSyntaxHelpProvider::new("ru");
+        let provider = PlatformSyntaxHelpProvider::new();
 
         let first_context = DocumentationContext {
             platform_version: Some("8.3.27.2074".to_string()),
@@ -658,5 +895,53 @@ mod tests {
             "попадание не должно быть страницей первой версии"
         );
         assert_eq!(second_syntax.hits[0].applicable_version, "8.5.4.1306");
+    }
+
+    /// Индекс переживает вызов: второй `search` по той же установке обязан
+    /// отвечать из уже построенного индекса, а не читать установку заново.
+    /// Наблюдаемо это так — контейнер удаляется между вызовами: заново
+    /// прочитать его уже нельзя, и ответ из индекса отличим от перестройки.
+    #[test]
+    fn a_second_call_answers_from_the_index_instead_of_rereading_the_installation() {
+        // Слот индекса общий на процесс — тесты, которые его пишут, идут по одному.
+        let _serial = index_test_lock();
+        let dir = tempfile::tempdir().expect("каталог");
+        let root = dir.path().join("8.3.27.2074");
+        std::fs::create_dir_all(&root).expect("каталог версии");
+        let container = root.join("shcntx_ru.hbk");
+        std::fs::write(
+            &container,
+            hbk_bytes(&[(
+                "alpha.html",
+                "<html><body><h1>Alpha</h1><p>текст</p></body></html>",
+            )]),
+        )
+        .expect("контейнер синтакс-помощника");
+
+        let context = DocumentationContext {
+            platform_version: Some("8.3.27.2074".to_string()),
+            installation_root: Some(root),
+        };
+        // Разные экземпляры поставщика — ровно то, что делает диспетчер:
+        // реестр собирается заново на каждый вызов, поэтому индекс обязан
+        // жить не в экземпляре.
+        let first = PlatformSyntaxHelpProvider::new().search(&request("Alpha"), &context);
+        assert_eq!(first[0].hits.len(), 1, "первый вызов строит индекс");
+
+        // Содержимое контейнера подменяется на мусор: перестройка увидела бы
+        // неразобравшийся контейнер и ответила `Failed` без попаданий.
+        std::fs::write(&container, b"not a container at all").expect("контейнер испорчен");
+
+        let second = PlatformSyntaxHelpProvider::new().search(&request("Alpha"), &context);
+        let syntax = second
+            .iter()
+            .find(|section| section.corpus == "syntax-context")
+            .expect("секция syntax-context");
+        assert!(
+            matches!(syntax.status, DocumentationSectionStatus::Ok),
+            "второй вызов обязан отвечать из индекса, получено {:?}",
+            syntax.status
+        );
+        assert_eq!(syntax.hits.len(), 1, "попадание приходит из индекса");
     }
 }

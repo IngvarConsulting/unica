@@ -20,7 +20,7 @@ use crate::domain::documentation::{
     DocumentationContext, DocumentationProvider, DocumentationSearchRequest,
     DocumentationSectionStatus, SourceKind,
 };
-use crate::infrastructure::platform_help::provider::PlatformSyntaxHelpProvider;
+use crate::infrastructure::platform_help::provider::{index_test_lock, PlatformSyntaxHelpProvider};
 
 #[test]
 fn real_installation_answers_navigation_link_question() {
@@ -28,7 +28,10 @@ fn real_installation_answers_navigation_link_question() {
         eprintln!("UNICA_PLATFORM_HELP_DIR не задан — проверка пропущена");
         return;
     };
-    let provider = PlatformSyntaxHelpProvider::new("ru");
+    // Слот индекса общий на процесс: настоящая установка не должна
+    // вытеснять индекс синтетического теста посреди его двух вызовов.
+    let _serial = index_test_lock();
+    let provider = PlatformSyntaxHelpProvider::new();
     let request = DocumentationSearchRequest {
         query: "ПолучитьНавигационнуюСсылку".to_string(),
         source_kinds: vec![SourceKind::PlatformHelp],

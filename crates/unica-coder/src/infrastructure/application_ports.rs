@@ -414,9 +414,21 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                         .to_string(),
                 };
                 let requested_version = args.get("platformVersion").and_then(Value::as_str);
+                // Порядок п.2 ADR-0029: явная версия в аргументе вызова,
+                // затем версия, закреплённая проектом, затем численно
+                // старшая найденная. Среднего уровня в коде не было, и
+                // проект, закреплённый за 8.3.27, молча получал справку от
+                // 8.5.4 — тот же вред, который запрещает п.3 записи.
+                let project_version = project_platform_version(context);
+                let installation_root = resolve_platform_installation_root(
+                    requested_version,
+                    project_version.as_deref(),
+                );
                 let context = crate::domain::documentation::DocumentationContext {
-                    platform_version: requested_version.map(str::to_string),
-                    installation_root: resolve_platform_installation_root(requested_version),
+                    // Ограничение, по которому установку искали: поставщик
+                    // называет его в отказе, когда установки не нашлось.
+                    platform_version: requested_version.map(str::to_string).or(project_version),
+                    installation_root,
                 };
                 let registry = documentation_registry()?;
                 let data =
@@ -586,9 +598,38 @@ fn documentation_registry() -> Result<crate::domain::documentation::Documentatio
     use std::sync::Arc;
 
     crate::domain::documentation::DocumentationRegistry::new(vec![Arc::new(
-        crate::infrastructure::platform_help::provider::PlatformSyntaxHelpProvider::new("ru"),
+        crate::infrastructure::platform_help::provider::PlatformSyntaxHelpProvider::new(),
     )
         as Arc<dyn crate::domain::documentation::DocumentationProvider>])
+}
+
+/// The platform version the project pins itself to: `tools.platform.version`
+/// from `v8project.yaml`, overridden by the same key in the local
+/// `v8project.local.yaml`. Same file, same key and same overlay order the
+/// pinned runner already uses (`full_dump_publication`); a second platform
+/// resolution mechanism must not appear in the project.
+///
+/// Absent, unreadable or malformed config means "no constraint", not an
+/// error: documentation search is a read-only question about the platform,
+/// and the runner is the place that refuses a broken project config loudly.
+fn project_platform_version(context: &WorkspaceContext) -> Option<String> {
+    let root = &context.workspace_root;
+    configured_platform_version(&root.join("v8project.local.yaml"))
+        .or_else(|| configured_platform_version(&root.join("v8project.yaml")))
+}
+
+fn configured_platform_version(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let yaml = serde_yaml::from_str::<serde_yaml::Value>(&text).ok()?;
+    let version = yaml
+        .as_mapping()?
+        .get(serde_yaml::Value::String("tools".to_string()))?
+        .as_mapping()?
+        .get(serde_yaml::Value::String("platform".to_string()))?
+        .as_mapping()?
+        .get(serde_yaml::Value::String("version".to_string()))?
+        .as_str()?;
+    Some(version.to_string())
 }
 
 /// The platform installation root comes from the same root list the full-dump
@@ -596,27 +637,97 @@ fn documentation_registry() -> Result<crate::domain::documentation::Documentatio
 /// `infrastructure::platform::full_dump_publication`. A second installation
 /// search mechanism must not appear in the project.
 ///
-/// The version subdirectory is either the explicit version from the call
-/// argument, or the numerically newest one present — picking is entirely
-/// `select_platform_version`'s job, so this loop passes the unordered
-/// directory listing straight through. `UNICA_PLATFORM_HELP_DIR` is a
-/// test-only switch (see `platform_help::installation`) and does not feed
-/// into this resolver.
-fn resolve_platform_installation_root(requested: Option<&str>) -> Option<std::path::PathBuf> {
-    for root in crate::infrastructure::platform::full_dump_publication::default_platform_roots() {
-        let Ok(children) = std::fs::read_dir(&root) else {
-            continue;
+/// `UNICA_PLATFORM_HELP_DIR` is a test-only switch (see
+/// `platform_help::installation`) and does not feed into this resolver.
+fn resolve_platform_installation_root(
+    requested: Option<&str>,
+    project_version: Option<&str>,
+) -> Option<std::path::PathBuf> {
+    select_installation_root(
+        &crate::infrastructure::platform::full_dump_publication::default_platform_roots(),
+        requested,
+        project_version,
+    )
+}
+
+/// Pure root pick, split out of `resolve_platform_installation_root` so it can
+/// be tested without the hard-coded platform roots. Roots are tried in the
+/// declared order and the first one that answers closes the walk (ADR-0029
+/// point 2).
+///
+/// The two constraints are not the same rule, because the two inputs do not
+/// mean the same thing. The call argument is a *requested version* and must
+/// match a directory name exactly: a caller asking for 8.3.27.2074 must never
+/// be handed 8.3.27.2075. `tools.platform.version` is a *platform line* —
+/// `references/tooling/runtime-build.md` documents it as constraining the
+/// family, with a four-component value demanding an exact build — so it
+/// selects the numerically newest installation under that line.
+fn select_installation_root(
+    roots: &[std::path::PathBuf],
+    requested: Option<&str>,
+    project_version: Option<&str>,
+) -> Option<std::path::PathBuf> {
+    for root in roots {
+        let versions = version_directories(root);
+        let selected = match (requested, project_version) {
+            (Some(version), _) => select_platform_version(&versions, Some(version)),
+            (None, Some(line)) => select_platform_line(&versions, line),
+            (None, None) => select_platform_version(&versions, None),
         };
-        let versions: Vec<std::path::PathBuf> = children
-            .flatten()
-            .map(|child| child.path())
-            .filter(|path| path.is_dir())
-            .collect();
-        if let Some(selected) = select_platform_version(&versions, requested) {
-            return Some(selected);
+        if selected.is_some() {
+            return selected;
         }
     }
     None
+}
+
+/// Subdirectories whose names have the shape of a platform version. Without
+/// this filter every sibling of the version directories is a candidate: in
+/// `/opt/1cv8` those are `1cv8`, `common` and `conf`, and since
+/// `numeric_version_key` maps a non-numeric name to `vec![0]` while
+/// `select_platform_version(_, None)` answers `Some` for any non-empty list,
+/// the resolver used to return `/opt/1cv8/conf` — and, returning on the first
+/// root that answers, never looked at the remaining roots. A single-component
+/// name is refused for the same reason: `vec![9] > vec![8, 3, 27, 2074]`.
+fn version_directories(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Ok(children) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    children
+        .flatten()
+        .map(|child| child.path())
+        .filter(|path| path.is_dir())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .and_then(version_components)
+                .is_some()
+        })
+        .collect()
+}
+
+/// Numeric components of a version-shaped name, or `None` when the name is
+/// not one: fewer than two dot-separated components, or a component that is
+/// not a number.
+fn version_components(name: &str) -> Option<Vec<u32>> {
+    let parts = name
+        .split('.')
+        .map(|part| part.parse::<u32>().ok())
+        .collect::<Option<Vec<u32>>>()?;
+    (parts.len() >= 2).then_some(parts)
+}
+
+/// Newest installation under a platform line: the candidate's numeric
+/// components must start with the configured ones. A four-component line
+/// therefore demands the exact build, and a shorter one leaves the build free
+/// — which is exactly how `tools.platform.version` is documented.
+fn select_platform_line(versions: &[std::path::PathBuf], line: &str) -> Option<std::path::PathBuf> {
+    let wanted = version_components(line)?;
+    versions
+        .iter()
+        .filter(|path| numeric_version_key(path).starts_with(&wanted))
+        .max_by_key(|path| numeric_version_key(path))
+        .cloned()
 }
 
 /// Version-directory name as a numeric sort key: dot-separated components
@@ -625,10 +736,10 @@ fn resolve_platform_installation_root(requested: Option<&str>) -> Option<std::pa
 /// `"8.3.10.50"` under `str`/`PathBuf` ordering because `'1' < '9'` — and a
 /// build-number digit rollover is a routine event over a machine's lifetime,
 /// not a corner case. Silently answering from the wrong version is exactly
-/// the "neighbouring version substituted" failure ADR-0029 point 4 forbids.
+/// the "neighbouring version substituted" failure ADR-0029 point 3 forbids.
 /// A non-numeric or missing component parses as 0; that only matters for a
-/// directory name that is not a version at all, and the platform-root
-/// listing this feeds from does not contain those.
+/// directory name that is not a version at all, and `version_directories`
+/// keeps those out of the listing this feeds from.
 fn numeric_version_key(path: &std::path::Path) -> Vec<u32> {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -666,8 +777,8 @@ fn select_platform_version(
 #[cfg(test)]
 mod tests {
     use super::{
-        documentation_registry, normalize_code_intelligence_read_request, select_platform_version,
-        verified_full_dump_invocation,
+        documentation_registry, normalize_code_intelligence_read_request, project_platform_version,
+        select_installation_root, select_platform_version, verified_full_dump_invocation,
     };
     use crate::application::{RuntimeJobAction, ToolHandler, ToolSpec};
     use crate::domain::cache::CacheAccess;
@@ -935,5 +1046,108 @@ mod tests {
     fn select_platform_version_returns_none_for_an_empty_list() {
         assert_eq!(select_platform_version(&[], None), None);
         assert_eq!(select_platform_version(&[], Some("8.3.27.2074")), None);
+    }
+
+    /// `select_platform_version` was the only tested half; the resolver that
+    /// builds its candidate list was covered by nothing. Every sibling of the
+    /// version directories used to qualify: in `/opt/1cv8` those are `1cv8`,
+    /// `common` and `conf`, and a single-component `9` outranks every real
+    /// version because `vec![9] > vec![8, 3, 27, 2074]`. Since the walk
+    /// returns on the first root that answers, one such name under the first
+    /// root hid every later root as well.
+    #[test]
+    fn installation_root_skips_names_that_are_not_versions_and_keeps_walking() {
+        let dir = tempfile::tempdir().expect("каталог");
+        let noise = dir.path().join("noise");
+        for name in ["1cv8", "common", "conf", "9"] {
+            std::fs::create_dir_all(noise.join(name)).expect("служебный каталог");
+        }
+        let installed = dir.path().join("installed");
+        std::fs::create_dir_all(installed.join("8.3.27.2074")).expect("каталог версии");
+
+        assert_eq!(
+            select_installation_root(&[noise, installed.clone()], None, None),
+            Some(installed.join("8.3.27.2074")),
+            "корень без версий не должен закрывать перебор своим служебным каталогом"
+        );
+    }
+
+    /// ADR-0029 point 2 orders the three inputs: the explicit call argument,
+    /// then the version the project pins itself to, then the numerically
+    /// newest installation. The middle level did not exist, so a project
+    /// pinned to 8.3.27 was answered from 8.5.4 without a diagnostic.
+    #[test]
+    fn project_platform_line_sits_between_the_call_argument_and_the_newest_install() {
+        let dir = tempfile::tempdir().expect("каталог");
+        let root = dir.path().join("1cv8");
+        for version in ["8.3.27.2074", "8.5.4.1306"] {
+            std::fs::create_dir_all(root.join(version)).expect("каталог версии");
+        }
+        let roots = [root.clone()];
+
+        assert_eq!(
+            select_installation_root(&roots, None, None),
+            Some(root.join("8.5.4.1306")),
+            "без ограничений побеждает численно старшая"
+        );
+        assert_eq!(
+            select_installation_root(&roots, None, Some("8.3.27")),
+            Some(root.join("8.3.27.2074")),
+            "версия проекта ограничивает семейство"
+        );
+        assert_eq!(
+            select_installation_root(&roots, Some("8.5.4.1306"), Some("8.3.27")),
+            Some(root.join("8.5.4.1306")),
+            "явный аргумент вызова сильнее версии проекта"
+        );
+        assert_eq!(
+            select_installation_root(&roots, None, Some("8.4")),
+            None,
+            "закреплённой семьи нет — отказ, а не подстановка соседней (ADR-0029 point 3)"
+        );
+    }
+
+    /// The project's own platform pin lives in `v8project.yaml` under
+    /// `tools.platform.version`, and the machine-specific
+    /// `v8project.local.yaml` overrides it — the same file, key and overlay
+    /// order the pinned runner already reads.
+    #[test]
+    fn project_platform_version_reads_the_config_and_prefers_the_local_overlay() {
+        let dir = tempfile::tempdir().expect("каталог");
+        let workspace = dir.path().to_path_buf();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        assert_eq!(
+            project_platform_version(&context),
+            None,
+            "без конфигурации проект ничего не закрепляет"
+        );
+
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "tools:\n  platform:\n    version: \"8.3.27\"\n",
+        )
+        .expect("конфигурация проекта");
+        assert_eq!(
+            project_platform_version(&context).as_deref(),
+            Some("8.3.27"),
+            "tools.platform.version читается из v8project.yaml"
+        );
+
+        std::fs::write(
+            workspace.join("v8project.local.yaml"),
+            "tools:\n  platform:\n    version: \"8.3.27.2074\"\n",
+        )
+        .expect("локальное перекрытие");
+        assert_eq!(
+            project_platform_version(&context).as_deref(),
+            Some("8.3.27.2074"),
+            "локальное перекрытие сильнее основной конфигурации"
+        );
     }
 }
