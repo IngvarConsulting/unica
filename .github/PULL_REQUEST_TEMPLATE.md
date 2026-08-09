@@ -31,6 +31,7 @@ REQ-* из spec/architecture/quality-requirements.md.
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace -- --test-threads=1
+python3.12 -m pip install -r tests/ci/requirements.txt
 python3.12 -m unittest discover -s tests/ci
 git diff --check
 ```

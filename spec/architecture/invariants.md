@@ -332,6 +332,26 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `tests/ci/test_release_assessment.py`
 - **Scope:** runtime, packaged
 
+### INV-MCP-DOCUMENTATION-SECTIONS — Поиск по документации сохраняет независимые секции поставщиков
+
+- **Rule:** `unica.documentation.search` публикует секции поставщиков в порядке
+  реестра: доступный поставщик даёт по секции на каждый объявленный корпус,
+  недоступный — одну секцию с диагностичным статусом. Происхождение объявляет
+  секция — поставщик, корпус, смысл источника, авторитетность и локаль, на
+  которой секция ответила на самом деле, а не запрошенная; попадание внутри
+  секции несёт применимую версию и устойчивый локатор. Ранги и оценки
+  локальны для секции: Unica не объединяет, не пересортировывает и не удаляет
+  совпадения между секциями. Отказ одного поставщика остаётся в его секции, а
+  неполнота, не отменяющая успеха, называется предупреждениями секции. Вызов
+  успешен, когда хотя бы одна применимая секция ответила `ok` или `empty`;
+  иначе он отвечает ошибкой, а не пустым на вид успехом, и частичного
+  результата не публикует.
+- **Decision:** ADR-0029
+- **Check:** `ci-test` — `crates/unica-coder/src/application/documentation.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/domain/documentation.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_help/provider.rs`
+- **Scope:** source, runtime
+
 ### INV-MCP-OUTLINE-DATA — Outline возвращает типизированные данные
 
 - **Rule:** Успешный `unica.code.outline` публикует доказанную структуру модуля
@@ -498,6 +518,22 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/application/code_intelligence.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/code_intelligence.rs`
 - **Scope:** source, runtime
+
+### INV-APP-DOCUMENTATION-NO-DISK-STATE — Разбор корпуса справки не создаёт состояния на диске
+
+- **Rule:** Поставщик справки платформы читает контейнеры установки и
+  разбирает их в памяти. Разобранный индекс переживает вызов, ключуется
+  каталогом установки и отпечатком выбранных по запросу контейнеров и потому
+  не смешивает ни корпуса разных версий платформы, ни корпуса разных
+  локалей; запросы, разрешающиеся в одни и те же файлы, делят один индекс, а
+  контейнер, подменённый на диске, перечитывается без перезапуска процесса.
+  Индекс, кеш и распакованные страницы на диск не пишутся, в рабочее дерево
+  не попадают и в пакет не включаются.
+- **Decision:** ADR-0029
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_help/provider.rs`
+- **Check:** `ci-test` — `tests/ci/test_product_contracts.py`
+- **Check:** `ci-test` — `tests/ci/test_package_unica_plugin.py`
+- **Scope:** source, packaged, runtime
 
 ### INV-APP-OUTLINE-SOURCE — Структура модуля берётся из текущего файла
 
@@ -723,6 +759,8 @@ Unica. Каждая запись формулирует одно нормати�
 - **Decision:** n/a
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/text_snapshot.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/code.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/meta/edit.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/metadata_operations.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_resources.rs`
 - **Scope:** runtime
 
@@ -798,17 +836,15 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/format_guard.rs`
 - **Scope:** runtime, source
 
-### INV-SOURCE-ROOT-REGISTRY — Корни платформенного XML классифицируются одним реестром
+### INV-SOURCE-ROOT-POLICIES — Публикация и владение форматом задаются независимо
 
-- **Rule:** Квалифицированные корни платформенного XML, которые валидатор полной
-  выгрузки допускает к публикации, а разрешитель владельцев классифицирует при
-  чтении, описываются одним закрытым реестром точных QName и явной политикой
-  версионирования; оба потребителя выводят свои решения из этого реестра, так
-  что добавить или изменить корень только с одной стороны нельзя. Политика
-  реестра различает отдельно маршрутизируемый `MetaDataObject`,
-  `ClientApplicationInterface` с наследуемой версией и корни без собственной
-  версии; независимых списков исключений потребителей для них нет.
-- **Decision:** ADR-0027
+- **Rule:** Один закрытый каталог точных QName платформенного XML задаёт две
+  независимые явные политики: допустимое написание версии при публикации и роль
+  документа в разрешении владельца формата. Версионированный при публикации
+  подчинённый документ не становится самостоятельным владельцем только из-за
+  атрибута `version`; публикация неизвестного QName и чтение неизвестного корня
+  с объявленной версией по-прежнему отказывают закрыто.
+- **Decision:** ADR-0031
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_roots.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_owner.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs`
@@ -1255,4 +1291,5 @@ Unica. Каждая запись формулирует одно нормати�
 поэтому примеры в прозе неуместны: их подхватит
 `tests/ci/test_architecture_registry.py`.
 
-Выведенных из обращения идентификаторов пока нет.
+- `INV-SOURCE-ROOT-REGISTRY`, `2026-08-07` — публикационное версионирование
+  больше не определяет роль владельца; правило заменено новым по ADR-0031.

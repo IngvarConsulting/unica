@@ -39,6 +39,9 @@ use super::super::common::{escape_xml, is_1c_identifier};
 use super::super::compile_transaction::{
     snapshot_directory_membership, DirectoryMembershipSelector, DirectoryMembershipSnapshot,
 };
+use super::super::text_snapshot::{
+    resolve_observed_line_ending, LineEnding, SourceTextSnapshot, Utf8Bom,
+};
 use super::format_contract::{
     validate_metadata_8_3_27_boolean_contract, validate_metadata_8_3_27_enum_contract,
 };
@@ -62,32 +65,9 @@ pub(super) struct MetaEditCounts {
 }
 
 #[derive(Clone, Copy)]
-enum MetaEditEol {
-    Lf,
-    CrLf,
-    Cr,
-}
-
-#[derive(Clone, Copy)]
 struct MetaEditSourceFormat {
     has_bom: bool,
-    eol: MetaEditEol,
-}
-
-fn meta_edit_source_eol(text: &str) -> MetaEditEol {
-    let bytes = text.as_bytes();
-    if let Some(index) = bytes.iter().position(|byte| *byte == b'\n') {
-        return if index > 0 && bytes[index - 1] == b'\r' {
-            MetaEditEol::CrLf
-        } else {
-            MetaEditEol::Lf
-        };
-    }
-    if bytes.contains(&b'\r') {
-        MetaEditEol::Cr
-    } else {
-        MetaEditEol::Lf
-    }
+    eol: LineEnding,
 }
 
 fn meta_edit_preserve_source_format(text: &str, format: MetaEditSourceFormat) -> Vec<u8> {
@@ -95,11 +75,7 @@ fn meta_edit_preserve_source_format(text: &str, format: MetaEditSourceFormat) ->
         .trim_start_matches('\u{feff}')
         .replace("\r\n", "\n")
         .replace('\r', "\n");
-    let serialized = match format.eol {
-        MetaEditEol::Lf => normalized,
-        MetaEditEol::CrLf => normalized.replace('\n', "\r\n"),
-        MetaEditEol::Cr => normalized.replace('\n', "\r"),
-    };
+    let serialized = normalized.replace('\n', format.eol.as_str());
     let mut bytes = Vec::with_capacity(serialized.len() + usize::from(format.has_bom) * 3);
     if format.has_bom {
         bytes.extend_from_slice(b"\xef\xbb\xbf");
@@ -343,6 +319,26 @@ pub(super) fn meta_edit_ensure_tabular_child_name_free(
     Ok(())
 }
 
+/// The 8.3.27 export orders register children `Resource` before `Attribute`
+/// before `Dimension` (uniform across the reference dump), so appended
+/// collections must land in their canonical slot or the platform reorders the
+/// file on the first roundtrip.
+fn register_collection_slot(tag: &str) -> Option<u8> {
+    match tag {
+        "Resource" => Some(0),
+        "Attribute" => Some(1),
+        "Dimension" => Some(2),
+        _ => None,
+    }
+}
+
+fn inserted_tag(lines: &[String]) -> Option<String> {
+    let first = lines.first()?.trim_start();
+    let rest = first.strip_prefix('<')?;
+    let end = rest.find([' ', '>', '/'])?;
+    Some(rest[..end].to_string())
+}
+
 pub(super) fn meta_edit_insert_top_child_object(
     xml_text: &mut String,
     lines: &[String],
@@ -351,6 +347,24 @@ pub(super) fn meta_edit_insert_top_child_object(
         .map_err(|err| format!("XML parse error: {err}"))?;
     let object = meta_edit_object_node(&doc)?;
     if let Some(child_objects) = meta_info_child(object, "ChildObjects") {
+        if let Some(slot) = inserted_tag(lines)
+            .as_deref()
+            .and_then(register_collection_slot)
+        {
+            let anchor = child_objects
+                .children()
+                .filter(|child| child.is_element())
+                .find(|child| {
+                    register_collection_slot(child.tag_name().name())
+                        .is_some_and(|existing| existing > slot)
+                })
+                .map(|child| child.range());
+            if let Some(anchor_range) = anchor {
+                drop(doc);
+                meta_edit_insert_lines_near_node(xml_text, anchor_range, false, lines);
+                return Ok(());
+            }
+        }
         let range = child_objects.range();
         drop(doc);
         return meta_edit_insert_lines_into_child_objects(xml_text, range, "\t\t", lines);
@@ -663,23 +677,34 @@ pub(super) fn build_typed_operation_post_image(
     operations: &[MetaEditOperation],
     context: &WorkspaceContext,
 ) -> Result<TypedOperationPostImage, MetaFailure> {
-    let mut xml = String::from_utf8(descriptor_preimage.to_vec()).map_err(|_| {
+    let snapshot = SourceTextSnapshot::from_bytes(descriptor_preimage).map_err(|error| {
         MetaFailure::from(
             typed_diagnostic(
                 MetaDiagnosticCode::ProviderUnavailable,
-                "metadata descriptor image is not UTF-8",
+                format!("metadata descriptor snapshot failed: {error}"),
+                None,
+            )
+            .with_metadata_path(target.clone()),
+        )
+    })?;
+    // Смешанный профиль — дефект содержимого источника, а не отказ провайдера:
+    // байты прочитаны и декодированы, но их вид не проходит проверку writer-а,
+    // как и неканоничные fill-значения ниже по файлу.
+    let eol = resolve_observed_line_ending(&snapshot, None).map_err(|error| {
+        MetaFailure::from(
+            typed_diagnostic(
+                MetaDiagnosticCode::ValidationFailed,
+                format!("metadata descriptor EOL policy failed: {error}"),
                 None,
             )
             .with_metadata_path(target.clone()),
         )
     })?;
     let source_format = MetaEditSourceFormat {
-        has_bom: descriptor_preimage.starts_with(b"\xef\xbb\xbf"),
-        eol: meta_edit_source_eol(&xml),
+        has_bom: snapshot.bom() == Utf8Bom::Present,
+        eol,
     };
-    if xml.starts_with('\u{feff}') {
-        xml = xml.trim_start_matches('\u{feff}').to_string();
-    }
+    let mut xml = snapshot.text().to_string();
     let normalized_preimage = xml.clone();
     let applied = apply_typed_operations(&mut xml, operations).map_err(|mut failure| {
         for diagnostic in &mut failure.diagnostics {
@@ -3878,6 +3903,86 @@ mod tests {
     fn metadata_reference(path: &str) -> MetadataReference {
         MetadataReference {
             metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, path).unwrap(),
+        }
+    }
+
+    #[test]
+    fn register_collections_insert_into_their_canonical_platform_slot() {
+        // The 8.3.27 export orders register children Resource → Attribute →
+        // Dimension (773/773 registers in the reference dump). Appending in
+        // operation order makes the platform reorder the file on roundtrip,
+        // which the exact gate reports as accepted-normalized.
+        fn register_xml(children: &[(&str, &str)]) -> String {
+            let mut body = String::new();
+            for (index, (tag, name)) in children.iter().enumerate() {
+                body.push_str(&format!(
+                    concat!(
+                        "\t\t\t<{tag} uuid=\"22222222-2222-4222-8222-22222222222{n}\">\n",
+                        "\t\t\t\t<Properties><Name>{name}</Name></Properties>\n",
+                        "\t\t\t</{tag}>\n",
+                    ),
+                    tag = tag,
+                    name = name,
+                    n = index,
+                ));
+            }
+            format!(
+                concat!(
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+                    "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">\n",
+                    "\t<InformationRegister uuid=\"11111111-1111-4111-8111-111111111111\">\n",
+                    "\t\t<Properties><Name>Corpus</Name></Properties>\n",
+                    "\t\t<ChildObjects>\n{body}\t\t</ChildObjects>\n",
+                    "\t</InformationRegister>\n",
+                    "</MetaDataObject>\n",
+                ),
+                body = body,
+            )
+        }
+
+        // (existing children, inserted tag, expected child-name order)
+        type SlotCase = (
+            &'static [(&'static str, &'static str)],
+            &'static str,
+            &'static [&'static str],
+        );
+        let matrix: &[SlotCase] = &[
+            // every earlier slot lands before every later slot already present
+            (&[("Dimension", "Item")], "Resource", &["New", "Item"]),
+            (&[("Attribute", "Note")], "Resource", &["New", "Note"]),
+            (&[("Dimension", "Item")], "Attribute", &["New", "Item"]),
+            (
+                &[("Attribute", "Note"), ("Dimension", "Item")],
+                "Resource",
+                &["New", "Note", "Item"],
+            ),
+            // the last slot and same-slot siblings keep append order
+            (&[("Resource", "Price")], "Dimension", &["Price", "New"]),
+            (&[("Dimension", "Item")], "Dimension", &["Item", "New"]),
+            (&[("Resource", "Price")], "Resource", &["Price", "New"]),
+        ];
+        for (existing, inserted, expected) in matrix {
+            let mut xml = register_xml(existing);
+            meta_edit_insert_top_child_object(
+                &mut xml,
+                &[
+                    format!("\t\t\t<{inserted} uuid=\"33333333-3333-4333-8333-333333333333\">"),
+                    "\t\t\t\t<Properties><Name>New</Name></Properties>".to_string(),
+                    format!("\t\t\t</{inserted}>"),
+                ],
+            )
+            .unwrap();
+
+            let order: Vec<&str> = expected
+                .iter()
+                .map(|name| (xml.find(&format!("<Name>{name}</Name>")).unwrap(), *name))
+                .collect::<std::collections::BTreeMap<_, _>>()
+                .into_values()
+                .collect();
+            assert_eq!(
+                &order, expected,
+                "insert {inserted} into {existing:?}: {xml}"
+            );
         }
     }
 

@@ -5505,8 +5505,7 @@ fn validate_staged_xml(path: &Path, expected: &TreeEntryKind) -> Result<(), Stri
     let namespace = root.tag_name().namespace().unwrap_or("");
     let local_name = root.tag_name().name();
     match staged_root_version_policy(namespace, local_name) {
-        Some(StagedRootVersionPolicy::InheritedRootVersion)
-        | Some(StagedRootVersionPolicy::Versionless) => {
+        Some(StagedRootVersionPolicy::Versionless) => {
             if let Some(version) = root_version_literal(source, root) {
                 return Err(format!(
                     "staged XML root {{{namespace}}}{local_name} is a registered versionless family and must not declare version={version} in {}",
@@ -5571,8 +5570,8 @@ fn read_tree_bound_file(
 #[cfg(test)]
 use crate::infrastructure::platform_xml_roots::PLATFORM_XML_ROOTS as STAGED_ROOT_REGISTRY;
 use crate::infrastructure::platform_xml_roots::{
-    platform_xml_root_versioning as staged_root_version_policy,
-    PlatformXmlRootVersioning as StagedRootVersionPolicy,
+    platform_xml_publication_policy as staged_root_version_policy,
+    PlatformXmlPublicationPolicy as StagedRootVersionPolicy,
 };
 
 fn publish_staged_tree(
@@ -7428,7 +7427,10 @@ fn default_platform_candidates(utility: PlatformUtility) -> Vec<PathBuf> {
     candidates
 }
 
-fn default_platform_roots() -> Vec<PathBuf> {
+/// The one enumeration of platform installation roots in the project — reused
+/// by `documentation_registry`'s installation resolver in
+/// `infrastructure::application_ports` so a second such list never appears.
+pub(crate) fn default_platform_roots() -> Vec<PathBuf> {
     #[cfg(windows)]
     {
         vec![
@@ -9490,10 +9492,9 @@ mod tests {
         (
             "Ext/ClientApplicationInterface.xml",
             br#"<ClientApplicationInterface xmlns="http://v8.1c.ru/8.2/managed-application/core"/>"#,
-            // Staged without a version like the versionless family, but unlike
-            // it this root still heads a format-bearing artifact and inherits
-            // the configuration's format when the file is read back.
-            StagedRootVersionPolicy::InheritedRootVersion,
+            // Publication syntax is versionless; the independent owner policy
+            // records that this document belongs to its containing source set.
+            StagedRootVersionPolicy::Versionless,
         ),
     ];
 
@@ -9593,11 +9594,7 @@ mod tests {
                     );
                     (mutated, "2.19")
                 }
-                // A staged inherited-version root is written exactly like a
-                // versionless one; the two differ only when the file is read
-                // back and needs an owner.
-                StagedRootVersionPolicy::Versionless
-                | StagedRootVersionPolicy::InheritedRootVersion => {
+                StagedRootVersionPolicy::Versionless => {
                     assert!(
                         root_node.attribute("version").is_none(),
                         "{relative}: the root must stay versionless"

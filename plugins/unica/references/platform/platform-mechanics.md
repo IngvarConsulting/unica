@@ -15,14 +15,10 @@ Use this reference when platform behavior matters more than local code shape.
 
 ## Managed Locks And Transactions
 
-- Use managed locks for write paths that read and then update shared registers
-  or state. Lock before the read, keep the transaction short, and do not wait for
-  user input or network calls while the transaction is open.
-- Define lock order for multi-register or multi-object scenarios before coding.
-  Deadlocks are usually a violated ordering contract, not a reason to add blind
-  retries.
-- Avoid nested transaction control inside object write/posting handlers; those
-  handlers already run inside platform-managed write transactions.
+Transaction shape, managed locks, and what makes a read responsible are owned by
+`transactions-locks.md`. Read it whenever a write path reads first, whenever a
+lock order has to be chosen, or whenever a transaction spans more than one
+method — this document does not restate those rules.
 
 ## Structured Logging
 

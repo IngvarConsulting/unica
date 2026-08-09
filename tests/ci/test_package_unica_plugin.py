@@ -689,6 +689,61 @@ class PackageUnicaPluginTests(unittest.TestCase):
             self.assertFalse((dest / "skills" / "web-test" / "screenshot.png").exists())
             self.assertFalse((dest / "skills" / "web-test" / "trace.mp4").exists())
 
+    def test_plugin_source_copy_excludes_vendor_corpus_outside_the_plugin_root(self) -> None:
+        """`docs-local` не пакуется структурно, а не потому, что скрипт знает его имя.
+
+        Ревью Task 8: прежняя проверка искала подстроки "docs-local"/".hbk" в
+        тексте `package-unica-plugin.py` — их там никогда не было, поэтому
+        проверка была истинна независимо от того, работает ли заявленное
+        свойство. Настоящая гарантия структурна: `git_tracked_plugin_files` и
+        `copy_tracked_plugin_source` копируют только пути, отслеживаемые под
+        `plugin_src`. Здесь они вызываются без подмены на настоящем
+        git-репозитории с приманкой рядом с `plugin_src`, но вне его — это и
+        есть форма прежней локальной документации платформы, снятой Task 8.
+        """
+        module = load_package_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo_root = root / "repo"
+            plugin_src = repo_root / "plugins" / "unica"
+            plugin_src.mkdir(parents=True)
+            (plugin_src / ".mcp.json").write_text("{}", encoding="utf-8")
+            (plugin_src / "skills" / "web-test").mkdir(parents=True)
+            (plugin_src / "skills" / "web-test" / "SKILL.md").write_text("tracked", encoding="utf-8")
+
+            # Приманка: локальный корпус вендора — брат plugin_src, не его
+            # потомок. Ничего не гитигнорит его в этом изолированном
+            # фикстурном репозитории, так что git отслеживает его как любой
+            # другой файл; единственное, что может его исключить, — то, что
+            # copy_tracked_plugin_source в принципе не смотрит за пределы
+            # plugin_src.
+            decoy = (
+                repo_root
+                / "docs-local"
+                / "1ci"
+                / "8.3.27"
+                / "en"
+                / "developer"
+                / "index.md"
+            )
+            decoy.parent.mkdir(parents=True)
+            decoy.write_text("vendor guide text, never packaged", encoding="utf-8")
+
+            subprocess.run(["git", "init", "-q", str(repo_root)], check=True)
+            subprocess.run(["git", "-C", str(repo_root), "add", "-A"], check=True)
+
+            dest = root / "dest"
+            module.copy_tracked_plugin_source(repo_root, plugin_src, dest)
+
+            self.assertTrue((dest / ".mcp.json").is_file())
+            self.assertTrue((dest / "skills" / "web-test" / "SKILL.md").is_file())
+            self.assertFalse((dest / "docs-local").exists())
+            packaged = [path.as_posix() for path in dest.rglob("*")]
+            self.assertTrue(packaged)
+            for path in packaged:
+                self.assertNotIn("docs-local", path)
+
     def test_attribution_page_and_referenced_local_licenses_are_packaged(self) -> None:
         module = load_package_module()
         repo_root = Path(__file__).resolve().parents[2]
