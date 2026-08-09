@@ -2628,6 +2628,14 @@ class PlatformHelpRoutingTests(unittest.TestCase):
     def test_states_the_source_boundary(self) -> None:
         self.assertIn("версию установки", self.text)
 
+    def test_requires_naming_the_answering_locale(self) -> None:
+        # ADR-0029 п.3: подстановка соседней локали разрешена и обязана быть
+        # названной в ответе. Данные называют её полем `language` секции, но
+        # без правила чтения агент не обязан пересказать подстановку: на
+        # русскоязычной установке запрос en возвращает русские страницы молча.
+        self.assertIn("`language`", self.text)
+        self.assertIn("назовите подстановку локали в ответе", self.text)
+
 
 if __name__ == "__main__":
     unittest.main()
