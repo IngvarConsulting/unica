@@ -1,3 +1,4 @@
+use super::integrity_check::check_meta_object_integrity;
 use crate::application::metadata::{MetaEditRequest, MetaFailure};
 use crate::application::ports::{
     MetadataChildDirectoryKind, MetadataChildFootprintEvidence, MetadataChildProfile,
@@ -707,6 +708,15 @@ pub(super) fn build_typed_operation_post_image(
     )?;
     child_resources.relation_dependencies =
         resolve_typed_relation_dependencies(source_set, target, operations, context, &xml)?;
+    // Итоговое состояние вызова, а не каждая операция по отдельности: замена
+    // единственного измерения через `remove` вместе с `add` остаётся законной,
+    // потому что промежуточная пустота здесь не наблюдается (ADR-0030). Вид,
+    // которого нет в закрытом наборе, условий не имеет и проверку пропускает.
+    if let Ok(object_kind) = MetadataKind::parse(&object_kind) {
+        check_meta_object_integrity(object_kind, xml.as_bytes()).map_err(|diagnostic| {
+            MetaFailure::from(diagnostic.with_metadata_path(target.clone()))
+        })?;
+    }
     Ok(TypedOperationPostImage {
         descriptor: meta_edit_preserve_source_format(&xml, source_format),
         child_resources,

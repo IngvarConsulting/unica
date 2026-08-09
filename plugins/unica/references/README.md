@@ -29,6 +29,14 @@ XML formats, DSL contracts, and reusable layout patterns live in
 - `platform/platform-solutions.md` — common platform pitfalls and fix templates.
 - `platform/runtime-diagnostics.md` — ЖР/ТЖ, startup, web-client, HTTP, background-job, and process/session diagnostics.
 - `platform/db-performance.md` — query, DCS, indexes, locks, virtual tables, and DBMS evidence.
+- `platform/document-posting.md` — document movements, real-time versus regular posting, register choice, and locks inside posting.
+- `platform/register-design.md` — register class choice, dimensions versus resources, periodicity, totals, virtual table reads, and bulk writes.
+- `platform/object-events.md` — which object event handler owns what, the exchange-load guard, the cancel parameter, and subscriptions.
+- `platform/form-events.md` — form module client/server split, compilation directives, server-call budget, form parameters, and attached handlers.
+- `platform/module-placement.md` — object versus manager versus common modules, common module contexts and flags, cached modules, presentation handlers, and first launch.
+- `platform/metadata-modeling.md` — which object class holds the data, attribute typing, composite and defined types, predefined items, names and presentations.
+- `platform/transactions-locks.md` — transaction shape, managed locks, responsible reading, lock order; the owner other platform documents defer to.
+- `platform/object-locks.md` — pessimistic and optimistic object locking, lock lifetime and the form id, version conflicts.
 - `platform/integration-contracts.md` — HTTP/SOAP/OData/JSON/XML/file-exchange contracts and error semantics.
 - `platform/platform-mechanics.md` — background jobs, temp storage, auth/crypto, data separation, and platform runtime boundaries.
 - `tooling/v8project.md` — project configuration contract.

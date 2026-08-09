@@ -13,7 +13,8 @@ description: "Фоновые и регламентные задания 1С. И�
 
 ## References
 
-- Read `../../references/platform/platform-mechanics.md` for background job context, temporary storage, locks, and security boundaries.
+- Read `../../references/platform/platform-mechanics.md` for background job context, temporary storage, and security boundaries.
+- Read `../../references/platform/transactions-locks.md` when the job reads and then writes shared state; this skill keeps only job restartability.
 - Read `../../references/platform/runtime-diagnostics.md` when the task includes ЖР/ТЖ, hangs, retries, or process/session evidence.
 
 ## Workflow
@@ -31,8 +32,8 @@ description: "Фоновые и регламентные задания 1С. И�
 - Long work is split or checkpointed.
 - Logs use structured logging fields: job id, parameters summary, correlation id,
   retry count, result, and sanitized error context, but no secrets.
-- Managed locks protect shared state without blocking unrelated users or tenants;
-  follow a stable lock order before reading and writing shared registers.
+- Shared state a job reads and then writes is handled per `transactions-locks`,
+  and the lock does not block unrelated users or tenants.
 - Failure paths distinguish retryable and permanent errors.
 
 ## Contract gaps

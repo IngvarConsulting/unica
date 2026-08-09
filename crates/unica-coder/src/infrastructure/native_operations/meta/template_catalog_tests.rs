@@ -146,6 +146,23 @@ fn minimal_templates_emit_child_objects_only_where_the_kind_declares_them() {
 }
 
 #[test]
+fn minimal_templates_never_invent_content() {
+    // Выдуманный ресурс — молчаливое решение за вызывающего, которое почти
+    // всегда переделывают, а в выгрузке остаётся мусором (ADR-0030).
+    for kind in [
+        MetadataKind::AccountingRegister,
+        MetadataKind::CalculationRegister,
+    ] {
+        let (xml, _) = minimal_metadata_xml_for_tests(kind, "Evidence").unwrap();
+        assert!(
+            !xml.contains("<Resource"),
+            "{} invented a resource: {xml}",
+            kind.as_str()
+        );
+    }
+}
+
+#[test]
 fn generated_synonym_separates_digits_from_the_words_around_them() {
     for (name, synonym) in [
         ("СуммаЗакупокЗа30Дней", "Сумма закупок за 30 дней"),
