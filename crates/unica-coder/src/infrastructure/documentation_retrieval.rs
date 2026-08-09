@@ -338,9 +338,93 @@ impl RetrievalIndex {
     }
 }
 
+/// Двуязычный словарь ru↔en, выводимый из заголовков корпуса установки вида
+/// «ТаблицаЗначений.Свернуть (ValueTable.GroupBy)»: русская и английская
+/// части режутся по точкам, сегменты сопоставляются по позиции, и каждый
+/// русский токен сегмента отображается в термы парного английского сегмента.
+/// Словарь расширяет русские запросы для корпусов с английскими заголовками
+/// (kb-1ci), когда установка доступна (ADR-0035 п.4).
+pub(crate) struct BilingualLexicon {
+    map: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+impl BilingualLexicon {
+    pub fn from_titles<'a>(titles: impl IntoIterator<Item = &'a str>) -> BilingualLexicon {
+        fn has_cyrillic(text: &str) -> bool {
+            text.chars()
+                .any(|character| ('\u{0400}'..='\u{04FF}').contains(&character))
+        }
+        let mut map: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for title in titles {
+            let title = title.trim();
+            let Some(open) = title.rfind('(') else {
+                continue;
+            };
+            let Some(closed) = title[open..].find(')') else {
+                continue;
+            };
+            let russian = title[..open].trim();
+            let english = &title[open + 1..open + closed];
+            if !has_cyrillic(russian) || has_cyrillic(english) {
+                continue;
+            }
+            for (russian_segment, english_segment) in russian.split('.').zip(english.split('.')) {
+                let english_terms: Vec<String> = tokenize(english_segment)
+                    .iter()
+                    .map(|token| stem_token(token))
+                    .collect();
+                if english_terms.is_empty() {
+                    continue;
+                }
+                for russian_token in tokenize(russian_segment) {
+                    if !has_cyrillic(&russian_token) {
+                        continue;
+                    }
+                    let entry = map.entry(stem_token(&russian_token)).or_default();
+                    for term in &english_terms {
+                        if !entry.contains(term) {
+                            entry.push(term.clone());
+                        }
+                    }
+                }
+            }
+        }
+        BilingualLexicon { map }
+    }
+
+    /// Расширения для `RetrievalIndex::query`: на каждый токен запроса —
+    /// английские термы его сегмента (пусто для нерусских и ненайденных).
+    pub fn expansions(&self, query: &str) -> Vec<Vec<String>> {
+        tokenize(query)
+            .iter()
+            .map(|token| {
+                self.map
+                    .get(&stem_token(token))
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lexicon_maps_ru_tokens_to_en_segment_tokens() {
+        let lexicon = BilingualLexicon::from_titles([
+            "ТаблицаЗначений.Свернуть (ValueTable.GroupBy)",
+            "Глобальный контекст.СтрНайти (Global context.StrFind)",
+        ]);
+        let expansions = lexicon.expansions("свернуть таблицу");
+        assert_eq!(expansions.len(), 2);
+        assert_eq!(expansions[0], vec![stem_token("group"), stem_token("by")]);
+        assert_eq!(expansions[1], vec![stem_token("value"), stem_token("table")]);
+        let empty = lexicon.expansions("group by");
+        assert!(empty.iter().all(Vec::is_empty), "{empty:?}");
+    }
 
     fn corpus(pairs: &[(&'static str, &'static str)]) -> RetrievalIndex {
         RetrievalIndex::build(pairs.iter().map(|(title, body)| RetrievalFields {
