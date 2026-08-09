@@ -264,6 +264,10 @@ fn rank_pages(
     query: &str,
     limit: usize,
     version: &str,
+    // Идентификатор поставщика приходит от вызывающего (`self.id()`), а не
+    // повторяется здесь литералом: переименование поставщика иначе молча
+    // разошлось бы с префиксом `document_id`.
+    provider: &str,
     corpus: &str,
     language: &str,
 ) -> Vec<DocumentationHit> {
@@ -295,7 +299,7 @@ fn rank_pages(
         .map(|(index, (score, page))| DocumentationHit {
             rank: index as u32 + 1,
             provider_score: score,
-            document_id: format!("platform-syntax-help:{corpus}:{}", page.path),
+            document_id: format!("{provider}:{corpus}:{}", page.path),
             title: page.title.clone(),
             signature: page
                 .signature
@@ -434,6 +438,7 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
             }
         };
         let index = indexed(IndexKey::for_corpora(root, &corpora), &corpora);
+        let provider_id = self.id().to_string();
         // По секции на корпус: поле `corpus` обязано описывать именно свои
         // попадания, поэтому корпуса не смешиваются в одну секцию.
         CORPUS_SPECS
@@ -445,6 +450,7 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
                     &request.query,
                     request.limit,
                     &index.version,
+                    &provider_id,
                     spec.id,
                     // Локаль КОРПУСА, а не запроса: сигнатура печатается рядом
                     // с заголовком и фрагментом его страницы (см. `signature_in`).
@@ -667,6 +673,7 @@ mod tests {
             "ЭлементыФормы",
             20,
             "8.3.27.2074",
+            "platform-syntax-help",
             "syntax-context",
             "ru",
         );
@@ -704,6 +711,7 @@ mod tests {
                 "GetURL",
                 20,
                 "8.3.27.2074",
+                "platform-syntax-help",
                 "syntax-context",
                 locale,
             )[0]

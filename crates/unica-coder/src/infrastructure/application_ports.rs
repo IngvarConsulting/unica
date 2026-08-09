@@ -413,6 +413,13 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                         .unwrap_or("ru")
                         .to_string(),
                 };
+                // Пробельный query настоящий вызов отклоняет на слое
+                // application; сухой прогон обязан отклонять его так же,
+                // иначе сломанный пример скилла проходит parity-тест и
+                // падает только у живого пользователя. Текст отказа — тот же.
+                if request.query.trim().is_empty() {
+                    return Err("unica.documentation.search requires a non-blank query".to_string());
+                }
                 // Предпросмотр — до разрешения установки и опроса реестра:
                 // parity-тест исполняет каждый пример скилла с dryRun, и
                 // «сухой» вызов не должен ни читать установку машины, ни
@@ -1083,6 +1090,9 @@ mod tests {
         // The composition root is the only place a documentation provider is
         // constructed; a registry left empty (forgot to wire the provider) or
         // wired to the wrong provider must fail this, not merely compile.
+        // Замок общий со стенд-тестами: без него параллельный прогон подменил
+        // бы реестр на стенд прямо под этой проверкой.
+        let _serial = documentation_registry_serial();
         let registry = documentation_registry().expect("registry constructs");
         let providers: Vec<_> = registry.providers().collect();
         assert_eq!(providers.len(), 1, "exactly one provider is wired today");
@@ -1109,6 +1119,8 @@ mod tests {
             .find(|tool| tool.name == "unica.documentation.search")
             .expect("инструмент объявлен")
             .description;
+        // Замок общий со стенд-тестами: настоящий реестр, а не стенд соседа.
+        let _serial = documentation_registry_serial();
         let registry = documentation_registry().expect("реестр собран");
         let declares_standards = registry.providers().any(|provider| {
             provider.corpora().iter().any(|corpus| {
@@ -1404,11 +1416,18 @@ mod tests {
         }
     }
 
-    fn install_stand_in(provider: std::sync::Arc<RecordingProvider>) -> StandInGuard {
+    /// Один замок на писателей слота подмены И на читателей настоящего
+    /// реестра: `documentation_registry()` под параллельным прогоном иначе
+    /// видел бы стенд соседнего теста вместо настоящего поставщика.
+    fn documentation_registry_serial() -> std::sync::MutexGuard<'static, ()> {
         static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let serial = SERIAL
+        SERIAL
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn install_stand_in(provider: std::sync::Arc<RecordingProvider>) -> StandInGuard {
+        let serial = documentation_registry_serial();
         *super::DOCUMENTATION_REGISTRY_STAND_IN
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(
@@ -1711,6 +1730,51 @@ mod tests {
         assert!(
             error.contains("query"),
             "отказ обязан назвать недостающий аргумент, получено {error}"
+        );
+    }
+
+    /// Пустой-но-присутствующий `query` («   ») настоящий вызов отклоняет на
+    /// слое application, а сухой прогон возвращался ДО этой проверки: пример
+    /// с пробельным запросом проходил parity-тест и падал только у живого
+    /// пользователя. Сухой прогон обязан быть честным к аргументам ровно в
+    /// той же мере, что и настоящий вызов.
+    #[test]
+    fn the_documentation_dry_run_refuses_a_blank_query_like_the_real_call_does() {
+        use crate::application::ports::ApplicationPorts;
+
+        let recorder = std::sync::Arc::new(RecordingProvider::default());
+        let _stand_in = install_stand_in(std::sync::Arc::clone(&recorder));
+
+        let dir = tempfile::tempdir().expect("каталог");
+        let workspace = dir.path().to_path_buf();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        let mut args = Map::new();
+        args.insert("query".to_string(), json!("   "));
+
+        let error = match super::InfrastructureApplicationPorts::new().invoke_handler(
+            spec(
+                "unica.documentation.search",
+                ToolHandler::Documentation {
+                    operation: "search",
+                },
+            ),
+            &args,
+            &context,
+            true,
+            &crate::domain::cancellation::CancellationToken::default(),
+        ) {
+            Ok(_) => panic!("пробельный query обязан отклоняться и всухую"),
+            Err(error) => error,
+        };
+        assert!(
+            error.contains("query"),
+            "отказ обязан назвать аргумент, получено {error}"
         );
     }
 }
