@@ -4846,11 +4846,11 @@ mod tests {
         fs::remove_dir_all(root).expect("temporary root must be removed");
     }
 
-    // Windows keeps the prepared child handles open and rejects renaming their
-    // non-empty parent. The platform-facade tests cover that fail-closed branch.
-    #[cfg(unix)]
     #[test]
     fn pending_registration_cleanup_preserves_same_name_decoys_after_parent_swap() {
+        if !testing::can_rename_parent_with_retained_cleanup_child_for_test() {
+            return;
+        }
         let root = temp_root("pending-recovery-parent-swap");
         let active_parent = root.join("active");
         let preserved_parent = root.join("preserved");
@@ -5021,11 +5021,11 @@ mod tests {
         fs::remove_dir_all(root).expect("temporary root must be removed");
     }
 
-    // Windows rejects this parent displacement while the recovery child is
-    // retained; the platform-facade tests cover that fail-closed branch.
-    #[cfg(unix)]
     #[test]
     fn successful_registration_cleanup_warns_and_preserves_decoy_after_parent_swap() {
+        if !testing::can_rename_parent_with_retained_cleanup_child_for_test() {
+            return;
+        }
         let root = temp_root("finalize-recovery-parent-swap");
         let active_parent = root.join("active");
         let preserved_parent = root.join("preserved");
@@ -5218,11 +5218,11 @@ mod tests {
         fs::remove_dir_all(root).expect("temporary root must be removed");
     }
 
-    // Windows cannot make this lexical route disappear while the retained
-    // cleanup child is open; the platform-facade tests cover that protection.
-    #[cfg(unix)]
     #[test]
     fn publication_cleanup_retry_does_not_treat_a_missing_route_as_cleaned() {
+        if !testing::can_rename_parent_with_retained_cleanup_child_for_test() {
+            return;
+        }
         use super::super::single_file_publisher::{
             publish, with_publish_failpoints, PublishCheckpoint,
         };
@@ -5644,11 +5644,11 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    // Windows rejects parent displacement while the published recovery child
-    // is retained; the platform-facade tests cover that fail-closed branch.
-    #[cfg(unix)]
     #[test]
     fn registration_rollback_preserves_same_name_recovery_decoy_after_parent_swap() {
+        if !testing::can_rename_parent_with_retained_cleanup_child_for_test() {
+            return;
+        }
         let root = temp_root("rollback-recovery-parent-swap");
         let active_parent = root.join("active");
         let preserved_parent = root.join("preserved");

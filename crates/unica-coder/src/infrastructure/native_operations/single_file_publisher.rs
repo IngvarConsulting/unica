@@ -1678,8 +1678,8 @@ mod tests {
         portable_permissions, prepare_file_for_removal,
     };
     use crate::infrastructure::platform::testing::{
-        create_file_link_fixture_for_test, set_unix_mode_for_test, unix_mode_for_test,
-        FileLinkFixtureOutcome,
+        can_rename_parent_with_retained_cleanup_child_for_test, create_file_link_fixture_for_test,
+        set_unix_mode_for_test, unix_mode_for_test, FileLinkFixtureOutcome,
     };
     use std::fs;
     use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -2184,11 +2184,11 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    // Windows rejects parent displacement while the cleanup child is retained;
-    // the platform-facade tests cover that fail-closed branch.
-    #[cfg(unix)]
     #[test]
     fn bound_cleanup_cannot_be_redirected_after_the_last_route_check() {
+        if !can_rename_parent_with_retained_cleanup_child_for_test() {
+            return;
+        }
         let root = unique_temp_root("bound-cleanup-final-route-swap");
         let active_parent = root.join("active");
         let preserved_parent = root.join("preserved");
