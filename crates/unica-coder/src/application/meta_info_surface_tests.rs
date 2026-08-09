@@ -1044,7 +1044,7 @@ fn meta_info_post_capture_cancellation_before_complete_return_is_provider_unavai
     assert_no_error_diagnostic(&result, "validation_failed");
 }
 
-const COMMAND_INTERFACE_RULE: &str = "belongs to no subsystem with IncludeInCommandInterface";
+const COMMAND_INTERFACE_RULE: &str = "reaches no command interface section";
 
 fn write_subsystem(workspace: &Path, relative_dir: &str, name: &str, include: &str, content: &str) {
     let dir = workspace.join(relative_dir);
@@ -1125,6 +1125,81 @@ fn register_command_interface_warnings(workspace: &Path, name: &str) -> Vec<Stri
         .filter(|diagnostic| diagnostic["severity"] == "warning")
         .map(|diagnostic| diagnostic["message"].as_str().unwrap().to_string())
         .collect()
+}
+
+#[test]
+fn info_warns_when_an_included_subsystem_sits_under_an_excluded_ancestor() {
+    let workspace = create_info_workspace("included-under-excluded");
+    // Mirrors InformationRegister.ДанныеКонтрагентовСоздаваемыхБезусловно of a
+    // real configuration: the owning subsystem carries the flag, but a library
+    // root above it is excluded, so the register reaches no section.
+    write_subsystem(workspace.path(), "src/Subsystems", "Library", "false", "");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems/Library/Subsystems",
+        "Service",
+        "true",
+        &content_item("InformationRegister.UnderExcluded"),
+    );
+    let warnings = register_command_interface_warnings(workspace.path(), "UnderExcluded");
+
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.contains(COMMAND_INTERFACE_RULE)),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn info_warns_when_the_chain_breaks_below_the_root() {
+    let workspace = create_info_workspace("chain-breaks-midway");
+    write_subsystem(workspace.path(), "src/Subsystems", "Top", "true", "");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems/Top/Subsystems",
+        "Middle",
+        "false",
+        "",
+    );
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems/Top/Subsystems/Middle/Subsystems",
+        "Leaf",
+        "true",
+        &content_item("InformationRegister.BrokenChain"),
+    );
+    let warnings = register_command_interface_warnings(workspace.path(), "BrokenChain");
+
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.contains(COMMAND_INTERFACE_RULE)),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn info_tells_same_named_subsystems_apart_by_their_path() {
+    let workspace = create_info_workspace("same-named-levels");
+    // Both levels are named Sales; only the nested one lists the register, and
+    // the excluded outer one must not lend it its own verdict either way.
+    write_subsystem(workspace.path(), "src/Subsystems", "Sales", "true", "");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems/Sales/Subsystems",
+        "Sales",
+        "true",
+        &content_item("InformationRegister.SameNamed"),
+    );
+    let warnings = register_command_interface_warnings(workspace.path(), "SameNamed");
+
+    assert!(
+        !warnings
+            .iter()
+            .any(|warning| warning.contains(COMMAND_INTERFACE_RULE)),
+        "{warnings:?}"
+    );
 }
 
 #[test]
