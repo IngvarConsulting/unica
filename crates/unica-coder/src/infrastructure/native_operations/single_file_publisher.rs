@@ -2184,6 +2184,9 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    // Windows rejects parent displacement while the cleanup child is retained;
+    // the platform-facade tests cover that fail-closed branch.
+    #[cfg(unix)]
     #[test]
     fn bound_cleanup_cannot_be_redirected_after_the_last_route_check() {
         let root = unique_temp_root("bound-cleanup-final-route-swap");

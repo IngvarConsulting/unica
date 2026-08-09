@@ -3962,6 +3962,43 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn retained_cleanup_child_blocks_windows_parent_route_displacement() {
+        use crate::infrastructure::platform::filesystem::{
+            create_new_regular_child, file_identity, open_directory_nofollow,
+            retain_regular_child_for_cleanup,
+        };
+        use std::ffi::OsStr;
+        use std::io::Write;
+
+        let root = unique_temp_root("retained-cleanup-parent-route");
+        let active = root.join("active");
+        let displaced = root.join("displaced");
+        fs::create_dir_all(&active).unwrap();
+        let parent = open_directory_nofollow(&active).unwrap();
+        let stage_name = OsStr::new("stage.bin");
+        let stage = active.join(stage_name);
+        let mut creation = create_new_regular_child(&parent, stage_name).unwrap();
+        creation.write_all(b"owned stage").unwrap();
+        let identity = file_identity(&creation).unwrap();
+        let retained = retain_regular_child_for_cleanup(&parent, stage_name, identity).unwrap();
+        drop(creation);
+
+        let error = fs::rename(&active, &displaced)
+            .expect_err("Windows must not reroute a parent with a retained cleanup child");
+
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+        assert_eq!(fs::read(&stage).unwrap(), b"owned stage");
+        assert!(!displaced.exists());
+
+        drop(retained);
+        drop(parent);
+        fs::rename(&active, &displaced)
+            .expect("the route must become movable after cleanup anchors are released");
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[cfg(any(unix, windows))]
     #[test]
     fn retained_parent_creation_cannot_be_redirected_to_a_replacement_route() {
