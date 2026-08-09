@@ -89,6 +89,91 @@ impl DocumentationProvider for V8StdDocumentationProvider {
         true
     }
 
+    /// Стандарт целиком по адресу `https://v8std.ru/...` — тем же движком,
+    /// что и фасад `unica.standards.explain` (`v8std_get_page`): текст —
+    /// `body_markdown`, стандарт без версии платформы несёт `unversioned`.
+    fn get(
+        &self,
+        document_id: &str,
+        _language: &str,
+        _context: &DocumentationContext,
+    ) -> Option<Result<DocumentationDocument, String>> {
+        if !document_id.starts_with("https://v8std.ru/") {
+            return None;
+        }
+        if self.network == NetworkAccess::Deny {
+            return Some(Err(
+                "сетевой выход v8std запрещён политикой unica.toml".to_string()
+            ));
+        }
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "v8std_get_page",
+                "arguments": { "id_or_alias_or_url": document_id },
+            }
+        });
+        let body = match self.http.post_json(&self.endpoint, &payload) {
+            Ok(body) => body,
+            Err(error) => {
+                return Some(Err(format!("сервер стандартов недоступен: {error}")));
+            }
+        };
+        let outcome = StandardsAdapter::outcome_from_http_body(
+            "get",
+            &self.endpoint,
+            "v8std_get_page",
+            &body,
+        );
+        if !outcome.outcome.ok {
+            return Some(Err(outcome.outcome.errors.join("; ")));
+        }
+        let inner = outcome
+            .data
+            .as_ref()
+            .and_then(|data| data.get("content"))
+            .and_then(Value::as_array)
+            .and_then(|content| content.first())
+            .and_then(|entry| entry.get("text"))
+            .and_then(Value::as_str)
+            .and_then(|text| serde_json::from_str::<Value>(text).ok());
+        let Some(inner) = inner else {
+            return Some(Err("ответ v8std_get_page не разбирается".to_string()));
+        };
+        if !inner.get("found").and_then(Value::as_bool).unwrap_or(false) {
+            return Some(Err(format!("стандарт {document_id:?} не найден")));
+        }
+        let Some(page) = inner.get("page") else {
+            return Some(Err("ответ v8std_get_page не несёт page".to_string()));
+        };
+        Some(Ok(DocumentationDocument {
+            provider: self.id(),
+            corpus: CORPUS.to_string(),
+            source_kind: SourceKind::DevelopmentStandard,
+            authority: Authority::Community,
+            language: "ru".to_string(),
+            document_id: page
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or(document_id)
+                .to_string(),
+            title: page
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or(document_id)
+                .to_string(),
+            signature: None,
+            applicable_version: UNVERSIONED.to_string(),
+            text: page
+                .get("body_markdown")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        }))
+    }
+
     fn search(
         &self,
         request: &DocumentationSearchRequest,
@@ -337,6 +422,70 @@ mod tests {
             DocumentationSectionStatus::Empty
         ));
         assert!(sections[0].hits.is_empty());
+    }
+
+    /// Канон живого `v8std_get_page` (зонд 2026-08-09): `found` и `page` с
+    /// `title`, `url`, `body_markdown`.
+    const GET_BODY: &str = r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"found\": true, \"page\": {\"id\": \"std702\", \"title\": \"Реквизит Ссылка #std702\", \"url\": \"https://v8std.ru/std/702/\", \"body_markdown\": \"ID: #std702\\n\\n# Реквизит Ссылка\\n\\nПолный текст стандарта.\"}}"}]}}"#;
+
+    /// `get` открывает стандарт целиком через тот же движок
+    /// (`v8std_get_page`): текст — `body_markdown`, локатор канонизируется
+    /// адресом страницы. Стандарт без версии платформы несёт маркер
+    /// `unversioned`, как и попадания поиска.
+    #[test]
+    fn v8std_get_returns_the_standard_body_by_its_url() {
+        let (provider, _http) = provider(NetworkAccess::Allow, Ok(GET_BODY.to_string()));
+        let document = provider
+            .get("https://v8std.ru/std/702/", "ru", &context())
+            .expect("локатор наш")
+            .expect("стандарт найден");
+        assert_eq!(document.corpus, "public-standards");
+        assert_eq!(document.source_kind, SourceKind::DevelopmentStandard);
+        assert_eq!(document.authority, Authority::Community);
+        assert_eq!(document.language, "ru");
+        assert_eq!(document.title, "Реквизит Ссылка #std702");
+        assert_eq!(document.applicable_version, UNVERSIONED);
+        assert!(
+            document.text.contains("Полный текст стандарта."),
+            "текст — body_markdown, получено {}",
+            document.text
+        );
+
+        assert!(
+            provider
+                .get("https://kb.1ci.com/x/", "ru", &context())
+                .is_none(),
+            "чужая база — не мой локатор"
+        );
+    }
+
+    #[test]
+    fn v8std_get_not_found_and_policy_deny_are_owner_failures() {
+        let not_found = r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"found\": false, \"candidates\": []}"}]}}"#;
+        let (provider_missing, _http) = provider(NetworkAccess::Allow, Ok(not_found.to_string()));
+        let error = provider_missing
+            .get("https://v8std.ru/std/99999/", "ru", &context())
+            .expect("локатор наш")
+            .expect_err("ненайденный стандарт — отказ владельца");
+        assert!(
+            error.contains("не найден"),
+            "отказ обязан назвать причину, получено {error}"
+        );
+
+        let (provider_denied, http) = provider(NetworkAccess::Deny, Ok(GET_BODY.to_string()));
+        let error = provider_denied
+            .get("https://v8std.ru/std/702/", "ru", &context())
+            .expect("локатор наш")
+            .expect_err("запрет политики — отказ владельца");
+        assert!(
+            error.contains("unica.toml"),
+            "отказ обязан назвать политику, получено {error}"
+        );
+        assert_eq!(
+            http.calls.load(Ordering::SeqCst),
+            0,
+            "запрещённый поставщик не должен трогать сеть"
+        );
     }
 
     /// Порядок слоёв цепочки endpoint: файл политики (локальный оверлей уже

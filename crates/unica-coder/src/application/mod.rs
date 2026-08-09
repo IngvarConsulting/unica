@@ -555,6 +555,14 @@ pub fn tools() -> Vec<ToolSpec> {
                 operation: "search",
             },
         },
+        ToolSpec {
+            name: "unica.documentation.get",
+            description:
+                "Fetch the full text of a documentation search hit by its documentId locator.",
+            mutating: false,
+            cache_access: CacheAccess::default(),
+            handler: ToolHandler::Documentation { operation: "get" },
+        },
     ]);
     specs
 }

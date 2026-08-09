@@ -413,6 +413,51 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     None => HandlerOutcome::plain(standards.outcome),
                 })
             }
+            ToolHandler::Documentation { operation: "get" } => {
+                let document_id = args
+                    .get("documentId")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "unica.documentation.get requires documentId".to_string())?;
+                // Пустой локатор отклоняется и всухую — тем же текстом, что и
+                // слой application: сломанный пример скилла обязан падать в
+                // parity-тесте, а не у живого пользователя.
+                if document_id.trim().is_empty() {
+                    return Err(
+                        "unica.documentation.get requires a non-blank documentId".to_string()
+                    );
+                }
+                let language = args
+                    .get("language")
+                    .and_then(Value::as_str)
+                    .unwrap_or("ru")
+                    .to_string();
+                // Предпросмотр — до опроса поставщиков, как у search
+                // (INV-SKILL-EXECUTABLE-EXAMPLES).
+                if dry_run {
+                    return Ok(HandlerOutcome::plain(AdapterOutcome::ok(format!(
+                        "dry run: {} would fetch the document from its owning provider",
+                        spec.name
+                    ))));
+                }
+                let registry = documentation_registry(context, cancellation)?;
+                let requested_version = args.get("platformVersion").and_then(Value::as_str);
+                let context = documentation_context(
+                    &crate::infrastructure::platform::full_dump_publication::default_platform_roots(
+                    ),
+                    requested_version,
+                    context,
+                );
+                let data = crate::application::documentation::get(
+                    &registry,
+                    document_id,
+                    &language,
+                    &context,
+                )?;
+                Ok(HandlerOutcome::with_data(
+                    AdapterOutcome::ok("unica.documentation.get completed"),
+                    data,
+                ))
+            }
             ToolHandler::Documentation { operation } => {
                 if operation != "search" {
                     return Err(format!("unknown documentation operation: {operation}"));
@@ -1559,6 +1604,13 @@ mod tests {
                 crate::domain::documentation::DocumentationContext,
             )>,
         >,
+        seen_gets: std::sync::Mutex<
+            Vec<(
+                String,
+                String,
+                crate::domain::documentation::DocumentationContext,
+            )>,
+        >,
     }
 
     impl crate::domain::documentation::DocumentationProvider for RecordingProvider {
@@ -1593,6 +1645,34 @@ mod tests {
                 crate::domain::documentation::Authority::Vendor,
                 &request.language,
             )]
+        }
+
+        fn get(
+            &self,
+            document_id: &str,
+            language: &str,
+            context: &crate::domain::documentation::DocumentationContext,
+        ) -> Option<Result<crate::domain::documentation::DocumentationDocument, String>> {
+            self.seen_gets
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push((
+                    document_id.to_string(),
+                    language.to_string(),
+                    context.clone(),
+                ));
+            Some(Ok(crate::domain::documentation::DocumentationDocument {
+                provider: self.id(),
+                corpus: "syntax-context".to_string(),
+                source_kind: crate::domain::documentation::SourceKind::PlatformHelp,
+                authority: crate::domain::documentation::Authority::Vendor,
+                language: language.to_string(),
+                document_id: document_id.to_string(),
+                title: "Заголовок".to_string(),
+                signature: None,
+                applicable_version: "8.3.27.2074".to_string(),
+                text: "Полный текст.".to_string(),
+            }))
         }
     }
 
@@ -2002,6 +2082,131 @@ mod tests {
         assert!(
             error.contains("standards") && error.contains("platform-help"),
             "отказ обязан назвать чужое значение и допустимые, получено {error}"
+        );
+    }
+
+    /// Ветка `unica.documentation.get`: аргументы обязаны дойти до владельца
+    /// локатора — `documentId` и `language` в вызов `get`, `platformVersion`
+    /// в контекст, — а документ владельца обязан дойти обратно типизированным
+    /// `data.document`. Версия намеренно невозможная: разрешение установки не
+    /// должно зависеть от машин сборки.
+    #[test]
+    fn the_documentation_get_branch_carries_arguments_and_returns_the_document() {
+        use crate::application::ports::ApplicationPorts;
+
+        let recorder = std::sync::Arc::new(RecordingProvider::default());
+        let _stand_in = install_stand_in(std::sync::Arc::clone(&recorder));
+
+        let dir = tempfile::tempdir().expect("каталог");
+        let workspace = dir.path().to_path_buf();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        let mut args = Map::new();
+        args.insert(
+            "documentId".to_string(),
+            json!("platform-syntax-help:syntax-context:page.html"),
+        );
+        args.insert("language".to_string(), json!("en"));
+        args.insert("platformVersion".to_string(), json!("9.9.9.9999"));
+
+        let outcome = super::InfrastructureApplicationPorts::new()
+            .invoke_handler(
+                spec(
+                    "unica.documentation.get",
+                    ToolHandler::Documentation { operation: "get" },
+                ),
+                &args,
+                &context,
+                false,
+                &crate::domain::cancellation::CancellationToken::default(),
+            )
+            .expect("ветка get обязана ответить");
+
+        let seen = recorder
+            .seen_gets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(seen.len(), 1, "владелец опрошен ровно раз");
+        let (document_id, language, documentation_context) = &seen[0];
+        assert_eq!(document_id, "platform-syntax-help:syntax-context:page.html");
+        assert_eq!(language, "en", "language обязан дойти до get");
+        assert_eq!(
+            documentation_context.platform_version.as_deref(),
+            Some("9.9.9.9999"),
+            "platformVersion обязан дойти до контекста"
+        );
+
+        let data = outcome.data.expect("типизированный data");
+        assert_eq!(
+            data["document"]["documentId"],
+            "platform-syntax-help:syntax-context:page.html"
+        );
+        assert_eq!(data["document"]["text"], "Полный текст.");
+    }
+
+    /// Сухой прогон `get` — предпросмотр до опроса поставщиков, но разбор
+    /// аргументов настоящий: пример без `documentId` обязан падать и всухую.
+    #[test]
+    fn the_documentation_get_dry_run_previews_without_polling_and_requires_document_id() {
+        use crate::application::ports::ApplicationPorts;
+
+        let recorder = std::sync::Arc::new(RecordingProvider::default());
+        let _stand_in = install_stand_in(std::sync::Arc::clone(&recorder));
+
+        let dir = tempfile::tempdir().expect("каталог");
+        let workspace = dir.path().to_path_buf();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        let mut args = Map::new();
+        args.insert("documentId".to_string(), json!("https://kb.1ci.com/x/"));
+        let outcome = super::InfrastructureApplicationPorts::new()
+            .invoke_handler(
+                spec(
+                    "unica.documentation.get",
+                    ToolHandler::Documentation { operation: "get" },
+                ),
+                &args,
+                &context,
+                true,
+                &crate::domain::cancellation::CancellationToken::default(),
+            )
+            .expect("сухой прогон обязан ответить успехом");
+        assert!(
+            recorder
+                .seen_gets
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_empty(),
+            "сухой прогон не должен опрашивать поставщиков"
+        );
+        assert!(outcome.adapter.summary.contains("dry run"));
+
+        let error = match super::InfrastructureApplicationPorts::new().invoke_handler(
+            spec(
+                "unica.documentation.get",
+                ToolHandler::Documentation { operation: "get" },
+            ),
+            &Map::new(),
+            &context,
+            true,
+            &crate::domain::cancellation::CancellationToken::default(),
+        ) {
+            Ok(_) => panic!("сухой прогон без documentId обязан отказывать"),
+            Err(error) => error,
+        };
+        assert!(
+            error.contains("documentId"),
+            "отказ обязан назвать аргумент, получено {error}"
         );
     }
 

@@ -235,10 +235,16 @@ fn strip_markup_skipping_scripts(raw: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Читает серверно отрендеренную страницу: заголовок из первого `<h1>`,
-/// текст без разметки от начала контентной области. Оболочка без
-/// `xwikicontent` — то самое «перенаправление на корень считается
-/// отсутствием страницы», а не пустой текст.
+/// Читает серверно отрендеренную страницу. Оболочка без `xwikicontent` — то
+/// самое «перенаправление на корень считается отсутствием страницы», а не
+/// пустой текст.
+///
+/// Живая раскладка (зонд 2026-08-09): `<h1>` заголовка лежит в шапке
+/// страницы, ВНЕ контентного div, поэтому заголовок ищется по всей странице.
+/// Текст — от маркера контентной области до `</main>`: после него идёт футер
+/// с иконками, который в тексте страницы не место. Страница-оглавление несёт
+/// пустой контентный div — это пустой текст, и его толкует вызывающий:
+/// поиск отвечает пустым фрагментом, получение — отказом «оглавление».
 pub fn read_page(html: &str) -> Result<KbPage, String> {
     let lower = html.to_ascii_lowercase();
     let Some(content_start) = lower.find("id=\"xwikicontent\"") else {
@@ -247,15 +253,23 @@ pub fn read_page(html: &str) -> Result<KbPage, String> {
                 .to_string(),
         );
     };
-    let content = &html[content_start..];
-    let content_lower = &lower[content_start..];
-    let title = content_lower.find("<h1").and_then(|open| {
-        let after_open = open + content_lower[open..].find('>')? + 1;
-        let close = content_lower[after_open..].find("</h1")? + after_open;
-        let inner = strip_markup_skipping_scripts(&content[after_open..close]);
+    let title = lower.find("<h1").and_then(|open| {
+        let after_open = open + lower[open..].find('>')? + 1;
+        let close = lower[after_open..].find("</h1")? + after_open;
+        let inner = strip_markup_skipping_scripts(&html[after_open..close]);
         (!inner.is_empty()).then_some(inner)
     });
-    let text = strip_markup_skipping_scripts(content);
+    // Начало текста — после закрытия открывающего тега контентного div,
+    // чтобы его собственные атрибуты не попали в текст.
+    let text_start = lower[content_start..]
+        .find('>')
+        .map(|offset| content_start + offset + 1)
+        .unwrap_or(content_start);
+    let text_end = lower[text_start..]
+        .find("</main")
+        .map(|offset| text_start + offset)
+        .unwrap_or(html.len());
+    let text = strip_markup_skipping_scripts(&html[text_start..text_end]);
     let title = match title {
         Some(title) => title,
         None => text.chars().take(120).collect(),
@@ -554,6 +568,79 @@ impl crate::domain::documentation::DocumentationProvider for Kb1ciProvider {
 
     fn needs_network(&self) -> bool {
         true
+    }
+
+    /// Страница целиком по pretty-локатору попадания: его путь зеркалит
+    /// сегменты серверного рендера, поэтому дерево не обходится — один
+    /// запрос `/bin/view`. Граница объявленных корней (ADR-0032 п.2)
+    /// действует и здесь: адрес вне категорий руководств не запрашивается,
+    /// а называется отказом.
+    fn get(
+        &self,
+        document_id: &str,
+        _language: &str,
+        _context: &crate::domain::documentation::DocumentationContext,
+    ) -> Option<Result<crate::domain::documentation::DocumentationDocument, String>> {
+        use crate::domain::documentation::*;
+        use crate::infrastructure::documentation_policy::NetworkAccess;
+
+        let path = document_id.strip_prefix(&self.base)?;
+        if self.network == NetworkAccess::Deny {
+            return Some(Err(
+                "сетевой выход kb-1ci запрещён политикой unica.toml".to_string()
+            ));
+        }
+        if self.cancellation.is_cancelled() {
+            return Some(Err("вызов отменён до обращения к площадке".to_string()));
+        }
+        let path = path.split('?').next().unwrap_or(path).trim_matches('/');
+        let corpus = if path.contains("Developer_Guides") {
+            "kb-developer-guide"
+        } else if path.contains("Administrator_Guides") {
+            "kb-administrator-guide"
+        } else {
+            return Some(Err(format!(
+                "адрес {document_id:?} вне объявленных корней руководств: запрашиваются только страницы категорий Developer Guides и Administrator Guides"
+            )));
+        };
+        // Версия — из имени сегмента руководства; попадания всегда её несут.
+        let version = path
+            .split('/')
+            .find_map(|segment| version_in(&segment.replace('_', " ")));
+        let Some(version) = version else {
+            return Some(Err(format!(
+                "адрес {document_id:?} не несёт версии руководства"
+            )));
+        };
+        let url = format!("{}/bin/view/OnecInt/KB/{}/?language=en", self.base, path);
+        let html = match self.transport.get(&url) {
+            Ok(html) => html,
+            Err(error) => return Some(Err(format!("площадка недоступна: {error}"))),
+        };
+        let page = match read_page(&html) {
+            Ok(page) => page,
+            Err(error) => return Some(Err(format!("{url}: {error}"))),
+        };
+        // Пустой контентный div — страница-оглавление: текста у неё нет, и
+        // выдавать пустоту за документ нечестно. Подраздел открывается по
+        // своему локатору из выдачи.
+        if page.text.trim().is_empty() {
+            return Some(Err(format!(
+                "{document_id}: страница — оглавление раздела и не несёт текста; откройте её подраздел по его локатору"
+            )));
+        }
+        Some(Ok(DocumentationDocument {
+            provider: DocumentationProviderId::new("kb-1ci"),
+            corpus: corpus.to_string(),
+            source_kind: SourceKind::PlatformHelp,
+            authority: Authority::Vendor,
+            language: "en".to_string(),
+            document_id: document_id.to_string(),
+            title: page.title,
+            signature: None,
+            applicable_version: version,
+            text: page.text,
+        }))
     }
 
     fn search(
@@ -907,13 +994,13 @@ pub(crate) mod tests_support {
                     DEV27_APPENDIX,
                     "Appendix 1. URL formats",
                     true,
-                    "/dev27/appendix1/?language=en"
+                    "/1C_Enterprise_Platform/Guides/Developer_Guides/1C_Enterprise_Developer_Guide/1C_Enterprise_8.3.27_Developer_Guide/Appendix_1._URL_formats/?language=en"
                 ),
                 node_href(
                     r"OnecInt.KB.1C_Enterprise_Platform.Guides.Developer_Guides.1C_Enterprise_Developer_Guide.1C_Enterprise_8\.3\.27_Developer_Guide.Chapter_2\._Managing_configurations.WebHome",
                     "Chapter 2. Managing configurations",
                     false,
-                    "/dev27/ch2/?language=en"
+                    "/1C_Enterprise_Platform/Guides/Developer_Guides/1C_Enterprise_Developer_Guide/1C_Enterprise_8.3.27_Developer_Guide/Chapter_2._Managing_configurations/?language=en"
                 )
             )),
         );
@@ -925,7 +1012,7 @@ pub(crate) mod tests_support {
                     DEV27_E1CIB,
                     "1. The e1cib URL scheme",
                     false,
-                    "/dev27/appendix1/e1cib/?language=en"
+                    "/1C_Enterprise_Platform/Guides/Developer_Guides/1C_Enterprise_Developer_Guide/1C_Enterprise_8.3.27_Developer_Guide/Appendix_1._URL_formats/The_e1cib_URL_scheme/?language=en"
                 )
             )),
         );
@@ -938,7 +1025,7 @@ pub(crate) mod tests_support {
                     r"OnecInt.KB.1C_Enterprise_Platform.Guides.Administrator_Guides.Administrator_Guide_Client_Server_Mode.1C_Enterprise_8\.3\.27_Administrator_Guide\._Client_Server_Mode.Chapter_1\._Cluster.WebHome",
                     "Chapter 1. Client/server cluster",
                     false,
-                    "/admin27/ch1/?language=en"
+                    "/1C_Enterprise_Platform/Guides/Administrator_Guides/Administrator_Guide_Client_Server_Mode/1C_Enterprise_8.3.27_Administrator_Guide._Client_Server_Mode/Chapter_1._Cluster/?language=en"
                 )
             )),
         );
@@ -1043,7 +1130,7 @@ mod provider_tests {
         );
         assert_eq!(
             developer.hits[0].document_id,
-            format!("{base}/dev27/appendix1/?language=en"),
+            format!("{base}/1C_Enterprise_Platform/Guides/Developer_Guides/1C_Enterprise_Developer_Guide/1C_Enterprise_8.3.27_Developer_Guide/Appendix_1._URL_formats/?language=en"),
             "локатор — абсолютный pretty-адрес узла"
         );
         assert!(
@@ -1188,6 +1275,77 @@ mod provider_tests {
         );
     }
 
+    /// `get` открывает страницу по её pretty-локатору из попадания: путь
+    /// локатора зеркалит сегменты серверного рендера, поэтому дерево не
+    /// обходится вовсе — один запрос `/bin/view`. Граница объявленных корней
+    /// действует и здесь: адрес вне категорий руководств не запрашивается.
+    #[test]
+    fn kb_get_opens_the_page_by_its_pretty_locator_without_walking_the_tree() {
+        let _serial = kb_test_lock();
+        let base = "https://kb.get";
+        let (provider, transport) = provider_over(base, standard_site(base), NetworkAccess::Allow);
+        let locator = format!(
+            "{base}/1C_Enterprise_Platform/Guides/Developer_Guides/1C_Enterprise_Developer_Guide/1C_Enterprise_8.3.27_Developer_Guide/Appendix_1._URL_formats/?language=en"
+        );
+        let document = provider
+            .get(&locator, "en", &request("x", Some("8.3.27")).1)
+            .expect("локатор наш")
+            .expect("страница открыта");
+        assert_eq!(document.title, "Appendix 1. URL formats");
+        assert!(
+            document.text.contains("The e1cib scheme addresses forms"),
+            "текст — серверная страница, получено {}",
+            document.text
+        );
+        assert_eq!(document.corpus, "kb-developer-guide");
+        assert_eq!(document.applicable_version, "8.3.27");
+        assert_eq!(document.language, "en");
+        assert_eq!(
+            transport.calls.load(Ordering::SeqCst),
+            1,
+            "get не обходит дерево — один запрос страницы"
+        );
+
+        assert!(
+            provider
+                .get("https://v8std.ru/std/702/", "en", &request("x", None).1)
+                .is_none(),
+            "чужая база — не мой локатор"
+        );
+        let outside = provider
+            .get(
+                &format!("{base}/Support/Billing/?language=en"),
+                "en",
+                &request("x", None).1,
+            )
+            .expect("база наша");
+        let error = outside.expect_err("адрес вне корней руководств — отказ");
+        assert!(
+            error.contains("корн"),
+            "отказ обязан назвать границу корней, получено {error}"
+        );
+    }
+
+    #[test]
+    fn kb_get_denied_by_policy_refuses_without_network() {
+        let _serial = kb_test_lock();
+        let base = "https://kb.getdeny";
+        let (provider, transport) = provider_over(base, standard_site(base), NetworkAccess::Deny);
+        let denied = provider
+            .get(
+                &format!("{base}/1C_Enterprise_Platform/Guides/Developer_Guides/x/?language=en"),
+                "en",
+                &request("x", None).1,
+            )
+            .expect("локатор наш");
+        let error = denied.expect_err("запрет политики — отказ владельца");
+        assert!(
+            error.contains("unica.toml"),
+            "отказ обязан назвать политику, получено {error}"
+        );
+        assert_eq!(transport.calls.load(Ordering::SeqCst), 0, "сеть не тронута");
+    }
+
     /// Живой прогон против площадки вендора: включается переменной
     /// `UNICA_KB1CI_LIVE=1`, в CI не требуется. Первый прогон дорогой —
     /// обход двухуровневого оглавления руководства с разнесением обращений;
@@ -1220,15 +1378,46 @@ mod provider_tests {
             hit.document_id
         );
         assert_eq!(hit.applicable_version, "8.3.27");
-        assert!(
-            !hit.snippet.is_empty(),
-            "фрагмент обязан прийти из серверной страницы"
-        );
         eprintln!(
             "live kb-1ci: {} совпадений, первое — {} ({} символов фрагмента)",
             developer.hits.len(),
             hit.document_id,
             hit.snippet.chars().count()
+        );
+
+        // Вторая нога: попадание — оглавление приложения, и get честно
+        // называет его оглавлением, а не отдаёт пустоту за документ.
+        let toc = provider
+            .get(&hit.document_id, "en", &context)
+            .expect("локатор площадки наш")
+            .expect_err("оглавление не выдаётся за документ");
+        assert!(
+            toc.contains("оглавлени"),
+            "отказ обязан назвать оглавление, получено {toc}"
+        );
+
+        // Третья нога: настоящий лист руководства открывается целиком
+        // (ADR-0033) и несёт текст про e1cib — вопрос #296 живьём.
+        let leaf = format!(
+            "{KB_BASE}/1C_Enterprise_Platform/Guides/Developer_Guides/1C_Enterprise_Developer_Guide/1C_Enterprise_8.3.27_Developer_Guide/Appendix_1._URL_formats/1.2._Internal_links/1.2.1._General_information/?language=en"
+        );
+        let document = provider
+            .get(&leaf, "en", &context)
+            .expect("локатор площадки наш")
+            .expect("лист открыт целиком");
+        assert!(
+            document.text.contains("e1cib"),
+            "текст листа обязан нести e1cib, получено {} символов",
+            document.text.chars().count()
+        );
+        assert!(
+            !document.title.is_empty(),
+            "документ обязан нести заголовок страницы"
+        );
+        eprintln!(
+            "live kb-1ci get: {} — {} символов полного текста",
+            document.title,
+            document.text.chars().count()
         );
     }
 
@@ -1325,6 +1514,45 @@ mod tests {
         assert!(
             shell.is_err(),
             "оболочка без xwikicontent — отсутствие страницы, а не пустой текст"
+        );
+    }
+
+    /// Живая раскладка страницы (зонд 2026-08-09, четвёртый переезд
+    /// площадки): `<h1>` заголовка лежит ВНЕ контентного div, в шапке
+    /// страницы; текст — между маркером `xwikicontent` и `</main>`, а после
+    /// `</main>` идёт футер с иконками, который не должен попадать в текст.
+    /// Страница-оглавление несёт пустой контентный div — это не отказ чтения,
+    /// а пустой текст, который вызывающий толкует сам.
+    #[test]
+    fn read_page_takes_the_header_h1_and_stops_the_text_at_main_end() {
+        let page = read_page(
+            r#"<html><body><h1 id="document-title">1.2.1. General information</h1><main><div id="xwikicontent" class="col-xs-12"><p>Common internal link format: e1cib.</p></div></main><footer>Search Icon/Social/001 Icon/Social/006</footer></body></html>"#,
+        )
+        .expect("настоящая страница читается");
+        assert_eq!(
+            page.title, "1.2.1. General information",
+            "заголовок — h1 шапки страницы, он лежит вне контентного div"
+        );
+        assert!(
+            page.text.contains("Common internal link format: e1cib."),
+            "текст — содержимое контентной области, получено {}",
+            page.text
+        );
+        assert!(
+            !page.text.contains("Icon/Social"),
+            "футер после </main> не должен попадать в текст, получено {}",
+            page.text
+        );
+
+        let toc = read_page(
+            r#"<h1>Appendix 1. URL formats</h1><main><div id="xwikicontent" class="col-xs-12"> </div></main><footer>chrome</footer>"#,
+        )
+        .expect("оглавление читается");
+        assert_eq!(toc.title, "Appendix 1. URL formats");
+        assert!(
+            toc.text.trim().is_empty(),
+            "оглавление несёт пустой текст, а не футер, получено {}",
+            toc.text
         );
     }
 

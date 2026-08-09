@@ -21,8 +21,9 @@ description: "Справка платформы 1С и объектной мод
 1. State the exact platform/API question: object, method/property, platform version, infobase mode, client/server context.
 2. Call `unica.documentation.search` with the object or member name.
 3. Read `applicableVersion` in the hit. Если она расходится с версией проекта, назовите расхождение в ответе.
-4. Validate against local project context with `unica.project.map` and targeted `unica.code.search` if the answer depends on project conventions.
-5. For code examples, run `unica.runtime.execute` with `operation=syntax` when feasible.
+4. Подтвердите ответ текстом открытой страницы: передайте `documentId` попадания в `unica.documentation.get` дословно и опирайтесь на поле `text`. Заголовок и фрагмент выдачи доказательством не является — доказательство только текст документа.
+5. Validate against local project context with `unica.project.map` and targeted `unica.code.search` if the answer depends on project conventions.
+6. For code examples, run `unica.runtime.execute` with `operation=syntax` when feasible.
 
 ## Platform context
 
@@ -71,6 +72,20 @@ description: "Справка платформы 1С и объектной мод
       "query": "ТаблицаЗначений.Свернуть",
       "platformVersion": "8.3.27.2074",
       "limit": 10
+    }
+  }
+}
+```
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.documentation.get",
+    "arguments": {
+      "cwd": "<workspace>",
+      "documentId": "platform-syntax-help:syntax-context:objects/catalog238/ValueTable/methods/GroupBy1290.html"
     }
   }
 }

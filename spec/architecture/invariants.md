@@ -356,6 +356,24 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_help/provider.rs`
 - **Scope:** source, runtime
 
+### INV-MCP-DOCUMENTATION-GET — Полный текст документа отдаёт владелец его локатора
+
+- **Rule:** `unica.documentation.get` возвращает полный текст одного документа
+  по `documentId` попадания, переданному дословно. Владелец локатора —
+  поставщик, выпустивший его; форматы локаторов поставщиков не пересекаются,
+  владельца находит первый непустой ответ в порядке реестра. Ответ несёт то же
+  происхождение, что и секция поиска, локаль фактического ответа, применимую
+  версию и полный текст — не фрагмент. Отказ владельца — отказ вызова, подмена
+  другой страницей или поставщиком запрещена; локатор без владельца — отказ,
+  называющий локатор; политика сетевого выхода и граница объявленных корней
+  действуют и на получение.
+- **Decision:** ADR-0033
+- **Check:** `ci-test` — `crates/unica-coder/src/application/documentation.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_help/provider.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/kb_1ci.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/standards_documentation.rs`
+- **Scope:** source, runtime
+
 ### INV-APP-DOCUMENTATION-NETWORK-POLICY — Сетевой выход поставщиков документации управляется политикой проекта
 
 - **Rule:** Сетевой выход поставщиков документации задаётся файлом

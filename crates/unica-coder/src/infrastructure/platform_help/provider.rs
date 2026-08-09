@@ -364,6 +364,75 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
         false
     }
 
+    /// Страница целиком по локатору `platform-syntax-help:<корпус>:<путь>` —
+    /// доказательство по ADR-0029 п.4, а не фрагмент. Индекс полного текста
+    /// не держит (он экономит память под поиск), поэтому страница
+    /// перечитывается из контейнеров выбранной установки; `get` редок, и цена
+    /// перечитывания честнее удвоения резидента индекса.
+    fn get(
+        &self,
+        document_id: &str,
+        language: &str,
+        context: &DocumentationContext,
+    ) -> Option<Result<crate::domain::documentation::DocumentationDocument, String>> {
+        let rest = document_id.strip_prefix("platform-syntax-help:")?;
+        // Префикс наш — дальнейшие неожиданности отвечаются отказом
+        // владельца, а не тихим None: другой владелец у локатора невозможен.
+        let Some((corpus_id, path)) = rest.split_once(':') else {
+            return Some(Err(format!(
+                "локатор {document_id:?} не несёт корпуса и пути"
+            )));
+        };
+        let Some(root) = context.installation_root.as_ref() else {
+            let detail = match context.platform_version.as_deref() {
+                Some(version) => {
+                    format!("установка платформы {version} не разрешена для рабочего пространства")
+                }
+                None => "установка платформы не разрешена для рабочего пространства".to_string(),
+            };
+            return Some(Err(detail));
+        };
+        let corpora = match discover(root, language) {
+            Ok(value) => value,
+            Err(error) => return Some(Err(format!("установка не разобрана: {error:?}"))),
+        };
+        let source = match corpus_id {
+            "syntax-context" => &corpora.syntax_context,
+            "platform-guides" => &corpora.platform_guides,
+            other => return Some(Err(format!("неизвестный корпус {other:?} в локаторе"))),
+        };
+        for container in &source.containers {
+            let Ok(bytes) = std::fs::read(container) else {
+                continue;
+            };
+            let Ok(pages) = read_corpus(&bytes) else {
+                continue;
+            };
+            if let Some(page) = pages.into_iter().find(|page| page.path == path) {
+                return Some(Ok(crate::domain::documentation::DocumentationDocument {
+                    provider: self.id(),
+                    corpus: corpus_id.to_string(),
+                    source_kind: SourceKind::PlatformHelp,
+                    authority: Authority::Vendor,
+                    // Локаль, которой корпус реально прочитан, — как у поиска.
+                    language: source.language.clone(),
+                    document_id: document_id.to_string(),
+                    title: page.title.clone(),
+                    signature: page
+                        .signature
+                        .as_ref()
+                        .and_then(|value| signature_in(value, &source.language)),
+                    applicable_version: corpora.version.clone(),
+                    text: page.text,
+                }));
+            }
+        }
+        Some(Err(format!(
+            "страницы {path:?} нет в корпусе {corpus_id} установки {}",
+            corpora.version
+        )))
+    }
+
     fn search(
         &self,
         request: &DocumentationSearchRequest,
@@ -1393,6 +1462,75 @@ mod tests {
             "platform-syntax-help:syntax-context:root/alpha.html"
         );
         assert_eq!(second_syntax.language, "root");
+    }
+
+    /// `get` возвращает страницу ЦЕЛИКОМ — доказательство по ADR-0029 п.4,
+    /// а не 400-символьный фрагмент индекса. Индекс полного текста не держит,
+    /// поэтому страница перечитывается из контейнеров выбранной установки;
+    /// локаль подставляется тем же правилом, что и у поиска, и называется в
+    /// документе. Чужой префикс — «не мой локатор», свой префикс с пропавшей
+    /// страницей — отказ владельца, называющий страницу.
+    #[test]
+    fn get_returns_the_full_page_text_not_the_snippet() {
+        let _serial = index_test_lock();
+        let dir = tempfile::tempdir().expect("каталог");
+        let root = dir.path().join("8.3.27.2074");
+        std::fs::create_dir_all(&root).expect("каталог версии");
+        // Текст заметно длиннее фрагмента (400): полнота наблюдаема.
+        let body = "слово ".repeat(200);
+        std::fs::write(
+            root.join("shcntx_root.hbk"),
+            hbk_bytes(&[(
+                "objects/GetURL.html",
+                &format!("<html><body><h1>Global context.GetURL</h1><p>{body}</p></body></html>"),
+            )]),
+        )
+        .expect("контейнер");
+
+        let provider = PlatformSyntaxHelpProvider::new();
+        let context = DocumentationContext {
+            platform_version: Some("8.3.27.2074".to_string()),
+            installation_root: Some(root),
+        };
+        let document = provider
+            .get(
+                "platform-syntax-help:syntax-context:objects/GetURL.html",
+                "en",
+                &context,
+            )
+            .expect("локатор наш")
+            .expect("страница найдена");
+        assert_eq!(document.title, "Global context.GetURL");
+        assert!(
+            document.text.chars().count() > 400,
+            "текст обязан быть полным, а не фрагментом: {} символов",
+            document.text.chars().count()
+        );
+        assert_eq!(
+            document.language, "root",
+            "локаль подставляется и называется, как у поиска"
+        );
+        assert_eq!(document.applicable_version, "8.3.27.2074");
+        assert_eq!(document.corpus, "syntax-context");
+
+        assert!(
+            provider
+                .get("https://kb.1ci.com/x/", "ru", &context)
+                .is_none(),
+            "чужой локатор — не мой, отвечает None"
+        );
+        let missing = provider
+            .get(
+                "platform-syntax-help:syntax-context:objects/Missing.html",
+                "en",
+                &context,
+            )
+            .expect("локатор наш");
+        let error = missing.expect_err("пропавшая страница — отказ владельца");
+        assert!(
+            error.contains("objects/Missing.html"),
+            "отказ обязан назвать страницу, получено {error}"
+        );
     }
 
     /// Платформа, переустановленная в тот же каталог, — не экзотика, а

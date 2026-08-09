@@ -2640,6 +2640,13 @@ class PlatformHelpRoutingTests(unittest.TestCase):
         self.assertIn("policy-denied", self.text)
         self.assertIn("unica.toml", self.text)
 
+    def test_confirms_answers_with_the_opened_document(self) -> None:
+        # ADR-0029 п.4: доказательство — текст открытой страницы, и с
+        # ADR-0033 он достижим маршрутом MCP. Скилл обязан вести к
+        # unica.documentation.get, а не останавливаться на фрагменте.
+        self.assertIn("unica.documentation.get", self.text)
+        self.assertIn("фрагмент выдачи доказательством не является", self.text)
+
     def test_requires_naming_the_answering_locale(self) -> None:
         # ADR-0029 п.3: подстановка соседней локали разрешена и обязана быть
         # названной в ответе. Данные называют её полем `language` секции, но

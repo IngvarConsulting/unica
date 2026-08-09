@@ -580,13 +580,14 @@ const STANDARDS_ARGS: &[&str] = &[
     "snippet",
     "types",
 ];
-const DOCUMENTATION_ARGS: &[&str] = &[
+const DOCUMENTATION_SEARCH_ARGS: &[&str] = &[
     "language",
     "limit",
     "platformVersion",
     "query",
     "sourceKinds",
 ];
+const DOCUMENTATION_GET_ARGS: &[&str] = &["documentId", "language", "platformVersion"];
 
 pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
     if let ToolHandler::Metadata { operation } = tool.handler {
@@ -2083,7 +2084,8 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
         }),
         ToolHandler::CodeAdapter { .. } => names.extend(code_args_for(tool.name)),
         ToolHandler::StandardsAdapter { .. } => names.extend(STANDARDS_ARGS),
-        ToolHandler::Documentation { .. } => names.extend(DOCUMENTATION_ARGS),
+        ToolHandler::Documentation { operation: "get" } => names.extend(DOCUMENTATION_GET_ARGS),
+        ToolHandler::Documentation { .. } => names.extend(DOCUMENTATION_SEARCH_ARGS),
         ToolHandler::ProjectStatus | ToolHandler::ProjectMap => {}
     }
     if tool.name == "unica.mxl.decompile" {
@@ -2120,6 +2122,9 @@ fn required_args(tool: &ToolSpec) -> Vec<&'static str> {
             operation: "search",
             ..
         } => vec!["query"],
+        ToolHandler::Documentation {
+            operation: "get", ..
+        } => vec!["documentId"],
         ToolHandler::RuntimeAdapter => runtime_required_args(tool),
         ToolHandler::RuntimeJob { action } => runtime_job_required_args(action),
         ToolHandler::CodeIntelligence { operation } => match operation {
@@ -2507,6 +2512,10 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "dir",
         "Edge direction to follow on unica.code.graph - in, out, or both; applies to the traversal modes such as neighbors, callers, and callees",
+    ),
+    (
+        "documentId",
+        "Stable locator of a unica.documentation.search hit, passed verbatim to unica.documentation.get to fetch the full document text: platform-syntax-help:<corpus>:<path> for the installed platform's help, an absolute https://kb.1ci.com/... page address for the vendor knowledge base, and an https://v8std.ru/... address for a development standard; the provider that minted the locator is the only one that resolves it.",
     ),
     (
         "distributiveModules",

@@ -150,6 +150,25 @@ impl DocumentationSection {
     }
 }
 
+/// Документ целиком — то, что `unica.documentation.get` возвращает по
+/// устойчивому локатору попадания. Доказательством поведения платформы
+/// считается текст открытой страницы (ADR-0029 п.4); фрагмент выдачи
+/// доказательством не является, и этот тип — та самая «открытая страница».
+#[derive(Debug, Clone)]
+pub struct DocumentationDocument {
+    pub provider: DocumentationProviderId,
+    pub corpus: String,
+    pub source_kind: SourceKind,
+    pub authority: Authority,
+    /// Локаль, которой документ ответил на самом деле, — как у секции.
+    pub language: String,
+    pub document_id: String,
+    pub title: String,
+    pub signature: Option<String>,
+    pub applicable_version: String,
+    pub text: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct DocumentationSearchRequest {
     pub query: String,
@@ -181,6 +200,21 @@ pub trait DocumentationProvider: Send + Sync {
         request: &DocumentationSearchRequest,
         context: &DocumentationContext,
     ) -> Vec<DocumentationSection>;
+
+    /// Документ целиком по устойчивому локатору попадания. `None` — «локатор
+    /// не мой»: форматы локаторов у поставщиков не пересекаются, и владельца
+    /// находит первый не-`None` ответ в порядке реестра. `Some(Err)` — «мой,
+    /// но отдать не смог»: страница исчезла, сеть запрещена политикой,
+    /// установка не разрешена. Умолчание `None` оставляет поставщиков без
+    /// полного текста честными: их попадания и так несут только локатор.
+    fn get(
+        &self,
+        _document_id: &str,
+        _language: &str,
+        _context: &DocumentationContext,
+    ) -> Option<Result<DocumentationDocument, String>> {
+        None
+    }
 }
 
 pub struct DocumentationRegistry {
