@@ -414,22 +414,12 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                         .to_string(),
                 };
                 let requested_version = args.get("platformVersion").and_then(Value::as_str);
-                // Порядок п.2 ADR-0029: явная версия в аргументе вызова,
-                // затем версия, закреплённая проектом, затем численно
-                // старшая найденная. Среднего уровня в коде не было, и
-                // проект, закреплённый за 8.3.27, молча получал справку от
-                // 8.5.4 — тот же вред, который запрещает п.3 записи.
-                let project_version = project_platform_version(context);
-                let installation_root = resolve_platform_installation_root(
+                let context = documentation_context(
+                    &crate::infrastructure::platform::full_dump_publication::default_platform_roots(
+                    ),
                     requested_version,
-                    project_version.as_deref(),
+                    context,
                 );
-                let context = crate::domain::documentation::DocumentationContext {
-                    // Ограничение, по которому установку искали: поставщик
-                    // называет его в отказе, когда установки не нашлось.
-                    platform_version: requested_version.map(str::to_string).or(project_version),
-                    installation_root,
-                };
                 let registry = documentation_registry()?;
                 let data =
                     crate::application::documentation::search(&registry, &request, &context)?;
@@ -632,22 +622,34 @@ fn configured_platform_version(path: &Path) -> Option<String> {
     Some(version.to_string())
 }
 
-/// The platform installation root comes from the same root list the full-dump
-/// publication adapter already uses: `default_platform_roots()` in
-/// `infrastructure::platform::full_dump_publication`. A second installation
-/// search mechanism must not appear in the project.
+/// The documentation context the dispatcher hands to the provider registry:
+/// which installation to read and which version constraint that search was
+/// made under.
+///
+/// Split out of the dispatcher and taking `roots` as an argument so the
+/// project-pin wiring can be tested without the hard-coded platform roots.
+/// Deleting the `project_platform_version` call is caught by the compiler and
+/// by clippy; passing `None` in its place is not, and that mutation is exactly
+/// the ADR-0029 point 3 harm — a project pinned to 8.3.27 silently answered
+/// from 8.5.4 while the reply still said 8.3.27.
+///
+/// Precedence is ADR-0029 point 2: the explicit call argument, then the
+/// project's own pin, then the numerically newest installation found.
 ///
 /// `UNICA_PLATFORM_HELP_DIR` is a test-only switch (see
 /// `platform_help::installation`) and does not feed into this resolver.
-fn resolve_platform_installation_root(
+fn documentation_context(
+    roots: &[std::path::PathBuf],
     requested: Option<&str>,
-    project_version: Option<&str>,
-) -> Option<std::path::PathBuf> {
-    select_installation_root(
-        &crate::infrastructure::platform::full_dump_publication::default_platform_roots(),
-        requested,
-        project_version,
-    )
+    workspace: &WorkspaceContext,
+) -> crate::domain::documentation::DocumentationContext {
+    let project_version = project_platform_version(workspace);
+    crate::domain::documentation::DocumentationContext {
+        installation_root: select_installation_root(roots, requested, project_version.as_deref()),
+        // Ограничение, по которому установку искали: поставщик называет его в
+        // отказе, когда установки не нашлось.
+        platform_version: requested.map(str::to_string).or(project_version),
+    }
 }
 
 /// Pure root pick, split out of `resolve_platform_installation_root` so it can
@@ -777,8 +779,9 @@ fn select_platform_version(
 #[cfg(test)]
 mod tests {
     use super::{
-        documentation_registry, normalize_code_intelligence_read_request, project_platform_version,
-        select_installation_root, select_platform_version, verified_full_dump_invocation,
+        documentation_context, documentation_registry, normalize_code_intelligence_read_request,
+        project_platform_version, select_installation_root, select_platform_version,
+        verified_full_dump_invocation,
     };
     use crate::application::{RuntimeJobAction, ToolHandler, ToolSpec};
     use crate::domain::cache::CacheAccess;
@@ -1149,5 +1152,68 @@ mod tests {
             Some("8.3.27.2074"),
             "локальное перекрытие сильнее основной конфигурации"
         );
+    }
+
+    /// Прочитать конфигурацию проекта умеет
+    /// `project_platform_version_reads_the_config_and_prefers_the_local_overlay`,
+    /// выбрать установку по закреплённой семье — `select_installation_root_*`.
+    /// Между ними была дыра: ничто не проверяло, что диспетчер
+    /// `unica.documentation.search` СОЕДИНЯЕТ одно с другим. Удаление вызова
+    /// ловит компилятор, а подстановка `None` на его место — нет: ревью
+    /// применило именно её, и все 2021 тест остались зелёными. Вред — п.3
+    /// ADR-0029: проект, закреплённый за 8.3.27, читает справку 8.5.4, а ответ
+    /// продолжает называть 8.3.27.
+    #[test]
+    fn the_dispatcher_constrains_the_installation_by_the_projects_own_platform_pin() {
+        let machine = tempfile::tempdir().expect("каталог установок");
+        for version in ["8.3.27.2074", "8.5.4.1306"] {
+            std::fs::create_dir_all(machine.path().join(version)).expect("каталог версии");
+        }
+        let roots = vec![machine.path().to_path_buf()];
+
+        let project = tempfile::tempdir().expect("каталог проекта");
+        let workspace = project.path().to_path_buf();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        // Без закрепления побеждает численно старшая — эта половина и
+        // остаётся верной при мутации, поэтому одной её недостаточно.
+        let unpinned = documentation_context(&roots, None, &context);
+        assert_eq!(
+            unpinned.installation_root,
+            Some(machine.path().join("8.5.4.1306")),
+            "без закрепления читается численно старшая установка"
+        );
+        assert_eq!(unpinned.platform_version, None);
+
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "tools:\n  platform:\n    version: \"8.3.27\"\n",
+        )
+        .expect("конфигурация проекта");
+
+        let pinned = documentation_context(&roots, None, &context);
+        assert_eq!(
+            pinned.installation_root,
+            Some(machine.path().join("8.3.27.2074")),
+            "закрепление проекта обязано сужать выбор установки, а не только попадать в ответ"
+        );
+        assert_eq!(
+            pinned.platform_version.as_deref(),
+            Some("8.3.27"),
+            "ограничение, по которому искали установку, обязано попасть в ответ"
+        );
+
+        // Явный аргумент вызова сильнее закрепления проекта (п.2 ADR-0029).
+        let requested = documentation_context(&roots, Some("8.5.4.1306"), &context);
+        assert_eq!(
+            requested.installation_root,
+            Some(machine.path().join("8.5.4.1306"))
+        );
+        assert_eq!(requested.platform_version.as_deref(), Some("8.5.4.1306"));
     }
 }
