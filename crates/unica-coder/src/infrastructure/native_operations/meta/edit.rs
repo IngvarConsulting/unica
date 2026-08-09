@@ -3925,37 +3925,78 @@ mod tests {
         // Dimension (773/773 registers in the reference dump). Appending in
         // operation order makes the platform reorder the file on roundtrip,
         // which the exact gate reports as accepted-normalized.
-        let mut xml = concat!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
-            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">\n",
-            "\t<InformationRegister uuid=\"11111111-1111-4111-8111-111111111111\">\n",
-            "\t\t<Properties><Name>Corpus</Name></Properties>\n",
-            "\t\t<ChildObjects>\n",
-            "\t\t\t<Dimension uuid=\"22222222-2222-4222-8222-222222222222\">\n",
-            "\t\t\t\t<Properties><Name>Item</Name></Properties>\n",
-            "\t\t\t</Dimension>\n",
-            "\t\t</ChildObjects>\n",
-            "\t</InformationRegister>\n",
-            "</MetaDataObject>\n",
-        )
-        .to_string();
+        fn register_xml(children: &[(&str, &str)]) -> String {
+            let mut body = String::new();
+            for (index, (tag, name)) in children.iter().enumerate() {
+                body.push_str(&format!(
+                    concat!(
+                        "\t\t\t<{tag} uuid=\"22222222-2222-4222-8222-22222222222{n}\">\n",
+                        "\t\t\t\t<Properties><Name>{name}</Name></Properties>\n",
+                        "\t\t\t</{tag}>\n",
+                    ),
+                    tag = tag,
+                    name = name,
+                    n = index,
+                ));
+            }
+            format!(
+                concat!(
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+                    "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">\n",
+                    "\t<InformationRegister uuid=\"11111111-1111-4111-8111-111111111111\">\n",
+                    "\t\t<Properties><Name>Corpus</Name></Properties>\n",
+                    "\t\t<ChildObjects>\n{body}\t\t</ChildObjects>\n",
+                    "\t</InformationRegister>\n",
+                    "</MetaDataObject>\n",
+                ),
+                body = body,
+            )
+        }
 
-        meta_edit_insert_top_child_object(
-            &mut xml,
-            &[
-                "\t\t\t<Resource uuid=\"33333333-3333-4333-8333-333333333333\">".to_string(),
-                "\t\t\t\t<Properties><Name>Price</Name></Properties>".to_string(),
-                "\t\t\t</Resource>".to_string(),
-            ],
-        )
-        .unwrap();
-
-        let resource = xml.find("<Resource").unwrap();
-        let dimension = xml.find("<Dimension").unwrap();
-        assert!(
-            resource < dimension,
-            "Resource must land before Dimension: {xml}"
+        // (existing children, inserted tag, expected child-name order)
+        type SlotCase = (
+            &'static [(&'static str, &'static str)],
+            &'static str,
+            &'static [&'static str],
         );
+        let matrix: &[SlotCase] = &[
+            // every earlier slot lands before every later slot already present
+            (&[("Dimension", "Item")], "Resource", &["New", "Item"]),
+            (&[("Attribute", "Note")], "Resource", &["New", "Note"]),
+            (&[("Dimension", "Item")], "Attribute", &["New", "Item"]),
+            (
+                &[("Attribute", "Note"), ("Dimension", "Item")],
+                "Resource",
+                &["New", "Note", "Item"],
+            ),
+            // the last slot and same-slot siblings keep append order
+            (&[("Resource", "Price")], "Dimension", &["Price", "New"]),
+            (&[("Dimension", "Item")], "Dimension", &["Item", "New"]),
+            (&[("Resource", "Price")], "Resource", &["Price", "New"]),
+        ];
+        for (existing, inserted, expected) in matrix {
+            let mut xml = register_xml(existing);
+            meta_edit_insert_top_child_object(
+                &mut xml,
+                &[
+                    format!("\t\t\t<{inserted} uuid=\"33333333-3333-4333-8333-333333333333\">"),
+                    "\t\t\t\t<Properties><Name>New</Name></Properties>".to_string(),
+                    format!("\t\t\t</{inserted}>"),
+                ],
+            )
+            .unwrap();
+
+            let order: Vec<&str> = expected
+                .iter()
+                .map(|name| (xml.find(&format!("<Name>{name}</Name>")).unwrap(), *name))
+                .collect::<std::collections::BTreeMap<_, _>>()
+                .into_values()
+                .collect();
+            assert_eq!(
+                &order, expected,
+                "insert {inserted} into {existing:?}: {xml}"
+            );
+        }
     }
 
     #[test]

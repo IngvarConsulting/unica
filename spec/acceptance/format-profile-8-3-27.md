@@ -100,7 +100,11 @@ ADR-0016, а проверяемые правила границы совмест
 | `unica.mxl.compile` | 1 |
 | `unica.role.compile` | 1 |
 | `unica.support.edit` | 1 |
-| **Всего выбрано точных платформенных контрольных пунктов** | **63** |
+| `unica.xdto.edit` | 1 |
+
+Итог по таблице вручную не суммируется: полный счётчик случаев владеет реестром
+`EXECUTABLE_CASES` генератора, а равенство обеих сторон контракта держат стражи
+паритета (`test_mandatory_corpus_matches_the_generator_case_inventory`).
 
 ## Инвентарь доказательств по публичным операциям
 
@@ -146,9 +150,9 @@ CRLF и состоянием описателя `Extended`, которого т�
 Текущий корпус порождался независимо дважды. Свежие содержимое и хеши, зависящие
 от UUID, делают сырые манифесты побайтово разными, поэтому равенство сырых
 каталогов было бы ложным требованием воспроизводимости. Тем не менее оба прогона
-дали один и тот же нормализованный дайджест контракта случаев, приведённый выше,
-с тем же инвентарём из 64 случаев и 64 контрольных пунктов, 975 файлов и 92
-пустых каталогов. Дайджест связывает инвентарь пустых каталогов вдобавок к
+дали один и тот же нормализованный дайджест контракта случаев, закреплённый в
+`EXPECTED_CASE_CONTRACT_SHA256` верификатора, с одним и тем же инвентарём
+случаев, контрольных пунктов, файлов и пустых каталогов. Дайджест связывает инвентарь пустых каталогов вдобавок к
 публичным вызовам и ожидаемым переходам до и после. Каждый сырой корпус остаётся
 независимо проверенным по хешам и топологии во время своего прогона верификатора.
 
@@ -214,13 +218,29 @@ EPF/ERF используют платформенный путь для внеш
 UNICA_XML_CORPUS_DIR=/absolute/empty/corpus-a \
   cargo test -p unica-coder --test format_8_3_27_xml_corpus \
   generate_platform_xml_corpus -- --ignored --exact
+UNICA_XML_CORPUS_DIR=/absolute/empty/corpus-b \
+  cargo test -p unica-coder --test format_8_3_27_xml_corpus \
+  generate_platform_xml_corpus -- --ignored --exact
 
 python3 scripts/dev/verify-8-3-27-platform.py \
   --ibcmd /opt/1cv8/8.3.27.2074/ibcmd \
   --corpus /absolute/empty/corpus-a/corpus-manifest.json \
   --report /absolute/platform-report.json \
   --evidence-dir /absolute/existing/empty/platform-evidence
+
+python3 scripts/dev/verify-8-3-27-platform.py \
+  --ibcmd /opt/1cv8/8.3.27.2074/ibcmd \
+  --corpus /absolute/empty/corpus-b/corpus-manifest.json \
+  --report /absolute/platform-report-b.json \
+  --evidence-dir /absolute/existing/empty/platform-evidence-b \
+  --case cf-init-default
 ```
+
+Сравнение дайджестов не требует отдельного шага: `load_corpus` сверяет
+нормализованный дайджест каждого манифеста с одним и тем же закреплённым
+`EXPECTED_CASE_CONTRACT_SHA256` и останавливает прогон при расхождении, поэтому
+полный прогон по `corpus-a` и короткий отфильтрованный по `corpus-b` вместе
+доказывают, что оба порождения дали одинаковый контракт.
 
 Контрольные пункты изолированы, поэтому `--jobs N` выполняет их параллельно;
 при этом стоит поднять `--timeout` (например, до 900), потому что несколько
