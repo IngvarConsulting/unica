@@ -1778,6 +1778,26 @@ pub(crate) fn open_any_child_for_delete(
 ) -> io::Result<fs::File> {
     const FILE_OPEN: u32 = 0x0000_0001;
     const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    use windows_sys::Win32::Storage::FileSystem::{DELETE, FILE_READ_ATTRIBUTES, SYNCHRONIZE};
+
+    open_relative_child(
+        parent,
+        name,
+        DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        0,
+        FILE_OPEN,
+        FILE_OPEN_REPARSE_POINT,
+        None,
+    )
+}
+
+#[cfg(windows)]
+fn open_child_for_delete_and_attribute_write(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    const FILE_OPEN: u32 = 0x0000_0001;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
     use windows_sys::Win32::Storage::FileSystem::{
         DELETE, FILE_READ_ATTRIBUTES, FILE_WRITE_ATTRIBUTES, SYNCHRONIZE,
     };
@@ -2925,7 +2945,7 @@ pub(crate) fn remove_identity_bound_regular_child(
     expected_identity: FileIdentity,
     retained: &fs::File,
 ) -> io::Result<()> {
-    let named = open_any_child_for_delete(parent, name)?;
+    let named = open_child_for_delete_and_attribute_write(parent, name)?;
     if opened_child_kind(&named)? != OpenedChildKind::RegularFile
         || file_identity(&named)? != expected_identity
     {
