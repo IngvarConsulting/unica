@@ -27,6 +27,10 @@ serde_json = { version = "1.0", features = ["preserve_order"] }
 serde_yaml = "0.9"
 sha2 = "0.10"
 tar = "0.4"
+# Политика сетевого выхода поставщиков документации (`unica.toml`,
+# ADR-0032). Разбор строгий, через toml::Value, а не derive: файл запрета
+# обязан отказывать на неизвестных ключах, derive их молча отбрасывает.
+toml = "0.8"
 roxmltree = "0.20"
 tempfile = "3"
 # Контейнеры справки платформы (`.hbk`) несут ZIP внутри записи FileStorage.
