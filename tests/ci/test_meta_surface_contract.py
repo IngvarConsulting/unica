@@ -159,8 +159,12 @@ class MetaSurfaceContractTests(unittest.TestCase):
             self.assertIn(marker, ports)
             self.assertIn(marker, results)
         self.assertIn("capture_registered_subsystem_topology", info)
-        self.assertIn("functional_memberships", info)
-        self.assertIn("interface_memberships", info)
+        self.assertIn("MetadataObjectIdentity", info)
+        self.assertIn("Uuid::parse_str", info)
+        self.assertIn("functional_memberships_for", info)
+        self.assertIn("interface_memberships_for", info)
+        self.assertNotIn("functional_memberships(target.as_str())", info)
+        self.assertNotIn("interface_memberships(target.as_str())", info)
         for retired in (
             "typed_subsystem_images",
             "subsystem_names_from_logical_path",
@@ -168,6 +172,34 @@ class MetaSurfaceContractTests(unittest.TestCase):
             "SubsystemDescriptorFacts",
         ):
             self.assertNotIn(retired, info + validation + validation_context)
+
+    def test_meta_info_public_contract_distinguishes_empty_from_unavailable_memberships(
+        self,
+    ) -> None:
+        skill = (
+            REPO_ROOT / "plugins/unica/skills/meta-info/SKILL.md"
+        ).read_text(encoding="utf-8")
+        ledger = (
+            REPO_ROOT / "spec/architecture/tool-surface.md"
+        ).read_text(encoding="utf-8")
+        review = json.loads(
+            (
+                REPO_ROOT / "spec/architecture/tool-surface-review.json"
+            ).read_text(encoding="utf-8")
+        )["unica.meta.info"]
+        ledger_section = ledger.split("### `unica.meta.info`", 1)[1].split(
+            "### `unica.meta.remove`", 1
+        )[0]
+
+        for text in (skill, ledger_section, json.dumps(review, ensure_ascii=False)):
+            for marker in (
+                "functionalSubsystems",
+                "interfaceSubsystems",
+                "UUID",
+                "`[]`",
+                "provider_unavailable",
+            ):
+                self.assertIn(marker, text)
 
     def test_retired_dsl_capabilities_are_accounted_for(self) -> None:
         donor = retired_meta_table_capabilities()

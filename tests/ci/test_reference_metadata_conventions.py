@@ -60,6 +60,10 @@ class MetadataConventionReferenceTests(unittest.TestCase):
             "`functionalSubsystems`",
             "`interfaceSubsystems`",
             "только подсистемы, чей `Content` содержит анализируемый объект",
+            "адресом метаданных или UUID",
+            "`[]`",
+            "поля отсутствуют",
+            "`provider_unavailable`",
         ):
             self.assertIn(marker, conventions)
 

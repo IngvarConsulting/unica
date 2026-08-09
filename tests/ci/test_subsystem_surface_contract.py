@@ -32,6 +32,9 @@ class SubsystemSurfaceContractTests(unittest.TestCase):
         skill = (
             REPO_ROOT / "plugins/unica/skills/subsystem-info/SKILL.md"
         ).read_text(encoding="utf-8")
+        application = (
+            REPO_ROOT / "crates/unica-coder/src/application/mod.rs"
+        ).read_text(encoding="utf-8")
 
         answer = runtime.split("pub(crate) enum SubsystemInfoAnswer", 1)[1].split(
             "pub(crate) struct SubsystemGroupData", 1
@@ -42,8 +45,19 @@ class SubsystemSurfaceContractTests(unittest.TestCase):
         self.assertIn("pub(crate) tree: Option<Vec<SubsystemTreeNode>>", runtime)
         self.assertNotIn("functionalSubsystems", skill)
         self.assertNotIn("interfaceSubsystems", skill)
-        for marker in ("цепоч", "корня", "потом"):
+        for marker in (
+            "цепоч",
+            "корня",
+            "потом",
+            "самостоятельный XML",
+            "локальн",
+            "provider_unavailable",
+            "отмен",
+        ):
             self.assertIn(marker, skill)
+        self.assertNotIn("`overview`", skill)
+        self.assertNotIn("`Mode`", skill)
+        self.assertNotIn("full or focused registered tree", application)
 
         tool_contracts = (
             REPO_ROOT / "crates/unica-coder/src/application/tool_contracts.rs"
@@ -67,7 +81,14 @@ class SubsystemSurfaceContractTests(unittest.TestCase):
             "### `unica.subsystem.validate`", 1
         )[0]
         for text in (ledger_section, review_text):
-            for marker in ("tree", "ADR-0033", "INV-SOURCE-SUBSYSTEM-TOPOLOGY"):
+            for marker in (
+                "tree",
+                "ADR-0033",
+                "INV-SOURCE-SUBSYSTEM-TOPOLOGY",
+                "самостоятельн",
+                "локальн",
+                "provider_unavailable",
+            ):
                 self.assertIn(marker, text)
             self.assertNotIn("functionalSubsystems", text)
             self.assertNotIn("interfaceSubsystems", text)

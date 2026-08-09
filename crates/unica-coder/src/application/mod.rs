@@ -1737,7 +1737,7 @@ fn configuration_tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "unica.meta.info",
-            description: "Inspect one metadata object with validation, subsystem memberships, and source-tree usage.",
+            description: "Inspect one metadata object with validation, proven subsystem memberships, and source-tree usage.",
             mutating: false,
             cache_access: CacheAccess {
                 reads: &["workspace_graph", "metadata_graph"],
@@ -1905,7 +1905,7 @@ fn configuration_tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "unica.subsystem.info",
-            description: "Inspect subsystem XML, command interface, and full or focused registered tree.",
+            description: "Inspect a registered subsystem tree from a directory, a focused registered tree from XML, or an unregistered XML locally.",
             mutating: false,
             cache_access: cache_access_for("subsystem-info", None),
             handler: ToolHandler::NativeOperation {

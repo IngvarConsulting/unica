@@ -858,7 +858,7 @@ Apply ordered typed metadata edit operations atomically.
 
 ### `unica.meta.info`
 
-Inspect one metadata object with validation, subsystem memberships, and source-tree usage.
+Inspect one metadata object with validation, proven subsystem memberships, and source-tree usage.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
@@ -867,7 +867,7 @@ Inspect one metadata object with validation, subsystem memberships, and source-t
 | `sections` | array | нет | Extra sections to compute, all read from the source tree: `roles`, `subscriptions` and `functionalOptions` land in `usage`, `predefinedItems` in its own field. Omit or pass [] to inspect the object alone. |
 | `sourceSet` | string | да | Exact Configuration source-set name from v8project.yaml. |
 
-**Результат сейчас:** `structuredContent.data`: локальная структура и валидация объекта; `functionalSubsystems` и `interfaceSubsystems` содержат только членства текущего объекта в зарегистрированной топологии как плоские `SubsystemAddress` (ADR-0033, INV-SOURCE-SUBSYSTEM-TOPOLOGY); явно выбранные секции читаются из дерева исходников в `usage` и `predefinedItems`, обращения к RLM нет ни при каких аргументах (отвечают типизированным `data`)
+**Результат сейчас:** `structuredContent.data`: локальная структура и валидация объекта; `functionalSubsystems` и `interfaceSubsystems` содержат только членства текущего объекта в зарегистрированной топологии как плоские `SubsystemAddress`, сопоставляя `Content` по адресу метаданных или UUID корневого дескриптора; доказанное отсутствие членств сериализуется как `[]`, а при недоступном или повреждённом доказательстве поля отсутствуют и диагностика содержит `provider_unavailable` (ADR-0033, INV-SOURCE-SUBSYSTEM-TOPOLOGY); явно выбранные секции читаются из дерева исходников в `usage` и `predefinedItems`, обращения к RLM нет ни при каких аргументах (отвечают типизированным `data`)
 
 **Целевой контракт:** достигнут
 
@@ -1423,7 +1423,7 @@ Edit subsystem XML content and hierarchy.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `SubsystemPath` | string | да | Path to a subsystem's XML, its directory, or the whole `Subsystems/` folder, relative to `cwd`; `unica.subsystem.info` returns the whole registered tree for the folder and a focused ancestor chain with all descendants for a registered subsystem |
+| `SubsystemPath` | string | да | Path to a subsystem XML or `Subsystems` directory, relative to `cwd`; `unica.subsystem.info` returns the registered tree for a directory, the ancestor chain plus descendants for a registered XML, and local data without `tree` for an unregistered XML |
 
 Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -1437,16 +1437,16 @@ Edit subsystem XML content and hierarchy.
 
 ### `unica.subsystem.info`
 
-Inspect subsystem XML, command interface, and full or focused registered tree.
+Inspect a registered subsystem tree from a directory, a focused registered tree from XML, or an unregistered XML locally.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `SubsystemPath` | string | да | Path to a subsystem's XML, its directory, or the whole `Subsystems/` folder, relative to `cwd`; `unica.subsystem.info` returns the whole registered tree for the folder and a focused ancestor chain with all descendants for a registered subsystem |
+| `SubsystemPath` | string | да | Path to a subsystem XML or `Subsystems` directory, relative to `cwd`; `unica.subsystem.info` returns the registered tree for a directory, the ancestor chain plus descendants for a registered XML, and local data without `tree` for an unregistered XML |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
 | `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 
-**Результат сейчас:** `data`: состав, группы, дочерние подсистемы и командный интерфейс; каталог возвращает полное зарегистрированное `tree`, а конкретная подсистема — сфокусированное `tree` с цепочкой от корня до выбранного узла и всеми его потомками (ADR-0023, ADR-0033, INV-SOURCE-SUBSYSTEM-TOPOLOGY) (отвечают типизированным `data`)
+**Результат сейчас:** `data`: состав, группы, дочерние подсистемы и командный интерфейс; каталог `Subsystems` возвращает зарегистрированное `tree`, зарегистрированный XML — сфокусированное `tree` с цепочкой от корня до выбранного узла и всеми его потомками, а самостоятельный незарегистрированный XML — только локальные данные без `tree`; повреждение доказательства или отмена дают `provider_unavailable`, а не частичное дерево (ADR-0023, ADR-0033, INV-SOURCE-SUBSYSTEM-TOPOLOGY) (отвечают типизированным `data`)
 
 **Целевой контракт:** достигнут
 
@@ -1456,6 +1456,7 @@ Inspect subsystem XML, command interface, and full or focused registered tree.
 - Прочитать видимость и размещение команд подсистемы
 - Построить полное дерево зарегистрированной топологии каталога `Subsystems`
 - Увидеть цепочку от корня до выбранной подсистемы и полное дерево её потомков
+- Прочитать самостоятельный XML локально, не принимая отсутствие регистрации за пустое дерево
 
 ### `unica.subsystem.validate`
 
@@ -1463,7 +1464,7 @@ Validate subsystem XML.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `SubsystemPath` | string | да | Path to a subsystem's XML, its directory, or the whole `Subsystems/` folder, relative to `cwd`; `unica.subsystem.info` returns the whole registered tree for the folder and a focused ancestor chain with all descendants for a registered subsystem |
+| `SubsystemPath` | string | да | Path to a subsystem XML or `Subsystems` directory, relative to `cwd`; `unica.subsystem.info` returns the registered tree for a directory, the ancestor chain plus descendants for a registered XML, and local data without `tree` for an unregistered XML |
 
 Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 

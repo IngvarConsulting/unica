@@ -349,6 +349,118 @@ fn info_groups_only_the_current_objects_subsystem_memberships() {
 }
 
 #[test]
+fn info_matches_subsystem_memberships_by_address_or_root_descriptor_uuid() {
+    let workspace = create_info_workspace("object-subsystem-uuid-memberships");
+    let target_uuid = metadata_object_uuid(workspace.path(), "Catalogs/Inspectable.xml");
+    let different_uuid = "11111111-2222-4333-8444-555555555555";
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "ПоUUID",
+        "false",
+        &format!(
+            "{}{}",
+            content_item("Catalog.Other"),
+            content_item(&target_uuid)
+        ),
+    );
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "ПоАдресу",
+        "true",
+        &format!(
+            "{}{}",
+            content_item("Catalog.Inspectable"),
+            content_item(different_uuid)
+        ),
+    );
+
+    let result = call_info(workspace.path(), []);
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.expect("typed metadata info data");
+    assert_eq!(data["functionalSubsystems"], serde_json::json!(["ПоUUID"]));
+    assert_eq!(data["interfaceSubsystems"], serde_json::json!(["ПоАдресу"]));
+}
+
+#[test]
+fn info_returns_proved_empty_memberships_for_a_nonmatching_valid_uuid() {
+    let workspace = create_info_workspace("object-subsystem-nonmatching-uuid");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Посторонняя",
+        "true",
+        &content_item("11111111-2222-4333-8444-555555555555"),
+    );
+
+    let result = call_info(workspace.path(), []);
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.expect("typed metadata info data");
+    assert_eq!(data["functionalSubsystems"], serde_json::json!([]));
+    assert_eq!(data["interfaceSubsystems"], serde_json::json!([]));
+}
+
+#[test]
+fn info_omits_memberships_when_registered_content_reference_is_malformed() {
+    let workspace = create_info_workspace("object-subsystem-malformed-content-reference");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Поврежденная",
+        "true",
+        &content_item("not-a-metadata-reference"),
+    );
+
+    let result = call_info(workspace.path(), []);
+
+    assert!(!result.ok);
+    let data = result
+        .data
+        .as_ref()
+        .expect("partial typed metadata info data");
+    assert!(data.get("functionalSubsystems").is_none());
+    assert!(data.get("interfaceSubsystems").is_none());
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_rejects_an_invalid_root_descriptor_uuid_instead_of_matching_by_address_only() {
+    let workspace = create_info_workspace("object-invalid-root-uuid");
+    let relative_descriptor = "Catalogs/Inspectable.xml";
+    let descriptor_path = workspace.path().join("src").join(relative_descriptor);
+    let target_uuid = metadata_object_uuid(workspace.path(), relative_descriptor);
+    let descriptor = std::fs::read_to_string(&descriptor_path).unwrap().replacen(
+        &format!("uuid=\"{target_uuid}\""),
+        "uuid=\"not-a-uuid\"",
+        1,
+    );
+    std::fs::write(&descriptor_path, descriptor).unwrap();
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "ПоАдресу",
+        "true",
+        &content_item("Catalog.Inspectable"),
+    );
+
+    let result = call_info(workspace.path(), []);
+
+    assert!(!result.ok);
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("functionalSubsystems").is_none()));
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("interfaceSubsystems").is_none()));
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
 fn info_preserves_local_structure_when_child_resource_evidence_is_unavailable() {
     let workspace = create_info_workspace("child-evidence-unavailable");
     let edited = call_edit(
@@ -1187,6 +1299,18 @@ fn write_subsystem(workspace: &Path, relative_dir: &str, name: &str, include: &s
 
 fn content_item(reference: &str) -> String {
     format!("\t\t\t\t<xr:Item xsi:type=\"xr:MDObjectRef\">{reference}</xr:Item>\n")
+}
+
+fn metadata_object_uuid(workspace: &Path, relative_descriptor: &str) -> String {
+    let xml = std::fs::read_to_string(workspace.join("src").join(relative_descriptor)).unwrap();
+    let document = roxmltree::Document::parse(&xml).unwrap();
+    document
+        .root_element()
+        .children()
+        .find(roxmltree::Node::is_element)
+        .and_then(|object| object.attribute("uuid"))
+        .expect("metadata object root has uuid")
+        .to_string()
 }
 
 fn add_command_interface_register(workspace: &Path, name: &str) {

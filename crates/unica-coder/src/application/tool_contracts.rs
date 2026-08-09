@@ -2911,7 +2911,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "subsystemPath",
-        "Path to a subsystem's XML, its directory, or the whole `Subsystems/` folder, relative to `cwd`; `unica.subsystem.info` returns the whole registered tree for the folder and a focused ancestor chain with all descendants for a registered subsystem",
+        "Path to a subsystem XML or `Subsystems` directory, relative to `cwd`; `unica.subsystem.info` returns the registered tree for a directory, the ancestor chain plus descendants for a registered XML, and local data without `tree` for an unregistered XML",
     ),
     (
         "synonym",

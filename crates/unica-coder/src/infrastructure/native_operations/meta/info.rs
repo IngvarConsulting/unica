@@ -20,7 +20,10 @@ use std::path::{Path, PathBuf};
 use crate::infrastructure::platform::secure_read::{
     capture_root_relative_regular_files, SecureTreeCaptureLimits,
 };
-use crate::infrastructure::subsystem_topology::capture_registered_subsystem_topology;
+use crate::infrastructure::subsystem_topology::{
+    capture_registered_subsystem_topology, MetadataObjectIdentity,
+};
+use uuid::Uuid;
 
 const REGISTRAR_SCAN_MAX_ENTRIES: usize = 20_000;
 const REGISTRAR_SCAN_MAX_FILES: usize = 20_000;
@@ -188,6 +191,23 @@ pub(crate) fn read_typed_meta_info(
                 .with_metadata_path(target.clone()),
         )
     })?;
+    let object_uuid = object
+        .attribute("uuid")
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .ok_or_else(|| {
+            MetaFailure::from(
+                MetaDiagnostic::error(
+                    MetaDiagnosticCode::ProviderUnavailable,
+                    "metadata descriptor has no valid object UUID",
+                )
+                .with_metadata_path(target.clone())
+                .with_field("uuid"),
+            )
+        })?;
+    let object_identity = MetadataObjectIdentity {
+        address: target.clone(),
+        uuid: object_uuid,
+    };
     let properties = meta_info_child(object, "Properties");
     let child_objects = meta_info_child(object, "ChildObjects");
     let name = properties
@@ -321,7 +341,7 @@ pub(crate) fn read_typed_meta_info(
     validation_resources.extend(registrar_resources);
     let subsystem_evidence = Some(typed_subsystem_evidence(
         resolved,
-        target,
+        &object_identity,
         deadline,
         cancellation,
     ));
@@ -536,7 +556,7 @@ fn subsystem_evidence_unavailable(
 /// command-interface rule when the object is an eligible register.
 fn typed_subsystem_evidence(
     resolved: &ResolvedMetadataObject,
-    target: &MetadataAddress,
+    identity: &MetadataObjectIdentity,
     deadline: ProviderDeadline,
     cancellation: &CancellationToken,
 ) -> MetadataSubsystemEvidence {
@@ -551,7 +571,7 @@ fn typed_subsystem_evidence(
         );
         if registrar_scan_checkpoint(deadline, cancellation).is_err() {
             return subsystem_evidence_unavailable(
-                target,
+                &identity.address,
                 "registered subsystem topology processing was interrupted",
             );
         }
@@ -566,7 +586,7 @@ fn typed_subsystem_evidence(
         Ok(topology) => topology,
         Err(_) => {
             return subsystem_evidence_unavailable(
-                target,
+                &identity.address,
                 "registered subsystem topology cannot be proved completely",
             )
         }
@@ -576,13 +596,13 @@ fn typed_subsystem_evidence(
     );
     if registrar_scan_checkpoint(deadline, cancellation).is_err() {
         return subsystem_evidence_unavailable(
-            target,
+            &identity.address,
             "registered subsystem topology processing was interrupted",
         );
     }
     MetadataSubsystemEvidence::Complete {
-        functional_subsystems: topology.functional_memberships(target.as_str()),
-        interface_subsystems: topology.interface_memberships(target.as_str()),
+        functional_subsystems: topology.functional_memberships_for(identity),
+        interface_subsystems: topology.interface_memberships_for(identity),
     }
 }
 
