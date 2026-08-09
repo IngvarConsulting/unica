@@ -21,7 +21,6 @@ use crate::infrastructure::workspace::discover_workspace;
 use crate::infrastructure::workspace_services::WorkspaceServiceManager;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
-use std::env;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -2034,6 +2033,13 @@ struct UreqHttpClient;
 
 static UREQ_HTTP_CLIENT: UreqHttpClient = UreqHttpClient;
 
+/// Общий продовый HTTP-клиент для потребителей за пределами модуля:
+/// поставщик `v8std` реестра документации держит его в `Arc`, а не через
+/// статическую ссылку, чтобы тесты подменяли транспорт значением.
+pub(crate) fn shared_http_client() -> std::sync::Arc<dyn HttpClient + Send + Sync> {
+    std::sync::Arc::new(UreqHttpClient)
+}
+
 impl StandardsAdapter {
     const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -2082,17 +2088,21 @@ impl StandardsAdapter {
         }
     }
 
-    pub fn invoke(operation: &str, args: &Map<String, Value>) -> StandardsOutcome {
-        Self::invoke_with_client(operation, args, &UREQ_HTTP_CLIENT)
+    /// Endpoint приходит от вызывающего: цепочку разрешения — политика
+    /// `unica.toml`, окружение, встроенное умолчание — знает
+    /// `standards_documentation::resolve_standards_endpoint`, и она одна на
+    /// фасады и поставщика реестра (ADR-0032 п.4).
+    pub fn invoke(operation: &str, args: &Map<String, Value>, endpoint: &str) -> StandardsOutcome {
+        Self::invoke_with_client(operation, args, endpoint, &UREQ_HTTP_CLIENT)
     }
 
     pub fn invoke_with_client(
         operation: &str,
         args: &Map<String, Value>,
+        endpoint: &str,
         http: &dyn HttpClient,
     ) -> StandardsOutcome {
-        let endpoint = env::var("UNICA_STANDARDS_MCP_URL")
-            .unwrap_or_else(|_| "https://ai.v8std.ru/mcp".to_string());
+        let endpoint = endpoint.to_string();
         let request = match Self::request_for(operation, args) {
             Ok(request) => request,
             Err(error) => {
@@ -5459,7 +5469,12 @@ source-set:
         args.insert("query".to_string(), json!("модальные окна"));
         args.insert("limit".to_string(), json!(2));
 
-        let outcome = StandardsAdapter::invoke_with_client("search", &args, &client);
+        let outcome = StandardsAdapter::invoke_with_client(
+            "search",
+            &args,
+            "https://ai.v8std.ru/mcp",
+            &client,
+        );
 
         assert!(outcome.outcome.ok);
         assert_eq!(outcome.data.unwrap(), json!({"content": []}));

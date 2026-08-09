@@ -364,6 +364,101 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
         false
     }
 
+    /// Страница целиком по локатору `platform-syntax-help:<корпус>:<путь>` —
+    /// доказательство по ADR-0029 п.4, а не фрагмент. Индекс полного текста
+    /// не держит (он экономит память под поиск), поэтому страница
+    /// перечитывается из контейнеров выбранной установки; `get` редок, и цена
+    /// перечитывания честнее удвоения резидента индекса.
+    fn get(
+        &self,
+        document_id: &str,
+        language: &str,
+        context: &DocumentationContext,
+    ) -> Option<Result<crate::domain::documentation::DocumentationDocument, String>> {
+        let rest = document_id.strip_prefix("platform-syntax-help:")?;
+        // Префикс наш — дальнейшие неожиданности отвечаются отказом
+        // владельца, а не тихим None: другой владелец у локатора невозможен.
+        let Some((corpus_id, path)) = rest.split_once(':') else {
+            return Some(Err(format!(
+                "локатор {document_id:?} не несёт корпуса и пути"
+            )));
+        };
+        let Some(root) = context.installation_root.as_ref() else {
+            let detail = match context.platform_version.as_deref() {
+                Some(version) => {
+                    format!("установка платформы {version} не разрешена для рабочего пространства")
+                }
+                None => "установка платформы не разрешена для рабочего пространства".to_string(),
+            };
+            return Some(Err(detail));
+        };
+        let corpora = match discover(root, language) {
+            Ok(value) => value,
+            Err(error) => return Some(Err(format!("установка не разобрана: {error:?}"))),
+        };
+        let source = match corpus_id {
+            "syntax-context" => &corpora.syntax_context,
+            "platform-guides" => &corpora.platform_guides,
+            other => return Some(Err(format!("неизвестный корпус {other:?} в локаторе"))),
+        };
+        let mut unreadable: Vec<String> = Vec::new();
+        for container in &source.containers {
+            let name = container
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("<без имени>")
+                .to_string();
+            let bytes = match std::fs::read(container) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    unreadable.push(format!("{name}: {error}"));
+                    continue;
+                }
+            };
+            // Точечное чтение одной записи, а не разбор корпуса: `get`
+            // платил 4.4 секунды за инфлейт всех 25 тысяч страниц ради
+            // одной, а битый поток соседней записи валил весь контейнер.
+            let page = match super::corpus::read_page_from_container(&bytes, path) {
+                Ok(page) => page,
+                Err(error) => {
+                    unreadable.push(format!("{name}: {}", corpus_failure(&error)));
+                    continue;
+                }
+            };
+            if let Some(page) = page {
+                return Some(Ok(crate::domain::documentation::DocumentationDocument {
+                    provider: self.id(),
+                    corpus: corpus_id.to_string(),
+                    source_kind: SourceKind::PlatformHelp,
+                    authority: Authority::Vendor,
+                    // Локаль, которой корпус реально прочитан, — как у поиска.
+                    language: source.language.clone(),
+                    document_id: document_id.to_string(),
+                    title: page.title.clone(),
+                    signature: page
+                        .signature
+                        .as_ref()
+                        .and_then(|value| signature_in(value, &source.language)),
+                    applicable_version: corpora.version.clone(),
+                    text: page.text,
+                }));
+            }
+        }
+        // «Страницы нет» при пропущенных контейнерах — неправда: страница,
+        // может, и есть, но контейнер не разобрался, и это называется.
+        if unreadable.is_empty() {
+            Some(Err(format!(
+                "страницы {path:?} нет в корпусе {corpus_id} установки {}",
+                corpora.version
+            )))
+        } else {
+            Some(Err(format!(
+                "страница {path:?} не найдена, но контейнеры корпуса {corpus_id} не разобрались: {}",
+                unreadable.join("; ")
+            )))
+        }
+    }
+
     fn search(
         &self,
         request: &DocumentationSearchRequest,
@@ -1393,6 +1488,183 @@ mod tests {
             "platform-syntax-help:syntax-context:root/alpha.html"
         );
         assert_eq!(second_syntax.language, "root");
+    }
+
+    /// `get` возвращает страницу ЦЕЛИКОМ — доказательство по ADR-0029 п.4,
+    /// а не 400-символьный фрагмент индекса. Индекс полного текста не держит,
+    /// поэтому страница перечитывается из контейнеров выбранной установки;
+    /// локаль подставляется тем же правилом, что и у поиска, и называется в
+    /// документе. Чужой префикс — «не мой локатор», свой префикс с пропавшей
+    /// страницей — отказ владельца, называющий страницу.
+    #[test]
+    fn get_returns_the_full_page_text_not_the_snippet() {
+        let _serial = index_test_lock();
+        let dir = tempfile::tempdir().expect("каталог");
+        let root = dir.path().join("8.3.27.2074");
+        std::fs::create_dir_all(&root).expect("каталог версии");
+        // Текст заметно длиннее фрагмента (400): полнота наблюдаема.
+        let body = "слово ".repeat(200);
+        std::fs::write(
+            root.join("shcntx_root.hbk"),
+            hbk_bytes(&[(
+                "objects/GetURL.html",
+                &format!("<html><body><h1>Global context.GetURL</h1><p>{body}</p></body></html>"),
+            )]),
+        )
+        .expect("контейнер");
+
+        let provider = PlatformSyntaxHelpProvider::new();
+        let context = DocumentationContext {
+            platform_version: Some("8.3.27.2074".to_string()),
+            installation_root: Some(root),
+        };
+        let document = provider
+            .get(
+                "platform-syntax-help:syntax-context:objects/GetURL.html",
+                "en",
+                &context,
+            )
+            .expect("локатор наш")
+            .expect("страница найдена");
+        assert_eq!(document.title, "Global context.GetURL");
+        assert!(
+            document.text.chars().count() > 400,
+            "текст обязан быть полным, а не фрагментом: {} символов",
+            document.text.chars().count()
+        );
+        assert_eq!(
+            document.language, "root",
+            "локаль подставляется и называется, как у поиска"
+        );
+        assert_eq!(document.applicable_version, "8.3.27.2074");
+        assert_eq!(document.corpus, "syntax-context");
+
+        assert!(
+            provider
+                .get("https://kb.1ci.com/x/", "ru", &context)
+                .is_none(),
+            "чужой локатор — не мой, отвечает None"
+        );
+        let missing = provider
+            .get(
+                "platform-syntax-help:syntax-context:objects/Missing.html",
+                "en",
+                &context,
+            )
+            .expect("локатор наш");
+        let error = missing.expect_err("пропавшая страница — отказ владельца");
+        assert!(
+            error.contains("objects/Missing.html"),
+            "отказ обязан назвать страницу, получено {error}"
+        );
+    }
+
+    /// `get` читает ОДНУ запись контейнера, а не разбирает корпус: битый
+    /// deflate-поток соседней страницы не мешает отдать запрошенную. До
+    /// правки полный `read_corpus` спотыкался о соседа, контейнер попадал в
+    /// «неразобравшиеся», и страница объявлялась недоступной — а заодно
+    /// каждый вызов платил 4.4 секунды за разбор всех 25 тысяч страниц.
+    #[test]
+    fn get_reads_only_the_requested_entry_and_survives_a_corrupted_sibling() {
+        let _serial = index_test_lock();
+        let dir = tempfile::tempdir().expect("каталог");
+        let root = dir.path().join("8.3.27.2074");
+        std::fs::create_dir_all(&root).expect("каталог версии");
+
+        // Архив с хорошей и битой записями — тем же приёмом, что и в
+        // corpus::tests: порча второго локального заголовка.
+        let mut archive = {
+            use std::io::Write;
+            let mut buffer = std::io::Cursor::new(Vec::new());
+            {
+                let mut writer = zip::ZipWriter::new(&mut buffer);
+                let options: zip::write::FileOptions<()> = zip::write::FileOptions::default()
+                    .compression_method(zip::CompressionMethod::Deflated);
+                for (name, html) in [
+                    (
+                        "objects/Good.html",
+                        "<html><body><h1>Хорошая страница</h1><p>Текст хорошей страницы.</p></body></html>",
+                    ),
+                    (
+                        "objects/Broken.html",
+                        "<html><body><h1>Сосед</h1><p>Поток будет испорчен.</p></body></html>",
+                    ),
+                ] {
+                    writer.start_file(name, options).expect("запись открыта");
+                    writer.write_all(html.as_bytes()).expect("запись записана");
+                }
+                writer.finish().expect("архив закрыт");
+            }
+            buffer.into_inner()
+        };
+        let signature = [0x50, 0x4B, 0x03, 0x04];
+        let mut headers = Vec::new();
+        for start in 0..archive.len().saturating_sub(4) {
+            if archive[start..start + 4] == signature {
+                headers.push(start);
+            }
+        }
+        let second = headers[1];
+        let name_len = u16::from_le_bytes([archive[second + 26], archive[second + 27]]) as usize;
+        let extra_len = u16::from_le_bytes([archive[second + 28], archive[second + 29]]) as usize;
+        let data = second + 30 + name_len + extra_len;
+        for byte in archive[data..data + 8].iter_mut() {
+            *byte = 0xFF;
+        }
+        std::fs::write(
+            root.join("shcntx_ru.hbk"),
+            crate::infrastructure::platform_help::container::tests_support::container_with(
+                &[("FileStorage", archive.as_slice())],
+                None,
+            ),
+        )
+        .expect("контейнер");
+
+        let provider = PlatformSyntaxHelpProvider::new();
+        let context = DocumentationContext {
+            platform_version: Some("8.3.27.2074".to_string()),
+            installation_root: Some(root),
+        };
+        let document = provider
+            .get(
+                "platform-syntax-help:syntax-context:objects/Good.html",
+                "ru",
+                &context,
+            )
+            .expect("локатор наш")
+            .expect("страница обязана читаться точечно, не спотыкаясь о соседа");
+        assert_eq!(document.title, "Хорошая страница");
+        assert!(document.text.contains("Текст хорошей страницы."));
+    }
+
+    /// Корпус из одного битого контейнера: «страницы нет» здесь неправда —
+    /// страница, может, и есть, но контейнер не разобрался, и отказ обязан
+    /// назвать пропуск, а не выдать неполноту за отсутствие.
+    #[test]
+    fn get_names_unreadable_containers_instead_of_claiming_the_page_absent() {
+        let _serial = index_test_lock();
+        let dir = tempfile::tempdir().expect("каталог");
+        let root = dir.path().join("8.3.27.2074");
+        std::fs::create_dir_all(&root).expect("каталог версии");
+        std::fs::write(root.join("shcntx_ru.hbk"), vec![b'x'; 256]).expect("битый контейнер");
+
+        let provider = PlatformSyntaxHelpProvider::new();
+        let context = DocumentationContext {
+            platform_version: Some("8.3.27.2074".to_string()),
+            installation_root: Some(root),
+        };
+        let error = provider
+            .get(
+                "platform-syntax-help:syntax-context:objects/Page.html",
+                "ru",
+                &context,
+            )
+            .expect("локатор наш")
+            .expect_err("битый корпус — отказ владельца");
+        assert!(
+            error.contains("shcntx_ru.hbk"),
+            "отказ обязан назвать неразобравшийся контейнер, получено {error}"
+        );
     }
 
     /// Платформа, переустановленная в тот же каталог, — не экзотика, а
