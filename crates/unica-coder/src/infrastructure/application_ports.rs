@@ -673,7 +673,7 @@ fn configured_platform_version(path: &Path) -> Option<String> {
 /// project's own pin, then the numerically newest installation found.
 ///
 /// `UNICA_PLATFORM_HELP_DIR` is a test-only switch (see
-/// `platform_help::installation`) and does not feed into this resolver.
+/// `platform_help::real_installation`) and does not feed into this resolver.
 fn documentation_context(
     roots: &[std::path::PathBuf],
     requested: Option<&str>,
@@ -688,7 +688,7 @@ fn documentation_context(
     }
 }
 
-/// Pure root pick, split out of `resolve_platform_installation_root` so it can
+/// Pure root pick, split out of `documentation_context`'s resolution so it can
 /// be tested without the hard-coded platform roots. Roots are tried in the
 /// declared order and the first one that answers closes the walk (ADR-0029
 /// point 2).
@@ -789,8 +789,8 @@ fn numeric_version_key(path: &std::path::Path) -> Vec<u32> {
         .unwrap_or_default()
 }
 
-/// Pure version pick, split out of `resolve_platform_installation_root` so it
-/// can be tested without touching the filesystem or the hard-coded platform
+/// Pure version pick, split out of `select_installation_root` so it can be
+/// tested without touching the filesystem or the hard-coded platform
 /// roots: an explicit version must match a directory name exactly (a
 /// three-component prefix like `8.3.27` must not silently resolve to
 /// `8.3.27.2074`, since a patch mismatch changes hundreds of API names), and
