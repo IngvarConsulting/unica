@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::domain::documentation::*;
@@ -73,13 +73,35 @@ struct InstallationIndex {
     corpora: Vec<IndexedCorpus>,
 }
 
-/// Ключ индекса — каталог установки и язык, а не одна лишь версия: под
-/// разными корнями встречаются одноимённые каталоги версий, и справка у них
-/// своя. Язык входит в ключ, потому что им отбираются сами контейнеры.
+/// Ключ индекса — каталог установки и сами ВЫБРАННЫЕ контейнеры обоих
+/// корпусов, а не запрошенная локаль. Прежний ключ по запрошенной локали
+/// делал из `en`, `root` и локали с опечаткой три разных ключа над одними и
+/// теми же файлами: единственный слот перестраивался на каждом чередовании
+/// таких запросов — секунды индексирования реальной установки на вызов, —
+/// хотя на диске не менялось ничего. Разрешённая локаль в ключ тоже не
+/// годится: у пустого корпуса она — эхо запроса. Списки выбранных
+/// контейнеров детерминированы (`discover` сортирует их) и совпадают ровно
+/// тогда, когда оба вызова читали бы одни и те же файлы; абсолютные пути
+/// заодно различают одноимённые каталоги версий под разными корнями.
 #[derive(PartialEq, Eq)]
 struct IndexKey {
     root: PathBuf,
-    language: String,
+    containers: Vec<PathBuf>,
+}
+
+impl IndexKey {
+    fn for_corpora(root: &Path, corpora: &InstallationCorpora) -> IndexKey {
+        IndexKey {
+            root: root.to_path_buf(),
+            containers: corpora
+                .syntax_context
+                .containers
+                .iter()
+                .chain(corpora.platform_guides.containers.iter())
+                .cloned()
+                .collect(),
+        }
+    }
 }
 
 struct CachedIndex {
@@ -394,13 +416,7 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
                 );
             }
         };
-        let index = indexed(
-            IndexKey {
-                root: root.clone(),
-                language: request.language.clone(),
-            },
-            &corpora,
-        );
+        let index = indexed(IndexKey::for_corpora(root, &corpora), &corpora);
         // По секции на корпус: поле `corpus` обязано описывать именно свои
         // попадания, поэтому корпуса не смешиваются в одну секцию.
         CORPUS_SPECS
@@ -1200,6 +1216,59 @@ mod tests {
             "смена языка при том же каталоге обязана перестраивать индекс"
         );
         assert_eq!(syntax.language, "en");
+    }
+
+    /// Ключ индекса — разрешённые локали корпусов, а не запрошенная. Запросы
+    /// `en` и `root` на установке без `shcntx_en.hbk` читают один и тот же
+    /// английский контейнер, но с ключом по запрошенной локали это два разных
+    /// ключа над одними корпусами: единственный слот перестраивался на каждом
+    /// чередовании — 15 секунд индексирования реальной установки на вызов, —
+    /// хотя на диске не менялось ничего. Наблюдаемо через порчу контейнеров:
+    /// второй запрос, разрешающийся в ту же локаль, обязан ответить из
+    /// индекса, а перестройка увидела бы испорченный файл.
+    #[test]
+    fn two_requests_resolving_to_the_same_locale_share_one_index() {
+        // Слот индекса общий на процесс — тесты, которые его пишут, идут по одному.
+        let _serial = index_test_lock();
+        let dir = tempfile::tempdir().expect("каталог");
+        let root = dir.path().join("8.3.27.2074");
+        std::fs::create_dir_all(&root).expect("каталог версии");
+        let container = root.join("shcntx_root.hbk");
+        std::fs::write(
+            &container,
+            hbk_bytes(&[(
+                "root/alpha.html",
+                "<html><body><h1>Alpha in English</h1><p>текст</p></body></html>",
+            )]),
+        )
+        .expect("английский контейнер");
+
+        let context = DocumentationContext {
+            platform_version: Some("8.3.27.2074".to_string()),
+            installation_root: Some(root),
+        };
+        let first = PlatformSyntaxHelpProvider::new().search(&request_in("Alpha", "en"), &context);
+        let first_syntax = syntax_section(&first);
+        assert_eq!(first_syntax.language, "root", "en разрешается в root");
+        assert_eq!(first_syntax.hits.len(), 1, "первый вызов строит индекс");
+
+        // Перестройка прочитала бы мусор и ответила Failed; ответ из индекса
+        // остаётся Ok.
+        std::fs::write(&container, b"not a container at all").expect("контейнер испорчен");
+
+        let second =
+            PlatformSyntaxHelpProvider::new().search(&request_in("Alpha", "root"), &context);
+        let second_syntax = syntax_section(&second);
+        assert!(
+            matches!(second_syntax.status, DocumentationSectionStatus::Ok),
+            "запрос root разрешается в ту же локаль и обязан ответить из индекса, получено {:?}",
+            second_syntax.status
+        );
+        assert_eq!(
+            second_syntax.hits[0].document_id,
+            "platform-syntax-help:syntax-context:root/alpha.html"
+        );
+        assert_eq!(second_syntax.language, "root");
     }
 
     /// Индекс переживает вызов: второй `search` по той же установке обязан
