@@ -928,6 +928,46 @@ fn add_with_synonym(workspace: &TempWorkspace, name: &str, synonym: &str) -> Vec
         .collect()
 }
 
+/// Classifies the command-text warning a synonym of `length` characters draws,
+/// so the two thresholds are pinned at their exact boundaries.
+fn command_text_warning_at(workspace: &TempWorkspace, name: &str, length: usize) -> Option<String> {
+    let warnings = add_with_synonym(workspace, name, &"Д".repeat(length));
+    let recommended = warnings
+        .iter()
+        .any(|warning| warning.contains("recommended 30 characters"));
+    let ceiling = warnings
+        .iter()
+        .any(|warning| warning.contains("longer than 38 characters"));
+    assert!(
+        !(recommended && ceiling),
+        "one value must never draw both warnings: {warnings:?}"
+    );
+    match (recommended, ceiling) {
+        (true, _) => Some("recommended".to_string()),
+        (_, true) => Some("ceiling".to_string()),
+        _ => None,
+    }
+}
+
+#[test]
+fn add_pins_both_command_text_thresholds_at_their_boundaries() {
+    let workspace = create_configuration_workspace("command-text-boundaries");
+
+    assert_eq!(command_text_warning_at(&workspace, "Exactly30", 30), None);
+    assert_eq!(
+        command_text_warning_at(&workspace, "Exactly31", 31).as_deref(),
+        Some("recommended")
+    );
+    assert_eq!(
+        command_text_warning_at(&workspace, "Exactly38", 38).as_deref(),
+        Some("recommended")
+    );
+    assert_eq!(
+        command_text_warning_at(&workspace, "Exactly39", 39).as_deref(),
+        Some("ceiling")
+    );
+}
+
 #[test]
 fn add_warns_when_command_text_passes_the_recommended_limit() {
     let workspace = create_configuration_workspace("command-text-soft-limit");
