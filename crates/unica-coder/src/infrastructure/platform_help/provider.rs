@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use crate::domain::documentation::*;
 
 use super::corpus::{read_corpus, CorpusError, CorpusPage, Signature};
-use super::installation::{discover, InstallationCorpora, InstallationError};
+use super::installation::{discover, CorpusContainers, InstallationCorpora, InstallationError};
 
 /// Длина фрагмента выдачи. Вырезается один раз при индексировании: фрагмент
 /// не зависит от запроса, и держать ради него полный текст страницы незачем.
@@ -58,6 +58,8 @@ fn index_page(page: CorpusPage) -> IndexedPage {
 
 struct IndexedCorpus {
     pages: Vec<IndexedPage>,
+    /// Локаль, в которой корпус реально прочитан: она уходит в секцию ответа.
+    language: String,
     /// Контейнеры, которые не прочитались или не разобрались. Молчаливый
     /// пропуск превращал повреждённый `.hbk` в «ничего не нашлось».
     unreadable: Vec<String>,
@@ -123,10 +125,10 @@ fn corpus_failure(error: &CorpusError) -> String {
     }
 }
 
-fn index_corpus(containers: &[PathBuf]) -> IndexedCorpus {
+fn index_corpus(source: &CorpusContainers) -> IndexedCorpus {
     let mut pages = Vec::new();
     let mut unreadable = Vec::new();
-    for path in containers {
+    for path in &source.containers {
         let name = path
             .file_name()
             .and_then(|value| value.to_str())
@@ -140,14 +142,18 @@ fn index_corpus(containers: &[PathBuf]) -> IndexedCorpus {
             },
         }
     }
-    IndexedCorpus { pages, unreadable }
+    IndexedCorpus {
+        pages,
+        language: source.language.clone(),
+        unreadable,
+    }
 }
 
 fn build_index(corpora: &InstallationCorpora) -> InstallationIndex {
     // Соответствие с `CORPUS_SPECS` позиционное: компилятор держит длину
     // массива, а порядок объявлен здесь. Добавленный корпус не соберётся,
     // пока его контейнеры не названы.
-    let sources: [&[PathBuf]; CORPUS_SPECS.len()] =
+    let sources: [&CorpusContainers; CORPUS_SPECS.len()] =
         [&corpora.syntax_context, &corpora.platform_guides];
     InstallationIndex {
         version: corpora.version.clone(),
@@ -251,13 +257,20 @@ impl PlatformSyntaxHelpProvider {
     /// ADR-0029). Её происхождение берётся у первого объявленного корпуса:
     /// секция описывает поставщика, а не какой-то один его корпус, и четыре
     /// почти одинаковых литерала повторять для этого незачем.
-    fn diagnostic(&self, status: DocumentationSectionStatus) -> Vec<DocumentationSection> {
+    fn diagnostic(
+        &self,
+        language: &str,
+        status: DocumentationSectionStatus,
+    ) -> Vec<DocumentationSection> {
         let spec = &CORPUS_SPECS[0];
         vec![DocumentationSection {
             provider: self.id(),
             corpus: spec.id.to_string(),
             source_kind: spec.source_kind,
             authority: spec.authority,
+            // Прочитать не удалось ничего, поэтому «ответившей» локали нет:
+            // называется запрошенная — та, на которой ответа не получилось.
+            language: language.to_string(),
             status,
             hits: Vec::new(),
         }]
@@ -299,45 +312,62 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
                 }
                 None => "установка платформы не разрешена для рабочего пространства".to_string(),
             };
-            return self.diagnostic(DocumentationSectionStatus::Unavailable {
-                reason: UnavailableReason::NotConfigured,
-                detail,
-            });
+            return self.diagnostic(
+                &request.language,
+                DocumentationSectionStatus::Unavailable {
+                    reason: UnavailableReason::NotConfigured,
+                    detail,
+                },
+            );
         };
         let corpora = match discover(root, &request.language) {
             Ok(value) => value,
             Err(InstallationError::HelpMissingForVersion { version }) => {
-                // Язык назван: у нерусской установки Синтакс-помощник лежит в
-                // `shcntx_<язык>.hbk`, и «нужна полная поставка» без языка
-                // отправляло бы читателя чинить не то.
-                return self.diagnostic(DocumentationSectionStatus::Unavailable {
-                    reason: UnavailableReason::VersionMissing,
-                    detail: format!(
-                        "установка {version} не содержит Синтакс-помощника на языке {}; нужна полная поставка",
-                        request.language
-                    ),
-                });
+                // Ни в одной локали: локаль запроса тут ни при чём, потому что
+                // отсутствующую подменяет установленная. Отказ означает именно
+                // клиентскую поставку без Синтакс-помощника вовсе.
+                return self.diagnostic(
+                    &request.language,
+                    DocumentationSectionStatus::Unavailable {
+                        reason: UnavailableReason::VersionMissing,
+                        detail: format!(
+                            "установка {version} не содержит Синтакс-помощника ни в одной локали; нужна полная поставка"
+                        ),
+                    },
+                );
             }
             Err(InstallationError::Unreadable { detail }) => {
-                return self.diagnostic(DocumentationSectionStatus::Failed {
-                    diagnostic: format!("каталог установки не читается: {detail}"),
-                });
+                return self.diagnostic(
+                    &request.language,
+                    DocumentationSectionStatus::Failed {
+                        diagnostic: format!("каталог установки не читается: {detail}"),
+                    },
+                );
             }
             // NotFound и VersionUndetermined и раньше давали один и тот же
             // `reason`, но обязаны различаться текстом: иначе вызывающий не
             // отличит «каталога нет» от «версию не вывести из пути» ни по
             // чему, кроме кода, а не по ответу.
             Err(InstallationError::VersionUndetermined) => {
-                return self.diagnostic(DocumentationSectionStatus::Unavailable {
-                    reason: UnavailableReason::NotConfigured,
-                    detail: format!("версия не выводится из корня установки: {}", root.display()),
-                });
+                return self.diagnostic(
+                    &request.language,
+                    DocumentationSectionStatus::Unavailable {
+                        reason: UnavailableReason::NotConfigured,
+                        detail: format!(
+                            "версия не выводится из корня установки: {}",
+                            root.display()
+                        ),
+                    },
+                );
             }
             Err(InstallationError::NotFound) => {
-                return self.diagnostic(DocumentationSectionStatus::Unavailable {
-                    reason: UnavailableReason::NotConfigured,
-                    detail: format!("каталог установки недоступен: {}", root.display()),
-                });
+                return self.diagnostic(
+                    &request.language,
+                    DocumentationSectionStatus::Unavailable {
+                        reason: UnavailableReason::NotConfigured,
+                        detail: format!("каталог установки недоступен: {}", root.display()),
+                    },
+                );
             }
         };
         let index = indexed(
@@ -382,6 +412,9 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
                     corpus: spec.id.to_string(),
                     source_kind: spec.source_kind,
                     authority: spec.authority,
+                    // Локаль КОРПУСА, а не запроса: справка платформы есть не
+                    // во всех локалях, и подмена обязана быть названа.
+                    language: corpus.language.clone(),
                     status,
                     hits,
                 }
@@ -402,12 +435,23 @@ mod tests {
     use std::io::Write;
 
     fn request(query: &str) -> DocumentationSearchRequest {
+        request_in(query, "ru")
+    }
+
+    fn request_in(query: &str, language: &str) -> DocumentationSearchRequest {
         DocumentationSearchRequest {
             query: query.to_string(),
             source_kinds: vec![SourceKind::PlatformHelp],
             limit: 20,
-            language: "ru".to_string(),
+            language: language.to_string(),
         }
+    }
+
+    fn syntax_section(sections: &[DocumentationSection]) -> &DocumentationSection {
+        sections
+            .iter()
+            .find(|section| section.corpus == "syntax-context")
+            .expect("секция syntax-context")
     }
 
     /// Собирает `.hbk`-контейнер: zip с HTML-страницами внутри записи
@@ -916,6 +960,146 @@ mod tests {
             "попадание не должно быть страницей первой версии"
         );
         assert_eq!(second_syntax.hits[0].applicable_version, "8.5.4.1306");
+    }
+
+    /// Установка, у которой Синтакс-помощник лежит в двух локалях. Одноимённые
+    /// страницы в разных контейнерах различимы по адресу, поэтому по ответу
+    /// видно, какой контейнер прочитали.
+    fn bilingual_installation(dir: &std::path::Path) -> std::path::PathBuf {
+        let root = dir.join("8.3.27.2074");
+        std::fs::create_dir_all(&root).expect("каталог версии");
+        for (name, path, title) in [
+            ("shcntx_ru.hbk", "ru/alpha.html", "Alpha по-русски"),
+            ("shcntx_en.hbk", "en/alpha.html", "Alpha in English"),
+        ] {
+            std::fs::write(
+                root.join(name),
+                hbk_bytes(&[(
+                    path,
+                    &format!("<html><body><h1>{title}</h1><p>текст</p></body></html>"),
+                )]),
+            )
+            .expect("контейнер");
+        }
+        root
+    }
+
+    /// Аргумент `language` отбирает контейнеры, а не только локаль сигнатуры.
+    /// Ревью применило мутацию `discover(root, "ru")` вместо
+    /// `discover(root, &request.language)` — и все 2021 тест остались
+    /// зелёными: единственный тест на язык (`requested_language_picks_the_signature_locale`)
+    /// зовёт `rank_pages` напрямую и до `discover` не доходит. Здесь язык
+    /// запроса решает, какой файл прочитан.
+    #[test]
+    fn the_requested_language_selects_the_containers_not_just_the_signature() {
+        // Слот индекса общий на процесс — тесты, которые его пишут, идут по одному.
+        let _serial = index_test_lock();
+        let dir = tempfile::tempdir().expect("каталог");
+        let root = bilingual_installation(dir.path());
+        let provider = PlatformSyntaxHelpProvider::new();
+        let context = DocumentationContext {
+            platform_version: Some("8.3.27.2074".to_string()),
+            installation_root: Some(root),
+        };
+        let sections = provider.search(&request_in("Alpha", "en"), &context);
+        let syntax = syntax_section(&sections);
+        assert_eq!(
+            syntax.hits.len(),
+            1,
+            "прочитан обязан быть ровно один контейнер, получено {:?}",
+            syntax.status
+        );
+        assert_eq!(
+            syntax.hits[0].document_id, "platform-syntax-help:syntax-context:en/alpha.html",
+            "язык запроса обязан выбирать контейнер, а не только локаль сигнатуры"
+        );
+        assert_eq!(
+            syntax.language, "en",
+            "секция обязана называть локаль, на которой ответила"
+        );
+    }
+
+    /// Установка 8.3.27.2074 несёт `shcntx_ru.hbk` и `shcntx_root.hbk`, но не
+    /// `shcntx_en.hbk`. До правки `language: "en"` давал единственную секцию
+    /// `Unavailable { VersionMissing }`, `any_usable` оставался ложным, и весь
+    /// вызов заканчивался отказом — при том что английский контейнер лежит
+    /// рядом. Теперь отвечает он, и секция это называет.
+    #[test]
+    fn a_language_the_installation_lacks_is_answered_by_another_and_named() {
+        // Слот индекса общий на процесс — тесты, которые его пишут, идут по одному.
+        let _serial = index_test_lock();
+        let dir = tempfile::tempdir().expect("каталог");
+        let root = dir.path().join("8.3.27.2074");
+        std::fs::create_dir_all(&root).expect("каталог версии");
+        std::fs::write(
+            root.join("shcntx_ru.hbk"),
+            hbk_bytes(&[(
+                "ru/alpha.html",
+                "<html><body><h1>Alpha по-русски</h1><p>текст</p></body></html>",
+            )]),
+        )
+        .expect("русский контейнер");
+        std::fs::write(
+            root.join("shcntx_root.hbk"),
+            hbk_bytes(&[(
+                "root/alpha.html",
+                "<html><body><h1>Alpha in English</h1><p>текст</p></body></html>",
+            )]),
+        )
+        .expect("английский контейнер");
+
+        let provider = PlatformSyntaxHelpProvider::new();
+        let context = DocumentationContext {
+            platform_version: Some("8.3.27.2074".to_string()),
+            installation_root: Some(root),
+        };
+        let sections = provider.search(&request_in("Alpha", "en"), &context);
+        let syntax = syntax_section(&sections);
+        assert!(
+            matches!(syntax.status, DocumentationSectionStatus::Ok),
+            "отсутствующая локаль обязана подменяться, а не ронять вызов; получено {:?}",
+            syntax.status
+        );
+        assert_eq!(
+            syntax.hits[0].document_id, "platform-syntax-help:syntax-context:root/alpha.html",
+            "ответить обязан английский контейнер, а не русский"
+        );
+        assert_eq!(
+            syntax.language, "root",
+            "секция обязана называть локаль, которая ответила, а не запрошенную"
+        );
+    }
+
+    /// Язык входит в ключ индекса. Мутация «`IndexKey.language` — константа»
+    /// прошла все 2021 тест: остальные тесты кеша меняют КАТАЛОГ, а не язык,
+    /// поэтому вторую половину ключа не различают. Здесь установка одна и та
+    /// же, а язык между вызовами меняется, и ответ обязан меняться вместе с
+    /// ним — правило INV-APP-DOCUMENTATION-NO-DISK-STATE держит именно это.
+    #[test]
+    fn a_second_language_on_the_same_installation_does_not_answer_from_the_first_ones_index() {
+        // Слот индекса общий на процесс — тесты, которые его пишут, идут по одному.
+        let _serial = index_test_lock();
+        let dir = tempfile::tempdir().expect("каталог");
+        let root = bilingual_installation(dir.path());
+        let context = DocumentationContext {
+            platform_version: Some("8.3.27.2074".to_string()),
+            installation_root: Some(root),
+        };
+
+        let first = PlatformSyntaxHelpProvider::new().search(&request_in("Alpha", "ru"), &context);
+        assert_eq!(
+            syntax_section(&first).hits[0].document_id,
+            "platform-syntax-help:syntax-context:ru/alpha.html",
+            "первый вызов строит индекс русских контейнеров"
+        );
+
+        let second = PlatformSyntaxHelpProvider::new().search(&request_in("Alpha", "en"), &context);
+        let syntax = syntax_section(&second);
+        assert_eq!(
+            syntax.hits[0].document_id, "platform-syntax-help:syntax-context:en/alpha.html",
+            "смена языка при том же каталоге обязана перестраивать индекс"
+        );
+        assert_eq!(syntax.language, "en");
     }
 
     /// Индекс переживает вызов: второй `search` по той же установке обязан

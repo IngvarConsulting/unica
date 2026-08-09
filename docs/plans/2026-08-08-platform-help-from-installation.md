@@ -620,6 +620,18 @@ git commit -m "feat(platform-help): читать страницы и двуяз�
 **Interfaces:**
 - Produces: `pub struct InstallationCorpora { pub version: String, pub syntax_context: Vec<std::path::PathBuf>, pub platform_guides: Vec<std::path::PathBuf> }`; `pub fn discover(root: &std::path::Path, language: &str) -> Result<InstallationCorpora, InstallationError>`; `pub enum InstallationError { NotFound, VersionUndetermined, Unreadable { detail: String }, HelpMissingForVersion { version: String } }`.
 
+> **Итоговая форма отличается от заданной здесь — по итогам финального ревью
+> ветки.** Корпус — это не голый `Vec<PathBuf>`, а `CorpusContainers { language,
+> containers }`, и локаль каждый корпус разрешает сам. Причина измерена:
+> справка подсистем есть в 24 локалях (`_ru`, `_root`, `_de`, `_zh`, …), а
+> Синтакс-помощник — ровно в двух, `shcntx_ru.hbk` и английском
+> `shcntx_root.hbk`; файла `shcntx_en.hbk` нет ни в одной из семи установок
+> машины. Требование «есть `shcntx_<язык>.hbk` или отказ» превращало
+> `language: "en"` в единственную секцию `Unavailable { VersionMissing }`, из-за
+> которой отказывал весь `unica.documentation.search`. Правило теперь:
+> запрошенная локаль, иначе `root`, иначе `ru`, иначе первая по алфавиту, — и
+> секция ответа называет локаль, которая ответила (п.3 и п.8 ADR-0029).
+
 - [ ] **Step 1: Написать падающий тест**
 
 ```rust

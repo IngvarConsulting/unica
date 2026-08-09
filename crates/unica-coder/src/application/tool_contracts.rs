@@ -2641,7 +2641,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "language",
-        "Alias of `lang` for `unica.help.add`; on `unica.standards.explain` the same key instead names the language of the `snippet` being explained; on `unica.documentation.search` it picks the locale of the platform help containers to read and of the signature returned with each hit, defaulting to ru",
+        "Alias of `lang` for `unica.help.add`; on `unica.standards.explain` the same key instead names the language of the `snippet` being explained; on `unica.documentation.search` it picks the locale of the platform help containers to read and of the signature returned with each hit, defaulting to ru, and each corpus falls back on its own to the installed locale (the English `root` container first) when the installation ships no containers in the requested one, so every section reports the locale that actually answered",
     ),
     (
         "limit",

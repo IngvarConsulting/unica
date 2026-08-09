@@ -102,6 +102,12 @@ pub struct DocumentationSection {
     pub corpus: String,
     pub source_kind: SourceKind,
     pub authority: Authority,
+    /// Локаль, на которой секция ответила НА САМОМ ДЕЛЕ, а не запрошенная.
+    /// Запрошенной локали у поставщика может не оказаться: справка платформы
+    /// поставляется не во всех локалях сразу, и секция, ответившая соседней,
+    /// обязана это назвать — иначе английский ответ на запрос `en` неотличим
+    /// от русского.
+    pub language: String,
     pub status: DocumentationSectionStatus,
     pub hits: Vec<DocumentationHit>,
 }
@@ -112,12 +118,14 @@ impl DocumentationSection {
         corpus: &str,
         source_kind: SourceKind,
         authority: Authority,
+        language: &str,
     ) -> Self {
         Self {
             provider,
             corpus: corpus.to_string(),
             source_kind,
             authority,
+            language: language.to_string(),
             status: DocumentationSectionStatus::Empty,
             hits: Vec::new(),
         }
@@ -207,6 +215,7 @@ mod tests {
                 "corpus",
                 SourceKind::PlatformHelp,
                 Authority::Vendor,
+                "ru",
             )]
         }
     }
@@ -271,9 +280,14 @@ mod tests {
             "developer-guide",
             SourceKind::DevelopmentStandard,
             Authority::Community,
+            "de",
         );
         assert_eq!(section.provider, provider, "провайдер секции");
         assert_eq!(section.corpus, "developer-guide", "корпус секции");
+        assert_eq!(
+            section.language, "de",
+            "локаль ответа не должна подменяться константой"
+        );
         assert_eq!(
             section.source_kind,
             SourceKind::DevelopmentStandard,

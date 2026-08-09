@@ -82,6 +82,10 @@ pub fn search(
                 "corpus": section.corpus,
                 "sourceKind": section.source_kind.as_str(),
                 "authority": section.authority.as_str(),
+                // Локаль, на которой секция ответила, а не запрошенная в
+                // `request.language`: справка платформы поставляется не во всех
+                // локалях, и подмена обязана быть видимой в ответе.
+                "language": section.language,
                 "status": status,
                 "diagnostic": diagnostic,
                 "hits": hits,
@@ -134,6 +138,10 @@ mod tests {
             corpus: "syntax-context".to_string(),
             source_kind: SourceKind::PlatformHelp,
             authority: Authority::Vendor,
+            // Намеренно НЕ `ru` из `request()`: локаль в ответе обязана быть
+            // локалью секции, а не запроса, и совпадение с запросом скрыло бы
+            // проекцию, подставляющую туда `request.language`.
+            language: "root".to_string(),
             status: DocumentationSectionStatus::Ok,
             hits: vec![DocumentationHit {
                 rank: 1,
@@ -221,6 +229,10 @@ mod tests {
         // fields, yet nothing asserted it: renaming or dropping the key in the
         // projection above used to pass every test in this file.
         assert_eq!(sections[0]["corpus"], "syntax-context");
+        // Локаль ответа — часть происхождения секции: запрос шёл на `ru`
+        // (см. `request()`), а секция объявляет `root`, и проекция обязана
+        // публиковать именно её.
+        assert_eq!(sections[0]["language"], "root");
         assert_eq!(sections[0]["hits"][0]["applicableVersion"], "8.3.27.2074");
     }
 
