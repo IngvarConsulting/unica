@@ -3028,7 +3028,23 @@ pub(super) fn meta_validate_check_register_command_interface(
         })
     } else if let Some(config_dir) = config_dir {
         let subsystems_dir = config_dir.join("Subsystems");
-        if !subsystems_dir.is_dir() {
+        // is_dir() follows a link and answers false on a metadata error, so a
+        // linked root would let the scan read outside the configuration and an
+        // unreadable one would pass for a proved absence.
+        let root_kind = match std::fs::symlink_metadata(&subsystems_dir) {
+            Ok(metadata) if metadata.is_dir() => Some(true),
+            Ok(_) => None,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(false),
+            Err(_) => None,
+        };
+        let Some(root_is_directory) = root_kind else {
+            report.warn(format!(
+                "10. {md_type}: command interface sections of '{object_ref}' could not be established (the Subsystems root is not a readable directory)"
+            ));
+            *issues += 1;
+            return;
+        };
+        if !root_is_directory {
             false
         } else {
             // A scan that could not reach the bottom proves nothing. The typed
