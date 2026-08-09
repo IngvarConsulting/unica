@@ -392,7 +392,7 @@ Run BSL diagnostics through the internal code analysis adapter.
 | `rangeEnd` | integer | нет | Integer end of the source line range for unica.code.diagnostics, forwarded as range_end; pair it with rangeStart to scope a mode=file read |
 | `rangeStart` | integer | нет | Integer start of the source line range for unica.code.diagnostics, forwarded as range_start; pair it with rangeEnd to scope a mode=file read |
 | `sourceDir` | string | нет | Workspace-relative source root to work in: on path-based unica.code.* tools it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
-| `timeoutSeconds` | integer | нет | Only supported for mode analyze. Defaults to 120 seconds. |
+| `timeoutSeconds` | integer | нет | Only supported for mode analyze. Overrides operational.code_diagnostics.analyze_timeout_seconds from workspace config, whose compiled fallback is 120 seconds. |
 
 **Результат сейчас:** `data`: ответ MCP анализатора как есть, тем же путём, что `code.graph`. `analyze` — имя инструмента анализатора, а не внешний процесс 1С, поэтому исключение ADR-0023 §4 на него не распространяется (отвечают типизированным `data`)
 
@@ -1204,7 +1204,7 @@ Wait for a durable runtime job with a caller-side bounded timeout.
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
 | `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 | `jobId` | string | да | UUID of a durable runtime job as returned by unica.runtime.job.start; required by the job status, wait, logs and cancel tools |
-| `timeoutSeconds` | integer | нет | Integer seconds bounding a blocking call: 1..60 (default 30) for unica.runtime.job.wait, and 30..3600 (default 120) for unica.code.diagnostics, which accepts it only with mode analyze. |
+| `timeoutSeconds` | integer | нет | Integer seconds bounding a blocking call: 1..60 (default 30) for unica.runtime.job.wait, and 30..3600 for unica.code.diagnostics mode analyze; diagnostics falls back to operational.code_diagnostics.analyze_timeout_seconds from workspace config, then to 120. |
 
 **Результат сейчас:** снимок задания в `job` (отвечают снимком задания в `job`)
 

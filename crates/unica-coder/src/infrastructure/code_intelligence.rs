@@ -12,7 +12,8 @@ use crate::infrastructure::internal_adapters::{
 use crate::infrastructure::rlm_navigation::RlmNavigationAdapter;
 use crate::infrastructure::workspace_index::IndexReadiness;
 use crate::infrastructure::workspace_services::{
-    WorkspaceRlmOperation, WorkspaceServiceBslOutput, WorkspaceServiceManager,
+    WorkspaceRlmOperation, WorkspaceServiceBslCall, WorkspaceServiceBslOutput,
+    WorkspaceServiceManager,
 };
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
@@ -28,8 +29,6 @@ const RLM_CAPABILITIES: &[ProviderCapability] = &[
     ProviderCapability::Definition,
     ProviderCapability::ObjectProfile,
 ];
-const GIT_GREP_TIMEOUT: Duration = Duration::from_secs(15);
-const RLM_EXECUTE_TIMEOUT: Duration = Duration::from_secs(45);
 
 pub(crate) struct GitGrepProvider<'a> {
     runner: &'a (dyn ProcessRunner + Send + Sync),
@@ -62,7 +61,7 @@ impl<'a> GitGrepProvider<'a> {
                 cancelled_error("git-grep search stopped before process start"),
             );
         }
-        let timeout = deadline.remaining().min(GIT_GREP_TIMEOUT);
+        let timeout = deadline.remaining();
         if timeout.is_zero() {
             return failed_section(
                 ProviderId::GitGrep,
@@ -143,12 +142,10 @@ impl BslSearchClient for WorkspaceBslSearchClient {
         timeout: Duration,
         cancellation: &CancellationToken,
     ) -> Result<WorkspaceServiceBslOutput, String> {
-        WorkspaceServiceManager::new().call_bsl_mcp_cancellable(
+        WorkspaceServiceManager::new().call_bsl_mcp_cancellable_with_budget(
             &context.workspace,
             &context.source_root.path,
-            "search",
-            arguments,
-            timeout,
+            WorkspaceServiceBslCall::new("search", arguments, timeout, timeout),
             cancellation,
         )
     }
@@ -386,17 +383,29 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> ProviderSearchSection {
-        let readiness_timeout = deadline.remaining().min(RLM_EXECUTE_TIMEOUT);
+        if cancellation.is_cancelled() {
+            return failed_section(
+                ProviderId::Rlm,
+                cancelled_error("RLM search stopped before readiness check"),
+            );
+        }
+        let readiness_timeout = deadline.remaining();
         if readiness_timeout.is_zero() {
             return failed_section(
                 ProviderId::Rlm,
                 "RLM provider deadline exceeded before readiness check".to_string(),
             );
         }
-        let readiness = match self
+        let readiness_result = self
             .client
-            .readiness(context, readiness_timeout, cancellation)
-        {
+            .readiness(context, readiness_timeout, cancellation);
+        if cancellation.is_cancelled() {
+            return failed_section(
+                ProviderId::Rlm,
+                cancelled_error("RLM search stopped after readiness check"),
+            );
+        }
+        let readiness = match readiness_result {
             Ok(readiness) => readiness,
             Err(error) => return unavailable_section(ProviderId::Rlm, error),
         };
@@ -421,7 +430,7 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
                 return unavailable_section(ProviderId::Rlm, error);
             }
         }
-        let timeout = deadline.remaining().min(RLM_EXECUTE_TIMEOUT);
+        let timeout = deadline.remaining();
         if timeout.is_zero() {
             return failed_section(
                 ProviderId::Rlm,
@@ -883,9 +892,31 @@ mod tests {
     use crate::infrastructure::workspace_index::IndexReadiness;
     use crate::infrastructure::workspace_services::WorkspaceServiceBslOutput;
     use serde_json::Value;
+    use std::cell::RefCell;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
+
+    thread_local! {
+        static MANUAL_NOW: RefCell<Option<Instant>> = const { RefCell::new(None) };
+    }
+
+    fn manual_now() -> Instant {
+        MANUAL_NOW.with(|now| now.borrow().expect("manual test clock must be initialized"))
+    }
+
+    fn set_manual_now(now: Instant) {
+        MANUAL_NOW.with(|current| *current.borrow_mut() = Some(now));
+    }
+
+    fn advance_manual_now(duration: Duration) {
+        MANUAL_NOW.with(|current| {
+            let now = current
+                .borrow()
+                .expect("manual test clock must be initialized");
+            *current.borrow_mut() = Some(now + duration);
+        });
+    }
 
     struct FakeRunner {
         output: ProcessOutput,
@@ -927,7 +958,7 @@ mod tests {
     }
 
     #[test]
-    fn git_grep_is_literal_source_scoped_and_bounded_to_fifteen_seconds() {
+    fn git_grep_is_literal_source_scoped_and_uses_the_upstream_deadline() {
         let runner = FakeRunner {
             output: output("CommonModules/Sales/Ext/Module.bsl:4:Post();\n"),
             commands: Mutex::new(Vec::new()),
@@ -970,7 +1001,9 @@ mod tests {
         assert!(commands[0].args.iter().any(|arg| arg == "-F"));
         assert!(commands[0].args.iter().any(|arg| arg == "Post.*"));
         assert!(!commands[0].args.iter().any(|arg| arg == "-i"));
-        assert!(commands[0].timeout.unwrap() <= Duration::from_secs(15));
+        let timeout = commands[0].timeout.unwrap();
+        assert!(timeout > Duration::from_secs(15), "{timeout:?}");
+        assert!(timeout <= Duration::from_secs(60), "{timeout:?}");
     }
 
     #[test]
@@ -1631,8 +1664,70 @@ mod tests {
         }
     }
 
+    struct CancellingRlmSearchClient {
+        readiness: IndexReadiness,
+        readiness_calls: Mutex<Vec<Duration>>,
+        search_calls: Mutex<Vec<Duration>>,
+    }
+
+    impl RlmSearchClient for CancellingRlmSearchClient {
+        fn readiness(
+            &self,
+            _context: &CodeIntelligenceContext,
+            timeout: Duration,
+            cancellation: &CancellationToken,
+        ) -> Result<IndexReadiness, String> {
+            self.readiness_calls.lock().unwrap().push(timeout);
+            cancellation.cancel();
+            Ok(self.readiness.clone())
+        }
+
+        fn search(
+            &self,
+            _context: &CodeIntelligenceContext,
+            _query: &str,
+            _limit: usize,
+            timeout: Duration,
+            _cancellation: &CancellationToken,
+        ) -> Result<String, String> {
+            self.search_calls.lock().unwrap().push(timeout);
+            Ok("[]".to_string())
+        }
+    }
+
+    struct DeadlineConsumingRlmSearchClient {
+        timeouts: Mutex<Vec<Duration>>,
+    }
+
+    impl RlmSearchClient for DeadlineConsumingRlmSearchClient {
+        fn readiness(
+            &self,
+            _context: &CodeIntelligenceContext,
+            timeout: Duration,
+            _cancellation: &CancellationToken,
+        ) -> Result<IndexReadiness, String> {
+            self.timeouts.lock().unwrap().push(timeout);
+            advance_manual_now(Duration::from_millis(20));
+            Ok(IndexReadiness::Ready {
+                db_path: PathBuf::from("/cache/index.db"),
+            })
+        }
+
+        fn search(
+            &self,
+            _context: &CodeIntelligenceContext,
+            _query: &str,
+            _limit: usize,
+            timeout: Duration,
+            _cancellation: &CancellationToken,
+        ) -> Result<String, String> {
+            self.timeouts.lock().unwrap().push(timeout);
+            Ok("[]".to_string())
+        }
+    }
+
     #[test]
-    fn rlm_provider_requires_ready_index_and_uses_persistent_session_budget() {
+    fn rlm_provider_requires_ready_index_and_shares_the_upstream_deadline() {
         let client = FakeRlmClient {
             readiness: IndexReadiness::Ready {
                 db_path: PathBuf::from("/cache/index.db"),
@@ -1654,13 +1749,105 @@ mod tests {
 
         assert_eq!(section.status, ProviderSectionStatus::Empty);
         assert_eq!(client.readiness_calls.lock().unwrap().len(), 1);
-        assert!(client.readiness_calls.lock().unwrap()[0] <= Duration::from_secs(45));
+        let readiness_timeout = client.readiness_calls.lock().unwrap()[0];
+        assert!(readiness_timeout > Duration::from_secs(45));
+        assert!(readiness_timeout <= Duration::from_secs(90));
         let calls = client.calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, PathBuf::from("/workspace/src"));
         assert_eq!(calls[0].1, "Post");
         assert_eq!(calls[0].2, 20);
-        assert!(calls[0].3 <= Duration::from_secs(45));
+        assert!(calls[0].3 > Duration::from_secs(45));
+        assert!(calls[0].3 <= Duration::from_secs(90));
+    }
+
+    #[test]
+    fn rlm_search_readiness_and_search_consume_one_manual_deadline() {
+        let started_at = Instant::now();
+        set_manual_now(started_at);
+        let client = DeadlineConsumingRlmSearchClient {
+            timeouts: Mutex::new(Vec::new()),
+        };
+
+        let section = RlmProvider::with_client(&client).search(
+            &SearchRequest {
+                query: "Post".to_string(),
+                limit: 20,
+            },
+            &context(),
+            ProviderDeadline::with_clock(started_at + Duration::from_millis(200), manual_now),
+            &CancellationToken::new(),
+        );
+
+        assert_eq!(section.status, ProviderSectionStatus::Empty);
+        assert_eq!(
+            client.timeouts.lock().unwrap().as_slice(),
+            &[Duration::from_millis(200), Duration::from_millis(180)]
+        );
+    }
+
+    #[test]
+    fn rlm_search_checks_cancellation_before_interpreting_an_expired_deadline() {
+        let started_at = Instant::now();
+        set_manual_now(started_at);
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let client = CancellingRlmSearchClient {
+            readiness: IndexReadiness::Missing,
+            readiness_calls: Mutex::new(Vec::new()),
+            search_calls: Mutex::new(Vec::new()),
+        };
+
+        let section = RlmProvider::with_client(&client).search(
+            &SearchRequest {
+                query: "Post".to_string(),
+                limit: 20,
+            },
+            &context(),
+            ProviderDeadline::with_clock(started_at, manual_now),
+            &cancellation,
+        );
+
+        assert_eq!(section.status, ProviderSectionStatus::Failed);
+        assert!(
+            section.diagnostics[0].starts_with(CANCELLED_PREFIX),
+            "{:?}",
+            section.diagnostics
+        );
+        assert!(client.readiness_calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn rlm_search_checks_cancellation_between_readiness_and_search() {
+        let started_at = Instant::now();
+        set_manual_now(started_at);
+        let cancellation = CancellationToken::new();
+        let client = CancellingRlmSearchClient {
+            readiness: IndexReadiness::Ready {
+                db_path: PathBuf::from("/cache/index.db"),
+            },
+            readiness_calls: Mutex::new(Vec::new()),
+            search_calls: Mutex::new(Vec::new()),
+        };
+
+        let section = RlmProvider::with_client(&client).search(
+            &SearchRequest {
+                query: "Post".to_string(),
+                limit: 20,
+            },
+            &context(),
+            ProviderDeadline::with_clock(started_at + Duration::from_secs(1), manual_now),
+            &cancellation,
+        );
+
+        assert_eq!(section.status, ProviderSectionStatus::Failed);
+        assert!(
+            section.diagnostics[0].starts_with(CANCELLED_PREFIX),
+            "{:?}",
+            section.diagnostics
+        );
+        assert_eq!(client.readiness_calls.lock().unwrap().len(), 1);
+        assert!(client.search_calls.lock().unwrap().is_empty());
     }
 
     #[test]

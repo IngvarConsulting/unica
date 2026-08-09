@@ -13,8 +13,6 @@ use serde_json::{Map, Value};
 use std::path::Path;
 use std::time::Duration;
 
-const RLM_NAVIGATION_TIMEOUT: Duration = Duration::from_secs(45);
-
 trait RlmNavigationClient: Send + Sync {
     fn readiness(
         &self,
@@ -104,18 +102,24 @@ impl<'a> RlmNavigationAdapter<'a> {
                 format!("{operation_name} cancelled before provider work"),
             )));
         }
-        let readiness_timeout = deadline.remaining().min(RLM_NAVIGATION_TIMEOUT);
+        let readiness_timeout = deadline.remaining();
         if readiness_timeout.is_zero() {
             return Err(format!(
                 "{operation_name} provider deadline exceeded before readiness check"
             ));
         }
-        let readiness = match self.client.readiness(
+        let readiness_result = self.client.readiness(
             &context.workspace,
             &context.source_root.path,
             readiness_timeout,
             cancellation,
-        ) {
+        );
+        if cancellation.is_cancelled() {
+            return Ok(RlmNavigationOutcome::plain(AdapterOutcome::cancelled(
+                format!("{operation_name} cancelled after readiness check"),
+            )));
+        }
+        let readiness = match readiness_result {
             Ok(readiness) => readiness,
             Err(error) if error.starts_with(CANCELLED_PREFIX) => {
                 return Ok(RlmNavigationOutcome::plain(cancelled_client_outcome(
@@ -133,7 +137,7 @@ impl<'a> RlmNavigationAdapter<'a> {
                 )))
             }
         };
-        let timeout = deadline.remaining().min(RLM_NAVIGATION_TIMEOUT);
+        let timeout = deadline.remaining();
         if timeout.is_zero() {
             return Err(format!("{operation_name} provider deadline exceeded"));
         }
@@ -379,9 +383,31 @@ mod tests {
         WorkspaceRlmOperation, WorkspaceServiceRlmOutput,
     };
     use serde_json::json;
+    use std::cell::RefCell;
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
+
+    thread_local! {
+        static MANUAL_NOW: RefCell<Option<Instant>> = const { RefCell::new(None) };
+    }
+
+    fn manual_now() -> Instant {
+        MANUAL_NOW.with(|now| now.borrow().expect("manual test clock must be initialized"))
+    }
+
+    fn set_manual_now(now: Instant) {
+        MANUAL_NOW.with(|current| *current.borrow_mut() = Some(now));
+    }
+
+    fn advance_manual_now(duration: Duration) {
+        MANUAL_NOW.with(|current| {
+            let now = current
+                .borrow()
+                .expect("manual test clock must be initialized");
+            *current.borrow_mut() = Some(now + duration);
+        });
+    }
 
     fn secure_temp_root(label: &str) -> PathBuf {
         std::fs::canonicalize(std::env::temp_dir())
@@ -446,6 +472,77 @@ mod tests {
 
     struct CancelledClient {
         cancel_during_call: bool,
+    }
+
+    struct DeadlineRecordingClient {
+        timeouts: Mutex<Vec<Duration>>,
+    }
+
+    struct CancellingReadinessClient {
+        readiness: IndexReadiness,
+        elapsed: Duration,
+    }
+
+    impl RlmNavigationClient for CancellingReadinessClient {
+        fn readiness(
+            &self,
+            _context: &WorkspaceContext,
+            _source_root: &Path,
+            _timeout: Duration,
+            cancellation: &CancellationToken,
+        ) -> Result<IndexReadiness, String> {
+            cancellation.cancel();
+            advance_manual_now(self.elapsed);
+            Ok(self.readiness.clone())
+        }
+
+        fn call(
+            &self,
+            _context: &WorkspaceContext,
+            _source_root: &Path,
+            _operation: WorkspaceRlmOperation,
+            _timeout: Duration,
+            _cancellation: &CancellationToken,
+        ) -> Result<WorkspaceServiceRlmOutput, String> {
+            panic!("cancellation after readiness must stop before the RLM call")
+        }
+    }
+
+    impl RlmNavigationClient for DeadlineRecordingClient {
+        fn readiness(
+            &self,
+            _context: &WorkspaceContext,
+            _source_root: &Path,
+            timeout: Duration,
+            _cancellation: &CancellationToken,
+        ) -> Result<IndexReadiness, String> {
+            self.timeouts.lock().unwrap().push(timeout);
+            advance_manual_now(Duration::from_millis(20));
+            Ok(IndexReadiness::Ready {
+                db_path: PathBuf::from("/tmp/index.db"),
+            })
+        }
+
+        fn call(
+            &self,
+            _context: &WorkspaceContext,
+            _source_root: &Path,
+            _operation: WorkspaceRlmOperation,
+            timeout: Duration,
+            _cancellation: &CancellationToken,
+        ) -> Result<WorkspaceServiceRlmOutput, String> {
+            self.timeouts.lock().unwrap().push(timeout);
+            Ok(WorkspaceServiceRlmOutput {
+                result_text: json!({
+                    "name": "Найти",
+                    "definitions": [],
+                    "total": 0,
+                    "truncated": false
+                })
+                .to_string(),
+                stderr: String::new(),
+            })
+        }
     }
 
     impl RlmNavigationClient for CancelledClient {
@@ -548,6 +645,93 @@ mod tests {
             assert!(!outcome.ok);
             assert!(outcome.summary.contains("cancelled"));
         }
+    }
+
+    #[test]
+    fn definition_readiness_and_call_share_one_remaining_deadline() {
+        let client = DeadlineRecordingClient {
+            timeouts: Mutex::new(Vec::new()),
+        };
+        let started_at = Instant::now();
+        set_manual_now(started_at);
+
+        let outcome = RlmNavigationAdapter::with_client(&client)
+            .invoke_resolved_cancellable(
+                &definition_request(),
+                &unready_index_context(),
+                ProviderDeadline::with_clock(started_at + Duration::from_millis(200), manual_now),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        assert!(outcome.outcome.ok);
+        let timeouts = client.timeouts.lock().unwrap();
+        assert_eq!(timeouts.len(), 2);
+        assert!(timeouts[0] > Duration::from_millis(100), "{:?}", timeouts);
+        assert!(
+            timeouts[1] + Duration::from_millis(10) < timeouts[0],
+            "readiness and call must consume one deadline: {:?}",
+            timeouts
+        );
+    }
+
+    #[test]
+    fn cancellation_after_readiness_wins_when_the_deadline_expires_at_the_same_time() {
+        let started_at = Instant::now();
+        set_manual_now(started_at);
+        let cancellation = CancellationToken::new();
+        let client = CancellingReadinessClient {
+            readiness: IndexReadiness::Ready {
+                db_path: PathBuf::from("/tmp/index.db"),
+            },
+            elapsed: Duration::from_millis(201),
+        };
+
+        let outcome = RlmNavigationAdapter::with_client(&client)
+            .invoke_resolved_cancellable(
+                &definition_request(),
+                &unready_index_context(),
+                ProviderDeadline::with_clock(started_at + Duration::from_millis(200), manual_now),
+                &cancellation,
+            )
+            .expect("cancellation must be normalized before deadline interpretation")
+            .outcome;
+
+        assert!(!outcome.ok);
+        assert!(
+            outcome.summary.starts_with("cancelled:"),
+            "{}",
+            outcome.summary
+        );
+    }
+
+    #[test]
+    fn cancellation_after_readiness_wins_before_any_readiness_state_is_interpreted() {
+        let started_at = Instant::now();
+        set_manual_now(started_at);
+        let cancellation = CancellationToken::new();
+        let client = CancellingReadinessClient {
+            readiness: IndexReadiness::Missing,
+            elapsed: Duration::ZERO,
+        };
+
+        let outcome = RlmNavigationAdapter::with_client(&client)
+            .invoke_resolved_cancellable(
+                &definition_request(),
+                &unready_index_context(),
+                ProviderDeadline::with_clock(started_at + Duration::from_millis(200), manual_now),
+                &cancellation,
+            )
+            .expect("cancellation must be normalized before readiness interpretation")
+            .outcome;
+
+        assert!(!outcome.ok);
+        assert!(
+            outcome.summary.starts_with("cancelled:"),
+            "{}",
+            outcome.summary
+        );
+        assert!(outcome.warnings.is_empty());
     }
 
     struct UnreadyClient {

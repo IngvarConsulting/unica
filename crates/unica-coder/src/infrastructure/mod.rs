@@ -7,6 +7,7 @@ pub mod internal_adapters;
 pub(crate) mod metadata_kinds;
 pub(crate) mod metadata_operations;
 pub mod native_operations;
+pub(crate) mod operational_config;
 pub mod path_policy;
 pub(crate) mod platform;
 pub mod platform_help;

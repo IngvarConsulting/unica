@@ -29,6 +29,7 @@ sha2 = "0.10"
 tar = "0.4"
 roxmltree = "0.20"
 tempfile = "3"
+toml = { version = "1", default-features = false, features = ["std", "parse", "serde"] }
 # Контейнеры справки платформы (`.hbk`) несут ZIP внутри записи FileStorage.
 # `deflate` целиком тянет в производственный граф сжиматель `zopfli`, который
 # здесь не нужен ничему: пишем мы только фикстуры тестов. `deflate-flate2` сам

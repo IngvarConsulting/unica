@@ -4,6 +4,7 @@ use crate::domain::code_intelligence::{
     CodeIntelligenceRegistry, CodeSearchResult, ProviderDeadline, ProviderId, ProviderReadOutcome,
     ProviderSearchSection, ProviderSectionStatus, SearchRequest,
 };
+use crate::domain::operational_config::CodeIntelligenceDeadlines;
 use std::any::Any;
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -11,10 +12,6 @@ use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const PUBLIC_SEARCH_BUDGET: Duration = Duration::from_secs(120);
-const RLM_SEARCH_BUDGET: Duration = Duration::from_secs(45);
-const GIT_GREP_SEARCH_BUDGET: Duration = Duration::from_secs(15);
-const PROVIDER_READ_BUDGET: Duration = Duration::from_secs(45);
 const MAX_CONCURRENT_WORKERS_PER_PROVIDER: usize = 32;
 
 #[derive(Debug)]
@@ -27,16 +24,28 @@ pub(crate) struct CodeSearchExecution {
 
 pub(crate) struct CodeSearchCoordinator {
     registry: CodeIntelligenceRegistry,
-    public_search_budget: Duration,
+    deadlines: CodeIntelligenceDeadlines,
     worker_admission: Arc<ProviderWorkerAdmission>,
     worker_lifecycle: Arc<ProviderWorkerLifecycle>,
 }
 
 impl CodeSearchCoordinator {
+    #[cfg(test)]
     pub(crate) fn new(registry: CodeIntelligenceRegistry) -> Self {
+        Self::with_deadlines(
+            registry,
+            crate::domain::operational_config::OperationalConfig::compiled_defaults()
+                .code_intelligence(),
+        )
+    }
+
+    pub(crate) fn with_deadlines(
+        registry: CodeIntelligenceRegistry,
+        deadlines: CodeIntelligenceDeadlines,
+    ) -> Self {
         Self {
             registry,
-            public_search_budget: PUBLIC_SEARCH_BUDGET,
+            deadlines,
             worker_admission: global_provider_worker_admission(),
             worker_lifecycle: global_provider_worker_lifecycle(),
         }
@@ -51,7 +60,7 @@ impl CodeSearchCoordinator {
     ) -> Self {
         Self {
             registry,
-            public_search_budget,
+            deadlines: CodeIntelligenceDeadlines::for_test(public_search_budget),
             worker_admission,
             worker_lifecycle,
         }
@@ -74,12 +83,18 @@ impl CodeSearchCoordinator {
             .iter()
             .map(|provider| provider.id())
             .collect::<Vec<_>>();
-        let public_deadline = Instant::now() + self.public_search_budget;
+        let started_at = Instant::now();
+        let public_search_budget = self.deadlines.search_total_timeout();
+        let public_deadline = started_at + public_search_budget;
         let (tx, rx) = mpsc::channel();
         let mut slots = vec![None; providers.len()];
-        let provider_deadlines = provider_ids
+        let provider_budgets = provider_ids
             .iter()
-            .map(|provider| public_deadline.min(Instant::now() + provider_budget(*provider)))
+            .map(|provider| self.provider_budget(*provider).min(public_search_budget))
+            .collect::<Vec<_>>();
+        let provider_deadlines = provider_budgets
+            .iter()
+            .map(|budget| public_deadline.min(started_at + *budget))
             .collect::<Vec<_>>();
         let provider_cancellations = provider_ids
             .iter()
@@ -153,7 +168,7 @@ impl CodeSearchCoordinator {
                     provider_cancellations[index].cancel();
                     *slot = Some(provider_timeout_section(
                         provider_ids[index],
-                        provider_budget(provider_ids[index]).min(self.public_search_budget),
+                        provider_budgets[index],
                     ));
                 }
             }
@@ -239,6 +254,14 @@ impl CodeSearchCoordinator {
             warnings,
             errors,
         })
+    }
+
+    fn provider_budget(&self, provider: ProviderId) -> Duration {
+        match provider {
+            ProviderId::Rlm => self.deadlines.search_rlm_timeout(),
+            ProviderId::BslAnalyzer => self.deadlines.search_total_timeout(),
+            ProviderId::GitGrep => self.deadlines.search_git_grep_timeout(),
+        }
     }
 }
 
@@ -421,13 +444,14 @@ pub(crate) fn execute_provider_read(
     provider: Arc<dyn CodeIntelligenceProvider>,
     request: CodeIntelligenceReadRequest,
     context: CodeIntelligenceContext,
+    budget: Duration,
     cancellation: &CancellationToken,
 ) -> Result<ProviderReadOutcome, String> {
     execute_provider_read_with_policy(
         provider,
         request,
         context,
-        PROVIDER_READ_BUDGET,
+        budget,
         global_provider_worker_admission(),
         global_provider_worker_lifecycle(),
         cancellation,
@@ -509,6 +533,8 @@ fn execute_provider_read_with_policy(
         }
         match rx.recv_timeout(remaining.min(Duration::from_millis(25))) {
             Ok(result) => {
+                let result =
+                    arbitrate_provider_read_result(result, cancellation, &worker_cancellation);
                 worker_lifecycle.reap();
                 return result;
             }
@@ -522,6 +548,20 @@ fn execute_provider_read_with_policy(
             }
         }
     }
+}
+
+fn arbitrate_provider_read_result(
+    result: Result<ProviderReadOutcome, String>,
+    cancellation: &CancellationToken,
+    worker_cancellation: &CancellationToken,
+) -> Result<ProviderReadOutcome, String> {
+    if cancellation.is_cancelled() {
+        worker_cancellation.cancel();
+        return Err(cancelled_error(
+            "code intelligence read stopped while provider was running",
+        ));
+    }
+    result
 }
 
 #[cfg(test)]
@@ -557,14 +597,6 @@ fn provider_admission_exhausted_section(
     }
 }
 
-fn provider_budget(provider: ProviderId) -> Duration {
-    match provider {
-        ProviderId::Rlm => RLM_SEARCH_BUDGET,
-        ProviderId::BslAnalyzer => PUBLIC_SEARCH_BUDGET,
-        ProviderId::GitGrep => GIT_GREP_SEARCH_BUDGET,
-    }
-}
-
 fn failed_after_panic(provider: ProviderId, panic: Box<dyn Any + Send>) -> ProviderSearchSection {
     let detail = panic
         .downcast_ref::<&str>()
@@ -592,8 +624,8 @@ fn section_problem(section: &ProviderSearchSection) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        execute_provider_read_with_policy, CodeSearchCoordinator, ProviderWorkerAdmission,
-        ProviderWorkerLifecycle,
+        arbitrate_provider_read_result, execute_provider_read_with_policy, CodeSearchCoordinator,
+        ProviderWorkerAdmission, ProviderWorkerLifecycle,
     };
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::{
@@ -602,6 +634,7 @@ mod tests {
         ProviderReadOutcome, ProviderSearchHit, ProviderSearchSection, ProviderSectionStatus,
         SearchRequest,
     };
+    use crate::domain::operational_config::CodeIntelligenceDeadlines;
     use crate::domain::source_roots::ResolvedSourceRoot;
     use crate::domain::workspace::WorkspaceContext;
     use serde_json::Map;
@@ -976,6 +1009,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn coordinator_projects_each_configured_provider_budget_without_hidden_caps() {
+        let deadlines = CodeIntelligenceDeadlines::for_test_values(
+            Duration::from_secs(100),
+            Duration::from_secs(30),
+            Duration::from_secs(70),
+            Duration::from_secs(40),
+        );
+        let coordinator = CodeSearchCoordinator::with_deadlines(
+            CodeIntelligenceRegistry::new(Vec::new()).unwrap(),
+            deadlines,
+        );
+
+        assert_eq!(
+            coordinator.provider_budget(ProviderId::BslAnalyzer),
+            Duration::from_secs(100)
+        );
+        assert_eq!(
+            coordinator.provider_budget(ProviderId::Rlm),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            coordinator.provider_budget(ProviderId::GitGrep),
+            Duration::from_secs(70)
+        );
+        assert_eq!(deadlines.provider_read_timeout(), Duration::from_secs(40));
+    }
+
     struct DeadlineIgnoringProvider;
 
     impl CodeIntelligenceProvider for DeadlineIgnoringProvider {
@@ -1144,6 +1205,29 @@ mod tests {
         assert_eq!(admission.active_count(ProviderId::Rlm), 1);
         assert!(lifecycle.drain(Duration::from_secs(2)));
         assert_eq!(admission.active_count(ProviderId::Rlm), 0);
+    }
+
+    #[test]
+    fn post_receive_arbitration_gives_parent_cancellation_priority_over_ok_result() {
+        let cancellation = CancellationToken::new();
+        let worker_cancellation = cancellation.linked_child();
+        cancellation.cancel();
+        let result = Ok(ProviderReadOutcome {
+            provider: ProviderId::Rlm,
+            ok: true,
+            summary: "result published after parent cancellation".to_string(),
+            warnings: Vec::new(),
+            errors: Vec::new(),
+            artifacts: Vec::new(),
+            stdout: None,
+            stderr: None,
+            data: None,
+        });
+
+        let error = arbitrate_provider_read_result(result, &cancellation, &worker_cancellation)
+            .expect_err("parent cancellation must win over a received Ok result");
+
+        assert!(error.starts_with("cancelled:"), "{error}");
     }
 
     struct PanickingProvider;

@@ -507,6 +507,22 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `tests/ci/test_product_contracts.py`
 - **Scope:** source
 
+### INV-APP-CONFIG-SNAPSHOT — Конфигурация вызова изолирована рабочим пространством
+
+- **Rule:** Для `unica.code.search`, `unica.code.definition`,
+  `unica.code.outline` и `unica.code.diagnostics` в режиме `analyze` приложение
+  после обнаружения рабочего пространства разрешает ровно один неизменяемый
+  `OperationalConfig`: все сроки данного вызова выводятся из этого снимка без
+  повторного чтения файлов, следующий вызов разрешает его заново, а снимок
+  одного рабочего пространства не переиспользуется другим. Невалидный файловый
+  слой останавливает затронутый вызов до запуска поставщика или процесса;
+  остальные вызовы конфигурационные файлы не читают.
+- **Decision:** ADR-0033
+- **Check:** `ci-test` — `crates/unica-coder/src/application/operational_config.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/operational_config.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
+- **Scope:** source, runtime
+
 ### INV-APP-CODE-PROVIDER-BOUNDARY — Анализ кода не зависит от движка
 
 - **Rule:** Слой application оркестрирует поиск и навигацию только через

@@ -3,6 +3,7 @@ use crate::application::{
     DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
 };
 use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
+use crate::domain::operational_config::OperationalConfig;
 use crate::domain::project_sources::{config_dump_info_xml_kind, ConfigDumpInfoXmlKind};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
@@ -1543,6 +1544,25 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         dry_run: bool,
         cancellation: &CancellationToken,
     ) -> Result<BslAnalyzerOutcome, String> {
+        self.invoke_cancellable_with_operational_config(
+            tool_name,
+            args,
+            context,
+            dry_run,
+            None,
+            cancellation,
+        )
+    }
+
+    pub(crate) fn invoke_cancellable_with_operational_config(
+        &self,
+        tool_name: &str,
+        args: &Map<String, Value>,
+        context: &WorkspaceContext,
+        dry_run: bool,
+        operational_config: Option<&OperationalConfig>,
+        cancellation: &CancellationToken,
+    ) -> Result<BslAnalyzerOutcome, String> {
         if cancellation.is_cancelled() {
             return Ok(BslAnalyzerOutcome::plain(AdapterOutcome::cancelled(
                 format!("{tool_name} cancelled before adapter work"),
@@ -1557,7 +1577,7 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         };
         if tool_name == "unica.code.diagnostics" && diagnostics_mode(args) == "analyze" {
             let cli_args = diagnostics_analyze_args(args);
-            let process_timeout = diagnostics_analyze_timeout(args)?;
+            let process_timeout = diagnostics_analyze_timeout(args, operational_config)?;
             let outcome = CliAdapter::with_runner(
                 "bsl-analyzer",
                 &["analyze"],
@@ -1809,9 +1829,16 @@ fn diagnostics_analyze_args(args: &Map<String, Value>) -> Map<String, Value> {
     filtered
 }
 
-fn diagnostics_analyze_timeout(args: &Map<String, Value>) -> Result<Duration, String> {
+fn diagnostics_analyze_timeout(
+    args: &Map<String, Value>,
+    operational_config: Option<&OperationalConfig>,
+) -> Result<Duration, String> {
     let Some(value) = args.get("timeoutSeconds") else {
-        return Ok(DEFAULT_PROCESS_TIMEOUT);
+        return Ok(
+            operational_config.map_or(DEFAULT_PROCESS_TIMEOUT, |config| {
+                config.code_diagnostics().analyze_timeout()
+            }),
+        );
     };
     let Some(seconds) = value.as_u64() else {
         return Err("unica.code.diagnostics argument `timeoutSeconds` must be integer".to_string());
@@ -4365,9 +4392,21 @@ source-set:
             commands: RefCell::new(Vec::new()),
             output: analyze_process_output(ANALYZE_CONSOLE_REPORT),
         };
+        let operational_config =
+            crate::infrastructure::operational_config::load_operational_config(
+                &context.workspace_root,
+            )
+            .unwrap();
 
         let outcome = BslAnalyzerMcpAdapter::with_process_runner(&runner)
-            .invoke("unica.code.diagnostics", &Map::new(), &context, false)
+            .invoke_cancellable_with_operational_config(
+                "unica.code.diagnostics",
+                &Map::new(),
+                &context,
+                false,
+                Some(&operational_config),
+                &CancellationToken::new(),
+            )
             .unwrap()
             .outcome;
 
@@ -4375,6 +4414,48 @@ source-set:
         assert_eq!(
             runner.commands.borrow()[0].timeout,
             Some(DEFAULT_PROCESS_TIMEOUT)
+        );
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn diagnostics_analyze_uses_workspace_operational_config_default() {
+        let context = temp_context("diagnostics-operational-config-timeout");
+        fs::write(
+            context.workspace_root.join("unica.toml"),
+            r#"version = 1
+
+[operational.code_diagnostics]
+analyze_timeout_seconds = 900
+"#,
+        )
+        .unwrap();
+        let runner = RecordingProcessRunner {
+            commands: RefCell::new(Vec::new()),
+            output: analyze_process_output(ANALYZE_CONSOLE_REPORT),
+        };
+        let operational_config =
+            crate::infrastructure::operational_config::load_operational_config(
+                &context.workspace_root,
+            )
+            .unwrap();
+
+        let outcome = BslAnalyzerMcpAdapter::with_process_runner(&runner)
+            .invoke_cancellable_with_operational_config(
+                "unica.code.diagnostics",
+                &Map::new(),
+                &context,
+                false,
+                Some(&operational_config),
+                &CancellationToken::new(),
+            )
+            .unwrap()
+            .outcome;
+
+        assert!(outcome.ok);
+        assert_eq!(
+            runner.commands.borrow()[0].timeout,
+            Some(Duration::from_secs(900))
         );
         cleanup_context(&context);
     }

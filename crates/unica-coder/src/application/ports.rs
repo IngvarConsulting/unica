@@ -16,6 +16,7 @@ use crate::domain::metadata::{
     MetaPredefinedItemsData, MetaPropertyData, MetaRelationsData, MetaSupportStatus, MetaUsageData,
     MetaValidationData, MetaValidationStatus, MetadataKind,
 };
+use crate::domain::operational_config::{OperationalConfig, OperationalConfigDiagnostic};
 use crate::domain::source_resources::{
     ResourceManifestPage, SourceReadResult, SourceResourceError,
 };
@@ -416,6 +417,13 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         context: &WorkspaceContext,
     ) -> Result<(), String>;
 
+    fn load_operational_config(
+        &self,
+        _context: &WorkspaceContext,
+    ) -> Result<OperationalConfig, OperationalConfigDiagnostic> {
+        Ok(OperationalConfig::compiled_defaults())
+    }
+
     fn read_metadata_local(
         &self,
         _request: &MetaInfoRequest,
@@ -562,6 +570,19 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         dry_run: bool,
         cancellation: &CancellationToken,
     ) -> Result<HandlerOutcome, String>;
+
+    fn invoke_handler_with_operational_config(
+        &self,
+        spec: ToolSpec,
+        args: &Map<String, Value>,
+        context: &WorkspaceContext,
+        dry_run: bool,
+        operational_config: Option<&OperationalConfig>,
+        cancellation: &CancellationToken,
+    ) -> Result<HandlerOutcome, String> {
+        let _ = operational_config;
+        self.invoke_handler(spec, args, context, dry_run, cancellation)
+    }
 
     fn cache_report(
         &self,

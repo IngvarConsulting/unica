@@ -167,11 +167,27 @@ struct WorkspaceServiceCallDeadline {
     budget: Duration,
 }
 
-struct WorkspaceServiceBslCall<'a> {
+pub(crate) struct WorkspaceServiceBslCall<'a> {
     tool_name: &'a str,
     tool_args: Value,
     timeout: Duration,
     request_budget: Duration,
+}
+
+impl<'a> WorkspaceServiceBslCall<'a> {
+    pub(crate) fn new(
+        tool_name: &'a str,
+        tool_args: Value,
+        timeout: Duration,
+        request_budget: Duration,
+    ) -> Self {
+        Self {
+            tool_name,
+            tool_args,
+            timeout,
+            request_budget,
+        }
+    }
 }
 
 impl WorkspaceServiceCallDeadline {
@@ -187,7 +203,7 @@ impl WorkspaceServiceCallDeadline {
         self.budget
             .checked_sub(self.started.elapsed())
             .filter(|remaining| !remaining.is_zero())
-            .ok_or_else(workspace_service_request_timeout_error)
+            .ok_or_else(|| workspace_service_request_timeout_error(self.budget))
     }
 }
 
@@ -297,17 +313,12 @@ impl<'a> WorkspaceServiceManager<'a> {
         self.call_bsl_mcp_cancellable_with_budget(
             context,
             source_root,
-            WorkspaceServiceBslCall {
-                tool_name,
-                tool_args,
-                timeout,
-                request_budget: SERVICE_REQUEST_TIMEOUT,
-            },
+            WorkspaceServiceBslCall::new(tool_name, tool_args, timeout, SERVICE_REQUEST_TIMEOUT),
             cancellation,
         )
     }
 
-    fn call_bsl_mcp_cancellable_with_budget(
+    pub(crate) fn call_bsl_mcp_cancellable_with_budget(
         &self,
         context: &WorkspaceContext,
         source_root: &Path,
@@ -950,13 +961,13 @@ fn remaining_or_timeout(
 ) -> Result<Duration, String> {
     deadline
         .remaining(clock)
-        .ok_or_else(workspace_service_request_timeout_error)
+        .ok_or_else(|| workspace_service_request_timeout_error(deadline.budget))
 }
 
-fn workspace_service_request_timeout_error() -> String {
+fn workspace_service_request_timeout_error(budget: Duration) -> String {
     format!(
         "timeout: workspace service request exceeded {} seconds",
-        SERVICE_REQUEST_TIMEOUT.as_secs()
+        budget.as_secs()
     )
 }
 
@@ -7184,6 +7195,21 @@ fn main() {
     }
 
     #[test]
+    fn workspace_service_deadline_reports_actual_request_budget() {
+        let deadline = WorkspaceServiceCallDeadline {
+            started: Instant::now() - Duration::from_secs(31),
+            budget: Duration::from_secs(30),
+        };
+
+        let error = deadline.remaining(&CancellationToken::new()).unwrap_err();
+
+        assert_eq!(
+            error,
+            "timeout: workspace service request exceeded 30 seconds"
+        );
+    }
+
+    #[test]
     fn spawn_lock_contention_classifier_uses_fs2_platform_error() {
         assert!(spawn_lock_is_contended(&fs2::lock_contended_error()));
         assert!(spawn_lock_is_contended(&io::Error::from(
@@ -8051,7 +8077,7 @@ fn main() {
                     .checked_sub(started.elapsed())
                     .filter(|remaining| !remaining.is_zero())
                 else {
-                    return Err(workspace_service_request_timeout_error());
+                    return Err(workspace_service_request_timeout_error(budget));
                 };
                 thread::sleep(
                     Duration::from_millis(10)
@@ -8061,7 +8087,7 @@ fn main() {
             }
             cancellation_error(cancellation)?;
             if started.elapsed() >= budget {
-                return Err(workspace_service_request_timeout_error());
+                return Err(workspace_service_request_timeout_error(budget));
             }
             let mut record = test_record(identity, 45678, env!("CARGO_PKG_VERSION"));
             record.token = token.to_string();

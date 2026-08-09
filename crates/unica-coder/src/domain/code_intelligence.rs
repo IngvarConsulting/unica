@@ -84,16 +84,41 @@ impl CodeIntelligenceContext {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ProviderDeadline(Instant);
+#[derive(Debug, Clone, Copy)]
+pub struct ProviderDeadline {
+    deadline: Instant,
+    #[cfg(test)]
+    now: fn() -> Instant,
+}
+
+impl PartialEq for ProviderDeadline {
+    fn eq(&self, other: &Self) -> bool {
+        self.deadline == other.deadline
+    }
+}
+
+impl Eq for ProviderDeadline {}
 
 impl ProviderDeadline {
     pub fn new(deadline: Instant) -> Self {
-        Self(deadline)
+        Self {
+            deadline,
+            #[cfg(test)]
+            now: Instant::now,
+        }
     }
 
     pub fn remaining(self) -> Duration {
-        self.0.saturating_duration_since(Instant::now())
+        #[cfg(test)]
+        let now = (self.now)();
+        #[cfg(not(test))]
+        let now = Instant::now();
+        self.deadline.saturating_duration_since(now)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_clock(deadline: Instant, now: fn() -> Instant) -> Self {
+        Self { deadline, now }
     }
 }
 
@@ -553,5 +578,17 @@ mod tests {
         );
         assert!(provider_deadline.remaining() <= Duration::from_secs(120));
         assert!(provider_deadline.remaining() > Duration::from_secs(119));
+    }
+
+    #[test]
+    fn provider_deadline_preserves_its_equality_contract() {
+        fn assert_eq_contract<T: Eq>() {}
+
+        assert_eq_contract::<ProviderDeadline>();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        assert_eq!(
+            ProviderDeadline::new(deadline),
+            ProviderDeadline::new(deadline)
+        );
     }
 }

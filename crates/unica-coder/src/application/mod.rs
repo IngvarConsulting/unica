@@ -18,6 +18,7 @@ pub(crate) mod code_intelligence;
 pub(crate) mod documentation;
 pub(crate) mod metadata;
 pub(crate) mod operation_descriptors;
+pub(crate) mod operational_config;
 mod outcome;
 pub(crate) mod ports;
 pub(crate) mod source_navigation;
@@ -703,29 +704,87 @@ fn call_tool(
         None
     };
 
+    if operational_config::requires_snapshot(spec, args) && cancellation.is_cancelled() {
+        return Err(crate::domain::cancellation::cancelled_error(
+            "operational config resolution stopped before reading workspace files",
+        ));
+    }
+    let operational_config = match operational_config::resolve_for_call(ports, spec, args, &context)
+    {
+        Ok(config) => config,
+        Err(diagnostic) => {
+            let error = diagnostic.to_string();
+            let diagnostic = serde_json::to_value(diagnostic).map_err(|serialize| {
+                format!("failed to serialize operational config diagnostic: {serialize}")
+            })?;
+            let cache = ports.cache_report(&context, &[], dry_run, spec.cache_access)?;
+            return Ok(OperationResult {
+                ok: false,
+                summary: format!("{} operational configuration is invalid", spec.name),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error],
+                artifacts: Vec::new(),
+                cache,
+                stdout: None,
+                stderr: None,
+                command: None,
+                diagnostics: Some(json!({"operationalConfig": diagnostic})),
+                data: None,
+                job: None,
+            });
+        }
+    };
+    if operational_config.is_some() && cancellation.is_cancelled() {
+        return Err(crate::domain::cancellation::cancelled_error(
+            "operational config resolution stopped after reading workspace files",
+        ));
+    }
+
     let handler_outcome = match spec.handler {
         ToolHandler::Metadata { operation } => {
             metadata::invoke(operation, ports, args, &context, cancellation)?
         }
         ToolHandler::CodeIntelligence {
             operation: CodeIntelligenceOperation::Search,
-        } => invoke_code_intelligence_search(ports, args, &context, dry_run, cancellation)?,
-        ToolHandler::CodeIntelligence { operation } => invoke_code_intelligence_read(
+        } => invoke_code_intelligence_search(
             ports,
-            spec.name,
-            operation,
             args,
             &context,
             dry_run,
+            operational_config.as_ref().ok_or_else(|| {
+                "code intelligence call is missing operational config".to_string()
+            })?,
             cancellation,
         )?,
+        ToolHandler::CodeIntelligence { operation } => {
+            invoke_code_intelligence_read(CodeIntelligenceReadInvocation {
+                ports,
+                tool_name: spec.name,
+                operation,
+                args,
+                workspace: &context,
+                dry_run,
+                operational_config: operational_config.as_ref().ok_or_else(|| {
+                    "code intelligence call is missing operational config".to_string()
+                })?,
+                cancellation,
+            })?
+        }
         ToolHandler::SourceNavigation { operation } => {
             source_navigation::invoke(operation, ports, args, &context, cancellation)?
         }
         ToolHandler::SourceResources { operation } => {
             source_resources::invoke(operation, ports, args, &context, dry_run, cancellation)?
         }
-        _ => ports.invoke_handler(spec, args, &context, dry_run, cancellation)?,
+        _ => ports.invoke_handler_with_operational_config(
+            spec,
+            args,
+            &context,
+            dry_run,
+            operational_config.as_ref(),
+            cancellation,
+        )?,
     };
     let mut outcome = handler_outcome.adapter;
     let handler_events = handler_outcome.events;
@@ -937,6 +996,7 @@ fn invoke_code_intelligence_search(
     args: &Map<String, Value>,
     workspace: &WorkspaceContext,
     dry_run: bool,
+    operational_config: &crate::domain::operational_config::OperationalConfig,
     cancellation: &CancellationToken,
 ) -> Result<ports::HandlerOutcome, String> {
     let context = ports.resolve_code_intelligence_context(workspace, args)?;
@@ -961,8 +1021,9 @@ fn invoke_code_intelligence_search(
             .and_then(|value| usize::try_from(value).ok())
             .unwrap_or(20),
     };
-    let execution = code_intelligence::CodeSearchCoordinator::new(
+    let execution = code_intelligence::CodeSearchCoordinator::with_deadlines(
         ports.code_intelligence_registry()?,
+        operational_config.code_intelligence(),
     )
     .search(&request, &context, cancellation)?;
     let artifacts = execution
@@ -996,15 +1057,30 @@ fn invoke_code_intelligence_search(
     ))
 }
 
-fn invoke_code_intelligence_read(
-    ports: &dyn ApplicationPorts,
-    tool_name: &str,
+struct CodeIntelligenceReadInvocation<'a> {
+    ports: &'a dyn ApplicationPorts,
+    tool_name: &'a str,
     operation: CodeIntelligenceOperation,
-    args: &Map<String, Value>,
-    workspace: &WorkspaceContext,
+    args: &'a Map<String, Value>,
+    workspace: &'a WorkspaceContext,
     dry_run: bool,
-    cancellation: &CancellationToken,
+    operational_config: &'a crate::domain::operational_config::OperationalConfig,
+    cancellation: &'a CancellationToken,
+}
+
+fn invoke_code_intelligence_read(
+    invocation: CodeIntelligenceReadInvocation<'_>,
 ) -> Result<ports::HandlerOutcome, String> {
+    let CodeIntelligenceReadInvocation {
+        ports,
+        tool_name,
+        operation,
+        args,
+        workspace,
+        dry_run,
+        operational_config,
+        cancellation,
+    } = invocation;
     let context = ports.resolve_code_intelligence_context(workspace, args)?;
     if dry_run {
         let mut outcome = AdapterOutcome::ok(format!(
@@ -1027,8 +1103,15 @@ fn invoke_code_intelligence_read(
         )
     })?;
     let provider_id = provider.id();
-    let mut outcome =
-        code_intelligence::execute_provider_read(provider, request, context, cancellation)?;
+    let mut outcome = code_intelligence::execute_provider_read(
+        provider,
+        request,
+        context,
+        operational_config
+            .code_intelligence()
+            .provider_read_timeout(),
+        cancellation,
+    )?;
     if outcome.provider != provider_id {
         outcome.warnings.insert(
             0,
@@ -2098,6 +2181,8 @@ mod tests {
         with_publication_lock_pause, CompileTransaction, FileLinkFixtureOutcome,
     };
     use serde_json::Map;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
     use std::sync::{mpsc, Arc, Barrier};
     use std::thread;
     use std::time::Duration;
@@ -2127,6 +2212,203 @@ mod tests {
 
     fn path_text(path: &std::path::Path) -> String {
         path.display().to_string().replace('\\', "/")
+    }
+
+    #[derive(Default)]
+    struct OperationalConfigRecordingPorts {
+        load_calls: AtomicUsize,
+        handler_calls: AtomicUsize,
+        code_context_calls: AtomicUsize,
+        fail_load: bool,
+        observed_analyze_timeout: Mutex<Option<Duration>>,
+    }
+
+    impl OperationalConfigRecordingPorts {
+        fn failing() -> Self {
+            Self {
+                fail_load: true,
+                ..Self::default()
+            }
+        }
+    }
+
+    impl ports::ApplicationPorts for OperationalConfigRecordingPorts {
+        fn discover_workspace(
+            &self,
+            requested_cwd: Option<PathBuf>,
+        ) -> Result<WorkspaceContext, String> {
+            let cwd = requested_cwd.unwrap_or_else(|| PathBuf::from("/workspace"));
+            Ok(WorkspaceContext {
+                cwd: cwd.clone(),
+                workspace_root: cwd.clone(),
+                cache_root: cwd.join(".build/unica"),
+                workspace_epoch: 1,
+            })
+        }
+
+        fn validate_tool_context(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _dry_run: bool,
+            _context: &WorkspaceContext,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn load_operational_config(
+            &self,
+            _context: &WorkspaceContext,
+        ) -> Result<
+            crate::domain::operational_config::OperationalConfig,
+            crate::domain::operational_config::OperationalConfigDiagnostic,
+        > {
+            self.load_calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail_load {
+                return Err(
+                    crate::domain::operational_config::OperationalConfigDiagnostic::new(
+                        crate::domain::operational_config::OperationalConfigDiagnosticCode::InvalidToml,
+                        crate::domain::operational_config::OperationalConfigDiagnosticSource::Shared,
+                        "$",
+                    ),
+                );
+            }
+            Ok(crate::domain::operational_config::OperationalConfig::compiled_defaults())
+        }
+
+        fn evaluate_support_guard(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _context: &WorkspaceContext,
+        ) -> Result<SupportGuardCheck, String> {
+            Ok(SupportGuardCheck::Allow)
+        }
+
+        fn resolve_code_intelligence_context(
+            &self,
+            _context: &WorkspaceContext,
+            _args: &Map<String, Value>,
+        ) -> Result<crate::domain::code_intelligence::CodeIntelligenceContext, String> {
+            self.code_context_calls.fetch_add(1, Ordering::SeqCst);
+            Err("code intelligence context should not be resolved in this test".to_string())
+        }
+
+        fn invoke_handler(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _context: &WorkspaceContext,
+            _dry_run: bool,
+            _cancellation: &CancellationToken,
+        ) -> Result<ports::HandlerOutcome, String> {
+            self.handler_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(ports::HandlerOutcome::plain(AdapterOutcome::ok("handled")))
+        }
+
+        fn invoke_handler_with_operational_config(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _context: &WorkspaceContext,
+            _dry_run: bool,
+            operational_config: Option<&crate::domain::operational_config::OperationalConfig>,
+            _cancellation: &CancellationToken,
+        ) -> Result<ports::HandlerOutcome, String> {
+            self.handler_calls.fetch_add(1, Ordering::SeqCst);
+            *self.observed_analyze_timeout.lock().unwrap() =
+                operational_config.map(|config| config.code_diagnostics().analyze_timeout());
+            Ok(ports::HandlerOutcome::plain(AdapterOutcome::ok("handled")))
+        }
+
+        fn cache_report(
+            &self,
+            context: &WorkspaceContext,
+            _events: &[DomainEvent],
+            dry_run: bool,
+            _cache_access: CacheAccess,
+        ) -> Result<CacheReport, String> {
+            Ok(CacheReport {
+                mode: if dry_run { "dry-run" } else { "read" }.to_string(),
+                root: context.cache_root.display().to_string(),
+                workspace_epoch: context.workspace_epoch,
+                events: Vec::new(),
+                invalidated: Vec::new(),
+                refreshed: Vec::new(),
+                lazy_rebuilt: Vec::new(),
+                stale: Vec::new(),
+                fresh: Vec::new(),
+                publication_warnings: Vec::new(),
+            })
+        }
+
+        fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
+    }
+
+    #[test]
+    fn operational_config_is_loaded_once_only_for_affected_calls() {
+        let ports = Arc::new(OperationalConfigRecordingPorts::default());
+        let app = UnicaApplication::with_ports(ports.clone());
+
+        let mut status = Map::new();
+        status.insert("mode".to_string(), json!("status"));
+        app.call_tool("unica.code.diagnostics", &status).unwrap();
+        assert_eq!(ports.load_calls.load(Ordering::SeqCst), 0);
+
+        let mut analyze = Map::new();
+        analyze.insert("dryRun".to_string(), json!(true));
+        analyze.insert("timeoutSeconds".to_string(), json!(900));
+        app.call_tool("unica.code.diagnostics", &analyze).unwrap();
+        assert_eq!(ports.load_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            *ports.observed_analyze_timeout.lock().unwrap(),
+            Some(Duration::from_secs(900))
+        );
+
+        app.call_tool("unica.project.status", &Map::new()).unwrap();
+        assert_eq!(ports.load_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(ports.handler_calls.load(Ordering::SeqCst), 3);
+
+        for (tool_name, args) in [
+            ("unica.code.search", json!({"query": "needle"})),
+            ("unica.code.definition", json!({"name": "Needle"})),
+            ("unica.code.outline", json!({"path": "Module.bsl"})),
+        ] {
+            let error = app
+                .call_tool(tool_name, args.as_object().unwrap())
+                .unwrap_err();
+            assert!(error.contains("should not be resolved"), "{error}");
+        }
+        assert_eq!(ports.load_calls.load(Ordering::SeqCst), 4);
+        assert_eq!(ports.code_context_calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn invalid_operational_config_stops_before_handler_execution() {
+        let cases = [
+            ("unica.code.search", json!({"query": "needle"})),
+            ("unica.code.definition", json!({"name": "Needle"})),
+            ("unica.code.outline", json!({"path": "Module.bsl"})),
+            ("unica.code.diagnostics", json!({"timeoutSeconds": 900})),
+        ];
+
+        for (tool_name, args) in cases {
+            let ports = Arc::new(OperationalConfigRecordingPorts::failing());
+            let app = UnicaApplication::with_ports(ports.clone());
+            let result = app.call_tool(tool_name, args.as_object().unwrap()).unwrap();
+
+            assert!(!result.ok, "{tool_name}");
+            assert_eq!(ports.load_calls.load(Ordering::SeqCst), 1, "{tool_name}");
+            assert_eq!(ports.handler_calls.load(Ordering::SeqCst), 0, "{tool_name}");
+            assert_eq!(
+                ports.code_context_calls.load(Ordering::SeqCst),
+                0,
+                "{tool_name}"
+            );
+            let diagnostic = &result.diagnostics.unwrap()["operationalConfig"];
+            assert_eq!(diagnostic["source"], "unica.toml");
+            assert_eq!(diagnostic["fieldPath"], "$");
+        }
     }
 
     #[test]
