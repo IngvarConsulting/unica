@@ -78,6 +78,8 @@ mod info;
 mod integrity_check;
 mod publisher;
 mod remove;
+mod subsystem_topology;
+pub(crate) use subsystem_topology::{build_subsystem_topology, SubsystemRole};
 mod template_catalog;
 mod usage_scan;
 mod validation;

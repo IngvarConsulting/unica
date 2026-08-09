@@ -1,11 +1,6 @@
 use serde::Serialize;
 use std::fmt;
 
-/// Предел сегментов плоского адреса подсистемы: вид плюс путь вложенности.
-/// Самая глубокая подсистема наблюдённой конфигурации даёт шесть сегментов;
-/// запас оставлен небольшим, чтобы адрес не подменял собой обход дерева.
-const SUBSYSTEM_ADDRESS_MAX_SEGMENTS: usize = 8;
-
 pub const PLATFORM_XML_8_3_27_FORMAT_2_20: &str = "platform-xml-8.3.27-format-2.20";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
@@ -185,25 +180,6 @@ impl AddressProfile {
             };
         }
 
-        // A subsystem only ever contains subsystems, so its tail reads
-        // unambiguously as nesting and the address stays flat:
-        // `Subsystem.Родитель.Потомок`, not `Subsystem.Родитель.Subsystem.Потомок`.
-        // The flat form is Unica's internal one; the platform writes the
-        // repeating form in `Rights.xml`, in subsystem `Content` items and in the
-        // BSL object model, so a reader of those must convert at the edge rather
-        // than compare the two forms directly.
-        if canonical_kind(parts[0]).is_ok_and(|kind| kind == "Subsystem") {
-            if parts.len() > SUBSYSTEM_ADDRESS_MAX_SEGMENTS {
-                return Err(SourceTargetError::invalid(
-                    "subsystem address nests deeper than the supported depth",
-                ));
-            }
-            let mut canonical = Vec::with_capacity(parts.len());
-            canonical.push(canonical_kind(parts[0])?);
-            canonical.extend(parts[1..].iter().copied());
-            return Ok(MetadataAddress(canonical.join(".")));
-        }
-
         if matches!(parts.len(), 3 | 5)
             && !is_module_terminal(parts.last().copied().unwrap_or_default())
         {
@@ -245,18 +221,7 @@ impl AddressProfile {
                 "metadata address prefix contains an empty segment",
             ));
         }
-        let subsystem_root = parts
-            .first()
-            .is_some_and(|part| canonical_kind(part).is_ok_and(|kind| kind == "Subsystem"));
-        // A flat subsystem address nests deeper than the general grammar, so a
-        // prefix over it must allow the same depth; otherwise navigation reads a
-        // valid target as unroutable and silently falls back to an unscoped scan.
-        let max_segments = if subsystem_root {
-            SUBSYSTEM_ADDRESS_MAX_SEGMENTS
-        } else {
-            5
-        };
-        if parts.len() > max_segments {
+        if parts.len() > 5 {
             return Err(SourceTargetError::invalid(
                 "metadata address prefix has an unsupported segment count",
             ));
@@ -282,13 +247,6 @@ impl AddressProfile {
                 "unknown metadata address prefix root `{}`",
                 parts[0]
             )));
-        }
-
-        if subsystem_root {
-            let mut canonical = Vec::with_capacity(parts.len());
-            canonical.push(canonical_kind(parts[0])?);
-            canonical.extend(parts[1..].iter().copied());
-            return Ok(MetadataAddressPrefix(canonical.join(".")));
         }
 
         let mut canonical = Vec::with_capacity(parts.len());
@@ -916,30 +874,5 @@ mod tests {
                 "targetKind": "metadataObject"
             })
         );
-    }
-
-    #[test]
-    fn flat_subsystem_addresses_and_their_prefixes_share_one_depth() {
-        let deep = "Subsystem.A.B.C.D.E";
-        assert_eq!(
-            AddressProfile::new(PLATFORM_XML_8_3_27_FORMAT_2_20)
-                .unwrap()
-                .parse(deep)
-                .unwrap()
-                .as_str(),
-            deep
-        );
-        // A prefix over a valid flat address must stay routable, otherwise
-        // navigation falls back to an unscoped scan for a target it can address.
-        assert_eq!(
-            MetadataAddressPrefix::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, deep)
-                .unwrap()
-                .as_str(),
-            deep
-        );
-        assert!(AddressProfile::new(PLATFORM_XML_8_3_27_FORMAT_2_20)
-            .unwrap()
-            .parse("Subsystem.A.B.C.D.E.F.G.H")
-            .is_err());
     }
 }

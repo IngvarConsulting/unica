@@ -6,6 +6,7 @@ use crate::application::ports::{
     MetadataAuxiliaryXmlKind, MetadataChildProfile, MetadataChildResourceKind,
     MetadataEvidenceAvailability, MetadataResourceRole, MetadataTemplateResourcePart,
     MetadataTemplateType, MetadataValidationResult, MetadataValidationSubject,
+    SubsystemMembershipEvidence,
 };
 use crate::domain::format_profile::{
     classify_root_version, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
@@ -37,7 +38,7 @@ use super::info::resolve_meta_info_path;
 use super::validation_context::{
     inspect_metadata_image_identity, inspect_metadata_language_image,
     inspect_metadata_registration_image, meta_validate_registrar_document_scan,
-    meta_validate_subsystem_command_interface_scan, meta_validate_types_with_list_presentation,
+    meta_validate_types_with_list_presentation,
 };
 use super::xml_model::{
     meta_info_child, meta_info_child_text, meta_info_children, meta_info_inner_text,
@@ -125,7 +126,7 @@ impl MetadataValidator {
         {
             completeness.extend(diagnostics.clone());
         }
-        if let Some(MetadataEvidenceAvailability::Unavailable(diagnostics)) =
+        if let Some(SubsystemMembershipEvidence::Unavailable(diagnostics)) =
             &subject.subsystem_evidence
         {
             completeness.extend(diagnostics.clone());
@@ -622,57 +623,6 @@ pub(super) fn document_registers(bytes: &[u8], expected: &str) -> bool {
                 .into_iter()
                 .any(|item| meta_info_inner_text(item).trim() == expected)
         })
-}
-
-/// Пересказ дескриптора подсистемы без политики: имя, собственный флаг и то,
-/// есть ли объект в составе. Раньше эти три факта складывались в одно
-/// `Option`, из-за чего «флаг снят» и «объекта нет в составе» были неразличимы,
-/// а различать их необходимо: раздел командного интерфейса определяется всей
-/// цепочкой предков, а состав — только своим дескриптором.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct SubsystemDescriptorFacts {
-    pub(super) name: String,
-    /// Собственный флаг подсистемы. Отсутствующий равен платформенному значению
-    /// по умолчанию; выгрузка конфигуратора пишет его всегда, поэтому ветка
-    /// живёт ради рукописных исходников.
-    pub(super) own_include: bool,
-    pub(super) lists_expected: bool,
-}
-
-/// `Subsystem` не входит в проверяемые виды, поэтому дескриптор разбирается
-/// здесь, а не общим инспектором личности образа.
-pub(super) fn subsystem_descriptor_facts(
-    bytes: &[u8],
-    expected: &str,
-) -> Result<SubsystemDescriptorFacts, String> {
-    let (_, document) = parse_metadata_image(bytes)?;
-    let Some(properties) = document
-        .root_element()
-        .children()
-        .find(|node| {
-            node.is_element()
-                && node.tag_name().namespace() == Some(MD_CLASSES_NS)
-                && node.tag_name().name() == "Subsystem"
-        })
-        .and_then(|object| meta_info_child(object, "Properties"))
-    else {
-        return Err("image is not a Subsystem descriptor".to_string());
-    };
-    let name = meta_info_child_text(properties, "Name")
-        .filter(|name| !name.is_empty())
-        .ok_or_else(|| "Subsystem Name is missing".to_string())?;
-    let own_include =
-        meta_info_child_text(properties, "IncludeInCommandInterface").as_deref() != Some("false");
-    let lists_expected = meta_info_child(properties, "Content").is_some_and(|content| {
-        meta_info_children(content, "Item")
-            .into_iter()
-            .any(|item| meta_info_inner_text(item).trim() == expected)
-    });
-    Ok(SubsystemDescriptorFacts {
-        name,
-        own_include,
-        lists_expected,
-    })
 }
 
 fn complete_read_missing(
@@ -3005,67 +2955,18 @@ pub(super) fn meta_validate_check_register_command_interface(
         return;
     }
     let object_ref = format!("{md_type}.{obj_name}");
-    let shown_in_command_interface = if let Some(subject) = proof_subject {
-        // Absence is only provable from a scan that actually ran and finished.
-        // A subject that gathered no subsystem evidence says nothing about
-        // membership, so the rule stays silent rather than reading the missing
-        // resources as proof.
-        if !matches!(
-            subject.subsystem_evidence,
-            Some(MetadataEvidenceAvailability::Complete)
-        ) {
-            return;
-        }
-        // The gatherer only records a subsystem that lists the register and
-        // whose whole chain reaches the command interface, so the presence of
-        // such evidence is the verdict; the policy is not applied twice.
-        subject.resources.iter().any(|resource| {
-            matches!(
-                &resource.role,
-                MetadataResourceRole::Dependency { target }
-                    if target.segments().next() == Some("Subsystem")
-            )
-        })
-    } else if let Some(config_dir) = config_dir {
-        let subsystems_dir = config_dir.join("Subsystems");
-        // is_dir() follows a link and answers false on a metadata error, so a
-        // linked root would let the scan read outside the configuration and an
-        // unreadable one would pass for a proved absence.
-        let root_kind = match std::fs::symlink_metadata(&subsystems_dir) {
-            Ok(metadata) if metadata.is_dir() => Some(true),
-            Ok(_) => None,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(false),
-            Err(_) => None,
-        };
-        let Some(root_is_directory) = root_kind else {
-            report.warn(format!(
-                "10. {md_type}: command interface sections of '{object_ref}' could not be established (the Subsystems root is not a readable directory)"
-            ));
-            *issues += 1;
-            return;
-        };
-        if !root_is_directory {
-            false
-        } else {
-            // A scan that could not reach the bottom proves nothing. The typed
-            // path reports that through its evidence channel; here the report is
-            // the only channel, so it says the check could not run instead of
-            // staying silent or passing the failure off as an absent section.
-            match meta_validate_subsystem_command_interface_scan(&subsystems_dir, &object_ref) {
-                Ok((_, found)) => found,
-                Err(error) => {
-                    report.warn(format!(
-                        "10. {md_type}: command interface sections of '{object_ref}' could not be established ({error})"
-                    ));
-                    *issues += 1;
-                    return;
-                }
-            }
-        }
-    } else {
+    // Принадлежность разделу доказуема только по всему зарегистрированному
+    // дереву, поэтому вердикт приходит готовым от построителя топологии. Пути
+    // без построенной топологии не судят: отсутствие доказательства не есть
+    // доказанное отсутствие.
+    let Some(SubsystemMembershipEvidence::Proven {
+        reaches_command_interface,
+    }) = proof_subject.and_then(|subject| subject.subsystem_evidence.as_ref())
+    else {
+        let _ = config_dir;
         return;
     };
-    if !shown_in_command_interface {
+    if !*reaches_command_interface {
         report.warn(format!(
             "10. {md_type}: UseStandardCommands=true but '{object_ref}' reaches no command interface section (a section is a subsystem whose whole chain to the root stays included; a service subsystem groups objects and is not made a section by its own flag)"
         ));

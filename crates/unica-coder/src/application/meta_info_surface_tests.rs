@@ -1046,8 +1046,16 @@ fn meta_info_post_capture_cancellation_before_complete_return_is_provider_unavai
 
 const COMMAND_INTERFACE_RULE: &str = "reaches no command interface section";
 
-fn write_subsystem(workspace: &Path, relative_dir: &str, name: &str, include: &str, content: &str) {
-    let dir = workspace.join(relative_dir);
+/// Записывает дескриптор подсистемы и регистрирует её у владельца: в
+/// `Configuration/ChildObjects` для корня и в `ChildObjects` родителя для
+/// вложенной. Членство в конфигурации доказывают регистрации, а не файл в
+/// каталоге, поэтому фикстура без регистрации была бы неверным образцом.
+fn write_registered_subsystem(workspace: &Path, path: &[&str], include: &str, content: &str) {
+    let (name, ancestors) = path.split_last().expect("subsystem path is not empty");
+    let mut dir = workspace.join("src/Subsystems");
+    for ancestor in ancestors {
+        dir = dir.join(ancestor).join("Subsystems");
+    }
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join(format!("{name}.xml")),
@@ -1066,6 +1074,7 @@ fn write_subsystem(workspace: &Path, relative_dir: &str, name: &str, include: &s
                 "{}",
                 "\t\t\t</Content>\n",
                 "\t\t</Properties>\n",
+                "\t\t<ChildObjects/>\n",
                 "\t</Subsystem>\n",
                 "</MetaDataObject>\n"
             ),
@@ -1073,6 +1082,34 @@ fn write_subsystem(workspace: &Path, relative_dir: &str, name: &str, include: &s
         ),
     )
     .unwrap();
+
+    let (owner, marker) = match ancestors.split_last() {
+        None => (workspace.join("src/Configuration.xml"), "</ChildObjects>"),
+        Some((parent, grandparents)) => {
+            let mut parent_dir = workspace.join("src/Subsystems");
+            for ancestor in grandparents {
+                parent_dir = parent_dir.join(ancestor).join("Subsystems");
+            }
+            (parent_dir.join(format!("{parent}.xml")), "<ChildObjects/>")
+        }
+    };
+    let text = std::fs::read_to_string(&owner).unwrap();
+    let registered = if marker == "<ChildObjects/>" {
+        text.replace(
+            "<ChildObjects/>",
+            &format!("<ChildObjects><Subsystem>{name}</Subsystem></ChildObjects>"),
+        )
+    } else {
+        text.replace(
+            "</ChildObjects>",
+            &format!("\t\t\t<Subsystem>{name}</Subsystem>\n\t\t</ChildObjects>"),
+        )
+    };
+    assert_ne!(
+        registered, text,
+        "{name}: owner has no ChildObjects to register in"
+    );
+    std::fs::write(&owner, registered).unwrap();
 }
 
 fn content_item(reference: &str) -> String {
@@ -1133,11 +1170,10 @@ fn info_warns_when_an_included_subsystem_sits_under_an_excluded_ancestor() {
     // Mirrors InformationRegister.ДанныеКонтрагентовСоздаваемыхБезусловно of a
     // real configuration: the owning subsystem carries the flag, but a library
     // root above it is excluded, so the register reaches no section.
-    write_subsystem(workspace.path(), "src/Subsystems", "Library", "false", "");
-    write_subsystem(
+    write_registered_subsystem(workspace.path(), &["Library"], "false", "");
+    write_registered_subsystem(
         workspace.path(),
-        "src/Subsystems/Library/Subsystems",
-        "Service",
+        &["Library", "Service"],
         "true",
         &content_item("InformationRegister.UnderExcluded"),
     );
@@ -1154,18 +1190,11 @@ fn info_warns_when_an_included_subsystem_sits_under_an_excluded_ancestor() {
 #[test]
 fn info_warns_when_the_chain_breaks_below_the_root() {
     let workspace = create_info_workspace("chain-breaks-midway");
-    write_subsystem(workspace.path(), "src/Subsystems", "Top", "true", "");
-    write_subsystem(
+    write_registered_subsystem(workspace.path(), &["Top"], "true", "");
+    write_registered_subsystem(workspace.path(), &["Top", "Middle"], "false", "");
+    write_registered_subsystem(
         workspace.path(),
-        "src/Subsystems/Top/Subsystems",
-        "Middle",
-        "false",
-        "",
-    );
-    write_subsystem(
-        workspace.path(),
-        "src/Subsystems/Top/Subsystems/Middle/Subsystems",
-        "Leaf",
+        &["Top", "Middle", "Leaf"],
         "true",
         &content_item("InformationRegister.BrokenChain"),
     );
@@ -1184,11 +1213,10 @@ fn info_tells_same_named_subsystems_apart_by_their_path() {
     let workspace = create_info_workspace("same-named-levels");
     // Both levels are named Sales; only the nested one lists the register, and
     // the excluded outer one must not lend it its own verdict either way.
-    write_subsystem(workspace.path(), "src/Subsystems", "Sales", "true", "");
-    write_subsystem(
+    write_registered_subsystem(workspace.path(), &["Sales"], "true", "");
+    write_registered_subsystem(
         workspace.path(),
-        "src/Subsystems/Sales/Subsystems",
-        "Sales",
+        &["Sales", "Sales"],
         "true",
         &content_item("InformationRegister.SameNamed"),
     );
@@ -1218,10 +1246,9 @@ fn info_warns_when_a_command_interface_register_is_in_no_subsystem() {
 #[test]
 fn info_accepts_a_register_listed_in_a_command_interface_subsystem() {
     let workspace = create_info_workspace("register-in-subsystem");
-    write_subsystem(
+    write_registered_subsystem(
         workspace.path(),
-        "src/Subsystems",
-        "Sales",
+        &["Sales"],
         "true",
         &content_item("InformationRegister.Listed"),
     );
@@ -1238,10 +1265,9 @@ fn info_accepts_a_register_listed_in_a_command_interface_subsystem() {
 #[test]
 fn info_warns_when_the_only_subsystem_is_excluded_from_the_command_interface() {
     let workspace = create_info_workspace("register-in-excluded-subsystem");
-    write_subsystem(
+    write_registered_subsystem(
         workspace.path(),
-        "src/Subsystems",
-        "Service",
+        &["Service"],
         "false",
         &content_item("InformationRegister.Excluded"),
     );
@@ -1258,11 +1284,10 @@ fn info_warns_when_the_only_subsystem_is_excluded_from_the_command_interface() {
 #[test]
 fn info_accepts_a_register_listed_in_a_nested_subsystem() {
     let workspace = create_info_workspace("register-in-nested-subsystem");
-    write_subsystem(workspace.path(), "src/Subsystems", "Parent", "true", "");
-    write_subsystem(
+    write_registered_subsystem(workspace.path(), &["Parent"], "true", "");
+    write_registered_subsystem(
         workspace.path(),
-        "src/Subsystems/Parent/Subsystems",
-        "Child",
+        &["Parent", "Child"],
         "true",
         &content_item("InformationRegister.Nested"),
     );

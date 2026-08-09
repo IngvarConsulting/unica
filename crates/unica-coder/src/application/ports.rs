@@ -224,10 +224,19 @@ pub(crate) struct MetadataValidationSubject {
     pub(crate) resources: Vec<MetadataResourceImage>,
     pub(crate) child_footprints: Vec<MetadataChildFootprintEvidence>,
     pub(crate) registrar_evidence: MetadataEvidenceAvailability,
-    /// `None` — подсистемы не просматривались: субъект ничего не утверждает о
-    /// принадлежности регистра командному интерфейсу. Полнота по умолчанию
+    /// `None` — топология подсистем не строилась: субъект ничего не утверждает
+    /// о принадлежности регистра командному интерфейсу. Полнота по умолчанию
     /// сделала бы несобранное доказанным.
-    pub(crate) subsystem_evidence: Option<MetadataEvidenceAvailability>,
+    pub(crate) subsystem_evidence: Option<SubsystemMembershipEvidence>,
+}
+
+/// Доказанное отношение объекта к разделам командного интерфейса. Вердикт, а
+/// не набор образов: доказать его можно только по всему зарегистрированному
+/// дереву, поэтому вычисляет его один построитель топологии, а не правило.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SubsystemMembershipEvidence {
+    Proven { reaches_command_interface: bool },
+    Unavailable(Vec<MetaDiagnostic>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

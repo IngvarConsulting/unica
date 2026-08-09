@@ -1,7 +1,7 @@
 use crate::application::metadata::MetaFailure;
 use crate::application::ports::{
     MetaLocalInfo, MetadataEvidenceAvailability, MetadataResourceImage, MetadataResourceRole,
-    MetadataValidationSubject,
+    MetadataValidationSubject, SubsystemMembershipEvidence,
 };
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
@@ -25,9 +25,6 @@ use crate::infrastructure::platform::secure_read::{
 const REGISTRAR_SCAN_MAX_ENTRIES: usize = 20_000;
 const REGISTRAR_SCAN_MAX_FILES: usize = 20_000;
 const REGISTRAR_SCAN_MAX_BYTES: usize = 64 * 1024 * 1024;
-// Subsystems nest as <Name>/Subsystems, so one nesting level costs two path
-// levels. The nesting budget itself is owned by validation_context.
-const SUBSYSTEM_SCAN_MAX_DEPTH: usize = super::validation_context::SUBSYSTEM_SCAN_MAX_NESTING * 2;
 const SUBSYSTEM_SCAN_MAX_ENTRIES: usize = 20_000;
 const SUBSYSTEM_SCAN_MAX_FILES: usize = 20_000;
 const SUBSYSTEM_SCAN_MAX_BYTES: usize = 64 * 1024 * 1024;
@@ -87,6 +84,7 @@ fn emit_registrar_processing_phase(phase: RegistrarProcessingPhase) {
 
 use super::super::common::object_support_state;
 use super::edit::ResolvedMetadataObject;
+use super::subsystem_topology::{build_subsystem_topology, SUBSYSTEM_TOPOLOGY_MAX_NESTING};
 use super::xml_model::{
     meta_info_child, meta_info_child_text, meta_info_children, meta_info_inner_text,
     meta_info_ml_text, meta_info_normalize_cfg_prefix,
@@ -281,9 +279,8 @@ pub(crate) fn read_typed_meta_info(
     let (registrar_resources, registrar_evidence) =
         typed_registrar_document_images(resolved, kind, properties, target, deadline, cancellation);
     validation_resources.extend(registrar_resources);
-    let (subsystem_resources, subsystem_evidence) =
-        typed_subsystem_images(resolved, kind, properties, target, deadline, cancellation);
-    validation_resources.extend(subsystem_resources);
+    let subsystem_evidence =
+        typed_subsystem_membership(resolved, kind, properties, target, deadline, cancellation);
     let child_resources = match super::edit::plan_typed_child_resources(
         &resolved.descriptor_path,
         target,
@@ -304,7 +301,7 @@ pub(crate) fn read_typed_meta_info(
         resources: validation_resources,
         child_footprints: child_resources.validation_footprints,
         registrar_evidence,
-        subsystem_evidence: Some(subsystem_evidence),
+        subsystem_evidence,
     };
     Ok((local, validation_subject))
 }
@@ -500,32 +497,29 @@ fn subsystem_names_from_logical_path(logical_path: &str) -> Option<Vec<String>> 
     }
 }
 
-fn subsystem_evidence_unavailable(
+fn subsystem_membership_unavailable(
     target: &MetadataAddress,
     message: &str,
-) -> (Vec<MetadataResourceImage>, MetadataEvidenceAvailability) {
-    (
-        Vec::new(),
-        MetadataEvidenceAvailability::Unavailable(vec![MetaDiagnostic::error(
-            MetaDiagnosticCode::ProviderUnavailable,
-            message,
-        )
-        .with_metadata_path(target.clone())
-        .with_field("subsystemEvidence")]),
+) -> SubsystemMembershipEvidence {
+    SubsystemMembershipEvidence::Unavailable(vec![MetaDiagnostic::error(
+        MetaDiagnosticCode::ProviderUnavailable,
+        message,
     )
+    .with_metadata_path(target.clone())
+    .with_field("subsystemEvidence")])
 }
 
-/// Collects the subsystems that already show the register in the command
-/// interface. Only registers that reach the command interface read them, and a
-/// complete scan with no match is what lets the rule warn.
-fn typed_subsystem_images(
+/// Строит доказанное дерево подсистем и отвечает, достигает ли регистр раздела
+/// командного интерфейса. Дерево строится по регистрациям, а файловая раскладка
+/// лишь подтверждает ресурсы зарегистрированного дерева.
+fn typed_subsystem_membership(
     resolved: &ResolvedMetadataObject,
     kind: MetadataKind,
     properties: Option<roxmltree::Node<'_, '_>>,
     target: &MetadataAddress,
     deadline: ProviderDeadline,
     cancellation: &CancellationToken,
-) -> (Vec<MetadataResourceImage>, MetadataEvidenceAvailability) {
+) -> Option<SubsystemMembershipEvidence> {
     let register_in_command_interface = matches!(
         kind,
         MetadataKind::AccumulationRegister
@@ -542,8 +536,9 @@ fn typed_subsystem_images(
                 .as_deref()
                 == Some("RecorderSubordinate"));
     if !register_in_command_interface {
-        return (Vec::new(), MetadataEvidenceAvailability::Complete);
+        return None;
     }
+    let checkpoint = || registrar_scan_checkpoint(deadline, cancellation);
     let is_subsystem_directory =
         |path: &Path| path.file_name().and_then(|name| name.to_str()) == Some("Subsystems");
     let sits_in_a_subsystem_directory = |path: &Path| {
@@ -552,12 +547,11 @@ fn typed_subsystem_images(
             .and_then(|name| name.to_str())
             == Some("Subsystems")
     };
-    let checkpoint = || registrar_scan_checkpoint(deadline, cancellation);
     let entries = match capture_root_relative_regular_files(
         &resolved.source_root,
         Path::new("Subsystems"),
         SecureTreeCaptureLimits {
-            maximum_depth: SUBSYSTEM_SCAN_MAX_DEPTH,
+            maximum_depth: SUBSYSTEM_TOPOLOGY_MAX_NESTING * 2,
             maximum_entries: SUBSYSTEM_SCAN_MAX_ENTRIES,
             maximum_files: SUBSYSTEM_SCAN_MAX_FILES,
             maximum_bytes: SUBSYSTEM_SCAN_MAX_BYTES,
@@ -574,77 +568,44 @@ fn typed_subsystem_images(
     ) {
         Ok(entries) => entries,
         Err(_) => {
-            return subsystem_evidence_unavailable(
+            return Some(subsystem_membership_unavailable(
                 target,
-                "subsystem evidence cannot be scanned completely",
-            )
+                "subsystem topology cannot be read completely",
+            ))
         }
     };
-    if entries.start_missing {
-        return (Vec::new(), MetadataEvidenceAvailability::Complete);
-    }
-    let register_reference = target.as_str().to_string();
-    // The capture keeps root-relative paths, so the ancestor chain is read off
-    // the path itself: Subsystems/A/Subsystems/B.xml sits under Subsystems/A.xml.
-    let mut facts_by_names = BTreeMap::new();
+    let mut images = BTreeMap::new();
     for entry in entries.files {
         if checkpoint().is_err() {
-            return subsystem_evidence_unavailable(
+            return Some(subsystem_membership_unavailable(
                 target,
-                "subsystem evidence processing was interrupted",
-            );
+                "subsystem topology reading was interrupted",
+            ));
         }
         let Some(names) = subsystem_names_from_logical_path(&entry.logical_path) else {
-            return subsystem_evidence_unavailable(
+            return Some(subsystem_membership_unavailable(
                 target,
-                "subsystem evidence candidate is not addressable",
-            );
+                "subsystem descriptor is not addressable",
+            ));
         };
-        match super::validation::subsystem_descriptor_facts(&entry.bytes, &register_reference) {
-            Ok(facts) => {
-                facts_by_names.insert(names, (facts, entry.bytes));
-            }
-            Err(_) => {
-                return subsystem_evidence_unavailable(
-                    target,
-                    "subsystem evidence candidate is malformed",
-                )
-            }
-        }
+        images.insert(names, entry.bytes);
     }
-
-    let mut resources = Vec::new();
-    for (names, (facts, bytes)) in &facts_by_names {
-        if !facts.lists_expected {
-            continue;
-        }
-        // Being a command interface section is a property of the whole chain to
-        // the root: an excluded ancestor makes nothing below it a section.
-        let effective_include = (1..=names.len()).all(|depth| {
-            facts_by_names
-                .get(&names[..depth])
-                .is_some_and(|(ancestor, _)| ancestor.own_include)
-        });
-        if !effective_include {
-            continue;
-        }
-        let Ok(dependency_target) = MetadataAddress::parse(
-            PLATFORM_XML_8_3_27_FORMAT_2_20,
-            &format!("Subsystem.{}", names.join(".")),
-        ) else {
-            return subsystem_evidence_unavailable(
-                target,
-                "subsystem evidence candidate has no logical identity",
-            );
-        };
-        resources.push(MetadataResourceImage {
-            role: MetadataResourceRole::Dependency {
-                target: dependency_target,
-            },
-            bytes: bytes.clone(),
-        });
+    let mut read_descriptor =
+        |names: &[String]| -> Result<Option<Vec<u8>>, String> { Ok(images.get(names).cloned()) };
+    let topology = match build_subsystem_topology(&resolved.owner_preimage, &mut read_descriptor) {
+        Ok(topology) => topology,
+        Err(error) => return Some(subsystem_membership_unavailable(target, &error)),
+    };
+    // Terminal checkpoint: a proven verdict must not outlive its deadline.
+    if checkpoint().is_err() {
+        return Some(subsystem_membership_unavailable(
+            target,
+            "subsystem topology reading was interrupted",
+        ));
     }
-    (resources, MetadataEvidenceAvailability::Complete)
+    Some(SubsystemMembershipEvidence::Proven {
+        reaches_command_interface: topology.reaches_command_interface(target.as_str()),
+    })
 }
 
 fn typed_registered_language_images(

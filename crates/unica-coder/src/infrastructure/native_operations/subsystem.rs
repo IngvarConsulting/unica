@@ -1529,7 +1529,7 @@ mod subsystem_info_typed_result_tests {
         let execution = analyze_subsystem_info(&args, &context);
 
         assert!(execution.outcome.ok, "{:?}", execution.outcome);
-        let SubsystemInfoAnswer::Tree { tree } =
+        let SubsystemInfoAnswer::Tree { tree, .. } =
             execution.data.expect("the folder answers with a tree")
         else {
             panic!("a folder must not answer as a single subsystem");
@@ -1598,7 +1598,20 @@ pub(crate) fn analyze_subsystem_info(
                 "unica.subsystem.info described {} root subsystem(s)",
                 tree.len()
             );
-            return Ok((SubsystemInfoAnswer::Tree { tree }, path, summary));
+            let roles = subsystem_roles_for_tree(&path);
+            let (interface_subsystems, functional_subsystems) = match roles {
+                Some((interface, functional)) => (Some(interface), Some(functional)),
+                None => (None, None),
+            };
+            return Ok((
+                SubsystemInfoAnswer::Tree {
+                    tree,
+                    interface_subsystems,
+                    functional_subsystems,
+                },
+                path,
+                summary,
+            ));
         }
         let xml_path = resolve_subsystem_info_xml(path, true)?;
         let (data, _) = load_subsystem_info_data(&xml_path)?;
@@ -1692,7 +1705,20 @@ pub(crate) struct SubsystemInfoResult {
 #[serde(rename_all = "camelCase", untagged)]
 pub(crate) enum SubsystemInfoAnswer {
     Subsystem(Box<SubsystemInfoResult>),
-    Tree { tree: Vec<SubsystemTreeNode> },
+    Tree {
+        tree: Vec<SubsystemTreeNode>,
+        /// Адреса подсистем, образующих разделы командного интерфейса, и
+        /// адреса функциональных — две разные семантики отношения, а не два
+        /// представления одного флага (v8std 543 п.1.1–1.3, v8std 705 п.1).
+        ///
+        /// Оба поля отсутствуют, когда зарегистрированное дерево доказать
+        /// нельзя: непрослеженная цепочка не превращается в два достоверно
+        /// пустых списка.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        interface_subsystems: Option<Vec<String>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        functional_subsystems: Option<Vec<String>>,
+    },
 }
 
 #[derive(serde::Serialize)]
@@ -1746,6 +1772,37 @@ fn subsystem_optional(value: String) -> Option<String> {
 /// answered; the projection survives the typing, only its selector changes --
 /// point the tool at a folder and it describes the tree, at a file and it
 /// describes that subsystem.
+/// Читает роли подсистем из доказанного зарегистрированного дерева. `None`,
+/// когда доказать его нельзя — отсутствует владелец, регистрация, дескриптор
+/// или флаг неканоничен.
+fn subsystem_roles_for_tree(directory: &Path) -> Option<(Vec<String>, Vec<String>)> {
+    let configuration = std::fs::read(directory.parent()?.join("Configuration.xml")).ok()?;
+    let mut read_descriptor = |names: &[String]| -> Result<Option<Vec<u8>>, String> {
+        let (name, ancestors) = names.split_last().expect("address names are not empty");
+        let mut path = directory.to_path_buf();
+        for ancestor in ancestors {
+            path = path.join(ancestor).join("Subsystems");
+        }
+        Ok(std::fs::read(path.join(format!("{name}.xml"))).ok())
+    };
+    let topology = crate::infrastructure::native_operations::meta::build_subsystem_topology(
+        &configuration,
+        &mut read_descriptor,
+    )
+    .ok()?;
+    let render = |role| {
+        topology
+            .addresses_with_role(role)
+            .into_iter()
+            .map(|address| address.as_str().to_string())
+            .collect::<Vec<_>>()
+    };
+    Some((
+        render(crate::infrastructure::native_operations::meta::SubsystemRole::Interface),
+        render(crate::infrastructure::native_operations::meta::SubsystemRole::Functional),
+    ))
+}
+
 fn subsystem_tree_nodes(directory: &Path) -> Result<Vec<SubsystemTreeNode>, String> {
     let mut files = fs::read_dir(directory)
         .map_err(|err| format!("failed to read {}: {err}", directory.display()))?
