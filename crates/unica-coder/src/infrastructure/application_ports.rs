@@ -645,17 +645,74 @@ fn project_platform_version(context: &WorkspaceContext) -> Option<String> {
 }
 
 fn configured_platform_version(path: &Path) -> Option<String> {
+    configured_platform_key(path, "version")
+}
+
+/// The second half of the runner's platform pin: `tools.platform.path` from
+/// the same files, with the same per-key local overlay. The reference config
+/// (`references/tooling/runtime-build.md`) stores it in
+/// `v8project.local.yaml` because the path is machine-specific.
+fn project_platform_path(context: &WorkspaceContext) -> Option<std::path::PathBuf> {
+    let root = &context.workspace_root;
+    let configured = configured_platform_key(&root.join("v8project.local.yaml"), "path")
+        .or_else(|| configured_platform_key(&root.join("v8project.yaml"), "path"))?;
+    let path = std::path::PathBuf::from(configured);
+    // Относительный путь читается от корня проекта — так же absolutize
+    // раннера читает его от каталога конфигурации.
+    Some(if path.is_absolute() {
+        path
+    } else {
+        root.join(path)
+    })
+}
+
+fn configured_platform_key(path: &Path, key: &str) -> Option<String> {
     let text = std::fs::read_to_string(path).ok()?;
     let yaml = serde_yaml::from_str::<serde_yaml::Value>(&text).ok()?;
-    let version = yaml
+    let value = yaml
         .as_mapping()?
         .get(serde_yaml::Value::String("tools".to_string()))?
         .as_mapping()?
         .get(serde_yaml::Value::String("platform".to_string()))?
         .as_mapping()?
-        .get(serde_yaml::Value::String("version".to_string()))?
+        .get(serde_yaml::Value::String(key.to_string()))?
         .as_str()?;
-    Some(version.to_string())
+    Some(value.to_string())
+}
+
+/// Installation named directly by the project's `tools.platform.path`. The
+/// pin replaces the roots walk — same as the runner, where the hint replaces
+/// the default candidate list — so a mismatch is a refusal, not a silent
+/// fall-through to a neighbouring installation (ADR-0029 point 3).
+///
+/// The reference config points the pin at `<version>/bin` (executables live
+/// there on Windows); the version directory is its parent, and the version is
+/// that directory's name. A pinned directory whose name is not version-shaped
+/// cannot prove which version answered, so it is refused rather than trusted.
+fn pinned_installation_root(
+    pin: &Path,
+    requested: Option<&str>,
+    project_version: Option<&str>,
+) -> Option<std::path::PathBuf> {
+    let candidate = if pin.file_name() == Some(std::ffi::OsStr::new("bin")) {
+        pin.parent()?.to_path_buf()
+    } else {
+        pin.to_path_buf()
+    };
+    let name = candidate.file_name()?.to_str()?;
+    let components = version_components(name)?;
+    if let Some(version) = requested {
+        if name != version {
+            return None;
+        }
+    }
+    if let Some(line) = project_version {
+        let wanted = version_components(line)?;
+        if !components.starts_with(&wanted) {
+            return None;
+        }
+    }
+    Some(candidate)
 }
 
 /// The documentation context the dispatcher hands to the provider registry:
@@ -670,7 +727,9 @@ fn configured_platform_version(path: &Path) -> Option<String> {
 /// from 8.5.4 while the reply still said 8.3.27.
 ///
 /// Precedence is ADR-0029 point 2: the explicit call argument, then the
-/// project's own pin, then the numerically newest installation found.
+/// project's own pin, then the numerically newest installation found. A
+/// `tools.platform.path` pin names the installation directly and replaces the
+/// roots walk; the version constraints still apply to it.
 ///
 /// `UNICA_PLATFORM_HELP_DIR` is a test-only switch (see
 /// `platform_help::real_installation`) and does not feed into this resolver.
@@ -680,8 +739,12 @@ fn documentation_context(
     workspace: &WorkspaceContext,
 ) -> crate::domain::documentation::DocumentationContext {
     let project_version = project_platform_version(workspace);
+    let installation_root = match project_platform_path(workspace) {
+        Some(pin) => pinned_installation_root(&pin, requested, project_version.as_deref()),
+        None => select_installation_root(roots, requested, project_version.as_deref()),
+    };
     crate::domain::documentation::DocumentationContext {
-        installation_root: select_installation_root(roots, requested, project_version.as_deref()),
+        installation_root,
         // Ограничение, по которому установку искали: поставщик называет его в
         // отказе, когда установки не нашлось.
         platform_version: requested.map(str::to_string).or(project_version),
@@ -1352,6 +1415,113 @@ mod tests {
             provider as std::sync::Arc<dyn crate::domain::documentation::DocumentationProvider>,
         );
         StandInGuard { _serial: serial }
+    }
+
+    /// `tools.platform.path` — вторая половина закрепления платформы у
+    /// раннера, и до правки она не читалась вовсе: проект, закрепивший один
+    /// путь (пример в `references/tooling/runtime-build.md` именно таков —
+    /// `path` в `v8project.local.yaml`), выгоды не получал, а справка
+    /// продолжала идти из численно старшей установки стандартных корней. Пин
+    /// пути называет установку напрямую и заменяет перебор корней, поэтому
+    /// проверяется на ПУСТОМ списке корней: разрешение не вправе зависеть от
+    /// них. Путь из документации указывает на `<версия>/bin` — он обязан
+    /// сводиться к каталогу версии, потому что имя версии несёт именно он.
+    #[test]
+    fn the_projects_platform_path_pin_names_the_installation_directly() {
+        let machine = tempfile::tempdir().expect("каталог установок");
+        let install = machine.path().join("8.3.27.2074");
+        std::fs::create_dir_all(install.join("bin")).expect("каталог версии с bin");
+
+        let project = tempfile::tempdir().expect("каталог проекта");
+        let workspace = project.path().to_path_buf();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        std::fs::write(
+            workspace.join("v8project.local.yaml"),
+            format!("tools:\n  platform:\n    path: \"{}\"\n", install.display()),
+        )
+        .expect("локальное закрепление пути");
+
+        let pinned = documentation_context(&[], None, &context);
+        assert_eq!(
+            pinned.installation_root,
+            Some(install.clone()),
+            "пин пути обязан называть установку без перебора корней"
+        );
+
+        std::fs::write(
+            workspace.join("v8project.local.yaml"),
+            format!(
+                "tools:\n  platform:\n    path: \"{}\"\n",
+                install.join("bin").display()
+            ),
+        )
+        .expect("закрепление пути на bin");
+        let via_bin = documentation_context(&[], None, &context);
+        assert_eq!(
+            via_bin.installation_root,
+            Some(install.clone()),
+            "путь на bin обязан сводиться к каталогу версии — имя версии несёт он"
+        );
+    }
+
+    /// Ограничения версий действуют и при пине пути: явный аргумент вызова
+    /// обязан совпасть с именем закреплённого каталога точно, а семейство
+    /// `tools.platform.version` — быть его префиксом. Несовпадение — отказ,
+    /// а не тихий переход к стандартным корням: пин заменяет перебор, как и
+    /// у раннера, и подстановка соседней установки здесь была бы тем же
+    /// вредом п.3 ADR-0029.
+    #[test]
+    fn version_constraints_still_apply_to_a_path_pinned_installation() {
+        let machine = tempfile::tempdir().expect("каталог установок");
+        let install = machine.path().join("8.3.27.2074");
+        std::fs::create_dir_all(&install).expect("каталог версии");
+        // Соседняя установка в стандартном корне: тихий переход к перебору
+        // корней подставил бы её и остался бы незамеченным без этой приманки.
+        let decoy_root = machine.path().join("standard");
+        std::fs::create_dir_all(decoy_root.join("8.5.4.1306")).expect("каталог приманки");
+
+        let project = tempfile::tempdir().expect("каталог проекта");
+        let workspace = project.path().to_path_buf();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            format!("tools:\n  platform:\n    path: \"{}\"\n", install.display()),
+        )
+        .expect("закрепление пути");
+
+        let roots = [decoy_root];
+        assert_eq!(
+            documentation_context(&roots, Some("8.3.27.2074"), &context).installation_root,
+            Some(install.clone()),
+            "совпавший аргумент вызова принимает закреплённую установку"
+        );
+        assert_eq!(
+            documentation_context(&roots, Some("8.5.4.1306"), &context).installation_root,
+            None,
+            "аргумент вызова, не совпавший с пином, — отказ, а не перебор корней"
+        );
+
+        std::fs::write(
+            workspace.join("v8project.local.yaml"),
+            "tools:\n  platform:\n    version: \"8.4\"\n",
+        )
+        .expect("несовместимое семейство");
+        assert_eq!(
+            documentation_context(&roots, None, &context).installation_root,
+            None,
+            "семейство, которому пин не принадлежит, — отказ, а не перебор корней"
+        );
     }
 
     /// `the_dispatcher_constrains_the_installation_by_the_projects_own_platform_pin`
