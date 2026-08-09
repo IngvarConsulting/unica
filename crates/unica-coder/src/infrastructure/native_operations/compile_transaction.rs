@@ -3750,10 +3750,9 @@ pub(crate) enum CommitFailpoint {
 }
 
 #[cfg(test)]
-#[derive(Clone)]
 struct RegistrationRecoveryPause {
-    ready: Arc<Barrier>,
-    release: Arc<Barrier>,
+    ready: std::sync::mpsc::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
 }
 
 #[cfg(test)]
@@ -3794,8 +3793,8 @@ pub(crate) fn with_commit_failpoint<T>(
 
 #[cfg(test)]
 fn with_registration_recovery_pause<T>(
-    ready: Arc<Barrier>,
-    release: Arc<Barrier>,
+    ready: std::sync::mpsc::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
     action: impl FnOnce() -> T,
 ) -> T {
     struct Reset(Option<RegistrationRecoveryPause>);
@@ -3898,8 +3897,14 @@ fn pause_after_registration_recovery() {
     let pause = TEST_REGISTRATION_RECOVERY_PAUSE.with(|slot| slot.borrow_mut().take());
     #[cfg(test)]
     if let Some(pause) = pause {
-        pause.ready.wait();
-        pause.release.wait();
+        pause
+            .ready
+            .send(())
+            .expect("registration recovery observer must remain available");
+        pause
+            .release
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("registration recovery observer must release the bounded pause");
     }
 }
 
@@ -4809,20 +4814,22 @@ mod tests {
             .register_canonical_child(&config, "Role", "Reader")
             .expect("registration must plan");
 
-        let recovery_ready = Arc::new(Barrier::new(2));
-        let release = Arc::new(Barrier::new(2));
-        let recovery_ready_in_commit = Arc::clone(&recovery_ready);
-        let release_in_commit = Arc::clone(&release);
+        let (recovery_ready_sender, recovery_ready_receiver) = mpsc::channel();
+        let (release_sender, release_receiver) = mpsc::channel();
         let commit_thread = thread::spawn(move || {
-            with_registration_recovery_pause(recovery_ready_in_commit, release_in_commit, || {
+            with_registration_recovery_pause(recovery_ready_sender, release_receiver, || {
                 transaction.commit()
             })
         });
 
-        recovery_ready.wait();
+        recovery_ready_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("transaction must reach recovery preparation without hanging");
         let target_present = fs::symlink_metadata(&config).is_ok();
         let bytes_during_recovery = fs::read(&config);
-        release.wait();
+        release_sender
+            .send(())
+            .expect("commit thread must remain available for release");
 
         let commit_result = commit_thread.join().expect("commit thread must not panic");
         assert!(
@@ -4852,21 +4859,19 @@ mod tests {
             .register_canonical_child(&config, "Role", "Reader")
             .expect("registration must plan");
 
-        let recovery_ready = Arc::new(Barrier::new(2));
-        let release = Arc::new(Barrier::new(2));
-        let recovery_ready_in_commit = Arc::clone(&recovery_ready);
-        let release_in_commit = Arc::clone(&release);
+        let (recovery_ready_sender, recovery_ready_receiver) = mpsc::channel();
+        let (release_sender, release_receiver) = mpsc::channel();
         let commit_thread = thread::spawn(move || {
             with_commit_failpoint(CommitFailpoint::AfterRegistrationBackup, || {
-                with_registration_recovery_pause(
-                    recovery_ready_in_commit,
-                    release_in_commit,
-                    || transaction.commit(),
-                )
+                with_registration_recovery_pause(recovery_ready_sender, release_receiver, || {
+                    transaction.commit()
+                })
             })
         });
 
-        recovery_ready.wait();
+        recovery_ready_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("transaction must reach recovery preparation without hanging");
         let entries = fs::read_dir(&active_parent)
             .expect("prepared publication entries must be readable")
             .map(|entry| entry.expect("prepared entry must be readable").file_name())
@@ -4892,7 +4897,9 @@ mod tests {
             .expect("recovery decoy directory must be created");
         fs::write(&decoy_recovery, b"same-name recovery decoy")
             .expect("recovery decoy must be written");
-        release.wait();
+        release_sender
+            .send(())
+            .expect("commit thread must remain available for release");
 
         let error = commit_thread
             .join()
