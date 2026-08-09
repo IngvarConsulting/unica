@@ -58,10 +58,12 @@ pub(crate) struct RetainedRootSecureRead {
     root: RetainedDirectoryPath,
     limits: SecureTreeCaptureLimits,
     entry_count: usize,
+    file_count: usize,
     total_bytes: usize,
     directories: HashMap<PathBuf, FileIdentity>,
     files: Vec<RetainedRegisteredFile>,
     file_indexes: HashMap<PathBuf, usize>,
+    poisoned: bool,
 }
 
 #[derive(Debug)]
@@ -85,10 +87,12 @@ impl RetainedRootSecureRead {
             root,
             limits,
             entry_count: 0,
+            file_count: 0,
             total_bytes: 0,
             directories: HashMap::new(),
             files: Vec::new(),
             file_indexes: HashMap::new(),
+            poisoned: false,
         })
     }
 
@@ -96,6 +100,21 @@ impl RetainedRootSecureRead {
         &mut self,
         logical_path: &Path,
         mut checkpoint: impl FnMut() -> io::Result<()>,
+    ) -> io::Result<SecureRead> {
+        if self.poisoned {
+            return Err(poisoned_secure_read_error());
+        }
+        let result = self.read_regular_file_unpoisoned(logical_path, &mut checkpoint);
+        if result.is_err() {
+            self.poisoned = true;
+        }
+        result
+    }
+
+    fn read_regular_file_unpoisoned(
+        &mut self,
+        logical_path: &Path,
+        checkpoint: &mut impl FnMut() -> io::Result<()>,
     ) -> io::Result<SecureRead> {
         checkpoint()?;
         let components = normal_relative_file_components(logical_path)?;
@@ -113,24 +132,16 @@ impl RetainedRootSecureRead {
                 "retained secure read exceeds the traversal-depth limit",
             ));
         }
-        if self.entry_count >= self.limits.maximum_entries {
-            return Err(io::Error::new(
-                io::ErrorKind::FileTooLarge,
-                "retained secure read exceeds the entry-count limit",
-            ));
-        }
-        if self.files.len() >= self.limits.maximum_files {
-            return Err(io::Error::new(
-                io::ErrorKind::FileTooLarge,
-                "retained secure read exceeds the file-count limit",
-            ));
-        }
 
         let mut parent = self.root.current().try_clone()?;
         let mut logical_directory = PathBuf::new();
         for name in &components[..directory_depth] {
             checkpoint()?;
             logical_directory.push(name);
+            let first_open = !self.directories.contains_key(&logical_directory);
+            if first_open {
+                self.reserve_entry()?;
+            }
             emit_tree_phase(SecureTreePhase::BeforeOpenEntry(logical_directory.clone()));
             let child = open_directory_child_nofollow(&parent, name)?;
             let identity = file_identity(&child)?;
@@ -141,8 +152,14 @@ impl RetainedRootSecureRead {
                     ))
                 }
                 Some(_) => {}
-                None => {
+                None if first_open => {
                     self.directories.insert(logical_directory.clone(), identity);
+                }
+                None => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "registered directory accounting lost a retained identity",
+                    ))
                 }
             }
             checkpoint()?;
@@ -157,6 +174,8 @@ impl RetainedRootSecureRead {
         let name = components
             .last()
             .expect("relative file has a final component");
+        self.reserve_entry()?;
+        self.reserve_file()?;
         checkpoint()?;
         emit_tree_phase(SecureTreePhase::BeforeOpenEntry(logical_path.clone()));
         let mut file = open_regular_child_nofollow(&parent, name)?;
@@ -175,19 +194,13 @@ impl RetainedRootSecureRead {
         let bytes = read_open_regular_file(
             &mut file,
             remaining_bytes.min(self.limits.maximum_bytes),
-            &mut checkpoint,
+            checkpoint,
         )?;
         checkpoint()?;
         emit_tree_phase(SecureTreePhase::BeforeRebindEntry(logical_path.clone()));
         prove_regular_file_binding(&parent, name, identity)?;
         emit_tree_phase(SecureTreePhase::AfterRebindEntry(logical_path.clone()));
 
-        self.entry_count = self.entry_count.checked_add(1).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::FileTooLarge,
-                "retained secure read entry count overflowed",
-            )
-        })?;
         self.total_bytes = self.total_bytes.checked_add(bytes.len()).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::FileTooLarge,
@@ -205,6 +218,9 @@ impl RetainedRootSecureRead {
     }
 
     pub(crate) fn complete(self, mut checkpoint: impl FnMut() -> io::Result<()>) -> io::Result<()> {
+        if self.poisoned {
+            return Err(poisoned_secure_read_error());
+        }
         checkpoint()?;
         prove_directory_path(&self.root, &mut checkpoint)?;
         for retained in &self.files {
@@ -218,6 +234,42 @@ impl RetainedRootSecureRead {
         prove_directory_path(&self.root, &mut checkpoint)?;
         checkpoint()
     }
+
+    fn reserve_entry(&mut self) -> io::Result<()> {
+        if self.entry_count >= self.limits.maximum_entries {
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "retained secure read exceeds the entry-count limit",
+            ));
+        }
+        self.entry_count = self.entry_count.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "retained secure read entry count overflowed",
+            )
+        })?;
+        Ok(())
+    }
+
+    fn reserve_file(&mut self) -> io::Result<()> {
+        if self.file_count >= self.limits.maximum_files {
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "retained secure read exceeds the file-count limit",
+            ));
+        }
+        self.file_count = self.file_count.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "retained secure read file count overflowed",
+            )
+        })?;
+        Ok(())
+    }
+}
+
+fn poisoned_secure_read_error() -> io::Error {
+    io::Error::other("retained secure read session is poisoned by a prior failure")
 }
 
 fn normal_relative_file_components(path: &Path) -> io::Result<Vec<OsString>> {
@@ -1760,7 +1812,7 @@ mod tests {
         .unwrap();
         let limits = SecureTreeCaptureLimits {
             maximum_depth: 1,
-            maximum_entries: 1,
+            maximum_entries: 2,
             maximum_files: 1,
             maximum_bytes: b"trusted".len(),
         };
@@ -1772,6 +1824,75 @@ mod tests {
 
         assert_eq!(read.bytes, b"trusted");
         session.complete(|| Ok(())).unwrap();
+    }
+
+    #[test]
+    fn retained_registration_session_counts_each_new_directory_and_file_path() {
+        let fixture = Fixture::new();
+        let limits = SecureTreeCaptureLimits {
+            maximum_depth: 1,
+            maximum_entries: 1,
+            maximum_files: 1,
+            maximum_bytes: b"trusted".len(),
+        };
+        let mut session = RetainedRootSecureRead::open(&fixture.root, limits, || Ok(())).unwrap();
+
+        let error = session
+            .read_regular_file(Path::new("parent/resource.xml"), || Ok(()))
+            .expect_err("the parent directory and file must spend two entry slots");
+
+        assert_eq!(error.kind(), io::ErrorKind::FileTooLarge);
+        assert!(error.to_string().contains("entry-count"), "{error}");
+    }
+
+    #[test]
+    fn retained_registration_session_counts_new_files_cumulatively_under_a_retained_directory() {
+        let fixture = Fixture::new();
+        fs::write(fixture.root.join("parent/second.xml"), b"second").unwrap();
+        let limits = SecureTreeCaptureLimits {
+            maximum_depth: 1,
+            maximum_entries: 2,
+            maximum_files: 2,
+            maximum_bytes: b"trusted".len() + b"second".len(),
+        };
+        let mut session = RetainedRootSecureRead::open(&fixture.root, limits, || Ok(())).unwrap();
+        session
+            .read_regular_file(Path::new("parent/resource.xml"), || Ok(()))
+            .unwrap();
+
+        let error = session
+            .read_regular_file(Path::new("parent/second.xml"), || Ok(()))
+            .expect_err("a second file must spend a third cumulative entry slot");
+
+        assert_eq!(error.kind(), io::ErrorKind::FileTooLarge);
+        assert!(error.to_string().contains("entry-count"), "{error}");
+    }
+
+    #[test]
+    fn retained_registration_session_is_poisoned_after_a_failed_read() {
+        let fixture = Fixture::new();
+        fs::write(fixture.root.join("small.xml"), b"x").unwrap();
+        let limits = SecureTreeCaptureLimits {
+            maximum_depth: 1,
+            maximum_entries: 4,
+            maximum_files: 2,
+            maximum_bytes: b"trusted".len() - 1,
+        };
+        let mut session = RetainedRootSecureRead::open(&fixture.root, limits, || Ok(())).unwrap();
+        let first = session
+            .read_regular_file(Path::new("parent/resource.xml"), || Ok(()))
+            .expect_err("the first registered file exceeds the byte budget");
+        assert_eq!(first.kind(), io::ErrorKind::FileTooLarge);
+
+        let second = session
+            .read_regular_file(Path::new("small.xml"), || Ok(()))
+            .expect_err("a failed partial read must make the capability unusable");
+        assert!(second.to_string().contains("poisoned"), "{second}");
+
+        let complete = session
+            .complete(|| Ok(()))
+            .expect_err("a poisoned capability cannot publish a proof");
+        assert!(complete.to_string().contains("poisoned"), "{complete}");
     }
 
     #[test]
