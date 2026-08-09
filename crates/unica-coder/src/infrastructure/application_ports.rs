@@ -1049,8 +1049,7 @@ mod tests {
         let registry = documentation_registry().expect("реестр собран");
         let declares_standards = registry.providers().any(|provider| {
             provider.corpora().iter().any(|corpus| {
-                corpus.source_kind
-                    == crate::domain::documentation::SourceKind::DevelopmentStandard
+                corpus.source_kind == crate::domain::documentation::SourceKind::DevelopmentStandard
             })
         });
         if !declares_standards {
@@ -1060,7 +1059,6 @@ mod tests {
             );
         }
     }
-
 
     #[test]
     fn select_platform_version_matches_the_requested_directory_name_exactly() {
@@ -1345,7 +1343,9 @@ mod tests {
 
     fn install_stand_in(provider: std::sync::Arc<RecordingProvider>) -> StandInGuard {
         static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let serial = SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let serial = SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         *super::DOCUMENTATION_REGISTRY_STAND_IN
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(
