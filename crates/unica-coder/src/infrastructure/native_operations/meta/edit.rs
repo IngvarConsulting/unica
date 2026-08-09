@@ -105,7 +105,7 @@ fn meta_edit_preserve_existing_eol(text: &str, has_bom: bool) -> Vec<u8> {
 
 fn meta_edit_line_indent(text: &str, position: usize) -> String {
     let line_start = text[..position]
-        .rfind(|character| matches!(character, '\r' | '\n'))
+        .rfind(['\r', '\n'])
         .map_or(0, |index| index + 1);
     text[line_start..position]
         .chars()
