@@ -421,6 +421,35 @@ pub struct Kb1ciProvider {
     /// работы, и долгоживущий процесс сервера не должен требовать рестарта,
     /// чтобы увидеть новую раскладку и не отдавать устаревшие локаторы.
     pub cache_ttl: Duration,
+    /// Источник лексикона ru↔en для расширения русских запросов к английским
+    /// заголовкам площадки (ADR-0035 п.4).
+    pub lexicon: std::sync::Arc<dyn KbLexiconSource>,
+}
+
+/// Источник двуязычного лексикона. Отделён трейтом: боевой источник отвечает
+/// из процессного индекса справки установки, тестам нужен предсказуемый
+/// словарь без установки на машине.
+pub trait KbLexiconSource: Send + Sync {
+    fn lexicon(
+        &self,
+        context: &crate::domain::documentation::DocumentationContext,
+    ) -> Option<std::sync::Arc<crate::infrastructure::documentation_retrieval::BilingualLexicon>>;
+}
+
+/// Боевой источник: лексикон двуязычных заголовков Синтакс-помощника той
+/// установки, которую диспетчер разрешил для вызова. Без установки — `None`,
+/// и русский запрос к английским заголовкам честно остаётся без расширения.
+pub struct InstallationLexiconSource;
+
+impl KbLexiconSource for InstallationLexiconSource {
+    fn lexicon(
+        &self,
+        context: &crate::domain::documentation::DocumentationContext,
+    ) -> Option<std::sync::Arc<crate::infrastructure::documentation_retrieval::BilingualLexicon>>
+    {
+        let root = context.installation_root.as_ref()?;
+        crate::infrastructure::platform_help::provider::bilingual_lexicon_for(root)
+    }
 }
 
 /// Продовый срок жизни kb-кешей: часы держат цену обхода около нуля и
@@ -727,7 +756,14 @@ impl crate::domain::documentation::DocumentationProvider for Kb1ciProvider {
             ("kb-developer-guide", &catalog.developer),
             ("kb-administrator-guide", &catalog.administrator),
         ];
-        let needle = request.query.to_lowercase();
+        // Расширения ru→en считаются один раз на вызов: лексикон отвечает из
+        // процессного индекса справки установки, без установки расширений нет
+        // и русский запрос честно не совпадает с английскими заголовками.
+        let expansions = self
+            .lexicon
+            .lexicon(context)
+            .map(|lexicon| lexicon.expansions(&request.query))
+            .unwrap_or_default();
         corpora
             .into_iter()
             .map(|(corpus_id, guides)| {
@@ -763,22 +799,35 @@ impl crate::domain::documentation::DocumentationProvider for Kb1ciProvider {
                         hits: Vec::new(),
                     };
                 }
-                let mut matched: Vec<KbSearchEntry> = Vec::new();
+                let mut entries: Vec<KbSearchEntry> = Vec::new();
                 let mut failure: Option<String> = None;
                 for guide in &selected {
                     match self.entries_for(guide) {
-                        Ok(entries) => matched.extend(
-                            entries
-                                .iter()
-                                .filter(|entry| entry.title.to_lowercase().contains(&needle))
-                                .cloned(),
-                        ),
+                        Ok(guide_entries) => entries.extend(guide_entries.iter().cloned()),
                         Err(error) => {
                             failure = Some(error);
                             break;
                         }
                     }
                 }
+                // Матчинг — лексическим ядром по заголовкам узлов (ADR-0035
+                // п.4): у сетевого корпуса дёшево есть только оглавление, и
+                // индекс из одних заголовков строится на вызов. Порядок
+                // совпадений — по оценке, а не по порядку обхода дерева.
+                let index = crate::infrastructure::documentation_retrieval::RetrievalIndex::build(
+                    entries.iter().map(|entry| {
+                        crate::infrastructure::documentation_retrieval::RetrievalFields {
+                            title: &entry.title,
+                            signature: "",
+                            body: "",
+                        }
+                    }),
+                );
+                let matched: Vec<(KbSearchEntry, f32)> = index
+                    .query(&request.query, request.limit, &expansions)
+                    .into_iter()
+                    .map(|scored| (entries[scored.document].clone(), scored.score))
+                    .collect();
                 if let Some(error) = failure {
                     return DocumentationSection {
                         provider: DocumentationProviderId::new("kb-1ci"),
@@ -794,7 +843,6 @@ impl crate::domain::documentation::DocumentationProvider for Kb1ciProvider {
                         hits: Vec::new(),
                     };
                 }
-                matched.truncate(request.limit);
                 let mut warnings = Vec::new();
                 // Усечение пина сборки до семейства — не молчаливая
                 // подстановка: секция называет и сборку, и семейство.
@@ -821,7 +869,7 @@ impl crate::domain::documentation::DocumentationProvider for Kb1ciProvider {
                 let hits: Vec<DocumentationHit> = matched
                     .iter()
                     .enumerate()
-                    .map(|(index, entry)| {
+                    .map(|(index, (entry, score))| {
                         // Страницы дочитываются только для верхних совпадений:
                         // «число страниц на вызов ограничено» (ADR-0032 п.3).
                         // Прочитанная страница отдаёт и фрагмент, и заголовок
@@ -855,7 +903,7 @@ impl crate::domain::documentation::DocumentationProvider for Kb1ciProvider {
                         };
                         DocumentationHit {
                             rank: index as u32 + 1,
-                            provider_score: 1.0,
+                            provider_score: *score,
                             document_id: format!("{}{}", self.base, entry.href),
                             title,
                             signature: None,
@@ -1145,6 +1193,7 @@ mod provider_tests {
                 transport: Arc::clone(&transport) as Arc<dyn KbTransport>,
                 cancellation: crate::domain::cancellation::CancellationToken::default(),
                 cache_ttl: Duration::from_secs(3600),
+                lexicon: Arc::new(InstallationLexiconSource),
             },
             transport,
         )
@@ -1232,6 +1281,83 @@ mod provider_tests {
             transport.calls.load(Ordering::SeqCst),
             tree_calls + 2,
             "страницы читаются только для совпадений"
+        );
+    }
+
+    /// Ядро ADR-0035 в kb: слова запроса совпадают с заголовком узла
+    /// пословно, а не целой подстрокой — переставленный порядок слов больше
+    /// не прячет главу (#415).
+    #[test]
+    fn kb_an_english_query_matches_title_tokens_not_the_whole_substring() {
+        let _serial = kb_test_lock();
+        let base = "https://kb.tokens";
+        let (provider, _transport) =
+            provider_over(base, standard_site(base), NetworkAccess::Allow);
+        let (request, context) = request("formats URL", Some("8.3.27"));
+        let sections = provider.search(&request, &context);
+        let developer = corpus_section(&sections, "kb-developer-guide");
+        assert!(
+            matches!(developer.status, DocumentationSectionStatus::Ok),
+            "переставленные слова обязаны найти главу: {:?}",
+            developer.status
+        );
+        assert!(
+            developer.hits[0].document_id.contains("URL_formats"),
+            "{:?}",
+            developer.hits
+        );
+    }
+
+    /// Русский запрос к английским заголовкам площадки работает через
+    /// лексикон установки (ADR-0035 п.4); без установки — честный Empty,
+    /// а не подложное совпадение.
+    #[test]
+    fn kb_a_russian_query_expands_through_the_installation_lexicon() {
+        struct FixedLexicon;
+        impl KbLexiconSource for FixedLexicon {
+            fn lexicon(
+                &self,
+                _context: &crate::domain::documentation::DocumentationContext,
+            ) -> Option<
+                std::sync::Arc<
+                    crate::infrastructure::documentation_retrieval::BilingualLexicon,
+                >,
+            > {
+                Some(std::sync::Arc::new(
+                    crate::infrastructure::documentation_retrieval::BilingualLexicon::from_titles(
+                        ["НавигационнаяСсылка.Форматы (URL.Formats)"],
+                    ),
+                ))
+            }
+        }
+        let _serial = kb_test_lock();
+        let base = "https://kb.lexicon";
+        let (mut provider, _transport) =
+            provider_over(base, standard_site(base), NetworkAccess::Allow);
+        let (request, context) = request("форматы ссылок", Some("8.3.27"));
+
+        let without = provider.search(&request, &context);
+        assert!(
+            matches!(
+                corpus_section(&without, "kb-developer-guide").status,
+                DocumentationSectionStatus::Empty
+            ),
+            "без лексикона русский запрос честно пуст: {:?}",
+            corpus_section(&without, "kb-developer-guide").status
+        );
+
+        provider.lexicon = Arc::new(FixedLexicon);
+        let sections = provider.search(&request, &context);
+        let developer = corpus_section(&sections, "kb-developer-guide");
+        assert!(
+            matches!(developer.status, DocumentationSectionStatus::Ok),
+            "лексикон обязан довести русский запрос до английской главы: {:?}",
+            developer.status
+        );
+        assert!(
+            developer.hits[0].document_id.contains("URL_formats"),
+            "{:?}",
+            developer.hits
         );
     }
 
@@ -1357,9 +1483,15 @@ mod provider_tests {
             "настоящее совпадение остаётся, получено {:?}",
             developer.status
         );
-        assert_eq!(developer.hits.len(), 1);
+        // Пословный матчинг вправе поднять и дочернюю страницу приложения —
+        // проверяется попадание самой оболочки, а не единственность выдачи.
+        let shell_hit = developer
+            .hits
+            .iter()
+            .find(|hit| hit.document_id.contains("Appendix_1._URL_formats/?"))
+            .expect("попадание оболочки остаётся в выдаче");
         assert!(
-            developer.hits[0].snippet.is_empty(),
+            shell_hit.snippet.is_empty(),
             "фрагмента нет — страница не отдана"
         );
         assert_eq!(
@@ -1536,6 +1668,7 @@ mod provider_tests {
             transport: transport as Arc<dyn KbTransport>,
             cancellation: token,
             cache_ttl: Duration::from_secs(3600),
+            lexicon: Arc::new(InstallationLexiconSource),
         };
         // Запрос «URL» совпадает с двумя узлами: первое дочитывание гасит
         // токен, и второе уже не должно ни состояться, ни превратить секцию
@@ -1587,6 +1720,7 @@ mod provider_tests {
             transport: Arc::new(UreqKbTransport),
             cancellation: crate::domain::cancellation::CancellationToken::default(),
             cache_ttl: Duration::from_secs(3600),
+            lexicon: Arc::new(InstallationLexiconSource),
         };
         let (request, context) = request("URL formats", Some("8.3.27"));
         let sections = provider.search(&request, &context);

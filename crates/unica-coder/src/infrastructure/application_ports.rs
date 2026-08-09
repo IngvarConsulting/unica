@@ -755,6 +755,7 @@ fn documentation_registry(
             // MCP, поэтому реестр собирается на вызов, а не на процесс.
             cancellation: cancellation.clone(),
             cache_ttl: crate::infrastructure::kb_1ci::KB_CACHE_TTL,
+            lexicon: Arc::new(crate::infrastructure::kb_1ci::InstallationLexiconSource),
         }),
         Arc::new(
             crate::infrastructure::standards_documentation::V8StdDocumentationProvider {

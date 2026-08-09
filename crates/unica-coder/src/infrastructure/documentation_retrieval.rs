@@ -237,7 +237,7 @@ impl RetrievalIndex {
         // запросе не должен удваивать его вес.
         let mut contributions: std::collections::BTreeMap<usize, f32> =
             std::collections::BTreeMap::new();
-        let mut merge = |contributions: &mut std::collections::BTreeMap<usize, f32>,
+        let merge = |contributions: &mut std::collections::BTreeMap<usize, f32>,
                          term_id: usize,
                          multiplier: f32| {
             let entry = contributions.entry(term_id).or_insert(0.0);
