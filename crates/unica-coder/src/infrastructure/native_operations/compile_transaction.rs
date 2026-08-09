@@ -26,8 +26,8 @@ use std::sync::{Arc, Mutex};
 use crate::infrastructure::platform::filesystem::{
     create_new_directory_child, file_identity, hard_link_count, metadata_is_link_or_reparse_point,
     open_directory_child_nofollow, open_directory_nofollow, prepare_file_for_removal,
-    remove_identity_bound_empty_directory_child, rename_no_replace, FileIdentity,
-    PortablePermissions,
+    remove_identity_bound_empty_directory_child, remove_identity_bound_regular_child,
+    rename_no_replace, retain_regular_child_for_cleanup, FileIdentity, PortablePermissions,
 };
 use crate::infrastructure::source_roots::normalize_path_identity;
 
@@ -3267,6 +3267,42 @@ fn rollback_registration(
             return;
         }
     }
+    let quarantine_name = match quarantined.file_name() {
+        Some(name) => name.to_os_string(),
+        None => {
+            errors.push(format!(
+                "rollback quarantine has no child name after moving registration {}; recovery and quarantined publication are preserved at {}",
+                published.target.display(),
+                recovery_path.display()
+            ));
+            return;
+        }
+    };
+    let quarantine_directory_handle = match published.recovery.directory.try_clone_directory() {
+        Ok(directory) => directory,
+        Err(error) => {
+            errors.push(format!(
+                "failed to retain rollback quarantine directory after moving registration {}; recovery and quarantined publication are preserved: {error}",
+                published.target.display()
+            ));
+            return;
+        }
+    };
+    let quarantined_file = match retain_regular_child_for_cleanup(
+        &quarantine_directory_handle,
+        &quarantine_name,
+        published.published.identity,
+    ) {
+        Ok(file) => file,
+        Err(error) => {
+            errors.push(format!(
+                "failed to bind quarantined registration {} to its published identity; recovery and quarantined publication are preserved at {}: {error}",
+                published.target.display(),
+                quarantined.display()
+            ));
+            return;
+        }
+    };
 
     if let Err(error) = published.recovery.verify_artifact() {
         let restore = restore_quarantined_file_no_clobber(&quarantined, &published.target);
@@ -3334,9 +3370,15 @@ fn rollback_registration(
         ));
         cleanup_warnings.push(warning);
     }
-    if let Err(error) = remove_if_exists(&quarantined) {
+    run_before_rollback_quarantine_cleanup(&quarantined);
+    if let Err(error) = remove_identity_bound_regular_child(
+        &quarantine_directory_handle,
+        &quarantine_name,
+        published.published.identity,
+        &quarantined_file,
+    ) {
         errors.push(format!(
-            "restored registration {}, but failed to remove quarantined published bytes {}; recovery is preserved: {error}",
+            "restored registration {}, but failed to remove identity-bound quarantined published bytes {}; quarantine is preserved: {error}",
             published.target.display(),
             quarantined.display()
         ));
@@ -3765,6 +3807,9 @@ type BeforeRemovalRollbackRestoreHook = Box<dyn FnOnce(&Path, &Path)>;
 type BeforeCleanupRetryHook = Box<dyn FnOnce()>;
 
 #[cfg(test)]
+type BeforeRollbackQuarantineCleanupHook = Box<dyn FnOnce(&Path)>;
+
+#[cfg(test)]
 thread_local! {
     static TEST_FAILPOINT: Cell<Option<CommitFailpoint>> = const { Cell::new(None) };
     static TEST_REGISTRATION_RECOVERY_PAUSE: RefCell<Option<RegistrationRecoveryPause>> = const { RefCell::new(None) };
@@ -3772,6 +3817,7 @@ thread_local! {
     static TEST_BEFORE_ROLLBACK_MUTATION_HOOK: RefCell<Option<BeforeRollbackMutationHook>> = const { RefCell::new(None) };
     static TEST_BEFORE_REMOVAL_ROLLBACK_RESTORE_HOOK: RefCell<Option<BeforeRemovalRollbackRestoreHook>> = const { RefCell::new(None) };
     static TEST_BEFORE_CLEANUP_RETRY_HOOK: RefCell<Option<BeforeCleanupRetryHook>> = const { RefCell::new(None) };
+    static TEST_BEFORE_ROLLBACK_QUARANTINE_CLEANUP_HOOK: RefCell<Option<BeforeRollbackQuarantineCleanupHook>> = const { RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -3870,9 +3916,38 @@ fn with_before_cleanup_retry_hook<T>(
 }
 
 #[cfg(test)]
+fn with_before_rollback_quarantine_cleanup_hook<T>(
+    hook: impl FnOnce(&Path) + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<BeforeRollbackQuarantineCleanupHook>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_BEFORE_ROLLBACK_QUARANTINE_CLEANUP_HOOK.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+
+    let previous = TEST_BEFORE_ROLLBACK_QUARANTINE_CLEANUP_HOOK
+        .with(|slot| slot.replace(Some(Box::new(hook))));
+    let _reset = Reset(previous);
+    action()
+}
+
+#[cfg(test)]
 fn run_before_cleanup_retry() {
     if let Some(hook) = TEST_BEFORE_CLEANUP_RETRY_HOOK.with(|slot| slot.borrow_mut().take()) {
         hook();
+    }
+}
+
+fn run_before_rollback_quarantine_cleanup(_path: &Path) {
+    #[cfg(test)]
+    if let Some(hook) =
+        TEST_BEFORE_ROLLBACK_QUARANTINE_CLEANUP_HOOK.with(|slot| slot.borrow_mut().take())
+    {
+        hook(_path);
     }
 }
 
@@ -5158,6 +5233,15 @@ mod tests {
             publish, with_publish_failpoints, PublishCheckpoint,
         };
 
+        fn assert_hard_link_count_if_supported(path: &Path, expected: u64, message: &str) {
+            let file = fs::File::open(path).expect("published target must remain readable");
+            match hard_link_count(&file) {
+                Ok(actual) => assert_eq!(actual, expected, "{message}"),
+                Err(error) if error.kind() == ErrorKind::Unsupported => {}
+                Err(error) => panic!("failed to inspect published hard links: {error}"),
+            }
+        }
+
         let root = temp_root("publication-cleanup-retry-identity-swap");
         let target = root.join("created.bin");
         let report = with_publish_failpoints(&[PublishCheckpoint::Cleanup], || {
@@ -5196,10 +5280,10 @@ mod tests {
         assert_eq!(fs::read(&warned_path).unwrap(), b"same-name retry decoy");
         assert_eq!(fs::read(&displaced).unwrap(), b"published bytes");
         assert_eq!(fs::read(&target).unwrap(), b"published bytes");
-        assert_eq!(
-            hard_link_count(&fs::File::open(&target).unwrap()).unwrap(),
+        assert_hard_link_count_if_supported(
+            &target,
             2,
-            "the committed target and displaced owned stage must both remain"
+            "the committed target and displaced owned stage must both remain",
         );
         fs::remove_file(&warned_path).expect("retry decoy must be removed");
         fs::rename(&displaced, &warned_path).expect("owned artifact route must be restored");
@@ -5210,10 +5294,10 @@ mod tests {
         assert!(state.pending_artifact_cleanups.is_empty());
         assert!(!warned_path.exists());
         assert_eq!(fs::read(&target).unwrap(), b"published bytes");
-        assert_eq!(
-            hard_link_count(&fs::File::open(&target).unwrap()).unwrap(),
+        assert_hard_link_count_if_supported(
+            &target,
             1,
-            "successful retry must remove only the owned stage link"
+            "successful retry must remove only the owned stage link",
         );
         fs::remove_dir_all(root).expect("temporary root must be removed");
     }
@@ -5724,6 +5808,52 @@ mod tests {
                 .is_file(),
             "the proven recovery must remain in the displaced parent"
         );
+        fs::remove_dir_all(root).expect("temporary root must be removed");
+    }
+
+    #[test]
+    fn registration_rollback_cleanup_preserves_same_name_quarantine_decoy() {
+        let root = temp_root("rollback-quarantine-identity-swap");
+        let config = root.join("Configuration.xml");
+        let original = configuration_bytes();
+        fs::write(&config, &original).expect("fixture must be written");
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .register_canonical_child(&config, "Role", "Reader")
+            .expect("registration must plan");
+        let (paths_sender, paths_receiver) = mpsc::channel();
+
+        let error = with_before_rollback_quarantine_cleanup_hook(
+            move |quarantined| {
+                let displaced = quarantined.with_file_name("displaced-published");
+                fs::rename(quarantined, &displaced)
+                    .expect("owned quarantine must be displaced before cleanup");
+                fs::write(quarantined, b"same-name quarantine decoy")
+                    .expect("same-name quarantine decoy must be written");
+                paths_sender
+                    .send((quarantined.to_path_buf(), displaced))
+                    .expect("quarantine paths must be reported");
+            },
+            || {
+                with_commit_failpoint(CommitFailpoint::PostWriteValidation, || {
+                    transaction.commit()
+                })
+            },
+        )
+        .expect_err("post-validation failure must roll publication back");
+        let (quarantined, displaced) = paths_receiver
+            .recv()
+            .expect("rollback cleanup hook must report quarantine paths");
+
+        assert!(error.contains("post-write validation"), "{error}");
+        assert_eq!(fs::read(&config).unwrap(), original);
+        assert_eq!(
+            fs::read(&quarantined).expect("cleanup must preserve the quarantine decoy"),
+            b"same-name quarantine decoy"
+        );
+        assert!(fs::read_to_string(&displaced)
+            .expect("cleanup must preserve the displaced published bytes")
+            .contains("<Role>Reader</Role>"));
         fs::remove_dir_all(root).expect("temporary root must be removed");
     }
 
