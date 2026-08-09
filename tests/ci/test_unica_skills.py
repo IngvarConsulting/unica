@@ -2628,6 +2628,18 @@ class PlatformHelpRoutingTests(unittest.TestCase):
     def test_states_the_source_boundary(self) -> None:
         self.assertIn("версию установки", self.text)
 
+    def test_filters_platform_questions_by_source_kind(self) -> None:
+        # ADR-0032 п.5: вопрос об API платформы зовётся с фильтром по смыслу
+        # источника, а не полагается на то, что секция стандартов не помешает.
+        self.assertIn('"sourceKinds"', self.text)
+        self.assertIn('"platform-help"', self.text)
+
+    def test_explains_policy_denied_as_a_user_choice(self) -> None:
+        # Запрет сетевого выхода — решение пользователя (unica.toml), и ответ
+        # обязан называть его, а не выдавать за сбой площадки.
+        self.assertIn("policy-denied", self.text)
+        self.assertIn("unica.toml", self.text)
+
     def test_requires_naming_the_answering_locale(self) -> None:
         # ADR-0029 п.3: подстановка соседней локали разрешена и обязана быть
         # названной в ответе. Данные называют её полем `language` секции, но

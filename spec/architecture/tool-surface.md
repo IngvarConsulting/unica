@@ -575,11 +575,11 @@ Validate Data Composition Schema Template.xml.
 
 - Проверить СКД после правки текста запроса
 
-## documentation — справка платформы
+## documentation — справка платформы и стандарты разработки
 
 ### `unica.documentation.search`
 
-Search installed-platform help across documentation providers.
+Search platform help and development standards across documentation providers.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
@@ -600,7 +600,8 @@ Search installed-platform help across documentation providers.
 
 - Уточнить сигнатуру и доступность метода платформы до написания кода
 - Проверить поведение механизма платформы для конкретной версии установки
-- Увидеть, какой локалью ответила установка, когда запрошенная не поставляется
+- Отличить справку платформы от стандарта разработки в одном ответе
+- Прочитать главу руководства площадки вендора для закреплённой версии
 
 ## epf — внешние обработки
 
