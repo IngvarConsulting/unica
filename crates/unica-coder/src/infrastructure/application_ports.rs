@@ -480,7 +480,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                 // Реестр собирается по рабочему пространству ДО того, как имя
                 // `context` затенит DocumentationContext: политика unica.toml —
                 // файлы проекта, и нечитаемая политика — отказ вызова.
-                let registry = documentation_registry(context)?;
+                let registry = documentation_registry(context, cancellation)?;
                 let requested_version = args.get("platformVersion").and_then(Value::as_str);
                 let context = documentation_context(
                     &crate::infrastructure::platform::full_dump_publication::default_platform_roots(
@@ -658,12 +658,16 @@ const DOCUMENTATION_PROVIDER_IDS: &[&str] = &["platform-syntax-help", "kb-1ci", 
 /// подмены; политика читается на каждый вызов — она из файлов проекта.
 fn documentation_registry(
     context: &WorkspaceContext,
+    cancellation: &crate::domain::cancellation::CancellationToken,
 ) -> Result<crate::domain::documentation::DocumentationRegistry, String> {
     use std::sync::Arc;
 
     #[cfg(test)]
-    if let Some(stand_in) = documentation_registry_stand_in() {
-        return crate::domain::documentation::DocumentationRegistry::new(vec![stand_in]);
+    {
+        let _ = cancellation;
+        if let Some(stand_in) = documentation_registry_stand_in() {
+            return crate::domain::documentation::DocumentationRegistry::new(vec![stand_in]);
+        }
     }
     let policy = crate::infrastructure::documentation_policy::DocumentationPolicy::load(
         &context.workspace_root,
@@ -674,6 +678,14 @@ fn documentation_registry(
     crate::domain::documentation::DocumentationRegistry::new(vec![
         Arc::new(crate::infrastructure::platform_help::provider::PlatformSyntaxHelpProvider::new())
             as Arc<dyn crate::domain::documentation::DocumentationProvider>,
+        Arc::new(crate::infrastructure::kb_1ci::Kb1ciProvider {
+            base: crate::infrastructure::kb_1ci::KB_BASE.to_string(),
+            network: policy.network("kb-1ci"),
+            transport: Arc::new(crate::infrastructure::kb_1ci::UreqKbTransport),
+            // Токен вызова: сетевой обход обязан отменяться вместе с вызовом
+            // MCP, поэтому реестр собирается на вызов, а не на процесс.
+            cancellation: cancellation.clone(),
+        }),
         Arc::new(
             crate::infrastructure::standards_documentation::V8StdDocumentationProvider {
                 endpoint,
@@ -1171,14 +1183,22 @@ mod tests {
             cache_root: workspace.join(".build/unica"),
             workspace_epoch: 1,
         };
-        let registry = documentation_registry(&context).expect("registry constructs");
+        let registry = documentation_registry(
+            &context,
+            &crate::domain::cancellation::CancellationToken::default(),
+        )
+        .expect("registry constructs");
         let ids: Vec<String> = registry
             .providers()
             .map(|provider| provider.id().to_string())
             .collect();
         assert_eq!(
             ids,
-            vec!["platform-syntax-help".to_string(), "v8std".to_string()],
+            vec![
+                "platform-syntax-help".to_string(),
+                "kb-1ci".to_string(),
+                "v8std".to_string()
+            ],
             "состав и порядок реестра"
         );
         let providers: Vec<_> = registry.providers().collect();
@@ -1187,9 +1207,14 @@ mod tests {
             2,
             "syntax-context and platform-guides"
         );
-        assert_eq!(providers[1].corpora().len(), 1, "public-standards");
         assert_eq!(
-            providers[1].corpora()[0].source_kind,
+            providers[1].corpora().len(),
+            2,
+            "kb-developer-guide and kb-administrator-guide"
+        );
+        assert_eq!(providers[2].corpora().len(), 1, "public-standards");
+        assert_eq!(
+            providers[2].corpora()[0].source_kind,
             crate::domain::documentation::SourceKind::DevelopmentStandard
         );
     }
@@ -1283,7 +1308,11 @@ mod tests {
             cache_root: workspace.join(".build/unica"),
             workspace_epoch: 1,
         };
-        let registry = documentation_registry(&context).expect("реестр собран");
+        let registry = documentation_registry(
+            &context,
+            &crate::domain::cancellation::CancellationToken::default(),
+        )
+        .expect("реестр собран");
         let declares_standards = registry.providers().any(|provider| {
             provider.corpora().iter().any(|corpus| {
                 corpus.source_kind == crate::domain::documentation::SourceKind::DevelopmentStandard
