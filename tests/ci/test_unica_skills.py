@@ -2642,10 +2642,28 @@ class PlatformHelpRoutingTests(unittest.TestCase):
 
     def test_confirms_answers_with_the_opened_document(self) -> None:
         # ADR-0029 п.4: доказательство — текст открытой страницы, и с
-        # ADR-0033 он достижим маршрутом MCP. Скилл обязан вести к
-        # unica.documentation.get, а не останавливаться на фрагменте.
-        self.assertIn("unica.documentation.get", self.text)
+        # ADR-0033 он достижим маршрутом MCP. Проверяются сами примеры, а не
+        # подстроки прозы: скилл обязан нести исполнимый вызов
+        # unica.documentation.get с обязательным documentId рядом с вызовом
+        # search — поток «нашёл → открыл» закреплён формой, а не упоминанием.
         self.assertIn("фрагмент выдачи доказательством не является", self.text)
+        calls = [
+            json.loads(block)
+            for block in re.findall(r"```json\n(.*?)\n```", self.text, flags=re.S)
+            if '"method": "tools/call"' in block
+        ]
+        names = [call["params"]["name"] for call in calls]
+        self.assertIn("unica.documentation.search", names)
+        self.assertIn("unica.documentation.get", names)
+        get_calls = [
+            call for call in calls if call["params"]["name"] == "unica.documentation.get"
+        ]
+        for call in get_calls:
+            self.assertIn(
+                "documentId",
+                call["params"]["arguments"],
+                "пример get обязан нести обязательный documentId",
+            )
 
     def test_requires_naming_the_answering_locale(self) -> None:
         # ADR-0029 п.3: подстановка соседней локали разрешена и обязана быть

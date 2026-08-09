@@ -40,8 +40,15 @@ impl DocumentationPolicy {
         let mut policy = DocumentationPolicy::default();
         for file_name in ["unica.toml", "unica.local.toml"] {
             let path = workspace_root.join(file_name);
-            let Ok(text) = std::fs::read_to_string(&path) else {
-                continue;
+            let text = match std::fs::read_to_string(&path) {
+                Ok(text) => text,
+                // Отсутствие файла — умолчания; любой ДРУГОЙ отказ чтения —
+                // жёсткий отказ: право на чтение, снятое с файла запрета,
+                // иначе превращалось бы в молчаливое разрешение.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    return Err(format!("{file_name}: файл не читается: {error}"));
+                }
             };
             let parsed =
                 parse_policy(&text, known).map_err(|error| format!("{file_name}: {error}"))?;
@@ -191,6 +198,24 @@ mod tests {
         std::fs::write(dir.path().join("unica.toml"), "[[[не toml").expect("файл");
         let error = DocumentationPolicy::load(dir.path(), KNOWN)
             .expect_err("неразбираемый файл обязан отказывать");
+        assert!(
+            error.contains("unica.toml"),
+            "отказ обязан назвать файл, получено {error}"
+        );
+    }
+
+    /// Нечитаемый файл — не то же, что отсутствующий: отказ чтения,
+    /// проглоченный на unica.toml, превращал бы правило запрета в молчаливое
+    /// разрешение — единственный по-настоящему опасный отказ этого файла.
+    /// Нечитаемость моделируется каталогом по имени файла: `read_to_string`
+    /// на нём отказывает не-NotFound ошибкой на любой ОС, без платформенных
+    /// прав и `cfg`-веток вне фасада (INV-платформенной границы).
+    #[test]
+    fn an_unreadable_file_is_a_refusal_not_a_silent_default() {
+        let dir = workspace();
+        std::fs::create_dir(dir.path().join("unica.toml")).expect("каталог по имени файла");
+        let error = DocumentationPolicy::load(dir.path(), KNOWN)
+            .expect_err("нечитаемый файл обязан отказывать");
         assert!(
             error.contains("unica.toml"),
             "отказ обязан назвать файл, получено {error}"

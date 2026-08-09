@@ -401,12 +401,26 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
             "platform-guides" => &corpora.platform_guides,
             other => return Some(Err(format!("неизвестный корпус {other:?} в локаторе"))),
         };
+        let mut unreadable: Vec<String> = Vec::new();
         for container in &source.containers {
-            let Ok(bytes) = std::fs::read(container) else {
-                continue;
+            let name = container
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("<без имени>")
+                .to_string();
+            let bytes = match std::fs::read(container) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    unreadable.push(format!("{name}: {error}"));
+                    continue;
+                }
             };
-            let Ok(pages) = read_corpus(&bytes) else {
-                continue;
+            let pages = match read_corpus(&bytes) {
+                Ok(pages) => pages,
+                Err(error) => {
+                    unreadable.push(format!("{name}: {}", corpus_failure(&error)));
+                    continue;
+                }
             };
             if let Some(page) = pages.into_iter().find(|page| page.path == path) {
                 return Some(Ok(crate::domain::documentation::DocumentationDocument {
@@ -427,10 +441,19 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
                 }));
             }
         }
-        Some(Err(format!(
-            "страницы {path:?} нет в корпусе {corpus_id} установки {}",
-            corpora.version
-        )))
+        // «Страницы нет» при пропущенных контейнерах — неправда: страница,
+        // может, и есть, но контейнер не разобрался, и это называется.
+        if unreadable.is_empty() {
+            Some(Err(format!(
+                "страницы {path:?} нет в корпусе {corpus_id} установки {}",
+                corpora.version
+            )))
+        } else {
+            Some(Err(format!(
+                "страница {path:?} не найдена, но контейнеры корпуса {corpus_id} не разобрались: {}",
+                unreadable.join("; ")
+            )))
+        }
     }
 
     fn search(
@@ -1530,6 +1553,36 @@ mod tests {
         assert!(
             error.contains("objects/Missing.html"),
             "отказ обязан назвать страницу, получено {error}"
+        );
+    }
+
+    /// Корпус из одного битого контейнера: «страницы нет» здесь неправда —
+    /// страница, может, и есть, но контейнер не разобрался, и отказ обязан
+    /// назвать пропуск, а не выдать неполноту за отсутствие.
+    #[test]
+    fn get_names_unreadable_containers_instead_of_claiming_the_page_absent() {
+        let _serial = index_test_lock();
+        let dir = tempfile::tempdir().expect("каталог");
+        let root = dir.path().join("8.3.27.2074");
+        std::fs::create_dir_all(&root).expect("каталог версии");
+        std::fs::write(root.join("shcntx_ru.hbk"), vec![b'x'; 256]).expect("битый контейнер");
+
+        let provider = PlatformSyntaxHelpProvider::new();
+        let context = DocumentationContext {
+            platform_version: Some("8.3.27.2074".to_string()),
+            installation_root: Some(root),
+        };
+        let error = provider
+            .get(
+                "platform-syntax-help:syntax-context:objects/Page.html",
+                "ru",
+                &context,
+            )
+            .expect("локатор наш")
+            .expect_err("битый корпус — отказ владельца");
+        assert!(
+            error.contains("shcntx_ru.hbk"),
+            "отказ обязан назвать неразобравшийся контейнер, получено {error}"
         );
     }
 

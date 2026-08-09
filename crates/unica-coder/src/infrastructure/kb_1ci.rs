@@ -43,17 +43,23 @@ const USER_AGENT: &str =
 
 impl KbTransport for UreqKbTransport {
     fn get(&self, url: &str) -> Result<String, String> {
-        {
+        // Слот времени бронируется под замком, а сон идёт СНАРУЖИ: сон под
+        // мьютексом заставил бы каждый параллельный запрос ждать весь чужой
+        // интервал на замке, а не в своей очереди слотов.
+        let wait = {
             let mut last = LAST_REQUEST
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if let Some(previous) = *last {
-                let elapsed = previous.elapsed();
-                if elapsed < REQUEST_SPACING {
-                    std::thread::sleep(REQUEST_SPACING - elapsed);
-                }
-            }
-            *last = Some(Instant::now());
+            let now = Instant::now();
+            let slot = match *last {
+                Some(previous) if previous + REQUEST_SPACING > now => previous + REQUEST_SPACING,
+                _ => now,
+            };
+            *last = Some(slot);
+            slot.saturating_duration_since(now)
+        };
+        if !wait.is_zero() {
+            std::thread::sleep(wait);
         }
         ureq::AgentBuilder::new()
             .timeout(Duration::from_secs(30))
@@ -594,6 +600,17 @@ impl crate::domain::documentation::DocumentationProvider for Kb1ciProvider {
             return Some(Err("вызов отменён до обращения к площадке".to_string()));
         }
         let path = path.split('?').next().unwrap_or(path).trim_matches('/');
+        // Путь локатора уходит в адрес запроса дословно: сегменты `..` (и
+        // пустые) вывели бы запрос за объявленные корни руководств — граница
+        // ADR-0032 п.2, действующая и на получение.
+        if path
+            .split('/')
+            .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+        {
+            return Some(Err(format!(
+                "адрес {document_id:?} несёт сегменты '..' или пустые и не является адресом страницы руководства"
+            )));
+        }
         let corpus = if path.contains("Developer_Guides") {
             "kb-developer-guide"
         } else if path.contains("Administrator_Guides") {
@@ -758,6 +775,7 @@ impl crate::domain::documentation::DocumentationProvider for Kb1ciProvider {
                 }
                 matched.truncate(request.limit);
                 let mut warnings = Vec::new();
+                let mut cancelled_mid_ranking = false;
                 let hits: Vec<DocumentationHit> = matched
                     .iter()
                     .enumerate()
@@ -768,8 +786,10 @@ impl crate::domain::documentation::DocumentationProvider for Kb1ciProvider {
                         // из своего <h1>: доказательство берётся у открытой
                         // страницы, а узел дерева остаётся запасным именем.
                         let mut title = entry.title.clone();
-                        let snippet = if index < PAGE_FETCH_CAP && !self.cancellation.is_cancelled()
-                        {
+                        if self.cancellation.is_cancelled() {
+                            cancelled_mid_ranking = true;
+                        }
+                        let snippet = if index < PAGE_FETCH_CAP && !cancelled_mid_ranking {
                             match content_url(&self.base, &entry.node_id)
                                 .ok_or_else(|| "адрес страницы не строится".to_string())
                                 .and_then(|url| {
@@ -802,10 +822,23 @@ impl crate::domain::documentation::DocumentationProvider for Kb1ciProvider {
                         }
                     })
                     .collect();
-                let status = if hits.is_empty() {
+                // Отмена посреди ранжирования — обрыв, а не ответ: пустые
+                // фрагменты при отменённом вызове публиковать как Ok нельзя
+                // (ADR-0032 п.10 — частичные результаты не публикуются).
+                let status = if cancelled_mid_ranking {
+                    DocumentationSectionStatus::Unavailable {
+                        reason: UnavailableReason::Timeout,
+                        detail: "вызов отменён посреди дочитывания страниц".to_string(),
+                    }
+                } else if hits.is_empty() {
                     DocumentationSectionStatus::Empty
                 } else {
                     DocumentationSectionStatus::Ok
+                };
+                let hits = if cancelled_mid_ranking {
+                    Vec::new()
+                } else {
+                    hits
                 };
                 DocumentationSection {
                     provider: DocumentationProviderId::new("kb-1ci"),
@@ -1323,6 +1356,81 @@ mod provider_tests {
         assert!(
             error.contains("корн"),
             "отказ обязан назвать границу корней, получено {error}"
+        );
+    }
+
+    /// Локатор приходит от вызывающего, и его путь уходит в адрес запроса:
+    /// сегменты `..` выводили бы запрос за объявленные корни руководств —
+    /// ровно та граница, которую ADR-0032 п.2 ставит вместо robots.txt.
+    /// Путь намеренно несёт и категорию, и версию: проверки корпуса и версии
+    /// такой обход проходит, и ловить его обязана именно проверка сегментов.
+    #[test]
+    fn kb_get_refuses_a_locator_with_parent_segments() {
+        let _serial = kb_test_lock();
+        let base = "https://kb.traversal";
+        let (provider, transport) = provider_over(base, standard_site(base), NetworkAccess::Allow);
+        let sneaky = format!(
+            "{base}/1C_Enterprise_Platform/Guides/Developer_Guides/1C_Enterprise_8.3.27_Developer_Guide/../../../../../XWiki/Admin/?language=en"
+        );
+        let error = provider
+            .get(&sneaky, "en", &request("x", None).1)
+            .expect("база наша")
+            .expect_err("сегменты .. обязаны отклоняться");
+        assert!(
+            error.contains(".."),
+            "отказ обязан назвать сегмент, получено {error}"
+        );
+        assert_eq!(transport.calls.load(Ordering::SeqCst), 0, "сеть не тронута");
+    }
+
+    /// Транспорт, гасящий токен на первом же запросе страницы: так отмена
+    /// приходит ПОСРЕДИ ранжирования, между дочитываниями, — за ранним
+    /// гейтом `search`, который пре-отменённый токен ловит и без этого.
+    struct CancellingTransport {
+        inner: FakeTransport,
+        token: crate::domain::cancellation::CancellationToken,
+    }
+
+    impl KbTransport for CancellingTransport {
+        fn get(&self, url: &str) -> Result<String, String> {
+            if url.contains("/bin/view/") {
+                self.token.cancel();
+            }
+            self.inner.get(url)
+        }
+    }
+
+    /// Отмена посреди ранжирования не публикует секцию как успех: пустые
+    /// фрагменты при отменённом вызове — не ответ, а обрыв, и ADR-0032 п.10
+    /// требует диагностичной секции без частичных результатов обхода.
+    #[test]
+    fn cancellation_during_ranking_yields_a_diagnostic_section_not_ok_with_gaps() {
+        let _serial = kb_test_lock();
+        let base = "https://kb.midcancel";
+        let token = crate::domain::cancellation::CancellationToken::default();
+        let transport = Arc::new(CancellingTransport {
+            inner: FakeTransport {
+                responses: standard_site(base),
+                calls: AtomicUsize::new(0),
+            },
+            token: token.clone(),
+        });
+        let provider = Kb1ciProvider {
+            base: base.to_string(),
+            network: NetworkAccess::Allow,
+            transport: transport as Arc<dyn KbTransport>,
+            cancellation: token,
+        };
+        // Запрос «URL» совпадает с двумя узлами: первое дочитывание гасит
+        // токен, и второе уже не должно ни состояться, ни превратить секцию
+        // в Ok с молчаливой дырой вместо фрагмента.
+        let (request, context) = request("URL", Some("8.3.27"));
+        let sections = provider.search(&request, &context);
+        let developer = corpus_section(&sections, "kb-developer-guide");
+        assert!(
+            !matches!(developer.status, DocumentationSectionStatus::Ok),
+            "отменённый посреди ранжирования вызов не публикует Ok-секцию, получено {:?}",
+            developer.status
         );
     }
 

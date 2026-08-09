@@ -474,14 +474,16 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                         })?
                         .iter()
                         .map(|entry| {
-                            let text = entry.as_str().unwrap_or_default();
-                            crate::domain::documentation::SourceKind::parse(text).ok_or_else(
-                                || {
+                            entry
+                                .as_str()
+                                .and_then(crate::domain::documentation::SourceKind::parse)
+                                .ok_or_else(|| {
+                                    // Нестроковое значение называется самим
+                                    // JSON-значением, а не пустой строкой.
                                     format!(
-                                        "unica.documentation.search: unknown sourceKinds value {text:?}; allowed: platform-help, development-standard"
+                                        "unica.documentation.search: unknown sourceKinds value {entry}; allowed: platform-help, development-standard"
                                     )
-                                },
-                            )
+                                })
                         })
                         .collect::<Result<Vec<_>, String>>()?,
                 };
@@ -736,6 +738,7 @@ fn documentation_registry(
                 endpoint,
                 network: policy.network("v8std"),
                 http: crate::infrastructure::internal_adapters::shared_http_client(),
+                cancellation: cancellation.clone(),
             },
         ),
     ])
@@ -2082,6 +2085,31 @@ mod tests {
         assert!(
             error.contains("standards") && error.contains("platform-help"),
             "отказ обязан назвать чужое значение и допустимые, получено {error}"
+        );
+
+        // Нестроковое значение — тот же отказ, но с самим значением, а не с
+        // пустой строкой: «unknown value \"\"» не говорит автору вызова ничего.
+        let mut non_string = Map::new();
+        non_string.insert("query".to_string(), json!("СтрНайти"));
+        non_string.insert("sourceKinds".to_string(), json!([42]));
+        let error = match super::InfrastructureApplicationPorts::new().invoke_handler(
+            spec(
+                "unica.documentation.search",
+                ToolHandler::Documentation {
+                    operation: "search",
+                },
+            ),
+            &non_string,
+            &context,
+            false,
+            &crate::domain::cancellation::CancellationToken::default(),
+        ) {
+            Ok(_) => panic!("нестроковое значение sourceKinds обязано отклоняться"),
+            Err(error) => error,
+        };
+        assert!(
+            error.contains("42"),
+            "отказ обязан назвать само значение, получено {error}"
         );
     }
 

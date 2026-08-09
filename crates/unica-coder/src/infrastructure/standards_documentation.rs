@@ -48,6 +48,9 @@ pub struct V8StdDocumentationProvider {
     pub endpoint: String,
     pub network: NetworkAccess,
     pub http: Arc<dyn HttpClient + Send + Sync>,
+    /// Токен вызова MCP: сетевой поставщик проверяет его перед обращением,
+    /// отмена не публикует результатов (ADR-0032 п.10).
+    pub cancellation: crate::domain::cancellation::CancellationToken,
 }
 
 const CORPUS: &str = "public-standards";
@@ -106,6 +109,11 @@ impl DocumentationProvider for V8StdDocumentationProvider {
                 "сетевой выход v8std запрещён политикой unica.toml".to_string()
             ));
         }
+        if self.cancellation.is_cancelled() {
+            return Some(Err(
+                "вызов отменён до обращения к серверу стандартов".to_string()
+            ));
+        }
         let payload = json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -148,6 +156,18 @@ impl DocumentationProvider for V8StdDocumentationProvider {
         let Some(page) = inner.get("page") else {
             return Some(Err("ответ v8std_get_page не несёт page".to_string()));
         };
+        let text = page
+            .get("body_markdown")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        // Успешный «документ» без текста — не доказательство: планка
+        // ADR-0029 п.4 держится на тексте открытой страницы.
+        if text.trim().is_empty() {
+            return Some(Err(format!(
+                "страница стандарта {document_id:?} не несёт текста"
+            )));
+        }
         Some(Ok(DocumentationDocument {
             provider: self.id(),
             corpus: CORPUS.to_string(),
@@ -166,11 +186,7 @@ impl DocumentationProvider for V8StdDocumentationProvider {
                 .to_string(),
             signature: None,
             applicable_version: UNVERSIONED.to_string(),
-            text: page
-                .get("body_markdown")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
+            text,
         }))
     }
 
@@ -187,6 +203,16 @@ impl DocumentationProvider for V8StdDocumentationProvider {
                 DocumentationSectionStatus::Unavailable {
                     reason: UnavailableReason::PolicyDenied,
                     detail: "сетевой выход v8std запрещён политикой unica.toml".to_string(),
+                },
+                Vec::new(),
+            )];
+        }
+        if self.cancellation.is_cancelled() {
+            return vec![self.section(
+                &request.language,
+                DocumentationSectionStatus::Unavailable {
+                    reason: UnavailableReason::Timeout,
+                    detail: "вызов отменён до обращения к серверу стандартов".to_string(),
                 },
                 Vec::new(),
             )];
@@ -324,6 +350,7 @@ mod tests {
                 endpoint: "http://stand.in/mcp".to_string(),
                 network,
                 http: Arc::clone(&http) as Arc<dyn HttpClient + Send + Sync>,
+                cancellation: crate::domain::cancellation::CancellationToken::default(),
             },
             http,
         )
@@ -394,6 +421,40 @@ mod tests {
             http.calls.load(Ordering::SeqCst),
             0,
             "запрещённый поставщик не должен трогать сеть"
+        );
+    }
+
+    /// Отмена вызова MCP приоритетна и для сервера стандартов: отменённый
+    /// вызов не трогает сеть и отвечает диагностикой, а не результатом
+    /// (ADR-0032 п.10).
+    #[test]
+    fn v8std_cancellation_stops_before_the_network_for_search_and_get() {
+        let (mut cancelled, http) = provider(NetworkAccess::Allow, Ok(LIVE_BODY.to_string()));
+        let token = crate::domain::cancellation::CancellationToken::default();
+        token.cancel();
+        cancelled.cancellation = token;
+
+        let sections = cancelled.search(&request(), &context());
+        assert!(
+            matches!(
+                sections[0].status,
+                DocumentationSectionStatus::Unavailable { .. }
+            ),
+            "отменённый поиск — диагностичная секция, получено {:?}",
+            sections[0].status
+        );
+        let error = cancelled
+            .get("https://v8std.ru/std/702/", "ru", &context())
+            .expect("локатор наш")
+            .expect_err("отменённое получение — отказ владельца");
+        assert!(
+            error.contains("отмен"),
+            "отказ обязан назвать отмену, получено {error}"
+        );
+        assert_eq!(
+            http.calls.load(Ordering::SeqCst),
+            0,
+            "отменённый вызов не должен трогать сеть"
         );
     }
 
@@ -470,6 +531,19 @@ mod tests {
         assert!(
             error.contains("не найден"),
             "отказ обязан назвать причину, получено {error}"
+        );
+
+        // Страница без body_markdown: успешный «документ» с пустым текстом —
+        // не доказательство, а обман планки ADR-0029 п.4.
+        let empty_page = r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"found\": true, \"page\": {\"title\": \"Пустой\", \"url\": \"https://v8std.ru/std/1/\"}}"}]}}"#;
+        let (provider_empty, _http) = provider(NetworkAccess::Allow, Ok(empty_page.to_string()));
+        let error = provider_empty
+            .get("https://v8std.ru/std/1/", "ru", &context())
+            .expect("локатор наш")
+            .expect_err("страница без текста — отказ владельца");
+        assert!(
+            error.contains("текст"),
+            "отказ обязан назвать отсутствие текста, получено {error}"
         );
 
         let (provider_denied, http) = provider(NetworkAccess::Deny, Ok(GET_BODY.to_string()));
