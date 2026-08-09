@@ -7,18 +7,20 @@ description: "Справка платформы 1С и объектной мод
 
 ## MCP routing
 
-- For project context, use MCP `unica` tools `unica.code.search`, `unica.project.map`, and `unica.runtime.execute`.
-- `unica.standards.search` and `unica.standards.explain` return development standards, not platform API/help. Use them only when the question explicitly asks for a standard or code-style rule, and label that source as `development-standard`.
-- Platform behavior, API signatures, and version-dependent mechanics require a `platform-help` source. Until it is exposed by public MCP `unica`, report this as a `platform-help` contract gap rather than substituting a standards result.
+- For platform API and mechanics, use MCP `unica` tool `unica.documentation.search`.
+- Каждая секция несёт `sourceKind` и `authority`, каждое попадание в ней — `applicableVersion` и `documentId`. Ответ обязан называть источник, версию установки и `documentId` страницы: без него читатель не может вернуться к той же странице.
+- `language` секции — локаль, которой источник ответил на самом деле, а не запрошенная. Если они расходятся, назовите подстановку локали в ответе: справка поставляется не во всех локалях, и запрос `en` на русскоязычной установке молча отвечал бы русскими страницами.
+- Секция со смыслом источника `development-standard` не закрывает вопрос о сигнатуре или механике платформы, каким бы уместным ни выглядел её текст. Это правило чтения, а не правило вызова.
+- For project context, use `unica.code.search`, `unica.project.map`, and `unica.runtime.execute`.
 - Use object-specific `unica.*.info` tools when the API question depends on metadata structure.
-- Do not call internal standards, runtime, or package adapters directly. They are hidden behind MCP `unica`.
+- Do not call internal standards, runtime, or package adapters directly.
 
 ## Workflow
 
-1. State the exact platform/API question: object, method/property, platform version, infobase mode, client/server context, managed/ordinary mode, and whether code runs in UI, server, background job, or external integration.
-2. Classify the requested evidence: use platform help for API/mechanics, and use `unica.standards.*` only for development standards. State the source type in the answer.
-3. Validate against local project context with `unica.project.map` and targeted `unica.code.search` if the answer depends on project conventions.
-4. If behavior is version-sensitive, ask for or read the configured platform version before giving a hard answer.
+1. State the exact platform/API question: object, method/property, platform version, infobase mode, client/server context.
+2. Call `unica.documentation.search` with the object or member name.
+3. Read `applicableVersion` in the hit. Если она расходится с версией проекта, назовите расхождение в ответе.
+4. Validate against local project context with `unica.project.map` and targeted `unica.code.search` if the answer depends on project conventions.
 5. For code examples, run `unica.runtime.execute` with `operation=syntax` when feasible.
 
 ## Platform context
@@ -33,11 +35,40 @@ description: "Справка платформы 1С и объектной мод
 
 ## Stop rules
 
-- Do not present `unica.standards.*` output as proof of platform API behavior or exact method signatures.
-- If the requested platform-help source is not available through public MCP `unica`, report it as a `platform-help contract gap` instead of bypassing the public boundary.
+- Do not present a `development-standard` section as proof of platform API behavior or exact method signatures.
+- Справка отвечает, что и с какими типами вызывать. Целостное описание механизма — за пределами источника: сообщите границу источника вместо ответа по памяти.
+- Если секция вернула `unavailable` с причиной `version-missing`, назовите, какой установки не хватает. Не подставляйте справку соседней версии.
+- Если ни один поставщик не дал подтверждения, сообщите `platform-help contract gap` и назовите требуемую версию и контекст.
 
 ## MCP examples
 
-When the answer requires platform help that the public MCP server does not yet
-expose, report `platform-help contract gap` and identify the required platform
-version and runtime context. Do not replace it with a standards-search call.
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.documentation.search",
+    "arguments": {
+      "cwd": "<workspace>",
+      "query": "СтрНайти",
+      "limit": 10
+    }
+  }
+}
+```
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.documentation.search",
+    "arguments": {
+      "cwd": "<workspace>",
+      "query": "ТаблицаЗначений.Свернуть",
+      "platformVersion": "8.3.27.2074",
+      "limit": 10
+    }
+  }
+}
+```

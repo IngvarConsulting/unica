@@ -7,6 +7,8 @@ from pathlib import Path
 
 import yaml
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 # Both ways a document points at another one: a backticked path, where the
 # slash separates a link from a bare filename mentioned as prose (`SKILL.md`),
@@ -2596,6 +2598,43 @@ Use `.claude/commands/xdto.md` as the execution route.
                     }
                     self.assertIn(params["name"], allowed_tool_names)
                     self.assertNotEqual(set(params["arguments"].keys()), {"cwd"})
+
+
+class PlatformHelpRoutingTests(unittest.TestCase):
+    """Скилл получил источник: отказ перестаёт быть штатным ответом."""
+
+    def setUp(self) -> None:
+        self.text = (
+            REPO_ROOT / "plugins" / "unica" / "skills" / "platform-help" / "SKILL.md"
+        ).read_text(encoding="utf-8")
+
+    def test_routes_platform_questions_to_documentation_search(self) -> None:
+        self.assertIn("unica.documentation.search", self.text)
+
+    def test_keeps_the_standards_reading_rule(self) -> None:
+        # Секция стандартов может прийти в том же ответе; правило вызова
+        # превращается в правило чтения и должно остаться дословным.
+        self.assertIn("development-standard", self.text)
+        self.assertIn("не закрывает вопрос", self.text)
+
+    def test_contract_gap_is_no_longer_the_default_answer(self) -> None:
+        # Отказ сохраняется только для случая, когда ни один поставщик не
+        # подтвердил ответ.
+        self.assertNotIn(
+            "Until it is exposed by public MCP `unica`, report this as a `platform-help` contract gap",
+            self.text,
+        )
+
+    def test_states_the_source_boundary(self) -> None:
+        self.assertIn("версию установки", self.text)
+
+    def test_requires_naming_the_answering_locale(self) -> None:
+        # ADR-0029 п.3: подстановка соседней локали разрешена и обязана быть
+        # названной в ответе. Данные называют её полем `language` секции, но
+        # без правила чтения агент не обязан пересказать подстановку: на
+        # русскоязычной установке запрос en возвращает русские страницы молча.
+        self.assertIn("`language`", self.text)
+        self.assertIn("назовите подстановку локали в ответе", self.text)
 
 
 if __name__ == "__main__":
