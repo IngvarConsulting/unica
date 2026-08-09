@@ -115,7 +115,13 @@ class FormatProfileContractTests(unittest.TestCase):
         text = MATRIX.read_text(encoding="utf-8")
         self.assertIn("8.3.27", text)
         self.assertIn("2.20", text)
-        self.assertIn("Export_format_versions/index.md", text)
+        # Официальный источник соответствия версий формата — глава публичного
+        # руководства разработчика, а не путь локального корпуса: контракт
+        # скачанного корпуса снят вместе с загрузчиком (ADR-0029), и активный
+        # слой spec/ на него больше не ссылается
+        # (test_product_contracts.test_downloader_and_local_corpus_contract_are_retired).
+        self.assertIn("Export format versions", text)
+        self.assertIn("2.17.2", text)
 
     def test_prompt_visible_specs_use_only_the_active_format_outside_history(self):
         specs = ROOT / "plugins/unica/references/specs"

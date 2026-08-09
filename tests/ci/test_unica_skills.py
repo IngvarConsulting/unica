@@ -5,6 +5,10 @@ import re
 import unittest
 from pathlib import Path
 
+import yaml
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 # Both ways a document points at another one: a backticked path, where the
 # slash separates a link from a bare filename mentioned as prose (`SKILL.md`),
@@ -46,6 +50,117 @@ def stale_route_guard_text(path: Path, text: str) -> str:
         )
     match = matches[0]
     return text[: match.start()] + text[match.end() :]
+
+
+PROMPT_FRONTMATTER_PATTERN = re.compile(
+    r"\A---(?:\r\n|\r|\n)(?P<body>.*?)(?:\r\n|\r|\n)"
+    r"---(?=\r\n|\r|\n|\Z)",
+    re.DOTALL,
+)
+
+
+class UniqueKeySafeLoader(yaml.SafeLoader):
+    """Safe YAML loader that also rejects duplicate and merge keys."""
+
+    def construct_mapping(self, node, deep=False):
+        if any(
+            key_node.tag == "tag:yaml.org,2002:merge"
+            for key_node, _ in node.value
+        ):
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                "YAML merge keys are not allowed in skill frontmatter",
+                node.start_mark,
+            )
+        self.flatten_mapping(node)
+        mapping = {}
+        for key_node, value_node in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            try:
+                duplicate = key in mapping
+            except TypeError as error:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    "found an unhashable key",
+                    key_node.start_mark,
+                ) from error
+            if duplicate:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    f"found duplicate key {key!r}",
+                    key_node.start_mark,
+                )
+            mapping[key] = self.construct_object(value_node, deep=deep)
+        return mapping
+
+
+def prompt_frontmatter_body(document: str) -> str | None:
+    """Return the raw YAML frontmatter body when the document has one."""
+
+    match = PROMPT_FRONTMATTER_PATTERN.match(document.removeprefix("\ufeff"))
+    return None if match is None else match.group("body")
+
+
+def prompt_frontmatter(document: str) -> dict[str, str]:
+    """Return prompt-visible single-line scalar metadata from YAML frontmatter."""
+
+    frontmatter = prompt_frontmatter_body(document)
+    if frontmatter is None:
+        return {}
+
+    try:
+        # UniqueKeySafeLoader derives from SafeLoader and cannot construct
+        # arbitrary Python objects.
+        values = yaml.load(frontmatter, Loader=UniqueKeySafeLoader)
+        syntax = yaml.compose(frontmatter, Loader=yaml.SafeLoader)
+        # An alias reprints a value written somewhere else, so the text a reader
+        # sees next to the key is `*anchor` rather than the value this helper
+        # would return. Frontmatter has no use for that indirection, so one
+        # alias anywhere disqualifies the whole document.
+        aliased = any(
+            isinstance(event, yaml.AliasEvent)
+            for event in yaml.parse(frontmatter, Loader=yaml.SafeLoader)
+        )
+    except yaml.YAMLError:
+        return {}
+    if aliased:
+        return {}
+    if not isinstance(values, dict) or not isinstance(syntax, yaml.MappingNode):
+        return {}
+
+    scalar_nodes = {
+        key_node.value: (key_node, value_node)
+        for key_node, value_node in syntax.value
+        if isinstance(key_node, yaml.ScalarNode)
+        and key_node.tag == "tag:yaml.org,2002:str"
+    }
+    fields = {}
+    for field in ("description", "argument-hint"):
+        value = values.get(field)
+        nodes = scalar_nodes.get(field)
+        if not isinstance(value, str) or nodes is None:
+            continue
+        key_node, value_node = nodes
+        if not isinstance(value_node, yaml.ScalarNode):
+            continue
+        if value_node.style not in (None, "'", '"'):
+            continue
+        # A plain scalar may open on the line below its key, which puts the
+        # text somewhere the reader does not look for it. Requiring the key and
+        # value to begin on the same physical line rejects that.
+        if key_node.start_mark.line != value_node.start_mark.line:
+            continue
+        if value_node.start_mark.line != value_node.end_mark.line:
+            continue
+        if not value.strip() or any(
+            line_break in value for line_break in "\r\n\x85\u2028\u2029"
+        ):
+            continue
+        fields[field] = value
+    return fields
 
 
 IN_SCOPE_TOOLS = {
@@ -854,6 +969,168 @@ def find_unsafe_platform_evidence_routes(
     return unsafe_routes
 
 
+class PromptFrontmatterParsingTests(unittest.TestCase):
+    def test_empty_value_does_not_capture_the_next_frontmatter_field(self) -> None:
+        document = "---\ndescription:\nargument-hint: insert replace\n---\n"
+
+        self.assertNotIn("description", prompt_frontmatter(document))
+
+    def test_direct_scalar_alias_is_not_a_physical_field_value(self) -> None:
+        documents = {
+            "plain": (
+                "---\ndefault: &description insert replace\n"
+                "description: *description\n"
+                "argument-hint: insert replace\n---\n"
+            ),
+            "quoted": (
+                '---\ndefault: &description "insert replace"\n'
+                "description: *description\n"
+                "argument-hint: insert replace\n---\n"
+            ),
+            # A flow mapping puts the anchor on the key's own physical line, so
+            # the line comparison alone would read the anchored text as if it
+            # stood next to `description`.
+            "flow-mapping": (
+                "---\n{default: &description insert replace, "
+                "description: *description}\n---\n"
+            ),
+        }
+
+        for style, document in documents.items():
+            with self.subTest(style=style):
+                self.assertNotIn("description", prompt_frontmatter(document))
+
+    def test_invalid_prompt_metadata_values_are_rejected(self) -> None:
+        invalid_descriptions = {
+            "whitespace": (
+                "---\ndescription:   \nargument-hint: insert replace\n---\n"
+            ),
+            "missing-yaml-separation": (
+                "---\ndescription:insert replace\n"
+                "argument-hint: insert replace\n---\n"
+            ),
+            "quoted-empty": (
+                '---\ndescription: "" # insert replace\n'
+                "argument-hint: insert replace\n---\n"
+            ),
+            "quoted-concatenation": (
+                '---\ndescription: "" "insert replace"\n'
+                "argument-hint: insert replace\n---\n"
+            ),
+            "flow-sequence": (
+                "---\ndescription: [insert, replace]\n"
+                "argument-hint: insert replace\n---\n"
+            ),
+            "flow-mapping": (
+                "---\ndescription: {insert: replace}\n"
+                "argument-hint: insert replace\n---\n"
+            ),
+            "invalid-plain-colon": (
+                "---\ndescription: insert: replace\n"
+                "argument-hint: insert replace\n---\n"
+            ),
+            "invalid-trailing-colon": (
+                "---\ndescription: insert replace:\n"
+                "argument-hint: insert replace\n---\n"
+            ),
+            "quoted-duplicate-key": (
+                "---\ndescription: insert replace\n"
+                '"description": initialize\n'
+                "argument-hint: insert replace\n---\n"
+            ),
+            "invalid-unrelated-field": (
+                "---\ndescription: insert replace\n"
+                "argument-hint: insert replace\n"
+                "unrelated: [unterminated\n---\n"
+            ),
+            "control-line-separator": (
+                "---\vdescription: insert replace\v"
+                "argument-hint: insert replace\v---"
+            ),
+            "internal-control-separator": (
+                "---\ndescription: insert replace\v"
+                "argument-hint: insert replace\n---\n"
+            ),
+            "duplicate-unrelated-key": (
+                "---\ndescription: insert replace\n"
+                "argument-hint: insert replace\n"
+                "unrelated:\n  key: one\n  'key': two\n---\n"
+            ),
+            "yaml-merge-key": (
+                "---\ndefaults: &defaults {unrelated: true}\n"
+                "<<: *defaults\n"
+                "description: insert replace\n"
+                "argument-hint: insert replace\n---\n"
+            ),
+            "block-sequence-indicator": (
+                "---\ndescription: - insert replace\n"
+                "argument-hint: insert replace\n---\n"
+            ),
+            "explicit-key-indicator": (
+                "---\ndescription: ? insert replace\n"
+                "argument-hint: insert replace\n---\n"
+            ),
+            "null-with-comment": (
+                "---\ndescription: null # insert replace\n"
+                "argument-hint: insert replace\n---\n"
+            ),
+            "body-decoy": (
+                "---\nargument-hint: insert replace\n---\n"
+                "description: insert replace\n"
+            ),
+            "folded-scalar": (
+                "---\ndescription: >\n  insert replace\n"
+                "argument-hint: insert replace\n---\n"
+            ),
+            "multiline-plain-scalar": (
+                "---\ndescription: insert\n  replace\n"
+                "argument-hint: insert replace\n---\n"
+            ),
+            "value-below-its-key": (
+                "---\ndescription:\n  insert replace\n"
+                "argument-hint: insert replace\n---\n"
+            ),
+            "escaped-line-break": (
+                '---\ndescription: "insert \\L replace"\n'
+                "argument-hint: insert replace\n---\n"
+            ),
+        }
+
+        for case, document in invalid_descriptions.items():
+            with self.subTest(case=case):
+                self.assertNotIn("description", prompt_frontmatter(document))
+
+    def test_single_line_prompt_metadata_values_are_accepted(self) -> None:
+        documents = {
+            "double-quoted": (
+                '---\ndescription: "insert replace" # visible value\n'
+                "argument-hint: insert replace\n---\n"
+            ),
+            "single-quoted": (
+                "---\ndescription: 'insert replace' # visible value\n"
+                "argument-hint: insert replace\n---\n"
+            ),
+            "escaped-character": (
+                '---\ndescription: "insert \\x72eplace"\n'
+                "argument-hint: insert replace\n---\n"
+            ),
+            "quoted-keys": (
+                '---\n"description": insert replace\n'
+                "'argument-hint': insert replace\n---\n"
+            ),
+        }
+
+        for case, document in documents.items():
+            with self.subTest(case=case):
+                self.assertEqual(
+                    prompt_frontmatter(document),
+                    {
+                        "description": "insert replace",
+                        "argument-hint": "insert replace",
+                    },
+                )
+
+
 class UnicaSkillRoutingTests(unittest.TestCase):
     def repo_root(self) -> Path:
         return Path(__file__).resolve().parents[2]
@@ -1412,9 +1689,13 @@ class UnicaSkillRoutingTests(unittest.TestCase):
     def test_v8_runner_metadata_describes_runtime_trigger_surface(self) -> None:
         skill_doc = self.skill_root() / "v8-runner" / "SKILL.md"
         text = skill_doc.read_text(encoding="utf-8")
-        description = re.search(r"^description:\s*(.+)$", text, flags=re.M)
-        self.assertIsNotNone(description)
-        description_text = description.group(1)
+        fields = prompt_frontmatter(text)
+        self.assertIn(
+            "description",
+            fields,
+            msg=f"invalid prompt frontmatter:\n{prompt_frontmatter_body(text)}",
+        )
+        description_text = fields["description"]
         for token in [
             "информационная база",
             "v8project.yaml",
@@ -2063,12 +2344,12 @@ Use `.claude/commands/xdto.md` as the execution route.
         published = ("insert", "replace")
         retired = ("initialize",)
 
-        fields = {
-            field: match.group(1)
-            for field in ("description", "argument-hint")
-            if (match := re.search(rf"(?m)^{re.escape(field)}:\s*(.+)$", text))
-        }
-        self.assertEqual(set(fields), {"description", "argument-hint"})
+        fields = prompt_frontmatter(text)
+        self.assertEqual(
+            set(fields),
+            {"description", "argument-hint"},
+            msg=f"invalid prompt frontmatter:\n{prompt_frontmatter_body(text)}",
+        )
         for field, value in fields.items():
             for operation in published:
                 with self.subTest(field=field, operation=operation):
@@ -2377,6 +2658,43 @@ Use `.claude/commands/xdto.md` as the execution route.
                     }
                     self.assertIn(params["name"], allowed_tool_names)
                     self.assertNotEqual(set(params["arguments"].keys()), {"cwd"})
+
+
+class PlatformHelpRoutingTests(unittest.TestCase):
+    """Скилл получил источник: отказ перестаёт быть штатным ответом."""
+
+    def setUp(self) -> None:
+        self.text = (
+            REPO_ROOT / "plugins" / "unica" / "skills" / "platform-help" / "SKILL.md"
+        ).read_text(encoding="utf-8")
+
+    def test_routes_platform_questions_to_documentation_search(self) -> None:
+        self.assertIn("unica.documentation.search", self.text)
+
+    def test_keeps_the_standards_reading_rule(self) -> None:
+        # Секция стандартов может прийти в том же ответе; правило вызова
+        # превращается в правило чтения и должно остаться дословным.
+        self.assertIn("development-standard", self.text)
+        self.assertIn("не закрывает вопрос", self.text)
+
+    def test_contract_gap_is_no_longer_the_default_answer(self) -> None:
+        # Отказ сохраняется только для случая, когда ни один поставщик не
+        # подтвердил ответ.
+        self.assertNotIn(
+            "Until it is exposed by public MCP `unica`, report this as a `platform-help` contract gap",
+            self.text,
+        )
+
+    def test_states_the_source_boundary(self) -> None:
+        self.assertIn("версию установки", self.text)
+
+    def test_requires_naming_the_answering_locale(self) -> None:
+        # ADR-0029 п.3: подстановка соседней локали разрешена и обязана быть
+        # названной в ответе. Данные называют её полем `language` секции, но
+        # без правила чтения агент не обязан пересказать подстановку: на
+        # русскоязычной установке запрос en возвращает русские страницы молча.
+        self.assertIn("`language`", self.text)
+        self.assertIn("назовите подстановку локали в ответе", self.text)
 
 
 if __name__ == "__main__":

@@ -31,7 +31,9 @@ impl MetadataOperations {
         )?;
         let (local, validation_subject) = read_typed_meta_info(
             &resolved,
+            &request.source_set,
             &request.metadata_path,
+            context,
             ProviderDeadline::new(std::time::Instant::now() + std::time::Duration::from_secs(5)),
             cancellation,
         )?;
@@ -739,6 +741,121 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    fn add_reference_event_subscription(fixture: &Fixture, name: &str) -> MetadataAddress {
+        add_exported_event_handler(&fixture.root, &fixture.context);
+        let cancellation = CancellationToken::new();
+        MetadataOperations::prepare_mutation(
+            &MetadataRequest::Add(MetaAddRequest {
+                source_set: "main".into(),
+                kind: MetadataKind::EventSubscription,
+                name: name.into(),
+                operations: vec![source_replace(vec![MetaEventSource::Reference {
+                    metadata_path: fixture.target.clone(),
+                }])],
+                dry_run: false,
+            }),
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap()
+        .publish(&cancellation)
+        .unwrap();
+        MetadataAddress::parse(
+            PLATFORM_XML_8_3_27_FORMAT_2_20,
+            &format!("EventSubscription.{name}"),
+        )
+        .unwrap()
+    }
+
+    fn assert_event_source_info_validation_fails(
+        fixture: &Fixture,
+        target: MetadataAddress,
+        expected_source: MetadataAddress,
+        expected_message: &str,
+    ) {
+        let cancellation = CancellationToken::new();
+        let read = MetadataOperations::read_local(
+            &MetaInfoRequest {
+                source_set: "main".into(),
+                metadata_path: target,
+                sections: Vec::new(),
+                limit: 20,
+            },
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap();
+        assert_eq!(
+            read.local.relations.source,
+            vec![MetaEventSource::Reference {
+                metadata_path: expected_source,
+            }],
+            "meta.info must retain typed partial data when dependency proof fails"
+        );
+
+        let validation = MetadataOperations::validate_read(
+            &read.validation_subject,
+            &fixture.context,
+            &cancellation,
+        );
+        assert_eq!(
+            validation.status,
+            MetaValidationStatus::Failed,
+            "{:?}",
+            validation.diagnostics
+        );
+        assert!(validation.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .field
+                .as_deref()
+                .is_some_and(|field| field.starts_with("relations.source"))
+                && diagnostic.message.contains(expected_message)
+        }));
+    }
+
+    #[test]
+    fn meta_info_rejects_missing_event_source_dependency_but_keeps_typed_readback() {
+        let fixture = Fixture::new("event-source-info-missing-dependency");
+        let subscription = add_reference_event_subscription(&fixture, "CatalogEvents");
+        let descriptor = fixture
+            .root
+            .join("src/EventSubscriptions/CatalogEvents.xml");
+        let source = String::from_utf8(fs::read(&descriptor).unwrap()).unwrap();
+        let missing = source.replacen("cfg:CatalogRef.Editable", "cfg:CatalogRef.Missing", 1);
+        assert_ne!(missing, source, "fixture must rewrite the Source QName");
+        fs::write(descriptor, missing).unwrap();
+        let missing_target =
+            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Missing").unwrap();
+
+        assert_event_source_info_validation_fails(
+            &fixture,
+            subscription,
+            missing_target,
+            "unavailable",
+        );
+    }
+
+    #[test]
+    fn meta_info_rejects_event_source_dependency_with_wrong_generated_type() {
+        let fixture = Fixture::new("event-source-info-generated-type");
+        let subscription = add_reference_event_subscription(&fixture, "CatalogEvents");
+        let source = String::from_utf8(fs::read(&fixture.descriptor).unwrap()).unwrap();
+        let malformed = source.replacen(
+            "name=\"CatalogRef.Editable\"",
+            "name=\"CatalogRef.Shadow\"",
+            1,
+        );
+        assert_ne!(malformed, source, "fixture must corrupt GeneratedType");
+        fs::write(&fixture.descriptor, malformed).unwrap();
+
+        assert_event_source_info_validation_fails(
+            &fixture,
+            subscription,
+            fixture.target.clone(),
+            "GeneratedType",
+        );
+    }
+
     #[test]
     fn typed_event_source_generated_dependencies_are_aggregated_validated_and_guarded() {
         let fixture = Fixture::new("event-source-dependencies");
@@ -828,6 +945,17 @@ mod tests {
         )
         .unwrap();
         assert_eq!(read.local.relations.source, sources);
+        let read_validation = MetadataOperations::validate_read(
+            &read.validation_subject,
+            &fixture.context,
+            &cancellation,
+        );
+        assert_eq!(
+            read_validation.status,
+            MetaValidationStatus::Passed,
+            "{:?}",
+            read_validation.diagnostics
+        );
 
         let subscription_before = fs::read(
             fixture
@@ -1238,6 +1366,307 @@ mod tests {
         prepared.publish(&cancellation).unwrap();
 
         assert_eq!(fs::read(&fixture.descriptor).unwrap(), preview);
+    }
+
+    #[test]
+    fn typed_edit_rejects_both_mixed_eol_orders_before_preview_or_apply_side_effects() {
+        fn mixed_eol_source(source: &[u8], first: &str, remaining: &str) -> Vec<u8> {
+            let normalized = String::from_utf8(source.to_vec())
+                .unwrap()
+                .replace("\r\n", "\n")
+                .replace('\r', "\n");
+            let mut output = String::with_capacity(normalized.len() + 64);
+            let mut line_ending_index = 0;
+            for segment in normalized.split_inclusive('\n') {
+                if let Some(body) = segment.strip_suffix('\n') {
+                    output.push_str(body);
+                    output.push_str(if line_ending_index == 0 {
+                        first
+                    } else {
+                        remaining
+                    });
+                    line_ending_index += 1;
+                } else {
+                    output.push_str(segment);
+                }
+            }
+            assert!(line_ending_index > 1, "fixture must contain multiple lines");
+            output.into_bytes()
+        }
+
+        for (label, first, remaining) in [
+            ("lf-then-crlf", "\n", "\r\n"),
+            ("crlf-then-lf", "\r\n", "\n"),
+        ] {
+            let fixture = Fixture::new(label);
+            let original = fs::read(&fixture.descriptor).unwrap();
+            let mixed = mixed_eol_source(&original, first, remaining);
+            let _cwd = crate::test_support::ProcessCwdGuard::enter(&fixture.root).unwrap();
+            let application = UnicaApplication::new();
+            let mut observations = Vec::new();
+
+            for dry_run in [true, false] {
+                fs::write(&fixture.descriptor, &mixed).unwrap();
+                let before = crate::test_support::tree_snapshot(&fixture.root);
+                let result = application
+                    .call_tool(
+                        "unica.meta.edit",
+                        &Map::from_iter([
+                            ("sourceSet".to_string(), json!("main")),
+                            ("metadataPath".to_string(), json!(fixture.target.as_str())),
+                            (
+                                "operations".to_string(),
+                                json!([{
+                                    "op": "setProperties",
+                                    "values": {"Comment": "must not publish"}
+                                }]),
+                            ),
+                            ("dryRun".to_string(), json!(dry_run)),
+                        ]),
+                    )
+                    .expect("public typed meta.edit call");
+                let after = crate::test_support::tree_snapshot(&fixture.root);
+                observations.push((dry_run, result, before, after));
+            }
+
+            for (dry_run, result, before, after) in observations {
+                assert!(
+                    !result.ok,
+                    "{label} dryRun={dry_run} unexpectedly succeeded"
+                );
+                assert_eq!(
+                    result
+                        .diagnostics
+                        .as_ref()
+                        .and_then(serde_json::Value::as_array)
+                        .and_then(|items| items.first())
+                        .and_then(|item| item.get("code"))
+                        .and_then(serde_json::Value::as_str),
+                    Some("validation_failed"),
+                    "{label} dryRun={dry_run}: {:?}",
+                    result.diagnostics
+                );
+                let message = result
+                    .diagnostics
+                    .as_ref()
+                    .and_then(serde_json::Value::as_array)
+                    .and_then(|items| items.first())
+                    .and_then(|item| item.get("message"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                assert!(
+                    message.contains("metadata descriptor EOL policy failed")
+                        && message.contains("mixed line endings"),
+                    "{label} dryRun={dry_run}: {message}"
+                );
+                assert!(result.cache.events.is_empty(), "{label} dryRun={dry_run}");
+                assert!(
+                    result.cache.invalidated.is_empty(),
+                    "{label} dryRun={dry_run}"
+                );
+                assert!(
+                    result.cache.refreshed.is_empty(),
+                    "{label} dryRun={dry_run}"
+                );
+                assert_eq!(after, before, "{label} dryRun={dry_run}");
+            }
+        }
+    }
+
+    #[test]
+    fn typed_edit_preserves_uniform_eol_bom_and_terminal_newline_profiles() {
+        fn uniform_source(
+            source: &[u8],
+            eol: &str,
+            has_bom: bool,
+            terminal_newline: bool,
+        ) -> Vec<u8> {
+            let normalized = String::from_utf8(source.to_vec())
+                .unwrap()
+                .trim_start_matches('\u{feff}')
+                .replace("\r\n", "\n")
+                .replace('\r', "\n");
+            let normalized = normalized.trim_end_matches('\n').replace('\n', eol);
+            let mut output = Vec::new();
+            if has_bom {
+                output.extend_from_slice(b"\xef\xbb\xbf");
+            }
+            output.extend_from_slice(normalized.as_bytes());
+            if terminal_newline {
+                output.extend_from_slice(eol.as_bytes());
+            }
+            output
+        }
+
+        for (eol_label, eol) in [("lf", "\n"), ("crlf", "\r\n"), ("cr", "\r")] {
+            for (has_bom, terminal_newline) in
+                [(false, false), (false, true), (true, false), (true, true)]
+            {
+                let label = format!(
+                    "{eol_label}-{}-{}",
+                    if has_bom { "bom" } else { "no-bom" },
+                    if terminal_newline {
+                        "terminal"
+                    } else {
+                        "no-terminal"
+                    }
+                );
+                let fixture = Fixture::new(&label);
+                let source = uniform_source(
+                    &fs::read(&fixture.descriptor).unwrap(),
+                    eol,
+                    has_bom,
+                    terminal_newline,
+                );
+                fs::write(&fixture.descriptor, &source).unwrap();
+                let request = fixture.edit(
+                    "Comment",
+                    MetaPropertyValue::String("uniform source edit".into()),
+                );
+                let cancellation = CancellationToken::new();
+
+                let prepared =
+                    MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+                        .unwrap();
+                let post_image = prepared
+                    .validation_subject()
+                    .resources
+                    .iter()
+                    .find(|resource| matches!(resource.role, MetadataResourceRole::Descriptor))
+                    .unwrap()
+                    .bytes
+                    .clone();
+                let body = if has_bom {
+                    assert!(post_image.starts_with(b"\xef\xbb\xbf"), "{label}");
+                    &post_image[3..]
+                } else {
+                    assert!(!post_image.starts_with(b"\xef\xbb\xbf"), "{label}");
+                    post_image.as_slice()
+                };
+                let without_eol = body
+                    .split(|byte| *byte == b'\n' || *byte == b'\r')
+                    .collect::<Vec<_>>();
+                assert!(without_eol.len() > 1, "{label}");
+                match eol {
+                    "\n" => assert!(!body.contains(&b'\r'), "{label}"),
+                    "\r\n" => {
+                        let stripped = body.windows(2).filter(|pair| *pair == b"\r\n").count();
+                        assert_eq!(stripped, body.iter().filter(|byte| **byte == b'\n').count());
+                        assert_eq!(stripped, body.iter().filter(|byte| **byte == b'\r').count());
+                    }
+                    "\r" => assert!(!body.contains(&b'\n'), "{label}"),
+                    _ => unreachable!(),
+                }
+                assert_eq!(body.ends_with(eol.as_bytes()), terminal_newline, "{label}");
+
+                prepared.publish(&cancellation).unwrap();
+                assert_eq!(
+                    fs::read(&fixture.descriptor).unwrap(),
+                    post_image,
+                    "{label}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn typed_edit_uses_explicit_lf_policy_when_source_has_no_line_endings() {
+        for has_bom in [false, true] {
+            let label = if has_bom {
+                "no-eol-explicit-lf-bom"
+            } else {
+                "no-eol-explicit-lf-no-bom"
+            };
+            let fixture = Fixture::new(label);
+            let normalized = String::from_utf8(fs::read(&fixture.descriptor).unwrap())
+                .unwrap()
+                .trim_start_matches('\u{feff}')
+                .replace("\r\n", "")
+                .replace(['\r', '\n'], "");
+            let mut source = Vec::new();
+            if has_bom {
+                source.extend_from_slice(b"\xef\xbb\xbf");
+            }
+            source.extend_from_slice(normalized.as_bytes());
+            fs::write(&fixture.descriptor, source).unwrap();
+            let request = fixture.edit(
+                "Synonym",
+                MetaPropertyValue::String("explicit LF policy".into()),
+            );
+            let cancellation = CancellationToken::new();
+
+            let prepared =
+                MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+                    .unwrap();
+            let post_image = prepared
+                .validation_subject()
+                .resources
+                .iter()
+                .find(|resource| matches!(resource.role, MetadataResourceRole::Descriptor))
+                .unwrap()
+                .bytes
+                .clone();
+
+            assert_eq!(post_image.starts_with(b"\xef\xbb\xbf"), has_bom);
+            let body = if has_bom {
+                &post_image[3..]
+            } else {
+                post_image.as_slice()
+            };
+            assert!(body.contains(&b'\n'));
+            assert!(!body.contains(&b'\r'));
+            assert!(!body.ends_with(b"\n"));
+            prepared.publish(&cancellation).unwrap();
+            assert_eq!(fs::read(&fixture.descriptor).unwrap(), post_image);
+        }
+    }
+
+    #[test]
+    fn typed_edit_republishes_double_bom_preamble_as_single_bom() {
+        // Патологическая двойная преамбула чинится до одной, и больше ничего
+        // не сдвигается: пост-образ от двух-BOM источника побайтово равен
+        // пост-образу той же правки над одно-BOM источником.
+        let fixture = Fixture::new("double-bom");
+        let body = String::from_utf8(fs::read(&fixture.descriptor).unwrap())
+            .unwrap()
+            .trim_start_matches('\u{feff}')
+            .to_string();
+        let cancellation = CancellationToken::new();
+
+        let mut post_images = Vec::new();
+        let mut prepared_double = None;
+        for bom_count in [1usize, 2] {
+            let mut source = Vec::new();
+            for _ in 0..bom_count {
+                source.extend_from_slice(b"\xef\xbb\xbf");
+            }
+            source.extend_from_slice(body.as_bytes());
+            fs::write(&fixture.descriptor, source).unwrap();
+            let request = fixture.edit(
+                "Comment",
+                MetaPropertyValue::String("single bom preamble".into()),
+            );
+            let prepared =
+                MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+                    .unwrap();
+            post_images.push(
+                prepared
+                    .validation_subject()
+                    .resources
+                    .iter()
+                    .find(|resource| matches!(resource.role, MetadataResourceRole::Descriptor))
+                    .unwrap()
+                    .bytes
+                    .clone(),
+            );
+            prepared_double = Some(prepared);
+        }
+
+        assert_eq!(post_images[0], post_images[1]);
+        assert!(post_images[1].starts_with(b"\xef\xbb\xbf"));
+        assert!(!post_images[1].starts_with(b"\xef\xbb\xbf\xef\xbb\xbf"));
+        prepared_double.unwrap().publish(&cancellation).unwrap();
+        assert_eq!(fs::read(&fixture.descriptor).unwrap(), post_images[1]);
     }
 
     #[test]

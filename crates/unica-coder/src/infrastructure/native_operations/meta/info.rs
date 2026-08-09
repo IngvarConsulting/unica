@@ -7,12 +7,19 @@ use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::metadata::{
     metadata_identifier_is_valid, MetaCollectionsData, MetaDiagnostic, MetaDiagnosticCode,
-    MetaDiagnosticSeverity, MetaElementData, MetaPropertyData, MetaPropertyValue,
+    MetaDiagnosticSeverity, MetaElementData, MetaEventSource, MetaPropertyData, MetaPropertyValue,
     MetaRelationTargetData, MetaRelationsData, MetaSupportStatus, MetadataKind,
     METADATA_PROPERTY_SPECS,
 };
-use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use crate::domain::source_target::{
+    MetadataAddress, SourceTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
+};
+use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::platform_xml_source_targets::{
+    platform_xml_resource_evidence, resolve_platform_xml_target, TargetKindPolicy,
+};
 use roxmltree::Document;
+use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -91,7 +98,9 @@ use super::xml_model::{
 /// performs a second descriptor read between structure and validation.
 pub(crate) fn read_typed_meta_info(
     resolved: &ResolvedMetadataObject,
+    source_set: &str,
     target: &MetadataAddress,
+    context: &WorkspaceContext,
     deadline: ProviderDeadline,
     cancellation: &CancellationToken,
 ) -> Result<(MetaLocalInfo, MetadataValidationSubject), MetaFailure> {
@@ -272,6 +281,13 @@ pub(crate) fn read_typed_meta_info(
         &resolved.descriptor_preimage,
         Some(&resolved.source_root),
     );
+    validation_resources.extend(typed_event_source_dependency_images(
+        resolved,
+        source_set,
+        &local.relations.source,
+        context,
+        cancellation,
+    ));
     let (registrar_resources, registrar_evidence) =
         typed_registrar_document_images(resolved, kind, properties, target, deadline, cancellation);
     validation_resources.extend(registrar_resources);
@@ -297,6 +313,58 @@ pub(crate) fn read_typed_meta_info(
         registrar_evidence,
     };
     Ok((local, validation_subject))
+}
+
+fn typed_event_source_dependency_images(
+    resolved: &ResolvedMetadataObject,
+    source_set: &str,
+    sources: &[MetaEventSource],
+    context: &WorkspaceContext,
+    cancellation: &CancellationToken,
+) -> Vec<MetadataResourceImage> {
+    let mut resources = Vec::new();
+    let mut seen = HashSet::new();
+    for source in sources {
+        if cancellation.is_cancelled() {
+            break;
+        }
+        let Some(metadata_path) = source.metadata_path() else {
+            continue;
+        };
+        if !seen.insert(metadata_path.clone()) {
+            continue;
+        }
+        let source_target = SourceTarget {
+            source_set: source_set.to_string(),
+            metadata_path: Some(metadata_path.clone()),
+        };
+        let Ok(resolution) =
+            resolve_platform_xml_target(context, &source_target, TargetKindPolicy::Any)
+        else {
+            continue;
+        };
+        if resolution.resolved.target_kind != TargetKind::MetadataObject {
+            continue;
+        }
+        let Ok(evidence) = platform_xml_resource_evidence(context, &resolution.handle) else {
+            continue;
+        };
+        if evidence.source_root != resolved.source_root
+            || evidence.registration_path != resolved.owner_path
+        {
+            continue;
+        }
+        let Ok(bytes) = fs::read(&evidence.target_path) else {
+            continue;
+        };
+        resources.push(MetadataResourceImage {
+            role: MetadataResourceRole::Dependency {
+                target: metadata_path.clone(),
+            },
+            bytes,
+        });
+    }
+    resources
 }
 
 fn typed_registrar_document_images(

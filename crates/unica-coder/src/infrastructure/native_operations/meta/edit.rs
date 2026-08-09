@@ -39,6 +39,9 @@ use super::super::common::{escape_xml, is_1c_identifier};
 use super::super::compile_transaction::{
     snapshot_directory_membership, DirectoryMembershipSelector, DirectoryMembershipSnapshot,
 };
+use super::super::text_snapshot::{
+    resolve_observed_line_ending, LineEnding, SourceTextSnapshot, Utf8Bom,
+};
 use super::format_contract::{
     validate_metadata_8_3_27_boolean_contract, validate_metadata_8_3_27_enum_contract,
 };
@@ -67,32 +70,9 @@ pub(super) struct MetaEditCounts {
 }
 
 #[derive(Clone, Copy)]
-enum MetaEditEol {
-    Lf,
-    CrLf,
-    Cr,
-}
-
-#[derive(Clone, Copy)]
 struct MetaEditSourceFormat {
     has_bom: bool,
-    eol: MetaEditEol,
-}
-
-fn meta_edit_source_eol(text: &str) -> MetaEditEol {
-    let bytes = text.as_bytes();
-    if let Some(index) = bytes.iter().position(|byte| *byte == b'\n') {
-        return if index > 0 && bytes[index - 1] == b'\r' {
-            MetaEditEol::CrLf
-        } else {
-            MetaEditEol::Lf
-        };
-    }
-    if bytes.contains(&b'\r') {
-        MetaEditEol::Cr
-    } else {
-        MetaEditEol::Lf
-    }
+    eol: LineEnding,
 }
 
 fn meta_edit_preserve_source_format(text: &str, format: MetaEditSourceFormat) -> Vec<u8> {
@@ -100,11 +80,7 @@ fn meta_edit_preserve_source_format(text: &str, format: MetaEditSourceFormat) ->
         .trim_start_matches('\u{feff}')
         .replace("\r\n", "\n")
         .replace('\r', "\n");
-    let serialized = match format.eol {
-        MetaEditEol::Lf => normalized,
-        MetaEditEol::CrLf => normalized.replace('\n', "\r\n"),
-        MetaEditEol::Cr => normalized.replace('\n', "\r"),
-    };
+    let serialized = normalized.replace('\n', format.eol.as_str());
     let mut bytes = Vec::with_capacity(serialized.len() + usize::from(format.has_bom) * 3);
     if format.has_bom {
         bytes.extend_from_slice(b"\xef\xbb\xbf");
@@ -113,12 +89,8 @@ fn meta_edit_preserve_source_format(text: &str, format: MetaEditSourceFormat) ->
     bytes
 }
 
-fn meta_edit_lf_to_eol(text: &str, eol: MetaEditEol) -> String {
-    match eol {
-        MetaEditEol::Lf => text.to_string(),
-        MetaEditEol::CrLf => text.replace('\n', "\r\n"),
-        MetaEditEol::Cr => text.replace('\n', "\r"),
-    }
+fn meta_edit_lf_to_eol(text: &str, eol: LineEnding) -> String {
+    text.replace('\n', eol.as_str())
 }
 
 fn meta_edit_preserve_existing_eol(text: &str, has_bom: bool) -> Vec<u8> {
@@ -132,7 +104,9 @@ fn meta_edit_preserve_existing_eol(text: &str, has_bom: bool) -> Vec<u8> {
 }
 
 fn meta_edit_line_indent(text: &str, position: usize) -> String {
-    let line_start = text[..position].rfind('\n').map_or(0, |index| index + 1);
+    let line_start = text[..position]
+        .rfind(|character| matches!(character, '\r' | '\n'))
+        .map_or(0, |index| index + 1);
     text[line_start..position]
         .chars()
         .take_while(|character| matches!(character, '\t' | ' '))
@@ -374,6 +348,26 @@ pub(super) fn meta_edit_ensure_tabular_child_name_free(
     Ok(())
 }
 
+/// The 8.3.27 export orders register children `Resource` before `Attribute`
+/// before `Dimension` (uniform across the reference dump), so appended
+/// collections must land in their canonical slot or the platform reorders the
+/// file on the first roundtrip.
+fn register_collection_slot(tag: &str) -> Option<u8> {
+    match tag {
+        "Resource" => Some(0),
+        "Attribute" => Some(1),
+        "Dimension" => Some(2),
+        _ => None,
+    }
+}
+
+fn inserted_tag(lines: &[String]) -> Option<String> {
+    let first = lines.first()?.trim_start();
+    let rest = first.strip_prefix('<')?;
+    let end = rest.find([' ', '>', '/'])?;
+    Some(rest[..end].to_string())
+}
+
 pub(super) fn meta_edit_insert_top_child_object(
     xml_text: &mut String,
     lines: &[String],
@@ -382,6 +376,24 @@ pub(super) fn meta_edit_insert_top_child_object(
         .map_err(|err| format!("XML parse error: {err}"))?;
     let object = meta_edit_object_node(&doc)?;
     if let Some(child_objects) = meta_info_child(object, "ChildObjects") {
+        if let Some(slot) = inserted_tag(lines)
+            .as_deref()
+            .and_then(register_collection_slot)
+        {
+            let anchor = child_objects
+                .children()
+                .filter(|child| child.is_element())
+                .find(|child| {
+                    register_collection_slot(child.tag_name().name())
+                        .is_some_and(|existing| existing > slot)
+                })
+                .map(|child| child.range());
+            if let Some(anchor_range) = anchor {
+                drop(doc);
+                meta_edit_insert_lines_near_node(xml_text, anchor_range, false, lines);
+                return Ok(());
+            }
+        }
         let range = child_objects.range();
         drop(doc);
         return meta_edit_insert_lines_into_child_objects(xml_text, range, "\t\t", lines);
@@ -743,23 +755,34 @@ pub(super) fn build_typed_operation_post_image(
                 }
             )
         });
-    let mut xml = String::from_utf8(descriptor_preimage.to_vec()).map_err(|_| {
+    let snapshot = SourceTextSnapshot::from_bytes(descriptor_preimage).map_err(|error| {
         MetaFailure::from(
             typed_diagnostic(
                 MetaDiagnosticCode::ProviderUnavailable,
-                "metadata descriptor image is not UTF-8",
+                format!("metadata descriptor snapshot failed: {error}"),
+                None,
+            )
+            .with_metadata_path(target.clone()),
+        )
+    })?;
+    // Смешанный профиль — дефект содержимого источника, а не отказ провайдера:
+    // байты прочитаны и декодированы, но их вид не проходит проверку writer-а,
+    // как и неканоничные fill-значения ниже по файлу.
+    let eol = resolve_observed_line_ending(&snapshot, None).map_err(|error| {
+        MetaFailure::from(
+            typed_diagnostic(
+                MetaDiagnosticCode::ValidationFailed,
+                format!("metadata descriptor EOL policy failed: {error}"),
                 None,
             )
             .with_metadata_path(target.clone()),
         )
     })?;
     let source_format = MetaEditSourceFormat {
-        has_bom: descriptor_preimage.starts_with(b"\xef\xbb\xbf"),
-        eol: meta_edit_source_eol(&xml),
+        has_bom: snapshot.bom() == Utf8Bom::Present,
+        eol,
     };
-    if xml.starts_with('\u{feff}') {
-        xml = xml.trim_start_matches('\u{feff}').to_string();
-    }
+    let mut xml = snapshot.text().to_string();
     let normalized_preimage = xml.clone();
     let applied = apply_typed_operations(&mut xml, operations).map_err(|mut failure| {
         for diagnostic in &mut failure.diagnostics {
@@ -4353,15 +4376,31 @@ fn apply_typed_event_subscription_source(
     let range = range.start + source_offset..range.end + source_offset;
     let indent = meta_edit_line_indent(xml_text, range.start);
     let current_source = &xml_text[range.clone()];
-    let replacement_eol = if current_source
+    let replacement_eol_source = if current_source
         .as_bytes()
         .iter()
         .any(|byte| matches!(*byte, b'\r' | b'\n'))
     {
-        meta_edit_source_eol(current_source)
+        current_source
     } else {
-        meta_edit_source_eol(xml_text)
+        xml_text.as_str()
     };
+    let replacement_snapshot = SourceTextSnapshot::from_bytes(replacement_eol_source.as_bytes())
+        .map_err(|error| {
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                format!("metadata descriptor snapshot failed: {error}"),
+                Some("relation"),
+            )
+        })?;
+    let replacement_eol =
+        resolve_observed_line_ending(&replacement_snapshot, None).map_err(|error| {
+            typed_diagnostic(
+                MetaDiagnosticCode::ValidationFailed,
+                format!("metadata descriptor EOL policy failed: {error}"),
+                Some("relation"),
+            )
+        })?;
     let replacement = emit_meta_event_subscription_source(&indent, &requested, source_node);
     let replacement = meta_edit_lf_to_eol(replacement.trim_start(), replacement_eol);
     drop(document);
@@ -4446,6 +4485,86 @@ mod tests {
     fn metadata_reference(path: &str) -> MetadataReference {
         MetadataReference {
             metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, path).unwrap(),
+        }
+    }
+
+    #[test]
+    fn register_collections_insert_into_their_canonical_platform_slot() {
+        // The 8.3.27 export orders register children Resource → Attribute →
+        // Dimension (773/773 registers in the reference dump). Appending in
+        // operation order makes the platform reorder the file on roundtrip,
+        // which the exact gate reports as accepted-normalized.
+        fn register_xml(children: &[(&str, &str)]) -> String {
+            let mut body = String::new();
+            for (index, (tag, name)) in children.iter().enumerate() {
+                body.push_str(&format!(
+                    concat!(
+                        "\t\t\t<{tag} uuid=\"22222222-2222-4222-8222-22222222222{n}\">\n",
+                        "\t\t\t\t<Properties><Name>{name}</Name></Properties>\n",
+                        "\t\t\t</{tag}>\n",
+                    ),
+                    tag = tag,
+                    name = name,
+                    n = index,
+                ));
+            }
+            format!(
+                concat!(
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+                    "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">\n",
+                    "\t<InformationRegister uuid=\"11111111-1111-4111-8111-111111111111\">\n",
+                    "\t\t<Properties><Name>Corpus</Name></Properties>\n",
+                    "\t\t<ChildObjects>\n{body}\t\t</ChildObjects>\n",
+                    "\t</InformationRegister>\n",
+                    "</MetaDataObject>\n",
+                ),
+                body = body,
+            )
+        }
+
+        // (existing children, inserted tag, expected child-name order)
+        type SlotCase = (
+            &'static [(&'static str, &'static str)],
+            &'static str,
+            &'static [&'static str],
+        );
+        let matrix: &[SlotCase] = &[
+            // every earlier slot lands before every later slot already present
+            (&[("Dimension", "Item")], "Resource", &["New", "Item"]),
+            (&[("Attribute", "Note")], "Resource", &["New", "Note"]),
+            (&[("Dimension", "Item")], "Attribute", &["New", "Item"]),
+            (
+                &[("Attribute", "Note"), ("Dimension", "Item")],
+                "Resource",
+                &["New", "Note", "Item"],
+            ),
+            // the last slot and same-slot siblings keep append order
+            (&[("Resource", "Price")], "Dimension", &["Price", "New"]),
+            (&[("Dimension", "Item")], "Dimension", &["Item", "New"]),
+            (&[("Resource", "Price")], "Resource", &["Price", "New"]),
+        ];
+        for (existing, inserted, expected) in matrix {
+            let mut xml = register_xml(existing);
+            meta_edit_insert_top_child_object(
+                &mut xml,
+                &[
+                    format!("\t\t\t<{inserted} uuid=\"33333333-3333-4333-8333-333333333333\">"),
+                    "\t\t\t\t<Properties><Name>New</Name></Properties>".to_string(),
+                    format!("\t\t\t</{inserted}>"),
+                ],
+            )
+            .unwrap();
+
+            let order: Vec<&str> = expected
+                .iter()
+                .map(|name| (xml.find(&format!("<Name>{name}</Name>")).unwrap(), *name))
+                .collect::<std::collections::BTreeMap<_, _>>()
+                .into_values()
+                .collect();
+            assert_eq!(
+                &order, expected,
+                "insert {inserted} into {existing:?}: {xml}"
+            );
         }
     }
 
@@ -5550,11 +5669,25 @@ mod tests {
         .unwrap()
         .descriptor;
         assert_eq!(noop, changed);
+    }
 
-        let mixed = event_subscription_xml("<Source/>").replacen('\n', "\r\n", 1);
-        let mut mixed_preimage = b"\xef\xbb\xbf".to_vec();
-        mixed_preimage.extend_from_slice(mixed.as_bytes());
-        let mixed_changed = build_typed_operation_post_image(
+    #[test]
+    fn typed_event_source_build_preserves_cr_only_indentation() {
+        let preimage = event_subscription_xml("<Source/>")
+            .replace('\n', "\r")
+            .into_bytes();
+        let operation = source_replace(vec![MetaEventSource::Boolean]);
+        let target =
+            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "EventSubscription.Events")
+                .unwrap();
+        let context = crate::domain::workspace::WorkspaceContext {
+            cwd: std::path::PathBuf::from("/unused"),
+            workspace_root: std::path::PathBuf::from("/unused"),
+            cache_root: std::path::PathBuf::from("/unused/.build"),
+            workspace_epoch: 0,
+        };
+
+        let changed = build_typed_operation_post_image(
             TypedOperationDependencyScope::new(
                 "main",
                 std::path::Path::new("/unused"),
@@ -5564,37 +5697,64 @@ mod tests {
             ),
             std::path::Path::new("/unused/EventSubscriptions/Events.xml"),
             &target,
-            &mixed_preimage,
-            std::slice::from_ref(&operation),
-            &context,
-        )
-        .unwrap()
-        .descriptor;
-        let expected_mixed = mixed.replace(
-            "<Source/>",
-            "<Source>\r\n\t\t\t\t<v8:Type>xs:boolean</v8:Type>\r\n\t\t\t</Source>",
-        );
-        let mut expected_mixed_bytes = b"\xef\xbb\xbf".to_vec();
-        expected_mixed_bytes.extend_from_slice(expected_mixed.as_bytes());
-        assert_eq!(mixed_changed, expected_mixed_bytes);
-
-        let mixed_noop = build_typed_operation_post_image(
-            TypedOperationDependencyScope::new(
-                "main",
-                std::path::Path::new("/unused"),
-                std::path::Path::new("/unused/Configuration.xml"),
-                b"",
-                false,
-            ),
-            std::path::Path::new("/unused/EventSubscriptions/Events.xml"),
-            &target,
-            &mixed_changed,
+            &preimage,
             &[operation],
             &context,
         )
         .unwrap()
         .descriptor;
-        assert_eq!(mixed_noop, mixed_changed);
+        let changed = String::from_utf8(changed).unwrap();
+
+        assert!(!changed.contains('\n'), "{changed:?}");
+        assert!(
+            changed
+                .contains("\t\t\t<Source>\r\t\t\t\t<v8:Type>xs:boolean</v8:Type>\r\t\t\t</Source>"),
+            "{changed:?}"
+        );
+    }
+
+    #[test]
+    fn typed_event_source_build_rejects_mixed_eol_before_source_only_serialization() {
+        let mixed = event_subscription_xml("<Source/>").replacen('\n', "\r\n", 1);
+        let operation = source_replace(vec![MetaEventSource::Boolean]);
+        let target =
+            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "EventSubscription.Events")
+                .unwrap();
+        let context = crate::domain::workspace::WorkspaceContext {
+            cwd: std::path::PathBuf::from("/unused"),
+            workspace_root: std::path::PathBuf::from("/unused"),
+            cache_root: std::path::PathBuf::from("/unused/.build"),
+            workspace_epoch: 0,
+        };
+
+        let failure = build_typed_operation_post_image(
+            TypedOperationDependencyScope::new(
+                "main",
+                std::path::Path::new("/unused"),
+                std::path::Path::new("/unused/Configuration.xml"),
+                b"",
+                false,
+            ),
+            std::path::Path::new("/unused/EventSubscriptions/Events.xml"),
+            &target,
+            mixed.as_bytes(),
+            &[operation],
+            &context,
+        )
+        .err()
+        .expect("mixed EOL must be rejected before publication planning");
+
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::ValidationFailed
+        );
+        assert!(
+            failure.diagnostics[0]
+                .message
+                .contains("mixed line endings"),
+            "{:?}",
+            failure.diagnostics
+        );
     }
 
     #[test]

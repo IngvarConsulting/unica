@@ -65,13 +65,15 @@ pub(crate) enum MetadataTemplateFileMode {
     Replace,
 }
 
-struct MinimalTemplateContext {
-    chart_of_accounts: Option<String>,
-    chart_of_calculation_types: Option<String>,
-    method_name: Option<String>,
-    event_source: Option<String>,
-    event_handler: Option<String>,
-    dependencies: Vec<MetadataTemplateFile>,
+pub(super) struct MinimalTemplateContext {
+    pub(super) chart_of_accounts: Option<String>,
+    pub(super) chart_of_calculation_types: Option<String>,
+    pub(super) task: Option<String>,
+    pub(super) registered_documents: Vec<String>,
+    pub(super) method_name: Option<String>,
+    pub(super) event_source: Option<String>,
+    pub(super) event_handler: Option<String>,
+    pub(super) dependencies: Vec<MetadataTemplateFile>,
 }
 
 impl MinimalTemplateContext {
@@ -85,6 +87,8 @@ impl MinimalTemplateContext {
     ) -> Result<Self, MetaFailure> {
         let mut context = Self {
             chart_of_accounts: None,
+            task: None,
+            registered_documents: Vec::new(),
             chart_of_calculation_types: None,
             method_name: None,
             event_source: None,
@@ -92,6 +96,37 @@ impl MinimalTemplateContext {
             dependencies: Vec::new(),
         };
         match kind {
+            MetadataKind::AccumulationRegister => {
+                context.dependencies.push(registrar_dependency(
+                    source,
+                    &format!("AccumulationRegister.{new_name}"),
+                    kind,
+                )?);
+            }
+            MetadataKind::BusinessProcess => {
+                let task = required_registered_name(source, "Task", kind)?;
+                context.task = Some(format!("Task.{task}"));
+                context.dependencies.push(read_dependency(
+                    source,
+                    "Task",
+                    &task,
+                    MetadataTemplateFileMode::Guard,
+                    None,
+                )?);
+            }
+            MetadataKind::DocumentJournal => {
+                let document = required_registered_name(source, "Document", kind)?;
+                context
+                    .registered_documents
+                    .push(format!("Document.{document}"));
+                context.dependencies.push(read_dependency(
+                    source,
+                    "Document",
+                    &document,
+                    MetadataTemplateFileMode::Guard,
+                    None,
+                )?);
+            }
             MetadataKind::AccountingRegister => {
                 let chart = required_registered_name(source, "ChartOfAccounts", kind)?;
                 context.chart_of_accounts = Some(format!("ChartOfAccounts.{chart}"));
@@ -606,6 +641,8 @@ pub(crate) fn minimal_auxiliary_files(
 pub(super) struct MetaTemplateDefinition {
     chart_of_accounts: Option<String>,
     chart_of_calculation_types: Option<String>,
+    task: Option<String>,
+    registered_documents: Vec<String>,
     method_name: Option<String>,
     sources: Vec<String>,
     handler: Option<String>,
@@ -659,7 +696,7 @@ fn kind_declares_child_objects(kind: crate::domain::metadata::MetadataKind) -> b
     )
 }
 
-fn minimal_metadata_xml(
+pub(super) fn minimal_metadata_xml(
     kind: crate::domain::metadata::MetadataKind,
     obj_name: &str,
     format_version: &str,
@@ -668,6 +705,8 @@ fn minimal_metadata_xml(
     let defn = MetaTemplateDefinition {
         chart_of_accounts: context.chart_of_accounts.clone(),
         chart_of_calculation_types: context.chart_of_calculation_types.clone(),
+        task: context.task.clone(),
+        registered_documents: context.registered_documents.clone(),
         method_name: context.method_name.clone(),
         sources: context.event_source.clone().into_iter().collect(),
         handler: context.event_handler.clone(),
@@ -795,6 +834,8 @@ pub(crate) fn minimal_metadata_xml_for_tests(
         &MinimalTemplateContext {
             chart_of_accounts: None,
             chart_of_calculation_types: None,
+            task: None,
+            registered_documents: Vec::new(),
             method_name: None,
             event_source: None,
             event_handler: None,
@@ -1941,7 +1982,7 @@ pub(super) fn emit_meta_business_process_properties(
         "{indent}<NumberPeriodicity>{}</NumberPeriodicity>",
         escape_xml("Nonperiodical")
     ));
-    emit_meta_optional_text(lines, indent, "Task", None);
+    emit_meta_optional_text(lines, indent, "Task", defn.task.as_deref());
     let privileged = true;
     lines.push(format!(
         "{indent}<CreateTaskInPrivilegedMode>{privileged}</CreateTaskInPrivilegedMode>"
@@ -2166,7 +2207,18 @@ pub(super) fn emit_meta_document_journal_properties(
     lines.push(format!(
         "{indent}<UseStandardCommands>true</UseStandardCommands>"
     ));
-    emit_empty_meta_object_refs(lines, indent, "RegisteredDocuments");
+    if defn.registered_documents.is_empty() {
+        emit_empty_meta_object_refs(lines, indent, "RegisteredDocuments");
+    } else {
+        lines.push(format!("{indent}<RegisteredDocuments>"));
+        for document in &defn.registered_documents {
+            lines.push(format!(
+                "{indent}\t<xr:Item xsi:type=\"xr:MDObjectRef\">{}</xr:Item>",
+                escape_xml(document)
+            ));
+        }
+        lines.push(format!("{indent}</RegisteredDocuments>"));
+    }
     lines.push(format!(
         "{indent}<IncludeHelpInContents>false</IncludeHelpInContents>"
     ));
@@ -3068,6 +3120,8 @@ mod typed_template_tests {
             chart_of_calculation_types: Some(
                 "ChartOfCalculationTypes.MetaAddCalculationTypes".to_string(),
             ),
+            task: Some("Task.MetaAddTask".to_string()),
+            registered_documents: vec!["Document.MetaAddDocument".to_string()],
             method_name: Some("CommonModule.MetaAddHandlers.Run".to_string()),
             event_source: Some("CatalogRef.MetaAddSource".to_string()),
             event_handler: Some("CommonModule.MetaAddHandlers.Handle".to_string()),

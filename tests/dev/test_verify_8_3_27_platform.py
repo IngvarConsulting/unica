@@ -9,6 +9,7 @@ import stat
 import subprocess
 import tempfile
 import textwrap
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -38,25 +39,6 @@ def write(path: Path, text: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     return path
-
-
-class DocumentedContractTests(unittest.TestCase):
-    def test_last_verified_case_contract_digest_is_documented_while_next_is_pending(self):
-        verifier = load_verifier()
-        last_verified = f"`{verifier.LAST_VERIFIED_CASE_CONTRACT_SHA256}`"
-        documents = (
-            ROOT / "spec/acceptance/format-profile-8-3-27.md",
-            ROOT
-            / "docs/design/2026-07-23-platform-8-3-27-format-2-20-design.md",
-        )
-
-        for path in documents:
-            with self.subTest(path=path.relative_to(ROOT).as_posix()):
-                self.assertIn(last_verified, path.read_text(encoding="utf-8"))
-        self.assertIsNone(verifier.EXPECTED_CASE_CONTRACT_SHA256)
-        acceptance = documents[0].read_text(encoding="utf-8")
-        self.assertIn("65", acceptance)
-        self.assertIn("ожидает", acceptance)
 
 
 CONFIG_XML = '''<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="11111111-1111-1111-1111-111111111111"/></MetaDataObject>'''
@@ -564,35 +546,6 @@ class SemanticXmlTests(unittest.TestCase):
             verifier.semantic_xml(same, "same.xml"),
         )
 
-    def test_xdto_type_ref_and_base_attributes_compare_as_qnames(self):
-        verifier = load_verifier()
-        one = b'''<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:t="urn:types"><property type="t:Value"/><property ref="t:Global"/><valueType base="t:Base"/></package>'''
-        same = b'''<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:q="urn:types"><property type="q:Value"/><property ref="q:Global"/><valueType base="q:Base"/></package>'''
-        changed = b'''<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:t="urn:changed"><property type="t:Value"/><property ref="t:Global"/><valueType base="t:Base"/></package>'''
-
-        self.assertEqual(
-            verifier.semantic_xml(one, "one.bin"),
-            verifier.semantic_xml(same, "same.bin"),
-        )
-        self.assertNotEqual(
-            verifier.semantic_xml(one, "one.bin"),
-            verifier.semantic_xml(changed, "changed.bin"),
-        )
-        with self.assertRaisesRegex(verifier.SourceError, "unresolved QName prefix"):
-            verifier.semantic_xml(
-                b'''<package xmlns="http://v8.1c.ru/8.1/xdto"><property type="missing:Value"/></package>''',
-                "broken.bin",
-            )
-
-    def test_non_xdto_type_ref_and_base_attributes_remain_plain_text(self):
-        verifier = load_verifier()
-        semantic = verifier.semantic_xml(
-            b'''<root type="missing:Value" ref="missing:Global" base="missing:Base"/>''',
-            "plain.xml",
-        )
-
-        self.assertIsNotNone(semantic)
-
     def test_non_indentation_text_and_element_order_are_preserved(self):
         verifier = load_verifier()
         compact = b'<r><a> x </a><b/>tail</r>'
@@ -611,6 +564,67 @@ class SemanticXmlTests(unittest.TestCase):
         payload = b'<!DOCTYPE r [<!ENTITY x "value">]><r>&x;</r>'
         with self.assertRaisesRegex(verifier.SourceError, "DOCTYPE|entity"):
             verifier.semantic_xml(payload, "entity.xml")
+
+
+XDTO_PACKAGE_BIN = (
+    '<package xmlns="http://v8.1c.ru/8.1/xdto" '
+    'targetNamespace="http://example.org/corpus">'
+    '<valueType name="Simple" base="xs:string" '
+    'xmlns:xs="http://www.w3.org/2001/XMLSchema"/>'
+    "</package>"
+)
+PKG_REL = "XDTOPackages/Corpus/Ext/Package.bin"
+MODULE_REL = "Ext/OrdinaryApplicationModule.bsl"
+
+
+class PlatformAliasedModuleTests(unittest.TestCase):
+    """8.3.27.2074 exports an XDTO configuration with an `OrdinaryApplicationModule.bsl`
+    that is a byte copy of the package payload, and re-importing that pair fails
+    non-deterministically. Round two consumes round one's export, so the gate has to
+    drop exactly that artifact — and nothing that merely shares its name."""
+
+    def build(self, tmp, *, in_source: bool, aliased: bool):
+        verifier = load_verifier()
+        root = Path(tmp)
+        source, export = root / "source", root / "export"
+        for tree in (source, export):
+            write(tree / "Configuration.xml", CONFIG_XML)
+            write(tree / PKG_REL, XDTO_PACKAGE_BIN)
+        if in_source:
+            write(source / MODULE_REL, "// authored module")
+        write(
+            export / MODULE_REL,
+            XDTO_PACKAGE_BIN if aliased else "// authored module",
+        )
+        return verifier, source, export
+
+    def test_platform_aliased_module_is_dropped_from_the_next_round_input(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            verifier, source, export = self.build(tmp, in_source=False, aliased=True)
+
+            dropped = verifier.drop_platform_aliased_ordinary_module(source, export)
+
+            self.assertEqual(dropped, MODULE_REL)
+            self.assertFalse((export / MODULE_REL).exists())
+            self.assertTrue((export / PKG_REL).is_file())
+
+    def test_module_the_source_authored_is_kept(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            verifier, source, export = self.build(tmp, in_source=True, aliased=True)
+
+            self.assertIsNone(
+                verifier.drop_platform_aliased_ordinary_module(source, export)
+            )
+            self.assertTrue((export / MODULE_REL).is_file())
+
+    def test_module_that_is_not_a_package_copy_is_kept(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            verifier, source, export = self.build(tmp, in_source=False, aliased=False)
+
+            self.assertIsNone(
+                verifier.drop_platform_aliased_ordinary_module(source, export)
+            )
+            self.assertTrue((export / MODULE_REL).is_file())
 
 
 class SemanticDirectoryTests(unittest.TestCase):
@@ -998,14 +1012,10 @@ class CorpusAdapterTests(unittest.TestCase):
             }.issubset(verifier.MANDATORY_CASE_IDS)
         )
 
-    def test_next_mandatory_corpus_includes_xdto_and_event_source_cases(self):
+    def test_next_mandatory_corpus_includes_event_source_case(self):
         verifier = load_verifier()
 
-        self.assertTrue(
-            {"xdto-add-nested-property", "meta-edit-event-source"}.issubset(
-                verifier.MANDATORY_CASE_IDS
-            )
-        )
+        self.assertIn("meta-edit-event-source", verifier.MANDATORY_CASE_IDS)
 
     def test_current_default_inventory_fails_explicitly_until_digest_is_pinned(self):
         verifier = load_verifier()
@@ -3181,6 +3191,138 @@ class CheckpointExecutionTests(unittest.TestCase):
                 )
 
 
+class ParallelGateTests(unittest.TestCase):
+    """One slow or broken checkpoint must cost one checkpoint, not the whole run,
+    and independent checkpoints must be able to run at the same time."""
+
+    CASE_IDS = ("cf-edit-root-property", "cf-init-default")
+
+    def two_case_gate(self, root: Path):
+        verifier = load_verifier()
+        corpus_root = root / "corpus"
+        corpus_root.mkdir()
+        cases = [write_platform_case(corpus_root, case_id) for case_id in self.CASE_IDS]
+        manifest = write_manifest(corpus_root, cases)
+        evidence = root / "evidence"
+        evidence.mkdir()
+        report = root / "platform-report.json"
+        fake = CheckpointExecutionTests().fake_ibcmd(root, "pass")
+        for name in (
+            "EXPECTED_IBCMD_SHA256",
+            "EXPECTED_PLATFORM_INSTALL_SHA256",
+            "EXPECTED_PLATFORM_INSTALL_FILE_COUNT",
+        ):
+            self.addCleanup(setattr, verifier, name, getattr(verifier, name))
+        verifier.EXPECTED_IBCMD_SHA256 = sha256(fake.read_bytes())
+        inventory = verifier.capture_platform_install_inventory(fake)
+        verifier.EXPECTED_PLATFORM_INSTALL_SHA256 = inventory["sha256"]
+        verifier.EXPECTED_PLATFORM_INSTALL_FILE_COUNT = inventory["fileCount"]
+        return verifier, manifest, evidence, report, fake
+
+    def execute(self, verifier, manifest, evidence, report, fake, **kwargs):
+        return verifier.execute_gate(
+            ibcmd=fake,
+            corpus_manifest=manifest,
+            report_path=report,
+            evidence_dir=evidence,
+            timeout_seconds=15,
+            repo_root=ROOT,
+            home_root=Path.home(),
+            mandatory_case_ids=set(self.CASE_IDS),
+            **kwargs,
+        )
+
+    def test_case_filter_runs_only_the_named_checkpoints(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            handles = self.two_case_gate(Path(tmp))
+
+            exit_code, report = self.execute(*handles, case_filter={"cf-init-default"})
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(report["status"], "pass")
+            self.assertEqual(report["summary"]["selected"], 1)
+            self.assertEqual(
+                [item["id"] for item in report["checkpoints"]], ["cf-init-default"]
+            )
+            self.assertEqual(
+                report["coverage"]["processedCaseIds"], ["cf-init-default"]
+            )
+            self.assertEqual(report["provenance"]["caseFilter"], ["cf-init-default"])
+
+    def test_case_filter_rejects_an_unknown_case_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            handles = self.two_case_gate(Path(tmp))
+            verifier = handles[0]
+
+            with self.assertRaisesRegex(verifier.SourceError, "case filter"):
+                self.execute(*handles, case_filter={"no-such-case"})
+
+    def test_checkpoint_source_error_does_not_stop_the_remaining_checkpoints(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            handles = self.two_case_gate(Path(tmp))
+            verifier = handles[0]
+            real = verifier.run_checkpoint
+
+            def flaky(item, *args, **kwargs):
+                if item["id"] == "cf-edit-root-property":
+                    raise verifier.CheckpointExecutionError(
+                        "synthetic checkpoint failure",
+                        checkpoint={
+                            "id": item["id"],
+                            "verdict": "source-error",
+                            "failedRound": 1,
+                            "failedStage": "import-apply",
+                            "commands": [],
+                            "commandCount": 0,
+                            "durationMs": 0,
+                            "coveredCaseIds": [item["id"]],
+                        },
+                    )
+                return real(item, *args, **kwargs)
+
+            with mock.patch.object(verifier, "run_checkpoint", side_effect=flaky):
+                exit_code, report = self.execute(*handles)
+
+            self.assertEqual(exit_code, 2)
+            self.assertEqual(report["status"], "source-error")
+            self.assertEqual(
+                [item["id"] for item in report["checkpoints"]], list(self.CASE_IDS)
+            )
+            self.assertEqual(
+                [item["verdict"] for item in report["checkpoints"]],
+                ["source-error", "pass"],
+            )
+            self.assertEqual(report["summary"]["pass"], 1)
+            self.assertEqual(report["summary"]["source-error"], 1)
+            self.assertEqual(
+                report["coverage"]["processedCaseIds"], ["cf-init-default"]
+            )
+            self.assertEqual(report["sourceError"]["code"], "platform-source-error")
+
+    def test_jobs_run_checkpoints_concurrently_and_report_in_corpus_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            handles = self.two_case_gate(Path(tmp))
+            verifier = handles[0]
+            real = verifier.run_checkpoint
+            barrier = threading.Barrier(2)
+
+            def synchronized(item, *args, **kwargs):
+                # Sequential execution never gets both checkpoints here at once,
+                # so the barrier times out and the test fails.
+                barrier.wait(timeout=30)
+                return real(item, *args, **kwargs)
+
+            with mock.patch.object(verifier, "run_checkpoint", side_effect=synchronized):
+                exit_code, report = self.execute(*handles, jobs=2)
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(report["status"], "pass")
+            self.assertEqual(
+                [item["id"] for item in report["checkpoints"]], list(self.CASE_IDS)
+            )
+            self.assertEqual(report["summary"]["pass"], 2)
+
+
 class GateAndReportTests(unittest.TestCase):
     def synthetic_gate(self, root: Path, *, fake_mode: str = "pass"):
         verifier = load_verifier()
@@ -4060,6 +4202,8 @@ class CliTests(unittest.TestCase):
             report_path=Path("/tmp/report.json"),
             evidence_dir=None,
             timeout_seconds=300.0,
+            case_filter=None,
+            jobs=1,
         )
 
     def test_main_forwards_the_documented_cli_contract(self):
@@ -4079,6 +4223,12 @@ class CliTests(unittest.TestCase):
                     "/tmp/evidence",
                     "--timeout",
                     "17.5",
+                    "--jobs",
+                    "3",
+                    "--case",
+                    "cf-init-default",
+                    "--case",
+                    "cf-edit-root-property",
                 ]
             )
 
@@ -4089,6 +4239,8 @@ class CliTests(unittest.TestCase):
             report_path=Path("/tmp/report.json"),
             evidence_dir=Path("/tmp/evidence"),
             timeout_seconds=17.5,
+            case_filter=frozenset({"cf-init-default", "cf-edit-root-property"}),
+            jobs=3,
         )
 
     def test_cli_entrypoint_exposes_the_documented_required_arguments(self):

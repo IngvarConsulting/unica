@@ -10,6 +10,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
 def load_contract_module():
     module_path = Path(__file__).resolve().parents[2] / "scripts" / "ci" / "check-tool-contracts.py"
     spec = importlib.util.spec_from_file_location("check_tool_contracts", module_path)
@@ -299,18 +302,38 @@ class ProductContractTests(unittest.TestCase):
         self.assertGreater(checked, 15, "пути таблицы не разобраны")
         self.assertEqual(offenders, [], "путь из таблицы маршрутизации не разрешается")
 
-    def test_local_1ci_corpus_is_ignored_and_agent_discoverable(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
-        ignore = (repo_root / ".gitignore").read_text(encoding="utf-8")
-        agents = (repo_root / "AGENTS.md").read_text(encoding="utf-8")
-        package_script = (repo_root / "scripts/ci/package-unica-plugin.py").read_text(
-            encoding="utf-8"
-        )
+    def test_downloader_and_local_corpus_contract_are_retired(self) -> None:
+        """Справка платформы приходит из установки, а не из скачанного корпуса.
 
+        Загрузчик закреплял ровно ту болезнь, ради которой заведена #254:
+        полная загрузка в каждом рабочем дереве ради точечного вопроса.
+        """
+        downloader = REPO_ROOT / "scripts" / "dev" / "download-1ci-guides.py"
+        downloader_test = REPO_ROOT / "tests" / "dev" / "test_download_1ci_guides.py"
+        agents = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+
+        self.assertFalse(downloader.exists(), "загрузчик удалён вместе с контрактом корпуса")
+        self.assertFalse(downloader_test.exists(), "тест загрузчика удалён вместе с ним")
+        self.assertNotIn("download-1ci-guides.py", agents)
+        self.assertNotIn("docs-local/1ci/8.3.27/en/", agents)
+        self.assertNotIn("kb.1ci.com/bin/download", agents)
+        # Активный слой spec/ — не только AGENTS.md: указание на локальный
+        # корпус в нём отправляет читателя к пути, который больше ничем не
+        # создаётся. Исторические docs/design и docs/plans сюда не входят.
+        for spec_path in sorted((REPO_ROOT / "spec").rglob("*")):
+            if not spec_path.is_file():
+                continue
+            with self.subTest(path=spec_path.relative_to(REPO_ROOT).as_posix()):
+                self.assertNotIn(
+                    "docs-local/1ci",
+                    spec_path.read_text(encoding="utf-8"),
+                    "активный слой spec не должен ссылаться на снятый корпус",
+                )
+
+    def test_local_corpus_directory_stays_ignored(self) -> None:
+        """Каталог остаётся игнорируемым: снят контракт корпуса, а не каталог."""
+        ignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
         self.assertIn("docs-local/", ignore.splitlines())
-        self.assertIn("docs-local/1ci/8.3.27/en/", agents)
-        self.assertIn("python3.12 scripts/dev/download-1ci-guides.py", agents)
-        self.assertNotIn("docs-local", package_script)
 
     def test_marketplace_card_uses_unica_product_legal_links(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]

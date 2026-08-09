@@ -4865,6 +4865,35 @@ fn owner_assignment_requires_same_case_source_set_path() {
     );
 }
 
+/// The XDTO fixture must be a configuration the platform can actually import.
+///
+/// `ibcmd infobase create --import` refuses a `Configuration` without
+/// `InternalInfo`, and rejects the XDTO model when a package references a
+/// `current-config` type the platform never defines for it. Both stop the
+/// exact-platform gate at `import-apply`, long before the mutated
+/// `Package.bin` is ever compared (issue #358).
+#[test]
+fn tracked_xdto_package_fixture_is_an_importable_platform_export() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("tests/fixtures/xdto/enterprise-data-minimal");
+
+    let configuration = fs::read_to_string(fixture.join("Configuration.xml"))
+        .expect("tracked XDTO fixture must ship Configuration.xml");
+    assert!(
+        configuration.contains("<InternalInfo"),
+        "platform import refuses a Configuration without InternalInfo"
+    );
+
+    let package =
+        fs::read_to_string(fixture.join("XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin"))
+            .expect("tracked XDTO fixture must ship Package.bin");
+    assert!(
+        !package.contains("http://v8.1c.ru/8.1/data/enterprise/current-config"),
+        "the platform cannot resolve current-config types for this package"
+    );
+}
+
 #[test]
 fn tracked_xdto_package_fixture_executes_public_corpus_preview_apply_and_noop() {
     let root = unique_temp_dir("xdto-package-pre-contract");

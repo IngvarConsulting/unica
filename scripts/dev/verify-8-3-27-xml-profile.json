@@ -56,11 +56,6 @@
       "wrapper": "dcs-root-alias",
       "version": "owner"
     },
-    "{http://v8.1c.ru/8.1/xdto}package": {
-      "id": "xdto-package",
-      "coverage": "not-covered",
-      "version": "owner"
-    },
     "{http://v8.1c.ru/8.2/roles}Rights": {
       "id": "roles",
       "coverage": "strict",

@@ -342,8 +342,15 @@ class ReferenceFormatProfileTests(unittest.TestCase):
             child.attrib["namespace"]
             for child in package.findall(f"{{{XDTO_NS}}}import")
         }
+        # Только импорты, которые платформа умеет разрешить для этого пакета.
+        # `current-config` разрешается из объектов самой конфигурации, и для
+        # отдельного пакета `ibcmd` отвергает модель XDTO с
+        # `Undefined '{...current-config}AnyRef'`; ни один из 394 пакетов
+        # эталонной выгрузки его не импортирует (ищью #358).
         self.assertIn("http://v8.1c.ru/8.1/data/core", imports)
-        self.assertIn("http://v8.1c.ru/8.1/data/enterprise/current-config", imports)
+        self.assertNotIn(
+            "http://v8.1c.ru/8.1/data/enterprise/current-config", imports
+        )
 
         named_types = [
             child.attrib["name"]
@@ -362,7 +369,6 @@ class ReferenceFormatProfileTests(unittest.TestCase):
                 "http://www.w3.org/2001/XMLSchema",
                 target_namespace,
                 "http://v8.1c.ru/8.1/data/core",
-                "http://v8.1c.ru/8.1/data/enterprise/current-config",
             },
         )
         self.assertTrue(

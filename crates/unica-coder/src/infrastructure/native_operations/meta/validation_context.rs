@@ -238,6 +238,7 @@ pub(crate) fn validate_event_source_dependency_descriptor(
                 "EventSubscription source descriptor GeneratedType '{expected_generated_type}' must contain exactly one direct xr:TypeId followed by exactly one direct xr:ValueId"
             ));
         }
+        let mut generated_ids = Vec::with_capacity(identifiers.len());
         for identifier in identifiers {
             let label = identifier.tag_name().name();
             let value = strict_leaf_text(
@@ -251,6 +252,27 @@ pub(crate) fn validate_event_source_dependency_descriptor(
                     "EventSubscription source descriptor GeneratedType '{expected_generated_type}' has invalid xr:{label} UUID '{value}'"
                 ));
             }
+            let parsed = uuid::Uuid::parse_str(&value).map_err(|_| {
+                format!(
+                    "EventSubscription source descriptor GeneratedType '{expected_generated_type}' has invalid xr:{label} UUID '{value}'"
+                )
+            })?;
+            if parsed.is_nil() {
+                return Err(format!(
+                    "EventSubscription source descriptor GeneratedType '{expected_generated_type}' xr:{label} must be a non-nil UUID"
+                ));
+            }
+            if parsed.get_version() != Some(uuid::Version::Random) {
+                return Err(format!(
+                    "EventSubscription source descriptor GeneratedType '{expected_generated_type}' xr:{label} must be a version 4 UUID"
+                ));
+            }
+            generated_ids.push(parsed);
+        }
+        if generated_ids[0] == generated_ids[1] {
+            return Err(format!(
+                "EventSubscription source descriptor GeneratedType '{expected_generated_type}' xr:TypeId and xr:ValueId must be distinct UUIDs"
+            ));
         }
     }
     Ok(())
@@ -432,6 +454,23 @@ mod tests {
     use super::*;
     use crate::domain::metadata::MetadataKind;
 
+    fn xr_leaf_text<'a>(source: &'a str, label: &str) -> &'a str {
+        let opening = format!("<xr:{label}>");
+        let closing = format!("</xr:{label}>");
+        let start = source.find(&opening).unwrap() + opening.len();
+        let end = start + source[start..].find(&closing).unwrap();
+        &source[start..end]
+    }
+
+    fn replace_first_xr_leaf(source: &str, label: &str, replacement: &str) -> String {
+        let current = xr_leaf_text(source, label);
+        source.replacen(
+            &format!("<xr:{label}>{current}</xr:{label}>",),
+            &format!("<xr:{label}>{replacement}</xr:{label}>",),
+            1,
+        )
+    }
+
     fn temp_documents(label: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
             "unica-registrar-scan-{label}-{}-{}",
@@ -548,5 +587,72 @@ mod tests {
             &prefixes,
         )
         .is_err());
+    }
+
+    #[test]
+    fn event_source_dependency_rejects_nil_generated_type_ids() {
+        let (descriptor, _) = super::super::template_catalog::minimal_metadata_xml_for_tests(
+            MetadataKind::Catalog,
+            "Items",
+        )
+        .unwrap();
+        let prefixes = vec!["CatalogObject".to_string()];
+
+        for label in ["TypeId", "ValueId"] {
+            let nil_id =
+                replace_first_xr_leaf(&descriptor, label, "00000000-0000-0000-0000-000000000000");
+            let error = validate_event_source_dependency_descriptor(
+                nil_id.as_bytes(),
+                "Catalog",
+                "Items",
+                &prefixes,
+            )
+            .expect_err("nil GeneratedType identifiers must be rejected");
+            assert!(error.contains("non-nil"), "{error}");
+        }
+    }
+
+    #[test]
+    fn event_source_dependency_rejects_non_v4_generated_type_ids() {
+        let (descriptor, _) = super::super::template_catalog::minimal_metadata_xml_for_tests(
+            MetadataKind::Catalog,
+            "Items",
+        )
+        .unwrap();
+        let prefixes = vec!["CatalogObject".to_string()];
+
+        for label in ["TypeId", "ValueId"] {
+            let version_one =
+                replace_first_xr_leaf(&descriptor, label, "67e55044-10b1-11eb-adc1-0242ac120002");
+            let error = validate_event_source_dependency_descriptor(
+                version_one.as_bytes(),
+                "Catalog",
+                "Items",
+                &prefixes,
+            )
+            .expect_err("non-v4 GeneratedType identifiers must be rejected");
+            assert!(error.contains("version 4"), "{error}");
+        }
+    }
+
+    #[test]
+    fn event_source_dependency_rejects_equal_generated_type_ids() {
+        let (descriptor, _) = super::super::template_catalog::minimal_metadata_xml_for_tests(
+            MetadataKind::Catalog,
+            "Items",
+        )
+        .unwrap();
+        let prefixes = vec!["CatalogObject".to_string()];
+        let type_id = xr_leaf_text(&descriptor, "TypeId");
+        let equal_ids = replace_first_xr_leaf(&descriptor, "ValueId", type_id);
+
+        let error = validate_event_source_dependency_descriptor(
+            equal_ids.as_bytes(),
+            "Catalog",
+            "Items",
+            &prefixes,
+        )
+        .expect_err("equal GeneratedType identifiers must be rejected");
+        assert!(error.contains("distinct"), "{error}");
     }
 }

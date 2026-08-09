@@ -53,6 +53,7 @@ GROUP_TITLES = {
     "cfe": "cfe — расширения конфигурации",
     "code": "code — код BSL",
     "dcs": "dcs — схемы компоновки данных",
+    "documentation": "documentation — справка платформы",
     "epf": "epf — внешние обработки",
     "erf": "erf — внешние отчёты",
     "form": "form — управляемые формы",
