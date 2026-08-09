@@ -22,6 +22,9 @@ pub(crate) mod redaction;
 pub(crate) mod rlm_navigation;
 pub(crate) mod runtime_jobs;
 pub(crate) mod source_roots;
+// The topology provider is introduced before both public consumers migrate to it.
+#[allow(dead_code)]
+pub(crate) mod subsystem_topology;
 pub(crate) mod support_guard;
 pub(crate) mod tool_context;
 pub(crate) mod workspace;

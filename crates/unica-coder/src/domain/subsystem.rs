@@ -63,6 +63,12 @@ impl fmt::Display for SubsystemAddressError {
 
 impl std::error::Error for SubsystemAddressError {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EffectiveSubsystemRole {
+    Functional,
+    Interface,
+}
+
 fn is_1c_identifier(value: &str) -> bool {
     let mut chars = value.chars();
     let Some(first) = chars.next() else {
@@ -125,8 +131,8 @@ mod tests {
 
     #[test]
     fn registered_names_build_the_same_public_address() {
-        let address = SubsystemAddress::from_names(["СтандартныеПодсистемы", "Обсуждения"])
-            .unwrap();
+        let address =
+            SubsystemAddress::from_names(["СтандартныеПодсистемы", "Обсуждения"]).unwrap();
 
         assert_eq!(address.as_str(), "СтандартныеПодсистемы.Обсуждения");
     }
