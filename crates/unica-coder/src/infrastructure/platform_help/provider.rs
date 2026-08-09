@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::domain::documentation::*;
 
+use super::container::ContainerError;
 use super::corpus::{read_corpus, CorpusError, CorpusPage, Signature};
 use super::installation::{discover, CorpusContainers, InstallationCorpora, InstallationError};
 
@@ -115,11 +116,19 @@ pub(crate) fn index_test_lock() -> std::sync::MutexGuard<'static, ()> {
 
 /// Причина, по которой контейнер не стал корпусом, — словами, а не отладочным
 /// представлением: этот текст уходит в диагностику секции и попадает
-/// пользователю. Обёрнутая ошибка разбора контейнера при этом называется: без
-/// неё «не разобрался» не отличает усечённый файл от чужого формата.
+/// пользователю, которому идентификатор варианта вроде `BadBlockHeader`
+/// ничего не говорит. Варианты обёрнутой ошибки при этом различаются
+/// текстом: без этого «не разобрался» не отличает усечённый файл от чужого
+/// формата.
 fn corpus_failure(error: &CorpusError) -> String {
     match error {
-        CorpusError::Container(inner) => format!("контейнер не разобрался ({inner:?})"),
+        CorpusError::Container(ContainerError::TruncatedBlock) => {
+            "контейнер обрезан: в файле меньше данных, чем объявляют его блоки".to_string()
+        }
+        CorpusError::Container(ContainerError::BadBlockHeader) => {
+            "файл не является контейнером справки: на месте заголовка блока чужая разметка"
+                .to_string()
+        }
         CorpusError::MissingFileStorage => "в контейнере нет записи FileStorage".to_string(),
         CorpusError::BadArchive => "запись FileStorage не читается как ZIP".to_string(),
     }
@@ -770,9 +779,15 @@ mod tests {
                     diagnostic.contains("shcntx_ru.hbk"),
                     "диагностика обязана назвать контейнер, получено {diagnostic}"
                 );
+                // Причина — словами: этот текст уходит пользователю, и
+                // отладочный идентификатор варианта ему ничего не говорит.
                 assert!(
-                    diagnostic.contains("BadBlockHeader"),
-                    "диагностика обязана назвать причину, получено {diagnostic}"
+                    diagnostic.contains("чужая разметка"),
+                    "диагностика обязана назвать причину словами, получено {diagnostic}"
+                );
+                assert!(
+                    !diagnostic.contains("BadBlockHeader"),
+                    "отладочный идентификатор не должен уходить пользователю, получено {diagnostic}"
                 );
             }
             other => panic!("ожидался Failed с именем контейнера, получено {other:?}"),
