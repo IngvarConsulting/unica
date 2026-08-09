@@ -2,6 +2,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::domain::documentation::*;
+use crate::infrastructure::documentation_retrieval::{
+    BilingualLexicon, RetrievalFields, RetrievalIndex,
+};
 
 use super::container::ContainerError;
 use super::corpus::{read_corpus, CorpusError, CorpusPage, Signature};
@@ -33,32 +36,22 @@ const CORPUS_SPECS: [CorpusSpec; 2] = [
     },
 ];
 
-/// Страница в индексе: только то, что нужно `rank_pages`. Текст лежит уже
-/// приведённым к нижнему регистру, а фрагмент выдачи — уже вырезанным,
-/// поэтому исходный текст страницы не удерживается вовсе и не копируется в
-/// нижний регистр на каждый запрос (около 43 МБ мусора на вызов до правки).
+/// Страница в индексе: только то, что нужно попаданию выдачи. Полный текст
+/// страницы не удерживается: постинги лексического ядра строятся один раз в
+/// `corpus_from_pages`, а фрагмент выдачи вырезан заранее (до правки полный
+/// текст копировался в нижний регистр — около 43 МБ мусора на вызов).
 struct IndexedPage {
     path: String,
     title: String,
-    title_lower: String,
-    text_lower: String,
     snippet: String,
     signature: Option<Signature>,
 }
 
-fn index_page(page: CorpusPage) -> IndexedPage {
-    IndexedPage {
-        title_lower: page.title.to_lowercase(),
-        text_lower: page.text.to_lowercase(),
-        snippet: page.text.chars().take(SNIPPET_CHARS).collect(),
-        path: page.path,
-        title: page.title,
-        signature: page.signature,
-    }
-}
-
 struct IndexedCorpus {
     pages: Vec<IndexedPage>,
+    /// Постинги лексического ядра (ADR-0035): номера документов — позиции в
+    /// `pages`.
+    retrieval: RetrievalIndex,
     /// Локаль, в которой корпус реально прочитан: она уходит в секцию ответа.
     language: String,
     /// Контейнеры, которые не прочитались или не разобрались. Молчаливый
@@ -66,11 +59,59 @@ struct IndexedCorpus {
     unreadable: Vec<String>,
 }
 
+/// Единственная дорога от разобранных страниц к корпусу: постинги и страницы
+/// выдачи строятся из одного списка, поэтому номер документа ядра и позиция
+/// страницы не могут разойтись.
+fn corpus_from_pages(
+    pages: Vec<CorpusPage>,
+    language: &str,
+    unreadable: Vec<String>,
+) -> IndexedCorpus {
+    // Обе локали сигнатуры индексируются: сигнатура — то самое поле, где
+    // английское имя встречается даже у русской страницы.
+    let signature_texts: Vec<String> = pages
+        .iter()
+        .map(|page| match &page.signature {
+            Some(signature) => [signature.ru.as_deref(), signature.en.as_deref()]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" "),
+            None => String::new(),
+        })
+        .collect();
+    let retrieval = RetrievalIndex::build(pages.iter().zip(signature_texts.iter()).map(
+        |(page, signature)| RetrievalFields {
+            title: &page.title,
+            signature,
+            body: &page.text,
+        },
+    ));
+    let pages = pages
+        .into_iter()
+        .map(|page| IndexedPage {
+            snippet: page.text.chars().take(SNIPPET_CHARS).collect(),
+            path: page.path,
+            title: page.title,
+            signature: page.signature,
+        })
+        .collect();
+    IndexedCorpus {
+        pages,
+        retrieval,
+        language: language.to_string(),
+        unreadable,
+    }
+}
+
 struct InstallationIndex {
     version: String,
     /// Параллелен `CORPUS_SPECS` по порядку и длине: длину держит компилятор
     /// (см. `build_index`), порядок задан там же одним местом.
     corpora: Vec<IndexedCorpus>,
+    /// Лексикон ru↔en из двуязычных заголовков Синтакс-помощника — для
+    /// расширения русских запросов к англоязычным корпусам (ADR-0035 п.4).
+    lexicon: Arc<BilingualLexicon>,
 }
 
 /// Ключ индекса — каталог установки и сами ВЫБРАННЫЕ контейнеры обоих
@@ -185,15 +226,11 @@ fn index_corpus(source: &CorpusContainers) -> IndexedCorpus {
             Err(error) => unreadable.push(format!("{name}: {error}")),
             Ok(bytes) => match read_corpus(&bytes) {
                 Err(error) => unreadable.push(format!("{name}: {}", corpus_failure(&error))),
-                Ok(read) => pages.extend(read.into_iter().map(index_page)),
+                Ok(read) => pages.extend(read),
             },
         }
     }
-    IndexedCorpus {
-        pages,
-        language: source.language.clone(),
-        unreadable,
-    }
+    corpus_from_pages(pages, &source.language, unreadable)
 }
 
 fn build_index(corpora: &InstallationCorpora) -> InstallationIndex {
@@ -202,10 +239,29 @@ fn build_index(corpora: &InstallationCorpora) -> InstallationIndex {
     // пока его контейнеры не названы.
     let sources: [&CorpusContainers; CORPUS_SPECS.len()] =
         [&corpora.syntax_context, &corpora.platform_guides];
+    let corpora_indexed: Vec<IndexedCorpus> = sources.into_iter().map(index_corpus).collect();
+    // Лексикон ru↔en строится из двуязычных заголовков Синтакс-помощника
+    // (первый корпус) и живёт вместе с индексом: тот же ключ, та же память
+    // процесса (ADR-0035 п.4).
+    let lexicon = Arc::new(BilingualLexicon::from_titles(
+        corpora_indexed[0].pages.iter().map(|page| page.title.as_str()),
+    ));
     InstallationIndex {
         version: corpora.version.clone(),
-        corpora: sources.into_iter().map(index_corpus).collect(),
+        corpora: corpora_indexed,
+        lexicon,
     }
+}
+
+/// Двуязычный лексикон установки для чужих корпусов с английскими
+/// заголовками (kb-1ci): отвечает из того же процессного индекса, что и
+/// поиск, поэтому не читает установку повторно. `None` — установка не
+/// разрешилась или без Синтакс-помощника; вызывающий честно деградирует до
+/// запроса без расширения.
+pub(crate) fn bilingual_lexicon_for(root: &Path) -> Option<Arc<BilingualLexicon>> {
+    let corpora = discover(root, "ru").ok()?;
+    let index = indexed(IndexKey::for_corpora(root, &corpora), &corpora);
+    Some(Arc::clone(&index.lexicon))
 }
 
 /// Индекс установки под ключом. Перестройка идёт под замком: одновременные
@@ -260,7 +316,7 @@ fn signature_in(signature: &Signature, language: &str) -> Option<String> {
 }
 
 fn rank_pages(
-    pages: &[IndexedPage],
+    corpus: &IndexedCorpus,
     query: &str,
     limit: usize,
     version: &str,
@@ -268,45 +324,28 @@ fn rank_pages(
     // повторяется здесь литералом: переименование поставщика иначе молча
     // разошлось бы с префиксом `document_id`.
     provider: &str,
-    corpus: &str,
+    corpus_id: &str,
     language: &str,
 ) -> Vec<DocumentationHit> {
-    let needle = query.to_lowercase();
-    let mut scored: Vec<(f32, &IndexedPage)> = pages
-        .iter()
-        .filter_map(|page| {
-            let score = if page.title_lower.contains(&needle) {
-                1.0
-            } else if page.text_lower.contains(&needle) {
-                0.5
-            } else {
-                return None;
-            };
-            Some((score, page))
-        })
-        .collect();
-    scored.sort_by(|left, right| {
-        right
-            .0
-            .partial_cmp(&left.0)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| left.1.path.cmp(&right.1.path))
-    });
-    scored
+    corpus
+        .retrieval
+        .query(query, limit, &[])
         .into_iter()
-        .take(limit)
         .enumerate()
-        .map(|(index, (score, page))| DocumentationHit {
-            rank: index as u32 + 1,
-            provider_score: score,
-            document_id: format!("{provider}:{corpus}:{}", page.path),
-            title: page.title.clone(),
-            signature: page
-                .signature
-                .as_ref()
-                .and_then(|value| signature_in(value, language)),
-            snippet: page.snippet.clone(),
-            applicable_version: version.to_string(),
+        .map(|(index, scored)| {
+            let page = &corpus.pages[scored.document];
+            DocumentationHit {
+                rank: index as u32 + 1,
+                provider_score: scored.score,
+                document_id: format!("{provider}:{corpus_id}:{}", page.path),
+                title: page.title.clone(),
+                signature: page
+                    .signature
+                    .as_ref()
+                    .and_then(|value| signature_in(value, language)),
+                snippet: page.snippet.clone(),
+                applicable_version: version.to_string(),
+            }
         })
         .collect()
 }
@@ -541,7 +580,7 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
             .zip(index.corpora.iter())
             .map(|(spec, corpus)| {
                 let hits = rank_pages(
-                    &corpus.pages,
+                    corpus,
                     &request.query,
                     request.limit,
                     &index.version,
@@ -740,31 +779,43 @@ mod tests {
         ));
     }
 
+    fn corpus_page(
+        path: &str,
+        title: &str,
+        text: &str,
+    ) -> crate::infrastructure::platform_help::corpus::CorpusPage {
+        crate::infrastructure::platform_help::corpus::CorpusPage {
+            path: path.to_string(),
+            title: title.to_string(),
+            text: text.to_string(),
+            signature: None,
+        }
+    }
+
     #[test]
     fn both_name_collisions_are_returned() {
         // «ЭлементыФормы» встречается в корпусе дважды — как коллекция и как
         // тип. Правило «первый побеждает» дало бы тихую потерю. Страницы
-        // проходят через `index_page`, а не собираются полем-в-поле: иначе
-        // тест мог бы задать `title_lower`, не совпадающий с `title`.
-        let pages: Vec<IndexedPage> = [
-            crate::infrastructure::platform_help::corpus::CorpusPage {
-                path: "objects/a/FormItems.html".to_string(),
-                title: "ЭлементыФормы (FormItems)".to_string(),
-                text: "Коллекция элементов формы".to_string(),
-                signature: None,
-            },
-            crate::infrastructure::platform_help::corpus::CorpusPage {
-                path: "objects/b/Controls.html".to_string(),
-                title: "ЭлементыФормы (Controls)".to_string(),
-                text: "Тип элементов формы".to_string(),
-                signature: None,
-            },
-        ]
-        .into_iter()
-        .map(index_page)
-        .collect();
+        // проходят через `corpus_from_pages` — ту же дорогу, что и продовые
+        // контейнеры, — а не собираются полем-в-поле.
+        let corpus = corpus_from_pages(
+            vec![
+                corpus_page(
+                    "objects/a/FormItems.html",
+                    "ЭлементыФормы (FormItems)",
+                    "Коллекция элементов формы",
+                ),
+                corpus_page(
+                    "objects/b/Controls.html",
+                    "ЭлементыФормы (Controls)",
+                    "Тип элементов формы",
+                ),
+            ],
+            "ru",
+            Vec::new(),
+        );
         let hits = rank_pages(
-            &pages,
+            &corpus,
             "ЭлементыФормы",
             20,
             "8.3.27.2074",
@@ -780,6 +831,108 @@ mod tests {
             .all(|hit| hit.applicable_version == "8.3.27.2074"));
     }
 
+    /// Ядро ADR-0035: естественная формулировка — другой порядок слов и
+    /// падежи — находит страницу метода. До правки находилась только точная
+    /// подстрока целого запроса (#415).
+    #[test]
+    fn natural_word_order_and_morphology_find_the_page() {
+        let corpus = corpus_from_pages(
+            vec![
+                corpus_page(
+                    "objects/ValueTable/methods/GroupBy1290.html",
+                    "ТаблицаЗначений.Свернуть (ValueTable.GroupBy)",
+                    "Группирует строки таблицы значений по колонкам.",
+                ),
+                corpus_page(
+                    "objects/Array/methods/Delete.html",
+                    "Массив.Удалить (Array.Delete)",
+                    "Удаляет элемент массива по индексу.",
+                ),
+            ],
+            "ru",
+            Vec::new(),
+        );
+        let ranked = |query: &str| {
+            rank_pages(
+                &corpus,
+                query,
+                5,
+                "8.3.27.2074",
+                "platform-syntax-help",
+                "syntax-context",
+                "ru",
+            )
+        };
+        let hits = ranked("свернуть таблицу значений");
+        assert!(
+            hits[0].document_id.ends_with("GroupBy1290.html"),
+            "{hits:?}"
+        );
+        let hits = ranked("как удалить элемент массива");
+        assert!(hits[0].document_id.ends_with("Delete.html"), "{hits:?}");
+    }
+
+    /// Опечатка находит страницу нечётким совпадением, но ранжируется ниже
+    /// точного запроса того же имени (дисконт нечёткости, ADR-0035).
+    #[test]
+    fn a_typo_finds_the_page_and_scores_below_the_exact_name() {
+        let corpus = corpus_from_pages(
+            vec![corpus_page(
+                "objects/Global/methods/StrFind.html",
+                "Глобальный контекст.СтрНайти (Global context.StrFind)",
+                "Ищет подстроку в строке.",
+            )],
+            "ru",
+            Vec::new(),
+        );
+        let score = |query: &str| {
+            rank_pages(
+                &corpus,
+                query,
+                5,
+                "8.3.27.2074",
+                "platform-syntax-help",
+                "syntax-context",
+                "ru",
+            )
+            .first()
+            .map(|hit| hit.provider_score)
+        };
+        let exact = score("СтрНайти").expect("точное имя находится");
+        let typo = score("СтрНайтти").expect("опечатка находится");
+        assert!(typo < exact, "опечатка {typo} против точного {exact}");
+    }
+
+    /// Английский многословный запрос находит двуязычный заголовок: до
+    /// правки «ValueTable GroupBy» не совпадал с «ValueTable.GroupBy» —
+    /// разделитель точка, а не пробел (#415).
+    #[test]
+    fn an_english_two_word_query_finds_the_bilingual_title() {
+        let corpus = corpus_from_pages(
+            vec![corpus_page(
+                "objects/ValueTable/methods/GroupBy1290.html",
+                "ТаблицаЗначений.Свернуть (ValueTable.GroupBy)",
+                "Группирует строки таблицы значений.",
+            )],
+            "ru",
+            Vec::new(),
+        );
+        let hits = rank_pages(
+            &corpus,
+            "ValueTable GroupBy",
+            5,
+            "8.3.27.2074",
+            "platform-syntax-help",
+            "syntax-context",
+            "ru",
+        );
+        assert!(
+            hits.first()
+                .is_some_and(|hit| hit.document_id.ends_with("GroupBy1290.html")),
+            "{hits:?}"
+        );
+    }
+
     /// Локаль корпуса выбирает локаль сигнатуры. `root` проверяется наравне с
     /// `ru` и `en`, потому что именно им отвечает установка на 22 запрошенные
     /// локали из 24 — и им же назван `section.language`, который вызывающий
@@ -788,21 +941,22 @@ mod tests {
     /// рядом с кириллической сигнатурой `ПолучитьНавигационнуюСсылку()`.
     #[test]
     fn the_corpus_locale_picks_the_signature_locale() {
-        let pages: Vec<IndexedPage> = [crate::infrastructure::platform_help::corpus::CorpusPage {
-            path: "objects/GetURL.html".to_string(),
-            title: "ПолучитьНавигационнуюСсылку (GetURL)".to_string(),
-            text: "текст".to_string(),
-            signature: Some(crate::infrastructure::platform_help::corpus::Signature {
-                ru: Some("ПолучитьНавигационнуюСсылку(<Объект>)".to_string()),
-                en: Some("GetURL(<Object>)".to_string()),
-            }),
-        }]
-        .into_iter()
-        .map(index_page)
-        .collect();
+        let corpus = corpus_from_pages(
+            vec![crate::infrastructure::platform_help::corpus::CorpusPage {
+                path: "objects/GetURL.html".to_string(),
+                title: "ПолучитьНавигационнуюСсылку (GetURL)".to_string(),
+                text: "текст".to_string(),
+                signature: Some(crate::infrastructure::platform_help::corpus::Signature {
+                    ru: Some("ПолучитьНавигационнуюСсылку(<Объект>)".to_string()),
+                    en: Some("GetURL(<Object>)".to_string()),
+                }),
+            }],
+            "ru",
+            Vec::new(),
+        );
         let signature_for = |locale: &str| {
             rank_pages(
-                &pages,
+                &corpus,
                 "GetURL",
                 20,
                 "8.3.27.2074",
