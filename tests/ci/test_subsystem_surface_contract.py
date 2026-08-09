@@ -24,7 +24,7 @@ class SubsystemSurfaceContractTests(unittest.TestCase):
         self.assertNotIn("SUBSYSTEM_ADDRESS_MAX_SEGMENTS", source_target)
         self.assertIn('profile.parse("Subsystem.A.B").is_err()', source_target)
 
-    def test_catalog_result_keeps_tree_and_two_flat_lists(self) -> None:
+    def test_subsystem_result_owns_structure_not_object_memberships(self) -> None:
         runtime = (
             REPO_ROOT
             / "crates/unica-coder/src/infrastructure/native_operations/subsystem.rs"
@@ -33,19 +33,23 @@ class SubsystemSurfaceContractTests(unittest.TestCase):
             REPO_ROOT / "plugins/unica/skills/subsystem-info/SKILL.md"
         ).read_text(encoding="utf-8")
 
-        for marker in ("tree", "functionalSubsystems", "interfaceSubsystems"):
-            self.assertIn(marker, runtime)
+        answer = runtime.split("pub(crate) enum SubsystemInfoAnswer", 1)[1].split(
+            "pub(crate) struct SubsystemGroupData", 1
+        )[0]
+        self.assertIn("Tree { tree: Vec<SubsystemTreeNode> }", answer)
+        self.assertNotIn("functional_subsystems", answer)
+        self.assertNotIn("interface_subsystems", answer)
+        self.assertIn("pub(crate) tree: Option<Vec<SubsystemTreeNode>>", runtime)
+        self.assertNotIn("functionalSubsystems", skill)
+        self.assertNotIn("interfaceSubsystems", skill)
+        for marker in ("цепоч", "корня", "потом"):
             self.assertIn(marker, skill)
 
         tool_contracts = (
             REPO_ROOT / "crates/unica-coder/src/application/tool_contracts.rs"
         ).read_text(encoding="utf-8")
         self.assertNotIn("whole `Subsystems/` folder for `Mode=tree`", tool_contracts)
-        for marker in (
-            "СтандартныеПодсистемы.Обсуждения",
-            "ADR-0033",
-            "INV-SOURCE-SUBSYSTEM-TOPOLOGY",
-        ):
+        for marker in ("ADR-0033", "INV-SOURCE-SUBSYSTEM-TOPOLOGY"):
             self.assertIn(marker, skill)
 
     def test_surface_ledger_names_the_shared_registered_contract(self) -> None:
@@ -59,15 +63,15 @@ class SubsystemSurfaceContractTests(unittest.TestCase):
         )["unica.subsystem.info"]
         review_text = json.dumps(review, ensure_ascii=False)
 
-        for text in (ledger, review_text):
-            for marker in (
-                "tree",
-                "functionalSubsystems",
-                "interfaceSubsystems",
-                "ADR-0033",
-                "INV-SOURCE-SUBSYSTEM-TOPOLOGY",
-            ):
+        ledger_section = ledger.split("### `unica.subsystem.info`", 1)[1].split(
+            "### `unica.subsystem.validate`", 1
+        )[0]
+        for text in (ledger_section, review_text):
+            for marker in ("tree", "ADR-0033", "INV-SOURCE-SUBSYSTEM-TOPOLOGY"):
                 self.assertIn(marker, text)
+            self.assertNotIn("functionalSubsystems", text)
+            self.assertNotIn("interfaceSubsystems", text)
+            self.assertIn("цепоч", text)
 
     def test_bsp_address_does_not_replace_platform_xml_reference(self) -> None:
         specification = (
@@ -82,7 +86,6 @@ class SubsystemSurfaceContractTests(unittest.TestCase):
             "Subsystem.СтандартныеПодсистемы.Subsystem.Обсуждения",
             specification,
         )
-        self.assertIn("СтандартныеПодсистемы.Обсуждения", skill)
         self.assertNotIn(
             "Subsystem.СтандартныеПодсистемы.Subsystem.Обсуждения", skill
         )

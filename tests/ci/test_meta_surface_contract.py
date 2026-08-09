@@ -150,10 +150,16 @@ class MetaSurfaceContractTests(unittest.TestCase):
         validation_context = (META_RUNTIME / "validation_context.rs").read_text(
             encoding="utf-8"
         )
+        results = (
+            REPO_ROOT / "crates/unica-coder/src/domain/metadata/results.rs"
+        ).read_text(encoding="utf-8")
 
         self.assertIn("enum MetadataSubsystemEvidence", ports)
-        self.assertIn("Vec<SubsystemAddress>", ports)
+        for marker in ("functional_subsystems", "interface_subsystems"):
+            self.assertIn(marker, ports)
+            self.assertIn(marker, results)
         self.assertIn("capture_registered_subsystem_topology", info)
+        self.assertIn("functional_memberships", info)
         self.assertIn("interface_memberships", info)
         for retired in (
             "typed_subsystem_images",

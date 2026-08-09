@@ -56,6 +56,12 @@ class MetadataConventionReferenceTests(unittest.TestCase):
         )
         for marker in ("Эффективная роль", "явный `false`", "ADR-0033"):
             self.assertIn(marker, conventions)
+        for marker in (
+            "`functionalSubsystems`",
+            "`interfaceSubsystems`",
+            "только подсистемы, чей `Content` содержит анализируемый объект",
+        ):
+            self.assertIn(marker, conventions)
 
     def test_reference_index_uses_path_relative_to_itself(self) -> None:
         text = (

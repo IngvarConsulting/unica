@@ -26,8 +26,9 @@ const CF_INFO_ARGS: &[&str] = &["ConfigPath", "configPath", "Path", "path"];
 /// `role.info` answers with typed data: `ShowDenied` selected nothing once the
 /// denied list is always present, and pagination cut printed lines.
 const ROLE_INFO_ARGS: &[&str] = &["RightsPath", "rightsPath", "Path", "path"];
-/// `subsystem.info` answers with typed data: its `Mode` picked which slice of
-/// one subsystem to print, and the tree projection belongs to a separate ask.
+/// `subsystem.info` answers with typed data: the path selects a complete tree
+/// or a concrete subsystem with its focused ancestor-and-descendant context,
+/// so `Mode` no longer selects a printable projection.
 const SUBSYSTEM_INFO_ARGS: &[&str] = &["SubsystemPath", "subsystemPath", "Path", "path"];
 
 /// A typed reader publishes only what it reads. `dcs.info` and `form.info`
@@ -2910,7 +2911,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "subsystemPath",
-        "Path to a subsystem's XML, its directory, or the whole `Subsystems/` folder for a registered tree with flat functional/interface address lists, used by `unica.subsystem.info`/`edit`/`validate`, relative to `cwd`",
+        "Path to a subsystem's XML, its directory, or the whole `Subsystems/` folder, relative to `cwd`; `unica.subsystem.info` returns the whole registered tree for the folder and a focused ancestor chain with all descendants for a registered subsystem",
     ),
     (
         "synonym",
