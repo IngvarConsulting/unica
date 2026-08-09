@@ -1031,6 +1031,36 @@ mod tests {
         );
     }
 
+    /// Описание публичного инструмента обещало «development standards», хотя
+    /// ни один поставщик реестра не объявляет корпуса этого смысла источника:
+    /// секция `development-standard` в ответе недостижима до ADR-0032, и
+    /// агент, ищущий стандарт, получил бы `empty` вместо маршрута в
+    /// `unica.standards.search`. Проверка структурная: описание вправе
+    /// назвать стандарты в тот момент, когда реестр действительно несёт
+    /// такой корпус, — тогда это утверждение перестаёт быть переобещанием и
+    /// тест перестаёт его запрещать.
+    #[test]
+    fn the_documentation_tool_description_promises_only_declared_source_kinds() {
+        let description = crate::application::tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.documentation.search")
+            .expect("инструмент объявлен")
+            .description;
+        let registry = documentation_registry().expect("реестр собран");
+        let declares_standards = registry.providers().any(|provider| {
+            provider.corpora().iter().any(|corpus| {
+                corpus.source_kind
+                    == crate::domain::documentation::SourceKind::DevelopmentStandard
+            })
+        });
+        if !declares_standards {
+            assert!(
+                !description.to_lowercase().contains("standard"),
+                "описание обещает стандарты, которых нет ни у одного поставщика: {description}"
+            );
+        }
+    }
+
 
     #[test]
     fn select_platform_version_matches_the_requested_directory_name_exactly() {
