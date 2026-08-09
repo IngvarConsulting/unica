@@ -25,9 +25,10 @@ use std::sync::{Arc, Mutex};
 
 use crate::infrastructure::platform::filesystem::{
     create_new_directory_child, file_identity, hard_link_count, metadata_is_link_or_reparse_point,
-    open_directory_child_nofollow, open_directory_nofollow, prepare_file_for_removal,
-    remove_identity_bound_empty_directory_child, remove_identity_bound_regular_child,
-    rename_no_replace, retain_regular_child_for_cleanup, FileIdentity, PortablePermissions,
+    open_directory_child_nofollow, open_directory_nofollow, open_regular_child_nofollow,
+    prepare_file_for_removal, remove_identity_bound_empty_directory_child,
+    remove_identity_bound_regular_child, rename_no_replace, retain_regular_child_for_cleanup,
+    FileIdentity, PortablePermissions,
 };
 use crate::infrastructure::source_roots::normalize_path_identity;
 
@@ -3161,21 +3162,149 @@ fn reserve_rollback_quarantine(target: &Path) -> Result<(PathBuf, PathBuf), Stri
     ))
 }
 
-fn restore_quarantined_file_no_clobber(quarantine: &Path, target: &Path) -> Result<(), String> {
-    fs::hard_link(quarantine, target).map_err(|error| {
+fn restore_quarantined_file_no_clobber(
+    quarantine_parent: &fs::File,
+    quarantine: &Path,
+    target_parent: &fs::File,
+    target: &Path,
+) -> Result<(), String> {
+    let quarantine_parent_path = quarantine.parent().ok_or_else(|| {
+        format!(
+            "rollback quarantine has no parent directory: {}",
+            quarantine.display()
+        )
+    })?;
+    let quarantine_name = quarantine.file_name().ok_or_else(|| {
+        format!(
+            "rollback quarantine has no child name: {}",
+            quarantine.display()
+        )
+    })?;
+    let target_parent_path = target.parent().ok_or_else(|| {
+        format!(
+            "restored rollback target has no parent directory: {}",
+            target.display()
+        )
+    })?;
+    let target_name = target.file_name().ok_or_else(|| {
+        format!(
+            "restored rollback target has no child name: {}",
+            target.display()
+        )
+    })?;
+    let retained_quarantine = open_regular_child_nofollow(quarantine_parent, quarantine_name)
+        .map_err(|error| {
+            format!(
+                "failed to retain quarantined concurrent file {} before restoration: {error}",
+                quarantine.display()
+            )
+        })?;
+    let quarantine_identity = file_identity(&retained_quarantine).map_err(|error| {
+        format!(
+            "failed to capture quarantined concurrent file identity {}: {error}",
+            quarantine.display()
+        )
+    })?;
+
+    run_before_rollback_quarantine_cleanup(quarantine);
+    let current_quarantine_parent =
+        open_directory_nofollow(quarantine_parent_path).map_err(|error| {
+            format!(
+                "failed to verify rollback quarantine route {}: {error}",
+                quarantine_parent_path.display()
+            )
+        })?;
+    if file_identity(&current_quarantine_parent).map_err(|error| {
+        format!(
+            "failed to capture rollback quarantine route identity {}: {error}",
+            quarantine_parent_path.display()
+        )
+    })? != file_identity(quarantine_parent).map_err(|error| {
+        format!(
+            "failed to capture retained rollback quarantine directory identity {}: {error}",
+            quarantine_parent_path.display()
+        )
+    })? {
+        return Err(format!(
+            "rollback quarantine directory identity changed at {}; replacement left untouched",
+            quarantine_parent_path.display()
+        ));
+    }
+    let current_quarantine =
+        open_regular_child_nofollow(&current_quarantine_parent, quarantine_name).map_err(
+            |error| {
+                format!(
+                    "failed to verify quarantined concurrent file route {}: {error}",
+                    quarantine.display()
+                )
+            },
+        )?;
+    if file_identity(&current_quarantine).map_err(|error| {
+        format!(
+            "failed to capture current quarantined file identity {}: {error}",
+            quarantine.display()
+        )
+    })? != quarantine_identity
+    {
+        return Err(format!(
+            "quarantined concurrent file identity changed at {}; replacement left untouched",
+            quarantine.display()
+        ));
+    }
+    let current_target_parent = open_directory_nofollow(target_parent_path).map_err(|error| {
+        format!(
+            "failed to verify rollback target parent route {}: {error}",
+            target_parent_path.display()
+        )
+    })?;
+    if file_identity(&current_target_parent).map_err(|error| {
+        format!(
+            "failed to capture rollback target parent route identity {}: {error}",
+            target_parent_path.display()
+        )
+    })? != file_identity(target_parent).map_err(|error| {
+        format!(
+            "failed to capture retained rollback target parent identity {}: {error}",
+            target_parent_path.display()
+        )
+    })? {
+        return Err(format!(
+            "rollback target parent identity changed at {}; replacement left untouched",
+            target_parent_path.display()
+        ));
+    }
+    drop(current_quarantine);
+    drop(current_quarantine_parent);
+    drop(current_target_parent);
+
+    rename_no_replace(quarantine, target).map_err(|error| {
         format!(
             "failed to restore quarantined concurrent file {} to {} without clobbering: {error}",
             quarantine.display(),
             target.display()
         )
     })?;
-    remove_if_exists(quarantine).map_err(|error| {
+    let restored_target =
+        open_regular_child_nofollow(target_parent, target_name).map_err(|error| {
+            format!(
+                "failed to verify restored rollback target {}: {error}",
+                target.display()
+            )
+        })?;
+    let restored_identity = file_identity(&restored_target).map_err(|error| {
         format!(
-            "restored quarantined concurrent file to {}, but failed to remove recovery link {}: {error}",
-            target.display(),
-            quarantine.display()
+            "failed to capture restored rollback target identity {}: {error}",
+            target.display()
         )
-    })
+    })?;
+    if restored_identity != quarantine_identity {
+        return Err(format!(
+            "restored rollback target identity differs from retained quarantine {}; unexpected target is left untouched at {}",
+            quarantine.display(),
+            target.display()
+        ));
+    }
+    Ok(())
 }
 
 fn rollback_registration(
@@ -3240,33 +3369,6 @@ fn rollback_registration(
         errors.push(message);
         return;
     }
-    match inspect_published_target(&quarantined, &published.published) {
-        PublishedTargetState::Matches => {}
-        PublishedTargetState::Missing => {
-            errors.push(format!(
-                "rollback conflict for registration {}: quarantined publication disappeared; original recovery is preserved at {}",
-                published.target.display(),
-                recovery_path.display()
-            ));
-            return;
-        }
-        PublishedTargetState::Conflict(reason) => {
-            let restore = restore_quarantined_file_no_clobber(&quarantined, &published.target);
-            let preservation = match restore {
-                Ok(()) => "concurrent target was restored without clobbering".to_string(),
-                Err(error) => format!(
-                    "{error}; concurrent file is preserved at {}",
-                    quarantined.display()
-                ),
-            };
-            errors.push(format!(
-                "rollback conflict for registration {}: {reason}; {preservation}; original recovery is preserved at {}",
-                published.target.display(),
-                recovery_path.display()
-            ));
-            return;
-        }
-    }
     let quarantine_name = match quarantined.file_name() {
         Some(name) => name.to_os_string(),
         None => {
@@ -3288,6 +3390,39 @@ fn rollback_registration(
             return;
         }
     };
+    let target_parent_handle = Arc::clone(&published.recovery.directory.parent);
+    match inspect_published_target(&quarantined, &published.published) {
+        PublishedTargetState::Matches => {}
+        PublishedTargetState::Missing => {
+            errors.push(format!(
+                "rollback conflict for registration {}: quarantined publication disappeared; original recovery is preserved at {}",
+                published.target.display(),
+                recovery_path.display()
+            ));
+            return;
+        }
+        PublishedTargetState::Conflict(reason) => {
+            let restore = restore_quarantined_file_no_clobber(
+                &quarantine_directory_handle,
+                &quarantined,
+                &target_parent_handle,
+                &published.target,
+            );
+            let preservation = match restore {
+                Ok(()) => "concurrent target was restored without clobbering".to_string(),
+                Err(error) => format!(
+                    "{error}; concurrent file is preserved at {}",
+                    quarantined.display()
+                ),
+            };
+            errors.push(format!(
+                "rollback conflict for registration {}: {reason}; {preservation}; original recovery is preserved at {}",
+                published.target.display(),
+                recovery_path.display()
+            ));
+            return;
+        }
+    }
     let quarantined_file = match retain_regular_child_for_cleanup(
         &quarantine_directory_handle,
         &quarantine_name,
@@ -3305,7 +3440,12 @@ fn rollback_registration(
     };
 
     if let Err(error) = published.recovery.verify_artifact() {
-        let restore = restore_quarantined_file_no_clobber(&quarantined, &published.target);
+        let restore = restore_quarantined_file_no_clobber(
+            &quarantine_directory_handle,
+            &quarantined,
+            &target_parent_handle,
+            &published.target,
+        );
         errors.push(format!(
             "rollback conflict for registration {}: recovery identity changed before restoration: {error}; published-byte restoration: {}",
             published.target.display(),
@@ -3468,7 +3608,30 @@ fn rollback_create(published: &PublishedCreate, errors: &mut Vec<String>) {
             ));
         }
         PublishedTargetState::Conflict(reason) => {
-            let restore = restore_quarantined_file_no_clobber(&quarantined, &published.target);
+            let restore = open_directory_nofollow(&quarantine_directory)
+                .map_err(|error| {
+                    format!(
+                        "failed to retain create-only rollback quarantine directory {}: {error}",
+                        quarantine_directory.display()
+                    )
+                })
+                .and_then(|quarantine_directory_handle| {
+                    open_directory_nofollow(usable_parent(&published.target))
+                        .map_err(|error| {
+                            format!(
+                                "failed to retain create-only rollback target parent {}: {error}",
+                                usable_parent(&published.target).display()
+                            )
+                        })
+                        .and_then(|target_parent_handle| {
+                            restore_quarantined_file_no_clobber(
+                                &quarantine_directory_handle,
+                                &quarantined,
+                                &target_parent_handle,
+                                &published.target,
+                            )
+                        })
+                });
             let preservation = match restore {
                 Ok(()) => "concurrent target was restored without clobbering".to_string(),
                 Err(error) => format!(
@@ -5856,6 +6019,92 @@ mod tests {
         assert!(fs::read_to_string(&displaced)
             .expect("cleanup must preserve the displaced published bytes")
             .contains("<Role>Reader</Role>"));
+        fs::remove_dir_all(root).expect("temporary root must be removed");
+    }
+
+    #[test]
+    fn registration_rollback_restore_cleanup_preserves_same_name_quarantine_decoy() {
+        let root = temp_root("registration-rollback-restore-cleanup-identity-swap");
+        let config = root.join("Configuration.xml");
+        let guard = root.join("Decision.bsl");
+        let original = configuration_bytes();
+        fs::write(&config, &original).expect("registration fixture must be written");
+        fs::write(&guard, b"stable").expect("guard fixture must be written");
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .register_canonical_child(&config, "Role", "Reader")
+            .expect("registration must plan");
+        let diff = transaction
+            .registration_diffs()
+            .pop()
+            .expect("registration diff must exist");
+        let mut concurrent = original.clone();
+        concurrent.splice(diff.byte_range, diff.after);
+        transaction
+            .guard_exact_preimage(&guard, b"stable")
+            .expect("guard must plan");
+        let config_for_mutation = config.clone();
+        let root_for_mutation = root.clone();
+        let concurrent_for_mutation = concurrent.clone();
+        let (paths_sender, paths_receiver) = mpsc::channel();
+
+        let error = with_before_rollback_quarantine_cleanup_hook(
+            move |quarantined| {
+                let displaced = quarantined.with_file_name("displaced-concurrent-registration");
+                fs::rename(quarantined, &displaced)
+                    .expect("owned quarantine link must be displaced before cleanup");
+                fs::write(quarantined, b"same-name quarantine decoy")
+                    .expect("same-name quarantine decoy must be written");
+                paths_sender
+                    .send((quarantined.to_path_buf(), displaced))
+                    .expect("quarantine paths must be reported");
+            },
+            || {
+                with_before_rollback_mutation_hook(
+                    move |path| {
+                        assert_eq!(path, config_for_mutation);
+                        let external = root_for_mutation.join("external-registration.xml");
+                        fs::write(&external, &concurrent_for_mutation)
+                            .expect("concurrent registration must be written");
+                        replace_file_atomically(&external, &config_for_mutation)
+                            .expect("concurrent registration must replace the published target");
+                    },
+                    || {
+                        transaction.commit_with_post_validation(|| {
+                            fs::write(&guard, b"changed")
+                                .expect("guard mutation must trigger rollback");
+                            Ok(())
+                        })
+                    },
+                )
+            },
+        )
+        .expect_err("late guard failure must roll the registration back");
+        let (quarantined, displaced) = paths_receiver
+            .recv()
+            .expect("rollback restore hook must report quarantine paths");
+
+        assert!(error.contains("rollback conflict"), "{error}");
+        assert!(
+            !config.exists(),
+            "identity loss must not publish the same-name quarantine decoy"
+        );
+        assert_eq!(
+            fs::read(&quarantined).expect("cleanup must preserve the quarantine decoy"),
+            b"same-name quarantine decoy"
+        );
+        assert_eq!(
+            fs::read(&displaced).expect("cleanup must preserve the displaced concurrent link"),
+            concurrent
+        );
+        let recovery_directory = transaction_debris(&root)
+            .into_iter()
+            .find(|path| path.is_dir())
+            .expect("unsafe registration rollback must preserve its recovery directory");
+        assert_eq!(
+            fs::read(recovery_directory.join("original")).unwrap(),
+            original
+        );
         fs::remove_dir_all(root).expect("temporary root must be removed");
     }
 
