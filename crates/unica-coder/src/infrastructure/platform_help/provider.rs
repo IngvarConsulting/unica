@@ -667,7 +667,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("каталог");
         let root = dir.path().join("8.3.27.2074");
         std::fs::create_dir_all(&root).expect("каталог версии");
-        std::fs::write(root.join("shcntx_ru.hbk"), b"not a container at all")
+        // Длиннее заголовка блока (16 + 31 байт): иначе отказ был бы
+        // «обрезок», а проверяется здесь именно чужая разметка на месте
+        // заголовка блока.
+        std::fs::write(root.join("shcntx_ru.hbk"), vec![b'x'; 256])
             .expect("повреждённый контейнер");
 
         let provider = PlatformSyntaxHelpProvider::new();
@@ -687,7 +690,7 @@ mod tests {
                     "диагностика обязана назвать контейнер, получено {diagnostic}"
                 );
                 assert!(
-                    diagnostic.contains("BadSignature"),
+                    diagnostic.contains("BadBlockHeader"),
                     "диагностика обязана назвать причину, получено {diagnostic}"
                 );
             }

@@ -4,15 +4,29 @@
 //! не из документации вендора: шестнадцатибайтовый заголовок файла, за ним
 //! блок таблицы записей (адреса заголовка и тела для каждой записи), записи
 //! адресуют блоки, которые могут продолжаться по цепочке страниц.
+//!
+//! Сигнатуры у формата нет. Первые четыре байта файла — указатель на
+//! следующую свободную страницу: у части контейнеров там ограничитель
+//! `7F FF FF FF`, у части — настоящее смещение внутрь собственного тела
+//! (`1cv8_ru.hbk` — `0x001d2338`, `frntend_ru.hbk` — `0x0003d256`). Из 38
+//! русскоязычных контейнеров установки 8.3.27.2074 ограничитель несут 15, а
+//! 23 — смещение. Требование «первые четыре байта равны ограничителю»
+//! отвергало эти 23 как чужой формат, обесценивая корпус `platform-guides`
+//! целиком.
+//!
+//! Структурный признак формата — заголовок блока по смещению 16: `\r\n`, три
+//! восьмизначных шестнадцатеричных поля через пробел и снова `\r\n`. Его и
+//! проверяет `read_block_header`, поэтому отдельной проверки «сигнатуры» нет.
 
 use std::collections::BTreeMap;
 
 const BLOCK_HEADER: usize = 31;
+/// Смещение первого блока: за шестнадцатибайтовым заголовком файла.
+const FILE_HEADER: usize = 16;
 const TERMINATOR: u32 = 0x7FFF_FFFF;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ContainerError {
-    BadSignature,
     TruncatedBlock,
     BadBlockHeader,
 }
@@ -34,7 +48,10 @@ fn read_block_header(bytes: &[u8], offset: usize) -> Result<BlockHeader, Contain
     let raw = bytes
         .get(offset..end)
         .ok_or(ContainerError::TruncatedBlock)?;
-    if &raw[..2] != b"\r\n" {
+    // Обе рамки, а не только открывающая: заголовок блока — единственный
+    // структурный признак формата (сигнатуры у него нет), и чем он у́же, тем
+    // меньше чужих файлов проходит за контейнер.
+    if &raw[..2] != b"\r\n" || &raw[BLOCK_HEADER - 2..] != b"\r\n" {
         return Err(ContainerError::BadBlockHeader);
     }
     let text = std::str::from_utf8(&raw[2..BLOCK_HEADER - 2])
@@ -114,10 +131,12 @@ fn entry_name(header: &[u8]) -> String {
 
 impl V8Container {
     pub fn parse(bytes: &[u8]) -> Result<V8Container, ContainerError> {
-        if bytes.len() < 16 || bytes[..4] != TERMINATOR.to_le_bytes() {
-            return Err(ContainerError::BadSignature);
-        }
-        let toc = read_block(bytes, 16)?;
+        // Проверять первые четыре байта нечего: это указатель на следующую
+        // свободную страницу, а не сигнатура (см. заголовок модуля). Признак
+        // формата — заголовок блока по смещению 16, и его читает `read_block`:
+        // файл короче заголовка даёт `TruncatedBlock`, файл с чужой разметкой
+        // на этом месте — `BadBlockHeader`.
+        let toc = read_block(bytes, FILE_HEADER)?;
         let mut entries = BTreeMap::new();
         for record in toc.chunks_exact(12) {
             let head = u32::from_le_bytes([record[0], record[1], record[2], record[3]]);
@@ -206,7 +225,12 @@ pub(crate) mod tests_support {
             }
         }
         let mut out = Vec::new();
-        out.extend_from_slice(&0x7FFF_FFFFu32.to_le_bytes());
+        // Первые четыре байта — указатель на следующую свободную страницу, а
+        // не сигнатура: у 23 из 38 контейнеров установки 8.3.27.2074 там
+        // настоящее смещение. Фикстура пишет сюда конец собственного тела,
+        // чтобы каждый тест, который её берёт, работал с контейнером того
+        // самого вида, который прежняя проверка «сигнатуры» отвергала.
+        out.extend_from_slice(&(cursor as u32).to_le_bytes());
         out.extend_from_slice(&512u32.to_le_bytes());
         out.extend_from_slice(&0u32.to_le_bytes());
         out.extend_from_slice(&0u32.to_le_bytes());
@@ -307,16 +331,67 @@ mod tests {
         );
     }
 
+    /// Прежняя проверка требовала, чтобы первые четыре байта равнялись
+    /// `0x7FFFFFFF`, и звала это сигнатурой формата. Это не сигнатура, а
+    /// указатель на следующую свободную страницу: в установке 8.3.27.2074
+    /// ограничитель там несут 15 контейнеров из 38, а остальные 23 — реальное
+    /// смещение внутрь собственного тела (`1cv8_ru.hbk` — `0x001d2338`).
+    /// Контейнер, у которого это поле не равно ограничителю, обязан
+    /// разбираться целиком.
     #[test]
-    fn wrong_signature_is_rejected() {
-        let mut bytes = container_with(&[("Book", b"x")], None);
-        bytes[0] = 0;
-        bytes[1] = 0;
-        bytes[2] = 0;
-        bytes[3] = 0;
-        assert!(matches!(
-            V8Container::parse(&bytes),
-            Err(ContainerError::BadSignature)
-        ));
+    fn a_page_pointer_in_the_first_four_bytes_does_not_make_the_file_alien() {
+        let mut bytes = container_with(
+            &[("Book", b"book-body"), ("FileStorage", b"zip-body")],
+            None,
+        );
+        // Ровно то значение, что лежит в `1cv8_ru.hbk` установки 8.3.27.2074.
+        bytes[..4].copy_from_slice(&0x001d_2338u32.to_le_bytes());
+        assert_ne!(
+            bytes[..4],
+            TERMINATOR.to_le_bytes(),
+            "фикстура обязана нести именно НЕ ограничитель, иначе тест ничего не различает"
+        );
+        let container = V8Container::parse(&bytes)
+            .expect("указатель страницы в первых четырёх байтах — не повод отвергать контейнер");
+        assert_eq!(container.entry("Book"), Some(&b"book-body"[..]));
+        assert_eq!(container.entry("FileStorage"), Some(&b"zip-body"[..]));
+    }
+
+    /// Что действительно опознаёт формат — заголовок блока по смещению 16:
+    /// `\r\n`, три восьмизначных шестнадцатеричных поля и снова `\r\n`. Обе
+    /// рамки проверяются, поэтому порча каждой из них отдельно обязана давать
+    /// отказ: проверка только открывающей `\r\n` пропустила бы второй случай.
+    #[test]
+    fn a_malformed_block_header_at_offset_sixteen_is_what_makes_a_file_alien() {
+        let intact = container_with(&[("Book", b"x")], None);
+        assert!(
+            V8Container::parse(&intact).is_ok(),
+            "исходная фикстура обязана разбираться, иначе порча ничего не доказывает"
+        );
+        for (label, corrupt_at) in [
+            ("открывающая \\r\\n", FILE_HEADER),
+            ("закрывающая \\r\\n", FILE_HEADER + BLOCK_HEADER - 2),
+        ] {
+            let mut bytes = intact.clone();
+            bytes[corrupt_at] = b'X';
+            bytes[corrupt_at + 1] = b'X';
+            assert_eq!(
+                V8Container::parse(&bytes).err(),
+                Some(ContainerError::BadBlockHeader),
+                "испорчена {label} заголовка блока — файл обязан перестать быть контейнером"
+            );
+        }
+    }
+
+    /// Файл короче заголовка блока — это не «чужой формат», а обрезок, и
+    /// сообщается он тем же `TruncatedBlock`, что и любая другая страница, до
+    /// которой не хватило байтов.
+    #[test]
+    fn a_file_too_short_to_hold_a_block_header_is_truncated_not_alien() {
+        let bytes = vec![0u8; FILE_HEADER + BLOCK_HEADER - 1];
+        assert_eq!(
+            V8Container::parse(&bytes).err(),
+            Some(ContainerError::TruncatedBlock)
+        );
     }
 }
