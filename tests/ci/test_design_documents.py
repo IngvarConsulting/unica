@@ -55,6 +55,25 @@ HEADERLESS_LEGACY = {
     "2026-07-26-writer-text-snapshot-eol-policy-design.md",
 }
 
+# These documents carry the three fields, but put their H1 before them. They
+# predate enforcement of the literal "opens with" order in AGENTS.md. Keep the
+# debt explicit without making an unrelated PR rewrite archived design history.
+TITLE_FIRST_LEGACY = {
+    "2026-07-27-provider-neutral-code-intelligence-design.md",
+    "2026-07-27-rlm-integration-api-issue-draft.md",
+    "2026-07-27-worktree-scoped-provider-state-design.md",
+    "2026-07-29-logical-source-addressing-design.md",
+    "2026-07-30-bounded-source-resource-access-design.md",
+    "2026-07-30-current-source-bsl-outline-design.md",
+    "2026-07-30-structured-bsl-outline-result-design.md",
+    "2026-07-30-windows-applied-full-dump-design.md",
+    "2026-08-02-xdto-package-domain-review-fixes-design.md",
+    "2026-08-03-issue-286-rlm-source-generation-design.md",
+    "2026-08-03-meta-surface-design.md",
+    "2026-08-08-meta-object-integrity-design.md",
+    "2026-08-08-platform-help-documentation-provider-design.md",
+}
+
 
 def decision_numbers_on_disk() -> set[str]:
     numbers = set()
@@ -123,6 +142,33 @@ class LayoutTests(unittest.TestCase):
 
 
 class DesignHeaderTests(unittest.TestCase):
+    def test_required_header_is_the_first_content_in_each_document(self) -> None:
+        offenders = []
+        required = (
+            ("Date", DATE_FIELD),
+            ("Status", STATUS_FIELD),
+            ("Decision", DECISION_FIELD),
+        )
+        for path in design_documents():
+            if path.name in HEADERLESS_LEGACY or path.name in TITLE_FIRST_LEGACY:
+                continue
+            lines = [
+                line
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            for index, (name, pattern) in enumerate(required):
+                if index >= len(lines) or pattern.fullmatch(lines[index]) is None:
+                    actual = lines[index] if index < len(lines) else "<missing>"
+                    offenders.append(
+                        f"{path.name}: content line {index + 1} must be {name}, got {actual!r}"
+                    )
+        self.assertEqual(
+            offenders,
+            [],
+            "design documents open with Date, Status, Decision; the title follows",
+        )
+
     def test_design_documents_carry_the_required_header(self) -> None:
         offenders = []
         for path in design_documents():
@@ -161,11 +207,16 @@ class DesignHeaderTests(unittest.TestCase):
         reuse the name.
         """
         present = {path.name for path in design_documents()}
-        stale = sorted(HEADERLESS_LEGACY - present)
+        stale = sorted((HEADERLESS_LEGACY | TITLE_FIRST_LEGACY) - present)
         self.assertEqual(
             stale,
             [],
             "remove exempted names that no longer exist instead of carrying them",
+        )
+        self.assertEqual(
+            HEADERLESS_LEGACY & TITLE_FIRST_LEGACY,
+            set(),
+            "a design cannot be both headerless and title-first legacy",
         )
 
 

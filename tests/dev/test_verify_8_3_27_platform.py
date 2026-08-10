@@ -1000,7 +1000,7 @@ class CorpusAdapterTests(unittest.TestCase):
     def test_mandatory_corpus_includes_every_cfe_patch_module_layout(self):
         verifier = load_verifier()
 
-        self.assertEqual(len(verifier.MANDATORY_CASE_IDS), 64)
+        self.assertEqual(len(verifier.MANDATORY_CASE_IDS), 66)
         self.assertTrue(
             {
                 "cfe-patch-method-bsl-only",

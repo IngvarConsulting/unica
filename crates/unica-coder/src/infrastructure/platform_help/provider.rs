@@ -2,6 +2,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::domain::documentation::*;
+use crate::infrastructure::documentation_retrieval::{
+    BilingualLexicon, RetrievalFields, RetrievalIndex,
+};
 
 use super::container::ContainerError;
 use super::corpus::{read_corpus, CorpusError, CorpusPage, Signature};
@@ -33,37 +36,72 @@ const CORPUS_SPECS: [CorpusSpec; 2] = [
     },
 ];
 
-/// Страница в индексе: только то, что нужно `rank_pages`. Текст лежит уже
-/// приведённым к нижнему регистру, а фрагмент выдачи — уже вырезанным,
-/// поэтому исходный текст страницы не удерживается вовсе и не копируется в
-/// нижний регистр на каждый запрос (около 43 МБ мусора на вызов до правки).
+/// Страница в индексе: только то, что нужно попаданию выдачи. Полный текст
+/// страницы не удерживается: постинги лексического ядра строятся один раз в
+/// `corpus_from_pages`, а фрагмент выдачи вырезан заранее (до правки полный
+/// текст копировался в нижний регистр — около 43 МБ мусора на вызов).
 struct IndexedPage {
     path: String,
     title: String,
-    title_lower: String,
-    text_lower: String,
     snippet: String,
     signature: Option<Signature>,
 }
 
-fn index_page(page: CorpusPage) -> IndexedPage {
-    IndexedPage {
-        title_lower: page.title.to_lowercase(),
-        text_lower: page.text.to_lowercase(),
-        snippet: page.text.chars().take(SNIPPET_CHARS).collect(),
-        path: page.path,
-        title: page.title,
-        signature: page.signature,
-    }
-}
-
 struct IndexedCorpus {
     pages: Vec<IndexedPage>,
+    /// Постинги лексического ядра (ADR-0037): номера документов — позиции в
+    /// `pages`.
+    retrieval: RetrievalIndex,
     /// Локаль, в которой корпус реально прочитан: она уходит в секцию ответа.
     language: String,
     /// Контейнеры, которые не прочитались или не разобрались. Молчаливый
     /// пропуск превращал повреждённый `.hbk` в «ничего не нашлось».
     unreadable: Vec<String>,
+}
+
+/// Единственная дорога от разобранных страниц к корпусу: постинги и страницы
+/// выдачи строятся из одного списка, поэтому номер документа ядра и позиция
+/// страницы не могут разойтись.
+fn corpus_from_pages(
+    pages: Vec<CorpusPage>,
+    language: &str,
+    unreadable: Vec<String>,
+) -> IndexedCorpus {
+    // Обе локали сигнатуры индексируются: сигнатура — то самое поле, где
+    // английское имя встречается даже у русской страницы.
+    let signature_texts: Vec<String> = pages
+        .iter()
+        .map(|page| match &page.signature {
+            Some(signature) => [signature.ru.as_deref(), signature.en.as_deref()]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" "),
+            None => String::new(),
+        })
+        .collect();
+    let retrieval = RetrievalIndex::build(pages.iter().zip(signature_texts.iter()).map(
+        |(page, signature)| RetrievalFields {
+            title: &page.title,
+            signature,
+            body: &page.text,
+        },
+    ));
+    let pages = pages
+        .into_iter()
+        .map(|page| IndexedPage {
+            snippet: page.text.chars().take(SNIPPET_CHARS).collect(),
+            path: page.path,
+            title: page.title,
+            signature: page.signature,
+        })
+        .collect();
+    IndexedCorpus {
+        pages,
+        retrieval,
+        language: language.to_string(),
+        unreadable,
+    }
 }
 
 struct InstallationIndex {
@@ -185,15 +223,11 @@ fn index_corpus(source: &CorpusContainers) -> IndexedCorpus {
             Err(error) => unreadable.push(format!("{name}: {error}")),
             Ok(bytes) => match read_corpus(&bytes) {
                 Err(error) => unreadable.push(format!("{name}: {}", corpus_failure(&error))),
-                Ok(read) => pages.extend(read.into_iter().map(index_page)),
+                Ok(read) => pages.extend(read),
             },
         }
     }
-    IndexedCorpus {
-        pages,
-        language: source.language.clone(),
-        unreadable,
-    }
+    corpus_from_pages(pages, &source.language, unreadable)
 }
 
 fn build_index(corpora: &InstallationCorpora) -> InstallationIndex {
@@ -206,6 +240,45 @@ fn build_index(corpora: &InstallationCorpora) -> InstallationIndex {
         version: corpora.version.clone(),
         corpora: sources.into_iter().map(index_corpus).collect(),
     }
+}
+
+/// Слот лексикона отделён от слота индекса корпуса намеренно: лексикон
+/// всегда строится из русского Синтакс-помощника, а индекс — из контейнеров
+/// локали запроса. Живи они в одном слоте, английский вызов
+/// `documentation.search` выселял бы en-индекс ru-лексиконом kb и обратно на
+/// каждом вызове (ревью PR #416). Слот один на процесс, перестраивается при
+/// смене ключа; на диск не пишется ничего (ADR-0029 п.11).
+type LexiconSlot = Option<(IndexKey, Arc<BilingualLexicon>)>;
+
+static LEXICON_SLOT: OnceLock<Mutex<LexiconSlot>> = OnceLock::new();
+
+fn lexicon_slot() -> &'static Mutex<LexiconSlot> {
+    LEXICON_SLOT.get_or_init(|| Mutex::new(None))
+}
+
+/// Двуязычный лексикон установки для чужих корпусов с английскими
+/// заголовками (kb-1ci). `None` — установка не разрешилась или без
+/// Синтакс-помощника; вызывающий честно деградирует до запроса без
+/// расширения. Разбор ru-корпуса — свой, в обход общего слота индекса:
+/// цена — один дополнительный разбор на процесс, зато никакого пинг-понга
+/// слота между локалями.
+pub(crate) fn bilingual_lexicon_for(root: &Path) -> Option<Arc<BilingualLexicon>> {
+    let corpora = discover(root, "ru").ok()?;
+    let key = IndexKey::for_corpora(root, &corpora);
+    let mut slot = lexicon_slot()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((cached_key, lexicon)) = slot.as_ref() {
+        if *cached_key == key {
+            return Some(Arc::clone(lexicon));
+        }
+    }
+    let corpus = index_corpus(&corpora.syntax_context);
+    let lexicon = Arc::new(BilingualLexicon::from_titles(
+        corpus.pages.iter().map(|page| page.title.as_str()),
+    ));
+    *slot = Some((key, Arc::clone(&lexicon)));
+    Some(lexicon)
 }
 
 /// Индекс установки под ключом. Перестройка идёт под замком: одновременные
@@ -260,7 +333,7 @@ fn signature_in(signature: &Signature, language: &str) -> Option<String> {
 }
 
 fn rank_pages(
-    pages: &[IndexedPage],
+    corpus: &IndexedCorpus,
     query: &str,
     limit: usize,
     version: &str,
@@ -268,45 +341,28 @@ fn rank_pages(
     // повторяется здесь литералом: переименование поставщика иначе молча
     // разошлось бы с префиксом `document_id`.
     provider: &str,
-    corpus: &str,
+    corpus_id: &str,
     language: &str,
 ) -> Vec<DocumentationHit> {
-    let needle = query.to_lowercase();
-    let mut scored: Vec<(f32, &IndexedPage)> = pages
-        .iter()
-        .filter_map(|page| {
-            let score = if page.title_lower.contains(&needle) {
-                1.0
-            } else if page.text_lower.contains(&needle) {
-                0.5
-            } else {
-                return None;
-            };
-            Some((score, page))
-        })
-        .collect();
-    scored.sort_by(|left, right| {
-        right
-            .0
-            .partial_cmp(&left.0)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| left.1.path.cmp(&right.1.path))
-    });
-    scored
+    corpus
+        .retrieval
+        .query(query, limit, &[])
         .into_iter()
-        .take(limit)
         .enumerate()
-        .map(|(index, (score, page))| DocumentationHit {
-            rank: index as u32 + 1,
-            provider_score: score,
-            document_id: format!("{provider}:{corpus}:{}", page.path),
-            title: page.title.clone(),
-            signature: page
-                .signature
-                .as_ref()
-                .and_then(|value| signature_in(value, language)),
-            snippet: page.snippet.clone(),
-            applicable_version: version.to_string(),
+        .map(|(index, scored)| {
+            let page = &corpus.pages[scored.document];
+            DocumentationHit {
+                rank: index as u32 + 1,
+                provider_score: scored.score,
+                document_id: format!("{provider}:{corpus_id}:{}", page.path),
+                title: page.title.clone(),
+                signature: page
+                    .signature
+                    .as_ref()
+                    .and_then(|value| signature_in(value, language)),
+                snippet: page.snippet.clone(),
+                applicable_version: version.to_string(),
+            }
         })
         .collect()
 }
@@ -362,6 +418,101 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
 
     fn needs_network(&self) -> bool {
         false
+    }
+
+    /// Страница целиком по локатору `platform-syntax-help:<корпус>:<путь>` —
+    /// доказательство по ADR-0029 п.4, а не фрагмент. Индекс полного текста
+    /// не держит (он экономит память под поиск), поэтому страница
+    /// перечитывается из контейнеров выбранной установки; `get` редок, и цена
+    /// перечитывания честнее удвоения резидента индекса.
+    fn get(
+        &self,
+        document_id: &str,
+        language: &str,
+        context: &DocumentationContext,
+    ) -> Option<Result<crate::domain::documentation::DocumentationDocument, String>> {
+        let rest = document_id.strip_prefix("platform-syntax-help:")?;
+        // Префикс наш — дальнейшие неожиданности отвечаются отказом
+        // владельца, а не тихим None: другой владелец у локатора невозможен.
+        let Some((corpus_id, path)) = rest.split_once(':') else {
+            return Some(Err(format!(
+                "локатор {document_id:?} не несёт корпуса и пути"
+            )));
+        };
+        let Some(root) = context.installation_root.as_ref() else {
+            let detail = match context.platform_version.as_deref() {
+                Some(version) => {
+                    format!("установка платформы {version} не разрешена для рабочего пространства")
+                }
+                None => "установка платформы не разрешена для рабочего пространства".to_string(),
+            };
+            return Some(Err(detail));
+        };
+        let corpora = match discover(root, language) {
+            Ok(value) => value,
+            Err(error) => return Some(Err(format!("установка не разобрана: {error:?}"))),
+        };
+        let source = match corpus_id {
+            "syntax-context" => &corpora.syntax_context,
+            "platform-guides" => &corpora.platform_guides,
+            other => return Some(Err(format!("неизвестный корпус {other:?} в локаторе"))),
+        };
+        let mut unreadable: Vec<String> = Vec::new();
+        for container in &source.containers {
+            let name = container
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("<без имени>")
+                .to_string();
+            let bytes = match std::fs::read(container) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    unreadable.push(format!("{name}: {error}"));
+                    continue;
+                }
+            };
+            // Точечное чтение одной записи, а не разбор корпуса: `get`
+            // платил 4.4 секунды за инфлейт всех 25 тысяч страниц ради
+            // одной, а битый поток соседней записи валил весь контейнер.
+            let page = match super::corpus::read_page_from_container(&bytes, path) {
+                Ok(page) => page,
+                Err(error) => {
+                    unreadable.push(format!("{name}: {}", corpus_failure(&error)));
+                    continue;
+                }
+            };
+            if let Some(page) = page {
+                return Some(Ok(crate::domain::documentation::DocumentationDocument {
+                    provider: self.id(),
+                    corpus: corpus_id.to_string(),
+                    source_kind: SourceKind::PlatformHelp,
+                    authority: Authority::Vendor,
+                    // Локаль, которой корпус реально прочитан, — как у поиска.
+                    language: source.language.clone(),
+                    document_id: document_id.to_string(),
+                    title: page.title.clone(),
+                    signature: page
+                        .signature
+                        .as_ref()
+                        .and_then(|value| signature_in(value, &source.language)),
+                    applicable_version: corpora.version.clone(),
+                    text: page.text,
+                }));
+            }
+        }
+        // «Страницы нет» при пропущенных контейнерах — неправда: страница,
+        // может, и есть, но контейнер не разобрался, и это называется.
+        if unreadable.is_empty() {
+            Some(Err(format!(
+                "страницы {path:?} нет в корпусе {corpus_id} установки {}",
+                corpora.version
+            )))
+        } else {
+            Some(Err(format!(
+                "страница {path:?} не найдена, но контейнеры корпуса {corpus_id} не разобрались: {}",
+                unreadable.join("; ")
+            )))
+        }
     }
 
     fn search(
@@ -446,7 +597,7 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
             .zip(index.corpora.iter())
             .map(|(spec, corpus)| {
                 let hits = rank_pages(
-                    &corpus.pages,
+                    corpus,
                     &request.query,
                     request.limit,
                     &index.version,
@@ -645,31 +796,43 @@ mod tests {
         ));
     }
 
+    fn corpus_page(
+        path: &str,
+        title: &str,
+        text: &str,
+    ) -> crate::infrastructure::platform_help::corpus::CorpusPage {
+        crate::infrastructure::platform_help::corpus::CorpusPage {
+            path: path.to_string(),
+            title: title.to_string(),
+            text: text.to_string(),
+            signature: None,
+        }
+    }
+
     #[test]
     fn both_name_collisions_are_returned() {
         // «ЭлементыФормы» встречается в корпусе дважды — как коллекция и как
         // тип. Правило «первый побеждает» дало бы тихую потерю. Страницы
-        // проходят через `index_page`, а не собираются полем-в-поле: иначе
-        // тест мог бы задать `title_lower`, не совпадающий с `title`.
-        let pages: Vec<IndexedPage> = [
-            crate::infrastructure::platform_help::corpus::CorpusPage {
-                path: "objects/a/FormItems.html".to_string(),
-                title: "ЭлементыФормы (FormItems)".to_string(),
-                text: "Коллекция элементов формы".to_string(),
-                signature: None,
-            },
-            crate::infrastructure::platform_help::corpus::CorpusPage {
-                path: "objects/b/Controls.html".to_string(),
-                title: "ЭлементыФормы (Controls)".to_string(),
-                text: "Тип элементов формы".to_string(),
-                signature: None,
-            },
-        ]
-        .into_iter()
-        .map(index_page)
-        .collect();
+        // проходят через `corpus_from_pages` — ту же дорогу, что и продовые
+        // контейнеры, — а не собираются полем-в-поле.
+        let corpus = corpus_from_pages(
+            vec![
+                corpus_page(
+                    "objects/a/FormItems.html",
+                    "ЭлементыФормы (FormItems)",
+                    "Коллекция элементов формы",
+                ),
+                corpus_page(
+                    "objects/b/Controls.html",
+                    "ЭлементыФормы (Controls)",
+                    "Тип элементов формы",
+                ),
+            ],
+            "ru",
+            Vec::new(),
+        );
         let hits = rank_pages(
-            &pages,
+            &corpus,
             "ЭлементыФормы",
             20,
             "8.3.27.2074",
@@ -685,6 +848,108 @@ mod tests {
             .all(|hit| hit.applicable_version == "8.3.27.2074"));
     }
 
+    /// Ядро ADR-0037: естественная формулировка — другой порядок слов и
+    /// падежи — находит страницу метода. До правки находилась только точная
+    /// подстрока целого запроса (#415).
+    #[test]
+    fn natural_word_order_and_morphology_find_the_page() {
+        let corpus = corpus_from_pages(
+            vec![
+                corpus_page(
+                    "objects/ValueTable/methods/GroupBy1290.html",
+                    "ТаблицаЗначений.Свернуть (ValueTable.GroupBy)",
+                    "Группирует строки таблицы значений по колонкам.",
+                ),
+                corpus_page(
+                    "objects/Array/methods/Delete.html",
+                    "Массив.Удалить (Array.Delete)",
+                    "Удаляет элемент массива по индексу.",
+                ),
+            ],
+            "ru",
+            Vec::new(),
+        );
+        let ranked = |query: &str| {
+            rank_pages(
+                &corpus,
+                query,
+                5,
+                "8.3.27.2074",
+                "platform-syntax-help",
+                "syntax-context",
+                "ru",
+            )
+        };
+        let hits = ranked("свернуть таблицу значений");
+        assert!(
+            hits[0].document_id.ends_with("GroupBy1290.html"),
+            "{hits:?}"
+        );
+        let hits = ranked("как удалить элемент массива");
+        assert!(hits[0].document_id.ends_with("Delete.html"), "{hits:?}");
+    }
+
+    /// Опечатка находит страницу нечётким совпадением, но ранжируется ниже
+    /// точного запроса того же имени (дисконт нечёткости, ADR-0037).
+    #[test]
+    fn a_typo_finds_the_page_and_scores_below_the_exact_name() {
+        let corpus = corpus_from_pages(
+            vec![corpus_page(
+                "objects/Global/methods/StrFind.html",
+                "Глобальный контекст.СтрНайти (Global context.StrFind)",
+                "Ищет подстроку в строке.",
+            )],
+            "ru",
+            Vec::new(),
+        );
+        let score = |query: &str| {
+            rank_pages(
+                &corpus,
+                query,
+                5,
+                "8.3.27.2074",
+                "platform-syntax-help",
+                "syntax-context",
+                "ru",
+            )
+            .first()
+            .map(|hit| hit.provider_score)
+        };
+        let exact = score("СтрНайти").expect("точное имя находится");
+        let typo = score("СтрНайтти").expect("опечатка находится");
+        assert!(typo < exact, "опечатка {typo} против точного {exact}");
+    }
+
+    /// Английский многословный запрос находит двуязычный заголовок: до
+    /// правки «ValueTable GroupBy» не совпадал с «ValueTable.GroupBy» —
+    /// разделитель точка, а не пробел (#415).
+    #[test]
+    fn an_english_two_word_query_finds_the_bilingual_title() {
+        let corpus = corpus_from_pages(
+            vec![corpus_page(
+                "objects/ValueTable/methods/GroupBy1290.html",
+                "ТаблицаЗначений.Свернуть (ValueTable.GroupBy)",
+                "Группирует строки таблицы значений.",
+            )],
+            "ru",
+            Vec::new(),
+        );
+        let hits = rank_pages(
+            &corpus,
+            "ValueTable GroupBy",
+            5,
+            "8.3.27.2074",
+            "platform-syntax-help",
+            "syntax-context",
+            "ru",
+        );
+        assert!(
+            hits.first()
+                .is_some_and(|hit| hit.document_id.ends_with("GroupBy1290.html")),
+            "{hits:?}"
+        );
+    }
+
     /// Локаль корпуса выбирает локаль сигнатуры. `root` проверяется наравне с
     /// `ru` и `en`, потому что именно им отвечает установка на 22 запрошенные
     /// локали из 24 — и им же назван `section.language`, который вызывающий
@@ -693,21 +958,22 @@ mod tests {
     /// рядом с кириллической сигнатурой `ПолучитьНавигационнуюСсылку()`.
     #[test]
     fn the_corpus_locale_picks_the_signature_locale() {
-        let pages: Vec<IndexedPage> = [crate::infrastructure::platform_help::corpus::CorpusPage {
-            path: "objects/GetURL.html".to_string(),
-            title: "ПолучитьНавигационнуюСсылку (GetURL)".to_string(),
-            text: "текст".to_string(),
-            signature: Some(crate::infrastructure::platform_help::corpus::Signature {
-                ru: Some("ПолучитьНавигационнуюСсылку(<Объект>)".to_string()),
-                en: Some("GetURL(<Object>)".to_string()),
-            }),
-        }]
-        .into_iter()
-        .map(index_page)
-        .collect();
+        let corpus = corpus_from_pages(
+            vec![crate::infrastructure::platform_help::corpus::CorpusPage {
+                path: "objects/GetURL.html".to_string(),
+                title: "ПолучитьНавигационнуюСсылку (GetURL)".to_string(),
+                text: "текст".to_string(),
+                signature: Some(crate::infrastructure::platform_help::corpus::Signature {
+                    ru: Some("ПолучитьНавигационнуюСсылку(<Объект>)".to_string()),
+                    en: Some("GetURL(<Object>)".to_string()),
+                }),
+            }],
+            "ru",
+            Vec::new(),
+        );
         let signature_for = |locale: &str| {
             rank_pages(
-                &pages,
+                &corpus,
                 "GetURL",
                 20,
                 "8.3.27.2074",
@@ -1175,6 +1441,45 @@ mod tests {
         root
     }
 
+    /// Лексикон kb не выселяет процессный индекс корпуса: иначе каждый
+    /// англоязычный вызов `documentation.search` перечитывал бы установку
+    /// дважды — en-корпус для своей секции и ru-корпус для лексикона, — и
+    /// слот пинг-понгом перестраивался бы на каждом вызове (ревью PR #416).
+    #[test]
+    fn the_lexicon_does_not_evict_the_corpus_index_slot() {
+        let _serial = index_test_lock();
+        let dir = tempfile::tempdir().expect("каталог");
+        let root = bilingual_installation(dir.path());
+        let provider = PlatformSyntaxHelpProvider::new();
+        let context = DocumentationContext {
+            platform_version: Some("8.3.27.2074".to_string()),
+            installation_root: Some(root.clone()),
+        };
+        let first = provider.search(&request_in("Alpha", "en"), &context);
+        assert!(
+            matches!(
+                syntax_section(&first).status,
+                DocumentationSectionStatus::Ok
+            ),
+            "{:?}",
+            syntax_section(&first).status
+        );
+        // Контейнеры портятся с сохранением отпечатка: перечитать их
+        // осмысленно нельзя, и выживший ответ доказывает ответ из кеша.
+        corrupt_preserving_fingerprint(&root.join("shcntx_ru.hbk"));
+        corrupt_preserving_fingerprint(&root.join("shcntx_en.hbk"));
+        let _ = bilingual_lexicon_for(&root);
+        let second = provider.search(&request_in("Alpha", "en"), &context);
+        assert!(
+            matches!(
+                syntax_section(&second).status,
+                DocumentationSectionStatus::Ok
+            ),
+            "лексикон не должен выселять индекс корпуса: {:?}",
+            syntax_section(&second).status
+        );
+    }
+
     /// Аргумент `language` отбирает контейнеры, а не только локаль сигнатуры.
     /// Ревью применило мутацию `discover(root, "ru")` вместо
     /// `discover(root, &request.language)` — и все 2021 тест остались
@@ -1393,6 +1698,183 @@ mod tests {
             "platform-syntax-help:syntax-context:root/alpha.html"
         );
         assert_eq!(second_syntax.language, "root");
+    }
+
+    /// `get` возвращает страницу ЦЕЛИКОМ — доказательство по ADR-0029 п.4,
+    /// а не 400-символьный фрагмент индекса. Индекс полного текста не держит,
+    /// поэтому страница перечитывается из контейнеров выбранной установки;
+    /// локаль подставляется тем же правилом, что и у поиска, и называется в
+    /// документе. Чужой префикс — «не мой локатор», свой префикс с пропавшей
+    /// страницей — отказ владельца, называющий страницу.
+    #[test]
+    fn get_returns_the_full_page_text_not_the_snippet() {
+        let _serial = index_test_lock();
+        let dir = tempfile::tempdir().expect("каталог");
+        let root = dir.path().join("8.3.27.2074");
+        std::fs::create_dir_all(&root).expect("каталог версии");
+        // Текст заметно длиннее фрагмента (400): полнота наблюдаема.
+        let body = "слово ".repeat(200);
+        std::fs::write(
+            root.join("shcntx_root.hbk"),
+            hbk_bytes(&[(
+                "objects/GetURL.html",
+                &format!("<html><body><h1>Global context.GetURL</h1><p>{body}</p></body></html>"),
+            )]),
+        )
+        .expect("контейнер");
+
+        let provider = PlatformSyntaxHelpProvider::new();
+        let context = DocumentationContext {
+            platform_version: Some("8.3.27.2074".to_string()),
+            installation_root: Some(root),
+        };
+        let document = provider
+            .get(
+                "platform-syntax-help:syntax-context:objects/GetURL.html",
+                "en",
+                &context,
+            )
+            .expect("локатор наш")
+            .expect("страница найдена");
+        assert_eq!(document.title, "Global context.GetURL");
+        assert!(
+            document.text.chars().count() > 400,
+            "текст обязан быть полным, а не фрагментом: {} символов",
+            document.text.chars().count()
+        );
+        assert_eq!(
+            document.language, "root",
+            "локаль подставляется и называется, как у поиска"
+        );
+        assert_eq!(document.applicable_version, "8.3.27.2074");
+        assert_eq!(document.corpus, "syntax-context");
+
+        assert!(
+            provider
+                .get("https://kb.1ci.com/x/", "ru", &context)
+                .is_none(),
+            "чужой локатор — не мой, отвечает None"
+        );
+        let missing = provider
+            .get(
+                "platform-syntax-help:syntax-context:objects/Missing.html",
+                "en",
+                &context,
+            )
+            .expect("локатор наш");
+        let error = missing.expect_err("пропавшая страница — отказ владельца");
+        assert!(
+            error.contains("objects/Missing.html"),
+            "отказ обязан назвать страницу, получено {error}"
+        );
+    }
+
+    /// `get` читает ОДНУ запись контейнера, а не разбирает корпус: битый
+    /// deflate-поток соседней страницы не мешает отдать запрошенную. До
+    /// правки полный `read_corpus` спотыкался о соседа, контейнер попадал в
+    /// «неразобравшиеся», и страница объявлялась недоступной — а заодно
+    /// каждый вызов платил 4.4 секунды за разбор всех 25 тысяч страниц.
+    #[test]
+    fn get_reads_only_the_requested_entry_and_survives_a_corrupted_sibling() {
+        let _serial = index_test_lock();
+        let dir = tempfile::tempdir().expect("каталог");
+        let root = dir.path().join("8.3.27.2074");
+        std::fs::create_dir_all(&root).expect("каталог версии");
+
+        // Архив с хорошей и битой записями — тем же приёмом, что и в
+        // corpus::tests: порча второго локального заголовка.
+        let mut archive = {
+            use std::io::Write;
+            let mut buffer = std::io::Cursor::new(Vec::new());
+            {
+                let mut writer = zip::ZipWriter::new(&mut buffer);
+                let options: zip::write::FileOptions<()> = zip::write::FileOptions::default()
+                    .compression_method(zip::CompressionMethod::Deflated);
+                for (name, html) in [
+                    (
+                        "objects/Good.html",
+                        "<html><body><h1>Хорошая страница</h1><p>Текст хорошей страницы.</p></body></html>",
+                    ),
+                    (
+                        "objects/Broken.html",
+                        "<html><body><h1>Сосед</h1><p>Поток будет испорчен.</p></body></html>",
+                    ),
+                ] {
+                    writer.start_file(name, options).expect("запись открыта");
+                    writer.write_all(html.as_bytes()).expect("запись записана");
+                }
+                writer.finish().expect("архив закрыт");
+            }
+            buffer.into_inner()
+        };
+        let signature = [0x50, 0x4B, 0x03, 0x04];
+        let mut headers = Vec::new();
+        for start in 0..archive.len().saturating_sub(4) {
+            if archive[start..start + 4] == signature {
+                headers.push(start);
+            }
+        }
+        let second = headers[1];
+        let name_len = u16::from_le_bytes([archive[second + 26], archive[second + 27]]) as usize;
+        let extra_len = u16::from_le_bytes([archive[second + 28], archive[second + 29]]) as usize;
+        let data = second + 30 + name_len + extra_len;
+        for byte in archive[data..data + 8].iter_mut() {
+            *byte = 0xFF;
+        }
+        std::fs::write(
+            root.join("shcntx_ru.hbk"),
+            crate::infrastructure::platform_help::container::tests_support::container_with(
+                &[("FileStorage", archive.as_slice())],
+                None,
+            ),
+        )
+        .expect("контейнер");
+
+        let provider = PlatformSyntaxHelpProvider::new();
+        let context = DocumentationContext {
+            platform_version: Some("8.3.27.2074".to_string()),
+            installation_root: Some(root),
+        };
+        let document = provider
+            .get(
+                "platform-syntax-help:syntax-context:objects/Good.html",
+                "ru",
+                &context,
+            )
+            .expect("локатор наш")
+            .expect("страница обязана читаться точечно, не спотыкаясь о соседа");
+        assert_eq!(document.title, "Хорошая страница");
+        assert!(document.text.contains("Текст хорошей страницы."));
+    }
+
+    /// Корпус из одного битого контейнера: «страницы нет» здесь неправда —
+    /// страница, может, и есть, но контейнер не разобрался, и отказ обязан
+    /// назвать пропуск, а не выдать неполноту за отсутствие.
+    #[test]
+    fn get_names_unreadable_containers_instead_of_claiming_the_page_absent() {
+        let _serial = index_test_lock();
+        let dir = tempfile::tempdir().expect("каталог");
+        let root = dir.path().join("8.3.27.2074");
+        std::fs::create_dir_all(&root).expect("каталог версии");
+        std::fs::write(root.join("shcntx_ru.hbk"), vec![b'x'; 256]).expect("битый контейнер");
+
+        let provider = PlatformSyntaxHelpProvider::new();
+        let context = DocumentationContext {
+            platform_version: Some("8.3.27.2074".to_string()),
+            installation_root: Some(root),
+        };
+        let error = provider
+            .get(
+                "platform-syntax-help:syntax-context:objects/Page.html",
+                "ru",
+                &context,
+            )
+            .expect("локатор наш")
+            .expect_err("битый корпус — отказ владельца");
+        assert!(
+            error.contains("shcntx_ru.hbk"),
+            "отказ обязан назвать неразобравшийся контейнер, получено {error}"
+        );
     }
 
     /// Платформа, переустановленная в тот же каталог, — не экзотика, а

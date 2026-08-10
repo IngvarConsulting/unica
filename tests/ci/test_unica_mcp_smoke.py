@@ -639,7 +639,8 @@ class UnicaMcpSmokeTests(unittest.TestCase):
             (root / "src/Catalogs/Goods.xml").write_bytes(
                 (
                     "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">"
-                    "<Catalog><Properties><Name>Goods</Name>"
+                    "<Catalog uuid=\"7e082488-1a41-4d06-b4be-66265c55ca16\">"
+                    "<Properties><Name>Goods</Name>"
                     "<Owners><xr:Item xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\">"
                     "Catalog.Kinds</xr:Item></Owners>"
                     "</Properties></Catalog></MetaDataObject>"

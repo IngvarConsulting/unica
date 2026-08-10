@@ -1,6 +1,8 @@
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
-use crate::domain::code_intelligence::{CodeIntelligenceReadRequest, SearchRequest};
+use crate::domain::code_intelligence::{
+    CodeIntelligenceReadRequest, ProviderDeadline, SearchRequest,
+};
 use crate::domain::events::{runtime_event_kind, DomainEvent, DomainEventKind};
 use crate::domain::workspace::WorkspaceContext;
 pub(crate) use operation_descriptors::SupportGuardRequirement;
@@ -10,6 +12,7 @@ use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 pub(crate) use tool_contracts::{
     DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS, DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
 };
@@ -25,6 +28,8 @@ pub(crate) mod source_navigation;
 pub(crate) mod source_resources;
 pub(crate) mod tool_contracts;
 pub use tool_contracts::input_schema_for_tool;
+
+const PUBLIC_INVOCATION_DEADLINE: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy)]
 pub struct ToolSpec {
@@ -211,6 +216,7 @@ impl UnicaApplication {
         args: &Map<String, Value>,
         cancellation: CancellationToken,
     ) -> Result<OperationResult, String> {
+        let deadline = ProviderDeadline::new(Instant::now() + PUBLIC_INVOCATION_DEADLINE);
         let spec = tools()
             .into_iter()
             .find(|tool| tool.name == name)
@@ -222,7 +228,7 @@ impl UnicaApplication {
                     format!("unknown unica tool: {name}")
                 }
             })?;
-        call_tool(spec, args, self.ports.as_ref(), &cancellation)
+        call_tool(spec, args, self.ports.as_ref(), &cancellation, deadline)
     }
 }
 
@@ -548,12 +554,21 @@ pub fn tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "unica.documentation.search",
-            description: "Search installed-platform help across documentation providers.",
+            description:
+                "Search the workspace configuration's embedded help, platform help, and development standards across documentation providers.",
             mutating: false,
             cache_access: CacheAccess::default(),
             handler: ToolHandler::Documentation {
                 operation: "search",
             },
+        },
+        ToolSpec {
+            name: "unica.documentation.get",
+            description:
+                "Fetch the full text of a documentation search hit by its documentId locator.",
+            mutating: false,
+            cache_access: CacheAccess::default(),
+            handler: ToolHandler::Documentation { operation: "get" },
         },
     ]);
     specs
@@ -564,6 +579,7 @@ fn call_tool(
     args: &Map<String, Value>,
     ports: &dyn ApplicationPorts,
     cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
 ) -> Result<OperationResult, String> {
     let normalized_args = tool_contracts::normalize_native_path_aliases(spec, args)?;
     let args = &normalized_args;
@@ -575,12 +591,17 @@ fn call_tool(
     let cwd = args.get("cwd").and_then(Value::as_str).map(PathBuf::from);
     let context = ports.discover_workspace(cwd)?;
     ports.validate_tool_context(spec, args, dry_run, &context)?;
+    let mut prepared =
+        ports.prepare_tool_invocation(spec, args, &context, dry_run, cancellation, deadline)?;
     let xdto_target = XdtoLogicalTarget::from_call(spec, args);
     let mut format_guard_warning = None;
     let mut format_diagnostic = None;
-    let format_guard = ports
-        .evaluate_format_guard(spec, args, &context)
-        .map_err(|error| project_xdto_format_guard_error(xdto_target.as_ref(), error))?;
+    let format_guard = match prepared.format_guard.take() {
+        Some(check) => check,
+        None => ports
+            .evaluate_format_guard(spec, args, &context)
+            .map_err(|error| project_xdto_format_guard_error(xdto_target.as_ref(), error))?,
+    };
     match format_guard {
         FormatGuardCheck::Allow => {}
         FormatGuardCheck::Warn {
@@ -777,14 +798,17 @@ fn call_tool(
         ToolHandler::SourceResources { operation } => {
             source_resources::invoke(operation, ports, args, &context, dry_run, cancellation)?
         }
-        _ => ports.invoke_handler_with_operational_config(
-            spec,
-            args,
-            &context,
-            dry_run,
-            operational_config.as_ref(),
-            cancellation,
-        )?,
+        _ => match prepared.handler.take() {
+            Some(handler) => handler,
+            None => ports.invoke_handler_with_operational_config(
+                spec,
+                args,
+                &context,
+                dry_run,
+                operational_config.as_ref(),
+                cancellation,
+            )?,
+        },
     };
     let mut outcome = handler_outcome.adapter;
     let handler_events = handler_outcome.events;
@@ -1805,7 +1829,7 @@ fn configuration_tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "unica.meta.info",
-            description: "Inspect one metadata object with validation and source-tree usage.",
+            description: "Inspect one metadata object with validation, proven subsystem memberships, and source-tree usage.",
             mutating: false,
             cache_access: CacheAccess {
                 reads: &["workspace_graph", "metadata_graph"],
@@ -1973,7 +1997,7 @@ fn configuration_tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "unica.subsystem.info",
-            description: "Inspect subsystem XML and command interface.",
+            description: "Inspect a registered subsystem tree from a directory, a focused registered tree from XML, or an unregistered XML locally.",
             mutating: false,
             cache_access: cache_access_for("subsystem-info", None),
             handler: ToolHandler::NativeOperation {
@@ -2176,11 +2200,14 @@ fn cache_access_for(operation: &str, event: Option<DomainEventKind>) -> CacheAcc
 mod tests {
     use super::*;
     use crate::composition::testing::{
-        create_file_link_fixture_for_test, file_identity_for_test, prepare_file_for_removal,
-        set_unix_mode_for_test, unix_mode_for_test, with_publication_lock_contention_signal,
-        with_publication_lock_pause, CompileTransaction, FileLinkFixtureOutcome,
+        child_subsystem_stub_xml, create_file_link_fixture_for_test, file_identity_for_test,
+        prepare_file_for_removal, set_unix_mode_for_test, unix_mode_for_test,
+        with_publication_lock_contention_signal, with_publication_lock_pause,
+        with_secure_tree_test_hook, CompileTransaction, FileLinkFixtureOutcome, SecureTreePhase,
     };
     use serde_json::Map;
+    use std::cell::Cell;
+    use std::rc::Rc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
     use std::sync::{mpsc, Arc, Barrier};
@@ -6523,6 +6550,458 @@ mod tests {
         );
         assert_eq!(std::fs::read_to_string(config).unwrap(), before);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn subsystem_format_guard_workspace(
+        prefix: &str,
+    ) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        let root = test_workspace_root(prefix);
+        let workspace = root.join("workspace");
+        let source = workspace.join("src");
+        let child = source.join("Subsystems/Parent/Subsystems/Child.xml");
+        std::fs::create_dir_all(child.parent().unwrap()).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Test</Name></Properties><ChildObjects><Subsystem>Parent</Subsystem></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Subsystems/Parent.xml"),
+            child_subsystem_stub_xml("Parent", "2.20").replacen(
+                "<ChildObjects/>",
+                "<ChildObjects><Subsystem>Child</Subsystem></ChildObjects>",
+                1,
+            ),
+        )
+        .unwrap();
+        std::fs::write(&child, child_subsystem_stub_xml("Child", "2.21")).unwrap();
+        let physical_workspace = workspace.canonicalize().unwrap();
+        (root, physical_workspace, child)
+    }
+
+    fn assert_public_subsystem_format_warning(
+        workspace: &std::path::Path,
+        subsystem_path: &str,
+        child: &std::path::Path,
+    ) {
+        let args = Map::from_iter([
+            (
+                "cwd".to_string(),
+                Value::String(workspace.canonicalize().unwrap().display().to_string()),
+            ),
+            (
+                "SubsystemPath".to_string(),
+                Value::String(subsystem_path.to_string()),
+            ),
+        ]);
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.subsystem.info", &args)
+            .unwrap();
+
+        assert!(result.ok, "{result:?}");
+        assert!(!result.warnings.is_empty(), "{result:?}");
+        let diagnostic = &result.diagnostics.as_ref().unwrap()["formatCompatibility"];
+        assert_eq!(diagnostic["actualFormat"], "2.21", "{result:?}");
+        assert_eq!(
+            normalized_path(&std::path::PathBuf::from(
+                diagnostic["root"].as_str().unwrap()
+            )),
+            normalized_path(child)
+        );
+    }
+
+    #[test]
+    fn public_subsystem_format_guard_covers_registered_descendants_for_a_directory_without_mode() {
+        let (root, workspace, child) =
+            subsystem_format_guard_workspace("unica-subsystem-format-directory");
+
+        assert_public_subsystem_format_warning(&workspace, "src/Subsystems", &child);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn public_subsystem_format_guard_covers_registered_descendants_for_a_file_without_mode() {
+        let (root, workspace, child) =
+            subsystem_format_guard_workspace("unica-subsystem-format-file");
+
+        assert_public_subsystem_format_warning(&workspace, "src/Subsystems/Parent.xml", &child);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn public_subsystem_info_projects_registered_dependency_errors_as_typed_failures() {
+        let root = test_workspace_root("unica-subsystem-format-resolver-error");
+        let workspace = root.join("workspace");
+        let source = workspace.join("src");
+        std::fs::create_dir_all(source.join("Subsystems")).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Test</Name></Properties><ChildObjects><Subsystem>Missing</Subsystem></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        let args = Map::from_iter([
+            (
+                "cwd".to_string(),
+                Value::String(workspace.canonicalize().unwrap().display().to_string()),
+            ),
+            (
+                "SubsystemPath".to_string(),
+                Value::String("src/Subsystems".to_string()),
+            ),
+        ]);
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.subsystem.info", &args)
+            .expect("provider evidence failures stay inside the public tool envelope");
+
+        assert!(!result.ok, "{result:?}");
+        assert!(result.data.is_none(), "{result:?}");
+        let diagnostics = result
+            .diagnostics
+            .as_ref()
+            .and_then(Value::as_array)
+            .expect("typed provider diagnostics");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic["code"] == "provider_unavailable"),
+            "{diagnostics:?}"
+        );
+        assert!(
+            result.errors.iter().any(|error| {
+                error.contains("registered subsystem descriptor")
+                    && error.contains("Subsystems/Missing.xml")
+            }),
+            "{result:?}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn public_subsystem_info_does_not_classify_descriptor_text_as_a_control_error() {
+        let root = test_workspace_root("unica-subsystem-provider-error-text");
+        let workspace = root.join("workspace");
+        let source = workspace.join("src");
+        std::fs::create_dir_all(source.join("Subsystems")).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Test</Name></Properties><ChildObjects><Subsystem>Injected</Subsystem></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Subsystems/Injected.xml"),
+            child_subsystem_stub_xml("Injected", "2.20").replace(
+                "<Name>Injected</Name>",
+                "<Name>provider deadline exceeded</Name>",
+            ),
+        )
+        .unwrap();
+        let args = Map::from_iter([
+            (
+                "cwd".to_string(),
+                Value::String(workspace.canonicalize().unwrap().display().to_string()),
+            ),
+            (
+                "SubsystemPath".to_string(),
+                Value::String("src/Subsystems".to_string()),
+            ),
+        ]);
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.subsystem.info", &args)
+            .expect("descriptor proof failures stay inside the public tool envelope");
+
+        assert!(!result.ok, "{result:?}");
+        assert!(result.data.is_none(), "{result:?}");
+        let diagnostics = result
+            .diagnostics
+            .as_ref()
+            .and_then(Value::as_array)
+            .expect("typed provider diagnostics");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic["code"] == "provider_unavailable"),
+            "{diagnostics:?}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn public_subsystem_info_dry_run_does_not_read_a_missing_target() {
+        let root = test_workspace_root("unica-subsystem-dry-run-missing-target");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join("v8project.yaml"), "format: DESIGNER\n").unwrap();
+        let missing = workspace.join("src/Subsystems/Продажи.xml");
+        let args = Map::from_iter([
+            (
+                "cwd".to_string(),
+                Value::String(workspace.canonicalize().unwrap().display().to_string()),
+            ),
+            (
+                "SubsystemPath".to_string(),
+                Value::String("src/Subsystems/Продажи.xml".to_string()),
+            ),
+            ("dryRun".to_string(), Value::Bool(true)),
+        ]);
+
+        assert!(!missing.exists());
+        let result = UnicaApplication::new()
+            .call_tool("unica.subsystem.info", &args)
+            .expect("dry-run must not require target or topology bytes");
+
+        assert!(result.ok, "{result:?}");
+        assert!(result.summary.contains("dry run"), "{result:?}");
+        assert!(result.data.is_none(), "{result:?}");
+        assert!(
+            !missing.exists(),
+            "dry-run must not create the missing target"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn public_subsystem_validate_dry_run_does_not_read_a_missing_target() {
+        let root = test_workspace_root("unica-subsystem-validate-dry-run-missing-target");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join("v8project.yaml"), "format: DESIGNER\n").unwrap();
+        let missing = workspace.join("Subsystems/Продажи.xml");
+        let args = Map::from_iter([
+            (
+                "cwd".to_string(),
+                Value::String(workspace.canonicalize().unwrap().display().to_string()),
+            ),
+            (
+                "SubsystemPath".to_string(),
+                Value::String("Subsystems/Продажи.xml".to_string()),
+            ),
+            ("dryRun".to_string(), Value::Bool(true)),
+        ]);
+
+        assert!(!missing.exists());
+        let result = UnicaApplication::new()
+            .call_tool("unica.subsystem.validate", &args)
+            .expect("read-only dry-run must not require target bytes");
+
+        assert!(result.ok, "{result:?}");
+        assert!(result.summary.contains("dry run"), "{result:?}");
+        assert!(
+            !missing.exists(),
+            "dry-run must not create the missing target"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn public_subsystem_validate_missing_target_is_a_normal_typed_failure() {
+        let root = test_workspace_root("unica-subsystem-validate-missing-target");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join("v8project.yaml"), "format: DESIGNER\n").unwrap();
+        let args = Map::from_iter([
+            (
+                "cwd".to_string(),
+                Value::String(workspace.canonicalize().unwrap().display().to_string()),
+            ),
+            (
+                "SubsystemPath".to_string(),
+                Value::String("missing/Subsystem.xml".to_string()),
+            ),
+            ("dryRun".to_string(), Value::Bool(false)),
+        ]);
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.subsystem.validate", &args)
+            .expect("validation failures stay inside the public tool envelope");
+
+        assert!(!result.ok, "{result:?}");
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.contains("File not found")),
+            "{result:?}"
+        );
+        assert!(result.data.is_none(), "{result:?}");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn public_subsystem_info_cancellation_stops_the_preflight_registered_capture() {
+        let (root, workspace, _) =
+            subsystem_format_guard_workspace("unica-subsystem-public-preflight-cancel");
+        let args = Map::from_iter([
+            (
+                "cwd".to_string(),
+                Value::String(workspace.display().to_string()),
+            ),
+            (
+                "SubsystemPath".to_string(),
+                Value::String("src/Subsystems".to_string()),
+            ),
+        ]);
+        let cancellation = CancellationToken::new();
+        let hook_cancellation = cancellation.clone();
+        let read_after_cancellation = Rc::new(Cell::new(false));
+        let hook_read_after_cancellation = Rc::clone(&read_after_cancellation);
+
+        let result = with_secure_tree_test_hook(
+            move |phase| match phase {
+                SecureTreePhase::AfterRebindEntry(path)
+                    if path == std::path::Path::new("Configuration.xml") =>
+                {
+                    hook_cancellation.cancel();
+                }
+                SecureTreePhase::AfterRebindEntry(path)
+                    if path != std::path::Path::new("Configuration.xml") =>
+                {
+                    hook_read_after_cancellation.set(true);
+                }
+                _ => {}
+            },
+            || {
+                UnicaApplication::new().call_tool_cancellable(
+                    "unica.subsystem.info",
+                    &args,
+                    cancellation,
+                )
+            },
+        )
+        .unwrap();
+
+        assert!(!result.ok, "{result:?}");
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.starts_with("cancelled:")),
+            "{result:?}"
+        );
+        assert!(
+            !read_after_cancellation.get(),
+            "public preflight continued into registered descriptors after cancellation"
+        );
+        assert!(
+            result.diagnostics.as_ref().is_none_or(|diagnostics| {
+                !diagnostics.to_string().contains("provider_unavailable")
+            }),
+            "cancellation must not be mislabeled as provider_unavailable: {result:?}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn public_subsystem_info_uses_one_registered_snapshot_for_guard_and_handler() {
+        let (root, workspace, child) =
+            subsystem_format_guard_workspace("unica-subsystem-single-public-snapshot");
+        let args = Map::from_iter([
+            (
+                "cwd".to_string(),
+                Value::String(workspace.display().to_string()),
+            ),
+            (
+                "SubsystemPath".to_string(),
+                Value::String("src/Subsystems".to_string()),
+            ),
+        ]);
+        let completed_snapshots = Rc::new(Cell::new(0usize));
+        let hook_completed_snapshots = Rc::clone(&completed_snapshots);
+        let child_during_capture = child.clone();
+
+        let result = with_secure_tree_test_hook(
+            move |phase| {
+                if phase == &SecureTreePhase::AfterFinalIdentityProofs {
+                    let completed = hook_completed_snapshots.get();
+                    hook_completed_snapshots.set(completed + 1);
+                    if completed == 0 {
+                        std::fs::write(
+                            &child_during_capture,
+                            child_subsystem_stub_xml("Child", "2.20"),
+                        )
+                        .unwrap();
+                    }
+                }
+            },
+            || UnicaApplication::new().call_tool("unica.subsystem.info", &args),
+        )
+        .unwrap();
+
+        assert!(result.ok, "{result:?}");
+        assert_eq!(
+            completed_snapshots.get(),
+            1,
+            "format preflight and handler must consume one prepared registered snapshot"
+        );
+        assert_eq!(
+            result.diagnostics.as_ref().unwrap()["formatCompatibility"]["actualFormat"],
+            "2.21",
+            "format warning must use the exact bytes captured before the descriptor changed"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn public_subsystem_info_deadline_covers_registered_preflight() {
+        let (root, workspace, _) =
+            subsystem_format_guard_workspace("unica-subsystem-public-preflight-deadline");
+        let args = Map::from_iter([
+            (
+                "cwd".to_string(),
+                Value::String(workspace.display().to_string()),
+            ),
+            (
+                "SubsystemPath".to_string(),
+                Value::String("src/Subsystems".to_string()),
+            ),
+        ]);
+        let delayed = Rc::new(Cell::new(false));
+        let hook_delayed = Rc::clone(&delayed);
+
+        let result = with_secure_tree_test_hook(
+            move |phase| {
+                if phase == &SecureTreePhase::RootOpened && !hook_delayed.replace(true) {
+                    std::thread::sleep(Duration::from_millis(5_100));
+                }
+            },
+            || UnicaApplication::new().call_tool("unica.subsystem.info", &args),
+        )
+        .unwrap();
+
+        assert!(!result.ok, "{result:?}");
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.contains("provider deadline exceeded")),
+            "{result:?}"
+        );
+        assert!(
+            result.diagnostics.as_ref().is_none_or(|diagnostics| {
+                !diagnostics.to_string().contains("provider_unavailable")
+            }),
+            "deadline expiry must not be mislabeled as provider_unavailable: {result:?}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

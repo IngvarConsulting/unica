@@ -21,10 +21,14 @@ use std::io::{ErrorKind, Read};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::infrastructure::platform::filesystem::{
-    file_identity, hard_link_count, metadata_is_link_or_reparse_point, prepare_file_for_removal,
-    rename_no_replace, FileIdentity, PortablePermissions,
+    create_new_directory_child, file_identity, hard_link_count, metadata_is_link_or_reparse_point,
+    open_directory_child_nofollow, open_directory_nofollow, open_regular_child_nofollow,
+    prepare_file_for_removal, remove_identity_bound_empty_directory_child,
+    remove_identity_bound_regular_child, rename_identity_bound_regular_child_no_replace,
+    rename_no_replace, retain_regular_child_for_cleanup, FileIdentity, PortablePermissions,
 };
 use crate::infrastructure::source_roots::normalize_path_identity;
 
@@ -35,19 +39,21 @@ use std::cell::{Cell, RefCell};
 use crate::infrastructure::platform::filesystem::replace_file_atomically;
 
 #[cfg(test)]
-use std::sync::{Arc, Barrier};
+use std::sync::Barrier;
 
 use super::cf::cf_edit_add_child_object_text;
 use super::single_file_publisher::{
-    cleanup_publication_artifact, prepare, with_publication_locks_mode_and_guard_targets,
-    write_exact_new_file, CleanupWarning, PreparedCreate, PreparedPublication, PreparedReplace,
+    absolute_lexical_path, cleanup_publication_artifact, prepare, verify_publication_artifact,
+    with_publication_locks_mode_and_guard_targets, write_exact_new_file_in_directory,
+    CleanupArtifact, CleanupWarning, PreparedCreate, PreparedPublication, PreparedReplace,
     PublicationLockToken, PublicationTreeLockMode, PublishError, PublishErrorKind, PublishMode,
     PublishRequest,
 };
 
 #[cfg(test)]
 use super::single_file_publisher::{
-    with_before_commit_hook, with_publication_lock_contention_signal, with_publication_lock_pause,
+    with_before_bound_cleanup_hook, with_before_commit_hook,
+    with_publication_lock_contention_signal, with_publication_lock_pause, write_exact_new_file,
 };
 
 const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
@@ -1000,7 +1006,7 @@ impl CompileTransaction {
             Err(error) => {
                 let primary = adapt_publish_error(&error, PublicationRole::Transaction);
                 record_publish_error_cleanup(&mut state, &error);
-                let mut cleanup_errors = retry_warned_artifacts(&mut state);
+                let mut cleanup_errors = retry_and_finish_recovery_cleanups(&mut state);
                 cleanup_errors.extend(cleanup_created_directories(&mut state.created_dirs));
                 cleanup_errors.extend(std::mem::take(&mut state.cleanup_warnings));
                 Err(with_cleanup_diagnostics(primary, cleanup_errors))
@@ -1176,20 +1182,46 @@ impl CompileTransaction {
                         return Err(error.into());
                     }
                 };
-                if let Err(error) =
-                    write_exact_new_file(&recovery.path, &registration.original, &permissions)
-                {
-                    let message = adapt_publish_error(&error, PublicationRole::Recovery);
-                    record_publish_error_cleanup(state, &error);
+                let recovery_path = recovery.path();
+                if let Err(error) = recovery.cleanup.directory.verify() {
                     record_cleanup_warnings(state, prepared.discard());
-                    record_cleanup_strings(state, recovery.cleanup());
-                    return Err(message);
+                    record_recovery_cleanup(state, &mut recovery);
+                    return Err(error.into());
+                }
+                let recovery_directory = match recovery.cleanup.directory.try_clone_directory() {
+                    Ok(directory) => directory,
+                    Err(error) => {
+                        record_cleanup_warnings(state, prepared.discard());
+                        record_recovery_cleanup(state, &mut recovery);
+                        return Err(error.into());
+                    }
+                };
+                let recovery_artifact = match write_exact_new_file_in_directory(
+                    &recovery_path,
+                    recovery_directory,
+                    recovery.cleanup.directory.identity,
+                    &registration.original,
+                    &permissions,
+                ) {
+                    Ok(artifact) => artifact,
+                    Err(error) => {
+                        let message = adapt_publish_error(&error, PublicationRole::Recovery);
+                        record_publish_error_cleanup(state, &error);
+                        record_cleanup_warnings(state, prepared.discard());
+                        record_recovery_cleanup(state, &mut recovery);
+                        return Err(message);
+                    }
+                };
+                if let Err(error) = recovery.bind_artifact(recovery_artifact) {
+                    record_cleanup_warnings(state, prepared.discard());
+                    record_recovery_cleanup(state, &mut recovery);
+                    return Err(error.into());
                 }
 
                 pause_after_registration_recovery();
                 if let Err(error) = failpoint_after_registration_backup() {
                     record_cleanup_warnings(state, prepared.discard());
-                    record_cleanup_strings(state, recovery.cleanup());
+                    record_recovery_cleanup(state, &mut recovery);
                     return Err(error.into());
                 }
 
@@ -1198,7 +1230,7 @@ impl CompileTransaction {
                     Err(error) => {
                         let message = adapt_publish_error(&error, PublicationRole::Registration);
                         record_publish_error_cleanup(state, &error);
-                        record_cleanup_strings(state, recovery.cleanup());
+                        record_recovery_cleanup(state, &mut recovery);
                         return Err(message);
                     }
                 };
@@ -1262,7 +1294,7 @@ impl CompileTransaction {
                 state
                     .published_registrations
                     .iter()
-                    .map(|published| published.recovery_directory.clone())
+                    .map(|published| published.recovery.directory_path().to_path_buf())
                     .chain(
                         state
                             .published_removals
@@ -1831,8 +1863,7 @@ struct PublishedCreate {
 #[derive(Debug)]
 struct PublishedRegistration {
     target: PathBuf,
-    recovery: PathBuf,
-    recovery_directory: PathBuf,
+    recovery: RecoveryCleanup,
     original: Vec<u8>,
     published: PublishedFileExpectation,
     original_permissions: PortablePermissions,
@@ -1856,38 +1887,404 @@ impl PublishedFileExpectation {
     }
 }
 
+#[derive(Debug, Clone)]
+struct RecoveryDirectory {
+    path: PathBuf,
+    identity: FileIdentity,
+    parent_identity: FileIdentity,
+    parent: Arc<fs::File>,
+    directory: Arc<Mutex<Option<fs::File>>>,
+}
+
+impl RecoveryDirectory {
+    fn reserve(path: &Path) -> Result<Self, (ErrorKind, String)> {
+        let route = absolute_lexical_path(path)
+            .map_err(|error| (ErrorKind::InvalidInput, error.to_string()))?;
+        let name = route
+            .file_name()
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| {
+                (
+                    ErrorKind::InvalidInput,
+                    format!(
+                        "registration recovery directory has no child name: {}",
+                        route.display()
+                    ),
+                )
+            })?;
+        let lexical_parent = route.parent().ok_or_else(|| {
+            (
+                ErrorKind::InvalidInput,
+                format!(
+                    "registration recovery directory has no parent: {}",
+                    route.display()
+                ),
+            )
+        })?;
+        let canonical_parent = fs::canonicalize(lexical_parent).map_err(|error| {
+            (
+                error.kind(),
+                format!(
+                    "failed to resolve registration recovery parent identity {}: {error}",
+                    lexical_parent.display()
+                ),
+            )
+        })?;
+        let parent = open_directory_nofollow(&canonical_parent).map_err(|error| {
+            (
+                error.kind(),
+                format!(
+                    "failed to bind registration recovery parent identity {}: {error}",
+                    canonical_parent.display()
+                ),
+            )
+        })?;
+        let parent_identity = file_identity(&parent).map_err(|error| {
+            (
+                error.kind(),
+                format!(
+                    "failed to inspect registration recovery parent identity {}: {error}",
+                    canonical_parent.display()
+                ),
+            )
+        })?;
+        let directory = create_new_directory_child(&parent, name).map_err(|error| {
+            (
+                error.kind(),
+                format!(
+                    "failed to reserve registration recovery directory {}: {error}",
+                    route.display()
+                ),
+            )
+        })?;
+        let identity = file_identity(&directory).map_err(|error| {
+            (
+                error.kind(),
+                format!(
+                    "failed to inspect registration recovery directory identity {}; the unverified directory was left untouched: {error}",
+                    route.display()
+                ),
+            )
+        })?;
+        Ok(Self {
+            path: route,
+            identity,
+            parent_identity,
+            parent: Arc::new(parent),
+            directory: Arc::new(Mutex::new(Some(directory))),
+        })
+    }
+
+    fn try_clone_directory(&self) -> Result<Arc<fs::File>, String> {
+        let retained = self.directory.lock().map_err(|_| {
+            format!(
+                "registration recovery directory-handle state is poisoned: {}",
+                self.path.display()
+            )
+        })?;
+        let directory = retained.as_ref().ok_or_else(|| {
+            format!(
+                "retained registration recovery directory handle is missing: {}",
+                self.path.display()
+            )
+        })?;
+        directory.try_clone().map(Arc::new).map_err(|error| {
+            format!(
+                "failed to duplicate registration recovery directory handle {}: {error}",
+                self.path.display()
+            )
+        })
+    }
+
+    fn verify(&self) -> Result<(), String> {
+        let name = self.path.file_name().ok_or_else(|| {
+            format!(
+                "registration recovery directory has no child name: {}",
+                self.path.display()
+            )
+        })?;
+        let lexical_parent = self.path.parent().ok_or_else(|| {
+            format!(
+                "registration recovery directory has no parent: {}",
+                self.path.display()
+            )
+        })?;
+        let canonical_parent = fs::canonicalize(lexical_parent).map_err(|error| {
+            format!(
+                "registration recovery parent route could not be resolved; replacement left untouched at {}: {error}",
+                lexical_parent.display()
+            )
+        })?;
+        let parent = open_directory_nofollow(&canonical_parent).map_err(|error| {
+            format!(
+                "registration recovery parent identity could not be proven; replacement left untouched at {}: {error}",
+                canonical_parent.display()
+            )
+        })?;
+        let parent_identity = file_identity(&parent).map_err(|error| {
+            format!(
+                "failed to recheck registration recovery parent identity {}; replacement left untouched: {error}",
+                canonical_parent.display()
+            )
+        })?;
+        if parent_identity != self.parent_identity {
+            return Err(format!(
+                "registration recovery parent identity changed; replacement left untouched at {}",
+                lexical_parent.display()
+            ));
+        }
+        let retained_parent_identity = file_identity(&self.parent).map_err(|error| {
+            format!(
+                "failed to recheck retained registration recovery parent identity {}; replacement left untouched: {error}",
+                self.path.display()
+            )
+        })?;
+        if retained_parent_identity != self.parent_identity {
+            return Err(format!(
+                "retained registration recovery parent identity changed; replacement left untouched at {}",
+                self.path.display()
+            ));
+        }
+        let directory = open_directory_child_nofollow(&parent, name).map_err(|error| {
+            format!(
+                "registration recovery directory identity could not be proven; replacement left untouched at {}: {error}",
+                self.path.display()
+            )
+        })?;
+        let identity = file_identity(&directory).map_err(|error| {
+            format!(
+                "failed to recheck registration recovery directory identity {}; replacement left untouched: {error}",
+                self.path.display()
+            )
+        })?;
+        if identity != self.identity {
+            return Err(format!(
+                "registration recovery directory identity changed; replacement left untouched at {}",
+                self.path.display()
+            ));
+        }
+        let retained = self.directory.lock().map_err(|_| {
+            format!(
+                "registration recovery directory-handle state is poisoned; replacement left untouched at {}",
+                self.path.display()
+            )
+        })?;
+        let retained = retained.as_ref().ok_or_else(|| {
+            format!(
+                "retained registration recovery directory handle is missing at {}",
+                self.path.display()
+            )
+        })?;
+        let retained_identity = file_identity(retained).map_err(|error| {
+            format!(
+                "failed to recheck retained registration recovery directory identity {}; replacement left untouched: {error}",
+                self.path.display()
+            )
+        })?;
+        if retained_identity != self.identity {
+            return Err(format!(
+                "retained registration recovery directory identity changed; replacement left untouched at {}",
+                self.path.display()
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RecoveryCleanup {
+    directory: RecoveryDirectory,
+    artifact: Option<CleanupArtifact>,
+    directory_removed: bool,
+}
+
+impl RecoveryCleanup {
+    fn reserve(directory: &Path) -> Result<Self, (ErrorKind, String)> {
+        Ok(Self {
+            directory: RecoveryDirectory::reserve(directory)?,
+            artifact: None,
+            directory_removed: false,
+        })
+    }
+
+    fn path(&self) -> PathBuf {
+        self.directory.path.join("original")
+    }
+
+    fn directory_path(&self) -> &Path {
+        &self.directory.path
+    }
+
+    fn bind_artifact(&mut self, artifact: CleanupArtifact) -> Result<(), String> {
+        let expected_path = self.path();
+        let binding_changed = artifact.path() != expected_path
+            || artifact.directory_identity() != self.directory.identity;
+        self.artifact = Some(artifact);
+        if binding_changed {
+            return Err(format!(
+                "registration recovery artifact identity is not bound to its reserved directory: {}",
+                expected_path.display()
+            ));
+        }
+        self.directory.verify()?;
+        Ok(())
+    }
+
+    fn artifact(&self) -> Option<&CleanupArtifact> {
+        self.artifact.as_ref()
+    }
+
+    fn verify_artifact(&self) -> Result<(), String> {
+        self.directory.verify()?;
+        let artifact = self.artifact.as_ref().ok_or_else(|| {
+            format!(
+                "registration recovery artifact is no longer retained at {}",
+                self.path().display()
+            )
+        })?;
+        match verify_publication_artifact(artifact) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(format!(
+                "registration recovery artifact identity is missing at {}",
+                artifact.path().display()
+            )),
+            Err(warning) => Err(warning.to_string()),
+        }
+    }
+
+    fn cleanup_file(&mut self) -> Result<(), CleanupWarning> {
+        let Some(artifact) = self.artifact.as_ref() else {
+            return Ok(());
+        };
+        cleanup_publication_artifact(artifact)?;
+        self.artifact = None;
+        Ok(())
+    }
+
+    fn advance_completed_file_cleanup(&mut self) -> Result<bool, String> {
+        let Some(artifact) = self.artifact.as_ref() else {
+            return Ok(false);
+        };
+        if !artifact.cleanup_completed().map_err(|error| {
+            format!(
+                "failed to inspect registration recovery cleanup state {}: {error}",
+                artifact.path().display()
+            )
+        })? {
+            return Ok(false);
+        }
+        self.artifact = None;
+        Ok(true)
+    }
+
+    fn cleanup_directory(&mut self) -> Result<(), String> {
+        if self.directory_removed {
+            return Ok(());
+        }
+        if self.artifact.is_some() {
+            return Err(format!(
+                "registration recovery file is still present in {}",
+                self.directory.path.display()
+            ));
+        }
+        self.directory.verify()?;
+        let name = self.directory.path.file_name().ok_or_else(|| {
+            format!(
+                "registration recovery directory has no child name: {}",
+                self.directory.path.display()
+            )
+        })?;
+        let mut retained = self.directory.directory.lock().map_err(|_| {
+            format!(
+                "registration recovery directory-handle state is poisoned: {}",
+                self.directory.path.display()
+            )
+        })?;
+        let retained_directory = retained.as_ref().ok_or_else(|| {
+            format!(
+                "retained registration recovery directory handle is missing: {}",
+                self.directory.path.display()
+            )
+        })?;
+        remove_identity_bound_empty_directory_child(
+            &self.directory.parent,
+            name,
+            self.directory.identity,
+            retained_directory,
+        )
+        .map_err(|error| {
+            format!(
+                "failed to remove identity-bound registration recovery directory {}: {error}",
+                self.directory.path.display()
+            )
+        })?;
+        *retained = None;
+        self.directory_removed = true;
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 struct PendingRecovery {
-    directory: PathBuf,
-    path: PathBuf,
+    cleanup: RecoveryCleanup,
     armed: bool,
 }
 
+#[derive(Debug, Default)]
+struct RecoveryCleanupReport {
+    diagnostics: Vec<String>,
+    artifact_warnings: Vec<CleanupWarning>,
+}
+
+impl RecoveryCleanupReport {
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.diagnostics.is_empty() && self.artifact_warnings.is_empty()
+    }
+}
+
 impl PendingRecovery {
-    fn cleanup(&mut self) -> Vec<String> {
+    fn cleanup(&mut self) -> RecoveryCleanupReport {
         if !self.armed {
-            return Vec::new();
+            return RecoveryCleanupReport::default();
         }
 
-        if let Err(warning) = cleanup_publication_artifact(&self.path) {
-            return vec![format!(
-                "failed to remove pending registration recovery {warning}"
-            )];
+        if let Err(warning) = self.cleanup.cleanup_file() {
+            return RecoveryCleanupReport {
+                diagnostics: vec![format!(
+                    "failed to remove pending registration recovery {warning}"
+                )],
+                artifact_warnings: vec![warning],
+            };
         }
-        match fs::remove_dir(&self.directory) {
+        match self.cleanup.cleanup_directory() {
             Ok(()) => {
                 self.armed = false;
-                Vec::new()
+                RecoveryCleanupReport::default()
             }
-            Err(error) if error.kind() == ErrorKind::NotFound => {
-                self.armed = false;
-                Vec::new()
-            }
-            Err(error) => vec![format!(
-                "failed to remove pending registration recovery directory {}: {error}",
-                self.directory.display()
-            )],
+            Err(error) => RecoveryCleanupReport {
+                diagnostics: vec![format!(
+                    "failed to remove pending registration recovery directory: {error}"
+                )],
+                artifact_warnings: Vec::new(),
+            },
         }
+    }
+
+    fn path(&self) -> PathBuf {
+        self.cleanup.path()
+    }
+
+    fn bind_artifact(&mut self, artifact: CleanupArtifact) -> Result<(), String> {
+        self.cleanup.bind_artifact(artifact)
+    }
+
+    fn defer_cleanup(&mut self) -> Option<RecoveryCleanup> {
+        if !self.armed {
+            return None;
+        }
+        self.armed = false;
+        Some(self.cleanup.clone())
     }
 
     fn into_published(
@@ -1900,8 +2297,7 @@ impl PendingRecovery {
         self.armed = false;
         PublishedRegistration {
             target,
-            recovery: self.path.clone(),
-            recovery_directory: self.directory.clone(),
+            recovery: self.cleanup.clone(),
             original,
             published,
             original_permissions,
@@ -1993,7 +2389,8 @@ struct PublishState {
     published_registrations: Vec<PublishedRegistration>,
     published_removals: Vec<PublishedRemoval>,
     created_dirs: Vec<PathBuf>,
-    warned_artifacts: Vec<PathBuf>,
+    pending_artifact_cleanups: Vec<CleanupArtifact>,
+    pending_recovery_cleanups: Vec<RecoveryCleanup>,
     cleanup_warnings: Vec<String>,
 }
 
@@ -2244,16 +2641,15 @@ fn reserve_recovery_with(
 ) -> Result<PendingRecovery, String> {
     for attempt in 1..=16 {
         let directory = next_directory();
-        match fs::create_dir(&directory) {
-            Ok(()) => {
+        match RecoveryCleanup::reserve(&directory) {
+            Ok(cleanup) => {
                 return Ok(PendingRecovery {
-                    path: directory.join("original"),
-                    directory,
+                    cleanup,
                     armed: true,
                 });
             }
-            Err(error) if error.kind() == ErrorKind::AlreadyExists && attempt < 16 => continue,
-            Err(error) => {
+            Err((ErrorKind::AlreadyExists, _)) if attempt < 16 => continue,
+            Err((_kind, error)) => {
                 return Err(format!(
                     "failed to reserve no-clobber recovery for {} at {}: {error}",
                     target.display(),
@@ -2439,8 +2835,10 @@ fn record_cleanup_warnings(
     warnings: impl IntoIterator<Item = CleanupWarning>,
 ) {
     for warning in warnings {
-        if !state.warned_artifacts.contains(&warning.path) {
-            state.warned_artifacts.push(warning.path.clone());
+        if !state.pending_artifact_cleanups.contains(&warning.artifact) {
+            state
+                .pending_artifact_cleanups
+                .push(warning.artifact.clone());
         }
         state.cleanup_warnings.push(warning.to_string());
     }
@@ -2448,6 +2846,15 @@ fn record_cleanup_warnings(
 
 fn record_cleanup_strings(state: &mut PublishState, warnings: impl IntoIterator<Item = String>) {
     state.cleanup_warnings.extend(warnings);
+}
+
+fn record_recovery_cleanup(state: &mut PublishState, recovery: &mut PendingRecovery) {
+    let report = recovery.cleanup();
+    record_cleanup_warnings(state, report.artifact_warnings);
+    record_cleanup_strings(state, report.diagnostics);
+    if let Some(cleanup) = recovery.defer_cleanup() {
+        state.pending_recovery_cleanups.push(cleanup);
+    }
 }
 
 fn discard_prepared<'request, 'lock, 'scope>(
@@ -2479,14 +2886,77 @@ fn discard_prepared_removals(
 }
 
 fn retry_warned_artifacts(state: &mut PublishState) -> Vec<String> {
-    std::mem::take(&mut state.warned_artifacts)
-        .into_iter()
-        .filter_map(|path| {
-            cleanup_publication_artifact(&path)
-                .err()
-                .map(|warning| format!("failed to retry publication cleanup {warning}"))
-        })
-        .collect()
+    #[cfg(test)]
+    run_before_cleanup_retry();
+    let mut errors = Vec::new();
+    for artifact in std::mem::take(&mut state.pending_artifact_cleanups) {
+        if let Err(warning) = cleanup_publication_artifact(&artifact) {
+            errors.push(format!("failed to retry publication cleanup {warning}"));
+            state.pending_artifact_cleanups.push(artifact);
+        }
+    }
+    errors
+}
+
+fn finish_pending_recovery_cleanups(state: &mut PublishState) -> Vec<String> {
+    let mut errors = Vec::new();
+    let mut pending = Vec::new();
+    for mut cleanup in std::mem::take(&mut state.pending_recovery_cleanups) {
+        if let Err(error) = cleanup.advance_completed_file_cleanup() {
+            errors.push(error);
+            pending.push(cleanup);
+            continue;
+        }
+        if cleanup.artifact().is_some() {
+            pending.push(cleanup);
+            continue;
+        }
+        if let Err(error) = cleanup.cleanup_directory() {
+            errors.push(format!(
+                "failed to finish pending registration recovery cleanup {}: {error}",
+                cleanup.directory_path().display()
+            ));
+            pending.push(cleanup);
+        }
+    }
+    state.pending_recovery_cleanups = pending;
+    errors
+}
+
+fn finish_retried_registration_recoveries(
+    registrations: &mut [PublishedRegistration],
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    for published in registrations {
+        match published.recovery.advance_completed_file_cleanup() {
+            Ok(_) => {}
+            Err(error) => {
+                errors.push(error);
+                continue;
+            }
+        }
+        if published.recovery.artifact().is_none() {
+            if let Err(error) = published.recovery.cleanup_directory() {
+                errors.push(format!(
+                    "failed to finish registration recovery cleanup {}: {error}",
+                    published.recovery.directory_path().display()
+                ));
+            }
+        }
+    }
+    errors
+}
+
+/// Retries identity-bound files before advancing their recovery owners to
+/// directory cleanup. The order is load-bearing because both owner queues
+/// observe completion through the shared file-handle slot.
+fn retry_and_finish_recovery_cleanups(state: &mut PublishState) -> Vec<String> {
+    let mut errors = retry_warned_artifacts(state);
+    errors.extend(finish_pending_recovery_cleanups(state));
+    errors.extend(finish_retried_registration_recoveries(
+        &mut state.published_registrations,
+    ));
+    errors
 }
 
 fn cleanup_created_directories(created_dirs: &mut Vec<PathBuf>) -> Vec<String> {
@@ -2692,31 +3162,182 @@ fn reserve_rollback_quarantine(target: &Path) -> Result<(PathBuf, PathBuf), Stri
     ))
 }
 
-fn restore_quarantined_file_no_clobber(quarantine: &Path, target: &Path) -> Result<(), String> {
-    fs::hard_link(quarantine, target).map_err(|error| {
+fn restore_quarantined_file_no_clobber(
+    quarantine_parent: &fs::File,
+    quarantine: &Path,
+    target_parent: &fs::File,
+    target: &Path,
+) -> Result<(), String> {
+    let quarantine_parent_path = quarantine.parent().ok_or_else(|| {
+        format!(
+            "rollback quarantine has no parent directory: {}",
+            quarantine.display()
+        )
+    })?;
+    let quarantine_name = quarantine.file_name().ok_or_else(|| {
+        format!(
+            "rollback quarantine has no child name: {}",
+            quarantine.display()
+        )
+    })?;
+    let target_parent_path = target.parent().ok_or_else(|| {
+        format!(
+            "restored rollback target has no parent directory: {}",
+            target.display()
+        )
+    })?;
+    let target_name = target.file_name().ok_or_else(|| {
+        format!(
+            "restored rollback target has no child name: {}",
+            target.display()
+        )
+    })?;
+    let retained_quarantine = open_regular_child_nofollow(quarantine_parent, quarantine_name)
+        .map_err(|error| {
+            format!(
+                "failed to retain quarantined concurrent file {} before restoration: {error}",
+                quarantine.display()
+            )
+        })?;
+    let quarantine_identity = file_identity(&retained_quarantine).map_err(|error| {
+        format!(
+            "failed to capture quarantined concurrent file identity {}: {error}",
+            quarantine.display()
+        )
+    })?;
+
+    run_before_rollback_quarantine_cleanup(quarantine);
+    let current_quarantine_parent =
+        open_directory_nofollow(quarantine_parent_path).map_err(|error| {
+            format!(
+                "failed to verify rollback quarantine route {}: {error}",
+                quarantine_parent_path.display()
+            )
+        })?;
+    if file_identity(&current_quarantine_parent).map_err(|error| {
+        format!(
+            "failed to capture rollback quarantine route identity {}: {error}",
+            quarantine_parent_path.display()
+        )
+    })? != file_identity(quarantine_parent).map_err(|error| {
+        format!(
+            "failed to capture retained rollback quarantine directory identity {}: {error}",
+            quarantine_parent_path.display()
+        )
+    })? {
+        return Err(format!(
+            "rollback quarantine directory identity changed at {}; replacement left untouched",
+            quarantine_parent_path.display()
+        ));
+    }
+    let current_quarantine =
+        open_regular_child_nofollow(&current_quarantine_parent, quarantine_name).map_err(
+            |error| {
+                format!(
+                    "failed to verify quarantined concurrent file route {}: {error}",
+                    quarantine.display()
+                )
+            },
+        )?;
+    if file_identity(&current_quarantine).map_err(|error| {
+        format!(
+            "failed to capture current quarantined file identity {}: {error}",
+            quarantine.display()
+        )
+    })? != quarantine_identity
+    {
+        return Err(format!(
+            "quarantined concurrent file identity changed at {}; replacement left untouched",
+            quarantine.display()
+        ));
+    }
+    let current_target_parent = open_directory_nofollow(target_parent_path).map_err(|error| {
+        format!(
+            "failed to verify rollback target parent route {}: {error}",
+            target_parent_path.display()
+        )
+    })?;
+    if file_identity(&current_target_parent).map_err(|error| {
+        format!(
+            "failed to capture rollback target parent route identity {}: {error}",
+            target_parent_path.display()
+        )
+    })? != file_identity(target_parent).map_err(|error| {
+        format!(
+            "failed to capture retained rollback target parent identity {}: {error}",
+            target_parent_path.display()
+        )
+    })? {
+        return Err(format!(
+            "rollback target parent identity changed at {}; replacement left untouched",
+            target_parent_path.display()
+        ));
+    }
+    drop(current_quarantine);
+    drop(current_quarantine_parent);
+    drop(current_target_parent);
+
+    run_before_rollback_quarantine_restore_rename(quarantine, target);
+    rename_identity_bound_regular_child_no_replace(
+        quarantine_parent,
+        quarantine_name,
+        quarantine_identity,
+        &retained_quarantine,
+        target_parent,
+        target_name,
+    )
+    .map_err(|error| {
         format!(
             "failed to restore quarantined concurrent file {} to {} without clobbering: {error}",
             quarantine.display(),
             target.display()
         )
     })?;
-    remove_if_exists(quarantine).map_err(|error| {
+    let restored_target =
+        open_regular_child_nofollow(target_parent, target_name).map_err(|error| {
+            format!(
+                "failed to verify restored rollback target {}: {error}",
+                target.display()
+            )
+        })?;
+    let restored_identity = file_identity(&restored_target).map_err(|error| {
         format!(
-            "restored quarantined concurrent file to {}, but failed to remove recovery link {}: {error}",
-            target.display(),
-            quarantine.display()
+            "failed to capture restored rollback target identity {}: {error}",
+            target.display()
         )
-    })
+    })?;
+    if restored_identity != quarantine_identity {
+        return Err(format!(
+            "restored rollback target identity differs from retained quarantine {}; unexpected target is left untouched at {}",
+            quarantine.display(),
+            target.display()
+        ));
+    }
+    Ok(())
 }
 
-fn rollback_registration(published: &PublishedRegistration, errors: &mut Vec<String>) {
+fn rollback_registration(
+    published: &mut PublishedRegistration,
+    errors: &mut Vec<String>,
+    cleanup_warnings: &mut Vec<CleanupWarning>,
+) {
+    let recovery_path = published.recovery.path();
+    let recovery_directory = published.recovery.directory_path().to_path_buf();
+    if let Err(error) = published.recovery.verify_artifact() {
+        errors.push(format!(
+            "rollback conflict for registration {}: {error}; recovery route is unverified at {}",
+            published.target.display(),
+            recovery_path.display()
+        ));
+        return;
+    }
     match inspect_published_target(&published.target, &published.published) {
         PublishedTargetState::Matches => {}
         PublishedTargetState::Missing => {
             errors.push(format!(
                 "rollback conflict for registration {}: the published target was removed concurrently; recovery is preserved at {}",
                 published.target.display(),
-                published.recovery.display()
+                recovery_path.display()
             ));
             return;
         }
@@ -2724,44 +3345,78 @@ fn rollback_registration(published: &PublishedRegistration, errors: &mut Vec<Str
             errors.push(format!(
                 "rollback conflict for registration {}: {reason}; concurrent target is preserved; recovery is preserved at {}",
                 published.target.display(),
-                published.recovery.display()
+                recovery_path.display()
             ));
             return;
         }
     }
     run_before_rollback_mutation(&published.target);
+    if let Err(error) = published.recovery.verify_artifact() {
+        errors.push(format!(
+            "rollback conflict for registration {}: {error}; published target and recovery are left untouched",
+            published.target.display()
+        ));
+        return;
+    }
 
-    let quarantined = published.recovery_directory.join("published");
+    let quarantined = recovery_directory.join("published");
     if let Err(error) = rename_no_replace(&published.target, &quarantined) {
         let message = if fs::symlink_metadata(&quarantined).is_ok() {
             format!(
                 "rollback conflict for registration {}: rollback quarantine appeared concurrently at {}; published target and recovery are preserved at {}: {error}",
                 published.target.display(),
                 quarantined.display(),
-                published.recovery.display()
+                recovery_path.display()
             )
         } else {
             format!(
                 "failed to quarantine published registration {} without clobbering before rollback; recovery is preserved at {}: {error}",
                 published.target.display(),
-                published.recovery.display()
+                recovery_path.display()
             )
         };
         errors.push(message);
         return;
     }
+    let quarantine_name = match quarantined.file_name() {
+        Some(name) => name.to_os_string(),
+        None => {
+            errors.push(format!(
+                "rollback quarantine has no child name after moving registration {}; recovery and quarantined publication are preserved at {}",
+                published.target.display(),
+                recovery_path.display()
+            ));
+            return;
+        }
+    };
+    let quarantine_directory_handle = match published.recovery.directory.try_clone_directory() {
+        Ok(directory) => directory,
+        Err(error) => {
+            errors.push(format!(
+                "failed to retain rollback quarantine directory after moving registration {}; recovery and quarantined publication are preserved: {error}",
+                published.target.display()
+            ));
+            return;
+        }
+    };
+    let target_parent_handle = Arc::clone(&published.recovery.directory.parent);
     match inspect_published_target(&quarantined, &published.published) {
         PublishedTargetState::Matches => {}
         PublishedTargetState::Missing => {
             errors.push(format!(
                 "rollback conflict for registration {}: quarantined publication disappeared; original recovery is preserved at {}",
                 published.target.display(),
-                published.recovery.display()
+                recovery_path.display()
             ));
             return;
         }
         PublishedTargetState::Conflict(reason) => {
-            let restore = restore_quarantined_file_no_clobber(&quarantined, &published.target);
+            let restore = restore_quarantined_file_no_clobber(
+                &quarantine_directory_handle,
+                &quarantined,
+                &target_parent_handle,
+                &published.target,
+            );
             let preservation = match restore {
                 Ok(()) => "concurrent target was restored without clobbering".to_string(),
                 Err(error) => format!(
@@ -2772,35 +3427,53 @@ fn rollback_registration(published: &PublishedRegistration, errors: &mut Vec<Str
             errors.push(format!(
                 "rollback conflict for registration {}: {reason}; {preservation}; original recovery is preserved at {}",
                 published.target.display(),
-                published.recovery.display()
+                recovery_path.display()
             ));
             return;
         }
     }
+    let quarantined_file = match retain_regular_child_for_cleanup(
+        &quarantine_directory_handle,
+        &quarantine_name,
+        published.published.identity,
+    ) {
+        Ok(file) => file,
+        Err(error) => {
+            errors.push(format!(
+                "failed to bind quarantined registration {} to its published identity; recovery and quarantined publication are preserved at {}: {error}",
+                published.target.display(),
+                quarantined.display()
+            ));
+            return;
+        }
+    };
 
-    if let Err(error) = fs::hard_link(&published.recovery, &published.target) {
+    if let Err(error) = published.recovery.verify_artifact() {
+        let restore = restore_quarantined_file_no_clobber(
+            &quarantine_directory_handle,
+            &quarantined,
+            &target_parent_handle,
+            &published.target,
+        );
+        errors.push(format!(
+            "rollback conflict for registration {}: recovery identity changed before restoration: {error}; published-byte restoration: {}",
+            published.target.display(),
+            restore
+                .map(|()| "restored".to_string())
+                .unwrap_or_else(|restore_error| format!("failed: {restore_error}"))
+        ));
+        return;
+    }
+    if let Err(error) = fs::hard_link(&recovery_path, &published.target) {
         errors.push(format!(
             "failed to restore registration {} without clobbering; original recovery is preserved at {} and published bytes at {}: {error}",
             published.target.display(),
-            published.recovery.display(),
+            recovery_path.display(),
             quarantined.display()
         ));
         return;
     }
-    if let Err(error) = remove_if_exists(&published.recovery) {
-        errors.push(format!(
-            "restored registration {}, but failed to remove original recovery link {}; recovery is preserved: {error}",
-            published.target.display(),
-            published.recovery.display()
-        ));
-    }
-    if let Err(error) = remove_if_exists(&quarantined) {
-        errors.push(format!(
-            "restored registration {}, but failed to remove quarantined published bytes {}; recovery is preserved: {error}",
-            published.target.display(),
-            quarantined.display()
-        ));
-    }
+    run_after_registration_rollback_restore(&published.target, &quarantined);
 
     let bytes_restored = match fs::read(&published.target) {
         Ok(bytes) if bytes == published.original => true,
@@ -2837,15 +3510,42 @@ fn rollback_registration(published: &PublishedRegistration, errors: &mut Vec<Str
         }
     };
     if !bytes_restored || !permissions_restored {
-        preserve_recovery_copy(published, errors);
+        errors.push(format!(
+            "quarantined published bytes are preserved at {}",
+            quarantined.display()
+        ));
+        preserve_rollback_recovery_copy(published, errors, cleanup_warnings);
         return;
     }
-    if let Err(error) = fs::remove_dir(&published.recovery_directory) {
+    if let Err(warning) = published.recovery.cleanup_file() {
         errors.push(format!(
-            "failed to remove restored registration recovery directory {}: {error}",
-            published.recovery_directory.display()
+            "restored registration {}, but failed to remove identity-bound original recovery {warning}",
+            published.target.display()
         ));
-        preserve_recovery_copy(published, errors);
+        cleanup_warnings.push(warning);
+    }
+    run_before_rollback_quarantine_cleanup(&quarantined);
+    let quarantine_cleanup = remove_identity_bound_regular_child(
+        &quarantine_directory_handle,
+        &quarantine_name,
+        published.published.identity,
+        &quarantined_file,
+    );
+    drop(quarantined_file);
+    if let Err(error) = quarantine_cleanup {
+        errors.push(format!(
+            "restored registration {}, but failed to remove identity-bound quarantined published bytes {}; quarantine is preserved: {error}",
+            published.target.display(),
+            quarantined.display()
+        ));
+    }
+    if published.recovery.artifact().is_none() {
+        if let Err(error) = published.recovery.cleanup_directory() {
+            errors.push(format!(
+                "failed to remove restored registration recovery directory {}: {error}",
+                recovery_directory.display()
+            ));
+        }
     }
 }
 
@@ -2922,7 +3622,30 @@ fn rollback_create(published: &PublishedCreate, errors: &mut Vec<String>) {
             ));
         }
         PublishedTargetState::Conflict(reason) => {
-            let restore = restore_quarantined_file_no_clobber(&quarantined, &published.target);
+            let restore = open_directory_nofollow(&quarantine_directory)
+                .map_err(|error| {
+                    format!(
+                        "failed to retain create-only rollback quarantine directory {}: {error}",
+                        quarantine_directory.display()
+                    )
+                })
+                .and_then(|quarantine_directory_handle| {
+                    open_directory_nofollow(usable_parent(&published.target))
+                        .map_err(|error| {
+                            format!(
+                                "failed to retain create-only rollback target parent {}: {error}",
+                                usable_parent(&published.target).display()
+                            )
+                        })
+                        .and_then(|target_parent_handle| {
+                            restore_quarantined_file_no_clobber(
+                                &quarantine_directory_handle,
+                                &quarantined,
+                                &target_parent_handle,
+                                &published.target,
+                            )
+                        })
+                });
             let preservation = match restore {
                 Ok(()) => "concurrent target was restored without clobbering".to_string(),
                 Err(error) => format!(
@@ -2948,6 +3671,7 @@ fn rollback_create(published: &PublishedCreate, errors: &mut Vec<String>) {
 
 fn rollback(state: &mut PublishState) -> Vec<String> {
     let mut errors = Vec::new();
+    let mut cleanup_warnings = Vec::new();
 
     for published in state.published_removals.iter().rev() {
         match fs::symlink_metadata(&published.target) {
@@ -3006,43 +3730,89 @@ fn rollback(state: &mut PublishState) -> Vec<String> {
         }
     }
 
-    for published in state.published_registrations.iter().rev() {
-        rollback_registration(published, &mut errors);
+    for published in state.published_registrations.iter_mut().rev() {
+        rollback_registration(published, &mut errors, &mut cleanup_warnings);
     }
+
+    record_cleanup_warnings(state, cleanup_warnings);
 
     for published in state.published_creates.iter().rev() {
         rollback_create(published, &mut errors);
     }
-    errors.extend(retry_warned_artifacts(state));
+    errors.extend(retry_and_finish_recovery_cleanups(state));
     errors.extend(cleanup_created_directories(&mut state.created_dirs));
     errors
 }
 
-fn preserve_recovery_copy(published: &PublishedRegistration, diagnostics: &mut Vec<String>) {
-    if published.recovery.exists() {
+fn preserve_rollback_recovery_copy(
+    published: &mut PublishedRegistration,
+    diagnostics: &mut Vec<String>,
+    cleanup_warnings: &mut Vec<CleanupWarning>,
+) {
+    let recovery_path = published.recovery.path();
+    if let Some(artifact) = published.recovery.artifact() {
+        match verify_publication_artifact(artifact) {
+            Ok(true) => diagnostics.push(format!(
+                "registration recovery is preserved at {}",
+                recovery_path.display()
+            )),
+            Ok(false) => diagnostics.push(format!(
+                "failed to preserve recovery copy {}: its proven file identity is missing",
+                recovery_path.display()
+            )),
+            Err(warning) => diagnostics.push(format!(
+                "failed to preserve recovery copy {}: {warning}",
+                recovery_path.display()
+            )),
+        }
+        return;
+    }
+    if let Err(error) = published.recovery.directory.verify() {
         diagnostics.push(format!(
-            "registration recovery is preserved at {}",
-            published.recovery.display()
+            "failed to preserve recovery copy {} in an unverified directory: {error}",
+            recovery_path.display()
         ));
         return;
     }
-    match write_exact_new_file(
-        &published.recovery,
+    let recovery_directory = match published.recovery.directory.try_clone_directory() {
+        Ok(directory) => directory,
+        Err(error) => {
+            diagnostics.push(format!(
+                "failed to preserve recovery copy {}: {error}",
+                recovery_path.display()
+            ));
+            return;
+        }
+    };
+    match write_exact_new_file_in_directory(
+        &recovery_path,
+        recovery_directory,
+        published.recovery.directory.identity,
         &published.original,
         &published.original_permissions,
     ) {
-        Ok(()) => diagnostics.push(format!(
-            "registration recovery is preserved at {}",
-            published.recovery.display()
-        )),
-        Err(error) => diagnostics.push(format!(
-            "failed to preserve recovery copy {} after rollback cleanup failure: {error}",
-            published.recovery.display()
-        )),
+        Ok(artifact) => match published.recovery.bind_artifact(artifact) {
+            Ok(()) => diagnostics.push(format!(
+                "registration recovery is preserved at {}",
+                recovery_path.display()
+            )),
+            Err(error) => diagnostics.push(format!(
+                "failed to bind preserved recovery copy {} after rollback cleanup failure: {error}",
+                recovery_path.display()
+            )),
+        },
+        Err(error) => {
+            cleanup_warnings.extend(error.cleanup_warnings().iter().cloned());
+            diagnostics.push(format!(
+                "failed to preserve recovery copy {} after rollback cleanup failure: {error}",
+                recovery_path.display()
+            ));
+        }
     }
 }
 
 fn finalize_success(state: &mut PublishState) {
+    let mut cleanup_warnings = Vec::new();
     for published in &state.published_removals {
         if let Err(error) = remove_recovery_path(&published.recovery) {
             state.cleanup_warnings.push(format!(
@@ -3059,26 +3829,28 @@ fn finalize_success(state: &mut PublishState) {
             ));
         }
     }
-    for published in &state.published_registrations {
-        if let Err(warning) = cleanup_publication_artifact(&published.recovery) {
-            state.cleanup_warnings.push(format!(
-                "failed to remove registration recovery {warning}; recovery is preserved at {}",
-                published.recovery.display()
-            ));
+    for published in &mut state.published_registrations {
+        let recovery_path = published.recovery.path();
+        let recovery_directory = published.recovery.directory_path().to_path_buf();
+        if let Err(mut warning) = published.recovery.cleanup_file() {
+            warning.message = format!(
+                "failed to remove registration recovery; recovery is preserved at {}: {}",
+                recovery_path.display(),
+                warning.message
+            );
+            cleanup_warnings.push(warning);
             continue;
         }
-        if let Err(error) = fs::remove_dir(&published.recovery_directory) {
+        if let Err(error) = published.recovery.cleanup_directory() {
             state.cleanup_warnings.push(format!(
                 "failed to remove registration recovery directory {}: {error}",
-                published.recovery_directory.display()
+                recovery_directory.display()
             ));
-            let mut preservation_errors = Vec::new();
-            preserve_recovery_copy(published, &mut preservation_errors);
-            state.cleanup_warnings.extend(preservation_errors);
         }
     }
-    let retry_warnings = retry_warned_artifacts(state);
-    state.cleanup_warnings.extend(retry_warnings);
+    record_cleanup_warnings(state, cleanup_warnings);
+    let recovery_warnings = retry_and_finish_recovery_cleanups(state);
+    state.cleanup_warnings.extend(recovery_warnings);
 }
 
 fn split_utf8_bom_prefix(bytes: &[u8]) -> (&[u8], &[u8]) {
@@ -3199,10 +3971,9 @@ pub(crate) enum CommitFailpoint {
 }
 
 #[cfg(test)]
-#[derive(Clone)]
 struct RegistrationRecoveryPause {
-    ready: Arc<Barrier>,
-    release: Arc<Barrier>,
+    ready: std::sync::mpsc::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
 }
 
 #[cfg(test)]
@@ -3212,12 +3983,28 @@ type BeforeRollbackMutationHook = Box<dyn FnOnce(&Path)>;
 type BeforeRemovalRollbackRestoreHook = Box<dyn FnOnce(&Path, &Path)>;
 
 #[cfg(test)]
+type BeforeCleanupRetryHook = Box<dyn FnOnce()>;
+
+#[cfg(test)]
+type BeforeRollbackQuarantineCleanupHook = Box<dyn FnOnce(&Path)>;
+
+#[cfg(test)]
+type BeforeRollbackQuarantineRestoreRenameHook = Box<dyn FnOnce(&Path, &Path)>;
+
+#[cfg(test)]
+type AfterRegistrationRollbackRestoreHook = Box<dyn FnOnce(&Path, &Path)>;
+
+#[cfg(test)]
 thread_local! {
     static TEST_FAILPOINT: Cell<Option<CommitFailpoint>> = const { Cell::new(None) };
     static TEST_REGISTRATION_RECOVERY_PAUSE: RefCell<Option<RegistrationRecoveryPause>> = const { RefCell::new(None) };
     static TEST_PATH_IDENTITY_NORMALIZATIONS: Cell<usize> = const { Cell::new(0) };
     static TEST_BEFORE_ROLLBACK_MUTATION_HOOK: RefCell<Option<BeforeRollbackMutationHook>> = const { RefCell::new(None) };
     static TEST_BEFORE_REMOVAL_ROLLBACK_RESTORE_HOOK: RefCell<Option<BeforeRemovalRollbackRestoreHook>> = const { RefCell::new(None) };
+    static TEST_BEFORE_CLEANUP_RETRY_HOOK: RefCell<Option<BeforeCleanupRetryHook>> = const { RefCell::new(None) };
+    static TEST_BEFORE_ROLLBACK_QUARANTINE_CLEANUP_HOOK: RefCell<Option<BeforeRollbackQuarantineCleanupHook>> = const { RefCell::new(None) };
+    static TEST_BEFORE_ROLLBACK_QUARANTINE_RESTORE_RENAME_HOOK: RefCell<Option<BeforeRollbackQuarantineRestoreRenameHook>> = const { RefCell::new(None) };
+    static TEST_AFTER_REGISTRATION_ROLLBACK_RESTORE_HOOK: RefCell<Option<AfterRegistrationRollbackRestoreHook>> = const { RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -3239,8 +4026,8 @@ pub(crate) fn with_commit_failpoint<T>(
 
 #[cfg(test)]
 fn with_registration_recovery_pause<T>(
-    ready: Arc<Barrier>,
-    release: Arc<Barrier>,
+    ready: std::sync::mpsc::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
     action: impl FnOnce() -> T,
 ) -> T {
     struct Reset(Option<RegistrationRecoveryPause>);
@@ -3296,6 +4083,119 @@ fn with_before_removal_rollback_restore_hook<T>(
     action()
 }
 
+#[cfg(test)]
+fn with_before_cleanup_retry_hook<T>(
+    hook: impl FnOnce() + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<BeforeCleanupRetryHook>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_BEFORE_CLEANUP_RETRY_HOOK.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+
+    let previous = TEST_BEFORE_CLEANUP_RETRY_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
+    let _reset = Reset(previous);
+    action()
+}
+
+#[cfg(test)]
+fn with_before_rollback_quarantine_cleanup_hook<T>(
+    hook: impl FnOnce(&Path) + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<BeforeRollbackQuarantineCleanupHook>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_BEFORE_ROLLBACK_QUARANTINE_CLEANUP_HOOK.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+
+    let previous = TEST_BEFORE_ROLLBACK_QUARANTINE_CLEANUP_HOOK
+        .with(|slot| slot.replace(Some(Box::new(hook))));
+    let _reset = Reset(previous);
+    action()
+}
+
+#[cfg(test)]
+fn with_before_rollback_quarantine_restore_rename_hook<T>(
+    hook: impl FnOnce(&Path, &Path) + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<BeforeRollbackQuarantineRestoreRenameHook>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_BEFORE_ROLLBACK_QUARANTINE_RESTORE_RENAME_HOOK.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+
+    let previous = TEST_BEFORE_ROLLBACK_QUARANTINE_RESTORE_RENAME_HOOK
+        .with(|slot| slot.replace(Some(Box::new(hook))));
+    let _reset = Reset(previous);
+    action()
+}
+
+#[cfg(test)]
+fn with_after_registration_rollback_restore_hook<T>(
+    hook: impl FnOnce(&Path, &Path) + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<AfterRegistrationRollbackRestoreHook>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_AFTER_REGISTRATION_ROLLBACK_RESTORE_HOOK.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+
+    let previous = TEST_AFTER_REGISTRATION_ROLLBACK_RESTORE_HOOK
+        .with(|slot| slot.replace(Some(Box::new(hook))));
+    let _reset = Reset(previous);
+    action()
+}
+
+#[cfg(test)]
+fn run_before_cleanup_retry() {
+    if let Some(hook) = TEST_BEFORE_CLEANUP_RETRY_HOOK.with(|slot| slot.borrow_mut().take()) {
+        hook();
+    }
+}
+
+fn run_before_rollback_quarantine_cleanup(_path: &Path) {
+    #[cfg(test)]
+    if let Some(hook) =
+        TEST_BEFORE_ROLLBACK_QUARANTINE_CLEANUP_HOOK.with(|slot| slot.borrow_mut().take())
+    {
+        hook(_path);
+    }
+}
+
+fn run_before_rollback_quarantine_restore_rename(_quarantine: &Path, _target: &Path) {
+    #[cfg(test)]
+    if let Some(hook) =
+        TEST_BEFORE_ROLLBACK_QUARANTINE_RESTORE_RENAME_HOOK.with(|slot| slot.borrow_mut().take())
+    {
+        hook(_quarantine, _target);
+    }
+}
+
+fn run_after_registration_rollback_restore(_target: &Path, _quarantine: &Path) {
+    #[cfg(test)]
+    if let Some(hook) =
+        TEST_AFTER_REGISTRATION_ROLLBACK_RESTORE_HOOK.with(|slot| slot.borrow_mut().take())
+    {
+        hook(_target, _quarantine);
+    }
+}
+
 fn run_before_rollback_mutation(_path: &Path) {
     #[cfg(test)]
     if let Some(hook) = TEST_BEFORE_ROLLBACK_MUTATION_HOOK.with(|slot| slot.borrow_mut().take()) {
@@ -3317,8 +4217,14 @@ fn pause_after_registration_recovery() {
     let pause = TEST_REGISTRATION_RECOVERY_PAUSE.with(|slot| slot.borrow_mut().take());
     #[cfg(test)]
     if let Some(pause) = pause {
-        pause.ready.wait();
-        pause.release.wait();
+        pause
+            .ready
+            .send(())
+            .expect("registration recovery observer must remain available");
+        pause
+            .release
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("registration recovery observer must release the bounded pause");
     }
 }
 
@@ -4228,20 +5134,22 @@ mod tests {
             .register_canonical_child(&config, "Role", "Reader")
             .expect("registration must plan");
 
-        let recovery_ready = Arc::new(Barrier::new(2));
-        let release = Arc::new(Barrier::new(2));
-        let recovery_ready_in_commit = Arc::clone(&recovery_ready);
-        let release_in_commit = Arc::clone(&release);
+        let (recovery_ready_sender, recovery_ready_receiver) = mpsc::channel();
+        let (release_sender, release_receiver) = mpsc::channel();
         let commit_thread = thread::spawn(move || {
-            with_registration_recovery_pause(recovery_ready_in_commit, release_in_commit, || {
+            with_registration_recovery_pause(recovery_ready_sender, release_receiver, || {
                 transaction.commit()
             })
         });
 
-        recovery_ready.wait();
+        recovery_ready_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("transaction must reach recovery preparation without hanging");
         let target_present = fs::symlink_metadata(&config).is_ok();
         let bytes_during_recovery = fs::read(&config);
-        release.wait();
+        release_sender
+            .send(())
+            .expect("commit thread must remain available for release");
 
         let commit_result = commit_thread.join().expect("commit thread must not panic");
         assert!(
@@ -4255,6 +5163,529 @@ mod tests {
             .unwrap()
             .contains("<Role>Reader</Role>"));
         assert!(transaction_debris(&root).is_empty());
+        fs::remove_dir_all(root).expect("temporary root must be removed");
+    }
+
+    #[test]
+    fn pending_registration_cleanup_preserves_same_name_decoys_after_parent_swap() {
+        if !testing::can_rename_parent_with_retained_cleanup_child_for_test() {
+            return;
+        }
+        let root = temp_root("pending-recovery-parent-swap");
+        let active_parent = root.join("active");
+        let preserved_parent = root.join("preserved");
+        fs::create_dir(&active_parent).expect("active parent must be created");
+        let config = active_parent.join("Configuration.xml");
+        fs::write(&config, configuration_bytes()).expect("fixture must be written");
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .register_canonical_child(&config, "Role", "Reader")
+            .expect("registration must plan");
+
+        let (recovery_ready_sender, recovery_ready_receiver) = mpsc::channel();
+        let (release_sender, release_receiver) = mpsc::channel();
+        let commit_thread = thread::spawn(move || {
+            with_commit_failpoint(CommitFailpoint::AfterRegistrationBackup, || {
+                with_registration_recovery_pause(recovery_ready_sender, release_receiver, || {
+                    transaction.commit()
+                })
+            })
+        });
+
+        recovery_ready_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("transaction must reach recovery preparation without hanging");
+        let entries = fs::read_dir(&active_parent)
+            .expect("prepared publication entries must be readable")
+            .map(|entry| entry.expect("prepared entry must be readable").file_name())
+            .collect::<Vec<_>>();
+        let stage_name = entries
+            .iter()
+            .find(|name| name.to_string_lossy().contains(".unica-stage-"))
+            .expect("prepared stage must exist")
+            .clone();
+        let recovery_name = entries
+            .iter()
+            .find(|name| name.to_string_lossy().contains(".unica-recovery-"))
+            .expect("prepared recovery directory must exist")
+            .clone();
+
+        fs::rename(&active_parent, &preserved_parent).expect("prepared parent must be displaced");
+        fs::create_dir(&active_parent).expect("replacement parent must be created");
+        let decoy_stage = active_parent.join(&stage_name);
+        let decoy_recovery_directory = active_parent.join(&recovery_name);
+        let decoy_recovery = decoy_recovery_directory.join("original");
+        fs::write(&decoy_stage, b"same-name stage decoy").expect("stage decoy must be written");
+        fs::create_dir(&decoy_recovery_directory)
+            .expect("recovery decoy directory must be created");
+        fs::write(&decoy_recovery, b"same-name recovery decoy")
+            .expect("recovery decoy must be written");
+        release_sender
+            .send(())
+            .expect("commit thread must remain available for release");
+
+        let error = commit_thread
+            .join()
+            .expect("commit thread must not panic")
+            .expect_err("backup failpoint must abort publication");
+
+        assert!(error.contains("after registration backup"), "{error}");
+        assert!(error.contains("identity changed"), "{error}");
+        assert!(
+            error.contains(&stage_name.to_string_lossy().to_string()),
+            "stage cleanup warning is missing: {error}"
+        );
+        assert!(
+            error.contains(&recovery_name.to_string_lossy().to_string()),
+            "recovery cleanup warning is missing: {error}"
+        );
+        assert_eq!(
+            fs::read(&decoy_stage).expect("cleanup must preserve the stage decoy"),
+            b"same-name stage decoy"
+        );
+        assert_eq!(
+            fs::read(&decoy_recovery).expect("cleanup must preserve the recovery decoy"),
+            b"same-name recovery decoy"
+        );
+        assert!(preserved_parent.join(&stage_name).is_file());
+        assert!(preserved_parent
+            .join(&recovery_name)
+            .join("original")
+            .is_file());
+        fs::remove_dir_all(root).expect("temporary root must be removed");
+    }
+
+    #[test]
+    fn precommit_retry_finishes_the_recovery_directory_after_file_cleanup_recovers() {
+        let root = temp_root("pending-recovery-retry-finishes-directory");
+        let config = root.join("Configuration.xml");
+        fs::write(&config, configuration_bytes()).expect("fixture must be written");
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .register_canonical_child(&config, "Role", "Reader")
+            .expect("registration must plan");
+
+        let displaced_recovery = Arc::new(Mutex::new(None));
+        let displaced_for_first_cleanup = Arc::clone(&displaced_recovery);
+        let displaced_for_retry = Arc::clone(&displaced_recovery);
+        let root_for_first_cleanup = root.clone();
+
+        let error = with_before_cleanup_retry_hook(
+            move || {
+                let (recovery_path, displaced_path) = displaced_for_retry
+                    .lock()
+                    .expect("recovery-path state must remain readable")
+                    .take()
+                    .expect("the first cleanup must displace the recovery file");
+                assert_eq!(
+                    fs::read(&recovery_path).expect("same-name decoy must remain readable"),
+                    b"same-name recovery decoy"
+                );
+                fs::remove_file(&recovery_path).expect("same-name decoy must be removed");
+                fs::rename(&displaced_path, &recovery_path)
+                    .expect("the proven recovery route must be restored before automatic retry");
+            },
+            || {
+                with_before_bound_cleanup_hook(
+                    move |stage_path| {
+                        assert!(
+                            stage_path.file_name().is_some_and(|name| name
+                                .to_string_lossy()
+                                .contains(".unica-stage-")),
+                            "the first bound cleanup must discard the prepared stage: {}",
+                            stage_path.display()
+                        );
+                        let recovery_directory = fs::read_dir(&root_for_first_cleanup)
+                            .expect("prepared recovery directory must be readable")
+                            .filter_map(Result::ok)
+                            .find(|entry| {
+                                entry
+                                    .file_name()
+                                    .to_string_lossy()
+                                    .contains(".unica-recovery-")
+                            })
+                            .map(|entry| entry.path())
+                            .expect("prepared recovery directory must exist");
+                        let recovery_path = recovery_directory.join("original");
+                        let displaced_path = recovery_directory.join("displaced-original");
+                        fs::rename(&recovery_path, &displaced_path)
+                            .expect("the proven recovery must be displaced");
+                        fs::write(&recovery_path, b"same-name recovery decoy")
+                            .expect("same-name recovery decoy must be written");
+                        *displaced_for_first_cleanup
+                            .lock()
+                            .expect("recovery-path state must remain writable") =
+                            Some((recovery_path, displaced_path));
+                    },
+                    || {
+                        with_commit_failpoint(CommitFailpoint::AfterRegistrationBackup, || {
+                            transaction.commit()
+                        })
+                    },
+                )
+            },
+        )
+        .expect_err("backup failpoint must abort publication");
+
+        assert!(error.contains("after registration backup"), "{error}");
+        assert!(
+            error.contains("failed to remove pending registration recovery"),
+            "the first identity mismatch must remain visible: {error}"
+        );
+        assert_eq!(fs::read(&config).unwrap(), configuration_bytes());
+        assert!(
+            transaction_debris(&root).is_empty(),
+            "automatic file cleanup retry must retain enough guard state to remove the now-empty recovery directory: {:?}",
+            transaction_debris(&root)
+        );
+        fs::remove_dir_all(root).expect("temporary root must be removed");
+    }
+
+    #[test]
+    fn successful_registration_cleanup_warns_and_preserves_decoy_after_parent_swap() {
+        if !testing::can_rename_parent_with_retained_cleanup_child_for_test() {
+            return;
+        }
+        let root = temp_root("finalize-recovery-parent-swap");
+        let active_parent = root.join("active");
+        let preserved_parent = root.join("preserved");
+        fs::create_dir(&active_parent).expect("active parent must be created");
+        let config = active_parent.join("Configuration.xml");
+        fs::write(&config, configuration_bytes()).expect("fixture must be written");
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .register_canonical_child(&config, "Role", "Reader")
+            .expect("registration must plan");
+        let active_for_validation = active_parent.clone();
+        let preserved_for_validation = preserved_parent.clone();
+        let (recovery_sender, recovery_receiver) = mpsc::channel();
+
+        let report = transaction
+            .commit_with_post_validation(move || {
+                let recovery_name = fs::read_dir(&active_for_validation)
+                    .map_err(|error| error.to_string())?
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.file_name())
+                    .find(|name| name.to_string_lossy().contains(".unica-recovery-"))
+                    .ok_or_else(|| "prepared recovery directory is missing".to_string())?;
+                fs::rename(&active_for_validation, &preserved_for_validation)
+                    .map_err(|error| error.to_string())?;
+                fs::create_dir(&active_for_validation).map_err(|error| error.to_string())?;
+                let decoy_directory = active_for_validation.join(&recovery_name);
+                fs::create_dir(&decoy_directory).map_err(|error| error.to_string())?;
+                fs::write(decoy_directory.join("original"), b"finalize recovery decoy")
+                    .map_err(|error| error.to_string())?;
+                recovery_sender
+                    .send(recovery_name)
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .expect("published bytes remain valid despite deferred cleanup warning");
+        let recovery_name = recovery_receiver
+            .recv()
+            .expect("post-validation must report its recovery name");
+        let decoy_recovery = active_parent.join(&recovery_name).join("original");
+
+        assert!(
+            report
+                .cleanup_warnings
+                .iter()
+                .any(|warning| warning.contains("identity changed")
+                    && warning.contains(&recovery_name.to_string_lossy().to_string())),
+            "{:?}",
+            report.cleanup_warnings
+        );
+        assert!(
+            fs::read_to_string(preserved_parent.join("Configuration.xml"))
+                .expect("published configuration must remain readable")
+                .contains("<Role>Reader</Role>"),
+            "finalize cleanup failure must not roll back committed bytes"
+        );
+        assert_eq!(
+            fs::read(&decoy_recovery).expect("finalize must preserve the recovery decoy"),
+            b"finalize recovery decoy"
+        );
+        assert!(
+            preserved_parent
+                .join(recovery_name)
+                .join("original")
+                .is_file(),
+            "the identity-bound recovery must remain in its displaced parent"
+        );
+        fs::remove_dir_all(root).expect("temporary root must be removed");
+    }
+
+    #[test]
+    fn successful_registration_finalize_does_not_recreate_recovery_after_directory_cleanup_failure()
+    {
+        let root = temp_root("finalize-partial-recovery-cleanup");
+        let config = root.join("Configuration.xml");
+        fs::write(&config, configuration_bytes()).expect("fixture must be written");
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .register_canonical_child(&config, "Role", "Reader")
+            .expect("registration must plan");
+        let root_for_validation = root.clone();
+        let (recovery_sender, recovery_receiver) = mpsc::channel();
+
+        let report = transaction
+            .commit_with_post_validation(move || {
+                let recovery_directory = fs::read_dir(&root_for_validation)
+                    .map_err(|error| error.to_string())?
+                    .filter_map(Result::ok)
+                    .find(|entry| {
+                        entry
+                            .file_name()
+                            .to_string_lossy()
+                            .contains(".unica-recovery-")
+                    })
+                    .map(|entry| entry.path())
+                    .ok_or_else(|| "prepared recovery directory is missing".to_string())?;
+                fs::write(recovery_directory.join("blocker"), b"retain directory")
+                    .map_err(|error| error.to_string())?;
+                recovery_sender
+                    .send(recovery_directory)
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .expect("directory cleanup failure must remain a post-commit warning");
+        let recovery_directory = recovery_receiver
+            .recv()
+            .expect("post-validation must report the recovery directory");
+
+        assert!(
+            report
+                .cleanup_warnings
+                .iter()
+                .any(|warning| warning.contains("recovery directory")),
+            "{:?}",
+            report.cleanup_warnings
+        );
+        assert_eq!(
+            fs::read(recovery_directory.join("blocker")).unwrap(),
+            b"retain directory"
+        );
+        assert!(
+            !recovery_directory.join("original").exists(),
+            "a committed transaction must not recreate a removed rollback file"
+        );
+        fs::remove_dir_all(root).expect("temporary root must be removed");
+    }
+
+    #[test]
+    fn publication_cleanup_retry_preserves_a_same_name_file_replacement() {
+        use super::super::single_file_publisher::{
+            publish, with_publish_failpoints, PublishCheckpoint,
+        };
+
+        fn assert_hard_link_count_if_supported(path: &Path, expected: u64, message: &str) {
+            let file = fs::File::open(path).expect("published target must remain readable");
+            match hard_link_count(&file) {
+                Ok(actual) => assert_eq!(actual, expected, "{message}"),
+                Err(error) if error.kind() == ErrorKind::Unsupported => {}
+                Err(error) => panic!("failed to inspect published hard links: {error}"),
+            }
+        }
+
+        let root = temp_root("publication-cleanup-retry-identity-swap");
+        let target = root.join("created.bin");
+        let report = with_publish_failpoints(&[PublishCheckpoint::Cleanup], || {
+            publish(PublishRequest {
+                target: &target,
+                replacement: b"published bytes",
+                mode: PublishMode::CreateOnly,
+            })
+        })
+        .expect("committed create must surface cleanup as a warning");
+        let warning = report
+            .cleanup_warnings
+            .into_iter()
+            .next()
+            .expect("cleanup failpoint must retain one identity-bound warning");
+        let warned_path = warning.path.clone();
+        let displaced = root.join("displaced-stage.bin");
+        fs::rename(&warned_path, &displaced).expect("warned artifact must be displaced");
+        fs::write(&warned_path, b"same-name retry decoy").expect("retry decoy must be written");
+        let mut state = PublishState::default();
+        record_cleanup_warnings(&mut state, [warning]);
+
+        let retry_errors = retry_warned_artifacts(&mut state);
+
+        assert!(
+            retry_errors
+                .iter()
+                .any(|error| error.contains("file identity changed")),
+            "{retry_errors:?}"
+        );
+        assert_eq!(
+            state.pending_artifact_cleanups.len(),
+            1,
+            "a failed retry must retain its identity-bound token"
+        );
+        assert_eq!(fs::read(&warned_path).unwrap(), b"same-name retry decoy");
+        assert_eq!(fs::read(&displaced).unwrap(), b"published bytes");
+        assert_eq!(fs::read(&target).unwrap(), b"published bytes");
+        assert_hard_link_count_if_supported(
+            &target,
+            2,
+            "the committed target and displaced owned stage must both remain",
+        );
+        fs::remove_file(&warned_path).expect("retry decoy must be removed");
+        fs::rename(&displaced, &warned_path).expect("owned artifact route must be restored");
+
+        let completed_retry = retry_warned_artifacts(&mut state);
+
+        assert!(completed_retry.is_empty(), "{completed_retry:?}");
+        assert!(state.pending_artifact_cleanups.is_empty());
+        assert!(!warned_path.exists());
+        assert_eq!(fs::read(&target).unwrap(), b"published bytes");
+        assert_hard_link_count_if_supported(
+            &target,
+            1,
+            "successful retry must remove only the owned stage link",
+        );
+        fs::remove_dir_all(root).expect("temporary root must be removed");
+    }
+
+    #[test]
+    fn publication_cleanup_retry_does_not_treat_a_missing_route_as_cleaned() {
+        if !testing::can_rename_parent_with_retained_cleanup_child_for_test() {
+            return;
+        }
+        use super::super::single_file_publisher::{
+            publish, with_publish_failpoints, PublishCheckpoint,
+        };
+
+        let root = temp_root("publication-cleanup-retry-missing-route");
+        let active = root.join("active");
+        let displaced = root.join("displaced");
+        fs::create_dir(&active).expect("publication parent must be created");
+        let target = active.join("created.bin");
+        let report = with_publish_failpoints(&[PublishCheckpoint::Cleanup], || {
+            publish(PublishRequest {
+                target: &target,
+                replacement: b"published bytes",
+                mode: PublishMode::CreateOnly,
+            })
+        })
+        .expect("committed create must surface cleanup as a warning");
+        let warning = report
+            .cleanup_warnings
+            .into_iter()
+            .next()
+            .expect("cleanup failpoint must retain one identity-bound warning");
+        let stage_name = warning
+            .path
+            .file_name()
+            .expect("warned stage must have a child name")
+            .to_os_string();
+        fs::rename(&active, &displaced).expect("publication parent must be displaced");
+        let mut state = PublishState::default();
+        record_cleanup_warnings(&mut state, [warning]);
+
+        let retry_errors = retry_warned_artifacts(&mut state);
+
+        assert!(
+            retry_errors
+                .iter()
+                .any(|error| error.contains("route could not be resolved")),
+            "{retry_errors:?}"
+        );
+        assert_eq!(
+            state.pending_artifact_cleanups.len(),
+            1,
+            "an absent lexical route must retain the identity-bound cleanup token"
+        );
+        assert_eq!(
+            fs::read(displaced.join(stage_name)).unwrap(),
+            b"published bytes",
+            "the owned artifact must remain available through its displaced parent"
+        );
+        drop(state);
+        fs::remove_dir_all(root).expect("temporary root must be removed");
+    }
+
+    #[test]
+    fn partial_recovery_cleanup_advances_the_file_guard_before_directory_retry() {
+        let root = temp_root("partial-recovery-cleanup-state");
+        let target = root.join("Configuration.xml");
+        fs::write(&target, configuration_bytes()).expect("fixture must be written");
+        let recovery_directory = root.join("reserved-recovery");
+        let mut recovery = reserve_recovery_with(&target, || recovery_directory.clone())
+            .expect("recovery directory must be reserved");
+        let recovery_path = recovery.path();
+        let permissions = crate::infrastructure::platform::filesystem::portable_permissions(
+            &fs::metadata(&target).expect("fixture metadata must be readable"),
+        );
+        let artifact = write_exact_new_file(&recovery_path, b"original", &permissions)
+            .expect("recovery artifact must be written");
+        recovery
+            .bind_artifact(artifact)
+            .expect("artifact must bind to its recovery directory");
+        let blocker = recovery_directory.join("blocker");
+        fs::write(&blocker, b"keep directory non-empty").expect("blocker must be written");
+
+        let first_cleanup = recovery.cleanup();
+
+        assert_eq!(first_cleanup.diagnostics.len(), 1, "{first_cleanup:?}");
+        assert!(first_cleanup.diagnostics[0].contains("recovery directory"));
+        assert!(first_cleanup.artifact_warnings.is_empty());
+        assert!(!recovery_path.exists());
+        assert!(
+            recovery.cleanup.artifact.is_none(),
+            "a removed file identity must not be retried through its old route"
+        );
+        fs::remove_file(blocker).expect("blocker must be removed");
+
+        assert!(recovery.cleanup().is_empty());
+        assert!(!recovery_directory.exists());
+        fs::remove_dir_all(root).expect("temporary root must be removed");
+    }
+
+    #[test]
+    fn retried_recovery_file_cleanup_advances_the_directory_guard() {
+        let root = temp_root("retried-recovery-cleanup-state");
+        let target = root.join("Configuration.xml");
+        fs::write(&target, configuration_bytes()).expect("fixture must be written");
+        let recovery_directory = root.join("reserved-recovery");
+        let mut recovery = reserve_recovery_with(&target, || recovery_directory.clone())
+            .expect("recovery directory must be reserved");
+        let recovery_path = recovery.path();
+        let permissions = crate::infrastructure::platform::filesystem::portable_permissions(
+            &fs::metadata(&target).expect("fixture metadata must be readable"),
+        );
+        let artifact = write_exact_new_file(&recovery_path, b"original", &permissions)
+            .expect("recovery artifact must be written");
+        recovery
+            .bind_artifact(artifact)
+            .expect("artifact must bind to its recovery directory");
+        let displaced = recovery_directory.join("displaced-original");
+        fs::rename(&recovery_path, &displaced).expect("owned recovery must be displaced");
+        fs::write(&recovery_path, b"same-name decoy").expect("recovery decoy must be written");
+
+        let report = recovery.cleanup();
+        let mut state = PublishState::default();
+        record_cleanup_warnings(&mut state, report.artifact_warnings);
+
+        assert_eq!(state.pending_artifact_cleanups.len(), 1);
+        assert_eq!(fs::read(&recovery_path).unwrap(), b"same-name decoy");
+        assert_eq!(fs::read(&displaced).unwrap(), b"original");
+        fs::remove_file(&recovery_path).expect("recovery decoy must be removed");
+        fs::rename(&displaced, &recovery_path).expect("owned recovery route must be restored");
+
+        assert!(retry_warned_artifacts(&mut state).is_empty());
+        assert!(state.pending_artifact_cleanups.is_empty());
+        assert!(
+            recovery
+                .cleanup
+                .advance_completed_file_cleanup()
+                .expect("retry state must remain readable"),
+            "the owner guard must observe cleanup completed through its cloned token"
+        );
+        assert!(recovery.cleanup.artifact().is_none());
+        assert!(recovery.cleanup.cleanup_directory().is_ok());
+        assert!(recovery.cleanup().is_empty());
+        assert!(!recovery_directory.exists());
         fs::remove_dir_all(root).expect("temporary root must be removed");
     }
 
@@ -4543,6 +5974,392 @@ mod tests {
     }
 
     #[test]
+    fn registration_rollback_preserves_same_name_recovery_decoy_after_parent_swap() {
+        if !testing::can_rename_parent_with_retained_cleanup_child_for_test() {
+            return;
+        }
+        let root = temp_root("rollback-recovery-parent-swap");
+        let active_parent = root.join("active");
+        let preserved_parent = root.join("preserved");
+        fs::create_dir(&active_parent).expect("active parent must be created");
+        let config = active_parent.join("Configuration.xml");
+        let original = configuration_bytes();
+        fs::write(&config, &original).expect("fixture must be written");
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .register_canonical_child(&config, "Role", "Reader")
+            .expect("registration must plan");
+        let active_for_hook = active_parent.clone();
+        let preserved_for_hook = preserved_parent.clone();
+        let config_for_hook = config.clone();
+        let original_for_hook = original.clone();
+        let (recovery_sender, recovery_receiver) = mpsc::channel();
+
+        let error = with_before_rollback_mutation_hook(
+            move |path| {
+                assert_eq!(path, config_for_hook);
+                let recovery_name = fs::read_dir(&active_for_hook)
+                    .expect("published entries must be readable")
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.file_name())
+                    .find(|name| name.to_string_lossy().contains(".unica-recovery-"))
+                    .expect("published recovery directory must exist");
+                fs::rename(&active_for_hook, &preserved_for_hook)
+                    .expect("published parent must be displaced");
+                fs::create_dir(&active_for_hook).expect("replacement parent must be created");
+                fs::hard_link(
+                    preserved_for_hook.join("Configuration.xml"),
+                    active_for_hook.join("Configuration.xml"),
+                )
+                .expect("published identity must be rebound through the old route");
+                fs::remove_file(preserved_for_hook.join("Configuration.xml"))
+                    .expect("old published name must be released");
+                let decoy_directory = active_for_hook.join(&recovery_name);
+                fs::create_dir(&decoy_directory).expect("recovery decoy must be created");
+                fs::write(decoy_directory.join("original"), &original_for_hook)
+                    .expect("same-name recovery decoy must be written");
+                recovery_sender
+                    .send(recovery_name)
+                    .expect("recovery name must be reported");
+            },
+            || {
+                with_commit_failpoint(CommitFailpoint::PostWriteValidation, || {
+                    transaction.commit()
+                })
+            },
+        )
+        .expect_err("post-validation failure must roll publication back");
+        let recovery_name = recovery_receiver
+            .recv()
+            .expect("rollback hook must report its recovery name");
+        let decoy_recovery = active_parent.join(&recovery_name).join("original");
+
+        assert!(error.contains("rollback encountered:"), "{error}");
+        assert!(error.contains("identity changed"), "{error}");
+        assert!(
+            fs::read_to_string(&config)
+                .expect("published target must remain readable")
+                .contains("<Role>Reader</Role>"),
+            "rollback must not mutate the published target after recovery identity loss"
+        );
+        assert_eq!(
+            fs::read(&decoy_recovery).expect("rollback must preserve the recovery decoy"),
+            original
+        );
+        assert!(
+            preserved_parent
+                .join(recovery_name)
+                .join("original")
+                .is_file(),
+            "the proven recovery must remain in the displaced parent"
+        );
+        fs::remove_dir_all(root).expect("temporary root must be removed");
+    }
+
+    #[test]
+    fn registration_rollback_cleanup_preserves_same_name_quarantine_decoy() {
+        let root = temp_root("rollback-quarantine-identity-swap");
+        let config = root.join("Configuration.xml");
+        let original = configuration_bytes();
+        fs::write(&config, &original).expect("fixture must be written");
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .register_canonical_child(&config, "Role", "Reader")
+            .expect("registration must plan");
+        let (paths_sender, paths_receiver) = mpsc::channel();
+
+        let error = with_before_rollback_quarantine_cleanup_hook(
+            move |quarantined| {
+                let displaced = quarantined.with_file_name("displaced-published");
+                fs::rename(quarantined, &displaced)
+                    .expect("owned quarantine must be displaced before cleanup");
+                fs::write(quarantined, b"same-name quarantine decoy")
+                    .expect("same-name quarantine decoy must be written");
+                paths_sender
+                    .send((quarantined.to_path_buf(), displaced))
+                    .expect("quarantine paths must be reported");
+            },
+            || {
+                with_commit_failpoint(CommitFailpoint::PostWriteValidation, || {
+                    transaction.commit()
+                })
+            },
+        )
+        .expect_err("post-validation failure must roll publication back");
+        let (quarantined, displaced) = paths_receiver
+            .recv()
+            .expect("rollback cleanup hook must report quarantine paths");
+
+        assert!(error.contains("post-write validation"), "{error}");
+        assert_eq!(fs::read(&config).unwrap(), original);
+        assert_eq!(
+            fs::read(&quarantined).expect("cleanup must preserve the quarantine decoy"),
+            b"same-name quarantine decoy"
+        );
+        assert!(fs::read_to_string(&displaced)
+            .expect("cleanup must preserve the displaced published bytes")
+            .contains("<Role>Reader</Role>"));
+        fs::remove_dir_all(root).expect("temporary root must be removed");
+    }
+
+    #[test]
+    fn registration_rollback_restore_cleanup_preserves_same_name_quarantine_decoy() {
+        let root = temp_root("registration-rollback-restore-cleanup-identity-swap");
+        let config = root.join("Configuration.xml");
+        let guard = root.join("Decision.bsl");
+        let original = configuration_bytes();
+        fs::write(&config, &original).expect("registration fixture must be written");
+        fs::write(&guard, b"stable").expect("guard fixture must be written");
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .register_canonical_child(&config, "Role", "Reader")
+            .expect("registration must plan");
+        let diff = transaction
+            .registration_diffs()
+            .pop()
+            .expect("registration diff must exist");
+        let mut concurrent = original.clone();
+        concurrent.splice(diff.byte_range, diff.after);
+        transaction
+            .guard_exact_preimage(&guard, b"stable")
+            .expect("guard must plan");
+        let config_for_mutation = config.clone();
+        let root_for_mutation = root.clone();
+        let concurrent_for_mutation = concurrent.clone();
+        let (paths_sender, paths_receiver) = mpsc::channel();
+
+        let error = with_before_rollback_quarantine_restore_rename_hook(
+            move |quarantined, _target| {
+                let displaced = quarantined.with_file_name("displaced-concurrent-registration");
+                fs::rename(quarantined, &displaced)
+                    .expect("owned quarantine link must be displaced before cleanup");
+                fs::write(quarantined, b"same-name quarantine decoy")
+                    .expect("same-name quarantine decoy must be written");
+                paths_sender
+                    .send((quarantined.to_path_buf(), displaced))
+                    .expect("quarantine paths must be reported");
+            },
+            || {
+                with_before_rollback_mutation_hook(
+                    move |path| {
+                        assert_eq!(path, config_for_mutation);
+                        let external = root_for_mutation.join("external-registration.xml");
+                        fs::write(&external, &concurrent_for_mutation)
+                            .expect("concurrent registration must be written");
+                        replace_file_atomically(&external, &config_for_mutation)
+                            .expect("concurrent registration must replace the published target");
+                    },
+                    || {
+                        transaction.commit_with_post_validation(|| {
+                            fs::write(&guard, b"changed")
+                                .expect("guard mutation must trigger rollback");
+                            Ok(())
+                        })
+                    },
+                )
+            },
+        )
+        .expect_err("late guard failure must roll the registration back");
+        let (quarantined, displaced) = paths_receiver
+            .recv()
+            .expect("rollback restore hook must report quarantine paths");
+
+        assert!(error.contains("rollback conflict"), "{error}");
+        assert!(error.contains("regular child identity changed"), "{error}");
+        assert!(
+            !config.exists(),
+            "identity loss must not publish the same-name quarantine decoy"
+        );
+        assert_eq!(
+            fs::read(&quarantined).expect("cleanup must preserve the quarantine decoy"),
+            b"same-name quarantine decoy"
+        );
+        assert_eq!(
+            fs::read(&displaced).expect("cleanup must preserve the displaced concurrent link"),
+            concurrent
+        );
+        let recovery_directory = transaction_debris(&root)
+            .into_iter()
+            .find(|path| path.is_dir())
+            .expect("unsafe registration rollback must preserve its recovery directory");
+        assert_eq!(
+            fs::read(recovery_directory.join("original")).unwrap(),
+            original
+        );
+        fs::remove_dir_all(root).expect("temporary root must be removed");
+    }
+
+    #[test]
+    fn registration_rollback_validation_reports_preserved_quarantine() {
+        let root = temp_root("registration-rollback-validation-quarantine-diagnostic");
+        let config = root.join("Configuration.xml");
+        let guard = root.join("Decision.bsl");
+        let original = configuration_bytes();
+        fs::write(&config, &original).expect("registration fixture must be written");
+        fs::write(&guard, b"stable").expect("guard fixture must be written");
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .register_canonical_child(&config, "Role", "Reader")
+            .expect("registration must plan");
+        transaction
+            .guard_exact_preimage(&guard, b"stable")
+            .expect("guard must plan");
+        let root_for_hook = root.clone();
+        let (path_sender, path_receiver) = mpsc::channel();
+
+        let error = with_after_registration_rollback_restore_hook(
+            move |target, quarantined| {
+                let replacement = root_for_hook.join("unexpected-restored-target.xml");
+                fs::write(&replacement, b"unexpected restored bytes")
+                    .expect("replacement target must be written");
+                replace_file_atomically(&replacement, target)
+                    .expect("restored target must be replaced before validation");
+                path_sender
+                    .send(quarantined.to_path_buf())
+                    .expect("quarantine path must be reported");
+            },
+            || {
+                transaction.commit_with_post_validation(|| {
+                    fs::write(&guard, b"changed").expect("guard must trigger rollback");
+                    Ok(())
+                })
+            },
+        )
+        .expect_err("restoration validation failure must be reported");
+        let quarantined = path_receiver
+            .recv()
+            .expect("rollback hook must report the quarantine path");
+
+        assert!(
+            error.contains(&format!(
+                "quarantined published bytes are preserved at {}",
+                quarantined.display()
+            )),
+            "{error}"
+        );
+        assert!(fs::read_to_string(&quarantined)
+            .expect("quarantined published bytes must remain readable")
+            .contains("<Role>Reader</Role>"));
+        let recovery_directory = quarantined
+            .parent()
+            .expect("quarantine must remain inside recovery");
+        assert_eq!(
+            fs::read(recovery_directory.join("original")).unwrap(),
+            original
+        );
+        fs::remove_dir_all(root).expect("temporary root must be removed");
+    }
+
+    #[test]
+    fn registration_rollback_restore_uses_retained_parent_handles_after_route_swap() {
+        if !testing::can_rename_parent_with_retained_cleanup_child_for_test() {
+            return;
+        }
+        let root = temp_root("registration-rollback-restore-parent-route-swap");
+        let active_parent = root.join("active");
+        let displaced_parent = root.join("displaced-active");
+        fs::create_dir(&active_parent).expect("active parent must be created");
+        let config = active_parent.join("Configuration.xml");
+        let guard = root.join("Decision.bsl");
+        let original = configuration_bytes();
+        fs::write(&config, &original).expect("registration fixture must be written");
+        fs::write(&guard, b"stable").expect("guard fixture must be written");
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .register_canonical_child(&config, "Role", "Reader")
+            .expect("registration must plan");
+        let diff = transaction
+            .registration_diffs()
+            .pop()
+            .expect("registration diff must exist");
+        let mut concurrent = original.clone();
+        concurrent.splice(diff.byte_range, diff.after);
+        transaction
+            .guard_exact_preimage(&guard, b"stable")
+            .expect("guard must plan");
+        let config_for_mutation = config.clone();
+        let root_for_mutation = root.clone();
+        let concurrent_for_mutation = concurrent.clone();
+        let active_for_swap = active_parent.clone();
+        let displaced_for_swap = displaced_parent.clone();
+        let config_for_swap = config.clone();
+        let (paths_sender, paths_receiver) = mpsc::channel();
+
+        let error = with_before_rollback_quarantine_restore_rename_hook(
+            move |quarantined, target| {
+                assert_eq!(target, config_for_swap);
+                let recovery_name = quarantined
+                    .parent()
+                    .and_then(Path::file_name)
+                    .expect("quarantine recovery name must exist")
+                    .to_os_string();
+                fs::rename(&active_for_swap, &displaced_for_swap)
+                    .expect("verified rollback parents must be displaced");
+                fs::create_dir(&active_for_swap).expect("replacement target parent must exist");
+                let replacement_recovery = active_for_swap.join(&recovery_name);
+                fs::create_dir(&replacement_recovery)
+                    .expect("replacement quarantine parent must exist");
+                let replacement_quarantine = replacement_recovery.join("published");
+                fs::write(&replacement_quarantine, b"same-name route decoy")
+                    .expect("same-name route decoy must be written");
+                paths_sender
+                    .send((
+                        replacement_quarantine,
+                        active_for_swap.join("Configuration.xml"),
+                        displaced_for_swap.join("Configuration.xml"),
+                        displaced_for_swap.join(recovery_name).join("published"),
+                    ))
+                    .expect("swapped rollback paths must be reported");
+            },
+            || {
+                with_before_rollback_mutation_hook(
+                    move |path| {
+                        assert_eq!(path, config_for_mutation);
+                        let external = root_for_mutation.join("external-registration.xml");
+                        fs::write(&external, &concurrent_for_mutation)
+                            .expect("concurrent registration must be written");
+                        replace_file_atomically(&external, &config_for_mutation)
+                            .expect("concurrent registration must replace the published target");
+                    },
+                    || {
+                        transaction.commit_with_post_validation(|| {
+                            fs::write(&guard, b"changed")
+                                .expect("guard mutation must trigger rollback");
+                            Ok(())
+                        })
+                    },
+                )
+            },
+        )
+        .expect_err("late guard failure must roll the registration back");
+        let (replacement_quarantine, replacement_target, restored_target, retained_quarantine) =
+            paths_receiver
+                .recv()
+                .expect("rollback route-swap hook must report paths");
+
+        assert!(error.contains("rollback conflict"), "{error}");
+        assert_eq!(
+            fs::read(&replacement_quarantine)
+                .expect("descriptor-relative restore must preserve the route decoy"),
+            b"same-name route decoy"
+        );
+        assert!(
+            !replacement_target.exists(),
+            "descriptor-relative restore must not publish through a replacement parent route"
+        );
+        assert_eq!(
+            fs::read(&restored_target)
+                .expect("concurrent target must be restored through its retained parent"),
+            concurrent
+        );
+        assert!(
+            !retained_quarantine.exists(),
+            "the retained quarantine link must move to the retained target parent"
+        );
+        fs::remove_dir_all(root).expect("temporary root must be removed");
+    }
+
+    #[test]
     fn rollback_preserves_concurrent_edit_of_create_only_target() {
         let root = temp_root("rollback-create-concurrent-replacement");
         let target = root.join("Generated.xml");
@@ -4721,9 +6538,9 @@ mod tests {
         .expect("second candidate must reserve successfully");
 
         assert_eq!(fs::read(&occupied).unwrap(), b"must remain exact");
-        assert_eq!(reservation.directory, available);
-        assert!(reservation.directory.is_dir());
-        assert!(!reservation.path.exists());
+        assert_eq!(reservation.cleanup.directory.path, available);
+        assert!(reservation.cleanup.directory.path.is_dir());
+        assert!(!reservation.path().exists());
         assert!(reservation.cleanup().is_empty());
         fs::remove_dir_all(root).expect("temporary root must be removed");
     }

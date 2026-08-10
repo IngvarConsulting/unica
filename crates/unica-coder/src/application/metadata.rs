@@ -148,9 +148,27 @@ fn invoke_info(
     } else {
         ports.read_metadata_related(request, &read.local, context, cancellation)
     };
+    let (functional_subsystems, interface_subsystems) =
+        match &read.validation_subject.subsystem_evidence {
+            Some(crate::application::ports::MetadataSubsystemEvidence::Complete {
+                functional_subsystems,
+                interface_subsystems,
+            }) => (
+                Some(functional_subsystems.clone()),
+                Some(interface_subsystems.clone()),
+            ),
+            Some(crate::application::ports::MetadataSubsystemEvidence::Unavailable(_)) | None => {
+                (None, None)
+            }
+        };
     let diagnostics = validation.diagnostics.clone();
-    let data = serde_json::to_value(read.local.into_info(validation, enrichment))
-        .map_err(|error| format!("cannot serialize metadata info result: {error}"))?;
+    let data = serde_json::to_value(read.local.into_info(
+        validation,
+        enrichment,
+        functional_subsystems,
+        interface_subsystems,
+    ))
+    .map_err(|error| format!("cannot serialize metadata info result: {error}"))?;
     if failed {
         return Ok(metadata_failure(
             "metadata validation failed",
@@ -1922,6 +1940,7 @@ mod tests {
     use crate::application::ToolSpec;
     use crate::domain::cache::{CacheAccess, CacheReport};
     use crate::domain::cancellation::CancellationToken;
+    use crate::domain::code_intelligence::ProviderDeadline;
     use crate::domain::events::{DomainEvent, DomainEventKind};
     use crate::domain::metadata::{
         metadata_fill_value_is_allowed, metadata_relation_specs, MetaCollectionsData,
@@ -1933,6 +1952,7 @@ mod tests {
     use std::collections::HashSet;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
 
     fn object(value: Value) -> Map<String, Value> {
         value
@@ -2243,6 +2263,7 @@ mod tests {
             }],
             child_footprints: Vec::new(),
             registrar_evidence: Default::default(),
+            subsystem_evidence: Default::default(),
         }
     }
 
@@ -2714,6 +2735,7 @@ mod tests {
             &add_args(false),
             &ports,
             &CancellationToken::new(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),
         )
         .unwrap();
 

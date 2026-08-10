@@ -11,4 +11,5 @@ pub mod project_sources;
 pub mod source_resources;
 pub mod source_roots;
 pub mod source_target;
+pub mod subsystem;
 pub mod workspace;

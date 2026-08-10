@@ -89,7 +89,11 @@ pub(crate) use edit::{
 };
 pub(crate) use info::read_typed_meta_info;
 #[cfg(test)]
-pub(crate) use info::{with_registrar_processing_hook, RegistrarProcessingPhase};
+pub(crate) use info::{
+    with_meta_info_descriptor_image_hook, with_registrar_processing_hook,
+    with_subsystem_evidence_processing_hook, RegistrarProcessingPhase,
+    SubsystemEvidenceProcessingPhase,
+};
 pub(crate) use publisher::{fresh_metadata_uuid, prepare_meta_add, prepare_meta_remove};
 #[cfg(test)]
 pub(crate) use publisher::{

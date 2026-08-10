@@ -1,7 +1,9 @@
 use crate::infrastructure::platform::filesystem::{
     file_identity, open_any_child_nofollow, open_child_for_secure_tree_use,
-    open_directory_child_nofollow, read_directory_names_bounded, FileIdentity, OpenedChildKind,
+    open_directory_child_nofollow, open_regular_child_nofollow, read_directory_names_bounded,
+    FileIdentity, OpenedChildKind,
 };
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{self, Read};
@@ -29,6 +31,7 @@ pub(crate) enum SecureTreePhase {
     BeforeReadEntry(PathBuf),
     BeforeRebindEntry(PathBuf),
     AfterRebindEntry(PathBuf),
+    AfterFinalIdentityProofs,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -49,6 +52,321 @@ pub(crate) struct SecureFileSnapshot {
 pub(crate) struct SecureFileSnapshotEntry {
     pub(crate) logical_path: String,
     pub(crate) bytes: Vec<u8>,
+}
+
+#[derive(Debug)]
+pub(crate) struct RetainedRootSecureRead {
+    root: RetainedDirectoryPath,
+    limits: SecureTreeCaptureLimits,
+    entry_count: usize,
+    file_count: usize,
+    total_bytes: usize,
+    directories: HashMap<PathBuf, FileIdentity>,
+    files: Vec<RetainedRegisteredFile>,
+    file_indexes: HashMap<PathBuf, usize>,
+    poisoned: bool,
+}
+
+#[derive(Debug)]
+struct RetainedRegisteredFile {
+    logical_path: PathBuf,
+    identity: FileIdentity,
+    bytes: Vec<u8>,
+}
+
+impl RetainedRootSecureRead {
+    pub(crate) fn open(
+        root: &Path,
+        limits: SecureTreeCaptureLimits,
+        mut checkpoint: impl FnMut() -> io::Result<()>,
+    ) -> io::Result<Self> {
+        checkpoint()?;
+        let root = imp::open_absolute_directory_path(root)?;
+        emit_tree_phase(SecureTreePhase::RootOpened);
+        checkpoint()?;
+        Ok(Self {
+            root,
+            limits,
+            entry_count: 0,
+            file_count: 0,
+            total_bytes: 0,
+            directories: HashMap::new(),
+            files: Vec::new(),
+            file_indexes: HashMap::new(),
+            poisoned: false,
+        })
+    }
+
+    pub(crate) fn read_regular_file(
+        &mut self,
+        logical_path: &Path,
+        mut checkpoint: impl FnMut() -> io::Result<()>,
+    ) -> io::Result<SecureRead> {
+        if self.poisoned {
+            return Err(poisoned_secure_read_error());
+        }
+        let result = self.read_regular_file_unpoisoned(logical_path, &mut checkpoint);
+        if result.is_err() {
+            self.poisoned = true;
+        }
+        result
+    }
+
+    fn read_regular_file_unpoisoned(
+        &mut self,
+        logical_path: &Path,
+        checkpoint: &mut impl FnMut() -> io::Result<()>,
+    ) -> io::Result<SecureRead> {
+        checkpoint()?;
+        let components = normal_relative_file_components(logical_path)?;
+        let logical_path = components.iter().collect::<PathBuf>();
+        if let Some(index) = self.file_indexes.get(&logical_path).copied() {
+            checkpoint()?;
+            return Ok(SecureRead {
+                bytes: self.files[index].bytes.clone(),
+            });
+        }
+        let directory_depth = components.len() - 1;
+        if directory_depth > self.limits.maximum_depth {
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "retained secure read exceeds the traversal-depth limit",
+            ));
+        }
+
+        let mut parent = self.root.current().try_clone()?;
+        let mut logical_directory = PathBuf::new();
+        for name in &components[..directory_depth] {
+            checkpoint()?;
+            logical_directory.push(name);
+            let first_open = !self.directories.contains_key(&logical_directory);
+            if first_open {
+                self.reserve_entry()?;
+            }
+            emit_tree_phase(SecureTreePhase::BeforeOpenEntry(logical_directory.clone()));
+            let child = open_directory_child_nofollow(&parent, name)?;
+            let identity = file_identity(&child)?;
+            match self.directories.get(&logical_directory) {
+                Some(expected) if *expected != identity => {
+                    return Err(io::Error::other(
+                        "registered directory identity changed between retained reads",
+                    ))
+                }
+                Some(_) => {}
+                None if first_open => {
+                    self.directories.insert(logical_directory.clone(), identity);
+                }
+                None => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "registered directory accounting lost a retained identity",
+                    ))
+                }
+            }
+            checkpoint()?;
+            emit_tree_phase(SecureTreePhase::BeforeRebindEntry(
+                logical_directory.clone(),
+            ));
+            prove_directory_binding(&parent, name, identity)?;
+            emit_tree_phase(SecureTreePhase::AfterRebindEntry(logical_directory.clone()));
+            parent = child;
+        }
+
+        let name = components
+            .last()
+            .expect("relative file has a final component");
+        self.reserve_entry()?;
+        self.reserve_file()?;
+        checkpoint()?;
+        emit_tree_phase(SecureTreePhase::BeforeOpenEntry(logical_path.clone()));
+        let mut file = open_regular_child_nofollow(&parent, name)?;
+        let identity = file_identity(&file)?;
+        let remaining_bytes = self
+            .limits
+            .maximum_bytes
+            .checked_sub(self.total_bytes)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::FileTooLarge,
+                    "retained secure read exceeds the cumulative byte limit",
+                )
+            })?;
+        emit_tree_phase(SecureTreePhase::BeforeReadEntry(logical_path.clone()));
+        let bytes = read_open_regular_file(
+            &mut file,
+            remaining_bytes.min(self.limits.maximum_bytes),
+            checkpoint,
+        )?;
+        checkpoint()?;
+        emit_tree_phase(SecureTreePhase::BeforeRebindEntry(logical_path.clone()));
+        prove_regular_file_binding(&parent, name, identity)?;
+        emit_tree_phase(SecureTreePhase::AfterRebindEntry(logical_path.clone()));
+
+        self.total_bytes = self.total_bytes.checked_add(bytes.len()).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "retained secure read byte count overflowed",
+            )
+        })?;
+        let index = self.files.len();
+        self.files.push(RetainedRegisteredFile {
+            logical_path: logical_path.clone(),
+            identity,
+            bytes: bytes.clone(),
+        });
+        self.file_indexes.insert(logical_path, index);
+        Ok(SecureRead { bytes })
+    }
+
+    pub(crate) fn complete(self, mut checkpoint: impl FnMut() -> io::Result<()>) -> io::Result<()> {
+        if self.poisoned {
+            return Err(poisoned_secure_read_error());
+        }
+        checkpoint()?;
+        prove_directory_path(&self.root, &mut checkpoint)?;
+        for retained in &self.files {
+            prove_registered_file(
+                self.root.current(),
+                &self.directories,
+                retained,
+                &mut checkpoint,
+            )?;
+        }
+        prove_directory_path(&self.root, &mut checkpoint)?;
+        emit_tree_phase(SecureTreePhase::AfterFinalIdentityProofs);
+        checkpoint()
+    }
+
+    fn reserve_entry(&mut self) -> io::Result<()> {
+        if self.entry_count >= self.limits.maximum_entries {
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "retained secure read exceeds the entry-count limit",
+            ));
+        }
+        self.entry_count = self.entry_count.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "retained secure read entry count overflowed",
+            )
+        })?;
+        Ok(())
+    }
+
+    fn reserve_file(&mut self) -> io::Result<()> {
+        if self.file_count >= self.limits.maximum_files {
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "retained secure read exceeds the file-count limit",
+            ));
+        }
+        self.file_count = self.file_count.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "retained secure read file count overflowed",
+            )
+        })?;
+        Ok(())
+    }
+}
+
+fn poisoned_secure_read_error() -> io::Error {
+    io::Error::other("retained secure read session is poisoned by a prior failure")
+}
+
+fn normal_relative_file_components(path: &Path) -> io::Result<Vec<OsString>> {
+    use std::path::Component;
+
+    let mut components = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(name) => components.push(name.to_os_string()),
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "retained secure read path must contain only normal relative components",
+                ))
+            }
+        }
+    }
+    if components.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "retained secure read path has no file name",
+        ));
+    }
+    Ok(components)
+}
+
+fn prove_registered_file(
+    root: &File,
+    directories: &HashMap<PathBuf, FileIdentity>,
+    retained: &RetainedRegisteredFile,
+    checkpoint: &mut impl FnMut() -> io::Result<()>,
+) -> io::Result<()> {
+    let components = normal_relative_file_components(&retained.logical_path)?;
+    let directory_depth = components.len() - 1;
+    let mut parent = root.try_clone()?;
+    let mut logical_directory = PathBuf::new();
+    for name in &components[..directory_depth] {
+        checkpoint()?;
+        logical_directory.push(name);
+        let expected = directories.get(&logical_directory).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "registered directory identity is missing from terminal proof",
+            )
+        })?;
+        let child = open_directory_child_nofollow(&parent, name)?;
+        if file_identity(&child)? != *expected {
+            return Err(io::Error::other(
+                "registered directory identity changed before terminal proof",
+            ));
+        }
+        prove_directory_binding(&parent, name, *expected)?;
+        parent = child;
+    }
+
+    checkpoint()?;
+    let name = components
+        .last()
+        .expect("relative file has a final component");
+    let mut file = open_regular_child_nofollow(&parent, name)?;
+    if file_identity(&file)? != retained.identity {
+        return Err(io::Error::other(
+            "registered file identity changed before terminal proof",
+        ));
+    }
+    verify_open_regular_file(&mut file, &retained.bytes, checkpoint)?;
+    prove_regular_file_binding(&parent, name, retained.identity)
+}
+
+fn prove_directory_binding(
+    parent: &File,
+    name: &std::ffi::OsStr,
+    identity: FileIdentity,
+) -> io::Result<()> {
+    let rebound = open_directory_child_nofollow(parent, name)?;
+    if file_identity(&rebound)? != identity {
+        return Err(io::Error::other(
+            "registered directory identity changed while reading",
+        ));
+    }
+    Ok(())
+}
+
+fn prove_regular_file_binding(
+    parent: &File,
+    name: &std::ffi::OsStr,
+    identity: FileIdentity,
+) -> io::Result<()> {
+    let rebound = open_regular_child_nofollow(parent, name)?;
+    if file_identity(&rebound)? != identity {
+        return Err(io::Error::other(
+            "registered file identity changed while reading",
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -1436,6 +1754,147 @@ mod tests {
             result.is_err(),
             "same-identity byte mutation must fail final proof"
         );
+    }
+
+    #[test]
+    fn retained_registration_session_revalidates_file_identity_at_terminal_proof() {
+        let fixture = Fixture::new();
+        let path = fixture.root.join("parent/resource.xml");
+        let displaced = fixture.root.join("parent/original.xml");
+        let replacement = fixture.root.join("replacement.xml");
+        fs::write(&replacement, b"replacement").unwrap();
+        let mut session =
+            RetainedRootSecureRead::open(&fixture.root, capture_limits(), || Ok(())).unwrap();
+        assert_eq!(
+            session
+                .read_regular_file(Path::new("parent/resource.xml"), || Ok(()))
+                .unwrap()
+                .bytes,
+            b"trusted"
+        );
+        fs::rename(&path, &displaced).unwrap();
+        fs::rename(&replacement, &path).unwrap();
+
+        let error = session
+            .complete(|| Ok(()))
+            .expect_err("a same-name registered file replacement must fail terminal proof");
+
+        assert!(error.to_string().contains("identity"), "{error}");
+    }
+
+    #[test]
+    fn retained_registration_session_revalidates_directory_identity_at_terminal_proof() {
+        let fixture = Fixture::new();
+        let parent = fixture.root.join("parent");
+        let displaced = fixture.root.join("parent-original");
+        let mut session =
+            RetainedRootSecureRead::open(&fixture.root, capture_limits(), || Ok(())).unwrap();
+        session
+            .read_regular_file(Path::new("parent/resource.xml"), || Ok(()))
+            .unwrap();
+        fs::rename(&parent, &displaced).unwrap();
+        fs::create_dir(&parent).unwrap();
+        fs::write(parent.join("resource.xml"), b"trusted").unwrap();
+
+        let error = session
+            .complete(|| Ok(()))
+            .expect_err("a same-name registered directory replacement must fail terminal proof");
+
+        assert!(error.to_string().contains("identity"), "{error}");
+    }
+
+    #[test]
+    fn retained_registration_session_spends_budgets_only_on_requested_files() {
+        let fixture = Fixture::new();
+        fs::write(fixture.root.join("unrelated.xml"), vec![b'x'; 2_048]).unwrap();
+        symlink(
+            fixture.root.join("unrelated.xml"),
+            fixture.root.join("unrelated-link.xml"),
+        )
+        .unwrap();
+        let limits = SecureTreeCaptureLimits {
+            maximum_depth: 1,
+            maximum_entries: 2,
+            maximum_files: 1,
+            maximum_bytes: b"trusted".len(),
+        };
+        let mut session = RetainedRootSecureRead::open(&fixture.root, limits, || Ok(())).unwrap();
+
+        let read = session
+            .read_regular_file(Path::new("parent/resource.xml"), || Ok(()))
+            .expect("unrequested files and links must not spend registration budgets");
+
+        assert_eq!(read.bytes, b"trusted");
+        session.complete(|| Ok(())).unwrap();
+    }
+
+    #[test]
+    fn retained_registration_session_counts_each_new_directory_and_file_path() {
+        let fixture = Fixture::new();
+        let limits = SecureTreeCaptureLimits {
+            maximum_depth: 1,
+            maximum_entries: 1,
+            maximum_files: 1,
+            maximum_bytes: b"trusted".len(),
+        };
+        let mut session = RetainedRootSecureRead::open(&fixture.root, limits, || Ok(())).unwrap();
+
+        let error = session
+            .read_regular_file(Path::new("parent/resource.xml"), || Ok(()))
+            .expect_err("the parent directory and file must spend two entry slots");
+
+        assert_eq!(error.kind(), io::ErrorKind::FileTooLarge);
+        assert!(error.to_string().contains("entry-count"), "{error}");
+    }
+
+    #[test]
+    fn retained_registration_session_counts_new_files_cumulatively_under_a_retained_directory() {
+        let fixture = Fixture::new();
+        fs::write(fixture.root.join("parent/second.xml"), b"second").unwrap();
+        let limits = SecureTreeCaptureLimits {
+            maximum_depth: 1,
+            maximum_entries: 2,
+            maximum_files: 2,
+            maximum_bytes: b"trusted".len() + b"second".len(),
+        };
+        let mut session = RetainedRootSecureRead::open(&fixture.root, limits, || Ok(())).unwrap();
+        session
+            .read_regular_file(Path::new("parent/resource.xml"), || Ok(()))
+            .unwrap();
+
+        let error = session
+            .read_regular_file(Path::new("parent/second.xml"), || Ok(()))
+            .expect_err("a second file must spend a third cumulative entry slot");
+
+        assert_eq!(error.kind(), io::ErrorKind::FileTooLarge);
+        assert!(error.to_string().contains("entry-count"), "{error}");
+    }
+
+    #[test]
+    fn retained_registration_session_is_poisoned_after_a_failed_read() {
+        let fixture = Fixture::new();
+        fs::write(fixture.root.join("small.xml"), b"x").unwrap();
+        let limits = SecureTreeCaptureLimits {
+            maximum_depth: 1,
+            maximum_entries: 4,
+            maximum_files: 2,
+            maximum_bytes: b"trusted".len() - 1,
+        };
+        let mut session = RetainedRootSecureRead::open(&fixture.root, limits, || Ok(())).unwrap();
+        let first = session
+            .read_regular_file(Path::new("parent/resource.xml"), || Ok(()))
+            .expect_err("the first registered file exceeds the byte budget");
+        assert_eq!(first.kind(), io::ErrorKind::FileTooLarge);
+
+        let second = session
+            .read_regular_file(Path::new("small.xml"), || Ok(()))
+            .expect_err("a failed partial read must make the capability unusable");
+        assert!(second.to_string().contains("poisoned"), "{second}");
+
+        let complete = session
+            .complete(|| Ok(()))
+            .expect_err("a poisoned capability cannot publish a proof");
+        assert!(complete.to_string().contains("poisoned"), "{complete}");
     }
 
     #[test]
