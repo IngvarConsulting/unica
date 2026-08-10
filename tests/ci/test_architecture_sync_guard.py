@@ -840,6 +840,47 @@ class TargetBranchLifecycleTests(unittest.TestCase):
 
         self.assertEqual(self.guard.analyze_decision_records(diff, self.base), [])
 
+    def test_a_proposed_duplicate_id_is_judged_by_its_exact_base_path(self) -> None:
+        """A merge race must not make the accepted sibling's status contagious.
+
+        Two stale pull requests can add different files under the same next ID.
+        Repair has to preserve the accepted record while withdrawing or
+        renumbering the proposed duplicate. Looking up status by ID alone makes
+        that repair impossible because the two files collapse into one entry.
+        """
+        base = self.guard.BaseCatalogue(
+            {"0040": "accepted"},
+            path_statuses={
+                "spec/decisions/0040-workspace-config.md": "accepted",
+                "spec/decisions/0040-meta-info.md": "proposed",
+            },
+        )
+        diff = renamed_diff_for(
+            "spec/decisions/0040-meta-info.md",
+            "spec/decisions/0041-meta-info.md",
+        )
+
+        self.assertEqual(self.guard.analyze_decision_records(diff, base), [])
+
+    def test_an_accepted_duplicate_id_stays_immutable_by_its_exact_base_path(self) -> None:
+        """Path-aware recovery must not weaken the binding sibling."""
+        base = self.guard.BaseCatalogue(
+            {"0040": "accepted"},
+            path_statuses={
+                "spec/decisions/0040-workspace-config.md": "accepted",
+                "spec/decisions/0040-meta-info.md": "proposed",
+            },
+        )
+        diff = renamed_diff_for(
+            "spec/decisions/0040-workspace-config.md",
+            "spec/decisions/0041-workspace-config.md",
+        )
+
+        violations = self.guard.analyze_decision_records(diff, base)
+
+        self.assertEqual(len(violations), 1, violations)
+        self.assertIn("left the catalogue", violations[0])
+
     def test_taking_a_number_the_branch_already_spent_is_a_violation(self) -> None:
         """The other half of the renumbering rule.
 
@@ -937,6 +978,34 @@ class BaseCatalogueReadTests(unittest.TestCase):
         )
 
         self.assertEqual(self.guard.base_status(text), "accepted")
+
+    def test_base_reader_preserves_paths_when_two_records_share_an_id(self) -> None:
+        """The exact proposed duplicate remains distinguishable from its owner."""
+        from unittest.mock import patch
+
+        accepted = "spec/decisions/0040-workspace-config.md"
+        proposed = "spec/decisions/0040-meta-info.md"
+        results = [
+            subprocess_result(returncode=0, stdout=f"{accepted}\0{proposed}\0"),
+            subprocess_result(
+                returncode=0,
+                stdout="# ADR-0040\n\n- Статус: `accepted`\n",
+            ),
+            subprocess_result(
+                returncode=0,
+                stdout="# ADR-0040\n\n- Статус: `proposed`\n",
+            ),
+        ]
+
+        with patch.object(self.guard.subprocess, "run", side_effect=results):
+            catalogue = self.guard.read_base_records("origin/main")
+
+        self.assertIsNotNone(catalogue)
+        self.assertEqual(catalogue.status("0040"), "accepted")
+        self.assertTrue(catalogue.has_path(accepted, "0040"))
+        self.assertTrue(catalogue.has_path(proposed, "0040"))
+        self.assertEqual(catalogue.status_for(accepted, "0040"), "accepted")
+        self.assertEqual(catalogue.status_for(proposed, "0040"), "proposed")
 
     def test_a_record_without_a_status_reads_as_none(self) -> None:
         self.assertIsNone(self.guard.base_status("# ADR-0011\n\n## Контекст\n"))

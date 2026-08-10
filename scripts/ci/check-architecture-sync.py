@@ -431,21 +431,47 @@ def unreadable_sections(diff_text: str) -> list[str]:
 class BaseCatalogue:
     """The decision records the target branch already carries.
 
-    Membership is what decides whether a record is history: an ID the target
-    branch does not have belongs to an unfinished pull request, whatever the
-    diff's own old side says about it. The status is read from the target branch
-    too, so `accepted -> superseded` can be recognised even in a diff that shows
-    only the added line.
+    Exact path membership decides whether the record changed by a diff is
+    history. ID membership remains separate because adding a second file under
+    a spent number is still forbidden. Normally both views are equivalent; the
+    distinction makes a stale-merge duplicate repairable without weakening the
+    accepted record that already owns the ID. The status is read from the target
+    branch too, so `accepted -> superseded` can be recognised even in a diff
+    that shows only the added line.
     """
 
-    def __init__(self, statuses: dict[str, str | None]) -> None:
+    def __init__(
+        self,
+        statuses: dict[str, str | None],
+        *,
+        path_statuses: dict[str, str | None] | None = None,
+    ) -> None:
         self.statuses = statuses
+        self.path_statuses = path_statuses
 
     def has(self, identifier: str) -> bool:
         return identifier in self.statuses
 
     def status(self, identifier: str) -> str | None:
         return self.statuses.get(identifier)
+
+    def has_path(self, path: str | None, identifier: str) -> bool:
+        """Whether the exact record path exists in the target catalogue.
+
+        Older unit callers construct an ID-only catalogue, so they retain the
+        conservative ID lookup. A catalogue read from git carries exact paths;
+        this distinction is required to repair a stale-merge collision where
+        one accepted and one proposed file accidentally share an ID.
+        """
+        if self.path_statuses is None:
+            return self.has(identifier)
+        return path is not None and path in self.path_statuses
+
+    def status_for(self, path: str | None, identifier: str) -> str | None:
+        """Status of the exact record path, with an ID-only compatibility fallback."""
+        if self.path_statuses is None:
+            return self.status(identifier)
+        return self.path_statuses.get(path) if path is not None else None
 
 
 def read_base_records(base: str) -> BaseCatalogue | None:
@@ -477,6 +503,7 @@ def read_base_records(base: str) -> BaseCatalogue | None:
         return None
 
     statuses: dict[str, str | None] = {}
+    path_statuses: dict[str, str | None] = {}
     for path in listing.stdout.split("\0"):
         identifier = record_id(path) if path else None
         if identifier is None:
@@ -489,12 +516,17 @@ def read_base_records(base: str) -> BaseCatalogue | None:
             encoding="utf-8",
             errors="replace",
         )
-        if content.returncode != 0:
-            statuses[identifier] = None
-            continue
-        statuses[identifier] = base_status(content.stdout)
+        status = None if content.returncode != 0 else base_status(content.stdout)
+        path_statuses[path] = status
+        previous = statuses.get(identifier)
+        if (
+            identifier not in statuses
+            or previous not in BINDING_STATUSES
+            and status in BINDING_STATUSES
+        ):
+            statuses[identifier] = status
 
-    return BaseCatalogue(statuses)
+    return BaseCatalogue(statuses, path_statuses=path_statuses)
 
 
 def base_status(record_text: str) -> str | None:
@@ -517,11 +549,13 @@ def analyze_decision_records(
     """Report decision records the diff rewrites (INV-DOC-SUPERSEDE-NOT-EDIT).
 
     Immutability starts at the target branch, not at the word `accepted`. With
-    `base` given, a record whose ID that branch does not carry exists only inside
-    this pull request: editing it, renumbering it, merging it into another record
-    or dropping it are review work, not rewrites. Without `base` -- a diff piped
-    in with no ref to read -- the diff's own old side is the only statement about
-    history available, so a name that was already a record is treated as one.
+    `base` given, a record whose exact path that branch does not carry exists
+    only inside this pull request: editing it, renumbering it, merging it into
+    another record or dropping it are review work, not rewrites. ID membership
+    is checked independently to reject a newly added duplicate. Without `base`
+    -- a diff piped in with no ref to read -- the diff's own old side is the only
+    statement about history available, so a name that was already a record is
+    treated as one.
 
     A record the target branch carries is held to its ID and to its fields. Its
     ID must still resolve after the change: deleting the file, moving it out of
@@ -584,7 +618,9 @@ def analyze_decision_records(
         if base is None:
             in_target_branch = before_id is not None
         else:
-            in_target_branch = before_id is not None and base.has(before_id)
+            in_target_branch = before_id is not None and base.has_path(
+                section.old_path, before_id
+            )
 
         if not in_target_branch:
             # Not history yet. The whole record is the pull request's to change,
@@ -614,7 +650,11 @@ def analyze_decision_records(
         # states it directly; the target branch states it when the diff shows
         # only an added line, which is what a per-commit diff of a header edit
         # looks like.
-        prior = base.status(before_id) if base is not None else None
+        prior = (
+            base.status_for(section.old_path, before_id)
+            if base is not None and before_id is not None
+            else None
+        )
         before_statuses = statuses["-"] or ([prior] if prior else [])
 
         # A record whose earlier status is visible and non-binding was never
