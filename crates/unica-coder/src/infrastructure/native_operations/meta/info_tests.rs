@@ -2,7 +2,7 @@ use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use std::time::{Duration, Instant};
 
-use super::info::{registrar_scan_checkpoint, typed_elements};
+use super::info::{predefined_code_type_for_info, registrar_scan_checkpoint, typed_elements};
 use super::xml_model::meta_info_child;
 
 #[test]
@@ -50,6 +50,21 @@ fn typed_info_preserves_structured_children_with_missing_or_empty_names_as_incom
     assert_eq!(value[0]["incomplete"], true);
     assert_eq!(value[1]["name"], "");
     assert_eq!(value[1]["incomplete"], true);
+}
+
+#[test]
+fn typed_info_retains_owner_code_type_for_predefined_validation() {
+    let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Catalog><Properties><CodeType>Number</CodeType></Properties></Catalog></MetaDataObject>"#;
+    let document = roxmltree::Document::parse(xml).unwrap();
+    let properties = document
+        .root_element()
+        .first_element_child()
+        .and_then(|object| meta_info_child(object, "Properties"));
+    assert_eq!(
+        predefined_code_type_for_info(properties, crate::domain::metadata::MetadataKind::Catalog,)
+            .as_deref(),
+        Some("Number")
+    );
 }
 
 #[test]

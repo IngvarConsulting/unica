@@ -364,9 +364,14 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                         ProviderDeadline::new(Instant::now() + NATIVE_TYPED_INVOCATION_DEADLINE),
                     ),
                 )
-                .map(|outcome| match outcome.data {
-                    Some(data) => HandlerOutcome::with_data(outcome.adapter, data),
-                    None => HandlerOutcome::plain(outcome.adapter),
+                .map(|outcome| {
+                    let mut handler = match outcome.data {
+                        Some(data) => HandlerOutcome::with_data(outcome.adapter, data),
+                        None => HandlerOutcome::plain(outcome.adapter),
+                    };
+                    handler.events = outcome.events;
+                    handler.recorded_cache = outcome.recorded_cache;
+                    handler
                 })
             }
             ToolHandler::ProjectStatus => {

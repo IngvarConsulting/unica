@@ -89,6 +89,7 @@ const FORM_EDIT_REQUIRED: &[&str] = &["FormPath"];
 const SUBSYSTEM_COMPILE_REQUIRED: &[&str] = &["OutputDir"];
 const MXL_COMPILE_REQUIRED: &[&str] = &["JsonPath", "OutputPath"];
 const ROLE_COMPILE_REQUIRED: &[&str] = &["JsonPath", "OutputDir"];
+const ROLE_EDIT_REQUIRED: &[&str] = &["sourceSet", "metadataPath", "operations"];
 const EXTERNAL_INIT_REQUIRED: &[&str] = &["Name", "OutputDir"];
 // `selector` and `position` are required only by selector-based operations, so
 // the descriptor cannot demand them for every call; `initialize` deliberately
@@ -506,6 +507,15 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         OUTPUT_DIR,
         OUTPUT_DIR,
         Some(path_guard(OUTPUT_DIR, SupportGuardRequirement::Editable)),
+    ),
+    descriptor_with_paths(
+        "role-edit",
+        ROLE_EDIT_REQUIRED,
+        EMPTY,
+        EMPTY,
+        FormatGuardPolicy::ExistingDump,
+        FormatPathPolicy::HandlerResolved,
+        Some(handler_resolved_guard(SupportGuardRequirement::Editable)),
     ),
     descriptor_with_paths(
         "role-info",
