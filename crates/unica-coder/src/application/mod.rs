@@ -816,7 +816,7 @@ fn call_tool(
                         &context,
                         target,
                         &[],
-                        dry_run,
+                        mode,
                         spec.cache_access,
                     ) {
                         Ok(cache) => cache,
@@ -869,7 +869,7 @@ fn call_tool(
                     &context,
                     target,
                     &[],
-                    dry_run,
+                    mode,
                     spec.cache_access,
                 ) {
                     Ok(cache) => cache,
@@ -945,7 +945,7 @@ fn call_tool(
                         &context,
                         target,
                         &[],
-                        dry_run,
+                        mode,
                         spec.cache_access,
                     ) {
                         Ok(cache) => cache,
@@ -987,7 +987,7 @@ fn call_tool(
                         &context,
                         target,
                         &[],
-                        dry_run,
+                        mode,
                         spec.cache_access,
                     ) {
                         Ok(cache) => cache,
@@ -1183,7 +1183,7 @@ fn call_tool(
         }
         cache
     } else if let Some(target) = role_target.as_ref() {
-        match role_cache_report(ports, &context, target, &events, dry_run, spec.cache_access) {
+        match role_cache_report(ports, &context, target, &events, mode, spec.cache_access) {
             Ok(cache) => cache,
             Err(result) => return Ok(*result),
         }
@@ -1366,11 +1366,12 @@ fn role_cache_report(
     context: &WorkspaceContext,
     target: &RoleEditLogicalTarget,
     events: &[DomainEvent],
-    dry_run: bool,
+    mode: InvocationMode,
     access: CacheAccess,
 ) -> Result<CacheReport, Box<OperationResult>> {
+    let dry_run = mode.is_preview();
     ports
-        .cache_report(context, events, dry_run, access)
+        .cache_report(context, events, mode, access)
         .map_err(|_| {
             Box::new(target.failed_result(
                 CacheReport {
@@ -2663,7 +2664,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.role.edit",
             description: "Edit role rights through a closed logical typed contract.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::Typed,
             cache_access: CacheAccess {
                 reads: &[],
                 writes: &["metadata_graph", "rights_graph"],

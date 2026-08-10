@@ -56,6 +56,7 @@ MUTATION_TOOL_NAMES = frozenset(
         "unica.dcs.edit",
         "unica.mxl.compile",
         "unica.role.compile",
+        "unica.role.edit",
         "unica.build.dump",
         "unica.build.load",
         "unica.build.update",
@@ -337,8 +338,8 @@ class UnicaMcpSmokeTests(unittest.TestCase):
             tool["name"]: tool for tool in responses[0]["result"]["tools"]
         }
 
-        self.assertEqual(len(tools), 73)
-        self.assertEqual(len(MUTATION_TOOL_NAMES), 35)
+        self.assertEqual(len(tools), 74)
+        self.assertEqual(len(MUTATION_TOOL_NAMES), 36)
         self.assertEqual(len(set(tools) - MUTATION_TOOL_NAMES), 38)
         self.assertEqual(MUTATION_TOOL_NAMES - set(tools), set())
         for name, tool in sorted(tools.items()):
