@@ -222,8 +222,10 @@ read-only тип повторила бы каскад.
 
 ## Проверка проектного pull request
 
-- `python3.12 -m unittest tests.ci.test_format_profile_contract` удерживает
-  доказанные границы команды и HTML в нормативных форматных спецификациях.
+- `python3.12 -m unittest tests.ci.test_format_profile_contract` проверяет, что
+  изменённая форматная спецификация остаётся частью активного профиля
+  8.3.27/2.20; фактическое поведение команды и HTML проверяется только
+  реализационными regression tests из плана выше.
 - `python3.12 -m unittest tests.ci.test_design_documents` проверяет шапку и
   разрешимость ADR проектной записки.
 - `python3.12 -m unittest tests.ci.test_architecture_registry` проверяет индекс,
