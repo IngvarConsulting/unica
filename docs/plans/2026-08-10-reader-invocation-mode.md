@@ -14,7 +14,7 @@
 
 - [x] Proposal PR #426 закрыт без merge; implementation branch
   `codex/issue-297-reader-invocation` создан непосредственно от обновлённого
-  `origin/main` в существующем linked worktree. Утверждённые design, ADR-0043 и
+  `origin/main` в существующем linked worktree. Утверждённые design, ADR-0044 и
   этот план перенесены в один changeset с runtime и тестами. Номер ADR проверен
   по целевой ветке согласно `INV-DOC-SUPERSEDE-NOT-EDIT`.
 - [ ] Не включать #298–#301 и не менять контракт preview/apply мутаторов из #290: отсутствие `dryRun` у мутации по-прежнему означает preview, `true` — preview, `false` — apply.
@@ -32,7 +32,7 @@
 
 - Import after branch creation: `docs/design/2026-08-10-reader-invocation-mode-design.md`
 - Import after branch creation: `docs/plans/2026-08-10-reader-invocation-mode.md`
-- Import after branch creation: `spec/decisions/0043-readers-ne-prinimayut-preview.md`
+- Import after branch creation: `spec/decisions/0044-readers-ne-prinimayut-preview.md`
 - Import after branch creation: `spec/decisions/README.md`
 
 - [ ] **Step 1: Verify the explicit execution approval and proposal state.**
@@ -734,11 +734,11 @@ git commit -m "test(skills): execute reader examples against local fixtures"
 
 ---
 
-### Task 7: Принять ADR-0043 и синхронизировать нормативную архитектуру
+### Task 7: Принять ADR-0044 и синхронизировать нормативную архитектуру
 
 **Files:**
 
-- Modify: `spec/decisions/0043-readers-ne-prinimayut-preview.md`
+- Modify: `spec/decisions/0044-readers-ne-prinimayut-preview.md`
 - Modify: `spec/decisions/README.md`
 - Modify: `spec/architecture/invariants.md`
 - Modify: `spec/architecture/change-checklist.md`
@@ -753,9 +753,9 @@ git commit -m "test(skills): execute reader examples against local fixtures"
 
 Проверить, что:
 
-- ADR-0043 имеет `accepted` и находится в accepted index;
+- ADR-0044 имеет `accepted` и находится в accepted index;
 - существует уникальный `INV-MCP-PREVIEW-MUTATION-ONLY`;
-- `INV-MCP-TYPED-RESULT` называет `typed_result_missing` и ADR-0043;
+- `INV-MCP-TYPED-RESULT` называет `typed_result_missing` и ADR-0044;
 - `INV-SKILL-EXECUTABLE-EXAMPLES` различает preview mutation и real deterministic reader;
 - change checklist ссылается на новый invariant, не копируя его Rule.
 
@@ -767,9 +767,9 @@ python3.12 -m unittest tests.ci.test_architecture_registry tests.ci.test_tool_su
 
 Expected: FAIL до нормативных правок.
 
-- [ ] **Step 2: Accept ADR-0043 in the implementation changeset.**
+- [ ] **Step 2: Accept ADR-0044 in the implementation changeset.**
 
-Proposal PR #426 к этому моменту закрыт без merge, поэтому ADR-0043 ещё не
+Proposal PR #426 к этому моменту закрыт без merge, поэтому ADR-0044 ещё не
 попадала в целевую ветку и остаётся редактируемой по правилам жизненного цикла.
 Перенести утверждённый файл в implementation branch сразу со статусом
 `accepted` и добавить строку в Accepted в `spec/decisions/README.md`; Proposed
@@ -789,15 +789,15 @@ entry в implementation diff не создаётся. Содержание ра�
   исполняется только как `InvocationMode::Read`; `ToolExecution::Mutation`
   выводит `Preview` при отсутствующем или истинном `dryRun` и `Apply` только
   при `dryRun: false`.
-- **Decision:** ADR-0043
+- **Decision:** ADR-0044
 - **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
 - **Check:** `ci-test` — `tests/ci/test_unica_mcp_script_parity.py`
 - **Scope:** source, runtime, packaged
 ```
 
-В `INV-MCP-TYPED-RESULT` добавить постусловие successful `Read + Typed` и stable `typed_result_missing`, Decision ADR-0043 и Rust check `tool_specs_match_reviewed_result_contracts`.
+В `INV-MCP-TYPED-RESULT` добавить постусловие successful `Read + Typed` и stable `typed_result_missing`, Decision ADR-0044 и Rust check `tool_specs_match_reviewed_result_contracts`.
 
-В `INV-SKILL-EXECUTABLE-EXAMPLES` заменить «каждый как сухой прогон» на «mutation — preview; reader — настоящий MCP read над deterministic fixture/local stand-in», Decision ADR-0005, ADR-0043.
+В `INV-SKILL-EXECUTABLE-EXAMPLES` заменить «каждый как сухой прогон» на «mutation — preview; reader — настоящий MCP read над deterministic fixture/local stand-in», Decision ADR-0005, ADR-0044.
 
 - [ ] **Step 4: Regenerate the ledger from the built registry.**
 
@@ -889,7 +889,7 @@ Expected: все CI unit/contract tests green; parity не использует 
 
 - [ ] **Step 4: Inspect package-contract files for unintended drift.**
 
-Проверить, что manifests и `tools.lock.json` не изменились: stand-ins существуют только в test fixtures/temp plugin root. Если diff затронул package-contract metadata, остановиться и объяснить причину — ADR-0043 не требует version/package change.
+Проверить, что manifests и `tools.lock.json` не изменились: stand-ins существуют только в test fixtures/temp plugin root. Если diff затронул package-contract metadata, остановиться и объяснить причину — ADR-0044 не требует version/package change.
 
 - [ ] **Step 5: Request code review.**
 
@@ -934,7 +934,7 @@ gh pr create \
 
 Перед командой создать игнорируемый `.superpowers/issue-297-pr-body.md` через
 `apply_patch`; не добавлять его в git. PR body должен ссылаться на #297,
-ADR-0043 и proposal PR #426, явно разделять root
+ADR-0044 и proposal PR #426, явно разделять root
 cause/schema/dispatch/result/parity, перечислять red tests и финальные команды.
 Issue #297 закрывать только этим implementation PR (`Closes #297`), не
 proposal PR.
@@ -951,7 +951,7 @@ Expected: ready PR, base `main`, head `codex/issue-297-reader-invocation`, clean
 
 ## Plan self-review checklist
 
-- [ ] Каждая цель ADR-0043 имеет task: независимая топология (0), schema/category (1), validation/mode (2), reader dispatch (3), typed postcondition (4), transport (5), skill parity (6), normative sync (7), full proof (8).
+- [ ] Каждая цель ADR-0044 имеет task: независимая топология (0), schema/category (1), validation/mode (2), reader dispatch (3), typed postcondition (4), transport (5), skill parity (6), normative sync (7), full proof (8).
 - [ ] Каждый production defect получает тест, который запускается red до исправления.
 - [ ] В плане нет незаполненных шагов, сетевой зависимости или машинно-зависимой установки.
 - [ ] Все новые типы согласованы: `ToolExecution` классифицирует tool, `InvocationMode` — конкретный call, `ResultContract` — result postcondition.

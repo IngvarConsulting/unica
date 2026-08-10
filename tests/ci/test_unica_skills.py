@@ -2777,7 +2777,7 @@ class ExecutableSkillExampleInvariantTests(unittest.TestCase):
             "### INV-SKILL-EXECUTABLE-EXAMPLES", 1
         )[1].split("\n### ", 1)[0]
 
-        self.assertIn("ADR-0043", section)
+        self.assertIn("ADR-0044", section)
         self.assertIn("предпросмотр", section)
         self.assertIn("настоящее чтение MCP", section)
         self.assertIn("детерминирован", section)

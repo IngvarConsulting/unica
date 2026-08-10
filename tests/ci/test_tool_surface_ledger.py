@@ -440,7 +440,7 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
                 current_field = None
 
         self.assertIn("typed_result_missing", " ".join(fields["Rule"]))
-        self.assertIn("ADR-0043", " ".join(fields["Decision"]))
+        self.assertIn("ADR-0044", " ".join(fields["Decision"]))
         self.assertIn(
             "`crates/unica-coder/src/application/mod.rs`",
             " ".join(fields["Check"]),

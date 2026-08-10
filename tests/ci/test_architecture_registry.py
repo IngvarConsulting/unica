@@ -1514,14 +1514,14 @@ class IndexSynchronizationTests(unittest.TestCase):
 
 
 class ReaderInvocationContractTests(unittest.TestCase):
-    """ADR-0043 stays activated through derived executable rules."""
+    """ADR-0044 stays activated through derived executable rules."""
 
     def setUp(self) -> None:
         self.records = {record.id: record for record in all_records()}
 
     def test_decision_is_accepted_and_indexed_only_as_accepted(self) -> None:
         decision = (
-            DECISIONS_DIR / "0043-readers-ne-prinimayut-preview.md"
+            DECISIONS_DIR / "0044-readers-ne-prinimayut-preview.md"
         ).read_text(encoding="utf-8")
         index = DECISIONS_INDEX.read_text(encoding="utf-8")
         accepted = index.split("## Принятые решения", 1)[1].split(
@@ -1530,20 +1530,20 @@ class ReaderInvocationContractTests(unittest.TestCase):
         proposed = index.split("## Предложенные решения", 1)[1].split("\n## ", 1)[0]
 
         self.assertIn("- Статус: `accepted`", decision)
-        self.assertIn("(0043-readers-ne-prinimayut-preview.md)", accepted)
-        self.assertNotIn("(0043-readers-ne-prinimayut-preview.md)", proposed)
+        self.assertIn("(0044-readers-ne-prinimayut-preview.md)", accepted)
+        self.assertNotIn("(0044-readers-ne-prinimayut-preview.md)", proposed)
 
-    def test_preview_and_typed_result_rules_name_adr_0043(self) -> None:
+    def test_preview_and_typed_result_rules_name_adr_0044(self) -> None:
         preview = self.records.get("INV-MCP-PREVIEW-MUTATION-ONLY")
         self.assertIsNotNone(preview, "missing INV-MCP-PREVIEW-MUTATION-ONLY")
-        self.assertEqual(preview.one("Decision"), "ADR-0043")
+        self.assertEqual(preview.one("Decision"), "ADR-0044")
         preview_rule = preview.one("Rule") or ""
         for token in ["ToolExecution::Read", "ToolExecution::Mutation", "InvocationMode::Read"]:
             with self.subTest(token=token):
                 self.assertIn(token, preview_rule)
 
         typed = self.records["INV-MCP-TYPED-RESULT"]
-        self.assertIn("ADR-0043", typed.one("Decision") or "")
+        self.assertIn("ADR-0044", typed.one("Decision") or "")
         self.assertIn("typed_result_missing", typed.one("Rule") or "")
 
     def test_change_checklist_cites_preview_rule_without_copying_it(self) -> None:

@@ -392,7 +392,7 @@ Unica. Каждая запись формулирует одно нормати�
   отсутствие завершает вызов стабильной ошибкой `typed_result_missing`;
   соответствие классификации ведомости проверяет
   `tool_specs_match_reviewed_result_contracts`.
-- **Decision:** ADR-0020, ADR-0023, ADR-0043
+- **Decision:** ADR-0020, ADR-0023, ADR-0044
 - **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
 - **Check:** `ci-test` — `tests/ci/test_tool_surface_ledger.py`
 - **Scope:** source, runtime
@@ -403,7 +403,7 @@ Unica. Каждая запись формулирует одно нормати�
   исполняется только как `InvocationMode::Read`; `ToolExecution::Mutation`
   выводит `Preview` при отсутствующем или истинном `dryRun` и `Apply` только
   при `dryRun: false`.
-- **Decision:** ADR-0043
+- **Decision:** ADR-0044
 - **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
 - **Check:** `ci-test` — `tests/ci/test_unica_mcp_script_parity.py`
 - **Scope:** source, runtime, packaged
@@ -601,7 +601,7 @@ Unica. Каждая запись формулирует одно нормати�
   вызов: мутация успешно исполняется через предпросмотр MCP, а читатель — как
   настоящее чтение MCP над детерминированной фикстурой или локальным подставным
   поставщиком без записи в рабочее пространство и зависимости от живой сети.
-- **Decision:** ADR-0005, ADR-0043
+- **Decision:** ADR-0005, ADR-0044
 - **Check:** `ci-test` — `tests/ci/test_unica_mcp_script_parity.py`
 - **Scope:** source, packaged
 
