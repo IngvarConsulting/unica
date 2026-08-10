@@ -87,18 +87,26 @@ readiness в строковую ошибку до публичного адап�
 8. Отсутствующий `codes` означает все коды, а заданный сравнивается точно с
     учётом регистра; `minSeverity` по умолчанию `warning`, `detail` —
     `concise`, `limit` — целое `1..=200` с умолчанием `200`. Ошибки файлов не
-    фильтруются. До `limit` элементы сортируются по нормализованному пути, виду,
-    диапазону, коду и сообщению. `diagnostics.reported` равен итогу анализатора,
+    фильтруются. До `limit` элементы сортируются по нормализованному пути,
+    затем `fileFailure` перед `diagnostic`, затем по `startLine`, `startColumn`,
+    `endLine`, `endColumn`, `code` и `message`. У `fileFailure` координаты и код
+    считаются пустыми нулевыми значениями. `diagnostics.reported` равен итогу анализатора,
     `diagnostics.matched` — числу после фильтров, `itemsTotal` — сумме
     `diagnostics.matched` и `files.failed`, `itemsReturned` — длине `items`, а
     `truncated` истинно тогда и только тогда, когда `itemsReturned < itemsTotal`.
-9. Полный поток завершается `state=completed`, `complete=true`, `ok=true` и
-   без `stdout`. Только `start` даёт допускающий повтор
-   `diagnostics_pending:`;
-   поток с `file` без `done` даёт `diagnostics_incomplete:`; невалидная
-   грамматика или итоговые счётчики дают `diagnostics_invalid:`. Последние три
-   состояния имеют `complete=false`, `ok=false`, не публикуют частичные
-   элементы и различимы в типизированном `data`.
+9. Состояния потока имеют закрытую таблицу результата:
+
+   | `state` | `complete` | `ok` | `retryable` | Префикс ошибки |
+   | --- | --- | --- | --- | --- |
+   | `completed` | `true` | `true` | `false` | нет |
+   | `pending` | `false` | `false` | `true` | `diagnostics_pending:` |
+   | `incomplete` | `false` | `false` | `false` | `diagnostics_incomplete:` |
+   | `invalid` | `false` | `false` | `false` | `diagnostics_invalid:` |
+
+   Полный поток завершается без `stdout`. Только `start` даёт `pending`;
+   поток с `file` без `done` даёт `incomplete`; невалидная грамматика или
+   итоговые счётчики дают `invalid`. Ошибочные состояния не публикуют
+   частичные элементы и различимы в типизированном `data`.
 10. Ошибка запуска процесса, ненулевой код завершения, превышение срока и
    отмена сохраняют собственные исходы процесса. Отмена не маскируется под
    ошибку протокола; `stderr` остаётся только очищенным диагностическим

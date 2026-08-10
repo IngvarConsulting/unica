@@ -427,7 +427,7 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
             Err(error) if error.starts_with(CANCELLED_PREFIX) => {
                 return failed_section(ProviderId::Rlm, error);
             }
-            Err(error) => return unavailable_section(ProviderId::Rlm, error),
+            Err(error) => return unavailable_section(ProviderId::Rlm, redactor(&error)),
         };
         match readiness {
             IndexReadiness::Ready { .. } => {}
@@ -440,14 +440,17 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
             IndexReadiness::Stale { status } => {
                 return unavailable_section(
                     ProviderId::Rlm,
-                    format!("rlm index is stale ({status}); background update requested"),
+                    format!(
+                        "rlm index is stale ({}); background update requested",
+                        redactor(&status)
+                    ),
                 );
             }
             IndexReadiness::Building => {
                 return unavailable_section(ProviderId::Rlm, "rlm index building".to_string());
             }
             IndexReadiness::Failed(error) | IndexReadiness::Unavailable(error) => {
-                return unavailable_section(ProviderId::Rlm, error);
+                return unavailable_section(ProviderId::Rlm, redactor(&error));
             }
         }
         let timeout = deadline.remaining();
@@ -2142,6 +2145,32 @@ mod tests {
 
         assert_eq!(section.status, ProviderSectionStatus::Unavailable);
         assert_eq!(section.diagnostics, vec!["rlm index building".to_string()]);
+        assert!(client.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn rlm_provider_redacts_pre_execution_readiness_failures() {
+        let client = FakeRlmClient {
+            readiness: IndexReadiness::Failed(
+                "token=top-secret index generation failed".to_string(),
+            ),
+            readiness_calls: Mutex::new(Vec::new()),
+            calls: Mutex::new(Vec::new()),
+            result: "[]".to_string(),
+        };
+
+        let section = RlmProvider::with_client(&client).search(
+            &SearchRequest {
+                query: "Post".to_string(),
+                limit: 20,
+            },
+            &context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(45)),
+            &CancellationToken::new(),
+        );
+
+        assert_eq!(section.status, ProviderSectionStatus::Unavailable);
+        assert!(!section.diagnostics.join(" ").contains("top-secret"));
         assert!(client.calls.lock().unwrap().is_empty());
     }
 }
