@@ -63,6 +63,32 @@ may override local-only `workPath`, `infobase`, `tools`, `tests`, and `mcp`
 settings. It cannot be passed as `config` and must not redefine shared
 `source-set`, `format`, `builder`, or `execution_timeout`.
 
+## Strict platform resolution
+
+Use `tools.platform.strict` when one machine must fail closed on an exact 1C
+installation instead of accepting another discovered platform version. A
+machine-local path normally belongs in `v8project.local.yaml`:
+
+```yaml
+tools:
+  platform:
+    version: "8.3.27.1859"
+    path: "C:\\Program Files\\1cv8\\8.3.27.1859\\bin"
+    strict: true
+```
+
+`path` is always an explicit-only search boundary. With both `path` and
+`strict: true`, the configured `version` is enforced fail-closed: a missing
+utility, unknown version, or incompatible version is an error. The first
+resolved platform utility fixes one canonical installation root, and sibling
+`1cv8`, `1cv8c`, and `ibcmd` are selected only from that root.
+
+With `path` and omitted/false `strict`, the runner still stays inside `path`,
+but it ignores `version` for that boundary. With no `path`, omitted/false
+`strict` preserves legacy discovery through the normal roots and `PATH`;
+`strict: true` alone creates no boundary. This project config field is not a
+new argument of `unica.runtime.execute`.
+
 ## Source-set format discovery
 
 Use MCP `unica.project.map` to inspect configured source-sets before choosing a

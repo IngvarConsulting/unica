@@ -16,6 +16,26 @@ Use `v8project.local.yaml` for local `workPath`, `infobase`, `tools`, `tests`, a
 
 Do not use legacy top-level `connection`; the current schema stores the connection under `infobase.connection`.
 
+For an opt-in fail-closed platform binding, put the machine-specific path in
+`v8project.local.yaml` when appropriate:
+
+```yaml
+tools:
+  platform:
+    version: "8.3.27.1859"
+    path: "C:\\Program Files\\1cv8\\8.3.27.1859\\bin"
+    strict: true
+```
+
+The key is `tools.platform.strict`. A configured `path` is always an
+explicit-only boundary. With `strict: true`, the runner enforces the configured
+version, rejects missing utilities and unknown/incompatible versions, and pins
+`1cv8`, `1cv8c`, and `ibcmd` to one canonical installation root. With
+`strict: false` or no `strict`, a configured `path` remains the boundary but
+its `version` is ignored. When `path` is absent, omitted/false `strict`
+preserves normal root/`PATH` discovery; `strict: true` alone adds no boundary.
+This is project configuration, not a new `unica.runtime.execute` argument.
+
 Backend guidance:
 
 - Designer format with Designer builder covers init/build/extensions/dump/syntax/tests/make/load.
