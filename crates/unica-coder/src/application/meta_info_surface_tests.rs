@@ -302,6 +302,108 @@ fn info_without_sections_is_local_only() {
 }
 
 #[test]
+fn info_observes_inline_command_without_a_standalone_descriptor() {
+    let workspace = create_info_workspace("inline-command");
+    let edited = call_edit(
+        workspace.path(),
+        "Catalog.Inspectable",
+        serde_json::json!([
+            {"op": "add", "collection": "forms", "elements": [{"name": "ItemForm"}]},
+            {"op": "add", "collection": "commands", "elements": [{"name": "Refresh"}]}
+        ]),
+        false,
+    );
+    assert!(edited.ok, "{:?}", edited.errors);
+
+    let owner_path = workspace.path().join("src/Catalogs/Inspectable.xml");
+    let mut owner_xml = std::fs::read_to_string(&owner_path).unwrap();
+    let form_range = {
+        let document = roxmltree::Document::parse(&owner_xml).unwrap();
+        document
+            .descendants()
+            .find(|node| node.is_element() && node.tag_name().name() == "Form")
+            .expect("generated form descriptor")
+            .range()
+    };
+    owner_xml.replace_range(form_range, "<Form>ItemForm</Form>");
+    std::fs::write(&owner_path, owner_xml).unwrap();
+
+    let invented_descriptor = workspace
+        .path()
+        .join("src/Catalogs/Inspectable/Commands/Refresh.xml");
+    assert!(
+        !invented_descriptor.exists(),
+        "command mutation must stay in the owner descriptor"
+    );
+
+    let result = call_info(workspace.path(), []);
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.expect("typed metadata info data");
+    assert_eq!(data["collections"]["forms"][0]["name"], "ItemForm");
+    assert_eq!(data["collections"]["commands"][0]["name"], "Refresh");
+    assert_eq!(data["validation"]["status"], "passed");
+
+    let form_descriptor = workspace
+        .path()
+        .join("src/Catalogs/Inspectable/Forms/ItemForm.xml");
+    let form_bytes = std::fs::read(&form_descriptor).unwrap();
+    std::fs::remove_file(&form_descriptor).unwrap();
+    let incomplete = call_info(workspace.path(), []);
+    assert!(!incomplete.ok, "missing form evidence must stay an error");
+    let errors = incomplete.errors.join("\n");
+    assert!(
+        errors.contains("Catalog.Inspectable.Form.ItemForm"),
+        "{errors}"
+    );
+    assert!(
+        !errors.contains("Catalog.Inspectable.Command.Refresh"),
+        "one missing child must not discard an observed sibling: {errors}"
+    );
+    let incomplete_data = incomplete.data.expect("partial local observation");
+    assert_eq!(
+        incomplete_data["collections"]["commands"][0]["name"],
+        "Refresh"
+    );
+    std::fs::write(&form_descriptor, form_bytes).unwrap();
+
+    let renamed = call_edit(
+        workspace.path(),
+        "Catalog.Inspectable",
+        serde_json::json!([{
+            "op": "update",
+            "collection": "commands",
+            "elements": [{"name": "Refresh", "newName": "Reload"}]
+        }]),
+        false,
+    );
+    assert!(renamed.ok, "{:?}", renamed.errors);
+    let commands_dir = workspace.path().join("src/Catalogs/Inspectable/Commands");
+    assert!(!commands_dir.join("Refresh.xml").exists());
+    assert!(!commands_dir.join("Reload.xml").exists());
+    let data = call_info(workspace.path(), [])
+        .data
+        .expect("typed metadata info after command rename");
+    assert_eq!(data["collections"]["commands"][0]["name"], "Reload");
+
+    let removed = call_edit(
+        workspace.path(),
+        "Catalog.Inspectable",
+        serde_json::json!([{
+            "op": "remove",
+            "collection": "commands",
+            "names": ["Reload"]
+        }]),
+        false,
+    );
+    assert!(removed.ok, "{:?}", removed.errors);
+    let data = call_info(workspace.path(), [])
+        .data
+        .expect("typed metadata info after command removal");
+    assert_eq!(data["collections"]["commands"], serde_json::json!([]));
+}
+
+#[test]
 fn info_groups_only_the_current_objects_subsystem_memberships() {
     let workspace = create_info_workspace("object-subsystem-memberships");
     write_subsystem(
@@ -1008,6 +1110,7 @@ fn info_observes_every_typed_mutation_field() {
         serde_json::json!({"kind": "number", "value": "12.50"})
     );
     assert_eq!(renamed["type"]["variants"][0]["kind"], "number");
+    assert_eq!(renamed["type"]["mutationCapability"], "editable");
     let rows = &data["collections"]["tabularSections"][0];
     assert_eq!(rows["synonym"], "Rows synonym");
     assert_eq!(rows["comment"], "Rows comment");
@@ -1041,31 +1144,117 @@ fn info_observes_every_typed_mutation_field() {
 }
 
 #[test]
-fn info_marks_malformed_optional_field_incomplete_with_diagnostic() {
-    let workspace = create_info_workspace("malformed-optional-type");
+fn info_localizes_an_unknown_but_valid_platform_type_as_a_warning() {
+    let workspace = create_info_workspace("unknown-platform-type");
     let descriptor = workspace.path().join("src/Catalogs/Inspectable.xml");
     let xml = std::fs::read_to_string(&descriptor).unwrap();
-    let malformed = xml.replacen(
+    let unknown = xml.replacen(
         "<v8:Type>xs:string</v8:Type>",
-        "<v8:Type>xs:unsupported</v8:Type>",
+        "<v8:Type>v8:FutureOpaque</v8:Type>",
         1,
     );
-    assert_ne!(malformed, xml, "fixture must contain a typed attribute");
-    std::fs::write(&descriptor, malformed).unwrap();
+    assert_ne!(unknown, xml, "fixture must contain a typed attribute");
+    std::fs::write(&descriptor, unknown).unwrap();
 
     let result = call_info(workspace.path(), []);
 
-    assert!(!result.ok);
+    assert!(result.ok, "{:?}", result.errors);
     let data = result.data.as_ref().expect("partial typed info");
     assert_eq!(data["collections"]["attributes"][0]["incomplete"], true);
-    assert!(result
-        .diagnostics
-        .as_ref()
-        .unwrap()
+    assert!(data["collections"]["attributes"][0].get("type").is_none());
+    assert!(data["validation"]["diagnostics"]
         .as_array()
         .unwrap()
         .iter()
-        .any(|diagnostic| diagnostic["field"] == "collections.attributes[0].type"));
+        .any(|diagnostic| {
+            diagnostic["field"] == "collections.attributes[0].type"
+                && diagnostic["severity"] == "warning"
+        }));
+}
+
+#[test]
+fn info_keeps_a_broken_qualifier_in_the_error_severity_branch() {
+    let workspace = create_info_workspace("broken-type-qualifier");
+    let descriptor = workspace.path().join("src/Catalogs/Inspectable.xml");
+    let xml = std::fs::read_to_string(&descriptor).unwrap();
+    let broken = xml.replacen("<v8:Length>9</v8:Length>", "<v8:Length>abc</v8:Length>", 1);
+    assert_ne!(broken, xml, "fixture must contain string qualifiers");
+    std::fs::write(&descriptor, broken).unwrap();
+
+    let result = call_info(workspace.path(), []);
+
+    assert!(!result.ok, "a malformed qualifier must remain an error");
+    let data = result.data.as_ref().expect("partial typed info");
+    assert_eq!(data["collections"]["attributes"][0]["incomplete"], true);
+    assert!(data["collections"]["attributes"][0].get("type").is_none());
+    assert!(data["validation"]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|diagnostic| {
+            diagnostic["field"] == "collections.attributes[0].type"
+                && diagnostic["severity"] == "error"
+        }));
+}
+
+#[test]
+fn info_reads_uuid_as_an_editable_observed_type() {
+    let workspace = create_info_workspace("uuid-observation");
+    let descriptor = workspace.path().join("src/Catalogs/Inspectable.xml");
+    let xml = std::fs::read_to_string(&descriptor).unwrap();
+    let uuid = xml.replacen(
+        "<v8:Type>xs:string</v8:Type>",
+        "<v8:Type>v8:UUID</v8:Type>",
+        1,
+    );
+    assert_ne!(uuid, xml, "fixture must contain a typed attribute");
+    std::fs::write(&descriptor, uuid).unwrap();
+
+    let result = call_info(workspace.path(), []);
+
+    assert!(result.ok, "{:?}", result.errors);
+    let observed = &result.data.unwrap()["collections"]["attributes"][0]["type"];
+    assert_eq!(observed["variants"], serde_json::json!([{"kind": "uuid"}]));
+    assert_eq!(observed["mutationCapability"], "editable");
+}
+
+#[test]
+fn uuid_writer_round_trips_through_meta_edit_and_info() {
+    let workspace = create_info_workspace("uuid-writer-round-trip");
+    let edited = call_edit(
+        workspace.path(),
+        "Catalog.Inspectable",
+        serde_json::json!([{
+            "op": "add",
+            "collection": "attributes",
+            "elements": [{
+                "name": "ExternalId",
+                "type": {"variants": [{"kind": "uuid"}]}
+            }]
+        }]),
+        false,
+    );
+
+    assert!(edited.ok, "{:?}", edited.errors);
+    let result = call_info(workspace.path(), []);
+    assert!(result.ok, "{:?}", result.errors);
+    let external_id = result.data.unwrap()["collections"]["attributes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|attribute| attribute["name"] == "ExternalId")
+        .cloned()
+        .expect("round-tripped UUID attribute");
+    assert_eq!(
+        external_id["type"],
+        serde_json::json!({
+            "variants": [{"kind": "uuid"}],
+            "mutationCapability": "editable"
+        })
+    );
+    let descriptor =
+        std::fs::read_to_string(workspace.path().join("src/Catalogs/Inspectable.xml")).unwrap();
+    assert!(descriptor.contains("<v8:Type>v8:UUID</v8:Type>"));
 }
 
 #[test]

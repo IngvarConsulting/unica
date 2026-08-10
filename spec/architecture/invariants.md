@@ -195,6 +195,27 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/application/metadata.rs`
 - **Scope:** source, packaged, runtime
 
+### INV-MCP-META-OBSERVATION — Наблюдение метаданных шире возможности мутации
+
+- **Rule:** `unica.meta.info` собирает дочерние ресурсы независимо от плана
+  публикации и локализует отказ одного элемента, не теряя доказательства его
+  исправных соседей; закрытый профиль хранит `Form` и `Template` как ссылку
+  владельца с отдельным XML-дескриптором, а `Command` — как встроенный
+  дескриптор без отдельного XML-файла. XML-дескриптор HTML-макета остаётся
+  строгим XML, но зарегистрированные страницы проверяются на допустимую
+  кодировку и
+  удерживаются побайтово без XML-разбора. Результат чтения типа содержит
+  `mutationCapability`; неизвестный синтаксически корректный платформенный
+  QName даёт локальное предупреждение, а записывающая сторона принимает только
+  варианты с доказанными порождением и обратным чтением, включая `uuid`.
+- **Decision:** ADR-0042
+- **Check:** `ci-test` — `crates/unica-coder/src/application/meta_info_surface_tests.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/meta/validation.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/meta/edit.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/application/metadata.rs`
+- **Check:** `ci-test` — `tests/ci/test_meta_surface_contract.py`
+- **Scope:** source, packaged, runtime
+
 ### INV-MCP-EVENT-SOURCE — Источник подписки является типизированным отношением
 
 - **Rule:** `unica.meta.add` и `unica.meta.edit` заменяют

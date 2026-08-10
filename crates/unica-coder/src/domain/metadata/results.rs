@@ -1,6 +1,6 @@
 use super::{
     MetaDiagnostic, MetaEventSource, MetaFillValue, MetaPropertyKey, MetaPropertyValue,
-    MetadataKind, MetadataType,
+    MetadataKind, MetadataType, MetadataTypeVariant,
 };
 use crate::domain::source_target::MetadataAddress;
 use crate::domain::subsystem::SubsystemAddress;
@@ -60,6 +60,32 @@ pub(crate) struct MetaPropertyData {
     pub(crate) value: MetaPropertyValue,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum MetadataMutationCapability {
+    Editable,
+    // The closed read model reserves this state for the first named platform
+    // variant whose writer evidence is not yet available (ADR-0042).
+    #[allow(dead_code)]
+    ReadOnly,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ObservedMetadataType {
+    pub(crate) variants: Vec<MetadataTypeVariant>,
+    pub(crate) mutation_capability: MetadataMutationCapability,
+}
+
+impl ObservedMetadataType {
+    pub(crate) fn editable(value: MetadataType) -> Self {
+        Self {
+            variants: value.variants,
+            mutation_capability: MetadataMutationCapability::Editable,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MetaElementData {
@@ -71,7 +97,7 @@ pub(crate) struct MetaElementData {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) comment: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) r#type: Option<MetadataType>,
+    pub(crate) r#type: Option<ObservedMetadataType>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) required: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
