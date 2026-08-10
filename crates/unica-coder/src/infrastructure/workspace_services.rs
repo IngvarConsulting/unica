@@ -383,7 +383,7 @@ impl<'a> WorkspaceServiceManager<'a> {
         timeout: Duration,
         cancellation: &CancellationToken,
     ) -> Result<WorkspaceServiceRlmOutput, String> {
-        let deadline = WorkspaceServiceCallDeadline::new(SERVICE_REQUEST_TIMEOUT.min(timeout));
+        let deadline = WorkspaceServiceCallDeadline::new(timeout);
         let mut retried_transport = false;
         loop {
             let record = self.ensure_service_cancellable_with_deadline(
@@ -463,7 +463,7 @@ impl<'a> WorkspaceServiceManager<'a> {
         timeout: Duration,
         cancellation: &CancellationToken,
     ) -> Result<IndexReadiness, String> {
-        let deadline = WorkspaceServiceCallDeadline::new(SERVICE_REQUEST_TIMEOUT.min(timeout));
+        let deadline = WorkspaceServiceCallDeadline::new(timeout);
         let record = self.ensure_service_cancellable_with_deadline(
             context,
             source_root,
@@ -2602,15 +2602,7 @@ impl RlmMcpSession {
         let timeout = remaining_rlm_time(deadline, cancellation)?;
         let output = self.transport.call(
             "rlm_start",
-            json!({
-                "path": self.source_root.display().to_string(),
-                "query": query_hint,
-                "effort": "low",
-                "max_output_chars": 100_000,
-                "max_execute_calls": 10_000,
-                "execution_timeout_seconds": 45,
-                "include_metadata": false
-            }),
+            rlm_start_arguments(&self.source_root, query_hint, timeout),
             timeout,
             cancellation,
         )?;
@@ -2699,6 +2691,22 @@ impl RlmMcpSession {
             cancellation,
         );
     }
+}
+
+fn duration_seconds_ceil(duration: Duration) -> u64 {
+    duration.as_secs() + u64::from(duration.subsec_nanos() != 0)
+}
+
+fn rlm_start_arguments(source_root: &Path, query: &str, timeout: Duration) -> Value {
+    json!({
+        "path": source_root.display().to_string(),
+        "query": query,
+        "effort": "low",
+        "max_output_chars": 100_000,
+        "max_execute_calls": 10_000,
+        "execution_timeout_seconds": duration_seconds_ceil(timeout),
+        "include_metadata": false
+    })
 }
 
 impl Drop for RlmMcpSession {
@@ -3817,6 +3825,17 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn rlm_start_uses_remaining_caller_deadline_for_execution_timeout() {
+        let args = rlm_start_arguments(
+            Path::new("/workspace/src"),
+            "needle",
+            Duration::from_millis(299_001),
+        );
+
+        assert_eq!(args["execution_timeout_seconds"], 300);
+    }
 
     #[test]
     fn fixed_rlm_helper_keeps_untrusted_values_inside_json_data() {
@@ -7319,6 +7338,71 @@ fn main() {
     }
 
     #[test]
+    fn rlm_request_preserves_caller_budget_above_service_default() {
+        let context = test_context("rlm-caller-budget");
+        let source_root = context.workspace_root.join("src");
+        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        write_record(
+            &identity,
+            test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
+        );
+        let connector = RecordingConnector {
+            ping_ok: true,
+            ..RecordingConnector::default()
+        };
+        let spawner = RecordingSpawner::default();
+        let manager = WorkspaceServiceManager::with_io(&connector, &spawner);
+
+        manager
+            .call_rlm_cancellable(
+                &context,
+                &source_root,
+                WorkspaceRlmOperation::Search {
+                    query: "needle".to_string(),
+                    limit: 20,
+                },
+                Duration::from_secs(300),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        let budget = *connector.budgets.borrow().last().unwrap();
+        cleanup(&context);
+        assert!(budget > Duration::from_secs(240), "{budget:?}");
+    }
+
+    #[test]
+    fn rlm_readiness_preserves_caller_budget_above_service_default() {
+        let context = test_context("rlm-readiness-caller-budget");
+        let source_root = context.workspace_root.join("src");
+        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        write_record(
+            &identity,
+            test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
+        );
+        let connector = RecordingConnector {
+            ping_ok: true,
+            ..RecordingConnector::default()
+        };
+        let spawner = RecordingSpawner::default();
+        let manager = WorkspaceServiceManager::with_io(&connector, &spawner);
+
+        manager
+            .rlm_readiness_cancellable_with_timeout(
+                &context,
+                &source_root,
+                &Map::new(),
+                Duration::from_secs(300),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        let budget = *connector.budgets.borrow().last().unwrap();
+        cleanup(&context);
+        assert!(budget > Duration::from_secs(240), "{budget:?}");
+    }
+
+    #[test]
     fn manager_retries_rlm_request_once_after_transport_reset() {
         let context = test_context("rlm-transport-reset-retry");
         let source_root = context.workspace_root.join("src");
@@ -7840,6 +7924,7 @@ fn main() {
         ping_ok: bool,
         pings: std::cell::RefCell<u32>,
         requests: std::cell::RefCell<Vec<ServiceRequestKind>>,
+        budgets: std::cell::RefCell<Vec<Duration>>,
     }
 
     #[derive(Default)]
@@ -8041,9 +8126,10 @@ fn main() {
             _record: &WorkspaceServiceRecord,
             request: ServiceRequest,
             _cancellation: &CancellationToken,
-            _budget: Duration,
+            budget: Duration,
         ) -> Result<ServiceResponse, String> {
             self.requests.borrow_mut().push(request.kind.clone());
+            self.budgets.borrow_mut().push(budget);
             if matches!(request.kind, ServiceRequestKind::Ping) {
                 *self.pings.borrow_mut() += 1;
             }
