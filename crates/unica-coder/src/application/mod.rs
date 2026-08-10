@@ -762,45 +762,45 @@ fn call_tool(
         ));
     }
 
-    let handler_outcome = match spec.handler {
-        ToolHandler::Metadata { operation } => {
-            metadata::invoke(operation, ports, args, &context, cancellation)?
-        }
-        ToolHandler::CodeIntelligence {
-            operation: CodeIntelligenceOperation::Search,
-        } => invoke_code_intelligence_search(
-            ports,
-            args,
-            &context,
-            dry_run,
-            operational_config.as_ref().ok_or_else(|| {
-                "code intelligence call is missing operational config".to_string()
-            })?,
-            cancellation,
-        )?,
-        ToolHandler::CodeIntelligence { operation } => {
-            invoke_code_intelligence_read(CodeIntelligenceReadInvocation {
+    let handler_outcome = match prepared.handler.take() {
+        Some(handler) => handler,
+        None => match spec.handler {
+            ToolHandler::Metadata { operation } => {
+                metadata::invoke(operation, ports, args, &context, cancellation)?
+            }
+            ToolHandler::CodeIntelligence {
+                operation: CodeIntelligenceOperation::Search,
+            } => invoke_code_intelligence_search(
                 ports,
-                tool_name: spec.name,
-                operation,
                 args,
-                workspace: &context,
+                &context,
                 dry_run,
-                operational_config: operational_config.as_ref().ok_or_else(|| {
+                operational_config.as_ref().ok_or_else(|| {
                     "code intelligence call is missing operational config".to_string()
                 })?,
                 cancellation,
-            })?
-        }
-        ToolHandler::SourceNavigation { operation } => {
-            source_navigation::invoke(operation, ports, args, &context, cancellation)?
-        }
-        ToolHandler::SourceResources { operation } => {
-            source_resources::invoke(operation, ports, args, &context, dry_run, cancellation)?
-        }
-        _ => match prepared.handler.take() {
-            Some(handler) => handler,
-            None => ports.invoke_handler_with_operational_config(
+            )?,
+            ToolHandler::CodeIntelligence { operation } => {
+                invoke_code_intelligence_read(CodeIntelligenceReadInvocation {
+                    ports,
+                    tool_name: spec.name,
+                    operation,
+                    args,
+                    workspace: &context,
+                    dry_run,
+                    operational_config: operational_config.as_ref().ok_or_else(|| {
+                        "code intelligence call is missing operational config".to_string()
+                    })?,
+                    cancellation,
+                })?
+            }
+            ToolHandler::SourceNavigation { operation } => {
+                source_navigation::invoke(operation, ports, args, &context, cancellation)?
+            }
+            ToolHandler::SourceResources { operation } => {
+                source_resources::invoke(operation, ports, args, &context, dry_run, cancellation)?
+            }
+            _ => ports.invoke_handler_with_operational_config(
                 spec,
                 args,
                 &context,
@@ -2244,9 +2244,11 @@ mod tests {
     #[derive(Default)]
     struct OperationalConfigRecordingPorts {
         load_calls: AtomicUsize,
+        prepare_calls: AtomicUsize,
         handler_calls: AtomicUsize,
         code_context_calls: AtomicUsize,
         fail_load: bool,
+        prepared_code_search_handler: bool,
         observed_analyze_timeout: Mutex<Option<Duration>>,
     }
 
@@ -2254,6 +2256,13 @@ mod tests {
         fn failing() -> Self {
             Self {
                 fail_load: true,
+                ..Self::default()
+            }
+        }
+
+        fn with_prepared_code_search_handler() -> Self {
+            Self {
+                prepared_code_search_handler: true,
                 ..Self::default()
             }
         }
@@ -2301,6 +2310,27 @@ mod tests {
                 );
             }
             Ok(crate::domain::operational_config::OperationalConfig::compiled_defaults())
+        }
+
+        fn prepare_tool_invocation(
+            &self,
+            spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _context: &WorkspaceContext,
+            _dry_run: bool,
+            _cancellation: &CancellationToken,
+            _deadline: ProviderDeadline,
+        ) -> Result<ports::PreparedToolInvocation, String> {
+            self.prepare_calls.fetch_add(1, Ordering::SeqCst);
+            if self.prepared_code_search_handler && spec.name == "unica.code.search" {
+                return Ok(ports::PreparedToolInvocation {
+                    format_guard: None,
+                    handler: Some(ports::HandlerOutcome::plain(AdapterOutcome::ok(
+                        "prepared code search",
+                    ))),
+                });
+            }
+            Ok(ports::PreparedToolInvocation::empty())
         }
 
         fn evaluate_support_guard(
@@ -2408,6 +2438,26 @@ mod tests {
         }
         assert_eq!(ports.load_calls.load(Ordering::SeqCst), 4);
         assert_eq!(ports.code_context_calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn prepared_code_search_handler_wins_after_required_operational_config_resolution() {
+        let ports = Arc::new(OperationalConfigRecordingPorts::with_prepared_code_search_handler());
+        let app = UnicaApplication::with_ports(ports.clone());
+
+        let result = app
+            .call_tool(
+                "unica.code.search",
+                &json!({"query": "needle"}).as_object().unwrap(),
+            )
+            .expect("prepared handler must serve code search");
+
+        assert!(result.ok, "{result:?}");
+        assert_eq!(result.summary, "prepared code search");
+        assert_eq!(ports.prepare_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(ports.load_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(ports.code_context_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(ports.handler_calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]
