@@ -175,8 +175,8 @@ fn parse_policy(text: &str, known: &[&str]) -> Result<DocumentationPolicy, Strin
                     policy.providers.insert(id.clone(), provider);
                 }
             }
-            "operational" => {}
-            _ => unreachable!("shared root parser only returns known root fields"),
+            // Секции общего корня, которыми владеют другие потребители.
+            _ => {}
         }
     }
     Ok(policy)

@@ -62,7 +62,7 @@ architecture guards.
 git add docs/design/2026-08-09-operational-code-config-design.md \
   docs/plans/2026-08-10-pr-398-operational-config-integration.md \
   spec/architecture/invariants.md spec/decisions/README.md \
-  spec/decisions/0033-workspace-operational-config-snapshot.md \
+  spec/decisions/0033-polnotekstovoe-poluchenie-dokumenta.md \
   spec/decisions/0040-workspace-operational-config-snapshot.md
 git commit -m "docs(config): согласовать операционный снимок с ADR-0032"
 ```
@@ -88,7 +88,7 @@ let operational_config = operational_config::resolve_for_call(ports, spec, args,
 
 В workspace dependencies оставить один `toml = "0.8"`; `Cargo.lock`
 перегенерировать `cargo check -p unica-coder`. В индекс ADR включить все
-принятые записи `0032`…`0038` в числовом порядке.
+принятые записи `0032`…`0040` в числовом порядке.
 
 - [ ] **Step 4: Проверить интегрированную компиляцию до функциональных правок**
 

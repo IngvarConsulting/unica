@@ -471,6 +471,42 @@ analyze_timeout_seconds = 30
             minimum.code_diagnostics().analyze_timeout(),
             Duration::from_secs(30)
         );
+
+        write_config(
+            &workspace,
+            SHARED_CONFIG_FILENAME,
+            r#"[operational.code_intelligence]
+search_total_timeout_seconds = 7200
+search_rlm_timeout_seconds = 3600
+search_git_grep_timeout_seconds = 1800
+provider_read_timeout_seconds = 7200
+[operational.code_diagnostics]
+analyze_timeout_seconds = 7200
+"#,
+        );
+        let above_former_ceilings = load_operational_config(workspace.path())
+            .expect("load values above former compiled ceilings");
+        let code_intelligence = above_former_ceilings.code_intelligence();
+        assert_eq!(
+            code_intelligence.search_total_timeout(),
+            Duration::from_secs(7_200)
+        );
+        assert_eq!(
+            code_intelligence.search_rlm_timeout(),
+            Duration::from_secs(3_600)
+        );
+        assert_eq!(
+            code_intelligence.search_git_grep_timeout(),
+            Duration::from_secs(1_800)
+        );
+        assert_eq!(
+            code_intelligence.provider_read_timeout(),
+            Duration::from_secs(7_200)
+        );
+        assert_eq!(
+            above_former_ceilings.code_diagnostics().analyze_timeout(),
+            Duration::from_secs(7_200)
+        );
     }
 
     #[test]
