@@ -332,18 +332,15 @@ command-text code, so that line would make a false claim.
 
 - [ ] **Step 2: Добавить проверяемый инвариант**
 
-Insert after `INV-MCP-META-SURFACE`:
-
-```markdown
-### INV-MCP-META-FINDINGS — Перенесённые находки метаданных имеют устойчивую идентичность
-
-- **Rule:** Каждое перенесённое из строкового контура языковое предупреждение `MetadataValidator` возвращает в `structuredContent` отдельный стабильный код правила, точное поле `properties.*` и непустой `language`; `message` не служит машинным идентификатором.
-- **Decision:** ADR-0035
-- **Check:** `ci-test` — `crates/unica-coder/src/application/meta_info_surface_tests.rs`
-- **Scope:** source, runtime
-```
-
-Wrap prose to the surrounding Markdown width without changing the rule.
+Insert after `INV-MCP-META-SURFACE` a registry record with identifier
+`INV-MCP-META-FINDINGS` and title «Перенесённые находки метаданных имеют
+устойчивую идентичность». Its `Rule` says that every language-specific warning
+migrated from the string path returns a distinct stable rule code, exact
+`properties.*` field and non-empty `language` in `structuredContent`, while
+`message` is not a machine identifier. Set `Decision` to `ADR-0035`, `Check` to
+`ci-test` over
+`crates/unica-coder/src/application/meta_info_surface_tests.rs`, and `Scope` to
+`source, runtime`. Wrap prose to the surrounding Markdown width.
 
 - [ ] **Step 3: Уточнить справку #316**
 
