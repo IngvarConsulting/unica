@@ -1049,7 +1049,7 @@ fn add_enum_with_presentations(
     name: &str,
     synonym: &str,
     list_presentation: Option<&str>,
-) -> Vec<String> {
+) -> Vec<Value> {
     {
         let _cwd = ProcessCwdGuard::enter(workspace).unwrap();
         let added = UnicaApplication::new()
@@ -1103,35 +1103,40 @@ fn add_enum_with_presentations(
     data["validation"]["diagnostics"]
         .as_array()
         .expect("validation diagnostics")
+        .clone()
+}
+
+fn diagnostic_by_code<'a>(diagnostics: &'a [Value], code: &str) -> Option<&'a Value> {
+    diagnostics
         .iter()
-        .filter(|diagnostic| diagnostic["severity"] == "warning")
-        .map(|diagnostic| diagnostic["message"].as_str().unwrap().to_string())
-        .collect()
+        .find(|diagnostic| diagnostic["code"] == code)
 }
 
 #[test]
 fn info_warns_when_list_presentation_duplicates_the_synonym() {
     let workspace = create_info_workspace("redundant-list-presentation");
-    let warnings = add_enum_with_presentations(
+    let diagnostics = add_enum_with_presentations(
         workspace.path(),
         "RedundantList",
         "Виды оплаты",
         Some("Виды оплаты"),
     );
 
-    assert!(
-        warnings.iter().any(|warning| warning
-            == "3. Properties: ListPresentation 'Виды оплаты' duplicates the Synonym for the \
-                command interface, language 'ru' (a list presentation equal to the synonym is \
-                redundant)"),
-        "{warnings:?}"
-    );
+    let warning = diagnostic_by_code(&diagnostics, "redundant_list_presentation")
+        .expect("typed redundancy warning");
+    assert_eq!(warning["severity"], "warning");
+    assert_eq!(warning["metadataPath"], "Enum.RedundantList");
+    assert_eq!(warning["field"], "properties.ListPresentation");
+    assert_eq!(warning["language"], "ru");
+    assert!(warning["message"]
+        .as_str()
+        .is_some_and(|message| !message.is_empty()));
 }
 
 #[test]
 fn info_allows_list_presentation_that_differs_from_the_synonym() {
     let workspace = create_info_workspace("distinct-list-presentation");
-    let warnings = add_enum_with_presentations(
+    let diagnostics = add_enum_with_presentations(
         workspace.path(),
         "DistinctList",
         "Вид оплаты",
@@ -1139,23 +1144,19 @@ fn info_allows_list_presentation_that_differs_from_the_synonym() {
     );
 
     assert!(
-        !warnings
-            .iter()
-            .any(|warning| warning.contains("duplicates the Synonym")),
-        "{warnings:?}"
+        diagnostic_by_code(&diagnostics, "redundant_list_presentation").is_none(),
+        "{diagnostics:?}"
     );
 }
 
 #[test]
 fn info_allows_synonym_fallback_without_a_redundancy_warning() {
     let workspace = create_info_workspace("fallback-list-presentation");
-    let warnings =
+    let diagnostics =
         add_enum_with_presentations(workspace.path(), "FallbackList", "Виды оплаты", None);
 
     assert!(
-        !warnings
-            .iter()
-            .any(|warning| warning.contains("duplicates the Synonym")),
-        "{warnings:?}"
+        diagnostic_by_code(&diagnostics, "redundant_list_presentation").is_none(),
+        "{diagnostics:?}"
     );
 }
