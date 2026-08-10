@@ -30,7 +30,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
-const SERVICE_SCHEMA_VERSION: u32 = 3;
+const SERVICE_SCHEMA_VERSION: u32 = 4;
 const DEFAULT_IDLE_SECS: u64 = 7200;
 const DEFAULT_MAX_AGE_SECS: u64 = 28800;
 const SERVICE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -165,6 +165,26 @@ impl WorkspaceServiceConfig {
 struct WorkspaceServiceCallDeadline {
     started: Instant,
     budget: Duration,
+}
+
+struct ElapsedBudgetDeadline {
+    started: Instant,
+    budget: Duration,
+}
+
+impl ElapsedBudgetDeadline {
+    fn new(budget: Duration) -> Self {
+        Self {
+            started: Instant::now(),
+            budget,
+        }
+    }
+
+    fn remaining(&self) -> Option<Duration> {
+        self.budget
+            .checked_sub(self.started.elapsed())
+            .filter(|remaining| !remaining.is_zero())
+    }
 }
 
 pub(crate) struct WorkspaceServiceBslCall<'a> {
@@ -400,7 +420,8 @@ impl<'a> WorkspaceServiceManager<'a> {
                     kind: ServiceRequestKind::RlmMcp {
                         operation_id: Uuid::new_v4().to_string(),
                         operation: operation.clone(),
-                        timeout_millis: duration_timeout_millis(timeout.min(send_budget)),
+                        timeout_seconds: send_budget.as_secs(),
+                        timeout_nanos: send_budget.subsec_nanos(),
                     },
                 },
                 cancellation,
@@ -609,6 +630,18 @@ fn duration_timeout_millis(duration: Duration) -> u64 {
         .div_ceil(1_000_000)
         .min(u128::from(u64::MAX))
         .max(1) as u64
+}
+
+fn duration_from_timeout_parts(seconds: u64, nanos: u32) -> Result<Duration, String> {
+    if nanos >= 1_000_000_000 {
+        return Err(format!(
+            "workspace service RLM timeout has invalid nanoseconds: {nanos}"
+        ));
+    }
+    if seconds == 0 && nanos == 0 {
+        return Err("workspace service RLM timeout must be positive".to_string());
+    }
+    Ok(Duration::new(seconds, nanos))
 }
 
 fn is_retryable_workspace_service_transport_error(error: &str) -> bool {
@@ -1673,7 +1706,8 @@ impl WorkspaceServiceRuntime {
     fn handle_rlm_mcp(
         &self,
         operation: WorkspaceRlmOperation,
-        timeout_millis: u64,
+        timeout_seconds: u64,
+        timeout_nanos: u32,
         cancellation: &CancellationToken,
     ) -> ServiceResponse {
         if cancellation.is_cancelled() {
@@ -1717,7 +1751,10 @@ impl WorkspaceServiceRuntime {
             let warnings = self.request_rlm_index_maintenance(cancellation);
             return ServiceResponse::unavailable_rlm_execution(pre_execution_readiness, warnings);
         }
-        let timeout = Duration::from_millis(timeout_millis.max(1));
+        let timeout = match duration_from_timeout_parts(timeout_seconds, timeout_nanos) {
+            Ok(timeout) => timeout,
+            Err(error) => return ServiceResponse::error(error),
+        };
         let result = (|| {
             if rlm.is_none() {
                 *rlm = Some((self.rlm_starter)(
@@ -1945,9 +1982,10 @@ impl WorkspaceServiceOperationExecutor for SystemWorkspaceServiceOperationExecut
             }
             ServiceRequestKind::RlmMcp {
                 operation,
-                timeout_millis,
+                timeout_seconds,
+                timeout_nanos,
                 ..
-            } => runtime.handle_rlm_mcp(operation, timeout_millis, cancellation),
+            } => runtime.handle_rlm_mcp(operation, timeout_seconds, timeout_nanos, cancellation),
             _ => ServiceResponse::error("workspace service received non-work operation"),
         }
     }
@@ -1976,7 +2014,8 @@ enum ServiceRequestKind {
     RlmMcp {
         operation_id: String,
         operation: WorkspaceRlmOperation,
-        timeout_millis: u64,
+        timeout_seconds: u64,
+        timeout_nanos: u32,
     },
     Cancel {
         operation_id: String,
@@ -2328,7 +2367,7 @@ impl PersistentMcpSession {
         if cancellation.is_cancelled() {
             return Err(cancelled_error("persistent MCP initialize stopped"));
         }
-        let deadline = Instant::now() + SERVICE_REQUEST_TIMEOUT;
+        let deadline = ElapsedBudgetDeadline::new(SERVICE_REQUEST_TIMEOUT);
         self.send_json_cancellable(
             json!({
                 "jsonrpc": "2.0",
@@ -2343,10 +2382,10 @@ impl PersistentMcpSession {
                     }
                 }
             }),
-            deadline,
+            &deadline,
             cancellation,
         )?;
-        let _ = self.read_response(1, deadline, cancellation)?;
+        let _ = self.read_response(1, &deadline, cancellation)?;
         if cancellation.is_cancelled() {
             return Err(cancelled_error("persistent MCP initialize stopped"));
         }
@@ -2355,7 +2394,7 @@ impl PersistentMcpSession {
                 "jsonrpc": "2.0",
                 "method": "notifications/initialized"
             }),
-            deadline,
+            &deadline,
             cancellation,
         )?;
         if cancellation.is_cancelled() {
@@ -2376,7 +2415,7 @@ impl PersistentMcpSession {
         }
         let id = self.next_id;
         self.next_id += 1;
-        let deadline = Instant::now() + timeout;
+        let deadline = ElapsedBudgetDeadline::new(timeout);
         self.send_json_cancellable(
             json!({
                 "jsonrpc": "2.0",
@@ -2387,10 +2426,10 @@ impl PersistentMcpSession {
                     "arguments": tool_args
                 }
             }),
-            deadline,
+            &deadline,
             cancellation,
         )?;
-        let response = match self.read_response(id, deadline, cancellation) {
+        let response = match self.read_response(id, &deadline, cancellation) {
             Ok(response) => response,
             Err(error) => {
                 return Err(error);
@@ -2431,7 +2470,7 @@ impl PersistentMcpSession {
     fn send_json_cancellable(
         &mut self,
         payload: Value,
-        deadline: Instant,
+        deadline: &ElapsedBudgetDeadline,
         cancellation: &CancellationToken,
     ) -> Result<(), String> {
         let (result, result_rx) = mpsc::sync_channel(1);
@@ -2440,7 +2479,7 @@ impl PersistentMcpSession {
             if cancellation.is_cancelled() {
                 return self.fail(cancelled_error("persistent MCP write stopped"));
             }
-            if Instant::now() >= deadline {
+            if deadline.remaining().is_none() {
                 return self.fail("timeout: persistent MCP write timed out".to_string());
             }
             match self.writer.try_send(request) {
@@ -2456,15 +2495,14 @@ impl PersistentMcpSession {
             if cancellation.is_cancelled() {
                 return self.fail(cancelled_error("persistent MCP write stopped"));
             }
-            if Instant::now() >= deadline {
+            let Some(remaining) = deadline.remaining() else {
                 return self.fail("timeout: persistent MCP write timed out".to_string());
-            }
-            let remaining = deadline.saturating_duration_since(Instant::now());
+            };
             let received = result_rx.recv_timeout(remaining.min(Duration::from_millis(25)));
             if cancellation.is_cancelled() {
                 return self.fail(cancelled_error("persistent MCP write stopped"));
             }
-            if Instant::now() >= deadline {
+            if deadline.remaining().is_none() {
                 return self.fail("timeout: persistent MCP write timed out".to_string());
             }
             match received {
@@ -2485,7 +2523,7 @@ impl PersistentMcpSession {
     fn read_response(
         &mut self,
         id: i64,
-        deadline: Instant,
+        deadline: &ElapsedBudgetDeadline,
         cancellation: &CancellationToken,
     ) -> Result<Value, String> {
         match read_json_response_cancellable(&self.rx, id, deadline, cancellation) {
@@ -2560,29 +2598,29 @@ impl RlmMcpSession {
         timeout: Duration,
         cancellation: &CancellationToken,
     ) -> Result<WorkspaceServiceRlmOutput, String> {
-        let deadline = Instant::now() + timeout;
+        let deadline = ElapsedBudgetDeadline::new(timeout);
         for attempt in 0..=RLM_LOGICAL_SESSION_RETRY_LIMIT {
-            match self.ensure_logical_session(operation.query_hint(), deadline, cancellation) {
+            match self.ensure_logical_session(operation.query_hint(), &deadline, cancellation) {
                 Ok(()) => {}
                 Err(error)
                     if attempt < RLM_LOGICAL_SESSION_RETRY_LIMIT
                         && is_retryable_rlm_session_error(&error) =>
                 {
-                    self.close_logical_session(deadline, cancellation);
+                    self.close_logical_session(&deadline, cancellation);
                     continue;
                 }
                 Err(error) => return Err(error),
             }
-            match self.execute_once(operation, deadline, cancellation) {
+            match self.execute_once(operation, &deadline, cancellation) {
                 Ok(output) => return Ok(output),
                 Err(error)
                     if attempt < RLM_LOGICAL_SESSION_RETRY_LIMIT
                         && is_retryable_rlm_session_error(&error) =>
                 {
-                    self.close_logical_session(deadline, cancellation);
+                    self.close_logical_session(&deadline, cancellation);
                 }
                 Err(error) => {
-                    self.close_logical_session(deadline, cancellation);
+                    self.close_logical_session(&deadline, cancellation);
                     return Err(error);
                 }
             }
@@ -2593,7 +2631,7 @@ impl RlmMcpSession {
     fn ensure_logical_session(
         &mut self,
         query_hint: &str,
-        deadline: Instant,
+        deadline: &ElapsedBudgetDeadline,
         cancellation: &CancellationToken,
     ) -> Result<(), String> {
         if self.session_id.is_some() {
@@ -2635,7 +2673,7 @@ impl RlmMcpSession {
     fn execute_once(
         &mut self,
         operation: &WorkspaceRlmOperation,
-        deadline: Instant,
+        deadline: &ElapsedBudgetDeadline,
         cancellation: &CancellationToken,
     ) -> Result<WorkspaceServiceRlmOutput, String> {
         let session_id = self
@@ -2676,7 +2714,11 @@ impl RlmMcpSession {
         })
     }
 
-    fn close_logical_session(&mut self, deadline: Instant, cancellation: &CancellationToken) {
+    fn close_logical_session(
+        &mut self,
+        deadline: &ElapsedBudgetDeadline,
+        cancellation: &CancellationToken,
+    ) {
         let Some(session_id) = self.session_id.take() else {
             return;
         };
@@ -2711,10 +2753,8 @@ fn rlm_start_arguments(source_root: &Path, query: &str, timeout: Duration) -> Va
 
 impl Drop for RlmMcpSession {
     fn drop(&mut self) {
-        self.close_logical_session(
-            Instant::now() + Duration::from_secs(2),
-            &CancellationToken::new(),
-        );
+        let deadline = ElapsedBudgetDeadline::new(Duration::from_secs(2));
+        self.close_logical_session(&deadline, &CancellationToken::new());
     }
 }
 
@@ -2748,15 +2788,14 @@ fn fixed_rlm_helper_code(operation: &WorkspaceRlmOperation) -> Result<String, St
 }
 
 fn remaining_rlm_time(
-    deadline: Instant,
+    deadline: &ElapsedBudgetDeadline,
     cancellation: &CancellationToken,
 ) -> Result<Duration, String> {
     if cancellation.is_cancelled() {
         return Err(cancelled_error("persistent RLM request stopped"));
     }
     deadline
-        .checked_duration_since(Instant::now())
-        .filter(|remaining| !remaining.is_zero())
+        .remaining()
         .ok_or_else(|| "timeout: persistent RLM request timed out".to_string())
 }
 
@@ -3725,23 +3764,22 @@ impl Drop for BslReaderTerminalGuard {
 fn read_json_response_cancellable(
     rx: &mpsc::Receiver<BslReaderEvent>,
     id: i64,
-    deadline: Instant,
+    deadline: &ElapsedBudgetDeadline,
     cancellation: &CancellationToken,
 ) -> Result<Value, String> {
-    while Instant::now() < deadline {
+    while let Some(remaining) = deadline.remaining() {
         if cancellation.is_cancelled() {
             return Err(cancelled_error(format!(
                 "persistent MCP request {id} stopped"
             )));
         }
-        let remaining = deadline.saturating_duration_since(Instant::now());
         let received = rx.recv_timeout(remaining.min(Duration::from_millis(50)));
         if cancellation.is_cancelled() {
             return Err(cancelled_error(format!(
                 "persistent MCP request {id} stopped"
             )));
         }
-        if Instant::now() >= deadline {
+        if deadline.remaining().is_none() {
             return Err(format!("timeout: persistent MCP request {id} timed out"));
         }
         match received {
@@ -3835,6 +3873,86 @@ mod tests {
         );
 
         assert_eq!(args["execution_timeout_seconds"], 300);
+    }
+
+    #[test]
+    fn persistent_rlm_deadline_handles_full_configured_range_without_panicking() {
+        let context = test_context("rlm-full-range-deadline");
+        let fixture = compile_exit_after_call_fixture(&context);
+        let pid_file = context.cache_root.join("rlm-full-range-pids.txt");
+        let completion_file = context.cache_root.join("rlm-full-range-completed.txt");
+        let mut command = Command::new(&fixture);
+        command.args([&pid_file, &completion_file]);
+        let cancellation = CancellationToken::new();
+        let mut session = RlmMcpSession {
+            transport: PersistentMcpSession::start_with_command(command, &cancellation).unwrap(),
+            source_root: context.workspace_root.join("src"),
+            session_id: None,
+        };
+        cancellation.cancel();
+
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            session.execute(
+                &WorkspaceRlmOperation::Search {
+                    query: "needle".to_string(),
+                    limit: 20,
+                },
+                Duration::from_secs(i64::MAX as u64),
+                &cancellation,
+            )
+        }));
+
+        drop(session);
+        cleanup(&context);
+        let error = outcome.expect("full configured timeout must not overflow Instant");
+        assert!(error.unwrap_err().starts_with("cancelled:"));
+    }
+
+    #[test]
+    fn persistent_transport_deadline_handles_full_configured_range_without_panicking() {
+        let context = test_context("persistent-transport-full-range-deadline");
+        let fixture = compile_exit_after_call_fixture(&context);
+        let pid_file = context.cache_root.join("transport-full-range-pids.txt");
+        let completion_file = context
+            .cache_root
+            .join("transport-full-range-completed.txt");
+        let mut command = Command::new(&fixture);
+        command.args([&pid_file, &completion_file]);
+        let cancellation = CancellationToken::new();
+        let mut session = PersistentMcpSession::start_with_command(command, &cancellation).unwrap();
+
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            session.call(
+                "rlm_start",
+                json!({}),
+                Duration::from_secs(i64::MAX as u64),
+                &cancellation,
+            )
+        }));
+
+        drop(session);
+        cleanup(&context);
+        let output = outcome.expect("full configured timeout must not overflow Instant");
+        assert_eq!(output.unwrap().result_text, "ok");
+    }
+
+    #[test]
+    fn rlm_protocol_roundtrips_full_positive_i64_seconds() {
+        let wire = json!({
+            "type": "rlm-mcp",
+            "operation_id": "max-timeout",
+            "operation": {
+                "operation": "search",
+                "query": "needle",
+                "limit": 20
+            },
+            "timeout_seconds": i64::MAX,
+            "timeout_nanos": 0
+        });
+
+        let request: ServiceRequestKind = serde_json::from_value(wire.clone()).unwrap();
+
+        assert_eq!(serde_json::to_value(request).unwrap(), wire);
     }
 
     #[test]
@@ -4617,14 +4735,9 @@ mod tests {
         let cancellation = CancellationToken::new();
         cancellation.cancel();
         let started = Instant::now();
+        let deadline = ElapsedBudgetDeadline::new(Duration::from_secs(30));
 
-        let error = read_json_response_cancellable(
-            &rx,
-            7,
-            Instant::now() + Duration::from_secs(30),
-            &cancellation,
-        )
-        .unwrap_err();
+        let error = read_json_response_cancellable(&rx, 7, &deadline, &cancellation).unwrap_err();
 
         assert!(error.starts_with("cancelled:"));
         assert!(started.elapsed() < Duration::from_millis(500));
@@ -5174,13 +5287,9 @@ mod tests {
             },
             tx,
         );
-        let response = read_json_response_cancellable(
-            &rx,
-            7,
-            Instant::now() + Duration::from_secs(1),
-            &CancellationToken::new(),
-        )
-        .unwrap();
+        let deadline = ElapsedBudgetDeadline::new(Duration::from_secs(1));
+        let response =
+            read_json_response_cancellable(&rx, 7, &deadline, &CancellationToken::new()).unwrap();
         assert_eq!(response["id"], 7);
 
         let (tx, rx) = mpsc::sync_channel(8);
@@ -5209,13 +5318,9 @@ mod tests {
         let (tx, rx) = mpsc::sync_channel(8);
         bsl_reader(std::io::Cursor::new(b"{\"jsonrpc\":\"2.0\""), tx);
         let started = Instant::now();
-        let error = read_json_response_cancellable(
-            &rx,
-            1,
-            Instant::now() + Duration::from_secs(30),
-            &CancellationToken::new(),
-        )
-        .unwrap_err();
+        let deadline = ElapsedBudgetDeadline::new(Duration::from_secs(30));
+        let error = read_json_response_cancellable(&rx, 1, &deadline, &CancellationToken::new())
+            .unwrap_err();
         assert!(error.contains("incomplete JSON line"), "{error}");
         assert!(started.elapsed() < Duration::from_millis(100));
     }
@@ -5244,13 +5349,9 @@ mod tests {
             tx.send(event).unwrap();
             let cancellation = CancellationToken::new();
             cancellation.cancel();
-            let error = read_json_response_cancellable(
-                &rx,
-                7,
-                Instant::now() + Duration::from_secs(1),
-                &cancellation,
-            )
-            .unwrap_err();
+            let deadline = ElapsedBudgetDeadline::new(Duration::from_secs(1));
+            let error =
+                read_json_response_cancellable(&rx, 7, &deadline, &cancellation).unwrap_err();
             assert!(error.starts_with("cancelled:"), "{error}");
         }
     }
@@ -5604,7 +5705,8 @@ fn main() {
                     query: "Smoke".to_string(),
                     limit: 20,
                 },
-                5_000,
+                5,
+                0,
                 &CancellationToken::new(),
             )
         });
@@ -6644,7 +6746,8 @@ fn main() {
                 query: "Smoke".to_string(),
                 limit: 20,
             },
-            1_000,
+            1,
+            0,
             &CancellationToken::new(),
         );
         wait_for_atomic_value(&maintenance_requests, 1, Duration::from_secs(2));
@@ -6698,7 +6801,8 @@ fn main() {
                     query: "Smoke".to_string(),
                     limit: 20,
                 },
-                1_000,
+                1,
+                0,
                 &CancellationToken::new(),
             );
             first_response_tx.send(response).unwrap();
@@ -6721,7 +6825,8 @@ fn main() {
                     query: "Smoke".to_string(),
                     limit: 20,
                 },
-                1_000,
+                1,
+                0,
                 &CancellationToken::new(),
             );
             second_response_tx.send(response).unwrap();
@@ -6897,6 +7002,21 @@ fn main() {
         assert!(
             !record.matches(&identity, env!("CARGO_PKG_VERSION")),
             "the pre-typed-invalidation service protocol must not be reused"
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn service_record_v3_is_not_reused_after_lossless_rlm_timeout_protocol() {
+        let context = test_context("lossless-rlm-timeout-record-version");
+        let source_root = context.workspace_root.join("src");
+        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        let mut record = test_record(&identity, 34567, env!("CARGO_PKG_VERSION"));
+        record.schema_version = 3;
+
+        assert!(
+            !record.matches(&identity, env!("CARGO_PKG_VERSION")),
+            "the millisecond-saturated RLM service protocol must not be reused"
         );
         cleanup(&context);
     }
@@ -7367,8 +7487,55 @@ fn main() {
             .unwrap();
 
         let budget = *connector.budgets.borrow().last().unwrap();
+        let request = serde_json::to_value(connector.requests.borrow().last().unwrap()).unwrap();
+        let wire_timeout = Duration::new(
+            request["timeout_seconds"].as_u64().unwrap(),
+            request["timeout_nanos"].as_u64().unwrap() as u32,
+        );
         cleanup(&context);
-        assert!(budget > Duration::from_secs(240), "{budget:?}");
+        assert!(budget > Duration::from_secs(299), "{budget:?}");
+        assert!(budget <= Duration::from_secs(300), "{budget:?}");
+        assert_eq!(wire_timeout, budget);
+    }
+
+    #[test]
+    fn rlm_request_preserves_budget_beyond_u64_max_milliseconds() {
+        let context = test_context("rlm-caller-budget-beyond-u64-millis");
+        let source_root = context.workspace_root.join("src");
+        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        write_record(
+            &identity,
+            test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
+        );
+        let connector = RecordingConnector {
+            ping_ok: true,
+            ..RecordingConnector::default()
+        };
+        let spawner = RecordingSpawner::default();
+        let manager = WorkspaceServiceManager::with_io(&connector, &spawner);
+
+        manager
+            .call_rlm_cancellable(
+                &context,
+                &source_root,
+                WorkspaceRlmOperation::Search {
+                    query: "needle".to_string(),
+                    limit: 20,
+                },
+                Duration::from_secs(i64::MAX as u64),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        let budget = *connector.budgets.borrow().last().unwrap();
+        let request = serde_json::to_value(connector.requests.borrow().last().unwrap()).unwrap();
+        let wire_timeout = Duration::new(
+            request["timeout_seconds"].as_u64().unwrap(),
+            request["timeout_nanos"].as_u64().unwrap() as u32,
+        );
+        cleanup(&context);
+        assert!(wire_timeout > Duration::from_millis(u64::MAX));
+        assert_eq!(wire_timeout, budget);
     }
 
     #[test]
@@ -7399,7 +7566,8 @@ fn main() {
 
         let budget = *connector.budgets.borrow().last().unwrap();
         cleanup(&context);
-        assert!(budget > Duration::from_secs(240), "{budget:?}");
+        assert!(budget > Duration::from_secs(299), "{budget:?}");
+        assert!(budget <= Duration::from_secs(300), "{budget:?}");
     }
 
     #[test]
@@ -7436,10 +7604,10 @@ fn main() {
             connector.operation_ids.borrow()[1]
         );
         assert!(connector
-            .timeout_millis
+            .timeouts
             .borrow()
             .iter()
-            .all(|timeout| *timeout <= 1_000));
+            .all(|timeout| *timeout <= Duration::from_secs(1)));
         cleanup(&context);
     }
 
@@ -7947,7 +8115,7 @@ fn main() {
     struct ResetRlmConnector {
         calls: std::cell::RefCell<u32>,
         operation_ids: std::cell::RefCell<Vec<String>>,
-        timeout_millis: std::cell::RefCell<Vec<u64>>,
+        timeouts: std::cell::RefCell<Vec<Duration>>,
     }
 
     impl ServiceConnector for ResetRlmConnector {
@@ -7966,11 +8134,14 @@ fn main() {
                 }),
                 ServiceRequestKind::RlmMcp {
                     operation_id,
-                    timeout_millis,
+                    timeout_seconds,
+                    timeout_nanos,
                     ..
                 } => {
                     self.operation_ids.borrow_mut().push(operation_id);
-                    self.timeout_millis.borrow_mut().push(timeout_millis);
+                    self.timeouts
+                        .borrow_mut()
+                        .push(Duration::new(timeout_seconds, timeout_nanos));
                     let mut calls = self.calls.borrow_mut();
                     *calls += 1;
                     if *calls == 1 {
