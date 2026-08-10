@@ -9,11 +9,12 @@ use crate::infrastructure::bsl_outline::render_current_source_outline;
 use crate::infrastructure::internal_adapters::{
     system_process_runner, ProcessCommand, ProcessOutput, ProcessRunner,
 };
+use crate::infrastructure::redaction::redactor;
 use crate::infrastructure::rlm_navigation::RlmNavigationAdapter;
 use crate::infrastructure::workspace_index::IndexReadiness;
 use crate::infrastructure::workspace_services::{
     WorkspaceRlmOperation, WorkspaceServiceBslCall, WorkspaceServiceBslOutput,
-    WorkspaceServiceManager,
+    WorkspaceServiceManager, WorkspaceServiceRlmCall,
 };
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
@@ -342,8 +343,24 @@ impl RlmSearchClient for WorkspaceRlmSearchClient {
                 timeout,
                 cancellation,
             )
-            .map(|output| output.result_text)
+            .and_then(|result| match result {
+                WorkspaceServiceRlmCall::Output(output) => Ok(output.result_text),
+                WorkspaceServiceRlmCall::Unready(readiness) => {
+                    Err(rlm_search_unready_error(readiness))
+                }
+            })
     }
+}
+
+fn rlm_search_unready_error(readiness: IndexReadiness) -> String {
+    let detail = match readiness {
+        IndexReadiness::Ready { .. } => "index readiness changed unexpectedly".to_string(),
+        IndexReadiness::Missing => "index is missing".to_string(),
+        IndexReadiness::Stale { status } => format!("index is stale: {}", redactor(&status)),
+        IndexReadiness::Building => "index is building".to_string(),
+        IndexReadiness::Failed(error) | IndexReadiness::Unavailable(error) => redactor(&error),
+    };
+    format!("RLM index became unavailable: {detail}")
 }
 
 static WORKSPACE_RLM_SEARCH_CLIENT: WorkspaceRlmSearchClient = WorkspaceRlmSearchClient;
@@ -410,7 +427,7 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
             Err(error) if error.starts_with(CANCELLED_PREFIX) => {
                 return failed_section(ProviderId::Rlm, error);
             }
-            Err(error) => return unavailable_section(ProviderId::Rlm, error),
+            Err(error) => return unavailable_section(ProviderId::Rlm, redactor(&error)),
         };
         match readiness {
             IndexReadiness::Ready { .. } => {}
@@ -423,14 +440,17 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
             IndexReadiness::Stale { status } => {
                 return unavailable_section(
                     ProviderId::Rlm,
-                    format!("rlm index is stale ({status}); background update requested"),
+                    format!(
+                        "rlm index is stale ({}); background update requested",
+                        redactor(&status)
+                    ),
                 );
             }
             IndexReadiness::Building => {
                 return unavailable_section(ProviderId::Rlm, "rlm index building".to_string());
             }
             IndexReadiness::Failed(error) | IndexReadiness::Unavailable(error) => {
-                return unavailable_section(ProviderId::Rlm, error);
+                return unavailable_section(ProviderId::Rlm, redactor(&error));
             }
         }
         let timeout = deadline.remaining();
@@ -879,8 +899,8 @@ fn failed_section(provider: ProviderId, diagnostic: String) -> ProviderSearchSec
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_bsl_analyzer_search, parse_rlm_search, BslAnalyzerProvider, BslSearchClient,
-        GitGrepProvider, RlmProvider, RlmSearchClient,
+        parse_bsl_analyzer_search, parse_rlm_search, rlm_search_unready_error, BslAnalyzerProvider,
+        BslSearchClient, GitGrepProvider, RlmProvider, RlmSearchClient,
     };
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::cancellation::CANCELLED_PREFIX;
@@ -1897,6 +1917,16 @@ mod tests {
     }
 
     #[test]
+    fn post_execution_rlm_search_readiness_is_redacted() {
+        let error = rlm_search_unready_error(IndexReadiness::Failed(
+            "token=top-secret index generation changed".to_string(),
+        ));
+
+        assert!(error.starts_with("RLM index became unavailable:"));
+        assert!(!error.contains("top-secret"));
+    }
+
+    #[test]
     fn rlm_provider_declares_its_search_and_navigation_capabilities() {
         let provider = RlmProvider::new();
 
@@ -2115,6 +2145,32 @@ mod tests {
 
         assert_eq!(section.status, ProviderSectionStatus::Unavailable);
         assert_eq!(section.diagnostics, vec!["rlm index building".to_string()]);
+        assert!(client.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn rlm_provider_redacts_pre_execution_readiness_failures() {
+        let client = FakeRlmClient {
+            readiness: IndexReadiness::Failed(
+                "token=top-secret index generation failed".to_string(),
+            ),
+            readiness_calls: Mutex::new(Vec::new()),
+            calls: Mutex::new(Vec::new()),
+            result: "[]".to_string(),
+        };
+
+        let section = RlmProvider::with_client(&client).search(
+            &SearchRequest {
+                query: "Post".to_string(),
+                limit: 20,
+            },
+            &context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(45)),
+            &CancellationToken::new(),
+        );
+
+        assert_eq!(section.status, ProviderSectionStatus::Unavailable);
+        assert!(!section.diagnostics.join(" ").contains("top-secret"));
         assert!(client.calls.lock().unwrap().is_empty());
     }
 }

@@ -2291,6 +2291,29 @@ network = "allow"
             raise AssertionError(json.dumps(response["error"], ensure_ascii=False, indent=2))
         return json.loads(response["result"]["content"][0]["text"])
 
+    def tool_input_schemas(self) -> dict[str, dict[str, Any]]:
+        cached = type(self)._input_schemas
+        if cached is not None:
+            return cached
+        with tempfile.TemporaryDirectory(prefix="unica-tool-schemas-") as temp:
+            responses = self.call_mcp_messages(
+                [
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/list",
+                        "params": {},
+                    }
+                ],
+                Path(temp) / "cache",
+            )
+        cached = {
+            tool["name"]: tool["inputSchema"]
+            for tool in responses[1]["result"]["tools"]
+        }
+        type(self)._input_schemas = cached
+        return cached
+
     def run_mcp_messages(
         self,
         messages: list[dict[str, Any]],
@@ -2327,7 +2350,11 @@ network = "allow"
                     return
 
         threading.Thread(target=read_stdout, daemon=True).start()
-        deadline = time.monotonic() + 30
+        # A batch is consumed by one stdio server. Reader examples now execute
+        # their real bounded work instead of abusing writer-only dryRun, so the
+        # transport budget must cover every public five-second deadline in the
+        # batch rather than treating 32 requests as one invocation.
+        deadline = time.monotonic() + max(30, len(messages) * 5)
         def read_response() -> dict[str, Any]:
             remaining = deadline - time.monotonic()
             if remaining <= 0:

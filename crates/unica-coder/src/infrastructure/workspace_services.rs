@@ -403,7 +403,7 @@ impl<'a> WorkspaceServiceManager<'a> {
         operation: WorkspaceRlmOperation,
         timeout: Duration,
         cancellation: &CancellationToken,
-    ) -> Result<WorkspaceServiceRlmOutput, String> {
+    ) -> Result<WorkspaceServiceRlmCall, String> {
         let deadline = WorkspaceServiceCallDeadline::new(timeout);
         let mut retried_transport = false;
         loop {
@@ -440,14 +440,17 @@ impl<'a> WorkspaceServiceManager<'a> {
             };
             deadline.remaining(cancellation)?;
             if !response.ok {
+                if response.index_status.is_some() {
+                    return Ok(WorkspaceServiceRlmCall::Unready(response.index_readiness()));
+                }
                 return Err(response
                     .error
                     .unwrap_or_else(|| "workspace service RLM request failed".to_string()));
             }
-            return Ok(WorkspaceServiceRlmOutput {
+            return Ok(WorkspaceServiceRlmCall::Output(WorkspaceServiceRlmOutput {
                 result_text: response.result_text.unwrap_or_default(),
                 stderr: response.stderr.unwrap_or_default(),
-            });
+            }));
         }
     }
 
@@ -2226,6 +2229,12 @@ impl WorkspaceRlmOperation {
 pub struct WorkspaceServiceRlmOutput {
     pub result_text: String,
     pub stderr: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum WorkspaceServiceRlmCall {
+    Output(WorkspaceServiceRlmOutput),
+    Unready(IndexReadiness),
 }
 
 struct PersistentMcpSession {
@@ -7751,6 +7760,9 @@ fn main() {
             )
             .unwrap();
 
+        let WorkspaceServiceRlmCall::Output(output) = output else {
+            panic!("successful retry must return RLM output");
+        };
         assert_eq!(output.result_text, "[]");
         assert_eq!(*connector.calls.borrow(), 2);
         assert_eq!(connector.operation_ids.borrow().len(), 2);
@@ -7763,6 +7775,68 @@ fn main() {
             .borrow()
             .iter()
             .all(|timeout| *timeout <= Duration::from_secs(1)));
+        cleanup(&context);
+    }
+
+    #[test]
+    fn manager_preserves_structured_post_execution_readiness() {
+        struct StaleRlmConnector;
+
+        impl ServiceConnector for StaleRlmConnector {
+            fn send(
+                &self,
+                _record: &WorkspaceServiceRecord,
+                request: ServiceRequest,
+                _cancellation: &CancellationToken,
+                _budget: Duration,
+            ) -> Result<ServiceResponse, String> {
+                match request.kind {
+                    ServiceRequestKind::Ping => Ok(ServiceResponse {
+                        ok: true,
+                        status: Some("alive".to_string()),
+                        ..ServiceResponse::default()
+                    }),
+                    ServiceRequestKind::RlmMcp { .. } => {
+                        Ok(ServiceResponse::unavailable_rlm_execution(
+                            IndexReadiness::Stale {
+                                status: "source generation changed".to_string(),
+                            },
+                            Vec::new(),
+                        ))
+                    }
+                    _ => panic!("unexpected request"),
+                }
+            }
+        }
+
+        let context = test_context("rlm-structured-post-readiness");
+        let source_root = context.workspace_root.join("src");
+        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        write_record(
+            &identity,
+            test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
+        );
+        let spawner = RecordingSpawner::default();
+        let manager = WorkspaceServiceManager::with_io(&StaleRlmConnector, &spawner);
+
+        let result = manager
+            .call_rlm_cancellable(
+                &context,
+                &source_root,
+                WorkspaceRlmOperation::Definition {
+                    name: "Needle".to_string(),
+                    module_hint: String::new(),
+                    limit: 50,
+                },
+                Duration::from_secs(1),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        let WorkspaceServiceRlmCall::Unready(IndexReadiness::Stale { status }) = result else {
+            panic!("stale service response must stay structured");
+        };
+        assert_eq!(status, "source generation changed");
         cleanup(&context);
     }
 

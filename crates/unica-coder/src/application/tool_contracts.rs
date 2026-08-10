@@ -1656,10 +1656,19 @@ fn validate_code_arguments(
             validate_enum_argument(tool.name, args, "mode", CODE_DIAGNOSTIC_MODES)?;
             validate_enum_argument(tool.name, args, "minSeverity", CODE_DIAGNOSTIC_SEVERITIES)?;
             validate_enum_argument(tool.name, args, "detail", CODE_DIAGNOSTIC_DETAIL)?;
+            validate_enum_argument(tool.name, args, "format", &["json", "jsonl"])?;
+            validate_integer_bound(tool.name, args, "limit", 1, 200)?;
+            validate_diagnostic_codes(tool.name, args)?;
             let mode = args
                 .get("mode")
                 .and_then(Value::as_str)
                 .unwrap_or("analyze");
+            if mode != "analyze" && args.contains_key("format") {
+                return Err(format!(
+                    "{} argument `format` is only supported for mode `analyze`",
+                    tool.name
+                ));
+            }
             // `path` scopes a single-file read, which only mode `file` performs.
             // Every other mode dropped it silently: `analyze` then scanned the
             // whole source set although the caller had named one file.
@@ -1692,6 +1701,29 @@ fn validate_code_arguments(
             }
         }
         _ => {}
+    }
+    Ok(())
+}
+
+fn validate_diagnostic_codes(tool_name: &str, args: &Map<String, Value>) -> Result<(), String> {
+    let Some(codes) = args.get("codes").and_then(Value::as_array) else {
+        return Ok(());
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    for code in codes {
+        let Some(code) = code.as_str() else {
+            return Err(format!("{tool_name} argument `codes` must contain strings"));
+        };
+        if code.trim().is_empty() {
+            return Err(format!(
+                "{tool_name} argument `codes` must contain non-empty strings"
+            ));
+        }
+        if !seen.insert(code) {
+            return Err(format!(
+                "{tool_name} argument `codes` must contain unique strings"
+            ));
+        }
     }
     Ok(())
 }
@@ -3391,6 +3423,14 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
         },
         "unica.code.diagnostics" => match name {
             "mode" => return json!({ "type": "string", "enum": CODE_DIAGNOSTIC_MODES }),
+            "format" => return json!({ "type": "string", "enum": ["json", "jsonl"] }),
+            "codes" => {
+                return json!({
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                    "uniqueItems": true
+                });
+            }
             "timeoutSeconds" => {
                 return json!({
                     "type": "integer",
@@ -3400,9 +3440,14 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
                 });
             }
             "minSeverity" => {
-                return json!({ "type": "string", "enum": CODE_DIAGNOSTIC_SEVERITIES });
+                return json!({ "type": "string", "enum": CODE_DIAGNOSTIC_SEVERITIES, "default": "warning" });
             }
-            "detail" => return json!({ "type": "string", "enum": CODE_DIAGNOSTIC_DETAIL }),
+            "detail" => {
+                return json!({ "type": "string", "enum": CODE_DIAGNOSTIC_DETAIL, "default": "concise" })
+            }
+            "limit" => {
+                return json!({ "type": "integer", "minimum": 1, "maximum": 200, "default": 200 });
+            }
             _ => {}
         },
         _ => {}
@@ -3653,6 +3698,26 @@ mod tests {
             .collect::<Vec<_>>();
         names.sort_unstable();
         names
+    }
+
+    #[test]
+    fn readers_neither_publish_nor_accept_dry_run() {
+        for tool in tools() {
+            let schema = input_schema_for_tool(&tool);
+            let publishes_dry_run = schema["properties"].get("dryRun").is_some();
+            match tool.execution {
+                crate::application::ToolExecution::Read => {
+                    assert!(!publishes_dry_run, "{}", tool.name);
+                    let args = Map::from_iter([("dryRun".to_string(), json!(true))]);
+                    let error = validate_tool_arguments(tool, &args, false)
+                        .expect_err("reader dryRun must fail before dispatch");
+                    assert!(error.contains("dryRun"), "{}: {error}", tool.name);
+                }
+                crate::application::ToolExecution::Mutation => {
+                    assert!(publishes_dry_run, "{}", tool.name);
+                }
+            }
+        }
     }
 
     fn collect_schema_property_names<'a>(value: &'a Value, names: &mut Vec<&'a str>) {
@@ -6228,11 +6293,23 @@ mod tests {
         assert!(schema["properties"].get("cwd").is_some());
         assert!(schema["properties"].get("sourceDir").is_some());
         assert_eq!(schema["properties"]["codes"]["type"], "array");
+        assert_eq!(schema["properties"]["codes"]["items"]["type"], "string");
+        assert_eq!(schema["properties"]["codes"]["items"]["minLength"], 1);
+        assert_eq!(schema["properties"]["codes"]["uniqueItems"], true);
         assert_eq!(schema["properties"]["rangeStart"]["type"], "integer");
         assert_eq!(schema["properties"]["maxFiles"]["type"], "integer");
         assert_eq!(schema["properties"]["timeoutSeconds"]["type"], "integer");
         assert_eq!(schema["properties"]["timeoutSeconds"]["minimum"], 30);
         assert_eq!(schema["properties"]["timeoutSeconds"]["maximum"], 3600);
+        assert_eq!(
+            schema["properties"]["format"]["enum"],
+            json!(["json", "jsonl"])
+        );
+        assert_eq!(schema["properties"]["minSeverity"]["default"], "warning");
+        assert_eq!(schema["properties"]["detail"]["default"], "concise");
+        assert_eq!(schema["properties"]["limit"]["minimum"], 1);
+        assert_eq!(schema["properties"]["limit"]["maximum"], 200);
+        assert_eq!(schema["properties"]["limit"]["default"], 200);
         assert!(schema["properties"]["timeoutSeconds"]["description"]
             .as_str()
             .unwrap()
@@ -6294,6 +6371,48 @@ mod tests {
 
         let args = Map::new();
         validate_tool_arguments(diagnostics, &args, false).unwrap();
+
+        for format in ["json", "jsonl"] {
+            let mut args = Map::new();
+            args.insert("format".to_string(), json!(format));
+            validate_tool_arguments(diagnostics, &args, false).unwrap();
+        }
+        for format in ["console", "sarif"] {
+            let mut args = Map::new();
+            args.insert("format".to_string(), json!(format));
+            let error = validate_tool_arguments(diagnostics, &args, false).unwrap_err();
+            assert!(error.contains("must be one of: json, jsonl"), "{error}");
+        }
+        for mode in ["status", "catalog", "file", "workspace"] {
+            let mut args = Map::new();
+            args.insert("mode".to_string(), json!(mode));
+            args.insert("format".to_string(), json!("jsonl"));
+            if mode == "file" {
+                args.insert("path".to_string(), json!("Module.bsl"));
+            }
+            let error = validate_tool_arguments(diagnostics, &args, false).unwrap_err();
+            assert!(
+                error.contains("only supported for mode `analyze`"),
+                "{mode}: {error}"
+            );
+        }
+
+        for limit in [1, 200] {
+            let mut args = Map::new();
+            args.insert("limit".to_string(), json!(limit));
+            validate_tool_arguments(diagnostics, &args, false).unwrap();
+        }
+        for limit in [json!(0), json!(201), json!("200"), json!(1.5)] {
+            let mut args = Map::new();
+            args.insert("limit".to_string(), limit);
+            assert!(validate_tool_arguments(diagnostics, &args, false).is_err());
+        }
+
+        for codes in [json!([""]), json!(["LineLength", "LineLength"]), json!([1])] {
+            let mut args = Map::new();
+            args.insert("codes".to_string(), codes);
+            assert!(validate_tool_arguments(diagnostics, &args, false).is_err());
+        }
 
         for timeout in [30, 900, 3600] {
             let mut args = Map::new();

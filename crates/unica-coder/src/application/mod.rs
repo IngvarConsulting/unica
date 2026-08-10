@@ -1244,12 +1244,19 @@ fn enforce_result_contract(
     if mode == InvocationMode::Read
         && spec.result_contract == ResultContract::Typed
         && outcome.adapter.ok
-        && outcome.data.is_none()
     {
-        return Err(format!(
-            "typed_result_missing: {} returned ok without OperationResult.data",
-            spec.name
-        ));
+        if outcome.data.is_none() {
+            return Err(format!(
+                "typed_result_missing: {} returned ok without OperationResult.data",
+                spec.name
+            ));
+        }
+        if outcome.adapter.stdout.is_some() {
+            return Err(format!(
+                "typed_result_textual: {} returned ok with a stdout duplicate",
+                spec.name
+            ));
+        }
     }
     Ok(())
 }
@@ -10946,6 +10953,24 @@ mod tests {
         assert_eq!(
             error,
             "typed_result_missing: unica.project.status returned ok without OperationResult.data"
+        );
+    }
+
+    #[test]
+    fn successful_typed_reader_with_stdout_duplicate_fails_closed() {
+        let mut outcome = AdapterOutcome::ok("reader duplicated its typed payload");
+        outcome.stdout = Some("rendered result".to_string());
+
+        let error = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
+            outcome,
+            data: Some(json!({"fixture": true})),
+        }))
+        .call_tool("unica.project.status", &Map::new())
+        .expect_err("successful typed reader must not duplicate data in stdout");
+
+        assert_eq!(
+            error,
+            "typed_result_textual: unica.project.status returned ok with a stdout duplicate"
         );
     }
 
