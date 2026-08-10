@@ -302,6 +302,108 @@ fn info_without_sections_is_local_only() {
 }
 
 #[test]
+fn info_observes_inline_command_without_a_standalone_descriptor() {
+    let workspace = create_info_workspace("inline-command");
+    let edited = call_edit(
+        workspace.path(),
+        "Catalog.Inspectable",
+        serde_json::json!([
+            {"op": "add", "collection": "forms", "elements": [{"name": "ItemForm"}]},
+            {"op": "add", "collection": "commands", "elements": [{"name": "Refresh"}]}
+        ]),
+        false,
+    );
+    assert!(edited.ok, "{:?}", edited.errors);
+
+    let owner_path = workspace.path().join("src/Catalogs/Inspectable.xml");
+    let mut owner_xml = std::fs::read_to_string(&owner_path).unwrap();
+    let form_range = {
+        let document = roxmltree::Document::parse(&owner_xml).unwrap();
+        document
+            .descendants()
+            .find(|node| node.is_element() && node.tag_name().name() == "Form")
+            .expect("generated form descriptor")
+            .range()
+    };
+    owner_xml.replace_range(form_range, "<Form>ItemForm</Form>");
+    std::fs::write(&owner_path, owner_xml).unwrap();
+
+    let invented_descriptor = workspace
+        .path()
+        .join("src/Catalogs/Inspectable/Commands/Refresh.xml");
+    assert!(
+        !invented_descriptor.exists(),
+        "command mutation must stay in the owner descriptor"
+    );
+
+    let result = call_info(workspace.path(), []);
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.expect("typed metadata info data");
+    assert_eq!(data["collections"]["forms"][0]["name"], "ItemForm");
+    assert_eq!(data["collections"]["commands"][0]["name"], "Refresh");
+    assert_eq!(data["validation"]["status"], "passed");
+
+    let form_descriptor = workspace
+        .path()
+        .join("src/Catalogs/Inspectable/Forms/ItemForm.xml");
+    let form_bytes = std::fs::read(&form_descriptor).unwrap();
+    std::fs::remove_file(&form_descriptor).unwrap();
+    let incomplete = call_info(workspace.path(), []);
+    assert!(!incomplete.ok, "missing form evidence must stay an error");
+    let errors = incomplete.errors.join("\n");
+    assert!(
+        errors.contains("Catalog.Inspectable.Form.ItemForm"),
+        "{errors}"
+    );
+    assert!(
+        !errors.contains("Catalog.Inspectable.Command.Refresh"),
+        "one missing child must not discard an observed sibling: {errors}"
+    );
+    let incomplete_data = incomplete.data.expect("partial local observation");
+    assert_eq!(
+        incomplete_data["collections"]["commands"][0]["name"],
+        "Refresh"
+    );
+    std::fs::write(&form_descriptor, form_bytes).unwrap();
+
+    let renamed = call_edit(
+        workspace.path(),
+        "Catalog.Inspectable",
+        serde_json::json!([{
+            "op": "update",
+            "collection": "commands",
+            "elements": [{"name": "Refresh", "newName": "Reload"}]
+        }]),
+        false,
+    );
+    assert!(renamed.ok, "{:?}", renamed.errors);
+    let commands_dir = workspace.path().join("src/Catalogs/Inspectable/Commands");
+    assert!(!commands_dir.join("Refresh.xml").exists());
+    assert!(!commands_dir.join("Reload.xml").exists());
+    let data = call_info(workspace.path(), [])
+        .data
+        .expect("typed metadata info after command rename");
+    assert_eq!(data["collections"]["commands"][0]["name"], "Reload");
+
+    let removed = call_edit(
+        workspace.path(),
+        "Catalog.Inspectable",
+        serde_json::json!([{
+            "op": "remove",
+            "collection": "commands",
+            "names": ["Reload"]
+        }]),
+        false,
+    );
+    assert!(removed.ok, "{:?}", removed.errors);
+    let data = call_info(workspace.path(), [])
+        .data
+        .expect("typed metadata info after command removal");
+    assert_eq!(data["collections"]["commands"], serde_json::json!([]));
+}
+
+#[test]
 fn info_groups_only_the_current_objects_subsystem_memberships() {
     let workspace = create_info_workspace("object-subsystem-memberships");
     write_subsystem(

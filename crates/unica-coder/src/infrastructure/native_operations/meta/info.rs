@@ -383,20 +383,20 @@ pub(crate) fn read_typed_meta_info(
         deadline,
         cancellation,
     ));
-    let child_resources = match super::edit::plan_typed_child_resources(
+    let child_resources = match super::edit::observe_typed_child_resources(
         &resolved.descriptor_path,
         target,
         kind.as_str(),
         &local.name,
-        &[],
         xml,
     ) {
         Ok(resources) => resources,
         Err(failure) => {
             local.diagnostics.extend(failure.diagnostics);
-            super::edit::TypedChildResourcePlan::default()
+            super::edit::TypedChildObservation::default()
         }
     };
+    local.diagnostics.extend(child_resources.diagnostics);
     validation_resources.extend(child_resources.validation_resources);
     let validation_subject = MetadataValidationSubject {
         target: target.clone(),
