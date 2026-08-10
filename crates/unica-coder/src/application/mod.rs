@@ -2461,7 +2461,7 @@ mod tests {
         let result = app
             .call_tool(
                 "unica.code.search",
-                &json!({"query": "needle"}).as_object().unwrap(),
+                json!({"query": "needle"}).as_object().unwrap(),
             )
             .expect("prepared handler must serve code search");
 

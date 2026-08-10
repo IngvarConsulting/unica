@@ -320,7 +320,7 @@ git commit -m "docs(config): закрепить общий контейнер AD
 cargo fmt --all -- --check
 cargo test --workspace --all-targets --all-features
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-uv run --with PyYAML==6.0.3 python -m unittest discover -s tests/ci
+uv run --with-requirements tests/ci/requirements.txt python -m unittest discover -s tests/ci
 git diff --check origin/main...HEAD
 git status --short
 ```
