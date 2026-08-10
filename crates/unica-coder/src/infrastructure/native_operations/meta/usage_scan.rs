@@ -13,7 +13,10 @@
 //! object collects is a few dozen entries.
 
 use crate::domain::cancellation::CancellationToken;
-use crate::domain::metadata::{MetaPredefinedItemsData, MetaUsageData, MetadataKind};
+use crate::domain::metadata::{
+    MetaDiagnostic, MetaDiagnosticCode, MetaPredefinedItemsData, MetaUsageData, MetadataKind,
+};
+use crate::domain::source_target::MetadataAddress;
 use crate::infrastructure::metadata_kinds::{metadata_kind_value_types, metadata_layout};
 use crate::infrastructure::platform::secure_read::read_root_relative_regular_file;
 use roxmltree::Document;
@@ -38,6 +41,7 @@ const USAGE_SECTION_MAX_FILES: usize = 8192;
 pub(crate) struct LocalEnrichment {
     pub(crate) usage: MetaUsageData,
     pub(crate) predefined_items: Option<MetaPredefinedItemsData>,
+    pub(crate) diagnostics: Vec<MetaDiagnostic>,
 }
 
 /// Sections a local read can serve, named as the public contract names them.
@@ -52,24 +56,55 @@ pub(crate) enum LocalSection {
 pub(crate) fn scan_local_enrichment(
     source_root: &Path,
     kind: MetadataKind,
-    name: &str,
+    metadata_path: &MetadataAddress,
+    predefined_code_type: Option<&str>,
     sections: &[LocalSection],
     limit: usize,
     cancellation: &CancellationToken,
 ) -> LocalEnrichment {
-    let target = format!("{}.{}", kind.as_str(), name);
+    let target = metadata_path.as_str();
+    let name = metadata_path
+        .segments()
+        .last()
+        .expect("a parsed metadata address has an object name");
     let mut enrichment = LocalEnrichment::default();
     if sections.contains(&LocalSection::Roles) && !cancellation.is_cancelled() {
-        enrichment.usage.roles = Some(scan_roles(source_root, &target));
+        enrichment.usage.roles = Some(scan_roles(source_root, target));
     }
     if sections.contains(&LocalSection::FunctionalOptions) && !cancellation.is_cancelled() {
-        enrichment.usage.functional_options = Some(scan_functional_options(source_root, &target));
+        enrichment.usage.functional_options = Some(scan_functional_options(source_root, target));
     }
     if sections.contains(&LocalSection::Subscriptions) && !cancellation.is_cancelled() {
         enrichment.usage.subscriptions = Some(scan_subscriptions(source_root, kind, name));
     }
     if sections.contains(&LocalSection::PredefinedItems) && !cancellation.is_cancelled() {
-        enrichment.predefined_items = Some(read_predefined_items(source_root, kind, name, limit));
+        if !crate::domain::metadata::metadata_kind_collections(kind)
+            .contains(&crate::domain::metadata::MetaCollection::PredefinedItems)
+        {
+            enrichment.diagnostics.push(
+                MetaDiagnostic::error(
+                    MetaDiagnosticCode::UnsupportedKind,
+                    format!(
+                        "predefinedItems is not supported for metadata kind `{}`",
+                        kind.as_str()
+                    ),
+                )
+                .with_metadata_path(metadata_path.clone())
+                .with_field("predefinedItems"),
+            );
+        } else {
+            match read_predefined_items(
+                source_root,
+                kind,
+                name,
+                metadata_path,
+                predefined_code_type,
+                limit,
+            ) {
+                Ok(items) => enrichment.predefined_items = Some(items),
+                Err(diagnostic) => enrichment.diagnostics.push(diagnostic),
+            }
+        }
     }
     enrichment
 }
@@ -241,48 +276,54 @@ fn read_predefined_items(
     source_root: &Path,
     kind: MetadataKind,
     name: &str,
+    metadata_path: &MetadataAddress,
+    code_type: Option<&str>,
     limit: usize,
-) -> MetaPredefinedItemsData {
+) -> Result<MetaPredefinedItemsData, MetaDiagnostic> {
     let path = source_root
         .join(metadata_layout(kind).directory)
         .join(name)
         .join("Ext")
         .join("Predefined.xml");
-    let Some(text) = read_descriptor(source_root, &path)
-        .filter(|text| Document::parse(text.trim_start_matches('\u{feff}')).is_ok())
-    else {
-        return MetaPredefinedItemsData {
-            total: 0,
-            returned: 0,
-            truncated: false,
-            items: Vec::new(),
+    let bytes =
+        match read_root_relative_regular_file(source_root, &path, USAGE_FILE_MAX_BYTES, |_| {}) {
+            Ok(read) => read.bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(MetaPredefinedItemsData {
+                    total: 0,
+                    returned: 0,
+                    truncated: false,
+                    items: Vec::new(),
+                })
+            }
+            Err(_) => {
+                return Err(MetaDiagnostic::error(
+                    MetaDiagnosticCode::ProviderUnavailable,
+                    "predefined data cannot be read through the source-root boundary",
+                )
+                .with_metadata_path(metadata_path.clone())
+                .with_field("predefinedItems"))
+            }
         };
+    let code_type = match code_type.unwrap_or("String") {
+        "String" => super::predefined::PredefinedCodeType::String,
+        "Number" => super::predefined::PredefinedCodeType::Number,
+        other => {
+            return Err(MetaDiagnostic::error(
+                MetaDiagnosticCode::ValidationFailed,
+                format!("predefined owner CodeType `{other}` is unsupported"),
+            )
+            .with_metadata_path(metadata_path.clone())
+            .with_field("predefinedItems"))
+        }
     };
-    let document = Document::parse(text.trim_start_matches('\u{feff}'))
-        .expect("descriptor was parsed during the guard above");
-    let names = document
-        .descendants()
-        .filter(|node| node.is_element() && node.tag_name().name() == "Item")
-        .filter_map(|item| {
-            item.children()
-                .find(|child| child.is_element() && child.tag_name().name() == "Name")
-                .and_then(|node| node.text())
-                .map(|value| value.trim().to_string())
-        })
-        .filter(|value| !value.is_empty())
-        .collect::<Vec<_>>();
-    let total = names.len();
-    let items = names
-        .into_iter()
-        .take(limit)
-        .map(|value| json!({"name": value}))
-        .collect::<Vec<_>>();
-    MetaPredefinedItemsData {
-        total,
-        returned: items.len(),
-        truncated: total > items.len(),
-        items,
-    }
+    super::predefined::read_predefined_items_for_code_type(&bytes, kind, code_type, limit).map_err(
+        |message| {
+            MetaDiagnostic::error(MetaDiagnosticCode::ValidationFailed, message)
+                .with_metadata_path(metadata_path.clone())
+                .with_field("predefinedItems")
+        },
+    )
 }
 
 /// `Kind.Name` itself, or anything nested beneath it.

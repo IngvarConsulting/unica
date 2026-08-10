@@ -2,7 +2,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-pub(crate) use super::filesystem::{create_dir_symlink_for_test, create_file_symlink_for_test};
+pub(crate) use super::filesystem::{
+    create_dir_symlink_for_test, create_file_symlink_for_test, remove_dir_symlink_for_test,
+};
 use super::filesystem::{file_identity, hard_link_count};
 
 pub(crate) fn normalize_path_text_for_test(value: &str) -> String {

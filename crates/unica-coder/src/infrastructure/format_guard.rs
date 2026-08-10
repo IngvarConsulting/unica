@@ -34,6 +34,7 @@ use crate::infrastructure::native_operations::interface::{
     interface_metadata_owner_path, resolve_interface_validate_path,
 };
 use crate::infrastructure::native_operations::mxl::resolve_mxl_validate_path;
+use crate::infrastructure::native_operations::role::resolve_role_edit_guard_path;
 use crate::infrastructure::native_operations::role::role_read_format_dependency_paths;
 use crate::infrastructure::native_operations::subsystem::{
     subsystem_edit_operations, subsystem_read_format_dependency_paths,
@@ -1043,12 +1044,19 @@ fn handler_resolved_format_paths(
         "dcs-edit" | "dcs-validate" => resolve_dcs_validate_path(args, context).ok(),
         "mxl-validate" => resolve_mxl_validate_path(args, context).ok(),
         "role-info" | "role-validate" => resolve_role_read_rights_path(args, context).ok(),
+        "role-edit" => {
+            Some(resolve_role_edit_guard_path(args, context).map_err(FormatGuardError::internal)?)
+        }
         _ => None,
     };
     let paths = resolved.or(fallback).into_iter().collect::<Vec<_>>();
-    if matches!(descriptor.operation, "xdto-info" | "xdto-edit") && paths.is_empty() {
+    if matches!(
+        descriptor.operation,
+        "xdto-info" | "xdto-edit" | "role-edit"
+    ) && paths.is_empty()
+    {
         return Err(FormatGuardError::internal(
-            "format guard contract: XDTO HandlerResolved target is empty",
+            "format guard contract: logical HandlerResolved target is empty",
         ));
     }
     Ok(paths)

@@ -6,8 +6,10 @@ use crate::domain::metadata::{
     metadata_reference_type_kinds, metadata_relation_specs, validate_metadata_kind_collection,
     validate_metadata_operation_capabilities, DateFractions, EventSourceClass, MetaCollection,
     MetaDiagnostic, MetaDiagnosticCode, MetaEditOperation, MetaEditOperationTag, MetaElementInput,
-    MetaElementUpdateInput, MetaEventSource, MetaFillValue, MetaPosition, MetaPropertyChanges,
-    MetaPropertyInput, MetaPropertyValue, MetaPropertyValueKind, MetaRelation, MetaRelationTarget,
+    MetaElementUpdateInput, MetaEventSource, MetaFillValue, MetaPosition,
+    MetaPredefinedAccountType, MetaPredefinedExtDimensionType, MetaPredefinedFields,
+    MetaPredefinedItemAdd, MetaPredefinedItemUpdate, MetaPropertyChanges, MetaPropertyInput,
+    MetaPropertyValue, MetaPropertyValueKind, MetaRelation, MetaRelationTarget,
     MetaRelationTargetPolicy, MetaScope, MetaValidationStatus, MetadataFieldPath, MetadataKind,
     MetadataReference, MetadataType, MetadataTypeVariant, NumberSign, RelationEditMode,
     StringLengthMode, METADATA_PROPERTY_SPECS, METADATA_XS_DATETIME_PATTERN,
@@ -18,6 +20,7 @@ use crate::domain::source_target::{
 };
 use crate::domain::workspace::WorkspaceContext;
 use serde_json::{json, Map, Value};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MetadataOperation {
@@ -139,7 +142,6 @@ fn invoke_info(
     validation
         .diagnostics
         .extend(read.local.diagnostics.iter().cloned());
-    let failed = validation.status == MetaValidationStatus::Failed;
     // The enrichment sections are read from the source tree and answer on their
     // own evidence, so a descriptor that failed validation says nothing about
     // whether they are correct. Withholding them made an unrelated failure cost
@@ -149,6 +151,15 @@ fn invoke_info(
     } else {
         ports.read_metadata_related(request, &read.local, context, cancellation)
     };
+    if enrichment.diagnostics.iter().any(|diagnostic| {
+        diagnostic.severity == crate::domain::metadata::MetaDiagnosticSeverity::Error
+    }) {
+        validation.status = MetaValidationStatus::Failed;
+    }
+    validation
+        .diagnostics
+        .extend(enrichment.diagnostics.iter().cloned());
+    let failed = validation.status == MetaValidationStatus::Failed;
     let (functional_subsystems, interface_subsystems) =
         match &read.validation_subject.subsystem_evidence {
             Some(crate::application::ports::MetadataSubsystemEvidence::Complete {
@@ -248,15 +259,17 @@ fn invoke_mutation(
     };
     let mut data = report.data;
     data.validation = validation;
-    let events = metadata_change_event(&data, false);
+    let events = if report.events.is_empty() {
+        metadata_change_event(&data, false)
+    } else {
+        report.events
+    };
     let data = serde_json::to_value(data)
         .map_err(|error| format!("cannot serialize metadata mutation result: {error}"))?;
-    Ok(metadata_success(
-        "metadata mutation published",
-        data,
-        events,
-        Vec::new(),
-    ))
+    let mut outcome = metadata_success("metadata mutation published", data, events, Vec::new());
+    outcome.recorded_cache = report.recorded_cache;
+    outcome.adapter.warnings = report.warnings;
+    Ok(outcome)
 }
 
 fn mutation_dry_run(request: &MetadataRequest) -> bool {
@@ -339,6 +352,23 @@ pub(crate) fn parse_metadata_request(
         MetadataOperation::Info => {
             let metadata_path = required_metadata_path(args, "metadataPath")?;
             let sections = parse_info_sections(args.get("sections"))?;
+            if sections.contains(&MetaInfoSection::PredefinedItems) {
+                let kind = metadata_kind_for_address(&metadata_path)?;
+                if !crate::domain::metadata::metadata_kind_collections(kind)
+                    .contains(&MetaCollection::PredefinedItems)
+                {
+                    return Err(MetaDiagnostic::error(
+                        MetaDiagnosticCode::UnsupportedKind,
+                        format!(
+                            "predefinedItems is not supported for metadata kind `{}`",
+                            kind.as_str()
+                        ),
+                    )
+                    .with_field("sections")
+                    .with_metadata_path(metadata_path)
+                    .into());
+                }
+            }
             let limit = parse_bounded_usize(args.get("limit"), "limit", 20, 50)?;
             Ok(MetadataRequest::Info(MetaInfoRequest {
                 source_set,
@@ -508,6 +538,7 @@ fn parse_edit_operation(
                     "scope",
                     "elements",
                     "names",
+                    "ids",
                     "relation",
                     "mode",
                     "targets",
@@ -517,8 +548,20 @@ fn parse_edit_operation(
             Ok(MetaEditOperation::SetProperties { values })
         }
         MetaEditOperationTag::Add => {
-            reject_forbidden_fields(object, &["values", "names", "relation", "mode", "targets"])?;
+            reject_forbidden_fields(
+                object,
+                &["values", "names", "ids", "relation", "mode", "targets"],
+            )?;
             let collection = parse_collection(object, kind)?;
+            if collection == MetaCollection::PredefinedItems {
+                reject_forbidden_fields(object, &["scope"])?;
+                let elements = required_array(object, "elements")?
+                    .iter()
+                    .enumerate()
+                    .map(|(index, element)| parse_predefined_add(element, index))
+                    .collect::<Result<Vec<_>, _>>()?;
+                return MetaEditOperation::add_predefined_items(elements);
+            }
             let scope = parse_scope(object.get("scope"))?;
             let elements = required_array(object, "elements")?
                 .iter()
@@ -530,8 +573,20 @@ fn parse_edit_operation(
             MetaEditOperation::add(collection, scope, elements)
         }
         MetaEditOperationTag::Update => {
-            reject_forbidden_fields(object, &["values", "names", "relation", "mode", "targets"])?;
+            reject_forbidden_fields(
+                object,
+                &["values", "names", "ids", "relation", "mode", "targets"],
+            )?;
             let collection = parse_collection(object, kind)?;
+            if collection == MetaCollection::PredefinedItems {
+                reject_forbidden_fields(object, &["scope"])?;
+                let elements = required_array(object, "elements")?
+                    .iter()
+                    .enumerate()
+                    .map(|(index, element)| parse_predefined_update(element, index))
+                    .collect::<Result<Vec<_>, _>>()?;
+                return MetaEditOperation::update_predefined_items(elements);
+            }
             let scope = parse_scope(object.get("scope"))?;
             let elements = required_array(object, "elements")?
                 .iter()
@@ -548,6 +603,16 @@ fn parse_edit_operation(
                 &["values", "elements", "relation", "mode", "targets"],
             )?;
             let collection = parse_collection(object, kind)?;
+            if collection == MetaCollection::PredefinedItems {
+                reject_forbidden_fields(object, &["scope", "names"])?;
+                let ids = required_array(object, "ids")?
+                    .iter()
+                    .enumerate()
+                    .map(|(index, value)| nonempty_string(value, &format!("ids[{index}]")))
+                    .collect::<Result<Vec<_>, _>>()?;
+                return MetaEditOperation::remove_predefined_items(ids);
+            }
+            reject_forbidden_fields(object, &["ids"])?;
             let scope = parse_scope(object.get("scope"))?;
             let names = required_array(object, "names")?
                 .iter()
@@ -559,7 +624,7 @@ fn parse_edit_operation(
         MetaEditOperationTag::EditRelations => {
             reject_forbidden_fields(
                 object,
-                &["values", "collection", "scope", "elements", "names"],
+                &["values", "collection", "scope", "elements", "names", "ids"],
             )?;
             let relation_name = required_string_diagnostic(object, "relation")?;
             let relation = MetaRelation::parse(&relation_name)?;
@@ -598,10 +663,203 @@ fn operation_property_names() -> &'static [&'static str] {
         "scope",
         "elements",
         "names",
+        "ids",
         "relation",
         "mode",
         "targets",
     ]
+}
+
+fn parse_predefined_add(
+    value: &Value,
+    index: usize,
+) -> Result<MetaPredefinedItemAdd, MetaDiagnostic> {
+    let prefix = format!("elements[{index}]");
+    let object = predefined_object(value, &prefix)?;
+    Ok(MetaPredefinedItemAdd {
+        id: canonical_uuid(object, "id", &prefix)?,
+        name: required_string_at(object, "name", &format!("{prefix}.name"))?,
+        fields: parse_predefined_fields(object, &prefix)?,
+    })
+}
+
+fn parse_predefined_update(
+    value: &Value,
+    index: usize,
+) -> Result<MetaPredefinedItemUpdate, MetaDiagnostic> {
+    let prefix = format!("elements[{index}]");
+    let object = predefined_object(value, &prefix)?;
+    Ok(MetaPredefinedItemUpdate {
+        id: canonical_uuid(object, "id", &prefix)?,
+        name: object
+            .get("name")
+            .map(|value| nonempty_string(value, &format!("{prefix}.name")))
+            .transpose()?,
+        fields: parse_predefined_fields(object, &prefix)?,
+    })
+}
+
+fn predefined_object<'a>(
+    value: &'a Value,
+    prefix: &str,
+) -> Result<&'a Map<String, Value>, MetaDiagnostic> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| invalid(prefix, "predefined item must be an object"))?;
+    reject_unknown_fields(
+        object,
+        &[
+            "id",
+            "name",
+            "code",
+            "description",
+            "isFolder",
+            "type",
+            "accountType",
+            "offBalance",
+            "order",
+            "accountingFlags",
+            "extDimensionTypes",
+            "actionPeriodIsBase",
+        ],
+        &format!("{prefix}."),
+    )?;
+    Ok(object)
+}
+
+fn canonical_uuid(
+    object: &Map<String, Value>,
+    name: &str,
+    prefix: &str,
+) -> Result<String, MetaDiagnostic> {
+    let field = format!("{prefix}.{name}");
+    let raw = required_string_at(object, name, &field)?;
+    crate::domain::metadata::canonical_predefined_uuid(&raw)
+        .ok_or_else(|| invalid(field, "predefined item id must be a UUID"))
+}
+
+fn parse_predefined_fields(
+    object: &Map<String, Value>,
+    prefix: &str,
+) -> Result<MetaPredefinedFields, MetaDiagnostic> {
+    let optional_string = |name: &str| {
+        object
+            .get(name)
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| invalid(format!("{prefix}.{name}"), "field must be a string"))
+            })
+            .transpose()
+    };
+    let optional_bool = |name: &str| {
+        object
+            .get(name)
+            .map(|value| {
+                value
+                    .as_bool()
+                    .ok_or_else(|| invalid(format!("{prefix}.{name}"), "field must be a boolean"))
+            })
+            .transpose()
+    };
+    Ok(MetaPredefinedFields {
+        code: optional_string("code")?,
+        description: optional_string("description")?,
+        is_folder: optional_bool("isFolder")?,
+        r#type: object
+            .get("type")
+            .map(|value| parse_metadata_type(value, &format!("{prefix}.type")))
+            .transpose()?,
+        account_type: object
+            .get("accountType")
+            .map(|value| {
+                let field = format!("{prefix}.accountType");
+                let value = value
+                    .as_str()
+                    .ok_or_else(|| invalid(&field, "accountType must be a string"))?;
+                MetaPredefinedAccountType::parse(value, &field)
+            })
+            .transpose()?,
+        off_balance: optional_bool("offBalance")?,
+        order: optional_string("order")?,
+        accounting_flags: object
+            .get("accountingFlags")
+            .map(|value| parse_predefined_flags(value, &format!("{prefix}.accountingFlags")))
+            .transpose()?,
+        ext_dimension_types: object
+            .get("extDimensionTypes")
+            .map(|value| parse_ext_dimension_types(value, &format!("{prefix}.extDimensionTypes")))
+            .transpose()?,
+        action_period_is_base: optional_bool("actionPeriodIsBase")?,
+    })
+}
+
+fn parse_predefined_flags(
+    value: &Value,
+    field: &str,
+) -> Result<BTreeMap<String, bool>, MetaDiagnostic> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| invalid(field, "accounting flags must be an object of name:boolean"))?;
+    let mut flags = BTreeMap::new();
+    for (name, value) in object {
+        if name.is_empty() {
+            return Err(invalid(field, "accounting flag name must not be empty"));
+        }
+        let value = value
+            .as_bool()
+            .ok_or_else(|| invalid(format!("{field}.{name}"), "accounting flag must be boolean"))?;
+        flags.insert(name.clone(), value);
+    }
+    Ok(flags)
+}
+
+fn parse_ext_dimension_types(
+    value: &Value,
+    field: &str,
+) -> Result<Vec<MetaPredefinedExtDimensionType>, MetaDiagnostic> {
+    let values = value
+        .as_array()
+        .ok_or_else(|| invalid(field, "extDimensionTypes must be an array"))?;
+    let mut result = Vec::with_capacity(values.len());
+    let mut names = std::collections::HashSet::new();
+    for (index, value) in values.iter().enumerate() {
+        let item_field = format!("{field}[{index}]");
+        let object = value
+            .as_object()
+            .ok_or_else(|| invalid(&item_field, "ext-dimension type must be an object"))?;
+        reject_unknown_fields(
+            object,
+            &["name", "turnover", "accountingFlags"],
+            &format!("{item_field}."),
+        )?;
+        let name = required_string_at(object, "name", &format!("{item_field}.name"))?;
+        if !names.insert(name.to_lowercase()) {
+            return Err(invalid(
+                format!("{item_field}.name"),
+                "ext-dimension type name is duplicated",
+            ));
+        }
+        let turnover = object
+            .get("turnover")
+            .map(|value| {
+                value.as_bool().ok_or_else(|| {
+                    invalid(format!("{item_field}.turnover"), "turnover must be boolean")
+                })
+            })
+            .transpose()?;
+        let accounting_flags = object
+            .get("accountingFlags")
+            .map(|value| parse_predefined_flags(value, &format!("{item_field}.accountingFlags")))
+            .transpose()?;
+        result.push(MetaPredefinedExtDimensionType {
+            name,
+            turnover,
+            accounting_flags,
+        });
+    }
+    Ok(result)
 }
 
 fn parse_collection(
@@ -1573,6 +1831,7 @@ fn host_visible_operation_schema() -> Value {
     let collections = MetaCollection::ALL
         .iter()
         .copied()
+        .filter(|collection| *collection != MetaCollection::PredefinedItems)
         .map(MetaCollection::as_str)
         .collect::<Vec<_>>();
     // One public name can carry several per-kind specs. They are merged rather
@@ -1661,6 +1920,66 @@ fn host_visible_operation_schema() -> Value {
         })
     };
     let elements = || json!({"type": "array", "minItems": 1, "items": element});
+    let predefined_fields = || {
+        json!({
+            "id": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
+            },
+            "name": {"type": "string", "minLength": 1},
+            "code": {"type": "string"},
+            "description": {"type": "string"},
+            "isFolder": {"type": "boolean"},
+            "type": schema_reference("metadataType"),
+            "accountType": {"type": "string", "enum": ["Active", "Passive", "ActivePassive"]},
+            "offBalance": {"type": "boolean"},
+            "order": {"type": "string"},
+            "accountingFlags": {
+                "type": "object",
+                "additionalProperties": {"type": "boolean"},
+            },
+            "extDimensionTypes": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["name"],
+                    "properties": {
+                        "name": {"type": "string", "minLength": 1},
+                        "turnover": {"type": "boolean"},
+                        "accountingFlags": {
+                            "type": "object",
+                            "additionalProperties": {"type": "boolean"},
+                        },
+                    },
+                },
+            },
+            "actionPeriodIsBase": {"type": "boolean"},
+        })
+    };
+    let predefined_operation = |tag: MetaEditOperationTag, update: bool| {
+        json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["op", "collection", "elements"],
+            "properties": {
+                "op": {"type": "string", "enum": [tag.as_str()]},
+                "collection": {"type": "string", "enum": [MetaCollection::PredefinedItems.as_str()]},
+                "elements": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "minProperties": if update { 2 } else { 0 },
+                        "required": if update { json!(["id"]) } else { json!(["id", "name"]) },
+                        "properties": predefined_fields(),
+                    },
+                },
+            },
+        })
+    };
     json!({
         "oneOf": [
             {
@@ -1690,6 +2009,27 @@ fn host_visible_operation_schema() -> Value {
                     "items": {"type": "string", "minLength": 1},
                 }),
             ),
+            predefined_operation(MetaEditOperationTag::Add, false),
+            predefined_operation(MetaEditOperationTag::Update, true),
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["op", "collection", "ids"],
+                "properties": {
+                    "op": {"type": "string", "enum": [MetaEditOperationTag::Remove.as_str()]},
+                    "collection": {"type": "string", "enum": [MetaCollection::PredefinedItems.as_str()]},
+                    "ids": {
+                        "type": "array",
+                        "minItems": 1,
+                        "uniqueItems": true,
+                        "items": {
+                            "type": "string",
+                            "format": "uuid",
+                            "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
+                        },
+                    },
+                },
+            },
             metadata_relation_operation_schema(),
         ],
         "description": "Exactly one typed metadata edit operation. Legal collections, root properties and relations are narrowed by the object kind. The EventSubscription source relation is replace-only and requires at least one logical event source.",
@@ -2622,6 +2962,7 @@ mod tests {
                         synonym: Some("Order".to_string()),
                         support: MetaSupportStatus::Supported,
                         properties: Vec::new(),
+                        predefined_code_type: None,
                         relations: empty_relations(),
                         collections: empty_collections(),
                         diagnostics: Vec::new(),
@@ -2806,6 +3147,7 @@ mod tests {
                     synonym: Some("Order".to_string()),
                     support: MetaSupportStatus::Supported,
                     properties: Vec::new(),
+                    predefined_code_type: None,
                     relations: empty_relations(),
                     collections: empty_collections(),
                     diagnostics: Vec::new(),
@@ -2824,7 +3166,7 @@ mod tests {
             &object(json!({
                 "sourceSet": "main",
                 "metadataPath": "Document.Order",
-                "sections": ["roles", "subscriptions", "functionalOptions", "predefinedItems"],
+                "sections": ["roles", "subscriptions", "functionalOptions"],
                 "limit": 50,
             })),
             &coordinator_context(),
@@ -2885,7 +3227,21 @@ mod tests {
                 total: 1,
                 returned: 1,
                 truncated: false,
-                items: vec![json!({"name": "Kept"})],
+                items: vec![crate::domain::metadata::MetaPredefinedItemData {
+                    id: "00000000-0000-0000-0000-000000000001".to_string(),
+                    parent_id: None,
+                    name: "Kept".to_string(),
+                    code: String::new(),
+                    description: String::new(),
+                    is_folder: None,
+                    r#type: None,
+                    account_type: None,
+                    off_balance: None,
+                    order: None,
+                    accounting_flags: None,
+                    ext_dimension_types: None,
+                    action_period_is_base: None,
+                }],
             }),
             ..Default::default()
         };
@@ -2912,6 +3268,37 @@ mod tests {
     }
 
     #[test]
+    fn coordinator_info_enrichment_error_changes_validation_status_to_failed() {
+        let (mut ports, state) = info_ports();
+        ports.related.diagnostics.push(
+            MetaDiagnostic::error(
+                MetaDiagnosticCode::ValidationFailed,
+                "predefined data has the wrong owner type",
+            )
+            .with_field("predefinedItems"),
+        );
+        let outcome = invoke(
+            MetadataOperation::Info,
+            &ports,
+            &object(json!({
+                "sourceSet": "main",
+                "metadataPath": "Document.Order",
+                "sections": ["roles"],
+            })),
+            &coordinator_context(),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+
+        assert!(!outcome.adapter.ok);
+        assert_eq!(
+            outcome.data.as_ref().unwrap()["validation"]["status"],
+            "failed"
+        );
+        assert_eq!(state.lock().unwrap().calls, ["read", "validate", "related"]);
+    }
+
+    #[test]
     fn coordinator_validation_failure_blocks_publication_and_returns_typed_diagnostics() {
         let diagnostic = MetaDiagnostic::error(
             MetaDiagnosticCode::ValidationFailed,
@@ -2924,9 +3311,7 @@ mod tests {
         let (ports, state) = fake_ports(
             failed_validation,
             true,
-            Ok(MetaPublishReport {
-                data: mutation_data(true),
-            }),
+            Ok(MetaPublishReport::source_only(mutation_data(true))),
         );
 
         let outcome = invoke(
@@ -2953,9 +3338,7 @@ mod tests {
         let (ports, state) = fake_ports(
             passed_validation(),
             true,
-            Ok(MetaPublishReport {
-                data: mutation_data(true),
-            }),
+            Ok(MetaPublishReport::source_only(mutation_data(true))),
         );
 
         let outcome = invoke(
@@ -2982,13 +3365,10 @@ mod tests {
 
     #[test]
     fn coordinator_apply_publishes_once_and_emits_only_an_actual_metadata_event() {
-        let (ports, state) = fake_ports(
-            passed_validation(),
-            true,
-            Ok(MetaPublishReport {
-                data: mutation_data(true),
-            }),
-        );
+        let mut publication = MetaPublishReport::source_only(mutation_data(true));
+        publication.warnings =
+            vec!["publication_cleanup_incomplete: metadata mutation was committed".to_string()];
+        let (ports, state) = fake_ports(passed_validation(), true, Ok(publication));
 
         let outcome = invoke(
             MetadataOperation::Add,
@@ -3004,6 +3384,8 @@ mod tests {
         assert_eq!(outcome.events.len(), 1);
         assert_eq!(outcome.events[0].kind, DomainEventKind::MetadataChanged);
         assert!(outcome.projected_events.is_empty());
+        assert_eq!(outcome.adapter.warnings.len(), 1);
+        assert!(outcome.adapter.warnings[0].contains("publication_cleanup_incomplete"));
         let state = state.lock().unwrap();
         assert_eq!(state.calls, ["prepare", "validate", "publish"]);
         assert_eq!(state.publish_calls, 1);
@@ -3014,9 +3396,7 @@ mod tests {
         let (ports, _state) = fake_ports(
             passed_validation(),
             true,
-            Ok(MetaPublishReport {
-                data: mutation_data(true),
-            }),
+            Ok(MetaPublishReport::source_only(mutation_data(true))),
         );
         let cache_events = Arc::clone(&ports.cache_events);
         let spec = ToolSpec {
@@ -3054,9 +3434,7 @@ mod tests {
         let (mut ports, state) = fake_ports(
             passed_validation(),
             true,
-            Ok(MetaPublishReport {
-                data: mutation_data(true),
-            }),
+            Ok(MetaPublishReport::source_only(mutation_data(true))),
         );
         ports.cancel_after_validation = Some(cancellation.clone());
 
@@ -3082,9 +3460,7 @@ mod tests {
         let (ports, state) = fake_ports(
             passed_validation(),
             true,
-            Ok(MetaPublishReport {
-                data: mutation_data(false),
-            }),
+            Ok(MetaPublishReport::source_only(mutation_data(false))),
         );
 
         let outcome = invoke(
@@ -3211,18 +3587,18 @@ mod tests {
             ("add", &["op", "collection", "elements"][..]),
             ("update", &["op", "collection", "elements"][..]),
             ("remove", &["op", "collection", "names"][..]),
+            ("add", &["op", "collection", "elements"][..]),
+            ("update", &["op", "collection", "elements"][..]),
+            ("remove", &["op", "collection", "ids"][..]),
             ("editRelations", &["op", "relation", "mode", "targets"][..]),
         ];
 
         assert_eq!(variants.len(), expected.len());
-        for (op, required) in expected {
-            let variant = variants
-                .iter()
-                .map(|variant| resolve_operation_variant(&root, variant))
-                .find(|variant| variant["properties"]["op"]["enum"] == json!([op]))
-                .unwrap_or_else(|| panic!("missing {op} operation schema variant"));
+        for (variant, (op, required)) in variants.iter().zip(expected) {
+            let variant = resolve_operation_variant(&root, variant);
             assert_eq!(variant["type"], json!("object"));
             assert_eq!(variant["additionalProperties"], json!(false));
+            assert_eq!(variant["properties"]["op"]["enum"], json!([op]));
             assert_eq!(variant["required"], json!(required));
         }
     }
@@ -3236,7 +3612,9 @@ mod tests {
             "meta.add and meta.edit share one operation algebra"
         );
         let operations = edit["oneOf"].as_array().expect("closed operation union");
-        assert_eq!(operations.len(), MetaEditOperationTag::ALL.len());
+        // Пять тегов, но `add`/`update`/`remove` дополнительно публикуют
+        // predefined-ветки со своим составом полей.
+        assert_eq!(operations.len(), MetaEditOperationTag::ALL.len() + 3);
         assert_eq!(
             operations
                 .iter()
@@ -3883,6 +4261,9 @@ mod tests {
                 | MetaCollection::Forms
                 | MetaCollection::Templates
                 | MetaCollection::Commands => {}
+                MetaCollection::PredefinedItems => {
+                    unreachable!("predefined items use their own typed element schema")
+                }
             }
             Value::Object(element)
         }
@@ -3920,6 +4301,9 @@ mod tests {
                 | MetaCollection::Forms
                 | MetaCollection::Templates
                 | MetaCollection::Commands => {}
+                MetaCollection::PredefinedItems => {
+                    unreachable!("predefined items use their own typed element schema")
+                }
             }
             Value::Object(element)
         }
@@ -3958,7 +4342,27 @@ mod tests {
                 .iter()
                 .flat_map(|collection| {
                     let collection_name = collection.as_str();
-                    [
+                    if *collection == MetaCollection::PredefinedItems {
+                        let id = "c7d2e6fc-3824-4b56-b4be-ae6be4944c0e";
+                        return vec![
+                            json!({
+                                "op": "add",
+                                "collection": collection_name,
+                                "elements": [{"id": id, "name": "Element"}],
+                            }),
+                            json!({
+                                "op": "update",
+                                "collection": collection_name,
+                                "elements": [{"id": id, "description": "Updated"}],
+                            }),
+                            json!({
+                                "op": "remove",
+                                "collection": collection_name,
+                                "ids": [id],
+                            }),
+                        ];
+                    }
+                    vec![
                         json!({
                             "op": "add",
                             "collection": collection_name,
@@ -5064,6 +5468,9 @@ mod tests {
         assert!(request.dry_run);
 
         for collection in MetaCollection::ALL {
+            if *collection == MetaCollection::PredefinedItems {
+                continue;
+            }
             let collection_name = collection.as_str();
             let metadata_path = match collection {
                 MetaCollection::Dimensions | MetaCollection::Resources => {
@@ -5076,6 +5483,7 @@ mod tests {
                 | MetaCollection::Forms
                 | MetaCollection::Templates
                 | MetaCollection::Commands => "Document.Order",
+                MetaCollection::PredefinedItems => unreachable!("filtered above"),
             };
             for (op, payload) in [
                 ("add", json!({"elements": [{"name": "Element"}]})),
@@ -5177,6 +5585,149 @@ mod tests {
                 ));
             }
         }
+    }
+
+    #[test]
+    fn predefined_items_schema_and_parser_use_uuid_typed_collection_contract() {
+        let schema = metadata_input_schema(MetadataOperation::Edit);
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let valid = json!({
+            "sourceSet": "main",
+            "metadataPath": "Catalog.Items",
+            "operations": [{
+                "op": "add",
+                "collection": "predefinedItems",
+                "elements": [{
+                    "id": "a7d2e6fc-3824-4b56-b4be-ae6be4944c0e",
+                    "name": "Main",
+                    "isFolder": false
+                }]
+            }]
+        });
+        assert!(validator.is_valid(&valid));
+        let MetadataRequest::Edit(request) =
+            parse_metadata_request(MetadataOperation::Edit, valid.as_object().unwrap()).unwrap()
+        else {
+            panic!("expected edit request")
+        };
+        assert!(matches!(
+            &request.operations[0],
+            MetaEditOperation::AddPredefinedItems { elements }
+                if elements[0].id == "a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"
+        ));
+
+        let clear_structural_fields = json!({
+            "sourceSet": "main",
+            "metadataPath": "ChartOfAccounts.Items",
+            "operations": [{
+                "op": "update",
+                "collection": "predefinedItems",
+                "elements": [{
+                    "id": "a7d2e6fc-3824-4b56-b4be-ae6be4944c0e",
+                    "accountingFlags": {},
+                    "extDimensionTypes": []
+                }]
+            }]
+        });
+        assert!(validator.is_valid(&clear_structural_fields));
+        let MetadataRequest::Edit(clear_request) = parse_metadata_request(
+            MetadataOperation::Edit,
+            clear_structural_fields.as_object().unwrap(),
+        )
+        .unwrap() else {
+            panic!("expected edit request")
+        };
+        assert!(matches!(
+            &clear_request.operations[0],
+            MetaEditOperation::UpdatePredefinedItems { elements }
+                if elements[0]
+                    .fields
+                    .accounting_flags
+                    .as_ref()
+                    .is_some_and(BTreeMap::is_empty)
+                    && elements[0]
+                        .fields
+                        .ext_dimension_types
+                        .as_ref()
+                        .is_some_and(Vec::is_empty)
+        ));
+
+        for invalid_operation in [
+            json!({
+                "op": "remove",
+                "collection": "predefinedItems",
+                "names": ["Main"]
+            }),
+            json!({
+                "op": "remove",
+                "collection": "predefinedItems",
+                "ids": ["not-a-uuid"]
+            }),
+            json!({
+                "op": "remove",
+                "collection": "predefinedItems",
+                "ids": ["a7d2e6fc38244b56b4beae6be4944c0e"]
+            }),
+            json!({
+                "op": "add",
+                "collection": "predefinedItems",
+                "scope": {"tabularSection": "Rows"},
+                "elements": [{
+                    "id": "a7d2e6fc-3824-4b56-b4be-ae6be4944c0e",
+                    "name": "Main"
+                }]
+            }),
+        ] {
+            let call = json!({
+                "sourceSet": "main",
+                "metadataPath": "Catalog.Items",
+                "operations": [invalid_operation]
+            });
+            assert!(!validator.is_valid(&call));
+            assert!(
+                parse_metadata_request(MetadataOperation::Edit, call.as_object().unwrap(),)
+                    .is_err()
+            );
+        }
+        let wrong_owner_field = json!({
+            "sourceSet": "main",
+            "metadataPath": "Catalog.Items",
+            "operations": [{
+                "op": "add",
+                "collection": "predefinedItems",
+                "elements": [{
+                    "id": "a7d2e6fc-3824-4b56-b4be-ae6be4944c0e",
+                    "name": "Main",
+                    "accountType": "Active"
+                }]
+            }]
+        });
+        assert!(validator.is_valid(&wrong_owner_field));
+        assert!(parse_metadata_request(
+            MetadataOperation::Edit,
+            wrong_owner_field.as_object().unwrap(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn predefined_info_section_rejects_an_unsupported_owner_kind() {
+        let error = parse_metadata_request(
+            MetadataOperation::Info,
+            json!({
+                "sourceSet": "main",
+                "metadataPath": "Document.Order",
+                "sections": ["predefinedItems"]
+            })
+            .as_object()
+            .unwrap(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.diagnostics[0].code,
+            MetaDiagnosticCode::UnsupportedKind
+        );
+        assert_eq!(error.diagnostics[0].field.as_deref(), Some("sections"));
     }
 
     #[test]

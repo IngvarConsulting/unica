@@ -31,9 +31,10 @@ pub(super) fn check_meta_object_integrity(
             MetaObjectRequirement::AnyCollectionNonEmpty(collections) => {
                 meta_info_child(object, "ChildObjects").is_some_and(|children| {
                     collections.iter().any(|collection| {
-                        children.children().any(|child| {
-                            child.is_element()
-                                && child.tag_name().name() == collection_element_name(*collection)
+                        collection_element_name(*collection).is_some_and(|element_name| {
+                            children.children().any(|child| {
+                                child.is_element() && child.tag_name().name() == element_name
+                            })
                         })
                     })
                 })
@@ -59,17 +60,20 @@ pub(super) fn check_meta_object_integrity(
     Ok(())
 }
 
-fn collection_element_name(collection: MetaCollection) -> &'static str {
+fn collection_element_name(collection: MetaCollection) -> Option<&'static str> {
     match collection {
-        MetaCollection::Dimensions => "Dimension",
-        MetaCollection::Resources => "Resource",
-        MetaCollection::Attributes => "Attribute",
-        MetaCollection::TabularSections => "TabularSection",
-        MetaCollection::EnumValues => "EnumValue",
-        MetaCollection::Columns => "Column",
-        MetaCollection::Forms => "Form",
-        MetaCollection::Templates => "Template",
-        MetaCollection::Commands => "Command",
+        MetaCollection::Dimensions => Some("Dimension"),
+        MetaCollection::Resources => Some("Resource"),
+        MetaCollection::Attributes => Some("Attribute"),
+        MetaCollection::TabularSections => Some("TabularSection"),
+        MetaCollection::EnumValues => Some("EnumValue"),
+        MetaCollection::Columns => Some("Column"),
+        MetaCollection::Forms => Some("Form"),
+        MetaCollection::Templates => Some("Template"),
+        MetaCollection::Commands => Some("Command"),
+        // Эта коллекция хранится в отдельном `Predefined.xml`, а проверка
+        // ADR-0030 читает только итоговый дескриптор объекта.
+        MetaCollection::PredefinedItems => None,
     }
 }
 

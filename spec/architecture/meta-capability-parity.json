@@ -5,7 +5,7 @@
       "ChartOfAccounts"
     ],
     "status": "removed",
-    "removalReason": "Creating ChartOfAccounts AccountingFlag child objects has no typed collection; create the chart without these flags and add them in Designer before relying on accounting behavior."
+    "removalReason": "Creating root ChartOfAccounts AccountingFlag child objects still has no typed collection; predefinedItems.elements[].accountingFlags configures only one predefined account and is not equivalent to the retired root capability."
   },
   {
     "legacyKey": "actionPeriod",
@@ -809,7 +809,7 @@
       "DefinedType"
     ],
     "status": "removed",
-    "removalReason": "DefinedType and ChartOfCharacteristicTypes valueTypes are compound Type nodes with no root typed operation; configure the type set in Designer."
+    "removalReason": "DefinedType and ChartOfCharacteristicTypes root valueTypes still have no typed operation; predefinedItems.elements[].type configures only one predefined characteristic item and is not equivalent to the retired root capability."
   },
   {
     "legacyKey": "values",

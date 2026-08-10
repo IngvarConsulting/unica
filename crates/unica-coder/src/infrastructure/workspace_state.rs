@@ -130,6 +130,24 @@ impl WorkspaceStateRepository {
         unreachable!("bounded cache state retry loop always returns")
     }
 
+    /// Stage the cache report in a caller-owned source transaction.
+    ///
+    /// Mutations that already own their publication transaction use this path
+    /// so source bytes and cache state either commit or roll back together.
+    /// A cache preimage conflict is surfaced to that transaction's caller; it
+    /// is intentionally not retried after source publication.
+    pub(crate) fn stage_report_in_transaction(
+        &self,
+        transaction: &mut CompileTransaction,
+        context: &WorkspaceContext,
+        events: &[DomainEvent],
+        dry_run: bool,
+        cache_access: CacheAccess,
+    ) -> Result<CacheReport, String> {
+        self.plan_report(context, events, dry_run, cache_access)?
+            .stage(transaction)
+    }
+
     fn plan_report(
         &self,
         context: &WorkspaceContext,

@@ -1,6 +1,6 @@
 """The tool-surface ledger must describe the registry that actually ships.
 
-A hand-maintained inventory of 71 tools drifts on the first merge, so the
+A hand-maintained tool inventory drifts on the first merge, so the
 mechanical columns are generated and this guard fails when they stop matching
 the built binary or when a tool has no review entry.
 """
@@ -88,6 +88,98 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
     def test_xdto_group_has_a_human_domain_title(self) -> None:
         self.assertEqual(self.module.GROUP_TITLES.get("xdto"), "xdto — пакеты XDTO")
 
+    def test_role_surface_contains_one_logical_typed_edit_contract(self) -> None:
+        expected = {
+            "unica.role.compile",
+            "unica.role.edit",
+            "unica.role.info",
+            "unica.role.validate",
+        }
+        published = {
+            tool["name"]: tool
+            for tool in self.tools
+            if tool["name"].startswith("unica.role.")
+        }
+        reviewed = {name for name in self.review if name.startswith("unica.role.")}
+
+        self.assertEqual(set(published), expected)
+        self.assertEqual(reviewed, expected)
+        review = self.review["unica.role.edit"]
+        self.assertEqual(review["scope"], "in")
+        self.assertEqual(review["result"]["contract"], "typed")
+        for token in (
+            "metadataPath",
+            "changed",
+            "effects",
+            "operationIndex",
+            "validation",
+            "diagnostics",
+        ):
+            with self.subTest(result_token=token):
+                self.assertIn(token, review["result"]["now"])
+
+        schema = published["unica.role.edit"]["inputSchema"]
+        self.assertEqual(schema["type"], "object")
+        self.assertFalse(schema["additionalProperties"])
+        self.assertEqual(
+            set(schema["properties"]),
+            {"sourceSet", "metadataPath", "operations", "dryRun"},
+        )
+        self.assertEqual(
+            schema["required"], ["sourceSet", "metadataPath", "operations"]
+        )
+        self.assertIs(schema["properties"]["dryRun"]["default"], True)
+        self.assertEqual(
+            schema["properties"]["metadataPath"]["pattern"],
+            r"^Role\.[\p{L}_][\p{L}\p{N}_]*$",
+        )
+
+        operations = schema["properties"]["operations"]
+        self.assertEqual(operations["type"], "array")
+        self.assertEqual(operations["minItems"], 1)
+        operation = operations["items"]
+        self.assertEqual(operation["type"], "object")
+        self.assertFalse(operation["additionalProperties"])
+        self.assertEqual(
+            set(operation["properties"]), {"op", "objectName", "right", "value"}
+        )
+        self.assertEqual(
+            operation["required"], ["op", "objectName", "right", "value"]
+        )
+        self.assertEqual(operation["properties"]["op"], {"const": "setRight"})
+        self.assertEqual(operation["properties"]["value"]["type"], "boolean")
+        self.assertTrue(operation["properties"]["right"]["enum"])
+
+        encoded = json.dumps(schema, ensure_ascii=False)
+        for legacy in ("RightsPath", "Path", "ObjectName", "Name", "Value"):
+            with self.subTest(legacy=legacy):
+                self.assertNotIn(f'"{legacy}"', encoded)
+
+        output = published["unica.role.edit"]["outputSchema"]
+        self.assertEqual(output["type"], "object")
+        self.assertFalse(output["additionalProperties"])
+        data = output["properties"]["data"]
+        self.assertEqual(data["type"], "object")
+        self.assertFalse(data["additionalProperties"])
+        self.assertEqual(
+            set(data["properties"]),
+            {"metadataPath", "changed", "effects", "validation", "diagnostics"},
+        )
+        self.assertEqual(
+            data["required"],
+            ["metadataPath", "changed", "effects", "validation", "diagnostics"],
+        )
+        effect = data["properties"]["effects"]["items"]
+        self.assertFalse(effect["additionalProperties"])
+        self.assertEqual(effect["properties"]["operation"], {"const": "setRight"})
+        self.assertEqual(
+            effect["properties"]["action"]["enum"], ["setRight", "removeObject"]
+        )
+        self.assertEqual(
+            data["properties"]["validation"]["properties"]["status"]["enum"],
+            ["passed", "failed"],
+        )
+
     def test_meta_surface_is_exactly_four_typed_operation_contracts(self) -> None:
         expected = {
             "unica.meta.info",
@@ -168,6 +260,80 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
             values["properties"]["HierarchyType"]["enum"],
             ["HierarchyFoldersAndItems", "HierarchyOfItems"],
         )
+
+        self.assertNotIn(
+            "upsert-predefined",
+            json.dumps(operation_schemas, ensure_ascii=False),
+        )
+        predefined = [
+            variant
+            for variant in variants
+            if variant["properties"].get("collection", {}).get("enum")
+            == ["predefinedItems"]
+        ]
+        self.assertEqual(len(predefined), 3)
+        self.assertEqual(
+            {variant["properties"]["op"]["enum"][0] for variant in predefined},
+            {"add", "update", "remove"},
+        )
+        expected_item_fields = {
+            "id",
+            "name",
+            "code",
+            "description",
+            "isFolder",
+            "type",
+            "accountType",
+            "offBalance",
+            "order",
+            "accountingFlags",
+            "extDimensionTypes",
+            "actionPeriodIsBase",
+        }
+        for variant in predefined:
+            tag = variant["properties"]["op"]["enum"][0]
+            with self.subTest(predefined_operation=tag):
+                self.assertFalse(variant["additionalProperties"])
+                self.assertNotIn("scope", variant["properties"])
+                self.assertNotIn("names", variant["properties"])
+                if tag == "remove":
+                    self.assertEqual(
+                        set(variant["properties"]), {"op", "collection", "ids"}
+                    )
+                    self.assertEqual(
+                        variant["required"], ["op", "collection", "ids"]
+                    )
+                    ids = variant["properties"]["ids"]
+                    self.assertEqual(ids["items"]["format"], "uuid")
+                    self.assertTrue(ids["uniqueItems"])
+                    continue
+
+                self.assertEqual(
+                    set(variant["properties"]), {"op", "collection", "elements"}
+                )
+                self.assertEqual(
+                    variant["required"], ["op", "collection", "elements"]
+                )
+                item = variant["properties"]["elements"]["items"]
+                self.assertFalse(item["additionalProperties"])
+                self.assertEqual(set(item["properties"]), expected_item_fields)
+                self.assertEqual(item["properties"]["id"]["format"], "uuid")
+                if tag == "add":
+                    self.assertEqual(item["required"], ["id", "name"])
+                else:
+                    self.assertEqual(item["required"], ["id"])
+                    self.assertEqual(item["minProperties"], 2)
+
+        generic_collection_branches = [
+            variant
+            for variant in variants
+            if "collection" in variant["properties"] and variant not in predefined
+        ]
+        self.assertTrue(generic_collection_branches)
+        for variant in generic_collection_branches:
+            self.assertNotIn(
+                "predefinedItems", variant["properties"]["collection"]["enum"]
+            )
 
     def test_every_review_entry_states_a_contract_and_scenarios(self) -> None:
         for name, entry in sorted(self.review.items()):

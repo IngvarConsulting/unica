@@ -28,7 +28,7 @@ use crate::infrastructure::platform_xml_source_targets::{
 use crate::infrastructure::support_guard::{
     evaluate_resolved_support_guard, ResolvedSupportGuardCheck,
 };
-use roxmltree::Document;
+use roxmltree::{Document, Node};
 use serde_json::{Map as JsonMap, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -659,6 +659,7 @@ pub(super) struct TypedChildFileMutation {
 #[derive(Debug, Default)]
 pub(super) struct TypedChildResourcePlan {
     pub(super) file_mutations: Vec<TypedChildFileMutation>,
+    pub(super) absent_path_guards: Vec<PathBuf>,
     pub(super) exact_file_guards: Vec<(PathBuf, Vec<u8>)>,
     pub(super) directory_guards: Vec<(
         PathBuf,
@@ -669,6 +670,7 @@ pub(super) struct TypedChildResourcePlan {
     pub(super) validation_resources: Vec<MetadataResourceImage>,
     pub(super) validation_footprints: Vec<MetadataChildFootprintEvidence>,
     pub(super) relation_dependencies: Vec<TypedRelationDependency>,
+    pub(super) expected_post_images: Vec<(PathBuf, Vec<u8>)>,
 }
 
 #[derive(Debug, Default)]
@@ -814,6 +816,80 @@ pub(super) fn build_typed_operation_post_image(
         operations,
         &xml,
     )?;
+    // Вид вне закрытого набора по-прежнему пропускает проверки, которым нужен
+    // typed-профиль (ADR-0030); жёстко он требуется только предопределённым
+    // данным ниже.
+    let owner_kind = MetadataKind::parse(&object_kind).ok();
+    // Разрешение набора исходников нужно только companion-writer-у
+    // `Ext/Predefined.xml`; правка, не касающаяся предопределённых данных и
+    // `CodeType`, не обязана его требовать.
+    let planned_predefined =
+        if super::predefined::descriptor_edit_requires_predefined_planning(operations) {
+            let owner_kind = owner_kind.ok_or_else(|| {
+                MetaFailure::from(
+                    typed_diagnostic(
+                        MetaDiagnosticCode::UnsupportedKind,
+                        format!("metadata kind `{object_kind}` has no typed operation profile"),
+                        None,
+                    )
+                    .with_metadata_path(target.clone()),
+                )
+            })?;
+            let source_root = crate::infrastructure::source_roots::resolve_named_source_set(
+                context,
+                dependency_scope.source_set,
+            )
+            .map_err(|_| {
+                MetaFailure::from(
+                    typed_diagnostic(
+                        MetaDiagnosticCode::ProviderUnavailable,
+                        "metadata source set cannot be resolved for predefined data",
+                        None,
+                    )
+                    .with_metadata_path(target.clone()),
+                )
+            })?
+            .path;
+            super::predefined::plan_predefined_resource_after_descriptor_edit(
+                &source_root,
+                descriptor_path,
+                target,
+                owner_kind,
+                &normalized_preimage,
+                &xml,
+                operations,
+            )?
+        } else {
+            super::predefined::PlannedPredefinedResource {
+                resources: TypedChildResourcePlan::default(),
+                effects: Vec::new(),
+            }
+        };
+    let predefined_resources = planned_predefined.resources;
+    child_resources
+        .file_mutations
+        .extend(predefined_resources.file_mutations);
+    child_resources
+        .absent_path_guards
+        .extend(predefined_resources.absent_path_guards);
+    child_resources
+        .exact_file_guards
+        .extend(predefined_resources.exact_file_guards);
+    child_resources
+        .directory_guards
+        .extend(predefined_resources.directory_guards);
+    child_resources
+        .publication_plan
+        .extend(predefined_resources.publication_plan);
+    child_resources
+        .validation_resources
+        .extend(predefined_resources.validation_resources);
+    child_resources
+        .validation_footprints
+        .extend(predefined_resources.validation_footprints);
+    child_resources
+        .expected_post_images
+        .extend(predefined_resources.expected_post_images);
     child_resources.relation_dependencies =
         resolve_typed_relation_dependencies(&dependency_scope, target, operations, context, &xml)?;
     if target.segments().next() == Some("EventSubscription") {
@@ -849,8 +925,8 @@ pub(super) fn build_typed_operation_post_image(
     // единственного измерения через `remove` вместе с `add` остаётся законной,
     // потому что промежуточная пустота здесь не наблюдается (ADR-0030). Вид,
     // которого нет в закрытом наборе, условий не имеет и проверку пропускает.
-    if let Ok(object_kind) = MetadataKind::parse(&object_kind) {
-        check_meta_object_integrity(object_kind, xml.as_bytes()).map_err(|diagnostic| {
+    if let Some(owner_kind) = owner_kind {
+        check_meta_object_integrity(owner_kind, xml.as_bytes()).map_err(|diagnostic| {
             MetaFailure::from(diagnostic.with_metadata_path(target.clone()))
         })?;
     }
@@ -861,10 +937,13 @@ pub(super) fn build_typed_operation_post_image(
     } else {
         meta_edit_preserve_source_format(&xml, source_format)
     };
+    let mut effects = applied.effects;
+    effects.extend(planned_predefined.effects);
+    effects.sort_by_key(|effect| effect.operation_index);
     Ok(TypedOperationPostImage {
         descriptor,
         child_resources,
-        effects: applied.effects,
+        effects,
     })
 }
 
@@ -1995,6 +2074,9 @@ fn typed_child_logical_address(
         MetaCollection::Forms => "Form",
         MetaCollection::Templates => "Template",
         MetaCollection::Commands => "Command",
+        MetaCollection::PredefinedItems => {
+            unreachable!("predefined items are not descriptor child objects")
+        }
         _ => unreachable!(),
     };
     MetadataAddress::parse(
@@ -2051,6 +2133,9 @@ const TYPED_CHILD_TREE_MAX_DEPTH: usize = 64;
 const TYPED_CHILD_TREE_MAX_ENTRIES: usize = 20_000;
 const TYPED_CHILD_TREE_MAX_FILES: usize = 20_000;
 const TYPED_CHILD_TREE_MAX_BYTES: usize = 64 * 1024 * 1024;
+const META_V8_NS: &str = "http://v8.1c.ru/8.1/data/core";
+const META_MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
+const META_PREDEFINED_NS: &str = "http://v8.1c.ru/8.3/xcf/predef";
 
 #[derive(Default)]
 struct TypedChildTreeBudget {
@@ -3160,6 +3245,14 @@ pub(crate) fn apply_typed_operations(
     let mut working = xml_text.clone();
     let mut counts = MetaEditCounts::default();
     for (operation_index, operation) in operations.iter().enumerate() {
+        if matches!(
+            operation,
+            MetaEditOperation::AddPredefinedItems { .. }
+                | MetaEditOperation::UpdatePredefinedItems { .. }
+                | MetaEditOperation::RemovePredefinedItems { .. }
+        ) {
+            continue;
+        }
         // Capture before applying, but let the writer own invalid-operation
         // diagnostics. A missing remove/update target must stay target_not_found
         // rather than being replaced by an effect-projection failure.
@@ -3243,6 +3336,9 @@ fn typed_operation_name(operation: &MetaEditOperation) -> &'static str {
         MetaEditOperation::Update { .. } => "update",
         MetaEditOperation::Remove { .. } => "remove",
         MetaEditOperation::EditRelations { .. } => "editRelations",
+        MetaEditOperation::AddPredefinedItems { .. } => "add",
+        MetaEditOperation::UpdatePredefinedItems { .. } => "update",
+        MetaEditOperation::RemovePredefinedItems { .. } => "remove",
     }
 }
 
@@ -3275,6 +3371,11 @@ fn typed_operation_target(xml: &str, operation: &MetaEditOperation) -> Result<St
         },
         MetaEditOperation::EditRelations { relation, .. } => {
             format!("{base}.relations.{}", relation.as_str())
+        }
+        MetaEditOperation::AddPredefinedItems { .. }
+        | MetaEditOperation::UpdatePredefinedItems { .. }
+        | MetaEditOperation::RemovePredefinedItems { .. } => {
+            format!("{base}.collections.predefinedItems")
         }
     })
 }
@@ -3430,6 +3531,15 @@ fn typed_operation_effect_value(
                     Some("relation"),
                 )
             })?
+        }
+        MetaEditOperation::AddPredefinedItems { .. }
+        | MetaEditOperation::UpdatePredefinedItems { .. }
+        | MetaEditOperation::RemovePredefinedItems { .. } => {
+            return Err(typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "predefined effects are projected by the predefined resource writer",
+                None,
+            ))
         }
     };
     Ok(Some(value))
@@ -3613,6 +3723,11 @@ fn apply_typed_operation(
             apply_typed_relations(xml_text, *relation, *mode, targets)?;
             counts.modified += 1;
         }
+        MetaEditOperation::AddPredefinedItems { .. }
+        | MetaEditOperation::UpdatePredefinedItems { .. }
+        | MetaEditOperation::RemovePredefinedItems { .. } => {
+            unreachable!("predefined operations are applied by their companion-resource writer")
+        }
     }
     Ok(())
 }
@@ -3775,6 +3890,9 @@ fn collection_tag(collection: MetaCollection) -> &'static str {
         MetaCollection::Forms => "Form",
         MetaCollection::Templates => "Template",
         MetaCollection::Commands => "Command",
+        MetaCollection::PredefinedItems => {
+            unreachable!("predefined items are not descriptor child objects")
+        }
     }
 }
 
@@ -3936,6 +4054,9 @@ fn render_typed_element(
             &element.name,
             &mut next_uuid,
         ),
+        MetaCollection::PredefinedItems => {
+            unreachable!("predefined items are rendered in Ext/Predefined.xml")
+        }
     }
     let mut rendered = lines.join("\n");
     if collection == MetaCollection::Forms {
@@ -4409,12 +4530,31 @@ pub(super) fn parse_typed_metadata_type(
             Some("type"),
         )
     })?;
-    let qualifier_text = |container: &str, name: &str| -> Option<&str> {
-        document
-            .descendants()
-            .find(|node| node.is_element() && node.tag_name().name() == container)
-            .and_then(|node| meta_info_child(node, name))
-            .and_then(|node| node.text())
+    let wrapper = document.root_element();
+    let fragment_root = wrapper.children().find(|node| node.is_element());
+    let type_container = match fragment_root {
+        Some(node) if typed_type_container(node, "Properties") => node
+            .children()
+            .find(|child| typed_type_container(*child, "Type")),
+        Some(node) if typed_type_container(node, "Type") => Some(node),
+        _ => Some(wrapper),
+    }
+    .ok_or_else(|| {
+        typed_diagnostic(
+            MetaDiagnosticCode::ValidationFailed,
+            "metadata properties have no direct Type element",
+            Some("type"),
+        )
+    })?;
+    let qualifier_text = |container: &str, name: &str| -> Option<String> {
+        typed_direct_v8_child(type_container, container)
+            .and_then(|node| typed_direct_v8_child(node, name))
+            .map(|node| {
+                node.children()
+                    .filter(|child| child.is_text())
+                    .filter_map(|child| child.text())
+                    .collect()
+            })
     };
     let qualifier_u32 = |container: &str, name: &str| -> Result<u32, MetaDiagnostic> {
         qualifier_text(container, name).map_or(Ok(0), |value| {
@@ -4428,12 +4568,17 @@ pub(super) fn parse_typed_metadata_type(
         })
     };
     let mut variants = Vec::new();
-    for node in document.descendants().filter(|node| {
+    for node in type_container.children().filter(|node| {
         node.is_element()
-            && node.tag_name().namespace() == Some("http://v8.1c.ru/8.1/data/core")
+            && node.tag_name().namespace() == Some(META_V8_NS)
             && matches!(node.tag_name().name(), "Type" | "TypeSet")
     }) {
-        let value = node.text().unwrap_or_default();
+        let value = node
+            .children()
+            .filter(|child| child.is_text())
+            .filter_map(|child| child.text())
+            .collect::<String>();
+        let value = value.as_str();
         let variant = if node.tag_name().name() == "TypeSet" {
             let raw = value.strip_prefix("cfg:").unwrap_or(value);
             MetadataTypeVariant::DefinedType {
@@ -4450,7 +4595,9 @@ pub(super) fn parse_typed_metadata_type(
             match value {
                 "xs:string" => MetadataTypeVariant::String {
                     length: qualifier_u32("StringQualifiers", "Length")?,
-                    allowed_length: match qualifier_text("StringQualifiers", "AllowedLength") {
+                    allowed_length: match qualifier_text("StringQualifiers", "AllowedLength")
+                        .as_deref()
+                    {
                         Some("Fixed") => StringLengthMode::Fixed,
                         Some("Variable") | None => StringLengthMode::Variable,
                         Some(_) => {
@@ -4465,7 +4612,7 @@ pub(super) fn parse_typed_metadata_type(
                 "xs:decimal" => MetadataTypeVariant::Number {
                     digits: qualifier_u32("NumberQualifiers", "Digits")?,
                     fraction: qualifier_u32("NumberQualifiers", "FractionDigits")?,
-                    sign: match qualifier_text("NumberQualifiers", "AllowedSign") {
+                    sign: match qualifier_text("NumberQualifiers", "AllowedSign").as_deref() {
                         Some("Nonnegative") => NumberSign::NonNegative,
                         Some("Any") | None => NumberSign::Any,
                         Some(_) => {
@@ -4480,7 +4627,7 @@ pub(super) fn parse_typed_metadata_type(
                 "xs:boolean" => MetadataTypeVariant::Boolean,
                 "v8:UUID" => MetadataTypeVariant::Uuid,
                 "xs:dateTime" => MetadataTypeVariant::Date {
-                    fractions: match qualifier_text("DateQualifiers", "DateFractions") {
+                    fractions: match qualifier_text("DateQualifiers", "DateFractions").as_deref() {
                         Some("Date") => DateFractions::Date,
                         Some("Time") => DateFractions::Time,
                         Some("DateTime") | None => DateFractions::DateTime,
@@ -4495,7 +4642,9 @@ pub(super) fn parse_typed_metadata_type(
                 },
                 "xs:binary" => MetadataTypeVariant::BinaryData {
                     length: qualifier_u32("BinaryDataQualifiers", "Length")?,
-                    allowed_length: match qualifier_text("BinaryDataQualifiers", "AllowedLength") {
+                    allowed_length: match qualifier_text("BinaryDataQualifiers", "AllowedLength")
+                        .as_deref()
+                    {
                         Some("Fixed") => StringLengthMode::Fixed,
                         Some("Variable") | None => StringLengthMode::Variable,
                         Some(_) => {
@@ -4553,6 +4702,26 @@ pub(super) fn parse_typed_metadata_type(
         diagnostic.field = Some("type".to_string());
         diagnostic
     })
+}
+
+fn typed_direct_v8_child<'a, 'input>(
+    parent: Node<'a, 'input>,
+    name: &str,
+) -> Option<Node<'a, 'input>> {
+    parent.children().find(|child| {
+        child.is_element()
+            && child.tag_name().namespace() == Some(META_V8_NS)
+            && child.tag_name().name() == name
+    })
+}
+
+fn typed_type_container(node: Node<'_, '_>, name: &str) -> bool {
+    node.is_element()
+        && node.tag_name().name() == name
+        && matches!(
+            node.tag_name().namespace(),
+            None | Some(META_MD_NS | META_PREDEFINED_NS)
+        )
 }
 
 fn remove_typed_element(
@@ -5010,6 +5179,65 @@ mod tests {
                 "writer fill parser disagrees at timezone {timezone}: {result:?}"
             );
         }
+    }
+
+    #[test]
+    fn typed_metadata_type_uses_the_complete_direct_text_value() {
+        let parsed =
+            parse_typed_metadata_type("<v8:Type>xs:str<!--future-separator-->ing</v8:Type>")
+                .unwrap();
+        assert!(matches!(
+            parsed.variants.as_slice(),
+            [MetadataTypeVariant::String { .. }]
+        ));
+
+        let invalid =
+            parse_typed_metadata_type("<v8:Type>xs:string<!--future-suffix-->garbage</v8:Type>");
+        assert!(invalid.is_err());
+
+        let qualified = parse_typed_metadata_type(concat!(
+            "<v8:Type>xs:string</v8:Type>",
+            "<v8:StringQualifiers>",
+            "<v8:Length>1<!--future-separator-->0</v8:Length>",
+            "<v8:AllowedLength>Fi<!--future-separator-->xed</v8:AllowedLength>",
+            "</v8:StringQualifiers>"
+        ))
+        .unwrap();
+        assert!(matches!(
+            qualified.variants.as_slice(),
+            [MetadataTypeVariant::String {
+                length: 10,
+                allowed_length: StringLengthMode::Fixed,
+            }]
+        ));
+
+        let invalid_qualifier = parse_typed_metadata_type(concat!(
+            "<v8:Type>xs:string</v8:Type>",
+            "<v8:StringQualifiers>",
+            "<v8:Length>10<!--future-suffix-->garbage</v8:Length>",
+            "</v8:StringQualifiers>"
+        ));
+        assert!(invalid_qualifier.is_err());
+
+        let scoped = parse_typed_metadata_type(concat!(
+            "<Properties>",
+            "<future:Type xmlns:future=\"urn:future\"><v8:Type>xs:boolean</v8:Type></future:Type>",
+            "<Type>",
+            "<v8:Type>xs:string</v8:Type>",
+            "<future:Extension xmlns:future=\"urn:future\">",
+            "<v8:Type>xs:boolean</v8:Type>",
+            "<v8:StringQualifiers><v8:Length>99</v8:Length></v8:StringQualifiers>",
+            "</future:Extension>",
+            "</Type></Properties>"
+        ))
+        .unwrap();
+        assert!(matches!(
+            scoped.variants.as_slice(),
+            [MetadataTypeVariant::String {
+                length: 0,
+                allowed_length: StringLengthMode::Variable,
+            }]
+        ));
     }
 
     #[test]

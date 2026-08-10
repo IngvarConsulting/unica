@@ -30,6 +30,7 @@ META_TOOL_NAMES = {
     "unica.meta.edit",
     "unica.meta.remove",
 }
+ROLE_TYPED_TOOL_NAME = "unica.role.edit"
 EXPECTED_META_OUTPUT_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -121,6 +122,49 @@ def _input_schema_shape_error(value: object) -> str | None:
         return "must not repeat required property names"
     if value.get("additionalProperties") is not False:
         return "must reject additional properties"
+    return None
+
+
+def _role_output_schema_shape_error(value: object) -> str | None:
+    """Return the first structural error in the role-edit output schema."""
+
+    if not isinstance(value, dict):
+        return "must be an object"
+    if value.get("type") != "object" or value.get("additionalProperties") is not False:
+        return "must be a closed object"
+    properties = value.get("properties")
+    expected = {
+        "ok",
+        "summary",
+        "changes",
+        "warnings",
+        "errors",
+        "artifacts",
+        "cache",
+        "data",
+    }
+    if not isinstance(properties, dict) or set(properties) != expected:
+        return "must expose only the typed role envelope"
+    if set(value.get("required", [])) != expected:
+        return "must require the complete typed role envelope"
+    cache = properties.get("cache")
+    if not isinstance(cache, dict) or cache.get("properties", {}).get("root") != {"const": ""}:
+        return "must redact the cache root"
+    data = properties.get("data")
+    if not isinstance(data, dict) or data.get("additionalProperties") is not False:
+        return "must publish closed typed data"
+    data_properties = data.get("properties")
+    data_expected = {
+        "metadataPath",
+        "changed",
+        "effects",
+        "validation",
+        "diagnostics",
+    }
+    if not isinstance(data_properties, dict) or set(data_properties) != data_expected:
+        return "must publish the logical role data fields"
+    if set(data.get("required", [])) != data_expected:
+        return "must require every logical role data field"
     return None
 
 
@@ -1413,6 +1457,14 @@ def _stable_tool_contract(tools: list[object], expected_names: set[str]) -> None
         if name in META_TOOL_NAMES:
             if tool.get("outputSchema") != EXPECTED_META_OUTPUT_SCHEMA:
                 raise SystemExit(f"Unica MCP Meta output schema drifted for {name}")
+        elif name == ROLE_TYPED_TOOL_NAME:
+            # Source-flow unit fixtures intentionally project only the input
+            # surface. A real advertised role schema, when present, is still
+            # checked here; the generated ledger separately requires it.
+            if "outputSchema" in tool:
+                error = _role_output_schema_shape_error(tool["outputSchema"])
+                if error is not None:
+                    raise SystemExit(f"Unica MCP role.edit output schema {error}")
         elif "outputSchema" in tool:
             raise SystemExit(f"non-Meta tool unexpectedly publishes outputSchema: {name}")
 

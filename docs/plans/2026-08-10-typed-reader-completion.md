@@ -45,7 +45,7 @@ lifecycle, Python 3.12 architecture guards and GitHub Actions.
 - Produces: one finalizer that returns `typed_result_missing:` before
   `typed_result_textual:` for an otherwise successful `Read + Typed` outcome.
 
-- [x] Add a table test proving all 73 tools map one-to-one to the ledger's four
+- [x] Add a table test proving every registered tool maps one-to-one to the ledger's four
   result values and every `mutating=false` tool maps to `Read`.
 - [x] Run the table test and observe failure because the executable categories
   do not exist.

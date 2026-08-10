@@ -76,6 +76,7 @@ mod edit;
 mod format_contract;
 mod info;
 mod integrity_check;
+mod predefined;
 mod publisher;
 mod remove;
 mod template_catalog;
