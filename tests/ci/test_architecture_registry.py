@@ -1559,6 +1559,25 @@ class ReaderInvocationContractTests(unittest.TestCase):
         self.assertIn("INV-MCP-PREVIEW-MUTATION-ONLY", checklist)
         self.assertNotIn(rule, checklist)
 
+    def test_building_blocks_validate_before_deriving_invocation_mode(self) -> None:
+        building_blocks = (
+            REPO_ROOT / "spec" / "architecture" / "building-blocks.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            "проверяет аргументы, выводит `InvocationMode`",
+            building_blocks,
+        )
+        self.assertIn("Читатель не принимает `dryRun`", building_blocks)
+        self.assertIn("`ToolExecution`", building_blocks)
+        self.assertIn("`ResultContract`", building_blocks)
+        self.assertNotIn(
+            "разрешает `dryRun`, проверяет аргументы",
+            building_blocks,
+        )
+        self.assertNotIn("признак мутации", building_blocks)
+        self.assertNotIn("Сегодня таких две", building_blocks)
+
     def test_checklist_cites_only_records_that_exist(self) -> None:
         """The change checklist attributes each item to a registry record.
 
