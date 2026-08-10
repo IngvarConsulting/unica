@@ -1,5 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
 <MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema">
-  <ChartOfAccounts>
+  <ChartOfAccounts uuid="99999999-9999-4999-8999-999999999999">
     <Properties><Name>Accounting</Name></Properties>
     <ChildObjects>
       <AccountingFlag><Properties><Name>Currency</Name><Type><v8:Type>xs:boolean</v8:Type></Type></Properties></AccountingFlag>

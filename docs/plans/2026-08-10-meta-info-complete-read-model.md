@@ -9,7 +9,7 @@
 
 ## Цель
 
-Сделать `unica.meta.info` полной типизированной read-model для 23 поддерживаемых видов метаданных: отделить чтение свойств и типов от разрешений writer-а, вернуть подтверждённые составные структуры Constant, DefinedType, CalculationRegister, ScheduledJob, HTTPService и WebService, а затем закрепить полноту исполняемым профилем и fixture-матрицей.
+Сделать `unica.meta.info` полной типизированной read-model для 23 поддерживаемых видов метаданных: отделить чтение свойств и типов от разрешений writer-а, вернуть подтверждённые составные структуры Constant, DefinedType, ChartOfCharacteristicTypes, ChartOfCalculationTypes, DocumentJournal, CalculationRegister, ScheduledJob, HTTPService и WebService, а затем закрепить полноту исполняемым профилем и fixture-матрицей.
 
 ## Архитектура
 
@@ -25,11 +25,11 @@ Rust, `serde`, `roxmltree`, существующий typed MCP envelope, Rust un
 
 - создать `crates/unica-coder/src/infrastructure/native_operations/meta/info_projection_tests.rs`;
 - изменить `crates/unica-coder/src/infrastructure/native_operations/meta/mod.rs` только для подключения тестового модуля;
-- добавить узкие XML fixtures в `tests/fixtures/platform_8_3_27/meta_info/edge/` для Constant, DefinedType, ScheduledJob, CalculationRegister, HTTPService и WebService.
+- добавить узкие XML fixtures в `tests/fixtures/platform_8_3_27/meta_info/edge/` для Constant, DefinedType, DocumentJournal, ScheduledJob, CalculationRegister, HTTPService и WebService; ChartOfCharacteristicTypes и ChartOfCalculationTypes закрепить канонической fixture-матрицей.
 
 **Шаги:**
 
-1. Для каждого fixture вызвать реальную проекцию descriptor image и проверить вручную выписанные JSON-литералы: `details.type`, `details.method`, целую schedule-тройку, HTTP templates/methods, Web operations/parameters и expanded QName.
+1. Для каждого fixture вызвать реальную проекцию descriptor image и проверить вручную выписанные JSON-литералы: `details.type`, `details.baseCalculationTypes`, `details.registeredDocuments`, `details.method`, целую schedule-тройку, HTTP templates/methods, Web operations/parameters и expanded QName.
 2. Отдельным regression-тестом сохранить уже доставленный ADR-0042 контракт: `v8:UUID` наблюдается в `collections.*[].type` с `mutationCapability: editable`.
 3. Запустить `cargo test -p unica-coder info_projection_tests -- --nocapture`; убедиться, что тесты компилируются после минимального объявления ожидаемой публичной формы и падают именно на отсутствующих значениях, до реализации parser-а.
 4. Не ослаблять ожидания под текущий результат: ожидаемые значения выводятся из hand-checked fixtures, а не из template/emitter helper-а.

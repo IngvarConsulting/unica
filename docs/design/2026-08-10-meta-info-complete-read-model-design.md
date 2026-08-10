@@ -236,11 +236,14 @@ fixture-классификатор доказал, что остальные с�
 | --- | --- |
 | `Constant` | `type` |
 | `DefinedType` | `type` |
+| `ChartOfCharacteristicTypes` | `type` |
+| `ChartOfCalculationTypes` | `baseCalculationTypes` |
+| `DocumentJournal` | `registeredDocuments` |
 | `CalculationRegister` | логически связанная тройка `schedule` |
 | `ScheduledJob` | логическая ссылка `method` |
 | `HTTPService` | `urlTemplates[].methods[]` |
 | `WebService` | `xdtoPackages`, `operations[].parameters[]` |
-| остальные 17 видов | `{}` допустим только если fixture-профиль доказал отсутствие дополнительных вложенных фактов; обнаруженный факт добавляет поле соответствующему варианту |
+| остальные 14 видов | `{}` допустим только если fixture-профиль доказал отсутствие дополнительных вложенных фактов; обнаруженный факт добавляет поле соответствующему варианту |
 
 Пустой `details` означает отсутствие дополнительных kind-specific полей у
 данного варианта, а не пустоту неизвестного XML. Fixture-классификатор всё равно
@@ -356,13 +359,17 @@ read-side алгебру значения и применимость, если 
 
 Минимальные regression fixtures из #293 дополняются 11 edge fixtures: восемью
 hand-checked feature-примерами и тремя route-coverage примерами для Catalog,
-DocumentJournal и Enum. Вместе они подтверждают следующие группы:
+DocumentJournal и Enum. Вместе с канонической матрицей они подтверждают
+следующие группы:
 
 | Fixture | Доказательство |
 | --- | --- |
 | `Catalog` | owners, hierarchy/code/presentation, forms, opt-in predefined items |
 | `Constant` | полный наблюдаемый `type` |
 | `DefinedType` | type set и квалификаторы |
+| `ChartOfCharacteristicTypes` | наблюдаемый `type` |
+| `ChartOfCalculationTypes` | `baseCalculationTypes` |
+| `DocumentJournal` | `registeredDocuments` и колонки |
 | `EventSubscription` | `Source`, `Event`, `Handler` без wire QName |
 | `HTTPService` | root URL, URL templates, methods, verbs, handlers |
 | `WebService` | namespace, packages, operations, parameters, directions, return types |

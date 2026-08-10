@@ -194,6 +194,43 @@ fn web_service_details_preserve_packages_operations_and_expanded_qnames() {
 }
 
 #[test]
+fn manifest_edge_fixtures_keep_the_canonical_platform_wrapper() {
+    let manifest: serde_json::Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/platform_8_3_27/meta_info/manifest.json"
+    )))
+    .unwrap();
+    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/platform_8_3_27/meta_info");
+
+    for entry in manifest["kinds"].as_array().unwrap() {
+        for relative in entry
+            .get("edgeFixtures")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let path = fixture_root.join(relative.as_str().unwrap());
+            let xml = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"),
+                "{} must preserve the canonical XML declaration",
+                path.display()
+            );
+            let document = roxmltree::Document::parse(&xml).unwrap();
+            let object = document.root_element().first_element_child().unwrap();
+            assert!(
+                object
+                    .attribute("uuid")
+                    .is_some_and(|uuid| !uuid.is_empty()),
+                "{} must preserve the canonical metadata-object UUID",
+                path.display()
+            );
+        }
+    }
+}
+
+#[test]
 fn manifest_and_profile_cover_every_platform_gated_metadata_kind() {
     let manifest: serde_json::Value = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
