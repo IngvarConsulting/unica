@@ -203,6 +203,7 @@ Unica. Каждая запись формулирует одно нормати�
   машинным идентификатором.
 - **Decision:** ADR-0035
 - **Check:** `ci-test` — `crates/unica-coder/src/application/meta_info_surface_tests.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/application/meta_add_surface_tests.rs`
 - **Scope:** source, runtime
 
 ### INV-MCP-XDTO-LOGICAL-TARGET — XDTO-пакет выбирается логическим адресом
