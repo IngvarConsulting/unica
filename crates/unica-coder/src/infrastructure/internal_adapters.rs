@@ -7,9 +7,12 @@ use crate::domain::operational_config::OperationalConfig;
 use crate::domain::project_sources::{config_dump_info_xml_kind, ConfigDumpInfoXmlKind};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
+use crate::infrastructure::diagnostics_jsonl::{
+    DiagnosticsJsonlParser, MAX_DIAGNOSTICS_JSONL_LINE_BYTES,
+};
 use crate::infrastructure::platform::filesystem::path_lock_identity;
 use crate::infrastructure::platform::{
-    ensure_truncation_diagnostics, ManagedChild, ManagedCommand, ManagedOutput,
+    ensure_truncation_diagnostics, ManagedChild, ManagedCommand, ManagedLineOutput, ManagedOutput,
 };
 use crate::infrastructure::plugin_runtime::{find_plugin_root, value_to_cli_string};
 use crate::infrastructure::redaction::{is_secret_key, redactor};
@@ -48,8 +51,54 @@ pub struct ProcessOutput {
     pub stdout_truncated: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct ProcessStreamOutput {
+    pub status_success: bool,
+    pub status: String,
+    pub stderr: String,
+    pub timed_out: bool,
+    pub cancelled: bool,
+    pub line_error: Option<(usize, String)>,
+}
+
 pub trait ProcessRunner {
     fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String>;
+
+    fn run_streaming(
+        &self,
+        command: &ProcessCommand,
+        max_line_bytes: usize,
+        on_line: &mut dyn FnMut(usize, &[u8]),
+    ) -> Result<ProcessStreamOutput, String> {
+        let output = self.run(command)?;
+        let mut line_error = None;
+        let logical_line_count = output.stdout.lines().count();
+        for (index, bytes) in output
+            .stdout
+            .as_bytes()
+            .split(|byte| *byte == b'\n')
+            .enumerate()
+        {
+            if bytes.is_empty() && index + 1 == logical_line_count + 1 {
+                continue;
+            }
+            if bytes.len() > max_line_bytes {
+                line_error.get_or_insert_with(|| {
+                    (index + 1, "line exceeds configured byte limit".to_string())
+                });
+            } else {
+                on_line(index + 1, bytes);
+            }
+        }
+        Ok(ProcessStreamOutput {
+            status_success: output.status_success,
+            status: output.status,
+            stderr: output.stderr,
+            timed_out: output.timed_out,
+            cancelled: output.cancelled,
+            line_error,
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -89,7 +138,6 @@ pub struct CliAdapter<'a> {
     label: &'static str,
     runner: &'a dyn ProcessRunner,
     process_timeout: Duration,
-    report_timeout_seconds: bool,
 }
 
 pub struct RuntimeAdapter<'a> {
@@ -158,7 +206,6 @@ impl<'a> CliAdapter<'a> {
             label,
             runner: &SYSTEM_PROCESS_RUNNER,
             process_timeout: DEFAULT_PROCESS_TIMEOUT,
-            report_timeout_seconds: false,
         }
     }
 
@@ -174,14 +221,7 @@ impl<'a> CliAdapter<'a> {
             label,
             runner,
             process_timeout: DEFAULT_PROCESS_TIMEOUT,
-            report_timeout_seconds: false,
         }
-    }
-
-    fn with_process_timeout(mut self, timeout: Duration) -> Self {
-        self.process_timeout = timeout;
-        self.report_timeout_seconds = true;
-        self
     }
 
     #[allow(dead_code)]
@@ -289,11 +329,7 @@ impl<'a> CliAdapter<'a> {
             warnings: if ok {
                 Vec::new()
             } else if output.timed_out {
-                vec![if self.report_timeout_seconds {
-                    process_timeout_error(self.label, process_timeout)
-                } else {
-                    format!("internal {} adapter timed out", self.label)
-                }]
+                vec![format!("internal {} adapter timed out", self.label)]
             } else {
                 vec![format!(
                     "internal {} adapter exited with status {}",
@@ -302,12 +338,6 @@ impl<'a> CliAdapter<'a> {
             },
             errors: if ok {
                 Vec::new()
-            } else if output.timed_out && self.report_timeout_seconds {
-                let mut errors = vec![process_timeout_error(self.label, process_timeout)];
-                if !output.stderr.trim().is_empty() {
-                    errors.push(output.stderr.trim().to_string());
-                }
-                errors
             } else if output.stderr.trim().is_empty() && output.timed_out {
                 vec![process_timeout_error(self.label, process_timeout)]
             } else {
@@ -1575,29 +1605,14 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
             _ => None,
         };
         if tool_name == "unica.code.diagnostics" && diagnostics_mode(args) == "analyze" {
-            let cli_args = diagnostics_analyze_args(args);
-            let process_timeout = diagnostics_analyze_timeout(args, operational_config)?;
-            let outcome = CliAdapter::with_runner(
-                "bsl-analyzer",
-                &["analyze"],
-                "code analysis",
-                self.process_runner,
-            )
-            .with_process_timeout(process_timeout)
-            .invoke_cancellable(
+            return self.invoke_diagnostics_analyze(
                 tool_name,
-                &cli_args,
+                args,
                 context,
                 dry_run,
-                false,
+                operational_config,
                 cancellation,
-            )?;
-            if dry_run {
-                return Ok(BslAnalyzerOutcome::plain(outcome));
-            }
-            return Ok(BslAnalyzerOutcome::plain(diagnostics_analyze_outcome(
-                tool_name, &cli_args, outcome,
-            )));
+            );
         }
 
         let plugin_root = find_plugin_root(&context.cwd).ok_or_else(|| {
@@ -1713,6 +1728,134 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
             data,
         })
     }
+
+    fn invoke_diagnostics_analyze(
+        &self,
+        tool_name: &str,
+        args: &Map<String, Value>,
+        context: &WorkspaceContext,
+        dry_run: bool,
+        operational_config: Option<&OperationalConfig>,
+        cancellation: &CancellationToken,
+    ) -> Result<BslAnalyzerOutcome, String> {
+        let plugin_root = find_plugin_root(&context.cwd).ok_or_else(|| {
+            "could not locate Unica plugin root for diagnostics adapter lookup".to_string()
+        })?;
+        let source_dir = resolve_source_dir(context, args)?;
+        let normalized_args = diagnostics_analyze_args(args);
+        let process_timeout = diagnostics_analyze_timeout(args, operational_config)?;
+        let bundled_tool = resolve_bundled_tool(&plugin_root, "bsl-analyzer", !dry_run)?;
+        let reported_args = cli_args(&normalized_args, true)?;
+        let execution_args = cli_args(&normalized_args, false)?;
+        let mut reported_command = vec![bundled_tool.program.display().to_string()];
+        reported_command.push("analyze".to_string());
+        reported_command.extend(reported_args);
+
+        if dry_run {
+            return Ok(BslAnalyzerOutcome::plain(AdapterOutcome {
+                ok: true,
+                summary: format!("dry run: {tool_name} would call internal code analysis adapter"),
+                changes: Vec::new(),
+                warnings: bundled_tool.warnings,
+                errors: Vec::new(),
+                artifacts: vec![source_dir.display().to_string()],
+                stdout: None,
+                stderr: None,
+                command: Some(reported_command),
+            }));
+        }
+
+        let mut process_args = vec!["analyze".to_string()];
+        process_args.extend(execution_args);
+        let mut parser = DiagnosticsJsonlParser::new(&source_dir, args.clone())?;
+        let mut consume = |line_number, bytes: &[u8]| parser.push_line(line_number, bytes);
+        let output = self.process_runner.run_streaming(
+            &ProcessCommand {
+                program: bundled_tool.program,
+                args: process_args,
+                cwd: context.cwd.clone(),
+                timeout: Some(process_timeout),
+                cancellation: cancellation.clone(),
+            },
+            MAX_DIAGNOSTICS_JSONL_LINE_BYTES,
+            &mut consume,
+        )?;
+        if let Some((line_number, reason)) = &output.line_error {
+            parser.reject_line(*line_number, reason);
+        }
+        let stderr = redactor(&output.stderr);
+        if output.cancelled {
+            let mut outcome = AdapterOutcome::cancelled(format!("{tool_name} process stopped"));
+            outcome.stderr = (!stderr.trim().is_empty()).then_some(stderr);
+            outcome.command = Some(reported_command);
+            return Ok(BslAnalyzerOutcome::plain(outcome));
+        }
+        if !output.status_success {
+            let timeout_error = output
+                .timed_out
+                .then(|| process_timeout_error("code analysis", Some(process_timeout)));
+            let mut errors = timeout_error.iter().cloned().collect::<Vec<_>>();
+            if !stderr.trim().is_empty() {
+                errors.push(stderr.trim().to_string());
+            }
+            if errors.is_empty() {
+                errors.push(format!(
+                    "internal code analysis adapter exited with status {}",
+                    output.status
+                ));
+            }
+            return Ok(BslAnalyzerOutcome::plain(AdapterOutcome {
+                ok: false,
+                summary: format!("{tool_name} failed through internal code analysis adapter"),
+                changes: Vec::new(),
+                warnings: if output.timed_out {
+                    timeout_error.into_iter().collect()
+                } else {
+                    vec![format!(
+                        "internal code analysis adapter exited with status {}",
+                        output.status
+                    )]
+                },
+                errors,
+                artifacts: vec![source_dir.display().to_string()],
+                stdout: None,
+                stderr: (!stderr.trim().is_empty()).then_some(stderr),
+                command: Some(reported_command),
+            }));
+        }
+
+        let projection = parser.finish();
+        let protocol_error = projection.error.as_ref();
+        let outcome = AdapterOutcome {
+            ok: protocol_error.is_none(),
+            summary: if let Some(error) = protocol_error {
+                format!(
+                    "{tool_name} finished with {} {}",
+                    error.code.trim_end_matches(':'),
+                    if error.retryable {
+                        "retryable state"
+                    } else {
+                        "protocol failure"
+                    }
+                )
+            } else {
+                format!("{tool_name} completed through typed JSONL diagnostics adapter")
+            },
+            changes: Vec::new(),
+            warnings: bundled_tool.warnings,
+            errors: protocol_error
+                .map(|error| vec![format!("{} {}", error.code, error.message)])
+                .unwrap_or_default(),
+            artifacts: vec![source_dir.display().to_string()],
+            stdout: None,
+            stderr: (!stderr.trim().is_empty()).then_some(stderr),
+            command: Some(reported_command),
+        };
+        Ok(BslAnalyzerOutcome {
+            outcome,
+            data: Some(projection.data),
+        })
+    }
 }
 
 /// An analyzer answer plus the typed payload, for the tools whose contract is
@@ -1761,70 +1904,14 @@ fn diagnostics_mode_reports_findings(mode: &str) -> bool {
     matches!(mode, "analyze" | "file" | "workspace")
 }
 
-/// End-of-run marker printed after the analyzer completes its console report.
-const DIAGNOSTICS_ANALYZE_CONSOLE_MARKER: &str = "=== BSL Analyzer Results ===";
-
-const DIAGNOSTICS_ANALYZE_PENDING_HINT: &str =
-    "bsl-analyzer stopped before its diagnostics database finished building, so this run reported no findings; retry the analyze call once the analyzer completes";
-
-fn diagnostics_analyze_outcome(
-    tool_name: &str,
-    cli_args: &Map<String, Value>,
-    outcome: AdapterOutcome,
-) -> AdapterOutcome {
-    if !outcome.ok {
-        return outcome;
-    }
-    let format = cli_args.get("format").and_then(Value::as_str);
-    let stdout = outcome.stdout.as_deref().unwrap_or_default();
-    if !diagnostics_analyze_reply_is_pending(format, stdout) {
-        return outcome;
-    }
-    AdapterOutcome {
-        ok: false,
-        summary: format!(
-            "{tool_name} is pending while bsl-analyzer builds its diagnostics database"
-        ),
-        errors: vec![format!(
-            "{DIAGNOSTICS_PENDING_PREFIX} {DIAGNOSTICS_ANALYZE_PENDING_HINT}"
-        )],
-        ..outcome
-    }
-}
-
-fn diagnostics_analyze_reply_is_pending(format: Option<&str>, stdout: &str) -> bool {
-    match format {
-        Some("jsonl") => !stdout
-            .lines()
-            .rev()
-            .any(diagnostics_analyze_jsonl_line_reports_files),
-        None | Some("console") => !stdout.contains(DIAGNOSTICS_ANALYZE_CONSOLE_MARKER),
-        Some(_) => false,
-    }
-}
-
-fn diagnostics_analyze_jsonl_line_reports_files(line: &str) -> bool {
-    let Ok(Value::Object(event)) = serde_json::from_str::<Value>(line) else {
-        return false;
-    };
-    matches!(
-        event.get("type").and_then(Value::as_str),
-        Some("file" | "done")
-    )
-}
-
 fn diagnostics_analyze_args(args: &Map<String, Value>) -> Map<String, Value> {
     let mut filtered = Map::new();
-    for key in ["cwd", "dryRun", "confirm", "sourceDir", "config", "format"] {
+    for key in ["cwd", "confirm", "sourceDir", "config"] {
         if let Some(value) = args.get(key) {
-            let value = if key == "format" && value.as_str() == Some("json") {
-                json!("jsonl")
-            } else {
-                value.clone()
-            };
-            filtered.insert(key.to_string(), value);
+            filtered.insert(key.to_string(), value.clone());
         }
     }
+    filtered.insert("format".to_string(), json!("jsonl"));
     filtered
 }
 
@@ -2008,6 +2095,24 @@ impl ProcessRunner for SystemProcessRunner {
         })?;
         Ok(map_managed_process_output(output))
     }
+
+    fn run_streaming(
+        &self,
+        command: &ProcessCommand,
+        max_line_bytes: usize,
+        on_line: &mut dyn FnMut(usize, &[u8]),
+    ) -> Result<ProcessStreamOutput, String> {
+        let mut child = ManagedChild::spawn(ManagedCommand {
+            program: command.program.clone(),
+            args: command.args.clone(),
+            cwd: command.cwd.clone(),
+            env: Vec::new(),
+            timeout: command.timeout,
+            cancellation: command.cancellation.clone(),
+        })?;
+        let output = child.wait_for_line_output(max_line_bytes, on_line)?;
+        Ok(map_managed_line_output(output))
+    }
 }
 
 fn map_managed_process_output(mut output: ManagedOutput) -> ProcessOutput {
@@ -2024,6 +2129,17 @@ fn map_managed_process_output(mut output: ManagedOutput) -> ProcessOutput {
     };
     debug_assert!(!(output.timed_out && output.cancelled));
     output
+}
+
+fn map_managed_line_output(output: ManagedLineOutput) -> ProcessStreamOutput {
+    ProcessStreamOutput {
+        status_success: output.status_success,
+        status: output.status,
+        stderr: output.stderr,
+        timed_out: output.timed_out,
+        cancelled: output.cancelled,
+        line_error: output.line_error,
+    }
 }
 
 impl BslMcpRunner for SystemBslMcpRunner {
@@ -4364,19 +4480,46 @@ source-set:
     }
 
     #[test]
+    fn diagnostics_analyze_default_forces_jsonl_and_returns_typed_data() {
+        let context = temp_context("diagnostics-default-jsonl");
+        let runner = RecordingProcessRunner {
+            commands: RefCell::new(Vec::new()),
+            output: analyze_process_output(concat!(
+                "{\"type\":\"start\",\"total_files\":0,\"version\":\"0.2.62\"}\n",
+                "{\"type\":\"done\",\"elapsed_secs\":0.1,\"total_files\":0,",
+                "\"total_diagnostics\":0,\"failed_files\":0}\n",
+            )),
+        };
+
+        let analyzer = BslAnalyzerMcpAdapter::with_process_runner(&runner)
+            .invoke("unica.code.diagnostics", &Map::new(), &context, false)
+            .unwrap();
+
+        assert!(analyzer.outcome.ok, "{:?}", analyzer.outcome);
+        assert!(analyzer.outcome.stdout.is_none());
+        assert_eq!(analyzer.data.as_ref().unwrap()["state"], "completed");
+        assert_eq!(analyzer.data.as_ref().unwrap()["items"], json!([]));
+        assert!(runner.commands.borrow()[0]
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--format", "jsonl"]));
+        cleanup_context(&context);
+    }
+
+    #[test]
     fn diagnostics_analyze_uses_custom_timeout_without_forwarding_cli_argument() {
         let context = temp_context("diagnostics-custom-timeout");
         let runner = RecordingProcessRunner {
             commands: RefCell::new(Vec::new()),
-            output: analyze_process_output(ANALYZE_CONSOLE_REPORT),
+            output: analyze_process_output(ANALYZE_JSONL_EMPTY),
         };
         let mut args = Map::new();
         args.insert("timeoutSeconds".to_string(), json!(900));
 
-        let outcome = BslAnalyzerMcpAdapter::with_process_runner(&runner)
+        let analyzer = BslAnalyzerMcpAdapter::with_process_runner(&runner)
             .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap()
-            .outcome;
+            .unwrap();
+        let outcome = analyzer.outcome;
 
         assert!(outcome.ok);
         let commands = runner.commands.borrow();
@@ -4400,7 +4543,7 @@ source-set:
         let context = temp_context("diagnostics-default-timeout");
         let runner = RecordingProcessRunner {
             commands: RefCell::new(Vec::new()),
-            output: analyze_process_output(ANALYZE_CONSOLE_REPORT),
+            output: analyze_process_output(ANALYZE_JSONL_EMPTY),
         };
         let operational_config =
             crate::infrastructure::operational_config::load_operational_config(
@@ -4440,7 +4583,7 @@ analyze_timeout_seconds = 900
         .unwrap();
         let runner = RecordingProcessRunner {
             commands: RefCell::new(Vec::new()),
-            output: analyze_process_output(ANALYZE_CONSOLE_REPORT),
+            output: analyze_process_output(ANALYZE_JSONL_EMPTY),
         };
         let operational_config =
             crate::infrastructure::operational_config::load_operational_config(
@@ -4485,10 +4628,10 @@ analyze_timeout_seconds = 900
         let mut args = Map::new();
         args.insert("timeoutSeconds".to_string(), json!(900));
 
-        let outcome = BslAnalyzerMcpAdapter::with_process_runner(&runner)
+        let analyzer = BslAnalyzerMcpAdapter::with_process_runner(&runner)
             .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap()
-            .outcome;
+            .unwrap();
+        let outcome = analyzer.outcome;
 
         assert!(!outcome.ok);
         assert!(outcome
@@ -4507,6 +4650,7 @@ analyze_timeout_seconds = 900
             outcome.stderr.as_deref(),
             Some("partial analyzer diagnostics")
         );
+        assert!(analyzer.data.is_none());
         cleanup_context(&context);
     }
 
@@ -4838,10 +4982,11 @@ analyze_timeout_seconds = 900
         cleanup_context(&context);
     }
 
-    /// A finished console report: the analyzer's reporter prints this block only
-    /// once the run is complete, so it stands in for "the analyzer reported".
-    const ANALYZE_CONSOLE_REPORT: &str =
-        "\n=== BSL Analyzer Results ===\nFiles analyzed: 812\nTotal diagnostics: 0\n";
+    const ANALYZE_JSONL_EMPTY: &str = concat!(
+        "{\"type\":\"start\",\"total_files\":0,\"version\":\"0.2.62\"}\n",
+        "{\"type\":\"done\",\"elapsed_secs\":0.1,\"total_files\":0,",
+        "\"total_diagnostics\":0,\"failed_files\":0}\n",
+    );
 
     fn analyze_process_output(stdout: &str) -> ProcessOutput {
         ProcessOutput {
@@ -4855,7 +5000,7 @@ analyze_timeout_seconds = 900
         }
     }
 
-    fn analyze_outcome(format: Option<&str>, stdout: &str, label: &str) -> AdapterOutcome {
+    fn analyze_outcome(format: Option<&str>, stdout: &str, label: &str) -> BslAnalyzerOutcome {
         let context = temp_context(label);
         let runner = FakeProcessRunner {
             output: analyze_process_output(stdout),
@@ -4867,8 +5012,7 @@ analyze_timeout_seconds = 900
 
         let outcome = BslAnalyzerMcpAdapter::with_process_runner(&runner)
             .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap()
-            .outcome;
+            .unwrap();
 
         cleanup_context(&context);
         outcome
@@ -4885,13 +5029,15 @@ analyze_timeout_seconds = 900
             "diagnostics-analyze-pending",
         );
 
-        assert!(!outcome.ok);
-        assert!(outcome.summary.contains("pending"));
+        assert!(!outcome.outcome.ok);
+        assert_eq!(outcome.data.as_ref().unwrap()["state"], "pending");
+        assert!(outcome.outcome.stdout.is_none());
         assert!(outcome
+            .outcome
             .errors
             .iter()
             .any(|error| error.starts_with(DIAGNOSTICS_PENDING_PREFIX)
-                && error.contains("retry the analyze call")));
+                && error.contains("did not report files")));
     }
 
     #[test]
@@ -4905,53 +5051,76 @@ analyze_timeout_seconds = 900
                 "{\"type\":\"start\",\"total_files\":1,\"version\":\"0.2.62\"}\n",
                 "{\"type\":\"file\",\"path\":\"CommonModules/Probe/Ext/Module.bsl\",",
                 "\"diagnostics\":[{\"code\":\"LineLength\",",
-                "\"message\":\"literal {\\\"type\\\":\\\"done\\\"} is not ready for review\"}]}\n",
+                "\"message\":\"literal {\\\"type\\\":\\\"done\\\"} is not ready for review\",",
+                "\"severity\":\"Warning\",\"start_line\":1,\"start_column\":0,",
+                "\"end_line\":1,\"end_column\":1,\"tags\":[]}]}\n",
                 "{\"type\":\"done\",\"elapsed_secs\":0.4,\"total_files\":1,",
                 "\"total_diagnostics\":1,\"failed_files\":0}\n",
             ),
             "diagnostics-analyze-complete",
         );
 
-        assert!(outcome.ok);
-        assert!(outcome.errors.is_empty());
+        assert!(outcome.outcome.ok, "{:?}", outcome.outcome);
+        assert!(outcome.outcome.errors.is_empty());
+        assert!(outcome.outcome.stdout.is_none());
+        assert_eq!(outcome.data.as_ref().unwrap()["itemsTotal"], 1);
     }
 
     #[test]
-    fn diagnostics_analyze_console_report_decides_completion() {
-        // `format` is optional and the analyzer then prints its console report,
-        // whose results block is written only after the run completes.
-        let complete = analyze_outcome(
-            None,
-            ANALYZE_CONSOLE_REPORT,
-            "diagnostics-analyze-console-complete",
-        );
-
-        assert!(complete.ok);
-        assert!(complete.errors.is_empty());
-
-        let pending = analyze_outcome(None, "", "diagnostics-analyze-console-pending");
-
-        assert!(!pending.ok);
-        assert!(pending
-            .errors
-            .iter()
-            .any(|error| error.starts_with(DIAGNOSTICS_PENDING_PREFIX)));
+    fn diagnostics_analyze_format_aliases_have_the_same_typed_result() {
+        let results = [None, Some("json"), Some("jsonl")]
+            .into_iter()
+            .map(|format| {
+                analyze_outcome(
+                    format,
+                    ANALYZE_JSONL_EMPTY,
+                    &format!("diagnostics-analyze-alias-{format:?}"),
+                )
+            })
+            .collect::<Vec<_>>();
+        for result in &results {
+            assert!(result.outcome.ok, "{:?}", result.outcome);
+            assert!(result.outcome.stdout.is_none());
+        }
+        assert_eq!(results[0].data, results[1].data);
+        assert_eq!(results[1].data, results[2].data);
     }
 
     #[test]
-    fn diagnostics_analyze_leaves_an_unknown_format_alone() {
-        // The analyzer accepts only `console` and `jsonl`, so a third format
-        // fails the run long before the readiness check. If one is ever added,
-        // its completion marker is unknown here and a finished run must not be
-        // called pending on the strength of a marker it never prints.
-        let outcome = analyze_outcome(
-            Some("sarif"),
-            "{\"runs\":[]}",
-            "diagnostics-analyze-unknown-format",
-        );
+    fn diagnostics_analyze_parses_more_than_the_legacy_stdout_capture_limit() {
+        let files = 20_000usize;
+        let mut stream =
+            format!("{{\"type\":\"start\",\"total_files\":{files},\"version\":\"0.2.62\"}}\n");
+        for index in 0..files {
+            stream.push_str(&format!(
+                "{{\"type\":\"file\",\"path\":\"Modules/{index}.bsl\",\"diagnostics\":[],\"error\":\"parse failed\"}}\n"
+            ));
+        }
+        stream.push_str(&format!(
+            "{{\"type\":\"done\",\"elapsed_secs\":1.0,\"total_files\":{files},\"total_diagnostics\":0,\"failed_files\":{files}}}\n"
+        ));
+        assert!(stream.len() > 1024 * 1024);
 
-        assert!(outcome.ok);
-        assert!(outcome.errors.is_empty());
+        let result = analyze_outcome(None, &stream, "diagnostics-analyze-large-stream");
+
+        assert!(result.outcome.ok, "{:?}", result.outcome);
+        assert!(result.outcome.stdout.is_none());
+        let data = result.data.unwrap();
+        assert_eq!(data["itemsTotal"], files);
+        assert_eq!(data["itemsReturned"], 200);
+        assert_eq!(data["truncated"], true);
+    }
+
+    #[test]
+    fn diagnostics_analyze_rejects_one_oversized_line_without_publishing_it() {
+        let oversized = "x".repeat(MAX_DIAGNOSTICS_JSONL_LINE_BYTES + 1);
+
+        let result = analyze_outcome(None, &oversized, "diagnostics-analyze-oversized-line");
+
+        assert!(!result.outcome.ok);
+        assert!(result.outcome.stdout.is_none());
+        assert!(result.outcome.errors[0].starts_with("diagnostics_invalid:"));
+        assert_eq!(result.data.unwrap()["state"], "invalid");
     }
 
     #[test]

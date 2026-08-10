@@ -40,6 +40,90 @@ pub struct ToolSpec {
     pub handler: ToolHandler,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolExecution {
+    Read,
+    Mutation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvocationMode {
+    Read,
+    Preview,
+    Apply,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResultContract {
+    Typed,
+    Prose,
+    Partial,
+    Job,
+}
+
+impl ResultContract {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Typed => "typed",
+            Self::Prose => "prose",
+            Self::Partial => "partial",
+            Self::Job => "job",
+        }
+    }
+}
+
+impl ToolSpec {
+    pub const fn execution(self) -> ToolExecution {
+        if self.mutating {
+            ToolExecution::Mutation
+        } else {
+            ToolExecution::Read
+        }
+    }
+
+    pub const fn invocation_mode(self, dry_run: bool) -> InvocationMode {
+        match (self.execution(), dry_run) {
+            (ToolExecution::Read, _) => InvocationMode::Read,
+            (ToolExecution::Mutation, true) => InvocationMode::Preview,
+            (ToolExecution::Mutation, false) => InvocationMode::Apply,
+        }
+    }
+
+    pub fn result_contract(self) -> ResultContract {
+        match self.handler {
+            ToolHandler::RuntimeJob { .. } => ResultContract::Job,
+            ToolHandler::RuntimeAdapter => ResultContract::Partial,
+            ToolHandler::BuildRuntime { .. } => ResultContract::Prose,
+            ToolHandler::NativeOperation { operation, .. }
+                if native_operation_returns_prose(operation) =>
+            {
+                ResultContract::Prose
+            }
+            _ => ResultContract::Typed,
+        }
+    }
+}
+
+fn native_operation_returns_prose(operation: &str) -> bool {
+    matches!(
+        operation,
+        "cf-validate"
+            | "cfe-validate"
+            | "form-compile"
+            | "form-validate"
+            | "dcs-compile"
+            | "dcs-validate"
+            | "mxl-compile"
+            | "mxl-decompile"
+            | "mxl-validate"
+            | "role-compile"
+            | "role-validate"
+            | "subsystem-compile"
+            | "subsystem-validate"
+            | "interface-validate"
+    )
+}
+
 // ToolHandler remains inspectable for surface-contract tests, while the typed
 // metadata operation enum is an application-internal dispatch detail.
 #[allow(private_interfaces)]
@@ -588,6 +672,8 @@ fn call_tool(
         .and_then(Value::as_bool)
         .unwrap_or(spec.mutating);
     tool_contracts::validate_tool_arguments(spec, args, dry_run)?;
+    let invocation_mode = spec.invocation_mode(dry_run);
+    let dry_run = matches!(invocation_mode, InvocationMode::Preview);
     let cwd = args.get("cwd").and_then(Value::as_str).map(PathBuf::from);
     let context = ports.discover_workspace(cwd)?;
     ports.validate_tool_context(spec, args, dry_run, &context)?;
@@ -811,6 +897,11 @@ fn call_tool(
             )?,
         },
     };
+    enforce_result_contract(
+        spec,
+        &handler_outcome.adapter,
+        handler_outcome.data.as_ref(),
+    )?;
     let mut outcome = handler_outcome.adapter;
     let handler_events = handler_outcome.events;
     let projected_events = handler_outcome.projected_events;
@@ -879,6 +970,32 @@ fn call_tool(
         data: handler_outcome.data,
         job: handler_outcome.job,
     })
+}
+
+fn enforce_result_contract(
+    spec: ToolSpec,
+    outcome: &AdapterOutcome,
+    data: Option<&Value>,
+) -> Result<(), String> {
+    if spec.execution() != ToolExecution::Read
+        || spec.result_contract() != ResultContract::Typed
+        || !outcome.ok
+    {
+        return Ok(());
+    }
+    if data.is_none() {
+        return Err(format!(
+            "typed_result_missing: {} completed successfully without typed data",
+            spec.name
+        ));
+    }
+    if outcome.stdout.is_some() {
+        return Err(format!(
+            "typed_result_textual: {} completed successfully with a stdout duplicate",
+            spec.name
+        ));
+    }
+    Ok(())
 }
 
 fn invalid_metadata_arguments_result(failure: metadata::MetaFailure) -> OperationResult {
@@ -2312,7 +2429,7 @@ mod tests {
 
         fn read(
             &self,
-            _request: &CodeIntelligenceReadRequest,
+            request: &CodeIntelligenceReadRequest,
             _context: &crate::domain::code_intelligence::CodeIntelligenceContext,
             _deadline: ProviderDeadline,
             _cancellation: &CancellationToken,
@@ -2326,7 +2443,32 @@ mod tests {
                 artifacts: Vec::new(),
                 stdout: None,
                 stderr: None,
-                data: None,
+                data: Some(match request {
+                    CodeIntelligenceReadRequest::Definition { name, .. } => {
+                        crate::domain::code_intelligence::CodeIntelligenceReadData::Definition(
+                            crate::domain::code_intelligence::CodeDefinitionResult {
+                                name: name.clone(),
+                                definitions: Vec::new(),
+                            },
+                        )
+                    }
+                    CodeIntelligenceReadRequest::Outline { path, .. } => {
+                        crate::domain::code_intelligence::CodeIntelligenceReadData::Outline(
+                            crate::domain::code_intelligence::CodeOutlineResult {
+                                module: path.clone(),
+                                identity: Default::default(),
+                                totals: crate::domain::code_intelligence::CodeOutlineTotals {
+                                    methods: 0,
+                                    exports: 0,
+                                    regions: 0,
+                                    loc: 0,
+                                },
+                                regions: Vec::new(),
+                                methods: Vec::new(),
+                            },
+                        )
+                    }
+                }),
             })
         }
     }
@@ -2408,9 +2550,10 @@ mod tests {
             if self.prepared_code_search_handler && spec.name == "unica.code.search" {
                 return Ok(ports::PreparedToolInvocation {
                     format_guard: None,
-                    handler: Some(ports::HandlerOutcome::plain(AdapterOutcome::ok(
-                        "prepared code search",
-                    ))),
+                    handler: Some(ports::HandlerOutcome::with_data(
+                        AdapterOutcome::ok("prepared code search"),
+                        json!({"sections": []}),
+                    )),
                 });
             }
             Ok(ports::PreparedToolInvocation::empty())
@@ -2476,7 +2619,10 @@ mod tests {
             _cancellation: &CancellationToken,
         ) -> Result<ports::HandlerOutcome, String> {
             self.handler_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(ports::HandlerOutcome::plain(AdapterOutcome::ok("handled")))
+            Ok(ports::HandlerOutcome::with_data(
+                AdapterOutcome::ok("handled"),
+                json!({}),
+            ))
         }
 
         fn invoke_handler_with_operational_config(
@@ -2491,7 +2637,10 @@ mod tests {
             self.handler_calls.fetch_add(1, Ordering::SeqCst);
             *self.observed_analyze_timeout.lock().unwrap() =
                 operational_config.map(|config| config.code_diagnostics().analyze_timeout());
-            Ok(ports::HandlerOutcome::plain(AdapterOutcome::ok("handled")))
+            Ok(ports::HandlerOutcome::with_data(
+                AdapterOutcome::ok("handled"),
+                json!({}),
+            ))
         }
 
         fn cache_report(
@@ -2529,7 +2678,6 @@ mod tests {
         assert_eq!(ports.load_calls.load(Ordering::SeqCst), 0);
 
         let mut analyze = Map::new();
-        analyze.insert("dryRun".to_string(), json!(true));
         analyze.insert("timeoutSeconds".to_string(), json!(900));
         app.call_tool("unica.code.diagnostics", &analyze).unwrap();
         assert_eq!(ports.load_calls.load(Ordering::SeqCst), 1);
@@ -2692,6 +2840,83 @@ mod tests {
         }
         assert!(names.contains(&"unica.standards.explain"));
         assert!(!names.contains(&"unica-coder"));
+    }
+
+    #[test]
+    fn executable_tool_contracts_match_the_architecture_ledger() {
+        let ledger: serde_json::Map<String, Value> = serde_json::from_str(include_str!(
+            "../../../../spec/architecture/tool-surface-review.json"
+        ))
+        .unwrap();
+        let tools = tools();
+
+        assert_eq!(tools.len(), 73);
+        assert_eq!(ledger.len(), tools.len());
+        for tool in tools {
+            let recorded = &ledger[tool.name]["result"]["contract"];
+            assert_eq!(
+                recorded.as_str(),
+                Some(tool.result_contract().as_str()),
+                "{}",
+                tool.name
+            );
+            assert_eq!(
+                tool.execution(),
+                if tool.mutating {
+                    ToolExecution::Mutation
+                } else {
+                    ToolExecution::Read
+                },
+                "{}",
+                tool.name
+            );
+            assert_eq!(
+                tool.invocation_mode(tool.mutating),
+                if tool.mutating {
+                    InvocationMode::Preview
+                } else {
+                    InvocationMode::Read
+                },
+                "{}",
+                tool.name
+            );
+        }
+    }
+
+    #[test]
+    fn typed_reader_postcondition_rejects_missing_or_textual_success() {
+        let typed_reader = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.project.status")
+            .unwrap();
+        let plain_reader = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.build.dump")
+            .unwrap();
+
+        let missing = AdapterOutcome::ok("empty success");
+        assert!(enforce_result_contract(typed_reader, &missing, None)
+            .unwrap_err()
+            .starts_with("typed_result_missing:"));
+
+        let mut textual = AdapterOutcome::ok("textual success");
+        textual.stdout = Some("rendered result".to_string());
+        assert!(
+            enforce_result_contract(typed_reader, &textual, Some(&json!({})))
+                .unwrap_err()
+                .starts_with("typed_result_textual:")
+        );
+        assert!(enforce_result_contract(typed_reader, &textual, None)
+            .unwrap_err()
+            .starts_with("typed_result_missing:"));
+
+        let failed = AdapterOutcome {
+            ok: false,
+            errors: vec!["subject failure".to_string()],
+            ..AdapterOutcome::ok("failed")
+        };
+        assert!(enforce_result_contract(typed_reader, &failed, None).is_ok());
+        assert!(enforce_result_contract(plain_reader, &textual, None).is_ok());
     }
 
     #[test]
@@ -6955,73 +7180,6 @@ mod tests {
     }
 
     #[test]
-    fn public_subsystem_info_dry_run_does_not_read_a_missing_target() {
-        let root = test_workspace_root("unica-subsystem-dry-run-missing-target");
-        let workspace = root.join("workspace");
-        std::fs::create_dir_all(&workspace).unwrap();
-        std::fs::write(workspace.join("v8project.yaml"), "format: DESIGNER\n").unwrap();
-        let missing = workspace.join("src/Subsystems/Продажи.xml");
-        let args = Map::from_iter([
-            (
-                "cwd".to_string(),
-                Value::String(workspace.canonicalize().unwrap().display().to_string()),
-            ),
-            (
-                "SubsystemPath".to_string(),
-                Value::String("src/Subsystems/Продажи.xml".to_string()),
-            ),
-            ("dryRun".to_string(), Value::Bool(true)),
-        ]);
-
-        assert!(!missing.exists());
-        let result = UnicaApplication::new()
-            .call_tool("unica.subsystem.info", &args)
-            .expect("dry-run must not require target or topology bytes");
-
-        assert!(result.ok, "{result:?}");
-        assert!(result.summary.contains("dry run"), "{result:?}");
-        assert!(result.data.is_none(), "{result:?}");
-        assert!(
-            !missing.exists(),
-            "dry-run must not create the missing target"
-        );
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn public_subsystem_validate_dry_run_does_not_read_a_missing_target() {
-        let root = test_workspace_root("unica-subsystem-validate-dry-run-missing-target");
-        let workspace = root.join("workspace");
-        std::fs::create_dir_all(&workspace).unwrap();
-        std::fs::write(workspace.join("v8project.yaml"), "format: DESIGNER\n").unwrap();
-        let missing = workspace.join("Subsystems/Продажи.xml");
-        let args = Map::from_iter([
-            (
-                "cwd".to_string(),
-                Value::String(workspace.canonicalize().unwrap().display().to_string()),
-            ),
-            (
-                "SubsystemPath".to_string(),
-                Value::String("Subsystems/Продажи.xml".to_string()),
-            ),
-            ("dryRun".to_string(), Value::Bool(true)),
-        ]);
-
-        assert!(!missing.exists());
-        let result = UnicaApplication::new()
-            .call_tool("unica.subsystem.validate", &args)
-            .expect("read-only dry-run must not require target bytes");
-
-        assert!(result.ok, "{result:?}");
-        assert!(result.summary.contains("dry run"), "{result:?}");
-        assert!(
-            !missing.exists(),
-            "dry-run must not create the missing target"
-        );
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
     fn public_subsystem_validate_missing_target_is_a_normal_typed_failure() {
         let root = test_workspace_root("unica-subsystem-validate-missing-target");
         let workspace = root.join("workspace");
@@ -7036,7 +7194,6 @@ mod tests {
                 "SubsystemPath".to_string(),
                 Value::String("missing/Subsystem.xml".to_string()),
             ),
-            ("dryRun".to_string(), Value::Bool(false)),
         ]);
 
         let result = UnicaApplication::new()
@@ -8181,8 +8338,6 @@ mod tests {
             let mut args = Map::new();
             args.insert("cwd".into(), Value::String(root.display().to_string()));
             args.insert(alias.into(), Value::String(directory.display().to_string()));
-            args.insert("dryRun".into(), Value::Bool(true));
-
             let result = UnicaApplication::new().call_tool(tool, &args).unwrap();
             assert!(
                 !result.warnings.is_empty(),
@@ -8400,9 +8555,10 @@ mod tests {
                 _cancellation: &CancellationToken,
             ) -> Result<ports::HandlerOutcome, String> {
                 self.record("handler", args);
-                Ok(ports::HandlerOutcome::plain(AdapterOutcome::ok(
-                    "alias recording",
-                )))
+                Ok(ports::HandlerOutcome::with_data(
+                    AdapterOutcome::ok("alias recording"),
+                    json!({}),
+                ))
             }
 
             fn cache_report(
@@ -8432,7 +8588,7 @@ mod tests {
         let cases = [
             (
                 "unica.cf.info",
-                json!({"configPath": "src", "dryRun": false}),
+                json!({"configPath": "src"}),
                 &[("ConfigPath", "configPath")][..],
             ),
             (
@@ -8514,32 +8670,29 @@ mod tests {
     fn native_path_alias_normalization_accepts_equal_or_empty_duplicates_but_rejects_conflicts() {
         let same = json!({
             "ConfigPath": "src",
-            "configPath": "src",
-            "dryRun": false
+            "configPath": "src"
         });
         UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
             outcome: AdapterOutcome::ok("same aliases"),
-            data: None,
+            data: Some(json!({})),
         }))
         .call_tool("unica.cf.info", same.as_object().unwrap())
         .expect("equal path aliases must collapse to one canonical value");
 
         let empty_and_value = json!({
             "ConfigPath": "",
-            "configPath": "src",
-            "dryRun": false
+            "configPath": "src"
         });
         UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
             outcome: AdapterOutcome::ok("empty alias ignored"),
-            data: None,
+            data: Some(json!({})),
         }))
         .call_tool("unica.cf.info", empty_and_value.as_object().unwrap())
         .expect("one non-empty path alias must win over empty aliases");
 
         let conflict = json!({
             "ConfigPath": "src-a",
-            "configPath": "src-b",
-            "dryRun": false
+            "configPath": "src-b"
         });
         let error = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
             outcome: AdapterOutcome::ok("must not run"),

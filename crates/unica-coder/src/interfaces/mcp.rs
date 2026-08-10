@@ -808,8 +808,14 @@ mod tests {
         assert_eq!(schema["additionalProperties"], false);
         assert!(schema["properties"].get("ConfigPath").is_some());
         assert!(schema["properties"].get("cwd").is_some());
-        assert!(schema["properties"].get("dryRun").is_some());
+        assert!(schema["properties"].get("dryRun").is_none());
         assert!(schema["properties"].get("args").is_none());
+
+        let form_edit = listed
+            .iter()
+            .find(|tool| tool.name == "unica.form.edit")
+            .expect("unica.form.edit must be listed");
+        assert!(form_edit.input_schema["properties"].get("dryRun").is_some());
     }
 
     #[tokio::test]

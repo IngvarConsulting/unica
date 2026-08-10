@@ -13,7 +13,7 @@ use crate::infrastructure::rlm_navigation::RlmNavigationAdapter;
 use crate::infrastructure::workspace_index::IndexReadiness;
 use crate::infrastructure::workspace_services::{
     WorkspaceRlmOperation, WorkspaceServiceBslCall, WorkspaceServiceBslOutput,
-    WorkspaceServiceManager,
+    WorkspaceServiceManager, WorkspaceServiceRlmCall,
 };
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
@@ -342,7 +342,12 @@ impl RlmSearchClient for WorkspaceRlmSearchClient {
                 timeout,
                 cancellation,
             )
-            .map(|output| output.result_text)
+            .and_then(|result| match result {
+                WorkspaceServiceRlmCall::Output(output) => Ok(output.result_text),
+                WorkspaceServiceRlmCall::Unready(readiness) => {
+                    Err(format!("RLM index became unavailable: {readiness:?}"))
+                }
+            })
     }
 }
 

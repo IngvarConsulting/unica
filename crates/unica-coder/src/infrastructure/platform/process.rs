@@ -95,6 +95,16 @@ pub struct ManagedOutput {
     pub stderr_truncated: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct ManagedLineOutput {
+    pub status_success: bool,
+    pub status: String,
+    pub stderr: String,
+    pub timed_out: bool,
+    pub cancelled: bool,
+    pub line_error: Option<(usize, String)>,
+}
+
 pub struct ManagedChild {
     child: Child,
     process_tree: ProcessTree,
@@ -228,6 +238,60 @@ impl ManagedChild {
                 callback();
                 last_callback = Instant::now();
             }
+        }
+    }
+
+    pub fn wait_for_line_output<F>(
+        &mut self,
+        max_line_bytes: usize,
+        mut on_line: F,
+    ) -> Result<ManagedLineOutput, String>
+    where
+        F: FnMut(usize, &[u8]),
+    {
+        drop(self.take_stdin());
+        let stdout = start_line_reader(self.take_stdout(), max_line_bytes);
+        let stderr = start_reader(self.take_stderr(), STDERR_CAPTURE_LIMIT);
+        let started = Instant::now();
+        let mut first_line_error = None;
+
+        loop {
+            drain_line_messages(&stdout, &mut on_line, &mut first_line_error, false);
+            if self.cancellation.is_cancelled() {
+                self.terminate_gracefully()?;
+                drain_line_messages(&stdout, &mut on_line, &mut first_line_error, true);
+                return Ok(finish_line_output(
+                    None,
+                    stderr,
+                    false,
+                    true,
+                    first_line_error,
+                ));
+            }
+            if self.timeout.is_some_and(|limit| started.elapsed() >= limit) {
+                self.terminate()?;
+                drain_line_messages(&stdout, &mut on_line, &mut first_line_error, true);
+                return Ok(finish_line_output(
+                    None,
+                    stderr,
+                    true,
+                    false,
+                    first_line_error,
+                ));
+            }
+            if let Some(status) = self.child.try_wait().map_err(process_error)? {
+                self.process_tree.cleanup_after_leader_exit(&mut self.child);
+                self.state = ChildState::Reaped;
+                drain_line_messages(&stdout, &mut on_line, &mut first_line_error, true);
+                return Ok(finish_line_output(
+                    Some(status),
+                    stderr,
+                    false,
+                    false,
+                    first_line_error,
+                ));
+            }
+            thread::sleep(PROCESS_POLL_INTERVAL);
         }
     }
 
@@ -791,6 +855,101 @@ struct CapturedOutput {
     truncated: bool,
 }
 
+enum LineMessage {
+    Line(usize, Vec<u8>),
+    TooLong(usize),
+    ReadError(usize, String),
+}
+
+fn start_line_reader<R>(pipe: Option<R>, max_line_bytes: usize) -> Option<Receiver<LineMessage>>
+where
+    R: Read + Send + 'static,
+{
+    pipe.map(|mut pipe| {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        thread::spawn(move || {
+            let mut chunk = [0_u8; 8192];
+            let mut line = Vec::new();
+            let mut line_number = 1usize;
+            let mut too_long = false;
+            loop {
+                let count = match pipe.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(count) => count,
+                    Err(error) => {
+                        let _ = sender.send(LineMessage::ReadError(line_number, error.to_string()));
+                        return;
+                    }
+                };
+                for byte in &chunk[..count] {
+                    if *byte == b'\n' {
+                        let message = if too_long {
+                            LineMessage::TooLong(line_number)
+                        } else {
+                            LineMessage::Line(line_number, std::mem::take(&mut line))
+                        };
+                        if sender.send(message).is_err() {
+                            return;
+                        }
+                        line.clear();
+                        too_long = false;
+                        line_number = line_number.saturating_add(1);
+                    } else if !too_long {
+                        if line.len() == max_line_bytes {
+                            line.clear();
+                            too_long = true;
+                        } else {
+                            line.push(*byte);
+                        }
+                    }
+                }
+            }
+            if too_long {
+                let _ = sender.send(LineMessage::TooLong(line_number));
+            } else if !line.is_empty() {
+                let _ = sender.send(LineMessage::Line(line_number, line));
+            }
+        });
+        receiver
+    })
+}
+
+fn drain_line_messages<F>(
+    receiver: &Option<Receiver<LineMessage>>,
+    on_line: &mut F,
+    first_error: &mut Option<(usize, String)>,
+    wait_for_end: bool,
+) where
+    F: FnMut(usize, &[u8]),
+{
+    let Some(receiver) = receiver else {
+        return;
+    };
+    loop {
+        let message = if wait_for_end {
+            receiver.recv_timeout(READER_WAIT_LIMIT).ok()
+        } else {
+            receiver.try_recv().ok()
+        };
+        let Some(message) = message else {
+            break;
+        };
+        match message {
+            LineMessage::Line(number, bytes) => on_line(number, &bytes),
+            LineMessage::TooLong(number) => {
+                first_error.get_or_insert_with(|| {
+                    (number, "line exceeds configured byte limit".to_string())
+                });
+            }
+            LineMessage::ReadError(number, error) => {
+                first_error.get_or_insert_with(|| {
+                    (number, format!("failed to read process stdout: {error}"))
+                });
+            }
+        }
+    }
+}
+
 fn start_reader<R>(pipe: Option<R>, limit: usize) -> Option<Receiver<CapturedOutput>>
 where
     R: Read + Send + 'static,
@@ -820,7 +979,14 @@ fn finish_output(
     cancelled: bool,
 ) -> ManagedOutput {
     let stdout = receive_output(stdout);
-    let stderr = receive_output(stderr);
+    let mut stderr = receive_output(stderr);
+    if stderr.truncated {
+        retain_tail(
+            &mut stderr,
+            b"\n[unica: stderr capture truncated; earlier stderr diagnostics omitted]\n",
+            STDERR_CAPTURE_LIMIT,
+        );
+    }
     let mut output = ManagedOutput {
         status_success: status.success() && !stdout.truncated && !cancelled && !timed_out,
         status: status.to_string(),
@@ -833,6 +999,35 @@ fn finish_output(
     };
     ensure_truncation_diagnostics(&mut output);
     output
+}
+
+fn finish_line_output(
+    status: Option<ExitStatus>,
+    stderr: Option<Receiver<CapturedOutput>>,
+    timed_out: bool,
+    cancelled: bool,
+    line_error: Option<(usize, String)>,
+) -> ManagedLineOutput {
+    let stderr = receive_output(stderr);
+    ManagedLineOutput {
+        status_success: status.is_some_and(|status| status.success()) && !timed_out && !cancelled,
+        status: status.map_or_else(
+            || {
+                if cancelled {
+                    "cancelled".to_string()
+                } else if timed_out {
+                    "timeout".to_string()
+                } else {
+                    "termination pending".to_string()
+                }
+            },
+            |status| status.to_string(),
+        ),
+        stderr: String::from_utf8_lossy(&stderr.bytes).into_owned(),
+        timed_out,
+        cancelled,
+        line_error,
+    }
 }
 
 pub(crate) fn ensure_truncation_diagnostics(output: &mut ManagedOutput) {

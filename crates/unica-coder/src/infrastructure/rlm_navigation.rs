@@ -5,9 +5,10 @@ use crate::domain::code_intelligence::{
     CodeIntelligenceReadRequest, ProviderDeadline,
 };
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::redaction::redactor;
 use crate::infrastructure::workspace_index::IndexReadiness;
 use crate::infrastructure::workspace_services::{
-    WorkspaceRlmOperation, WorkspaceServiceManager, WorkspaceServiceRlmOutput,
+    WorkspaceRlmOperation, WorkspaceServiceManager, WorkspaceServiceRlmCall,
 };
 use serde_json::{Map, Value};
 use std::path::Path;
@@ -29,7 +30,7 @@ trait RlmNavigationClient: Send + Sync {
         operation: WorkspaceRlmOperation,
         timeout: Duration,
         cancellation: &CancellationToken,
-    ) -> Result<WorkspaceServiceRlmOutput, String>;
+    ) -> Result<WorkspaceServiceRlmCall, String>;
 }
 
 struct WorkspaceRlmNavigationClient;
@@ -58,7 +59,7 @@ impl RlmNavigationClient for WorkspaceRlmNavigationClient {
         operation: WorkspaceRlmOperation,
         timeout: Duration,
         cancellation: &CancellationToken,
-    ) -> Result<WorkspaceServiceRlmOutput, String> {
+    ) -> Result<WorkspaceServiceRlmCall, String> {
         WorkspaceServiceManager::new().call_rlm_cancellable(
             context,
             source_root,
@@ -148,7 +149,12 @@ impl<'a> RlmNavigationAdapter<'a> {
             timeout,
             cancellation,
         ) {
-            Ok(output) => output,
+            Ok(WorkspaceServiceRlmCall::Output(output)) => output,
+            Ok(WorkspaceServiceRlmCall::Unready(readiness)) => {
+                return Ok(RlmNavigationOutcome::plain(index_unavailable_outcome(
+                    request, readiness,
+                )))
+            }
             Err(error) if error.starts_with(CANCELLED_PREFIX) => {
                 return Ok(RlmNavigationOutcome::plain(cancelled_client_outcome(
                     operation_name,
@@ -323,21 +329,20 @@ fn index_unavailable_outcome(
     readiness: IndexReadiness,
 ) -> AdapterOutcome {
     let tool_name = request.operation_name();
-    let warning = readiness_warning(readiness);
-    if warning.starts_with(CANCELLED_PREFIX) {
+    let message = readiness_message(readiness);
+    if message.starts_with(CANCELLED_PREFIX) {
         return AdapterOutcome::cancelled(
-            warning
+            message
                 .strip_prefix(CANCELLED_PREFIX)
-                .unwrap_or(&warning)
+                .unwrap_or(&message)
                 .trim(),
         );
     }
-    // Definition and object profile still answer something useful without the
-    // index, so an unready index is a warning rather than a typed failure.
     let mut outcome = AdapterOutcome::ok(format!(
         "{tool_name} could not use the persistent RLM MCP API"
     ));
-    outcome.warnings.push(warning);
+    outcome.ok = false;
+    outcome.errors.push(message);
     outcome
 }
 
@@ -348,21 +353,28 @@ fn cancelled_client_outcome(tool_name: &str, error: &str) -> AdapterOutcome {
     ))
 }
 
-fn readiness_warning(readiness: IndexReadiness) -> String {
+fn readiness_message(readiness: IndexReadiness) -> String {
     match readiness {
         IndexReadiness::Ready { .. } => {
             unreachable!("ready indexes are handled before readiness warnings")
         }
-        IndexReadiness::Missing => "rlm index unavailable: index is missing".to_string(),
-        IndexReadiness::Stale { status } => format!("rlm index stale: {status}"),
-        IndexReadiness::Building => "rlm index building".to_string(),
+        IndexReadiness::Missing => "index_unavailable: index is missing".to_string(),
+        IndexReadiness::Stale { status } => {
+            format!(
+                "index_unavailable: index is stale: {}",
+                redactor(status.trim())
+            )
+        }
+        IndexReadiness::Building => {
+            "index_pending: rlm index building; retry once index maintenance completes".to_string()
+        }
         IndexReadiness::Failed(error) | IndexReadiness::Unavailable(error)
             if error.starts_with(CANCELLED_PREFIX) =>
         {
             error
         }
         IndexReadiness::Failed(error) | IndexReadiness::Unavailable(error) => {
-            format!("rlm index unavailable: {error}")
+            format!("index_unavailable: {}", redactor(error.trim()))
         }
     }
 }
@@ -370,7 +382,6 @@ fn readiness_warning(readiness: IndexReadiness) -> String {
 #[cfg(test)]
 mod tests {
     use super::{operation_for_request, RlmNavigationAdapter, RlmNavigationClient};
-    use crate::application::AdapterOutcome;
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::CodeIntelligenceReadData;
     use crate::domain::code_intelligence::{
@@ -380,7 +391,7 @@ mod tests {
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::workspace_index::IndexReadiness;
     use crate::infrastructure::workspace_services::{
-        WorkspaceRlmOperation, WorkspaceServiceRlmOutput,
+        WorkspaceRlmOperation, WorkspaceServiceRlmCall, WorkspaceServiceRlmOutput,
     };
     use serde_json::json;
     use std::cell::RefCell;
@@ -503,7 +514,7 @@ mod tests {
             _operation: WorkspaceRlmOperation,
             _timeout: Duration,
             _cancellation: &CancellationToken,
-        ) -> Result<WorkspaceServiceRlmOutput, String> {
+        ) -> Result<WorkspaceServiceRlmCall, String> {
             panic!("cancellation after readiness must stop before the RLM call")
         }
     }
@@ -530,9 +541,9 @@ mod tests {
             _operation: WorkspaceRlmOperation,
             timeout: Duration,
             _cancellation: &CancellationToken,
-        ) -> Result<WorkspaceServiceRlmOutput, String> {
+        ) -> Result<WorkspaceServiceRlmCall, String> {
             self.timeouts.lock().unwrap().push(timeout);
-            Ok(WorkspaceServiceRlmOutput {
+            Ok(WorkspaceServiceRlmCall::Output(WorkspaceServiceRlmOutput {
                 result_text: json!({
                     "name": "Найти",
                     "definitions": [],
@@ -541,7 +552,7 @@ mod tests {
                 })
                 .to_string(),
                 stderr: String::new(),
-            })
+            }))
         }
     }
 
@@ -569,7 +580,7 @@ mod tests {
             _operation: WorkspaceRlmOperation,
             _timeout: Duration,
             _cancellation: &CancellationToken,
-        ) -> Result<WorkspaceServiceRlmOutput, String> {
+        ) -> Result<WorkspaceServiceRlmCall, String> {
             Err("cancelled: provider call stopped".to_string())
         }
     }
@@ -738,6 +749,35 @@ mod tests {
         readiness: IndexReadiness,
     }
 
+    struct PostExecutionUnreadyClient;
+
+    impl RlmNavigationClient for PostExecutionUnreadyClient {
+        fn readiness(
+            &self,
+            _context: &WorkspaceContext,
+            _source_root: &Path,
+            _timeout: Duration,
+            _cancellation: &CancellationToken,
+        ) -> Result<IndexReadiness, String> {
+            Ok(IndexReadiness::Ready {
+                db_path: PathBuf::from("/tmp/index.db"),
+            })
+        }
+
+        fn call(
+            &self,
+            _context: &WorkspaceContext,
+            _source_root: &Path,
+            _operation: WorkspaceRlmOperation,
+            _timeout: Duration,
+            _cancellation: &CancellationToken,
+        ) -> Result<WorkspaceServiceRlmCall, String> {
+            Ok(WorkspaceServiceRlmCall::Unready(IndexReadiness::Stale {
+                status: "source generation changed".to_string(),
+            }))
+        }
+    }
+
     impl RlmNavigationClient for UnreadyClient {
         fn readiness(
             &self,
@@ -756,7 +796,7 @@ mod tests {
             _operation: WorkspaceRlmOperation,
             _timeout: Duration,
             _cancellation: &CancellationToken,
-        ) -> Result<WorkspaceServiceRlmOutput, String> {
+        ) -> Result<WorkspaceServiceRlmCall, String> {
             panic!("a not-ready index must never reach the RLM call")
         }
     }
@@ -764,7 +804,7 @@ mod tests {
     fn unready_index_outcome(
         request: &CodeIntelligenceReadRequest,
         readiness: IndexReadiness,
-    ) -> AdapterOutcome {
+    ) -> super::RlmNavigationOutcome {
         RlmNavigationAdapter::with_client(&UnreadyClient { readiness })
             .invoke_resolved_cancellable(
                 request,
@@ -773,7 +813,6 @@ mod tests {
                 &CancellationToken::new(),
             )
             .expect("a not-ready index must be reported as an outcome")
-            .outcome
     }
 
     fn unready_index_context() -> CodeIntelligenceContext {
@@ -809,20 +848,63 @@ mod tests {
     }
 
     #[test]
-    fn definition_keeps_the_warning_only_contract_for_an_unready_index() {
-        let request = CodeIntelligenceReadRequest::Definition {
-            name: "Найти".to_string(),
-            module_hint: String::new(),
-            limit: 50,
-        };
-        let outcome = unready_index_outcome(&request, IndexReadiness::Missing);
+    fn definition_readiness_matrix_never_reports_false_typed_success() {
+        let request = definition_request();
+        for (readiness, prefix, retryable) in [
+            (IndexReadiness::Building, "index_pending:", true),
+            (IndexReadiness::Missing, "index_unavailable:", false),
+            (
+                IndexReadiness::Stale {
+                    status: "source generation changed".to_string(),
+                },
+                "index_unavailable:",
+                false,
+            ),
+            (
+                IndexReadiness::Failed("Pwd=secret build failed".to_string()),
+                "index_unavailable:",
+                false,
+            ),
+            (
+                IndexReadiness::Unavailable("service absent".to_string()),
+                "index_unavailable:",
+                false,
+            ),
+        ] {
+            let result = unready_index_outcome(&request, readiness);
+            let outcome = result.outcome;
+            assert!(!outcome.ok, "{prefix}: {outcome:?}");
+            assert!(outcome.warnings.is_empty(), "{prefix}: {outcome:?}");
+            assert_eq!(outcome.errors.len(), 1, "{prefix}: {outcome:?}");
+            assert!(outcome.errors[0].starts_with(prefix), "{outcome:?}");
+            assert_eq!(
+                outcome.errors[0].contains("retry"),
+                retryable,
+                "{outcome:?}"
+            );
+            assert!(!outcome.errors[0].contains("secret"), "{outcome:?}");
+            assert!(outcome.stdout.is_none(), "{outcome:?}");
+            assert!(result.data.is_none());
+        }
+    }
 
-        assert!(outcome.ok, "{}", request.operation_name());
-        assert!(outcome.errors.is_empty(), "{}", request.operation_name());
-        assert_eq!(
-            outcome.warnings,
-            vec!["rlm index unavailable: index is missing".to_string()]
-        );
+    #[test]
+    fn post_execution_stale_generation_uses_the_same_readiness_mapper() {
+        let result = RlmNavigationAdapter::with_client(&PostExecutionUnreadyClient)
+            .invoke_resolved_cancellable(
+                &definition_request(),
+                &unready_index_context(),
+                ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        assert!(!result.outcome.ok);
+        assert_eq!(result.outcome.errors.len(), 1);
+        assert!(result.outcome.errors[0].starts_with("index_unavailable:"));
+        assert!(result.outcome.stdout.is_none());
+        assert!(result.outcome.artifacts.is_empty());
+        assert!(result.data.is_none());
     }
 
     #[test]
@@ -830,7 +912,8 @@ mod tests {
         let outcome = unready_index_outcome(
             &definition_request(),
             IndexReadiness::Unavailable("cancelled: readiness stopped".to_string()),
-        );
+        )
+        .outcome;
 
         assert!(!outcome.ok);
         assert!(outcome.summary.contains("cancelled"), "{}", outcome.summary);
@@ -885,9 +968,9 @@ mod tests {
             operation: WorkspaceRlmOperation,
             _timeout: Duration,
             _cancellation: &CancellationToken,
-        ) -> Result<WorkspaceServiceRlmOutput, String> {
+        ) -> Result<WorkspaceServiceRlmCall, String> {
             self.operations.lock().unwrap().push(operation);
-            Ok(WorkspaceServiceRlmOutput {
+            Ok(WorkspaceServiceRlmCall::Output(WorkspaceServiceRlmOutput {
                 result_text: json!({
                     "name": "Найти",
                     "definitions": [],
@@ -896,7 +979,7 @@ mod tests {
                 })
                 .to_string(),
                 stderr: String::new(),
-            })
+            }))
         }
     }
 

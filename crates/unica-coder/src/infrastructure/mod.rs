@@ -3,6 +3,7 @@ pub(crate) mod bsl_outline;
 pub(crate) mod bundled_tools;
 pub(crate) mod code_intelligence;
 pub(crate) mod configuration_help;
+pub(crate) mod diagnostics_jsonl;
 pub(crate) mod documentation_policy;
 pub(crate) mod documentation_retrieval;
 pub(crate) mod format_guard;
