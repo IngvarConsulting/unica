@@ -49,7 +49,7 @@ struct IndexedPage {
 
 struct IndexedCorpus {
     pages: Vec<IndexedPage>,
-    /// Постинги лексического ядра (ADR-0036): номера документов — позиции в
+    /// Постинги лексического ядра (ADR-0037): номера документов — позиции в
     /// `pages`.
     retrieval: RetrievalIndex,
     /// Локаль, в которой корпус реально прочитан: она уходит в секцию ответа.
@@ -110,7 +110,7 @@ struct InstallationIndex {
     /// (см. `build_index`), порядок задан там же одним местом.
     corpora: Vec<IndexedCorpus>,
     /// Лексикон ru↔en из двуязычных заголовков Синтакс-помощника — для
-    /// расширения русских запросов к англоязычным корпусам (ADR-0036 п.4).
+    /// расширения русских запросов к англоязычным корпусам (ADR-0037 п.4).
     lexicon: Arc<BilingualLexicon>,
 }
 
@@ -242,7 +242,7 @@ fn build_index(corpora: &InstallationCorpora) -> InstallationIndex {
     let corpora_indexed: Vec<IndexedCorpus> = sources.into_iter().map(index_corpus).collect();
     // Лексикон ru↔en строится из двуязычных заголовков Синтакс-помощника
     // (первый корпус) и живёт вместе с индексом: тот же ключ, та же память
-    // процесса (ADR-0036 п.4).
+    // процесса (ADR-0037 п.4).
     let lexicon = Arc::new(BilingualLexicon::from_titles(
         corpora_indexed[0]
             .pages
@@ -834,7 +834,7 @@ mod tests {
             .all(|hit| hit.applicable_version == "8.3.27.2074"));
     }
 
-    /// Ядро ADR-0036: естественная формулировка — другой порядок слов и
+    /// Ядро ADR-0037: естественная формулировка — другой порядок слов и
     /// падежи — находит страницу метода. До правки находилась только точная
     /// подстрока целого запроса (#415).
     #[test]
@@ -876,7 +876,7 @@ mod tests {
     }
 
     /// Опечатка находит страницу нечётким совпадением, но ранжируется ниже
-    /// точного запроса того же имени (дисконт нечёткости, ADR-0036).
+    /// точного запроса того же имени (дисконт нечёткости, ADR-0037).
     #[test]
     fn a_typo_finds_the_page_and_scores_below_the_exact_name() {
         let corpus = corpus_from_pages(

@@ -2,8 +2,10 @@ use super::super::common::read_utf8_sig;
 use super::validation::{document_registers, meta_validate_valid_types};
 use super::xml_model::parse_metadata_image;
 use super::{meta_info_child, meta_info_inner_text};
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
 
 const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
@@ -11,7 +13,51 @@ const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 pub(crate) struct MetaValidationImageIdentity {
     pub(crate) object_type: String,
     pub(crate) object_name: String,
+    pub(crate) object_uuid: Uuid,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MetaValidationImageIdentityError {
+    Structural(String),
+    Ambiguous(String),
+    ForeignProperties(String),
+    ForeignName(String),
+    UnsupportedKind(String),
+    MissingName(String),
+    InvalidUuid(String),
+}
+
+impl MetaValidationImageIdentityError {
+    pub(crate) fn is_structural(&self) -> bool {
+        matches!(
+            self,
+            Self::Structural(_)
+                | Self::Ambiguous(_)
+                | Self::ForeignProperties(_)
+                | Self::ForeignName(_)
+        )
+    }
+
+    pub(crate) fn field(&self) -> Option<&'static str> {
+        matches!(self, Self::Ambiguous(_) | Self::InvalidUuid(_)).then_some("uuid")
+    }
+}
+
+impl fmt::Display for MetaValidationImageIdentityError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Structural(message)
+            | Self::Ambiguous(message)
+            | Self::ForeignProperties(message)
+            | Self::ForeignName(message)
+            | Self::UnsupportedKind(message)
+            | Self::MissingName(message)
+            | Self::InvalidUuid(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for MetaValidationImageIdentityError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MetaValidationRegistrationImage {
@@ -21,33 +67,112 @@ pub(crate) struct MetaValidationRegistrationImage {
 
 pub(crate) fn inspect_metadata_image_identity(
     bytes: &[u8],
-) -> Result<MetaValidationImageIdentity, String> {
-    let (_, document) = parse_metadata_image(bytes)?;
+) -> Result<MetaValidationImageIdentity, MetaValidationImageIdentityError> {
+    let (_, document) =
+        parse_metadata_image(bytes).map_err(MetaValidationImageIdentityError::Structural)?;
     let root = document.root_element();
     if root.tag_name().namespace() != Some(MD_CLASSES_NS)
         || root.tag_name().name() != "MetaDataObject"
     {
-        return Err("image is not an MDClasses MetaDataObject".to_string());
+        return Err(MetaValidationImageIdentityError::Structural(
+            "image is not an MDClasses MetaDataObject".to_string(),
+        ));
     }
     let artifacts = root
         .children()
-        .filter(|node| node.is_element() && node.tag_name().namespace() == Some(MD_CLASSES_NS))
+        .filter(roxmltree::Node::is_element)
         .collect::<Vec<_>>();
     let [artifact] = artifacts.as_slice() else {
-        return Err("image must contain exactly one metadata descriptor".to_string());
+        return Err(MetaValidationImageIdentityError::Ambiguous(
+            "image must contain exactly one metadata descriptor".to_string(),
+        ));
     };
+    if artifact.tag_name().namespace() != Some(MD_CLASSES_NS) {
+        return Err(MetaValidationImageIdentityError::Structural(
+            "metadata descriptor is outside the MDClasses namespace".to_string(),
+        ));
+    }
     let object_type = artifact.tag_name().name();
     if !meta_validate_valid_types().contains(&object_type) {
-        return Err(format!("unrecognized metadata type: {object_type}"));
+        return Err(MetaValidationImageIdentityError::UnsupportedKind(format!(
+            "unrecognized metadata type: {object_type}"
+        )));
     }
-    let object_name = meta_info_child(*artifact, "Properties")
-        .and_then(|properties| meta_info_child(properties, "Name"))
-        .map(meta_info_inner_text)
-        .filter(|name| !name.is_empty())
-        .ok_or_else(|| format!("{object_type} Name is missing"))?;
+    let properties = artifact
+        .children()
+        .filter(roxmltree::Node::is_element)
+        .filter(|child| child.tag_name().name() == "Properties")
+        .collect::<Vec<_>>();
+    if properties
+        .iter()
+        .any(|child| child.tag_name().namespace() != Some(MD_CLASSES_NS))
+    {
+        return Err(MetaValidationImageIdentityError::ForeignProperties(
+            format!("{object_type} Properties is outside the MDClasses namespace"),
+        ));
+    }
+    let [properties] = properties.as_slice() else {
+        return Err(if properties.is_empty() {
+            MetaValidationImageIdentityError::Structural(format!(
+                "{object_type} must contain exactly one MDClasses Properties"
+            ))
+        } else {
+            MetaValidationImageIdentityError::Ambiguous(format!(
+                "{object_type} contains ambiguous Properties"
+            ))
+        });
+    };
+    let names = properties
+        .children()
+        .filter(roxmltree::Node::is_element)
+        .filter(|child| child.tag_name().name() == "Name")
+        .collect::<Vec<_>>();
+    if names
+        .iter()
+        .any(|child| child.tag_name().namespace() != Some(MD_CLASSES_NS))
+    {
+        return Err(MetaValidationImageIdentityError::ForeignName(format!(
+            "{object_type} Name is outside the MDClasses namespace"
+        )));
+    }
+    let [name] = names.as_slice() else {
+        return Err(if names.is_empty() {
+            MetaValidationImageIdentityError::MissingName(format!("{object_type} Name is missing"))
+        } else {
+            MetaValidationImageIdentityError::Ambiguous(format!(
+                "{object_type} contains ambiguous Name properties"
+            ))
+        });
+    };
+    if name.children().any(|child| child.is_element()) {
+        return Err(MetaValidationImageIdentityError::Structural(format!(
+            "{object_type} Name is not one scalar MDClasses value"
+        )));
+    }
+    let object_name = name
+        .children()
+        .filter(roxmltree::Node::is_text)
+        .filter_map(|child| child.text())
+        .collect::<String>()
+        .trim()
+        .to_string();
+    if object_name.is_empty() {
+        return Err(MetaValidationImageIdentityError::MissingName(format!(
+            "{object_type} Name is missing"
+        )));
+    }
+    let object_uuid = artifact
+        .attribute("uuid")
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .ok_or_else(|| {
+            MetaValidationImageIdentityError::InvalidUuid(format!(
+                "{object_type} UUID is missing or invalid"
+            ))
+        })?;
     Ok(MetaValidationImageIdentity {
         object_type: object_type.to_string(),
         object_name,
+        object_uuid,
     })
 }
 

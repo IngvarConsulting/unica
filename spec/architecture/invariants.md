@@ -203,6 +203,7 @@ Unica. Каждая запись формулирует одно нормати�
   машинным идентификатором.
 - **Decision:** ADR-0035
 - **Check:** `ci-test` — `crates/unica-coder/src/application/meta_info_surface_tests.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/application/meta_add_surface_tests.rs`
 - **Scope:** source, runtime
 
 ### INV-MCP-XDTO-LOGICAL-TARGET — XDTO-пакет выбирается логическим адресом
@@ -416,7 +417,7 @@ Unica. Каждая запись формулирует одно нормати�
   Оценки остаются локальными для секции, индексы ядра живут только в памяти
   процесса. Провайдерное сопоставление всего запроса как одной подстроки
   запрещено.
-- **Decision:** ADR-0036
+- **Decision:** ADR-0037
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/documentation_retrieval.rs`
 - **Scope:** source, runtime
 
@@ -776,6 +777,24 @@ Unica. Каждая запись формулирует одно нормати�
 - **Decision:** ADR-0021
 - **Check:** `ci-test` — `crates/unica-coder/src/domain/source_target.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs`
+- **Scope:** source, runtime
+
+### INV-SOURCE-SUBSYSTEM-TOPOLOGY — Публичные проекции подсистем выводятся из регистрации
+
+- **Rule:** Единый построитель под одним удерживаемым корнем, открытым без
+  перехода по символическим ссылкам, читает `Configuration.xml` и только транзитивно зарегистрированные
+  дескрипторы из `Configuration/ChildObjects` и `Subsystem/ChildObjects`: только они
+  расходуют бюджеты и образуют зависимости формата, а незарегистрированная раскладка не
+  влияет на доказательство. Каждый элемент `Content` имеет тип `MetadataAddress | UUID`,
+  и `meta.info` публикует только членства текущего дескриптора, сопоставляя обе его
+  идентичности. `subsystem.info` публикует только дерево с адресами `SubsystemAddress` в
+  диалекте БСП, выведенными из физического пути под доказанным корнем, а
+  каждый доказанный узел принадлежит ровно одной эффективной роли. Недопустимый элемент,
+  ошибка, отмена, истечение срока или неполное чтение не публикуются как пустая
+  доказанная проекция, а сбор зависимостей формата не зависит от снятого `Mode`.
+- **Decision:** ADR-0036
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/subsystem.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/application/meta_info_surface_tests.rs`
 - **Scope:** source, runtime
 
 ### INV-SOURCE-WRITE-TARGET-KIND — Писатель принимает только терминал модуля

@@ -14,7 +14,7 @@
 - Индексы только в памяти процесса, ключ — установка/корпус; на диск не пишется ничего (ADR-0029 п.11).
 - kb-1ci: обход только от объявленных корней, `PAGE_FETCH_CAP` не растёт (ADR-0032 п.2–3).
 - Политика `unica.toml` проверяется до сети и до кеша; `policy-denied` не отвечает из кеша.
-- Запись решения (ADR-0036) и инвариант INV-MCP-SEARCH-SEMANTICS — в этом же наборе изменений (AGENTS.md, «общее ядро — политика для >1 потребителя»).
+- Запись решения (ADR-0037) и инвариант INV-MCP-SEARCH-SEMANTICS — в этом же наборе изменений (AGENTS.md, «общее ядро — политика для >1 потребителя»).
 - Сначала падающий тест, потом код (AGENTS.md «Правила разработки»).
 - Коммиты без GPG-подписи (`--no-gpg-sign`), русские сообщения в стиле репозитория, ссылка на #415.
 
@@ -45,7 +45,7 @@ fn tokenize_splits_camel_case_including_cyrillic() {
 ```
 
 - [ ] `cargo test -p unica-coder tokenize_splits` — FAIL (модуля нет).
-- [ ] Реализация: `rust-stemmers = "1.2"` в workspace (комментарий: лицензии MIT/BSD-3, офлайн-Snowball ru/en для ядра поиска документации, ADR-0036); `rust-stemmers.workspace = true` в крейте. `tokenize`: проход по `char`, граница токена — не-`char::is_alphanumeric`, дополнительный разрез при `prev.is_lowercase() && current.is_uppercase()`; `to_lowercase()` на каждом токене.
+- [ ] Реализация: `rust-stemmers = "1.2"` в workspace (комментарий: лицензии MIT/BSD-3, офлайн-Snowball ru/en для ядра поиска документации, ADR-0037); `rust-stemmers.workspace = true` в крейте. `tokenize`: проход по `char`, граница токена — не-`char::is_alphanumeric`, дополнительный разрез при `prev.is_lowercase() && current.is_uppercase()`; `to_lowercase()` на каждом токене.
 - [ ] `cargo test -p unica-coder tokenize_splits` — PASS.
 - [ ] Коммит: `feat(documentation): токенизация лексического ядра поиска (#415)`.
 
@@ -142,14 +142,14 @@ fn ties_break_by_document_index_deterministically() { /* два одинаков
 - [ ] FAIL → реализация: словарь `BTreeMap<String, TermId>`; постинги `Vec<Vec<(u32 doc, f32 weighted_tf)>>`; длины `Vec<f32>`; сырые токены заголовков `Vec<Vec<String>>`; скоринг в `HashMap<u32, f32>` → сортировка (score desc, doc asc) → truncate(limit) → PASS.
 - [ ] Коммит: `feat(documentation): BM25F и нечёткий fallback лексического ядра (#415)`.
 
-### Task 5: ADR-0036 и инвариант INV-MCP-SEARCH-SEMANTICS
+### Task 5: ADR-0037 и инвариант INV-MCP-SEARCH-SEMANTICS
 
 **Files:**
 - Create: `spec/decisions/0035-leksicheskoe-yadro-poiska-dokumentacii.md` (Статус accepted, Дата 2026-08-10, Задача #415; Решение: пункты 1–7 из issue; Неграницы: эмбеддинги, слияние секций, полнотекст kb, подмена серверной релевантности v8std; Верификация: имена cargo-тестов задач 1–10)
-- Modify: `spec/architecture/invariants.md` — новая запись в области MCP рядом с INV-MCP-DOCUMENTATION-SECTIONS: Rule — локальные корпуса `unica.documentation.search` сопоставляют запрос одним лексическим контрактом (пословность, CamelCase-токенизация, морфология ru/en, ограниченная нечёткость, детерминированный порядок; оценки локальны для секции); Decision: ADR-0036; Check: `ci-test` — `crates/unica-coder/src/infrastructure/documentation_retrieval.rs`; Scope: source, runtime.
+- Modify: `spec/architecture/invariants.md` — новая запись в области MCP рядом с INV-MCP-DOCUMENTATION-SECTIONS: Rule — локальные корпуса `unica.documentation.search` сопоставляют запрос одним лексическим контрактом (пословность, CamelCase-токенизация, морфология ru/en, ограниченная нечёткость, детерминированный порядок; оценки локальны для секции); Decision: ADR-0037; Check: `ci-test` — `crates/unica-coder/src/infrastructure/documentation_retrieval.rs`; Scope: source, runtime.
 
 - [ ] Написать обе записи; `python3.12 -m pytest tests/ci/test_architecture_registry.py tests/ci/test_design_documents.py` (через /opt/homebrew/bin/python3.12) — PASS; проверить требования индексов (INV-DOC-INDEX-SYNC) — если реестр ведёт индекс, обновить.
-- [ ] Коммит: `docs(spec): ADR-0036 — лексическое ядро поиска документации (#415)`.
+- [ ] Коммит: `docs(spec): ADR-0037 — лексическое ядро поиска документации (#415)`.
 
 ### Task 6: Двуязычный лексикон из заголовков корпуса
 
@@ -244,7 +244,7 @@ fn lexicon_maps_ru_tokens_to_en_segment_tokens() {
 
 ### Task 13: Pull request
 
-- [ ] `git push -u origin claude/kb-search-semantics-a06528`; `gh pr create --repo IngvarConsulting/unica --base main` — заголовок `feat(documentation): лексическое ядро поиска — пословный, морфологический и нечёткий матчинг (#415)`; тело: Closes #415, до/после-таблица замера, перечень решений (ADR-0036, INV-MCP-SEARCH-SEMANTICS), команды верификации.
+- [ ] `git push -u origin claude/kb-search-semantics-a06528`; `gh pr create --repo IngvarConsulting/unica --base main` — заголовок `feat(documentation): лексическое ядро поиска — пословный, морфологический и нечёткий матчинг (#415)`; тело: Closes #415, до/после-таблица замера, перечень решений (ADR-0037, INV-MCP-SEARCH-SEMANTICS), команды верификации.
 
 ## Self-Review
 

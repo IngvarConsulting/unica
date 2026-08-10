@@ -20,7 +20,7 @@ description: "Справка платформы 1С и объектной мод
 ## Workflow
 
 1. State the exact platform/API question: object, method/property, platform version, infobase mode, client/server context.
-2. Call `unica.documentation.search` with the object or member name — или с естественной формулировкой вопроса: поиск пословный, морфологический и нечёткий (ADR-0036), точная подстрока и порядок слов не требуются, опечатка в имени не прячет страницу.
+2. Call `unica.documentation.search` with the object or member name — или с естественной формулировкой вопроса: поиск пословный, морфологический и нечёткий (ADR-0037), точная подстрока и порядок слов не требуются, опечатка в имени не прячет страницу.
 3. Read `applicableVersion` in the hit. Если она расходится с версией проекта, назовите расхождение в ответе.
 4. Подтвердите ответ текстом открытой страницы: передайте `documentId` попадания в `unica.documentation.get` дословно и опирайтесь на поле `text`. Заголовок и фрагмент выдачи доказательством не является — доказательство только текст документа.
 5. Validate against local project context with `unica.project.map` and targeted `unica.code.search` if the answer depends on project conventions.

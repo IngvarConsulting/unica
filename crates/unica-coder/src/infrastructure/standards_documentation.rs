@@ -51,7 +51,7 @@ pub struct V8StdDocumentationProvider {
     /// Токен вызова MCP: сетевой поставщик проверяет его перед обращением,
     /// отмена не публикует результатов (ADR-0032 п.10).
     pub cancellation: crate::domain::cancellation::CancellationToken,
-    /// Срок жизни кеша поиска стандартов в памяти процесса (ADR-0036 п.5).
+    /// Срок жизни кеша поиска стандартов в памяти процесса (ADR-0037 п.5).
     pub search_cache_ttl: std::time::Duration,
 }
 
@@ -247,7 +247,7 @@ impl DocumentationProvider for V8StdDocumentationProvider {
         let query = normalized_query(&request.query);
         let cache_key = (self.endpoint.clone(), query.clone(), request.limit);
         // Кеш читается ПОСЛЕ политики и отмены: запрет отвечает запретом, а
-        // не вчерашним успехом (ADR-0036 п.5).
+        // не вчерашним успехом (ADR-0037 п.5).
         let cached_body = {
             let cache = V8STD_SEARCH_CACHE
                 .lock()
@@ -472,7 +472,7 @@ mod tests {
     }
 
     /// Повторный одинаковый запрос сессии отвечается кешем процесса, без
-    /// второго обращения к серверу (ADR-0036 п.5).
+    /// второго обращения к серверу (ADR-0037 п.5).
     #[test]
     fn a_repeated_search_answers_from_the_process_cache() {
         let (provider, http) = provider(NetworkAccess::Allow, Ok(LIVE_BODY.to_string()));
@@ -502,7 +502,7 @@ mod tests {
     }
 
     /// Запрет политики не читает кеш: `policy-denied` означает «обращение
-    /// запрещено», а не «ответим вчерашним» (ADR-0036 п.5).
+    /// запрещено», а не «ответим вчерашним» (ADR-0037 п.5).
     #[test]
     fn policy_deny_does_not_answer_from_the_search_cache() {
         let (mut provider, http) = provider(NetworkAccess::Allow, Ok(LIVE_BODY.to_string()));
