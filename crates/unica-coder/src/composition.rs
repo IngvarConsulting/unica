@@ -54,7 +54,8 @@ mod tests {
         for (left, right) in created_tools.iter().zip(&defaulted_tools) {
             assert_eq!(left.name, right.name);
             assert_eq!(left.description, right.description);
-            assert_eq!(left.mutating, right.mutating);
+            assert_eq!(left.execution, right.execution);
+            assert_eq!(left.result_contract, right.result_contract);
             assert_eq!(left.cache_access.reads, right.cache_access.reads);
             assert_eq!(left.cache_access.writes, right.cache_access.writes);
             assert_eq!(input_schema_for_tool(left), input_schema_for_tool(right));

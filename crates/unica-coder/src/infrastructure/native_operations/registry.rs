@@ -256,7 +256,7 @@ mod tests {
     fn mutating_native_tools_have_registered_mutation_handlers() {
         let args = Map::new();
         for tool in tools() {
-            if !tool.mutating {
+            if !tool.execution.is_mutating() {
                 continue;
             }
             let ToolHandler::NativeOperation { operation, .. } = tool.handler else {
@@ -316,7 +316,10 @@ mod tests {
         ]);
         let mut actual_file_backed = BTreeMap::new();
 
-        for tool in tools().into_iter().filter(|tool| tool.mutating) {
+        for tool in tools()
+            .into_iter()
+            .filter(|tool| tool.execution.is_mutating())
+        {
             let ToolHandler::NativeOperation { operation, .. } = tool.handler else {
                 continue;
             };

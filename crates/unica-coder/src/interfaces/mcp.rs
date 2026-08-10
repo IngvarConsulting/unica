@@ -363,6 +363,7 @@ impl Drop for InFlightGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::{ResultContract, ToolExecution};
     use crate::domain::cache::CacheReport;
     use serde_json::json;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -803,7 +804,8 @@ mod tests {
         let listed = tool_definitions(&[ToolSpec {
             name: "unica.meta.future",
             description: "Synthetic metadata registry entry.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::Typed,
             cache_access: crate::domain::cache::CacheAccess::default(),
             handler: crate::application::ToolHandler::Metadata {
                 operation: crate::application::metadata::MetadataOperation::Info,

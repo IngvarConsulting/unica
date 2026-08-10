@@ -3402,7 +3402,8 @@ mod tests {
         let spec = ToolSpec {
             name: "unica.meta.add",
             description: "internal metadata coordinator test",
-            mutating: true,
+            execution: crate::application::ToolExecution::Mutation,
+            result_contract: crate::application::ResultContract::Typed,
             cache_access: CacheAccess::default(),
             handler: crate::application::ToolHandler::Metadata {
                 operation: MetadataOperation::Add,

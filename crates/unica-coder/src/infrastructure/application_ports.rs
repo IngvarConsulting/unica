@@ -358,7 +358,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     args,
                     context,
                     dry_run,
-                    spec.mutating,
+                    spec.execution.is_mutating(),
                     NativeInvocationControl::new(
                         cancellation,
                         ProviderDeadline::new(Instant::now() + NATIVE_TYPED_INVOCATION_DEADLINE),
@@ -425,7 +425,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                         args,
                         context,
                         dry_run,
-                        spec.mutating,
+                        spec.execution.is_mutating(),
                         cancellation,
                     )
                     .map(HandlerOutcome::plain)
@@ -436,7 +436,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     args,
                     context,
                     dry_run,
-                    spec.mutating,
+                    spec.execution.is_mutating(),
                     cancellation,
                 )
                 .map(|outcome| match outcome.data {
@@ -489,7 +489,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                         args,
                         context,
                         dry_run,
-                        spec.mutating,
+                        spec.execution.is_mutating(),
                         cancellation,
                     )
                     .map(HandlerOutcome::plain)
@@ -1183,7 +1183,9 @@ mod tests {
         project_platform_version, select_installation_root, select_platform_version,
         verified_full_dump_invocation,
     };
-    use crate::application::{RuntimeJobAction, ToolHandler, ToolSpec};
+    use crate::application::{
+        ResultContract, RuntimeJobAction, ToolExecution, ToolHandler, ToolSpec,
+    };
     use crate::domain::cache::CacheAccess;
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::{
@@ -1205,7 +1207,8 @@ mod tests {
         ToolSpec {
             name,
             description: "test",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::Typed,
             cache_access: CacheAccess::default(),
             handler,
         }

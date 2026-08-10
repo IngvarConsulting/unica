@@ -14,7 +14,8 @@ use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
-const COMMON_ARGS: &[&str] = &["cwd", "dryRun", "confirm"];
+const COMMON_ARGS: &[&str] = &["cwd", "confirm"];
+const MUTATION_ARGS: &[&str] = &["dryRun"];
 const CODE_PATCH_ARGS: &[&str] = &[
     "sourceSet",
     "metadataPath",
@@ -1807,12 +1808,13 @@ fn validate_runtime_operation_payload(
 ) -> Result<(), String> {
     let allowed = runtime_operation_args(operation);
     for key in args.keys() {
-        if COMMON_ARGS.contains(&key.as_str()) {
+        if COMMON_ARGS.contains(&key.as_str()) || MUTATION_ARGS.contains(&key.as_str()) {
             continue;
         }
         if !allowed.contains(&key.as_str()) {
             let mut accepted = allowed.to_vec();
             accepted.extend_from_slice(COMMON_ARGS);
+            accepted.extend_from_slice(MUTATION_ARGS);
             accepted.sort_unstable();
             accepted.dedup();
             return Err(format!(
@@ -2063,6 +2065,9 @@ fn argument_name_distance(left: &str, right: &str) -> usize {
 
 fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
     let mut names = COMMON_ARGS.to_vec();
+    if tool.execution.is_mutating() {
+        names.extend(MUTATION_ARGS);
+    }
     match tool.handler {
         ToolHandler::Metadata { .. } => names.clear(),
         ToolHandler::NativeOperation { operation, .. } => {
@@ -2544,7 +2549,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "dryRun",
-        "Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution.",
+        "Boolean preview switch for mutation tools; when omitted or true the tool only reports the change it would make, and false applies the mutation when the user requested execution.",
     ),
     (
         "edgeKinds",
@@ -3566,7 +3571,7 @@ fn expected_scalar_type(key: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
     use crate::application::metadata::MetadataOperation;
-    use crate::application::tools;
+    use crate::application::{tools, ResultContract, ToolExecution};
 
     fn metadata_tool(operation: MetadataOperation) -> ToolSpec {
         ToolSpec {
@@ -3577,7 +3582,12 @@ mod tests {
                 MetadataOperation::Remove => "unica.meta.remove",
             },
             description: "direct metadata contract test",
-            mutating: !matches!(operation, MetadataOperation::Info),
+            execution: if matches!(operation, MetadataOperation::Info) {
+                ToolExecution::Read
+            } else {
+                ToolExecution::Mutation
+            },
+            result_contract: ResultContract::Typed,
             cache_access: crate::domain::cache::CacheAccess::default(),
             handler: ToolHandler::Metadata { operation },
         }
@@ -4126,9 +4136,7 @@ mod tests {
             "unexpected suggestion for an unrelated name: {error}"
         );
         assert!(
-            error.contains(
-                "accepted arguments: confirm, cwd, dryRun, limit, moduleHint, name, sourceDir"
-            ),
+            error.contains("accepted arguments: confirm, cwd, limit, moduleHint, name, sourceDir"),
             "missing accepted arguments: {error}"
         );
     }
@@ -5415,7 +5423,7 @@ mod tests {
     fn contracts_reject_wrong_scalar_type() {
         let tool = tools()
             .into_iter()
-            .find(|tool| tool.name == "unica.cf.info")
+            .find(|tool| tool.name == "unica.cf.edit")
             .unwrap();
         let mut args = Map::new();
         args.insert("ConfigPath".to_string(), json!("Configuration.xml"));

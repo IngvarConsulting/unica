@@ -529,17 +529,24 @@ class MetaSurfaceContractTests(unittest.TestCase):
         blocks = registered_tool_blocks()
         meta = {name: block for name, block in blocks.items() if name.startswith("unica.meta.")}
         expected = {
-            "unica.meta.info": ("false", "Info"),
-            "unica.meta.add": ("true", "Add"),
-            "unica.meta.edit": ("true", "Edit"),
-            "unica.meta.remove": ("true", "Remove"),
+            "unica.meta.info": ("Read", "Info"),
+            "unica.meta.add": ("Mutation", "Add"),
+            "unica.meta.edit": ("Mutation", "Edit"),
+            "unica.meta.remove": ("Mutation", "Remove"),
         }
 
         self.assertEqual(set(meta), set(expected))
-        for name, (mutating, operation) in expected.items():
+        for name, (execution, operation) in expected.items():
             with self.subTest(name=name):
                 block = meta[name]
-                self.assertRegex(block, rf"mutating:\s*{mutating},")
+                self.assertRegex(
+                    block,
+                    rf"execution:\s*ToolExecution::{execution},",
+                )
+                self.assertRegex(
+                    block,
+                    r"result_contract:\s*ResultContract::Typed,",
+                )
                 self.assertIn("handler: ToolHandler::Metadata {", block)
                 self.assertRegex(
                     block,

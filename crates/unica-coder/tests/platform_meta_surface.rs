@@ -15,8 +15,8 @@ fn public_meta_surface_is_the_exact_four_typed_operations() {
             "unica.meta.remove",
         ]
     );
-    assert!(!meta[0].mutating);
-    assert!(meta[1..].iter().all(|tool| tool.mutating));
+    assert!(!meta[0].execution.is_mutating());
+    assert!(meta[1..].iter().all(|tool| tool.execution.is_mutating()));
     assert!(meta.iter().all(|tool| matches!(
         tool.handler,
         unica_coder::application::ToolHandler::Metadata { .. }
