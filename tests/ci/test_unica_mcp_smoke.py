@@ -742,6 +742,127 @@ class UnicaMcpSmokeTests(unittest.TestCase):
             self.assertNotIn(str(root), encoded_data)
             self.assertEqual(rights.read_bytes(), before)
 
+    def test_role_edit_apply_publishes_through_the_transport(self) -> None:
+        """Применение проходит тот же путь, что и предпросмотр.
+
+        Предпросмотр ничего не публикует, поэтому сам по себе не доказывает,
+        что apply через транспорт пишет файл, отдаёт тот же типизированный
+        конверт и не выносит наружу физический путь.
+        """
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            rights = root / "src/Roles/Demo/Ext/Rights.xml"
+            rights.parent.mkdir(parents=True)
+            (root / "v8project.yaml").write_text(
+                "format: DESIGNER\nsource-set:\n"
+                "  - name: main\n    type: CONFIGURATION\n    path: src\n",
+                encoding="utf-8",
+            )
+            (root / "src/Configuration.xml").write_text(
+                '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" '
+                'version="2.20"><Configuration '
+                'uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa">'
+                "<Properties><Name>Main</Name></Properties>"
+                "<ChildObjects><Role>Demo</Role></ChildObjects>"
+                "</Configuration></MetaDataObject>",
+                encoding="utf-8",
+            )
+            (root / "src/Roles/Demo.xml").write_text(
+                '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" '
+                'version="2.20"><Role '
+                'uuid="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb">'
+                "<Properties><Name>Demo</Name></Properties>"
+                "</Role></MetaDataObject>",
+                encoding="utf-8",
+            )
+            body = (
+                '<?xml version="1.0" encoding="UTF-8"?>\r\n'
+                '<Rights xmlns="http://v8.1c.ru/8.2/roles" '
+                'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+                'xsi:type="Rights" version="2.20">\r\n'
+                "\t<setForNewObjects>false</setForNewObjects>\r\n"
+                "\t<setForAttributesByDefault>true</setForAttributesByDefault>\r\n"
+                "\t<independentRightsOfChildObjects>false</independentRightsOfChildObjects>\r\n"
+                "\t<object>\r\n"
+                "\t\t<name>Catalog.Demo</name>\r\n"
+                "\t\t<right><name>Delete</name><value>true</value></right>\r\n"
+                "\t\t<right><name>Read</name><value>true</value></right>\r\n"
+                "\t</object>\r\n"
+                "</Rights>\r\n"
+            )
+            before = b"\xef\xbb\xbf" + body.encode("utf-8")
+            rights.write_bytes(before)
+
+            call = {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "unica.role.edit",
+                    "arguments": {
+                        "sourceSet": "main",
+                        "metadataPath": "Role.Demo",
+                        "operations": [
+                            {
+                                "op": "setRight",
+                                "objectName": "Catalog.Demo",
+                                "right": "Delete",
+                                "value": False,
+                            }
+                        ],
+                        "dryRun": False,
+                    },
+                },
+            }
+            with self.mcp_session(
+                cache_dir=Path(tmp) / "cache", workdir=root
+            ) as request:
+                response = request(call)
+
+            self.assertNotIn("error", response, response)
+            result = response["result"]
+            payload = result["structuredContent"]
+            self.assertEqual(json.loads(result["content"][0]["text"]), payload)
+            self.assertTrue(payload["ok"])
+            self.assertFalse(result["isError"])
+            for absent in ("stdout", "stderr", "command"):
+                self.assertNotIn(absent, payload)
+            data = payload["data"]
+            self.assertEqual(
+                set(data),
+                {"metadataPath", "changed", "effects", "validation", "diagnostics"},
+            )
+            self.assertTrue(data["changed"])
+            self.assertEqual(data["validation"], {"status": "passed"})
+            self.assertEqual(data["effects"][0]["before"], True)
+            self.assertEqual(data["effects"][0]["after"], False)
+            self.assertEqual(payload["cache"]["events"], ["RoleChanged"])
+            self.assertNotEqual(payload["cache"]["mode"], "dry-run")
+
+            # Ни одна часть конверта применения не несёт физический путь.
+            encoded = json.dumps(payload, ensure_ascii=False)
+            self.assertNotIn("Rights.xml", encoded)
+            self.assertNotIn(str(root), encoded)
+
+            # Платформенная форма: право со значением умолчания не хранится.
+            published = rights.read_bytes()
+            self.assertNotEqual(published, before)
+            self.assertTrue(published.startswith(b"\xef\xbb\xbf"))
+            published_text = published.decode("utf-8-sig")
+            self.assertNotIn("<name>Delete</name>", published_text)
+            self.assertIn("<name>Read</name>", published_text)
+            self.assertNotIn("\n\n", published_text.replace("\r\n", "\n"))
+
+            # Повтор того же вызова — семантический no-op без записи.
+            with self.mcp_session(
+                cache_dir=Path(tmp) / "cache2", workdir=root
+            ) as request:
+                repeated = request(call)
+            repeated_data = repeated["result"]["structuredContent"]["data"]
+            self.assertFalse(repeated_data["changed"])
+            self.assertEqual(rights.read_bytes(), published)
+
     def test_source_resources_cover_configuration_and_extension_through_one_jsonrpc_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             temp = Path(tmp)

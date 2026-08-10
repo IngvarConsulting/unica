@@ -4,8 +4,8 @@ use crate::application::AdapterOutcome;
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::events::{DomainEvent, DomainEventKind};
 use crate::domain::role::{
-    known_role_rights, parse_role_edit_request, validate_nested_right, RoleEditData,
-    RoleEditEffect, RoleEditEffectAction,
+    known_role_rights, nested_right_shape_is_modelled, parse_role_edit_request,
+    validate_nested_right, RoleEditData, RoleEditEffect, RoleEditEffectAction,
 };
 use crate::domain::source_target::{
     MetadataAddress, SourceTarget, SourceTargetErrorCode, TargetKind,
@@ -811,8 +811,13 @@ pub(crate) fn validate_role(
 
                 right_count += 1;
                 if is_nested {
-                    if let Err(message) = validate_nested_right(obj_name, right_name) {
-                        report.warn(message);
+                    // О раскладке вне закрытой модели наблюдение не судит:
+                    // иначе легальные адреса платформы получают ложное
+                    // предупреждение (см. `nested_right_shape_is_modelled`).
+                    if nested_right_shape_is_modelled(obj_name) {
+                        if let Err(message) = validate_nested_right(obj_name, right_name) {
+                            report.warn(message);
+                        }
                     }
                 } else {
                     let valid_rights = role_validate_known_rights(object_type);
@@ -1939,6 +1944,9 @@ struct RoleEditTarget {
     rights_path: PathBuf,
     rights_preimage: Vec<u8>,
     support_warning: Option<String>,
+    /// Пары «объект, право», которых касался вызов: только их значения
+    /// пост-образ обязан иметь булевыми.
+    written_rights: Vec<(String, String)>,
 }
 
 struct RoleEditPlan {
@@ -2283,7 +2291,7 @@ fn plan_role_edit(
         read_regular_file(&rights_path).map_err(|message| ("target_unavailable", message, None))?;
     let (bom, mut body) = decode_role_xml(&rights_preimage)
         .map_err(|message| ("format_incompatible", message, None))?;
-    validate_role_rights_document(&body, false)
+    validate_role_rights_document(&body, RoleValueScope::SourceImage)
         .map_err(|message| ("role_validation_failed", message, None))?;
 
     let support_warning = match evaluate_resolved_support_guard(
@@ -2319,7 +2327,12 @@ fn plan_role_edit(
         body = updated;
         effects.push(effect);
     }
-    validate_role_rights_document(&body, true)
+    let written_rights = request
+        .operations
+        .iter()
+        .map(|operation| (operation.object_name.clone(), operation.right.clone()))
+        .collect::<Vec<_>>();
+    validate_role_rights_document(&body, RoleValueScope::WrittenRights(&written_rights))
         .map_err(|message| ("role_validation_failed", message, None))?;
     let postimage = encode_role_xml(bom, &body);
     let changed = rights_preimage != postimage;
@@ -2336,6 +2349,7 @@ fn plan_role_edit(
             rights_path,
             rights_preimage,
             support_warning,
+            written_rights,
         },
         postimage,
         data: RoleEditData::passed(metadata_path, changed, effects),
@@ -2428,6 +2442,7 @@ fn publish_role_edit(
         .map_err(|_| ("cache_publication_failed", None))?;
 
     let expected = postimage.to_vec();
+    let written_rights = target.written_rights.clone();
     let handle = current_handle;
     let descriptor = target.descriptor_path.clone();
     let rights = target.rights_path.clone();
@@ -2461,7 +2476,8 @@ fn publish_role_edit(
             ));
         }
         let (_, body) = decode_role_xml(&published).map_err(CommitFailure::provider)?;
-        validate_role_rights_document(&body, true).map_err(CommitFailure::provider)
+        validate_role_rights_document(&body, RoleValueScope::WrittenRights(&written_rights))
+            .map_err(CommitFailure::provider)
     });
     match report {
         Ok(report) => {
@@ -2632,7 +2648,28 @@ fn role_direct_boolean(node: roxmltree::Node<'_, '_>) -> Option<bool> {
     }
 }
 
-fn validate_role_rights_document(text: &str, require_boolean_values: bool) -> Result<(), String> {
+/// Чьё значение права обязано быть булевым. Прообраз источника писателю не
+/// принадлежит: небулевое значение соседнего права — свойство исходника, а не
+/// дефект мутации, и запрещать им правку другого права нельзя. Пост-образ
+/// строго проверяется ровно там, где писатель менял байты.
+#[derive(Clone, Copy)]
+enum RoleValueScope<'a> {
+    SourceImage,
+    WrittenRights(&'a [(String, String)]),
+}
+
+impl RoleValueScope<'_> {
+    fn requires_boolean(self, object_name: &str, right_name: &str) -> bool {
+        match self {
+            Self::SourceImage => false,
+            Self::WrittenRights(written) => written
+                .iter()
+                .any(|(object, right)| object == object_name && right == right_name),
+        }
+    }
+}
+
+fn validate_role_rights_document(text: &str, values: RoleValueScope<'_>) -> Result<(), String> {
     let document =
         Document::parse(text).map_err(|_| "Rights.xml is not well-formed XML".to_string())?;
     let root = document.root_element();
@@ -2695,13 +2732,15 @@ fn validate_role_rights_document(text: &str, require_boolean_values: bool) -> Re
                     "duplicate right `{right_name}` for object `{object_name}`"
                 ));
             }
-            let values = direct_role_children(right, "value", ROLE_RIGHTS_NAMESPACE);
-            if values.len() != 1 {
+            let value_nodes = direct_role_children(right, "value", ROLE_RIGHTS_NAMESPACE);
+            if value_nodes.len() != 1 {
                 return Err(format!(
                     "right `{right_name}` of `{object_name}` must have one direct value"
                 ));
             }
-            if require_boolean_values && role_direct_boolean(values[0]).is_none() {
+            if values.requires_boolean(&object_name, &right_name)
+                && role_direct_boolean(value_nodes[0]).is_none()
+            {
                 return Err(format!(
                     "right `{right_name}` of `{object_name}` must have a boolean value"
                 ));
@@ -3089,6 +3128,39 @@ pub(crate) fn invoke_mutation(
 mod role_edit_contract_tests {
     use super::super::single_file_publisher::{with_publish_failpoints, PublishCheckpoint};
     use super::*;
+
+    /// В фикстурах тестов документ целиком принадлежит писателю, поэтому
+    /// булевость требуется от каждого права: строгость прежнего флага
+    /// сохраняется, а продуктовый контракт остаётся адресным.
+    fn validate_every_role_value(text: &str) -> Result<(), String> {
+        let pairs = match Document::parse(text) {
+            Ok(document) => {
+                direct_role_children(document.root_element(), "object", ROLE_RIGHTS_NAMESPACE)
+                    .into_iter()
+                    .flat_map(|object| {
+                        let object_name =
+                            direct_role_children(object, "name", ROLE_RIGHTS_NAMESPACE)
+                                .first()
+                                .map(|node| role_text_content(*node))
+                                .unwrap_or_default();
+                        direct_role_children(object, "right", ROLE_RIGHTS_NAMESPACE)
+                            .into_iter()
+                            .map(move |right| {
+                                let right_name =
+                                    direct_role_children(right, "name", ROLE_RIGHTS_NAMESPACE)
+                                        .first()
+                                        .map(|node| role_text_content(*node))
+                                        .unwrap_or_default();
+                                (object_name.clone(), right_name)
+                            })
+                    })
+                    .collect::<Vec<_>>()
+            }
+            Err(_) => Vec::new(),
+        };
+        validate_role_rights_document(text, RoleValueScope::WrittenRights(&pairs))
+    }
+
     use crate::infrastructure::platform::testing::{
         create_dir_symlink_for_test, create_file_symlink_for_test, remove_dir_symlink_for_test,
     };
@@ -3139,12 +3211,12 @@ mod role_edit_contract_tests {
     #[test]
     fn rights_profile_requires_registered_root_and_unprefixed_rights_xsi_type() {
         let valid = rights_xml("\n", "<value>true</value>");
-        validate_role_rights_document(&valid, true).unwrap();
+        validate_every_role_value(&valid).unwrap();
 
         let alias = valid
             .replace("xmlns:xsi=", "xmlns:schemaInstance=")
             .replace("xsi:type=", "schemaInstance:type=");
-        validate_role_rights_document(&alias, true).unwrap();
+        validate_every_role_value(&alias).unwrap();
 
         for invalid in [
             valid.replace(" xsi:type=\"Rights\"", ""),
@@ -3161,7 +3233,7 @@ mod role_edit_contract_tests {
                 .replace("</Rights>", "</PredefinedData>"),
         ] {
             assert!(
-                validate_role_rights_document(&invalid, true).is_err(),
+                validate_every_role_value(&invalid).is_err(),
                 "accepted incompatible root contract: {invalid}"
             );
         }
@@ -3182,7 +3254,7 @@ mod role_edit_contract_tests {
         )
         .expect_err("a prefix text node must not identify the role object");
         assert!(error.contains("was not found"), "{error}");
-        validate_role_rights_document(&misleading_object, true).unwrap();
+        validate_every_role_value(&misleading_object).unwrap();
 
         let misleading_right = body.replacen(
             "\t\t\t<name>Delete</name>",
@@ -3209,7 +3281,7 @@ mod role_edit_contract_tests {
             .collect::<Vec<_>>();
         assert!(right_names.iter().any(|name| name == "DeleteSuffix"));
         assert!(right_names.iter().any(|name| name == "Delete"));
-        validate_role_rights_document(&updated, true).unwrap();
+        validate_every_role_value(&updated).unwrap();
 
         let descriptor = format!(
             r#"<MetaDataObject xmlns="{ROLE_METADATA_NAMESPACE}" version="2.20"><Role><Properties><Name>Demo<!--future-->Suffix</Name></Properties></Role></MetaDataObject>"#
@@ -3221,8 +3293,8 @@ mod role_edit_contract_tests {
 
         let split_boolean =
             body.replacen("<value>true</value>", "<value>tr<!--future-->ue</value>", 1);
-        validate_role_rights_document(&split_boolean, false).unwrap();
-        assert!(validate_role_rights_document(&split_boolean, true).is_err());
+        validate_role_rights_document(&split_boolean, RoleValueScope::SourceImage).unwrap();
+        assert!(validate_every_role_value(&split_boolean).is_err());
         let error = apply_role_edit_operation(
             &split_boolean,
             &operation("Catalog.Demo", "Delete", true),
@@ -3280,7 +3352,7 @@ mod role_edit_contract_tests {
             assert!(updated.contains("FuturePlatformRight"));
             assert!(updated.contains("restrictionTemplate"));
             assert!(!updated.replace("\r\n", "").contains('\n'));
-            validate_role_rights_document(&updated, true).unwrap();
+            validate_every_role_value(&updated).unwrap();
 
             let encoded = encode_role_xml(true, &updated);
             assert!(encoded.starts_with(&[0xEF, 0xBB, 0xBF]));
@@ -3300,7 +3372,7 @@ mod role_edit_contract_tests {
 
         assert!(effect.changed);
         assert!(updated.contains(r#"<r:value future=">">true<!--future-value-marker--></r:value>"#));
-        validate_role_rights_document(&updated, true).unwrap();
+        validate_every_role_value(&updated).unwrap();
     }
 
     #[test]
@@ -3323,7 +3395,7 @@ mod role_edit_contract_tests {
         assert!(effect.changed);
         assert!(updated.contains(unnamed_right));
         assert!(updated.contains(unnamed_object));
-        validate_role_rights_document(&updated, true).unwrap();
+        validate_every_role_value(&updated).unwrap();
     }
 
     #[test]
@@ -3369,7 +3441,7 @@ mod role_edit_contract_tests {
             removed.contains("\t</object>\n\t<restrictionTemplate>"),
             "{removed}"
         );
-        validate_role_rights_document(&removed, true).unwrap();
+        validate_every_role_value(&removed).unwrap();
     }
 
     #[test]
@@ -3394,7 +3466,7 @@ mod role_edit_contract_tests {
         assert!(updated.contains("<r:name>View</r:name>"), "{updated}");
         assert!(updated.contains("<r:value>true</r:value>"), "{updated}");
         assert!(!updated.contains("<right>"), "{updated}");
-        validate_role_rights_document(&updated, true).unwrap();
+        validate_every_role_value(&updated).unwrap();
     }
 
     #[test]
@@ -3424,7 +3496,146 @@ mod role_edit_contract_tests {
         assert!(updated.contains(local_right));
         assert!(updated.contains("<right><name>View</name><value>true</value></right>"));
         assert_eq!(updated.matches("xmlns:x=").count(), 1);
-        validate_role_rights_document(&updated, true).unwrap();
+        validate_every_role_value(&updated).unwrap();
+    }
+
+    #[test]
+    fn duplicate_objects_and_rights_are_refused_before_any_mutation() {
+        // Шесть веток отказа структурной проверки: неоднозначный документ
+        // нельзя ни читать как истину, ни править «первым попавшимся».
+        let base = rights_xml("\n", "<value>true</value>");
+        for (label, body, expected) in [
+            (
+                "duplicate object",
+                base.replacen(
+                    "\t<object>\n\t\t<name>DataProcessor.Worker</name>",
+                    "\t<object>\n\t\t<name>Catalog.Demo</name>\n\t\t<right><name>Read</name><value>true</value></right>\n\t</object>\n\t<object>\n\t\t<name>DataProcessor.Worker</name>",
+                    1,
+                ),
+                "duplicate role object",
+            ),
+            (
+                "duplicate object name",
+                base.replacen(
+                    "\t\t<name>Catalog.Demo</name>",
+                    "\t\t<name>Catalog.Demo</name>\n\t\t<name>Catalog.Other</name>",
+                    1,
+                ),
+                "duplicate direct names",
+            ),
+            (
+                "duplicate right",
+                base.replacen(
+                    "\t\t<right><name>FuturePlatformRight</name><value>true</value><future/></right>",
+                    "\t\t<right><name>Delete</name><value>false</value></right>",
+                    1,
+                ),
+                "duplicate right `Delete`",
+            ),
+            (
+                "duplicate right name",
+                base.replacen(
+                    "\t\t\t<name>Delete</name>",
+                    "\t\t\t<name>Delete</name>\n\t\t\t<name>Insert</name>",
+                    1,
+                ),
+                "must not have duplicate direct names",
+            ),
+            (
+                "two direct values",
+                base.replacen(
+                    "\t\t\t<value>true</value>",
+                    "\t\t\t<value>true</value>\n\t\t\t<value>false</value>",
+                    1,
+                ),
+                "must have one direct value",
+            ),
+        ] {
+            let error = validate_role_rights_document(&body, RoleValueScope::SourceImage)
+                .expect_err(label);
+            assert!(error.contains(expected), "{label}: {error}");
+        }
+
+        // Неоднозначность до мутации ловит и сам writer.
+        let ambiguous_object = base.replacen(
+            "\t<object>\n\t\t<name>DataProcessor.Worker</name>",
+            "\t<object>\n\t\t<name>Catalog.Demo</name>\n\t\t<right><name>Read</name><value>true</value></right>\n\t</object>\n\t<object>\n\t\t<name>DataProcessor.Worker</name>",
+            1,
+        );
+        let error = apply_role_edit_operation(
+            &ambiguous_object,
+            &operation("Catalog.Demo", "Read", false),
+            0,
+        )
+        .expect_err("ambiguous object must not be resolved by picking the first");
+        assert!(error.contains("is ambiguous"), "{error}");
+
+        let ambiguous_right = base.replacen(
+            "\t\t<right><name>FuturePlatformRight</name><value>true</value><future/></right>",
+            "\t\t<right><name>Delete</name><value>false</value></right>",
+            1,
+        );
+        let error = apply_role_edit_operation(
+            &ambiguous_right,
+            &operation("Catalog.Demo", "Delete", false),
+            0,
+        )
+        .expect_err("ambiguous right must not be resolved by picking the first");
+        assert!(error.contains("is ambiguous"), "{error}");
+    }
+
+    #[test]
+    fn cdata_carries_identity_and_value_like_ordinary_text() {
+        // CDATA — та же строка инфосета: адресация и чтение значения не должны
+        // от неё зависеть.
+        let body = rights_xml("\n", "<value><![CDATA[true]]></value>").replacen(
+            "<name>Catalog.Demo</name>",
+            "<name><![CDATA[Catalog.Demo]]></name>",
+            1,
+        );
+
+        let (updated, effect) =
+            apply_role_edit_operation(&body, &operation("Catalog.Demo", "Delete", false), 0)
+                .unwrap();
+
+        assert_eq!(effect.before, Some(true), "CDATA-значение прочитано");
+        assert!(effect.changed);
+        assert!(
+            updated.contains("<![CDATA[Catalog.Demo]]>"),
+            "имя объекта сохранено как есть: {updated}"
+        );
+        validate_every_role_value(&updated).unwrap();
+    }
+
+    #[test]
+    fn an_untouched_non_boolean_neighbour_does_not_block_the_requested_edit() {
+        // Небулевое значение соседнего права принадлежит исходнику, а не
+        // писателю: раньше строгая пост-проверка отвергала весь вызов чужим
+        // правом и без `operationIndex`.
+        let body = rights_xml("\n", "<value>true</value>").replacen(
+            "<right><name>FuturePlatformRight</name><value>true</value><future/></right>",
+            "<right><name>FuturePlatformRight</name><value/><future/></right>",
+            1,
+        );
+        assert!(body.contains("<value/>"), "{body}");
+
+        let (updated, effect) =
+            apply_role_edit_operation(&body, &operation("Catalog.Demo", "Delete", false), 0)
+                .unwrap();
+
+        assert!(effect.changed);
+        assert!(updated.contains("<value/>"), "сосед сохранён как есть");
+        let written = [("Catalog.Demo".to_string(), "Delete".to_string())];
+        validate_role_rights_document(&updated, RoleValueScope::WrittenRights(&written)).unwrap();
+        // А если бы писатель тронул именно это право, строгость осталась бы.
+        let neighbour = [(
+            "Catalog.Demo".to_string(),
+            "FuturePlatformRight".to_string(),
+        )];
+        assert!(
+            validate_role_rights_document(&updated, RoleValueScope::WrittenRights(&neighbour))
+                .is_err()
+        );
     }
 
     #[test]
@@ -3463,7 +3674,7 @@ mod role_edit_contract_tests {
             "{updated}"
         );
         assert!(updated.contains("restrictionTemplate"), "{updated}");
-        validate_role_rights_document(&updated, true).unwrap();
+        validate_every_role_value(&updated).unwrap();
 
         // Повтор — no-op: право уже несёт умолчание отсутствием.
         let (repeated, second) =
@@ -3502,7 +3713,7 @@ mod role_edit_contract_tests {
         assert_eq!(effect.action, RoleEditEffectAction::SetRight);
         assert!(!updated.contains("Catalog.Solo"), "{updated}");
         assert!(updated.contains("Catalog.Kept"), "{updated}");
-        validate_role_rights_document(&updated, true).unwrap();
+        validate_every_role_value(&updated).unwrap();
     }
 
     #[test]
@@ -3528,7 +3739,7 @@ mod role_edit_contract_tests {
         assert!(updated.contains("<name>Catalog.Solo</name>"), "{updated}");
         assert!(updated.contains("<future keep=\"true\"/>"), "{updated}");
         assert!(!updated.contains("<name>Read</name>"), "{updated}");
-        validate_role_rights_document(&updated, true).unwrap();
+        validate_every_role_value(&updated).unwrap();
     }
 
     #[test]
@@ -3553,7 +3764,7 @@ mod role_edit_contract_tests {
                 .unwrap();
         assert!(replaced.changed);
         assert!(with_false.contains("<value>false</value>"), "{with_false}");
-        validate_role_rights_document(&with_false, true).unwrap();
+        validate_every_role_value(&with_false).unwrap();
 
         // Возврат к true — переход к умолчанию: право уходит из хранения.
         let (canonical, removed) =
@@ -3574,7 +3785,7 @@ mod role_edit_contract_tests {
             "{canonical}"
         );
         drop(document);
-        validate_role_rights_document(&canonical, true).unwrap();
+        validate_every_role_value(&canonical).unwrap();
     }
 
     #[test]
@@ -3679,6 +3890,48 @@ mod role_edit_contract_tests {
             replacement.as_bytes().iter().copied(),
         );
         updated
+    }
+
+    #[test]
+    fn a_mid_sequence_failure_publishes_nothing_and_names_its_operation() {
+        // Последовательность операций — одна транзакция: отказ на второй не
+        // должен оставить применённой первую.
+        let (context, mut args, rights) = fixture("mid-sequence-failure");
+        let before = fs::read(&rights).unwrap();
+        args.insert(
+            "operations".to_string(),
+            json!([
+                {"op":"setRight", "objectName":"Catalog.Demo", "right":"Delete", "value":false},
+                {"op":"setRight", "objectName":"Catalog.Missing", "right":"Read", "value":true},
+                {"op":"setRight", "objectName":"DataProcessor.Worker", "right":"Use", "value":false}
+            ]),
+        );
+
+        let applied = apply_edit_with_data(&args, &context);
+
+        assert!(!applied.outcome.ok, "{:?}", applied.outcome.errors);
+        assert_eq!(
+            fs::read(&rights).unwrap(),
+            before,
+            "провалившийся вызов не имеет права публиковать первую операцию"
+        );
+        let data = applied.data.expect("typed failure data");
+        assert_eq!(data.diagnostics.len(), 1);
+        assert_eq!(data.diagnostics[0].code, "object_not_listed");
+        assert_eq!(
+            data.diagnostics[0].operation_index,
+            Some(1),
+            "отказ назван своим индексом: {:?}",
+            data.diagnostics
+        );
+        assert!(!data.changed);
+        assert_eq!(
+            data.validation.status,
+            crate::domain::role::RoleEditValidationStatus::Failed
+        );
+        let encoded = serde_json::to_string(&data).unwrap();
+        assert!(!encoded.contains("Rights.xml"), "{encoded}");
+        fs::remove_dir_all(context.workspace_root).unwrap();
     }
 
     #[test]

@@ -4,11 +4,12 @@ use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
-pub const ROLE_METADATA_PATH_PATTERN: &str = r"^Role\.[\p{L}_][\p{L}\p{N}_]*$";
-pub const ROLE_OBJECT_NAME_PATTERN: &str = concat!(
-    r"^[\p{L}_][\p{L}\p{N}_]*\.[\p{L}_][\p{L}\p{N}_]*",
-    r"(?:\.[\p{L}_][\p{L}\p{N}_]*\.[\p{L}_][\p{L}\p{N}_]*)*$"
-);
+// Публикуемые схемы читает ECMA-262: там `\p{...}` без флага `u` — это
+// литеральная `p`, а не класс символов. Поэтому наружу уходит сегментная форма
+// соседних `meta.*`-схем, а строгую проверку идентификатора 1С держит парсер
+// (`is_1c_identifier`) на Rust-regex, где Unicode-классы работают.
+pub const ROLE_METADATA_PATH_PATTERN: &str = r"^Role\.[^.]+$";
+pub const ROLE_OBJECT_NAME_PATTERN: &str = r"^[^.]+\.[^.]+(?:\.[^.]+\.[^.]+)*$";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoleEditRequest {
@@ -334,6 +335,70 @@ fn is_1c_identifier(value: &str) -> bool {
                 .expect("role identifier pattern is static and valid")
         })
         .is_match(value)
+}
+
+/// Входит ли раскладка вложенного адреса в закрытую модель прав.
+///
+/// Наблюдение и мутация относятся к незнакомой раскладке по-разному.
+/// `unica.role.edit` пишет только то, что моделирует, поэтому незнакомое
+/// сочетание для него — отказ. `unica.role.validate` лишь читает чужой файл и
+/// об отсутствующей в модели раскладке не вправе утверждать, что она неверна:
+/// платформа знает больше видов вложенных объектов, чем закрытый набор writer-а
+/// (например, колонки журналов документов и перерасчёты). Верхний уровень той
+/// же проверки уже молчит о неизвестном виде объекта — здесь та же политика.
+pub fn nested_right_shape_is_modelled(object_name: &str) -> bool {
+    let parts = object_name.split('.').collect::<Vec<_>>();
+    if parts.len() >= 4
+        && parts[0] == "Subsystem"
+        && parts[2..].chunks_exact(2).all(|p| p[0] == "Subsystem")
+    {
+        return true;
+    }
+    match parts.as_slice() {
+        [parent, _, "Command", _] => supports_commands(parent),
+        ["WebService", _, "Operation", _]
+        | ["HTTPService", _, "URLTemplate", _, "Method", _]
+        | ["IntegrationService", _, "IntegrationServiceChannel", _]
+        | ["Task", _, "AddressingAttribute", _] => true,
+        [parent, _, "StandardAttribute", _] => supports_standard_attributes(parent),
+        [parent, _, "Attribute", _] => supports_attributes(parent),
+        [parent, _, "TabularSection", _]
+        | [parent, _, "TabularSection", _, "Attribute", _]
+        | [parent, _, "TabularSection", _, "StandardAttribute", _] => {
+            supports_tabular_sections(parent)
+        }
+        [parent, _, "Dimension", _] | [parent, _, "Resource", _] => {
+            supports_register_fields(parent)
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod nested_shape_tests {
+    use super::*;
+
+    #[test]
+    fn observation_stays_silent_about_shapes_outside_the_closed_model() {
+        // Раскладки, которых закрытая модель не знает: платформа их пишет
+        // (колонка журнала документов, перерасчёт регистра расчёта), а writer
+        // не моделирует. Наблюдение не должно объявлять их неверными.
+        for unmodelled in [
+            "DocumentJournal.Orders.Column.Number",
+            "CalculationRegister.Payroll.Recalculation.Basis",
+        ] {
+            assert!(!nested_right_shape_is_modelled(unmodelled), "{unmodelled}");
+            // Мутация закрыта по-прежнему: писать неизвестное нельзя.
+            assert!(validate_nested_right(unmodelled, "View").is_err());
+        }
+
+        // Известная раскладка остаётся под строгой проверкой права.
+        assert!(nested_right_shape_is_modelled(
+            "Catalog.Goods.Attribute.Price"
+        ));
+        assert!(validate_nested_right("Catalog.Goods.Attribute.Price", "View").is_ok());
+        assert!(validate_nested_right("Catalog.Goods.Attribute.Price", "Delete").is_err());
+    }
 }
 
 pub fn validate_nested_right(object_name: &str, right: &str) -> Result<(), String> {
