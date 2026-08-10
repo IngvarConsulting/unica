@@ -2203,11 +2203,6 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
         case.id,
         "meta-edit-resource-append" | "meta-edit-resource-position-after"
     ) {
-        seed_metadata(
-            workspace,
-            "seed-information-register",
-            meta_definition("InformationRegister").expect("InformationRegister seed definition"),
-        )?;
         let number_type = json!({
             "variants": [{
                 "kind": "number",
@@ -2216,6 +2211,25 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
                 "sign": "any"
             }]
         });
+        let mut create_args = common_args(workspace);
+        create_args.insert("sourceSet".to_string(), Value::String("main".to_string()));
+        create_args.insert(
+            "kind".to_string(),
+            Value::String("InformationRegister".to_string()),
+        );
+        create_args.insert(
+            "name".to_string(),
+            Value::String("CorpusInformationRegister".to_string()),
+        );
+        create_args.insert(
+            "operations".to_string(),
+            json!([{
+                "op": "add",
+                "collection": "resources",
+                "elements": [{"name": "Price", "type": number_type.clone()}]
+            }]),
+        );
+        call_public_tool("unica.meta.add", &create_args)?;
         if case.id == "meta-edit-resource-position-after" {
             let mut seed_args = common_args(workspace);
             seed_args.insert("sourceSet".to_string(), Value::String("main".to_string()));
@@ -3688,6 +3702,25 @@ fn meta_edit_structural_resource_insertions_build_exact_platform_cases() {
             [case_id.to_string()],
             "{case_id}"
         );
+        if case_id == "meta-edit-resource-append" {
+            let preimage = fs::read_to_string(
+                root.join("cases")
+                    .join(case_id)
+                    .join("pre-xml/src/InformationRegisters/CorpusInformationRegister.xml"),
+            )
+            .unwrap();
+            let child_objects_close = preimage.find("</ChildObjects>").unwrap();
+            let resource_close = preimage[..child_objects_close]
+                .rfind("</Resource>")
+                .map(|index| index + "</Resource>".len())
+                .expect("append preimage must contain a resource");
+            assert!(
+                preimage[resource_close..child_objects_close]
+                    .trim()
+                    .is_empty(),
+                "append preimage must end ChildObjects with Resource: {preimage}"
+            );
+        }
         let descriptor = fs::read_to_string(
             root.join("cases")
                 .join(case_id)
