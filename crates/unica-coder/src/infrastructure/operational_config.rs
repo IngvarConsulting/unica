@@ -413,7 +413,7 @@ search_total_timeout_seconds = 90
     }
 
     #[test]
-    fn exact_lower_and_upper_boundaries_are_accepted_without_clamping() {
+    fn positive_timeout_values_are_accepted_without_clamping() {
         let workspace = tempdir().expect("workspace tempdir");
         write_config(
             &workspace,
@@ -584,13 +584,13 @@ analyze_timeout_seconds = 30
             ),
             (
                 "search_total_timeout_seconds",
-                "121",
+                "-1",
                 "operational.code_intelligence.search_total_timeout_seconds",
                 "code_intelligence",
             ),
             (
                 "search_rlm_timeout_seconds",
-                "46",
+                "0",
                 "operational.code_intelligence.search_rlm_timeout_seconds",
                 "code_intelligence",
             ),
@@ -602,25 +602,25 @@ analyze_timeout_seconds = 30
             ),
             (
                 "search_git_grep_timeout_seconds",
-                "121",
+                "0",
                 "operational.code_intelligence.search_git_grep_timeout_seconds",
                 "code_intelligence",
             ),
             (
                 "provider_read_timeout_seconds",
-                "46",
+                "0",
                 "operational.code_intelligence.provider_read_timeout_seconds",
                 "code_intelligence",
             ),
             (
                 "analyze_timeout_seconds",
-                "29",
+                "0",
                 "operational.code_diagnostics.analyze_timeout_seconds",
                 "code_diagnostics",
             ),
             (
                 "analyze_timeout_seconds",
-                "3601",
+                "-1",
                 "operational.code_diagnostics.analyze_timeout_seconds",
                 "code_diagnostics",
             ),
@@ -653,7 +653,7 @@ analyze_timeout_seconds = 30
         write_config(
             &workspace,
             SHARED_CONFIG_FILENAME,
-            "[operational.code_intelligence]\nsearch_total_timeout_seconds = 121\n",
+            "[operational.code_intelligence]\nsearch_total_timeout_seconds = 0\n",
         );
         write_config(
             &workspace,
@@ -681,7 +681,7 @@ analyze_timeout_seconds = 30
         write_config(
             &workspace,
             LOCAL_CONFIG_FILENAME,
-            "[operational.code_intelligence]\nprovider_read_timeout_seconds = 46\n",
+            "[operational.code_intelligence]\nprovider_read_timeout_seconds = 0\n",
         );
 
         let diagnostic =

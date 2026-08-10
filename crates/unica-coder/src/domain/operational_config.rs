@@ -3,16 +3,12 @@ use std::fmt;
 use std::time::Duration;
 
 const SEARCH_TOTAL_DEFAULT_SECONDS: u64 = 120;
-const SEARCH_TOTAL_MAX_SECONDS: i64 = 120;
 const SEARCH_RLM_DEFAULT_SECONDS: u64 = 45;
-const SEARCH_RLM_MAX_SECONDS: i64 = 45;
 const SEARCH_GIT_GREP_DEFAULT_SECONDS: u64 = 15;
-const SEARCH_GIT_GREP_MAX_SECONDS: i64 = 120;
 const PROVIDER_READ_DEFAULT_SECONDS: u64 = 45;
-const PROVIDER_READ_MAX_SECONDS: i64 = 45;
 const DIAGNOSTICS_ANALYZE_DEFAULT_SECONDS: u64 = 120;
-const DIAGNOSTICS_ANALYZE_MIN_SECONDS: i64 = 30;
-const DIAGNOSTICS_ANALYZE_MAX_SECONDS: i64 = 3_600;
+const EXPLICIT_DIAGNOSTICS_ANALYZE_MIN_SECONDS: u64 = 30;
+const EXPLICIT_DIAGNOSTICS_ANALYZE_MAX_SECONDS: u64 = 3_600;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OperationalConfig {
@@ -40,8 +36,8 @@ impl OperationalConfig {
         mut self,
         timeout: Duration,
     ) -> Result<Self, OperationalConfigDiagnostic> {
-        let minimum = Duration::from_secs(DIAGNOSTICS_ANALYZE_MIN_SECONDS as u64);
-        let maximum = Duration::from_secs(DIAGNOSTICS_ANALYZE_MAX_SECONDS as u64);
+        let minimum = Duration::from_secs(EXPLICIT_DIAGNOSTICS_ANALYZE_MIN_SECONDS);
+        let maximum = Duration::from_secs(EXPLICIT_DIAGNOSTICS_ANALYZE_MAX_SECONDS);
         if timeout < minimum || timeout > maximum {
             return Err(OperationalConfigDiagnostic::new(
                 OperationalConfigDiagnosticCode::OutOfRange,
@@ -332,17 +328,8 @@ impl OperationalConfigField {
         }
     }
 
-    const fn range(self) -> (i64, i64) {
-        match self {
-            Self::SearchTotal => (1, SEARCH_TOTAL_MAX_SECONDS),
-            Self::SearchRlm => (1, SEARCH_RLM_MAX_SECONDS),
-            Self::SearchGitGrep => (1, SEARCH_GIT_GREP_MAX_SECONDS),
-            Self::ProviderRead => (1, PROVIDER_READ_MAX_SECONDS),
-            Self::DiagnosticsAnalyze => (
-                DIAGNOSTICS_ANALYZE_MIN_SECONDS,
-                DIAGNOSTICS_ANALYZE_MAX_SECONDS,
-            ),
-        }
+    const fn minimum(self) -> i64 {
+        1
     }
 }
 
@@ -362,8 +349,7 @@ impl OperationalConfigLayer {
         seconds: i64,
         source: OperationalConfigDiagnosticSource,
     ) -> Result<(), OperationalConfigDiagnostic> {
-        let (minimum, maximum) = field.range();
-        if seconds < minimum || seconds > maximum {
+        if seconds < field.minimum() {
             return Err(OperationalConfigDiagnostic::new(
                 OperationalConfigDiagnosticCode::OutOfRange,
                 source,
@@ -459,6 +445,31 @@ mod tests {
         assert_eq!(
             config.code_diagnostics().analyze_timeout(),
             Duration::from_secs(120)
+        );
+    }
+
+    #[test]
+    fn operational_layers_accept_deadlines_above_compiled_defaults() {
+        let mut shared = OperationalConfigLayer::default();
+        for (field, seconds) in [
+            (OperationalConfigField::SearchTotal, 7_200),
+            (OperationalConfigField::SearchRlm, 3_600),
+            (OperationalConfigField::SearchGitGrep, 1_800),
+            (OperationalConfigField::ProviderRead, 7_200),
+            (OperationalConfigField::DiagnosticsAnalyze, 7_200),
+        ] {
+            shared
+                .set_timeout_seconds(field, seconds, OperationalConfigDiagnosticSource::Shared)
+                .expect("positive operational deadline");
+        }
+        let config = OperationalConfig::from_layers(Some(&shared), None).unwrap();
+        assert_eq!(
+            config.code_intelligence().search_total_timeout(),
+            Duration::from_secs(7_200)
+        );
+        assert_eq!(
+            config.code_diagnostics().analyze_timeout(),
+            Duration::from_secs(7_200)
         );
     }
 
