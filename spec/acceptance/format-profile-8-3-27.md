@@ -221,6 +221,29 @@ CRLF и состоянием описателя `Extended`, которого т�
 доказать полную корректность конфигурации и дерева исходников; поэтому
 авторитетен точный платформенный гейт.
 
+## Матрица чтения `unica.meta.info`
+
+Отдельный read-профиль ADR-0047 закреплён манифестом
+`tests/fixtures/platform_8_3_27/meta_info/manifest.json`. Его множество видов
+точно совпадает с `MetadataKind::ALL`: основной случай каждого из 23 видов
+строится тем же каноническим шаблоном, который участвует в platform-gated
+корпусе. Одиннадцать отслеживаемых edge fixtures состоят из восьми
+hand-checked feature-примеров (типы Constant и DefinedType, метод ScheduledJob,
+расписание CalculationRegister, HTTP/WebService, маршруты Task и ChartOfAccounts)
+и трёх route-coverage примеров для дочерних видов Catalog, DocumentJournal и
+Enum.
+
+Манифест не выдаёт порождённый шаблоном XML за независимое платформенное
+свидетельство. Исполняемый тест отдельно требует точное множество видов,
+проектируемость каждого канонического случая, существование edge fixtures и
+классификацию составных узлов `Properties`/`ChildObjects`. Неизвестный составной
+узел поддерживаемого профиля даёт `provider_unavailable`, а не исчезает из
+ответа молча. Проверка:
+
+```sh
+cargo test -p unica-coder manifest_and_profile_cover_every_platform_gated_metadata_kind -- --test-threads=1
+```
+
 ## Точный платформенный гейт
 
 Для каждого выбранного контрольного пункта верификатор доказывает, что полное

@@ -1,4 +1,4 @@
-use super::super::common::{escape_xml, multilang_text};
+use super::super::common::escape_xml;
 use super::super::role::role_info_element;
 use crate::domain::metadata::{
     metadata_identifier_is_valid, DateFractions, EventSourceClass, MetaEventSource, MetaFillValue,
@@ -49,7 +49,10 @@ pub(crate) fn meta_info_child_text(
 }
 
 pub(crate) fn meta_info_inner_text(node: roxmltree::Node<'_, '_>) -> String {
-    node.text().unwrap_or("").to_string()
+    node.children()
+        .filter(roxmltree::Node::is_text)
+        .filter_map(|child| child.text())
+        .collect()
 }
 
 fn single_direct_md_child<'a, 'input>(
@@ -907,12 +910,37 @@ pub(super) fn emit_meta_event_subscription_source(
 }
 
 pub(super) fn meta_info_ml_text(node: roxmltree::Node<'_, '_>) -> String {
-    let value = multilang_text(node);
-    if value.is_empty() {
-        node.text().unwrap_or("").trim().to_string()
-    } else {
-        value
-    }
+    const DATA_CORE_NAMESPACE: &str = "http://v8.1c.ru/8.1/data/core";
+    let values = node
+        .children()
+        .filter(|item| {
+            item.is_element()
+                && item.tag_name().namespace() == Some(DATA_CORE_NAMESPACE)
+                && item.tag_name().name() == "item"
+        })
+        .filter_map(|item| {
+            let language = item.children().find(|child| {
+                child.is_element()
+                    && child.tag_name().namespace() == Some(DATA_CORE_NAMESPACE)
+                    && child.tag_name().name() == "lang"
+            })?;
+            let content = item.children().find(|child| {
+                child.is_element()
+                    && child.tag_name().namespace() == Some(DATA_CORE_NAMESPACE)
+                    && child.tag_name().name() == "content"
+            })?;
+            Some((
+                meta_info_inner_text(language),
+                meta_info_inner_text(content),
+            ))
+        })
+        .collect::<Vec<_>>();
+    values
+        .iter()
+        .find(|(language, content)| language == "ru" && !content.is_empty())
+        .or_else(|| values.iter().find(|(_, content)| !content.is_empty()))
+        .map(|(_, content)| content.clone())
+        .unwrap_or_else(|| meta_info_inner_text(node).trim().to_string())
 }
 
 pub(super) fn meta_info_normalize_cfg_prefix(raw: &str) -> String {

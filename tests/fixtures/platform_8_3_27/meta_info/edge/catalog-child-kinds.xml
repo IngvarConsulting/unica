@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <Catalog uuid="77777777-7777-4777-8777-777777777777">
+    <Properties><Name>Items</Name></Properties>
+    <ChildObjects>
+      <Attribute><Properties><Name>Code</Name><Type><v8:Type>xs:string</v8:Type></Type></Properties></Attribute>
+      <TabularSection><Properties><Name>Lines</Name></Properties><ChildObjects/></TabularSection>
+      <Form>ItemForm</Form>
+      <Template>Print</Template>
+      <Command>Refresh</Command>
+    </ChildObjects>
+  </Catalog>
+</MetaDataObject>

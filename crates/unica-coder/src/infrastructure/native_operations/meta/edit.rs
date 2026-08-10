@@ -10,12 +10,11 @@ use crate::domain::format_profile::ACTIVE_FORMAT_PROFILE;
 use crate::domain::metadata::{
     metadata_decimal_shape, metadata_name_eq, metadata_xs_datetime_is_valid,
     validate_metadata_element_value_profile, validate_metadata_operation_capabilities,
-    validate_metadata_relation_target_profile, DateFractions, MetaCollection, MetaDiagnostic,
-    MetaDiagnosticCode, MetaEditOperation, MetaElementDefinition, MetaElementUpdate, MetaFillValue,
-    MetaMutationEffect, MetaPosition, MetaPropertyKey, MetaPropertyValue, MetaPublicationAction,
+    validate_metadata_relation_target_profile, MetaCollection, MetaDiagnostic, MetaDiagnosticCode,
+    MetaEditOperation, MetaElementDefinition, MetaElementUpdate, MetaFillValue, MetaMutationEffect,
+    MetaPosition, MetaPropertyKey, MetaPropertyValue, MetaPublicationAction,
     MetaPublicationPlanEntry, MetaPublicationResource, MetaRelation, MetaValueProfileContext,
-    MetadataKind, MetadataType, MetadataTypeVariant, NumberSign, RelationEditMode,
-    StringLengthMode, METADATA_PROPERTY_SPECS,
+    MetadataKind, MetadataType, RelationEditMode, METADATA_PROPERTY_SPECS,
 };
 use crate::domain::source_target::{
     MetadataAddress, SourceTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
@@ -28,7 +27,7 @@ use crate::infrastructure::platform_xml_source_targets::{
 use crate::infrastructure::support_guard::{
     evaluate_resolved_support_guard, ResolvedSupportGuardCheck,
 };
-use roxmltree::{Document, Node};
+use roxmltree::Document;
 use serde_json::{Map as JsonMap, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -2133,10 +2132,6 @@ const TYPED_CHILD_TREE_MAX_DEPTH: usize = 64;
 const TYPED_CHILD_TREE_MAX_ENTRIES: usize = 20_000;
 const TYPED_CHILD_TREE_MAX_FILES: usize = 20_000;
 const TYPED_CHILD_TREE_MAX_BYTES: usize = 64 * 1024 * 1024;
-const META_V8_NS: &str = "http://v8.1c.ru/8.1/data/core";
-const META_MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
-const META_PREDEFINED_NS: &str = "http://v8.1c.ru/8.3/xcf/predef";
-
 #[derive(Default)]
 struct TypedChildTreeBudget {
     entries: usize,
@@ -3435,17 +3430,7 @@ fn typed_operation_effect_value(
             let observed = super::info::typed_properties(properties, kind);
             let mut selected = JsonMap::new();
             for (key, _) in values.entries() {
-                let property = observed
-                    .iter()
-                    .find(|property| &property.key == key)
-                    .ok_or_else(|| {
-                        typed_diagnostic(
-                            MetaDiagnosticCode::ProviderUnavailable,
-                            "metadata property is unavailable for semantic effect",
-                            Some("values"),
-                        )
-                    })?;
-                let key = serde_json::to_value(property.key)
+                let public_key = serde_json::to_value(key)
                     .ok()
                     .and_then(|value| value.as_str().map(str::to_string))
                     .ok_or_else(|| {
@@ -3455,8 +3440,18 @@ fn typed_operation_effect_value(
                             Some("values"),
                         )
                     })?;
+                let property = observed
+                    .iter()
+                    .find(|property| property.key == public_key)
+                    .ok_or_else(|| {
+                        typed_diagnostic(
+                            MetaDiagnosticCode::ProviderUnavailable,
+                            "metadata property is unavailable for semantic effect",
+                            Some("values"),
+                        )
+                    })?;
                 selected.insert(
-                    key,
+                    public_key,
                     serde_json::to_value(&property.value).map_err(|_| {
                         typed_diagnostic(
                             MetaDiagnosticCode::ProviderUnavailable,
@@ -3512,8 +3507,13 @@ fn typed_operation_effect_value(
         )?,
         MetaEditOperation::EditRelations { relation, .. } => {
             let mut diagnostics = Vec::new();
-            let relations =
-                super::info::typed_relations(&document, properties, &target, &mut diagnostics);
+            let relations = super::info::typed_relations(
+                &document,
+                properties,
+                kind,
+                &target,
+                &mut diagnostics,
+            );
             if let Some(diagnostic) = diagnostics.into_iter().next() {
                 return Err(diagnostic);
             }
@@ -4284,7 +4284,7 @@ fn update_typed_element(
     if let Some(metadata_type) = &update.r#type {
         let fill_value = match &update.fill_value {
             Some(fill_value) => Some(fill_value.clone()),
-            None => parse_typed_fill_value(&properties_text)?,
+            None => parse_typed_fill_value_at_element(xml_text, range.clone())?,
         };
         validate_metadata_element_value_profile(
             Some(metadata_type),
@@ -4298,7 +4298,7 @@ fn update_typed_element(
             diagnostic
         })?;
     } else if let Some(fill_value) = &update.fill_value {
-        let metadata_type = parse_typed_metadata_type(&properties_text)?;
+        let metadata_type = parse_typed_metadata_type_at_element(xml_text, range.clone())?;
         validate_metadata_element_value_profile(
             Some(&metadata_type),
             Some(fill_value),
@@ -4436,10 +4436,11 @@ fn update_typed_element(
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) fn parse_typed_fill_value(
     properties_text: &str,
 ) -> Result<Option<MetaFillValue>, MetaDiagnostic> {
-    const WRAPPER_START: &str = r#"<Root xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config">"#;
+    const WRAPPER_START: &str = r#"<Root xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config">"#;
     let wrapped = format!("{WRAPPER_START}{properties_text}</Root>");
     let document = Document::parse(&wrapped).map_err(|_| {
         typed_diagnostic(
@@ -4448,35 +4449,107 @@ pub(super) fn parse_typed_fill_value(
             Some("fillValue"),
         )
     })?;
-    let Some(fill) = document
-        .descendants()
-        .find(|node| node.is_element() && node.tag_name().name() == "FillValue")
-    else {
+    parse_typed_fill_value_node(document.root_element())
+}
+
+pub(super) fn parse_typed_fill_value_node(
+    properties: roxmltree::Node<'_, '_>,
+) -> Result<Option<MetaFillValue>, MetaDiagnostic> {
+    const MD_NAMESPACE: &str = "http://v8.1c.ru/8.3/MDClasses";
+    const XSI_NAMESPACE: &str = "http://www.w3.org/2001/XMLSchema-instance";
+    const XSD_NAMESPACE: &str = "http://www.w3.org/2001/XMLSchema";
+    const READABLE_NAMESPACE: &str = "http://v8.1c.ru/8.3/xcf/readable";
+    let properties = if properties.tag_name().namespace() == Some(MD_NAMESPACE)
+        && properties.tag_name().name() == "Properties"
+    {
+        properties
+    } else {
+        properties
+            .children()
+            .find(|node| {
+                node.is_element()
+                    && node.tag_name().namespace() == Some(MD_NAMESPACE)
+                    && node.tag_name().name() == "Properties"
+            })
+            .unwrap_or(properties)
+    };
+    let fills = properties
+        .children()
+        .filter(|node| {
+            node.is_element()
+                && node.tag_name().namespace() == Some(MD_NAMESPACE)
+                && node.tag_name().name() == "FillValue"
+        })
+        .collect::<Vec<_>>();
+    let ([] | [_]) = fills.as_slice() else {
+        return Err(typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata properties contain duplicate FillValue elements",
+            Some("fillValue"),
+        ));
+    };
+    let Some(fill) = fills.first().copied() else {
         return Ok(None);
     };
-    if fill
-        .attributes()
-        .any(|attribute| attribute.name() == "nil" && attribute.value() == "true")
-    {
+    if fill.children().any(|child| child.is_element()) {
+        return Err(typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "existing fill value contains unsupported nested markup",
+            Some("fillValue"),
+        ));
+    }
+    let nil = fill.attribute((XSI_NAMESPACE, "nil"));
+    let value_type = fill.attribute((XSI_NAMESPACE, "type"));
+    let value = super::info_projection::direct_text_content(fill);
+    if nil == Some("true") {
+        if fill.attributes().len() != 1 || value_type.is_some() || !value.trim().is_empty() {
+            return Err(typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "existing nil fill value contains unsupported structure",
+                Some("fillValue"),
+            ));
+        }
         return Ok(None);
     }
-    let value = fill.text().unwrap_or_default().to_string();
-    let value_type = fill
-        .attributes()
-        .find(|attribute| attribute.name() == "type")
-        .map(|attribute| attribute.value())
-        .unwrap_or_default();
-    match value_type {
-        "xs:string" => Ok(Some(MetaFillValue::String(value))),
-        "xs:decimal" if metadata_decimal_shape(&value).is_some() => {
+    if fill.attributes().len() != 1 {
+        return Err(typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "existing fill value must contain exactly one xsi:type attribute",
+            Some("fillValue"),
+        ));
+    }
+    let value_type = value_type.ok_or_else(|| {
+        typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "existing fill value has no xsi:type attribute",
+            Some("fillValue"),
+        )
+    })?;
+    let (prefix, local_name) = value_type.split_once(':').ok_or_else(|| {
+        typed_diagnostic(
+            MetaDiagnosticCode::ValidationFailed,
+            "existing fill value type is not a qualified name",
+            Some("fillValue"),
+        )
+    })?;
+    let namespace = fill.lookup_namespace_uri(Some(prefix)).ok_or_else(|| {
+        typed_diagnostic(
+            MetaDiagnosticCode::ValidationFailed,
+            "existing fill value type prefix is not bound",
+            Some("fillValue"),
+        )
+    })?;
+    match (namespace, local_name) {
+        (XSD_NAMESPACE, "string") => Ok(Some(MetaFillValue::String(value))),
+        (XSD_NAMESPACE, "decimal") if metadata_decimal_shape(&value).is_some() => {
             Ok(Some(MetaFillValue::Number(value)))
         }
-        "xs:decimal" => Err(typed_diagnostic(
+        (XSD_NAMESPACE, "decimal") => Err(typed_diagnostic(
             MetaDiagnosticCode::ValidationFailed,
             "existing numeric fill value is not canonical",
             Some("fillValue"),
         )),
-        "xs:boolean" => match value.as_str() {
+        (XSD_NAMESPACE, "boolean") => match value.as_str() {
             "true" => Ok(Some(MetaFillValue::Boolean(true))),
             "false" => Ok(Some(MetaFillValue::Boolean(false))),
             _ => Err(typed_diagnostic(
@@ -4485,15 +4558,15 @@ pub(super) fn parse_typed_fill_value(
                 Some("fillValue"),
             )),
         },
-        "xs:dateTime" if metadata_xs_datetime_is_valid(&value) => {
+        (XSD_NAMESPACE, "dateTime") if metadata_xs_datetime_is_valid(&value) => {
             Ok(Some(MetaFillValue::DateTime(value)))
         }
-        "xs:dateTime" => Err(typed_diagnostic(
+        (XSD_NAMESPACE, "dateTime") => Err(typed_diagnostic(
             MetaDiagnosticCode::ValidationFailed,
             "existing date-time fill value is not canonical",
             Some("fillValue"),
         )),
-        "xr:DesignTimeRef" => Ok(Some(MetaFillValue::Reference(
+        (READABLE_NAMESPACE, "DesignTimeRef") => Ok(Some(MetaFillValue::Reference(
             crate::domain::metadata::MetadataReference {
                 metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &value)
                     .map_err(|_| {
@@ -4505,11 +4578,6 @@ pub(super) fn parse_typed_fill_value(
                     })?,
             },
         ))),
-        "" if value.is_empty() => Err(typed_diagnostic(
-            MetaDiagnosticCode::ValidationFailed,
-            "existing fill value has no typed value or xsi:nil marker",
-            Some("fillValue"),
-        )),
         _ => Err(typed_diagnostic(
             MetaDiagnosticCode::ValidationFailed,
             "existing fill value type is unsupported by typed metadata edit",
@@ -4518,210 +4586,89 @@ pub(super) fn parse_typed_fill_value(
     }
 }
 
+fn parse_typed_fill_value_at_element(
+    xml_text: &str,
+    element_range: std::ops::Range<usize>,
+) -> Result<Option<MetaFillValue>, MetaDiagnostic> {
+    let document = Document::parse(xml_text.trim_start_matches('\u{feff}')).map_err(|_| {
+        typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata descriptor is not valid XML",
+            Some("fillValue"),
+        )
+    })?;
+    let element = document
+        .descendants()
+        .find(|node| node.is_element() && node.range() == element_range)
+        .ok_or_else(|| {
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata element is unavailable",
+                Some("fillValue"),
+            )
+        })?;
+    let properties =
+        super::info_projection::direct_md_child(element, "Properties").ok_or_else(|| {
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata element has no Properties",
+                Some("fillValue"),
+            )
+        })?;
+    parse_typed_fill_value_node(properties)
+}
+
+#[cfg(test)]
 pub(super) fn parse_typed_metadata_type(
     properties_text: &str,
 ) -> Result<MetadataType, MetaDiagnostic> {
-    const WRAPPER_START: &str = r#"<Root xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config">"#;
-    let wrapped = format!("{WRAPPER_START}{properties_text}</Root>");
-    let document = Document::parse(&wrapped).map_err(|_| {
+    let observed = super::info_projection::parse_observed_metadata_type(properties_text)?;
+    narrow_observed_metadata_type(observed)
+}
+
+fn parse_typed_metadata_type_at_element(
+    xml_text: &str,
+    element_range: std::ops::Range<usize>,
+) -> Result<MetadataType, MetaDiagnostic> {
+    let document = Document::parse(xml_text.trim_start_matches('\u{feff}')).map_err(|_| {
         typed_diagnostic(
             MetaDiagnosticCode::ProviderUnavailable,
-            "metadata element properties are not valid XML",
+            "metadata descriptor is not valid XML",
             Some("type"),
         )
     })?;
-    let wrapper = document.root_element();
-    let fragment_root = wrapper.children().find(|node| node.is_element());
-    let type_container = match fragment_root {
-        Some(node) if typed_type_container(node, "Properties") => node
-            .children()
-            .find(|child| typed_type_container(*child, "Type")),
-        Some(node) if typed_type_container(node, "Type") => Some(node),
-        _ => Some(wrapper),
-    }
-    .ok_or_else(|| {
-        typed_diagnostic(
-            MetaDiagnosticCode::ValidationFailed,
-            "metadata properties have no direct Type element",
-            Some("type"),
-        )
-    })?;
-    let qualifier_text = |container: &str, name: &str| -> Option<String> {
-        typed_direct_v8_child(type_container, container)
-            .and_then(|node| typed_direct_v8_child(node, name))
-            .map(|node| {
-                node.children()
-                    .filter(|child| child.is_text())
-                    .filter_map(|child| child.text())
-                    .collect()
-            })
-    };
-    let qualifier_u32 = |container: &str, name: &str| -> Result<u32, MetaDiagnostic> {
-        qualifier_text(container, name).map_or(Ok(0), |value| {
-            value.parse().map_err(|_| {
-                typed_diagnostic(
-                    MetaDiagnosticCode::ValidationFailed,
-                    format!("existing metadata type has malformed {container}.{name}"),
-                    Some("type"),
-                )
-            })
-        })
-    };
-    let mut variants = Vec::new();
-    for node in type_container.children().filter(|node| {
-        node.is_element()
-            && node.tag_name().namespace() == Some(META_V8_NS)
-            && matches!(node.tag_name().name(), "Type" | "TypeSet")
-    }) {
-        let value = node
-            .children()
-            .filter(|child| child.is_text())
-            .filter_map(|child| child.text())
-            .collect::<String>();
-        let value = value.as_str();
-        let variant = if node.tag_name().name() == "TypeSet" {
-            let raw = value.strip_prefix("cfg:").unwrap_or(value);
-            MetadataTypeVariant::DefinedType {
-                metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw)
-                    .map_err(|_| {
-                        typed_diagnostic(
-                            MetaDiagnosticCode::ValidationFailed,
-                            "existing defined type is not a metadata address",
-                            Some("type"),
-                        )
-                    })?,
-            }
-        } else {
-            match value {
-                "xs:string" => MetadataTypeVariant::String {
-                    length: qualifier_u32("StringQualifiers", "Length")?,
-                    allowed_length: match qualifier_text("StringQualifiers", "AllowedLength")
-                        .as_deref()
-                    {
-                        Some("Fixed") => StringLengthMode::Fixed,
-                        Some("Variable") | None => StringLengthMode::Variable,
-                        Some(_) => {
-                            return Err(typed_diagnostic(
-                                MetaDiagnosticCode::ValidationFailed,
-                                "existing string length mode is unsupported",
-                                Some("type"),
-                            ))
-                        }
-                    },
-                },
-                "xs:decimal" => MetadataTypeVariant::Number {
-                    digits: qualifier_u32("NumberQualifiers", "Digits")?,
-                    fraction: qualifier_u32("NumberQualifiers", "FractionDigits")?,
-                    sign: match qualifier_text("NumberQualifiers", "AllowedSign").as_deref() {
-                        Some("Nonnegative") => NumberSign::NonNegative,
-                        Some("Any") | None => NumberSign::Any,
-                        Some(_) => {
-                            return Err(typed_diagnostic(
-                                MetaDiagnosticCode::ValidationFailed,
-                                "existing number sign mode is unsupported",
-                                Some("type"),
-                            ))
-                        }
-                    },
-                },
-                "xs:boolean" => MetadataTypeVariant::Boolean,
-                "v8:UUID" => MetadataTypeVariant::Uuid,
-                "xs:dateTime" => MetadataTypeVariant::Date {
-                    fractions: match qualifier_text("DateQualifiers", "DateFractions").as_deref() {
-                        Some("Date") => DateFractions::Date,
-                        Some("Time") => DateFractions::Time,
-                        Some("DateTime") | None => DateFractions::DateTime,
-                        Some(_) => {
-                            return Err(typed_diagnostic(
-                                MetaDiagnosticCode::ValidationFailed,
-                                "existing date fractions mode is unsupported",
-                                Some("type"),
-                            ))
-                        }
-                    },
-                },
-                "xs:binary" => MetadataTypeVariant::BinaryData {
-                    length: qualifier_u32("BinaryDataQualifiers", "Length")?,
-                    allowed_length: match qualifier_text("BinaryDataQualifiers", "AllowedLength")
-                        .as_deref()
-                    {
-                        Some("Fixed") => StringLengthMode::Fixed,
-                        Some("Variable") | None => StringLengthMode::Variable,
-                        Some(_) => {
-                            return Err(typed_diagnostic(
-                                MetaDiagnosticCode::ValidationFailed,
-                                "existing binary length mode is unsupported",
-                                Some("type"),
-                            ))
-                        }
-                    },
-                },
-                "v8:ValueStorage" => MetadataTypeVariant::ValueStorage,
-                raw if raw.starts_with("cfg:") => {
-                    let raw = raw.trim_start_matches("cfg:");
-                    let Some((generated, name)) = raw.split_once('.') else {
-                        return Err(typed_diagnostic(
-                            MetaDiagnosticCode::ValidationFailed,
-                            "existing reference type is malformed",
-                            Some("type"),
-                        ));
-                    };
-                    let kind = generated.strip_suffix("Ref").ok_or_else(|| {
-                        typed_diagnostic(
-                            MetaDiagnosticCode::ValidationFailed,
-                            "existing generated type is not a reference",
-                            Some("type"),
-                        )
-                    })?;
-                    MetadataTypeVariant::Reference {
-                        metadata_path: MetadataAddress::parse(
-                            PLATFORM_XML_8_3_27_FORMAT_2_20,
-                            &format!("{kind}.{name}"),
-                        )
-                        .map_err(|_| {
-                            typed_diagnostic(
-                                MetaDiagnosticCode::ValidationFailed,
-                                "existing reference type is not a metadata address",
-                                Some("type"),
-                            )
-                        })?,
-                    }
-                }
-                _ => {
-                    return Err(typed_diagnostic(
-                        MetaDiagnosticCode::ValidationFailed,
-                        "existing metadata type is unsupported by typed edit",
-                        Some("type"),
-                    ))
-                }
-            }
-        };
-        variants.push(variant);
-    }
-    MetadataType::new(variants).map_err(|mut diagnostic| {
+    let element = document
+        .descendants()
+        .find(|node| node.is_element() && node.range() == element_range)
+        .ok_or_else(|| {
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata element is unavailable",
+                Some("type"),
+            )
+        })?;
+    let properties =
+        super::info_projection::direct_md_child(element, "Properties").ok_or_else(|| {
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata element has no Properties",
+                Some("type"),
+            )
+        })?;
+    let observed = super::info_projection::parse_observed_metadata_type_node(properties)?;
+    narrow_observed_metadata_type(observed)
+}
+
+fn narrow_observed_metadata_type(
+    observed: crate::domain::metadata::ObservedMetadataType,
+) -> Result<MetadataType, MetaDiagnostic> {
+    MetadataType::try_from(observed).map_err(|mut diagnostic| {
+        diagnostic.code = MetaDiagnosticCode::ValidationFailed;
+        diagnostic.message =
+            "existing metadata type is outside the public mutation algebra".to_string();
         diagnostic.field = Some("type".to_string());
         diagnostic
     })
-}
-
-fn typed_direct_v8_child<'a, 'input>(
-    parent: Node<'a, 'input>,
-    name: &str,
-) -> Option<Node<'a, 'input>> {
-    parent.children().find(|child| {
-        child.is_element()
-            && child.tag_name().namespace() == Some(META_V8_NS)
-            && child.tag_name().name() == name
-    })
-}
-
-fn typed_type_container(node: Node<'_, '_>, name: &str) -> bool {
-    node.is_element()
-        && node.tag_name().name() == name
-        && matches!(
-            node.tag_name().namespace(),
-            None | Some(META_MD_NS | META_PREDEFINED_NS)
-        )
 }
 
 fn remove_typed_element(
@@ -5005,7 +4952,7 @@ mod tests {
     fn object_xml(kind: &str, name: &str, properties: &str) -> String {
         format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
 	<{kind} uuid="11111111-1111-4111-8111-111111111111">
 		<Properties><Name>{name}</Name><Synonym/><Comment/>{properties}</Properties>
 		<ChildObjects/>
@@ -5182,17 +5129,38 @@ mod tests {
     }
 
     #[test]
+    fn typed_fill_parser_uses_complete_direct_text_and_rejects_nil_suffix() {
+        assert_eq!(
+            parse_typed_fill_value(
+                r#"<FillValue xsi:type="xs:string">ab<!--split-->cd</FillValue>"#,
+            )
+            .unwrap(),
+            Some(MetaFillValue::String("abcd".to_string()))
+        );
+        assert!(parse_typed_fill_value(
+            r#"<FillValue xsi:nil="true"><!--split-->garbage</FillValue>"#,
+        )
+        .is_err());
+    }
+
+    #[test]
     fn typed_metadata_type_uses_the_complete_direct_text_value() {
-        let parsed =
-            parse_typed_metadata_type("<v8:Type>xs:str<!--future-separator-->ing</v8:Type>")
-                .unwrap();
+        let parsed = parse_typed_metadata_type(concat!(
+            "<v8:Type>xs:str<!--future-separator-->ing</v8:Type>",
+            "<v8:StringQualifiers><v8:Length>0</v8:Length>",
+            "<v8:AllowedLength>Variable</v8:AllowedLength></v8:StringQualifiers>"
+        ))
+        .unwrap();
         assert!(matches!(
             parsed.variants.as_slice(),
             [MetadataTypeVariant::String { .. }]
         ));
 
-        let invalid =
-            parse_typed_metadata_type("<v8:Type>xs:string<!--future-suffix-->garbage</v8:Type>");
+        let invalid = parse_typed_metadata_type(concat!(
+            "<v8:Type>xs:string<!--future-suffix-->garbage</v8:Type>",
+            "<v8:StringQualifiers><v8:Length>0</v8:Length>",
+            "<v8:AllowedLength>Variable</v8:AllowedLength></v8:StringQualifiers>"
+        ));
         assert!(invalid.is_err());
 
         let qualified = parse_typed_metadata_type(concat!(
@@ -5219,16 +5187,20 @@ mod tests {
         ));
         assert!(invalid_qualifier.is_err());
 
+        let container =
+            parse_typed_metadata_type("<Type><v8:Type>xs:boolean</v8:Type></Type>").unwrap();
+        assert!(matches!(
+            container.variants.as_slice(),
+            [MetadataTypeVariant::Boolean]
+        ));
+
         let scoped = parse_typed_metadata_type(concat!(
             "<Properties>",
             "<future:Type xmlns:future=\"urn:future\"><v8:Type>xs:boolean</v8:Type></future:Type>",
-            "<Type>",
-            "<v8:Type>xs:string</v8:Type>",
-            "<future:Extension xmlns:future=\"urn:future\">",
-            "<v8:Type>xs:boolean</v8:Type>",
-            "<v8:StringQualifiers><v8:Length>99</v8:Length></v8:StringQualifiers>",
-            "</future:Extension>",
-            "</Type></Properties>"
+            "<Type><v8:Type>xs:string</v8:Type>",
+            "<v8:StringQualifiers><v8:Length>0</v8:Length>",
+            "<v8:AllowedLength>Variable</v8:AllowedLength></v8:StringQualifiers></Type>",
+            "</Properties>"
         ))
         .unwrap();
         assert!(matches!(
@@ -5238,6 +5210,13 @@ mod tests {
                 allowed_length: StringLengthMode::Variable,
             }]
         ));
+
+        assert!(parse_typed_metadata_type(concat!(
+            "<Type><v8:Type>xs:string</v8:Type>",
+            "<future:Extension xmlns:future=\"urn:future\"/>",
+            "</Type>"
+        ))
+        .is_err());
     }
 
     #[test]
@@ -5696,18 +5675,13 @@ mod tests {
                 let observed = super::super::info::typed_properties(properties, *kind);
                 let observed = observed
                     .iter()
-                    .find(|property| {
-                        serde_json::to_value(property.key)
-                            .ok()
-                            .and_then(|value| value.as_str().map(|name| name == *public_name))
-                            == Some(true)
-                    })
+                    .find(|property| property.key == *public_name)
                     .unwrap_or_else(|| {
                         panic!("{public_name} missing from info for {}", kind.as_str())
                     });
                 assert_eq!(
-                    &observed.value,
-                    value,
+                    serde_json::to_value(&observed.value).unwrap(),
+                    serde_json::to_value(value).unwrap(),
                     "{public_name} for {}",
                     kind.as_str()
                 );
@@ -7429,6 +7403,68 @@ mod tests {
             failure.diagnostics[0].field.as_deref(),
             Some("operations[1].elements[0].fillValue")
         );
+    }
+
+    #[test]
+    fn fill_value_only_update_preserves_inherited_type_namespace_aliases() {
+        let mut xml = object_xml("Document", "Order", "<RegisterRecords/>");
+        let add = MetaEditOperation::add(
+            MetaCollection::Attributes,
+            None,
+            vec![MetaElementInput {
+                name: "CodeText".into(),
+                r#type: Some(
+                    MetadataType::new(vec![MetadataTypeVariant::String {
+                        length: 10,
+                        allowed_length: StringLengthMode::Variable,
+                    }])
+                    .unwrap(),
+                ),
+                ..MetaElementInput::default()
+            }],
+        )
+        .unwrap();
+        apply_typed_operations(&mut xml, &[add]).unwrap();
+        xml = xml
+            .replace(
+                "xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"",
+                "xmlns:schema=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"",
+            )
+            .replace(
+                "xmlns:v8=\"http://v8.1c.ru/8.1/data/core\"",
+                "xmlns:core=\"http://v8.1c.ru/8.1/data/core\"",
+            )
+            .replace("<v8:", "<core:")
+            .replace("</v8:", "</core:")
+            .replace(">xs:string<", ">schema:string<");
+        let document = roxmltree::Document::parse(&xml).unwrap();
+        let observed_type = document
+            .descendants()
+            .find(|node| {
+                node.is_element()
+                    && node.tag_name().namespace() == Some("http://v8.1c.ru/8.1/data/core")
+                    && node.tag_name().name() == "Type"
+            })
+            .unwrap();
+        assert_eq!(
+            observed_type.lookup_namespace_uri(Some("schema")),
+            Some("http://www.w3.org/2001/XMLSchema")
+        );
+        let update = MetaEditOperation::update(
+            MetaCollection::Attributes,
+            None,
+            vec![MetaElementUpdateInput {
+                name: "CodeText".into(),
+                fill_value: Some(MetaFillValue::String("ok".into())),
+                ..MetaElementUpdateInput::default()
+            }],
+        )
+        .unwrap();
+
+        apply_typed_operations(&mut xml, &[update]).unwrap();
+
+        assert!(xml.contains("schema:string"));
+        assert!(xml.contains("xsi:type=\"xs:string\">ok</FillValue>"));
     }
 
     #[test]

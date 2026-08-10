@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <ScheduledJob uuid="33333333-3333-4333-8333-333333333333">
+    <Properties>
+      <Name>MonthClose</Name>
+      <MethodName>CommonModule.MonthClose.RunScheduled</MethodName>
+      <Use>true</Use><Predefined>false</Predefined>
+      <RestartCountOnFailure>3</RestartCountOnFailure><RestartIntervalOnFailure>10</RestartIntervalOnFailure>
+    </Properties>
+  </ScheduledJob>
+</MetaDataObject>

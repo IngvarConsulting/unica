@@ -29,6 +29,7 @@
 | Расширение резолвера не расширяет запись | `unica.code.patch` отклоняет адрес объекта метаданных и ничего не пишет, потому что писатель разрешает цель под политикой «только модуль» | `cargo test -p unica-coder code_patch -- --test-threads=1` |
 | Снятые селекторы `unica.meta.info` | `ObjectPath` и `Path` отклоняются кодом `legacy_target_removed`; `Detailed`, который инструмент никогда не читал, отклоняется как незнакомый аргумент | `cargo test -p unica-coder meta_info -- --test-threads=1` |
 | Логический адрес в предметном читателе | `unica.meta.info` читает дескриптор по `sourceSet + metadataPath`, принимает русский псевдоним вида, отклоняет терминал модуля по имени и возвращает разрешённую цель типизированными данными | `cargo test -p unica-coder meta_info -- --test-threads=1` |
+| Полный локальный read-профиль объекта | Ответ связывает каждый из 23 `kind` с обязательным вариантом `details`, не выводит свойства чтения из writer allowlist, сохраняет наблюдаемый UUID как `{"kind":"uuid"}` с `mutationCapability: editable`, а вложенные HTTP/WebService-коллекции различают `[]` и недоказанное `null` с диагностикой | `cargo test -p unica-coder meta_info -- --test-threads=1` |
 | Частные поля поставщика | `providerRevision`, закрытая ручка, абсолютный путь и строка соединения отсутствуют в MCP-ответе | `cargo test -p unica-coder interfaces::mcp::tests -- --test-threads=1` |
 
 ## Матрица снимка и чтения

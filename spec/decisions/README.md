@@ -64,6 +64,7 @@
 - [ADR-0044: Читатели не принимают режим предпросмотра](0044-readers-ne-prinimayut-preview.md)
 - [ADR-0045: Диагностика и RLM различают завершённый типизированный результат](0045-typed-reader-completion-contract.md)
 - [ADR-0046: Отсутствие предопределённых элементов выражается отсутствием файла](0046-otsutstvie-predopredelennyh-est-otsutstvie-fayla.md)
+- [ADR-0047: `unica.meta.info` имеет отдельную полную read-model](0047-polnaya-read-model-meta-info.md)
 
 Заголовки записей ADR-0001…ADR-0006 приведены здесь дословно: индекс называет
 документ так, как он называется сам. Почему они выглядят иначе — в разделе

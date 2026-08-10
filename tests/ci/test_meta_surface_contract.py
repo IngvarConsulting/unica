@@ -27,6 +27,9 @@ META_OPERATION_REGISTRY = (
     REPO_ROOT / "crates/unica-coder/src/domain/metadata/operations.rs"
 )
 META_CAPABILITY_LEDGER = REPO_ROOT / "spec/architecture/meta-capability-parity.json"
+META_INFO_FIXTURE_MANIFEST = (
+    REPO_ROOT / "tests/fixtures/platform_8_3_27/meta_info/manifest.json"
+)
 META_MIGRATION = REPO_ROOT / "docs/migrations/0.12.0-meta-surface.md"
 RETIRED_META_TYPE_REFERENCE = (
     REPO_ROOT
@@ -279,6 +282,79 @@ class MetaSurfaceContractTests(unittest.TestCase):
                 "interfaceSubsystems",
                 "UUID",
                 "`[]`",
+                "provider_unavailable",
+            ):
+                self.assertIn(marker, text)
+
+    def test_meta_info_complete_read_contract_is_synchronized(self) -> None:
+        skill = (REPO_ROOT / "plugins/unica/skills/meta-info/SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        ledger = (REPO_ROOT / "spec/architecture/tool-surface.md").read_text(
+            encoding="utf-8"
+        )
+        review = json.loads(
+            (REPO_ROOT / "spec/architecture/tool-surface-review.json").read_text(
+                encoding="utf-8"
+            )
+        )["unica.meta.info"]
+        invariant = (REPO_ROOT / "spec/architecture/invariants.md").read_text(
+            encoding="utf-8"
+        )
+        acceptance = "\n".join(
+            (REPO_ROOT / path).read_text(encoding="utf-8")
+            for path in (
+                "spec/acceptance/logical-source-addressing-and-resource-access.md",
+                "spec/acceptance/format-profile-8-3-27.md",
+                "spec/acceptance/unica-mcp-validation.md",
+            )
+        )
+        manifest = json.loads(META_INFO_FIXTURE_MANIFEST.read_text(encoding="utf-8"))
+        platform_corpus = (
+            REPO_ROOT / "crates/unica-coder/tests/format_8_3_27_xml_corpus.rs"
+        ).read_text(encoding="utf-8")
+
+        self.assertEqual(len(manifest["kinds"]), len(DONOR_METADATA_KINDS))
+        self.assertEqual(
+            {entry["kind"] for entry in manifest["kinds"]},
+            DONOR_METADATA_KINDS,
+        )
+        self.assertEqual(
+            sorted(
+                fixture
+                for entry in manifest["kinds"]
+                for fixture in entry.get("edgeFixtures", [])
+            ),
+            sorted(
+                [
+                    "edge/constant-type.xml",
+                    "edge/defined-type.xml",
+                    "edge/scheduled-job.xml",
+                    "edge/calculation-register.xml",
+                    "edge/chart-of-accounts-child-kinds.xml",
+                    "edge/http-service.xml",
+                    "edge/web-service.xml",
+                    "edge/task-addressing.xml",
+                    "edge/catalog-child-kinds.xml",
+                    "edge/document-journal-child-kinds.xml",
+                    "edge/enum-child-kinds.xml",
+                ]
+            ),
+        )
+        for entry in manifest["kinds"]:
+            self.assertEqual(entry["mainFixture"], "canonical-template")
+            self.assertIsInstance(entry["platformCase"], str)
+            self.assertIn(f'"{entry["platformCase"]}"', platform_corpus)
+            for fixture in entry.get("edgeFixtures", []):
+                self.assertTrue((META_INFO_FIXTURE_MANIFEST.parent / fixture).is_file())
+
+        surfaces = (skill, ledger, json.dumps(review, ensure_ascii=False), invariant, acceptance)
+        for text in surfaces:
+            for marker in (
+                "ADR-0047",
+                "INV-MCP-META-INFO-COVERAGE",
+                "details",
+                "UUID",
                 "provider_unavailable",
             ):
                 self.assertIn(marker, text)
