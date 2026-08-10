@@ -1498,6 +1498,42 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
         }
         self.assertEqual(untested, set())
 
+    def test_event_subscription_fixture_exports_its_declared_handler(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="unica-event-handler-fixture-") as temp:
+            source_root = Path(temp) / "src" / "cf"
+            source_root.mkdir(parents=True)
+            (source_root / "Configuration.xml").write_text(
+                """<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+	<Configuration>
+		<ChildObjects>
+		</ChildObjects>
+	</Configuration>
+</MetaDataObject>
+""",
+                encoding="utf-8",
+            )
+            prepare_meta_add_skill_example(
+                {"main": source_root},
+                {"sourceSet": "main", "kind": "EventSubscription"},
+            )
+            subscription = source_root / "EventSubscriptions" / "Events.xml"
+            subscription.parent.mkdir(parents=True)
+            write_meta_event_subscription_fixture(subscription, "Events")
+
+            namespace = {"md": "http://v8.1c.ru/8.3/MDClasses"}
+            handler = ET.parse(subscription).findtext(".//md:Handler", namespaces=namespace)
+            self.assertIsNotNone(handler)
+            prefix, module_name, procedure_name = handler.split(".")
+            self.assertEqual(prefix, "CommonModule")
+            module = (
+                source_root / "CommonModules" / module_name / "Ext" / "Module.bsl"
+            ).read_text(encoding="utf-8")
+            self.assertRegex(
+                module,
+                rf"(?im)^\s*(?:Procedure|Процедура)\s+{re.escape(procedure_name)}"
+                rf"\s*\([^)]*\)\s+(?:Export|Экспорт)\s*$",
+            )
+
     def test_every_skill_tools_call_example_executes_as_mcp_dry_run(self) -> None:
         examples = list(iter_skill_mcp_examples())
         self.assertGreater(len(examples), 0)
@@ -2765,7 +2801,7 @@ def prepare_meta_add_skill_example(
     module = source_root / "CommonModules" / module_name / "Ext" / "Module.bsl"
     module.parent.mkdir(parents=True, exist_ok=True)
     module.write_text(
-        "Процедура Обработать(Источник, Отказ) Экспорт\nКонецПроцедуры\n",
+        "Procedure OnBeforeWrite(Source, Cancel) Export\nEndProcedure\n",
         encoding="utf-8",
     )
     register_meta_skill_object(source_root, "CommonModule", module_name)
