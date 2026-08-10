@@ -206,11 +206,22 @@ Unica. Каждая запись формулирует одно нормати�
   того же точного владельца регистрацию, описатель и совпадающий
   `GeneratedType` каждой конфигурационной цели и связывает их точные байты с
   транзакцией, а `unica.meta.info` возвращает тот же типизированный wire-массив.
-- **Decision:** ADR-0035
+- **Decision:** ADR-0036
 - **Check:** `ci-test` — `tests/ci/test_meta_surface_contract.py`
 - **Check:** `ci-test` — `crates/unica-coder/src/application/metadata.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/metadata_operations.rs`
 - **Scope:** source, packaged, runtime
+
+### INV-MCP-META-FINDINGS — Перенесённые находки метаданных имеют устойчивую идентичность
+
+- **Rule:** Каждое перенесённое из строкового контура языковое предупреждение
+  `MetadataValidator` возвращает в `structuredContent` отдельный стабильный код
+  правила, точное поле `properties.*` и непустой `language`; `message` не служит
+  машинным идентификатором.
+- **Decision:** ADR-0035
+- **Check:** `ci-test` — `crates/unica-coder/src/application/meta_info_surface_tests.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/application/meta_add_surface_tests.rs`
+- **Scope:** source, runtime
 
 ### INV-MCP-XDTO-LOGICAL-TARGET — XDTO-пакет выбирается логическим адресом
 

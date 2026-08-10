@@ -6,9 +6,9 @@ use crate::application::source_navigation::SourceLocateRequest;
 use crate::application::SupportGuardRequirement;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::metadata::{
-    MetaDiagnostic, MetaDiagnosticCode, MetaDiagnosticSeverity, MetaMutationData,
-    MetaMutationEffect, MetaPublicationAction, MetaPublicationPlanEntry, MetaPublicationResource,
-    MetaValidationData, MetaValidationStatus, MetadataKind,
+    MetaDiagnostic, MetaDiagnosticCode, MetaMutationData, MetaMutationEffect,
+    MetaPublicationAction, MetaPublicationPlanEntry, MetaPublicationResource, MetaValidationData,
+    MetaValidationStatus, MetadataKind,
 };
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::domain::workspace::WorkspaceContext;
@@ -601,17 +601,17 @@ pub(crate) fn plan_typed_remove(
         });
     }
     for referrer in &logical_referrers {
-        diagnostics.push(MetaDiagnostic {
-            code: MetaDiagnosticCode::ReferenceConflict,
-            severity: MetaDiagnosticSeverity::Warning,
-            message: format!(
-                "confirmed removal leaves the logical reference from `{}` to `{target}`",
-                referrer.as_str()
-            ),
-            metadata_path: Some(referrer.clone()),
-            operation_index: None,
-            field: Some("force".to_string()),
-        });
+        diagnostics.push(
+            MetaDiagnostic::warning(
+                MetaDiagnosticCode::ReferenceConflict,
+                format!(
+                    "confirmed removal leaves the logical reference from `{}` to `{target}`",
+                    referrer.as_str()
+                ),
+            )
+            .with_metadata_path(referrer.clone())
+            .with_field("force"),
+        );
     }
 
     let subsystems_dir = resolved.source_root.join("Subsystems");
@@ -689,14 +689,13 @@ pub(crate) fn plan_typed_remove(
         context,
     ) {
         ResolvedSupportGuardCheck::Allow => {}
-        ResolvedSupportGuardCheck::Warn(_) => diagnostics.push(MetaDiagnostic {
-            code: MetaDiagnosticCode::SupportLocked,
-            severity: MetaDiagnosticSeverity::Warning,
-            message: "metadata support policy permits removal with a warning".to_string(),
-            metadata_path: Some(target.clone()),
-            operation_index: None,
-            field: None,
-        }),
+        ResolvedSupportGuardCheck::Warn(_) => diagnostics.push(
+            MetaDiagnostic::warning(
+                MetaDiagnosticCode::SupportLocked,
+                "metadata support policy permits removal with a warning",
+            )
+            .with_metadata_path(target.clone()),
+        ),
         ResolvedSupportGuardCheck::Block(_) => {
             return Err(typed_remove_failure(
                 MetaDiagnosticCode::SupportLocked,
@@ -713,17 +712,17 @@ pub(crate) fn plan_typed_remove(
             context,
         ) {
             ResolvedSupportGuardCheck::Allow => {}
-            ResolvedSupportGuardCheck::Warn(_) => diagnostics.push(MetaDiagnostic {
-                code: MetaDiagnosticCode::SupportLocked,
-                severity: MetaDiagnosticSeverity::Warning,
-                message: format!(
-                    "subsystem `{}` support policy permits cleanup with a warning",
-                    replacement.subsystem_name
-                ),
-                metadata_path: Some(target.clone()),
-                operation_index: None,
-                field: Some("dependencies".to_string()),
-            }),
+            ResolvedSupportGuardCheck::Warn(_) => diagnostics.push(
+                MetaDiagnostic::warning(
+                    MetaDiagnosticCode::SupportLocked,
+                    format!(
+                        "subsystem `{}` support policy permits cleanup with a warning",
+                        replacement.subsystem_name
+                    ),
+                )
+                .with_metadata_path(target.clone())
+                .with_field("dependencies"),
+            ),
             ResolvedSupportGuardCheck::Block(_) => {
                 return Err(typed_remove_failure(
                     MetaDiagnosticCode::SupportLocked,

@@ -243,8 +243,18 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
         tool: "unica.meta.edit",
         operation: "meta-edit",
         impact: XmlImpactClass::CreateOrModify,
-        case_ids: &["meta-edit-property", "meta-edit-event-source"],
-        required_branches: &["modify-property", "event-source"],
+        case_ids: &[
+            "meta-edit-property",
+            "meta-edit-event-source",
+            "meta-edit-resource-append",
+            "meta-edit-resource-position-after",
+        ],
+        required_branches: &[
+            "modify-property",
+            "event-source",
+            "resource-append",
+            "resource-position-after",
+        ],
     },
     MutatorRegistryEntry {
         tool: "unica.meta.remove",
@@ -581,6 +591,16 @@ static EXECUTABLE_CASES: &[ExecutableCase] = &[
         id: "meta-edit-event-source",
         tool: "unica.meta.edit",
         branch: "event-source",
+    },
+    ExecutableCase {
+        id: "meta-edit-resource-append",
+        tool: "unica.meta.edit",
+        branch: "resource-append",
+    },
+    ExecutableCase {
+        id: "meta-edit-resource-position-after",
+        tool: "unica.meta.edit",
+        branch: "resource-position-after",
     },
     ExecutableCase {
         id: "meta-remove-object",
@@ -2335,49 +2355,118 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
         return Ok(args);
     }
 
+    if case.id == "meta-edit-event-source" {
+        seed_event_handlers(workspace)?;
+        seed_catalog(workspace)?;
+        seed_metadata(
+            workspace,
+            "seed-event-source-information-register",
+            json!({
+                "type": "InformationRegister",
+                "name": "CorpusInformationRegister"
+            }),
+        )?;
+        seed_metadata(
+            workspace,
+            "seed-event-subscription",
+            json!({
+                "type": "EventSubscription",
+                "name": "CorpusEventSubscription"
+            }),
+        )?;
+        let mut args = common_args(workspace);
+        args.insert("sourceSet".to_string(), Value::String("main".to_string()));
+        args.insert(
+            "metadataPath".to_string(),
+            Value::String("EventSubscription.CorpusEventSubscription".to_string()),
+        );
+        args.insert(
+            "operations".to_string(),
+            json!([{
+                "op": "editRelations",
+                "relation": "source",
+                "mode": "replace",
+                "targets": [{
+                    "kind": "recordSet",
+                    "metadataPath": "InformationRegister.CorpusInformationRegister"
+                }]
+            }]),
+        );
+        return Ok(args);
+    }
+
     if matches!(
         case.id,
-        "meta-edit-property" | "meta-edit-event-source" | "meta-remove-object"
+        "meta-edit-resource-append" | "meta-edit-resource-position-after"
     ) {
-        if case.id == "meta-edit-event-source" {
-            seed_event_handlers(workspace)?;
-            seed_catalog(workspace)?;
-            seed_metadata(
-                workspace,
-                "seed-event-source-information-register",
-                json!({
-                    "type": "InformationRegister",
-                    "name": "CorpusInformationRegister"
-                }),
-            )?;
-            seed_metadata(
-                workspace,
-                "seed-event-subscription",
-                json!({
-                    "type": "EventSubscription",
-                    "name": "CorpusEventSubscription"
-                }),
-            )?;
-            let mut args = common_args(workspace);
-            args.insert("sourceSet".to_string(), Value::String("main".to_string()));
-            args.insert(
+        let number_type = json!({
+            "variants": [{
+                "kind": "number",
+                "digits": 15,
+                "fraction": 2,
+                "sign": "any"
+            }]
+        });
+        let mut create_args = common_args(workspace);
+        create_args.insert("sourceSet".to_string(), Value::String("main".to_string()));
+        create_args.insert(
+            "kind".to_string(),
+            Value::String("InformationRegister".to_string()),
+        );
+        create_args.insert(
+            "name".to_string(),
+            Value::String("CorpusInformationRegister".to_string()),
+        );
+        create_args.insert(
+            "operations".to_string(),
+            json!([{
+                "op": "add",
+                "collection": "resources",
+                "elements": [{"name": "Price", "type": number_type.clone()}]
+            }]),
+        );
+        call_public_tool("unica.meta.add", &create_args)?;
+        if case.id == "meta-edit-resource-position-after" {
+            let mut seed_args = common_args(workspace);
+            seed_args.insert("sourceSet".to_string(), Value::String("main".to_string()));
+            seed_args.insert(
                 "metadataPath".to_string(),
-                Value::String("EventSubscription.CorpusEventSubscription".to_string()),
+                Value::String("InformationRegister.CorpusInformationRegister".to_string()),
             );
-            args.insert(
+            seed_args.insert(
                 "operations".to_string(),
                 json!([{
-                    "op": "editRelations",
-                    "relation": "source",
-                    "mode": "replace",
-                    "targets": [{
-                        "kind": "recordSet",
-                        "metadataPath": "InformationRegister.CorpusInformationRegister"
-                    }]
+                    "op": "add",
+                    "collection": "resources",
+                    "elements": [{"name": "Total", "type": number_type.clone()}]
                 }]),
             );
-            return Ok(args);
+            call_public_tool("unica.meta.edit", &seed_args)?;
         }
+
+        let element = if case.id == "meta-edit-resource-append" {
+            json!({"name": "Amount", "type": number_type})
+        } else {
+            json!({
+                "name": "Quantity",
+                "type": number_type,
+                "position": {"after": "Price"}
+            })
+        };
+        let mut args = common_args(workspace);
+        args.insert("sourceSet".to_string(), Value::String("main".to_string()));
+        args.insert(
+            "metadataPath".to_string(),
+            Value::String("InformationRegister.CorpusInformationRegister".to_string()),
+        );
+        args.insert(
+            "operations".to_string(),
+            json!([{"op": "add", "collection": "resources", "elements": [element]}]),
+        );
+        return Ok(args);
+    }
+
+    if matches!(case.id, "meta-edit-property" | "meta-remove-object") {
         seed_catalog(workspace)?;
         let mut args = common_args(workspace);
         args.insert("sourceSet".to_string(), Value::String("main".to_string()));
@@ -3796,6 +3885,72 @@ fn every_public_native_mutator_has_xml_impact_and_case_coverage() {
         executable.keys().copied().collect(),
         "stale executable case"
     );
+}
+
+#[test]
+fn meta_edit_structural_resource_insertions_build_exact_platform_cases() {
+    for (case_id, expected_names) in [
+        ("meta-edit-resource-append", &["Price", "Amount"][..]),
+        (
+            "meta-edit-resource-position-after",
+            &["Price", "Quantity", "Total"][..],
+        ),
+    ] {
+        let case = EXECUTABLE_CASES
+            .iter()
+            .find(|case| case.id == case_id)
+            .unwrap_or_else(|| panic!("missing exact platform case: {case_id}"));
+        let root = unique_temp_dir(case_id);
+        let mut gate = SequentialCallGate::default();
+        let generated = run_corpus_case(&root, case, &mut gate).unwrap();
+
+        assert_eq!(gate.completed_target_calls, 1, "{case_id}");
+        assert_eq!(
+            generated.platform_checkpoint.covered_case_ids,
+            [case_id.to_string()],
+            "{case_id}"
+        );
+        if case_id == "meta-edit-resource-append" {
+            let preimage = fs::read_to_string(
+                root.join("cases")
+                    .join(case_id)
+                    .join("pre-xml/src/InformationRegisters/CorpusInformationRegister.xml"),
+            )
+            .unwrap();
+            let child_objects_close = preimage.find("</ChildObjects>").unwrap();
+            let resource_close = preimage[..child_objects_close]
+                .rfind("</Resource>")
+                .map(|index| index + "</Resource>".len())
+                .expect("append preimage must contain a resource");
+            assert!(
+                preimage[resource_close..child_objects_close]
+                    .trim()
+                    .is_empty(),
+                "append preimage must end ChildObjects with Resource: {preimage}"
+            );
+        }
+        let descriptor = fs::read_to_string(
+            root.join("cases")
+                .join(case_id)
+                .join("workspace/src/InformationRegisters/CorpusInformationRegister.xml"),
+        )
+        .unwrap();
+        assert!(!descriptor.contains("</Resource>&#13;"), "{descriptor}");
+        let positions = expected_names
+            .iter()
+            .map(|name| {
+                descriptor
+                    .find(&format!("<Name>{name}</Name>"))
+                    .unwrap_or_else(|| panic!("{case_id} has no resource {name}: {descriptor}"))
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            positions.windows(2).all(|pair| pair[0] < pair[1]),
+            "{case_id}: {descriptor}"
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
 }
 
 #[test]

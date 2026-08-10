@@ -7,9 +7,8 @@ use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::metadata::{
     metadata_identifier_is_valid, MetaCollectionsData, MetaDiagnostic, MetaDiagnosticCode,
-    MetaDiagnosticSeverity, MetaElementData, MetaEventSource, MetaPropertyData, MetaPropertyValue,
-    MetaRelationTargetData, MetaRelationsData, MetaSupportStatus, MetadataKind,
-    METADATA_PROPERTY_SPECS,
+    MetaElementData, MetaEventSource, MetaPropertyData, MetaPropertyValue, MetaRelationTargetData,
+    MetaRelationsData, MetaSupportStatus, MetadataKind, METADATA_PROPERTY_SPECS,
 };
 use crate::domain::source_target::{
     MetadataAddress, SourceTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
@@ -775,22 +774,19 @@ fn typed_element(
             Err(diagnostic) => {
                 incomplete = true;
                 let read_only = typed_read_only_platform_type(properties_text);
-                diagnostics.push(MetaDiagnostic {
-                    code: MetaDiagnosticCode::ValidationFailed,
-                    severity: if read_only {
-                        MetaDiagnosticSeverity::Warning
-                    } else {
-                        MetaDiagnosticSeverity::Error
-                    },
-                    message: if read_only {
-                        "metadata type is valid but outside the public mutation algebra".to_string()
-                    } else {
-                        diagnostic.message
-                    },
-                    metadata_path: Some(target.clone()),
-                    operation_index: None,
-                    field: Some(format!("{field}.type")),
-                });
+                let typed = if read_only {
+                    MetaDiagnostic::warning(
+                        MetaDiagnosticCode::ValidationFailed,
+                        "metadata type is valid but outside the public mutation algebra",
+                    )
+                } else {
+                    MetaDiagnostic::error(MetaDiagnosticCode::ValidationFailed, diagnostic.message)
+                };
+                diagnostics.push(
+                    typed
+                        .with_metadata_path(target.clone())
+                        .with_field(format!("{field}.type")),
+                );
                 None
             }
         }

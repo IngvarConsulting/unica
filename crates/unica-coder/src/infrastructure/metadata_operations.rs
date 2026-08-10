@@ -266,6 +266,15 @@ mod tests {
                 .prepare_metadata_mutation(request, context, cancellation)
         }
 
+        fn validate_metadata(
+            &self,
+            subject: &MetadataValidationSubject,
+            context: &WorkspaceContext,
+            cancellation: &CancellationToken,
+        ) -> MetadataValidationResult {
+            self.inner.validate_metadata(subject, context, cancellation)
+        }
+
         fn evaluate_format_guard(
             &self,
             spec: ToolSpec,
@@ -499,13 +508,22 @@ mod tests {
         }
 
         fn add_object(&self, kind: MetadataKind, name: &str) -> MetadataAddress {
+            self.add_object_with_operations(kind, name, Vec::new())
+        }
+
+        fn add_object_with_operations(
+            &self,
+            kind: MetadataKind,
+            name: &str,
+            operations: Vec<MetaEditOperation>,
+        ) -> MetadataAddress {
             let cancellation = CancellationToken::new();
             MetadataOperations::prepare_mutation(
                 &MetadataRequest::Add(MetaAddRequest {
                     source_set: "main".into(),
                     kind,
                     name: name.into(),
-                    operations: Vec::new(),
+                    operations,
                     dry_run: false,
                 }),
                 &self.context,
@@ -1366,6 +1384,98 @@ mod tests {
         prepared.publish(&cancellation).unwrap();
 
         assert_eq!(fs::read(&fixture.descriptor).unwrap(), preview);
+    }
+
+    #[test]
+    fn typed_resource_append_and_position_after_preserve_the_source_format() {
+        let fixture = Fixture::new("resource-preview-apply-source-format");
+        let first_resource = MetaEditOperation::add(
+            MetaCollection::Resources,
+            None,
+            vec![MetaElementInput::named("First")],
+        )
+        .unwrap();
+        let target = fixture.add_object_with_operations(
+            MetadataKind::InformationRegister,
+            "Facts",
+            vec![first_resource],
+        );
+        let descriptor = fixture.root.join("src/InformationRegisters/Facts.xml");
+        let generated = fs::read(&descriptor).unwrap();
+        let source_without_bom = generated
+            .strip_prefix(b"\xef\xbb\xbf")
+            .expect("generated descriptor has one UTF-8 BOM");
+        assert!(!source_without_bom.starts_with(b"\xef\xbb\xbf"));
+        let source = String::from_utf8(source_without_bom.to_vec())
+            .unwrap()
+            .replacen("<Comment/>", "<Comment>First&#13;Second</Comment>", 1);
+        let source = source
+            .trim_end_matches(['\r', '\n'])
+            .replace("\r\n", "\n")
+            .replace('\r', "\n")
+            .replace('\n', "\r\n");
+        let mut source_bytes = Vec::with_capacity(source.len() + 3);
+        source_bytes.extend_from_slice(b"\xef\xbb\xbf");
+        source_bytes.extend_from_slice(source.as_bytes());
+        fs::write(&descriptor, &source_bytes).unwrap();
+
+        let application = UnicaApplication::with_ports(Arc::new(FixedWorkspaceApplicationPorts {
+            context: fixture.context.clone(),
+            inner: InfrastructureApplicationPorts::new(),
+        }));
+        let dry_run_args = Map::from_iter([
+            ("sourceSet".to_string(), json!("main")),
+            ("metadataPath".to_string(), json!(target.as_str())),
+            (
+                "operations".to_string(),
+                json!([{
+                    "op": "add",
+                    "collection": "resources",
+                    "elements": [{"name": "Last"}]
+                }, {
+                    "op": "add",
+                    "collection": "resources",
+                    "elements": [{
+                        "name": "Second",
+                        "position": {"after": "First"}
+                    }]
+                }]),
+            ),
+            ("dryRun".to_string(), json!(true)),
+        ]);
+        let dry_run = application
+            .call_tool("unica.meta.edit", &dry_run_args)
+            .unwrap();
+        assert!(dry_run.ok, "{:?}", dry_run.errors);
+        let dry_run_data = dry_run.data.as_ref().expect("typed preview data");
+        assert_eq!(dry_run_data["changed"], true);
+        assert_eq!(dry_run_data["validation"]["status"], "passed");
+        assert_eq!(fs::read(&descriptor).unwrap(), source_bytes);
+
+        let mut apply_args = dry_run_args;
+        apply_args.insert("dryRun".to_string(), json!(false));
+        let applied = application
+            .call_tool("unica.meta.edit", &apply_args)
+            .unwrap();
+        assert!(applied.ok, "{:?}", applied.errors);
+        assert_eq!(applied.data.as_ref().unwrap()["changed"], true);
+
+        let updated = fs::read(&descriptor).unwrap();
+        assert!(updated.starts_with(b"\xef\xbb\xbf"));
+        assert!(!updated[3..].starts_with(b"\xef\xbb\xbf"));
+        assert!(!updated.ends_with(b"\r\n"));
+        let updated_text = std::str::from_utf8(&updated[3..]).unwrap();
+        let without_crlf = updated_text.replace("\r\n", "");
+        assert!(!without_crlf.contains(['\r', '\n']), "{updated_text}");
+        assert!(
+            updated_text.contains("<Comment>First&#13;Second</Comment>"),
+            "{updated_text}"
+        );
+        assert!(!updated_text.contains("</Resource>&#13;"), "{updated_text}");
+        let first = updated_text.find("<Name>First</Name>").unwrap();
+        let second = updated_text.find("<Name>Second</Name>").unwrap();
+        let last = updated_text.find("<Name>Last</Name>").unwrap();
+        assert!(first < second && second < last, "{updated_text}");
     }
 
     #[test]

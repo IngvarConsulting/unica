@@ -8,10 +8,10 @@ use crate::application::ports::{
 use crate::application::SupportGuardRequirement;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::metadata::{
-    metadata_identifier_is_valid, MetaDiagnostic, MetaDiagnosticCode, MetaDiagnosticSeverity,
-    MetaEditOperation, MetaMutationData, MetaMutationEffect, MetaPublicationAction,
-    MetaPublicationPlanEntry, MetaPublicationResource, MetaRelation, MetaValidationData,
-    MetaValidationStatus, RelationEditMode,
+    metadata_identifier_is_valid, MetaDiagnostic, MetaDiagnosticCode, MetaEditOperation,
+    MetaMutationData, MetaMutationEffect, MetaPublicationAction, MetaPublicationPlanEntry,
+    MetaPublicationResource, MetaRelation, MetaValidationData, MetaValidationStatus,
+    RelationEditMode,
 };
 use crate::domain::source_target::MetadataAddress;
 use crate::domain::workspace::WorkspaceContext;
@@ -175,15 +175,13 @@ impl PreparedMetaEdit {
             context,
         ) {
             ResolvedSupportGuardCheck::Allow => {}
-            ResolvedSupportGuardCheck::Warn(_) => diagnostics.push(MetaDiagnostic {
-                code: MetaDiagnosticCode::SupportLocked,
-                severity: MetaDiagnosticSeverity::Warning,
-                message: "metadata source support policy permits editing with a warning"
-                    .to_string(),
-                metadata_path: Some(target.clone()),
-                operation_index: None,
-                field: None,
-            }),
+            ResolvedSupportGuardCheck::Warn(_) => diagnostics.push(
+                MetaDiagnostic::warning(
+                    MetaDiagnosticCode::SupportLocked,
+                    "metadata source support policy permits editing with a warning",
+                )
+                .with_metadata_path(target.clone()),
+            ),
             ResolvedSupportGuardCheck::Block(_) => {
                 return Err(MetaDiagnostic::error(
                     MetaDiagnosticCode::SupportLocked,
@@ -619,14 +617,12 @@ pub(crate) fn prepare_meta_add(
         context,
     ) {
         ResolvedSupportGuardCheck::Allow => {}
-        ResolvedSupportGuardCheck::Warn(_) => preparation_diagnostics.push(MetaDiagnostic {
-            code: MetaDiagnosticCode::SupportLocked,
-            severity: MetaDiagnosticSeverity::Warning,
-            message: "metadata source support policy permits creation with a warning".to_string(),
-            metadata_path: None,
-            operation_index: None,
-            field: None,
-        }),
+        ResolvedSupportGuardCheck::Warn(_) => {
+            preparation_diagnostics.push(MetaDiagnostic::warning(
+                MetaDiagnosticCode::SupportLocked,
+                "metadata source support policy permits creation with a warning",
+            ))
+        }
         ResolvedSupportGuardCheck::Block(_) => {
             return Err(MetaDiagnostic::error(
                 MetaDiagnosticCode::SupportLocked,

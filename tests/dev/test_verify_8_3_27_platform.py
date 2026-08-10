@@ -1000,7 +1000,7 @@ class CorpusAdapterTests(unittest.TestCase):
     def test_mandatory_corpus_includes_every_cfe_patch_module_layout(self):
         verifier = load_verifier()
 
-        self.assertEqual(len(verifier.MANDATORY_CASE_IDS), 65)
+        self.assertEqual(len(verifier.MANDATORY_CASE_IDS), 67)
         self.assertTrue(
             {
                 "cfe-patch-method-bsl-only",
@@ -1031,7 +1031,7 @@ class CorpusAdapterTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 verifier.CorpusError,
-                r"65-case public-writer inventory; last verified digest.*candidate digest.*pending",
+                r"67-case public-writer inventory; last verified digest.*candidate digest.*pending",
             ):
                 verifier.load_corpus(
                     manifest,
