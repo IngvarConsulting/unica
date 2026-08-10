@@ -13,6 +13,16 @@ pub(crate) fn path_text_for_test(path: &Path) -> String {
     normalize_path_text_for_test(&path.display().to_string())
 }
 
+#[cfg(unix)]
+pub(crate) fn can_rename_parent_with_retained_cleanup_child_for_test() -> bool {
+    true
+}
+
+#[cfg(not(unix))]
+pub(crate) fn can_rename_parent_with_retained_cleanup_child_for_test() -> bool {
+    false
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FileLinkFixtureOutcome {
     Created,
