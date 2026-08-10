@@ -195,6 +195,17 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/application/metadata.rs`
 - **Scope:** source, packaged, runtime
 
+### INV-MCP-META-FINDINGS — Перенесённые находки метаданных имеют устойчивую идентичность
+
+- **Rule:** Каждое перенесённое из строкового контура языковое предупреждение
+  `MetadataValidator` возвращает в `structuredContent` отдельный стабильный код
+  правила, точное поле `properties.*` и непустой `language`; `message` не служит
+  машинным идентификатором.
+- **Decision:** ADR-0035
+- **Check:** `ci-test` — `crates/unica-coder/src/application/meta_info_surface_tests.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/application/meta_add_surface_tests.rs`
+- **Scope:** source, runtime
+
 ### INV-MCP-XDTO-LOGICAL-TARGET — XDTO-пакет выбирается логическим адресом
 
 - **Rule:** `unica.xdto.info` и `unica.xdto.edit` принимают XDTO-пакет только
@@ -764,7 +775,7 @@ Unica. Каждая запись формулирует одно нормати�
   каждый доказанный узел принадлежит ровно одной эффективной роли. Недопустимый элемент,
   ошибка, отмена, истечение срока или неполное чтение не публикуются как пустая
   доказанная проекция, а сбор зависимостей формата не зависит от снятого `Mode`.
-- **Decision:** ADR-0035
+- **Decision:** ADR-0036
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/subsystem.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/application/meta_info_surface_tests.rs`
 - **Scope:** source, runtime

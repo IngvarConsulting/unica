@@ -60,7 +60,7 @@ allowed-tools:
 | `tree` | Корневые подсистемы: `name`, `content` со счётчиком состава и вложенные `children` |
 
 Дерево строится только от `Configuration/ChildObjects` и рекурсивных
-`Subsystem/ChildObjects` (ADR-0035, `INV-SOURCE-SUBSYSTEM-TOPOLOGY`). Для
+`Subsystem/ChildObjects` (ADR-0036, `INV-SOURCE-SUBSYSTEM-TOPOLOGY`). Для
 конкретной зарегистрированной подсистемы оно сохраняет единственную цепочку
 предков от корня, выбранный узел и всех его потомков. Так в одном результате
 видно и положение подсистемы в конфигурации, и вся вложенная в неё структура.

@@ -28,13 +28,13 @@
 
 **Files:**
 - Modify: `docs/design/2026-08-09-subsystem-address-and-effective-role-design.md`
-- Modify: `spec/decisions/0035-subsystem-address-and-effective-role.md`
+- Modify: `spec/decisions/0036-subsystem-address-and-effective-role.md`
 - Modify: `spec/architecture/invariants.md`
 - Modify: `spec/architecture/building-blocks.md`
 - Modify: `docs/plans/2026-08-09-pr-386-subsystem-address-and-topology.md`
 
 **Interfaces:**
-- Produces: ADR-0035 and `INV-SOURCE-SUBSYSTEM-TOPOLOGY` with separate public projections.
+- Produces: ADR-0036 and `INV-SOURCE-SUBSYSTEM-TOPOLOGY` with separate public projections.
 
 - [ ] **Step 1: Record the corrected projections**
 
@@ -53,7 +53,7 @@ Expected: PASS.
 - [ ] **Step 3: Commit the corrected decision**
 
 ```bash
-git add docs/design/2026-08-09-subsystem-address-and-effective-role-design.md docs/plans/2026-08-09-pr-386-subsystem-address-and-topology.md spec/decisions/0035-subsystem-address-and-effective-role.md spec/architecture/invariants.md spec/architecture/building-blocks.md
+git add docs/design/2026-08-09-subsystem-address-and-effective-role-design.md docs/plans/2026-08-09-pr-386-subsystem-address-and-topology.md spec/decisions/0036-subsystem-address-and-effective-role.md spec/architecture/invariants.md spec/architecture/building-blocks.md
 git commit -m "docs(subsystem): разделить дерево и членства объекта"
 ```
 

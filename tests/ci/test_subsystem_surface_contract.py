@@ -147,7 +147,7 @@ Prose resembling JSON: `"SubsystemPath": "Subsystems/Ложная/Subsystems"`.
             REPO_ROOT / "crates/unica-coder/src/application/tool_contracts.rs"
         ).read_text(encoding="utf-8")
         self.assertNotIn("whole `Subsystems/` folder for `Mode=tree`", tool_contracts)
-        for marker in ("ADR-0035", "INV-SOURCE-SUBSYSTEM-TOPOLOGY"):
+        for marker in ("ADR-0036", "INV-SOURCE-SUBSYSTEM-TOPOLOGY"):
             self.assertIn(marker, skill)
 
     def test_surface_ledger_names_the_shared_registered_contract(self) -> None:
@@ -167,7 +167,7 @@ Prose resembling JSON: `"SubsystemPath": "Subsystems/Ложная/Subsystems"`.
         for text in (ledger_section, review_text):
             for marker in (
                 "tree",
-                "ADR-0035",
+                "ADR-0036",
                 "INV-SOURCE-SUBSYSTEM-TOPOLOGY",
                 "самостоятельн",
                 "локальн",

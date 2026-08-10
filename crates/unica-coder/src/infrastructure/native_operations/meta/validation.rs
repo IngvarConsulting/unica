@@ -83,14 +83,36 @@ pub(crate) fn validate_metadata_owner_shape_8_3_27(
 pub(super) struct MetaValidationReporter {
     pub(crate) errors: Vec<String>,
     pub(crate) warnings: Vec<String>,
+    pub(crate) findings: Vec<MetaValidationFinding>,
     pub(crate) stopped: bool,
     pub(crate) max_errors: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct MetaValidationFinding {
+    code: MetaDiagnosticCode,
+    field: String,
+    language: Option<String>,
+    message: String,
+}
+
+impl MetaValidationFinding {
+    fn into_diagnostic(self, subject: &MetadataValidationSubject) -> MetaDiagnostic {
+        let diagnostic = MetaDiagnostic::warning(self.code, self.message)
+            .with_metadata_path(subject.target.clone())
+            .with_field(self.field);
+        match self.language {
+            Some(language) => diagnostic.with_language(language),
+            None => diagnostic,
+        }
+    }
 }
 
 pub(super) struct MetaValidationRun {
     pub(crate) ok: bool,
     pub(crate) errors: Vec<String>,
     pub(crate) warnings: Vec<String>,
+    pub(crate) findings: Vec<MetaValidationFinding>,
 }
 
 #[derive(Debug, Clone)]
@@ -399,6 +421,11 @@ impl MetadataValidator {
                             warning.trim_start_matches("[WARN]  "),
                         )
                     }));
+                    diagnostics.extend(
+                        run.findings
+                            .into_iter()
+                            .map(|finding| finding.into_diagnostic(subject)),
+                    );
                 }
                 Err(error) => {
                     diagnostics.push(provider_diagnostic(subject, descriptor_index, error))
@@ -1618,11 +1645,9 @@ fn validation_warning(
     field: &str,
     message: impl Into<String>,
 ) -> MetaDiagnostic {
-    let mut diagnostic = MetaDiagnostic::error(MetaDiagnosticCode::ValidationFailed, message)
+    MetaDiagnostic::warning(MetaDiagnosticCode::ValidationFailed, message)
         .with_metadata_path(subject.target.clone())
-        .with_field(field);
-    diagnostic.severity = MetaDiagnosticSeverity::Warning;
-    diagnostic
+        .with_field(field)
 }
 
 fn subject_target_identity(subject: &MetadataValidationSubject) -> (&str, &str) {
@@ -1689,6 +1714,7 @@ impl MetaValidationReporter {
         Self {
             errors: Vec::new(),
             warnings: Vec::new(),
+            findings: Vec::new(),
             stopped: false,
             max_errors,
         }
@@ -1707,8 +1733,28 @@ impl MetaValidationReporter {
         self.warnings.push(format!("[WARN]  {}", message.into()));
     }
 
-    pub(super) fn finalize(self) -> (bool, Vec<String>, Vec<String>) {
-        (self.errors.is_empty(), self.errors, self.warnings)
+    pub(super) fn warn_finding(
+        &mut self,
+        code: MetaDiagnosticCode,
+        field: impl Into<String>,
+        language: Option<&str>,
+        message: impl Into<String>,
+    ) {
+        self.findings.push(MetaValidationFinding {
+            code,
+            field: field.into(),
+            language: language.map(str::to_owned),
+            message: message.into(),
+        });
+    }
+
+    pub(super) fn finalize(self) -> (bool, Vec<String>, Vec<String>, Vec<MetaValidationFinding>) {
+        (
+            self.errors.is_empty(),
+            self.errors,
+            self.warnings,
+            self.findings,
+        )
     }
 }
 
@@ -2072,11 +2118,12 @@ fn meta_validate_check_subject_owner_proof(
 pub(super) fn meta_validate_finish(
     report: MetaValidationReporter,
 ) -> Result<MetaValidationRun, String> {
-    let (ok, errors, warnings) = report.finalize();
+    let (ok, errors, warnings, findings) = report.finalize();
     Ok(MetaValidationRun {
         ok,
         errors,
         warnings,
+        findings,
     })
 }
 
@@ -2278,6 +2325,27 @@ fn meta_validate_check_command_texts(
                 language.as_deref() == Some(language_code.as_str()) && !text.trim().is_empty()
             })
             .collect::<Vec<_>>();
+        // A list presentation that merely repeats the synonym adds nothing to the
+        // command interface, so a value equal to the synonym is redundant.
+        for (_, list_text) in &list_values {
+            let duplicates_synonym = synonyms.iter().any(|(language, synonym_text)| {
+                language.as_deref() == Some(language_code.as_str())
+                    && !synonym_text.trim().is_empty()
+                    && synonym_text == list_text
+            });
+            if duplicates_synonym {
+                report.warn_finding(
+                    MetaDiagnosticCode::RedundantListPresentation,
+                    "properties.ListPresentation",
+                    Some(language_code.as_str()),
+                    format!(
+                        "3. Properties: ListPresentation '{list_text}' duplicates the Synonym \
+                         for the command interface, language '{language_code}' (a list \
+                         presentation equal to the synonym is redundant)"
+                    ),
+                );
+            }
+        }
         let selected = if list_values.is_empty() {
             synonyms
                 .iter()
@@ -2293,7 +2361,12 @@ fn meta_validate_check_command_texts(
                 .collect::<Vec<_>>()
         };
         for (source, text) in selected {
-            meta_validate_warn_long_command_text(report, source, text, Some(language_code));
+            meta_validate_warn_long_command_text(
+                report,
+                source,
+                text,
+                Some(language_code.as_str()),
+            );
         }
     }
 }
@@ -2302,18 +2375,29 @@ fn meta_validate_warn_long_command_text(
     report: &mut MetaValidationReporter,
     source: &str,
     text: &str,
-    language: Option<&String>,
+    language: Option<&str>,
 ) {
     let length = text.chars().count();
-    if length <= 38 {
+    let (code, message) = if length > 38 {
+        (
+            MetaDiagnosticCode::CommandTextUpperLimit,
+            format!(
+                "3. Properties: {source} '{text}' is longer than the upper \
+                 command-interface threshold of 38 characters ({length})"
+            ),
+        )
+    } else if length > 30 {
+        (
+            MetaDiagnosticCode::CommandTextRecommendedLimit,
+            format!(
+                "3. Properties: {source} '{text}' is longer than the recommended \
+                 command-interface length of 30 characters ({length})"
+            ),
+        )
+    } else {
         return;
-    }
-    let language_suffix = language
-        .map(|language| format!(", language '{language}'"))
-        .unwrap_or_default();
-    report.warn(format!(
-        "3. Properties: {source} '{text}' is longer than 38 characters ({length}) for the command interface{language_suffix}"
-    ));
+    };
+    report.warn_finding(code, format!("properties.{source}"), language, message);
 }
 
 pub(super) fn meta_validate_check_property_values(

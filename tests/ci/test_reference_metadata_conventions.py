@@ -54,7 +54,7 @@ class MetadataConventionReferenceTests(unittest.TestCase):
         self.assertNotIn(
             "Отсутствующий `IncludeInCommandInterface` равнозначен", conventions
         )
-        for marker in ("Эффективная роль", "явный `false`", "ADR-0035"):
+        for marker in ("Эффективная роль", "явный `false`", "ADR-0036"):
             self.assertIn(marker, conventions)
         for marker in (
             "`functionalSubsystems`",

@@ -948,6 +948,137 @@ fn add_does_not_judge_subsystem_membership() {
     );
 }
 
+fn add_with_synonym(workspace: &TempWorkspace, name: &str, synonym: &str) -> Vec<Value> {
+    let mut args = add_args(workspace.path(), "Catalog", name, false);
+    args.insert(
+        "operations".to_string(),
+        json!([{"op": "setProperties", "values": {"Synonym": synonym}}]),
+    );
+    let result = call_add_with_args(workspace.path(), &args);
+    assert!(result.ok, "{name}: {:?}", result.errors);
+    assert!(
+        workspace
+            .path()
+            .join(format!("src/Catalogs/{name}.xml"))
+            .exists(),
+        "warning must not block apply for Catalog.{name}"
+    );
+    let data = result.data.expect("typed mutation data");
+    assert_eq!(data["validation"]["status"], "passed", "{name}");
+    data["validation"]["diagnostics"]
+        .as_array()
+        .expect("validation diagnostics")
+        .clone()
+}
+
+fn diagnostic_by_code<'a>(diagnostics: &'a [Value], code: &str) -> Option<&'a Value> {
+    diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic["code"] == code)
+}
+
+#[test]
+fn add_pins_both_command_text_thresholds_at_their_boundaries() {
+    let workspace = create_configuration_workspace("command-text-boundaries");
+    let cases = [
+        (30, None),
+        (31, Some("command_text_recommended_limit")),
+        (38, Some("command_text_recommended_limit")),
+        (39, Some("command_text_upper_limit")),
+    ];
+
+    for (length, expected_code) in cases {
+        let name = format!("Exactly{length}");
+        let diagnostics = add_with_synonym(&workspace, &name, &"Д".repeat(length));
+        let recommended = diagnostic_by_code(&diagnostics, "command_text_recommended_limit");
+        let upper = diagnostic_by_code(&diagnostics, "command_text_upper_limit");
+
+        match expected_code {
+            Some(code) => {
+                let warning = diagnostic_by_code(&diagnostics, code)
+                    .unwrap_or_else(|| panic!("missing {code} for {length}: {diagnostics:?}"));
+                assert_eq!(warning["severity"], "warning", "{diagnostics:?}");
+                assert_eq!(warning["metadataPath"], format!("Catalog.{name}"));
+                assert_eq!(warning["field"], "properties.Synonym");
+                assert_eq!(warning["language"], "ru");
+                assert!(
+                    warning["message"]
+                        .as_str()
+                        .is_some_and(|value| !value.is_empty()),
+                    "{diagnostics:?}"
+                );
+            }
+            None => assert!(recommended.is_none() && upper.is_none(), "{diagnostics:?}"),
+        }
+        assert_eq!(
+            (recommended.is_some(), upper.is_some()),
+            match expected_code {
+                Some("command_text_recommended_limit") => (true, false),
+                Some("command_text_upper_limit") => (false, true),
+                _ => (false, false),
+            },
+            "one value must never draw both threshold findings: {diagnostics:?}"
+        );
+    }
+}
+
+#[test]
+fn info_uses_nonempty_list_presentation_for_command_text_finding() {
+    let workspace = create_configuration_workspace("command-text-list-presentation");
+    let name = "ListPresentationLimit";
+    let synonym_diagnostics = add_with_synonym(&workspace, name, "Короткий синоним");
+    assert!(
+        diagnostic_by_code(&synonym_diagnostics, "command_text_recommended_limit").is_none()
+            && diagnostic_by_code(&synonym_diagnostics, "command_text_upper_limit").is_none(),
+        "{synonym_diagnostics:?}"
+    );
+
+    let descriptor = workspace.path().join(format!("src/Catalogs/{name}.xml"));
+    let source = std::fs::read_to_string(&descriptor).unwrap();
+    let list_text = "Текст длиной не менее тридцати девяти символов";
+    assert!(list_text.chars().count() > 38);
+    let replacement = format!(
+        "<ListPresentation>\n\t\t\t<v8:item>\n\t\t\t\t<v8:lang>ru</v8:lang>\n\t\t\t\t<v8:content>{list_text}</v8:content>\n\t\t\t</v8:item>\n\t\t</ListPresentation>"
+    );
+    let patched = source.replacen("<ListPresentation/>", &replacement, 1);
+    assert_ne!(
+        patched, source,
+        "fixture must patch a real ListPresentation"
+    );
+    std::fs::write(&descriptor, patched).unwrap();
+
+    let _cwd = ProcessCwdGuard::enter(workspace.path()).unwrap();
+    let result = UnicaApplication::new()
+        .call_tool(
+            "unica.meta.info",
+            &Map::from_iter([
+                ("sourceSet".to_string(), json!("main")),
+                ("metadataPath".to_string(), json!(format!("Catalog.{name}"))),
+            ]),
+        )
+        .expect("private typed meta.info call");
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.expect("typed info data");
+    assert_eq!(data["validation"]["status"], "passed");
+    let diagnostics = data["validation"]["diagnostics"]
+        .as_array()
+        .expect("validation diagnostics");
+    let warning = diagnostic_by_code(diagnostics, "command_text_upper_limit")
+        .unwrap_or_else(|| panic!("typed ListPresentation warning: {diagnostics:?}"));
+    assert_eq!(warning["severity"], "warning");
+    assert_eq!(warning["metadataPath"], format!("Catalog.{name}"));
+    assert_eq!(warning["field"], "properties.ListPresentation");
+    assert_eq!(warning["language"], "ru");
+    assert!(
+        diagnostics.iter().all(|diagnostic| {
+            diagnostic["code"] != "command_text_recommended_limit"
+                && !(diagnostic["code"] == "command_text_upper_limit"
+                    && diagnostic["field"] == "properties.Synonym")
+        }),
+        "nonempty ListPresentation must take priority: {diagnostics:?}"
+    );
+}
+
 fn assert_partial_is_stable(workspace: &TempWorkspace, kind: &str, name: &str) {
     let before = tree_snapshot(&workspace.path().join("src"));
     let result = call_add(workspace.path(), kind, name, false);
