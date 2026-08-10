@@ -983,7 +983,7 @@ mod tests {
     }
 
     #[test]
-    fn native_tool_schema_is_typed_and_does_not_expose_raw_args() {
+    fn native_reader_schema_is_typed_and_has_no_invocation_switch() {
         let listed = tool_definitions(&crate::application::tools());
         let cf_info = listed
             .iter()
@@ -994,7 +994,7 @@ mod tests {
         assert_eq!(schema["additionalProperties"], false);
         assert!(schema["properties"].get("ConfigPath").is_some());
         assert!(schema["properties"].get("cwd").is_some());
-        assert!(schema["properties"].get("dryRun").is_some());
+        assert!(schema["properties"].get("dryRun").is_none());
         assert!(schema["properties"].get("args").is_none());
     }
 

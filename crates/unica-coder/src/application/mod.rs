@@ -1116,6 +1116,7 @@ fn call_tool(
             )?,
         },
     };
+    enforce_result_contract(spec, mode, &handler_outcome)?;
     let mut outcome = handler_outcome.adapter;
     let handler_events = handler_outcome.events;
     let projected_events = handler_outcome.projected_events;
@@ -1233,6 +1234,24 @@ fn call_tool(
             handler_outcome.job
         },
     })
+}
+
+fn enforce_result_contract(
+    spec: ToolSpec,
+    mode: InvocationMode,
+    outcome: &ports::HandlerOutcome,
+) -> Result<(), String> {
+    if mode == InvocationMode::Read
+        && spec.result_contract == ResultContract::Typed
+        && outcome.adapter.ok
+        && outcome.data.is_none()
+    {
+        return Err(format!(
+            "typed_result_missing: {} returned ok without OperationResult.data",
+            spec.name
+        ));
+    }
+    Ok(())
 }
 
 fn invalid_metadata_arguments_result(failure: metadata::MetaFailure) -> OperationResult {
@@ -2963,11 +2982,37 @@ mod tests {
 
         fn read(
             &self,
-            _request: &CodeIntelligenceReadRequest,
+            request: &CodeIntelligenceReadRequest,
             _context: &crate::domain::code_intelligence::CodeIntelligenceContext,
             _deadline: ProviderDeadline,
             _cancellation: &CancellationToken,
         ) -> Result<crate::domain::code_intelligence::ProviderReadOutcome, String> {
+            let data = match request {
+                CodeIntelligenceReadRequest::Definition { name, .. } => {
+                    crate::domain::code_intelligence::CodeIntelligenceReadData::Definition(
+                        crate::domain::code_intelligence::CodeDefinitionResult {
+                            name: name.clone(),
+                            definitions: Vec::new(),
+                        },
+                    )
+                }
+                CodeIntelligenceReadRequest::Outline { path, .. } => {
+                    crate::domain::code_intelligence::CodeIntelligenceReadData::Outline(
+                        crate::domain::code_intelligence::CodeOutlineResult {
+                            module: path.clone(),
+                            identity: Default::default(),
+                            totals: crate::domain::code_intelligence::CodeOutlineTotals {
+                                methods: 0,
+                                exports: 0,
+                                regions: 0,
+                                loc: 0,
+                            },
+                            regions: Vec::new(),
+                            methods: Vec::new(),
+                        },
+                    )
+                }
+            };
             Ok(crate::domain::code_intelligence::ProviderReadOutcome {
                 provider: crate::domain::code_intelligence::ProviderId::Rlm,
                 ok: true,
@@ -2977,7 +3022,7 @@ mod tests {
                 artifacts: Vec::new(),
                 stdout: None,
                 stderr: None,
-                data: None,
+                data: Some(data),
             })
         }
     }
@@ -3059,9 +3104,10 @@ mod tests {
             if self.prepared_code_search_handler && spec.name == "unica.code.search" {
                 return Ok(ports::PreparedToolInvocation {
                     format_guard: None,
-                    handler: Some(ports::HandlerOutcome::plain(AdapterOutcome::ok(
-                        "prepared code search",
-                    ))),
+                    handler: Some(ports::HandlerOutcome::with_data(
+                        AdapterOutcome::ok("prepared code search"),
+                        json!({"sections": []}),
+                    )),
                 });
             }
             Ok(ports::PreparedToolInvocation::empty())
@@ -3120,19 +3166,28 @@ mod tests {
 
         fn invoke_handler(
             &self,
-            _spec: ToolSpec,
+            spec: ToolSpec,
             _args: &Map<String, Value>,
             _context: &WorkspaceContext,
             _mode: InvocationMode,
             _cancellation: &CancellationToken,
         ) -> Result<ports::HandlerOutcome, String> {
             self.handler_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(ports::HandlerOutcome::plain(AdapterOutcome::ok("handled")))
+            let outcome = AdapterOutcome::ok("handled");
+            Ok(
+                if spec.execution == ToolExecution::Read
+                    && spec.result_contract == ResultContract::Typed
+                {
+                    ports::HandlerOutcome::with_data(outcome, json!({"fixture": true}))
+                } else {
+                    ports::HandlerOutcome::plain(outcome)
+                },
+            )
         }
 
         fn invoke_handler_with_operational_config(
             &self,
-            _spec: ToolSpec,
+            spec: ToolSpec,
             _args: &Map<String, Value>,
             _context: &WorkspaceContext,
             _mode: InvocationMode,
@@ -3142,7 +3197,16 @@ mod tests {
             self.handler_calls.fetch_add(1, Ordering::SeqCst);
             *self.observed_analyze_timeout.lock().unwrap() =
                 operational_config.map(|config| config.code_diagnostics().analyze_timeout());
-            Ok(ports::HandlerOutcome::plain(AdapterOutcome::ok("handled")))
+            let outcome = AdapterOutcome::ok("handled");
+            Ok(
+                if spec.execution == ToolExecution::Read
+                    && spec.result_contract == ResultContract::Typed
+                {
+                    ports::HandlerOutcome::with_data(outcome, json!({"fixture": true}))
+                } else {
+                    ports::HandlerOutcome::plain(outcome)
+                },
+            )
         }
 
         fn cache_report(
@@ -7364,6 +7428,31 @@ mod tests {
     }
 
     #[test]
+    fn tool_specs_match_reviewed_result_contracts() {
+        let review: Value = serde_json::from_str(include_str!(
+            "../../../../spec/architecture/tool-surface-review.json"
+        ))
+        .expect("tool-surface review is valid JSON");
+        let review = review
+            .as_object()
+            .expect("tool-surface review is a tool-name object");
+        let registered = tools();
+        assert_eq!(review.len(), registered.len());
+
+        for tool in registered {
+            let entry = review
+                .get(tool.name)
+                .unwrap_or_else(|| panic!("{} has no tool-surface review", tool.name));
+            let expected = if entry["scope"] == "in" && entry["result"]["contract"] == "typed" {
+                ResultContract::Typed
+            } else {
+                ResultContract::ExternalStream
+            };
+            assert_eq!(tool.result_contract, expected, "{}", tool.name);
+        }
+    }
+
+    #[test]
     fn native_operation_descriptors_cover_all_native_tool_handlers() {
         for tool in tools() {
             let ToolHandler::NativeOperation { operation, .. } = tool.handler else {
@@ -9383,16 +9472,23 @@ mod tests {
 
             fn invoke_handler(
                 &self,
-                _spec: ToolSpec,
+                spec: ToolSpec,
                 args: &Map<String, Value>,
                 _context: &WorkspaceContext,
                 _mode: InvocationMode,
                 _cancellation: &CancellationToken,
             ) -> Result<ports::HandlerOutcome, String> {
                 self.record("handler", args);
-                Ok(ports::HandlerOutcome::plain(AdapterOutcome::ok(
-                    "alias recording",
-                )))
+                let outcome = AdapterOutcome::ok("alias recording");
+                Ok(
+                    if spec.execution == ToolExecution::Read
+                        && spec.result_contract == ResultContract::Typed
+                    {
+                        ports::HandlerOutcome::with_data(outcome, json!({"fixture": true}))
+                    } else {
+                        ports::HandlerOutcome::plain(outcome)
+                    },
+                )
             }
 
             fn cache_report(
@@ -9508,7 +9604,7 @@ mod tests {
         });
         UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
             outcome: AdapterOutcome::ok("same aliases"),
-            data: None,
+            data: Some(json!({"fixture": true})),
         }))
         .call_tool("unica.cf.info", same.as_object().unwrap())
         .expect("equal path aliases must collapse to one canonical value");
@@ -9519,7 +9615,7 @@ mod tests {
         });
         UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
             outcome: AdapterOutcome::ok("empty alias ignored"),
-            data: None,
+            data: Some(json!({"fixture": true})),
         }))
         .call_tool("unica.cf.info", empty_and_value.as_object().unwrap())
         .expect("one non-empty path alias must win over empty aliases");
@@ -10827,6 +10923,68 @@ mod tests {
         }
 
         fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
+    }
+
+    #[test]
+    fn successful_typed_reader_without_data_fails_closed() {
+        let error = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
+            outcome: AdapterOutcome::ok("reader omitted its typed payload"),
+            data: None,
+        }))
+        .call_tool("unica.project.status", &Map::new())
+        .expect_err("successful typed reader without data must fail closed");
+
+        assert_eq!(
+            error,
+            "typed_result_missing: unica.project.status returned ok without OperationResult.data"
+        );
+    }
+
+    #[test]
+    fn failed_typed_reader_may_omit_data() {
+        let mut outcome = AdapterOutcome::ok("reader failed before producing data");
+        outcome.ok = false;
+        outcome.errors.push("invalid source input".to_string());
+
+        let result = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
+            outcome,
+            data: None,
+        }))
+        .call_tool("unica.project.status", &Map::new())
+        .expect("typed reader failure may omit data");
+
+        assert!(!result.ok);
+        assert!(result.data.is_none());
+    }
+
+    #[test]
+    fn successful_typed_mutation_may_omit_data() {
+        let result = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
+            outcome: AdapterOutcome::ok("mutation completed without a typed receipt"),
+            data: None,
+        }))
+        .call_tool("unica.cf.edit", &Map::new())
+        .expect("typed mutation remains outside the reader postcondition");
+
+        assert!(result.ok);
+        assert!(result.data.is_none());
+    }
+
+    #[test]
+    fn successful_external_stream_reader_may_omit_data() {
+        let args = Map::from_iter([(
+            "ConfigPath".to_string(),
+            Value::String("src/Configuration.xml".to_string()),
+        )]);
+        let result = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
+            outcome: AdapterOutcome::ok("validator reported through its external stream"),
+            data: None,
+        }))
+        .call_tool("unica.cf.validate", &args)
+        .expect("external-stream reader remains outside the typed postcondition");
+
+        assert!(result.ok);
+        assert!(result.data.is_none());
     }
 
     fn call_runtime_with_outcome(

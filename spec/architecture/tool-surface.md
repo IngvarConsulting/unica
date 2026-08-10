@@ -32,7 +32,7 @@ Dump source set through the internal build/runtime adapter.
 | `database` | string | нет | String forwarded to unica.build.* as --database with no behaviour documented in the skills; prefer connection on operation config-init when working through unica.runtime.execute |
 | `dbPassword` | string | нет | String forwarded to unica.build.* as --db-password and redacted in reported commands; undocumented in the skills, and credentials belong in v8project.local.yaml, not tool arguments |
 | `dbUser` | string | нет | String forwarded to unica.build.* as --db-user; the skills document no behaviour for it beyond the flag name |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
+| `dryRun` | boolean | нет | Boolean preview switch for mutation tools; when omitted or true the tool only reports the change it would make, and false applies the mutation when the user requested execution. |
 | `format` | string | нет | On unica.runtime.execute this is the source format (designer or edt) recorded by config-init and no other runtime operation accepts it; on unica.code.* and the native XML tools `format` selects the report/output format instead (for example text, json or jsonl), and on unica.build.* it is an undocumented --format passthrough. |
 | `infobase` | string | нет | String forwarded to unica.build.* as --infobase with no behaviour documented in the skills; unica.runtime.execute has no such argument and reaches a database through connection at config-init |
 | `mode` | string | нет | Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full\|incremental\|partial for dump, load\|merge for load, designer-config\|designer-modules\|edt for syntax, and the client kind for an mcp or mcp-va launch, while every other tool defines its own values (for example analyze\|status\|catalog\|file\|workspace on unica.code.diagnostics) — always use the enum published in that tool's own schema. |
@@ -64,7 +64,7 @@ Load/build XML source set through the internal build/runtime adapter.
 | `database` | string | нет | String forwarded to unica.build.* as --database with no behaviour documented in the skills; prefer connection on operation config-init when working through unica.runtime.execute |
 | `dbPassword` | string | нет | String forwarded to unica.build.* as --db-password and redacted in reported commands; undocumented in the skills, and credentials belong in v8project.local.yaml, not tool arguments |
 | `dbUser` | string | нет | String forwarded to unica.build.* as --db-user; the skills document no behaviour for it beyond the flag name |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
+| `dryRun` | boolean | нет | Boolean preview switch for mutation tools; when omitted or true the tool only reports the change it would make, and false applies the mutation when the user requested execution. |
 | `format` | string | нет | On unica.runtime.execute this is the source format (designer or edt) recorded by config-init and no other runtime operation accepts it; on unica.code.* and the native XML tools `format` selects the report/output format instead (for example text, json or jsonl), and on unica.build.* it is an undocumented --format passthrough. |
 | `infobase` | string | нет | String forwarded to unica.build.* as --infobase with no behaviour documented in the skills; unica.runtime.execute has no such argument and reaches a database through connection at config-init |
 | `mode` | string | нет | Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full\|incremental\|partial for dump, load\|merge for load, designer-config\|designer-modules\|edt for syntax, and the client kind for an mcp or mcp-va launch, while every other tool defines its own values (for example analyze\|status\|catalog\|file\|workspace on unica.code.diagnostics) — always use the enum published in that tool's own schema. |
@@ -96,7 +96,7 @@ Create CF/CFE artifact through the internal build/runtime adapter.
 | `database` | string | нет | String forwarded to unica.build.* as --database with no behaviour documented in the skills; prefer connection on operation config-init when working through unica.runtime.execute |
 | `dbPassword` | string | нет | String forwarded to unica.build.* as --db-password and redacted in reported commands; undocumented in the skills, and credentials belong in v8project.local.yaml, not tool arguments |
 | `dbUser` | string | нет | String forwarded to unica.build.* as --db-user; the skills document no behaviour for it beyond the flag name |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
+| `dryRun` | boolean | нет | Boolean preview switch for mutation tools; when omitted or true the tool only reports the change it would make, and false applies the mutation when the user requested execution. |
 | `format` | string | нет | On unica.runtime.execute this is the source format (designer or edt) recorded by config-init and no other runtime operation accepts it; on unica.code.* and the native XML tools `format` selects the report/output format instead (for example text, json or jsonl), and on unica.build.* it is an undocumented --format passthrough. |
 | `infobase` | string | нет | String forwarded to unica.build.* as --infobase with no behaviour documented in the skills; unica.runtime.execute has no such argument and reaches a database through connection at config-init |
 | `mode` | string | нет | Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full\|incremental\|partial for dump, load\|merge for load, designer-config\|designer-modules\|edt for syntax, and the client kind for an mcp or mcp-va launch, while every other tool defines its own values (for example analyze\|status\|catalog\|file\|workspace on unica.code.diagnostics) — always use the enum published in that tool's own schema. |
@@ -128,7 +128,7 @@ Launch 1C runtime or Designer through the internal build/runtime adapter.
 | `database` | string | нет | String forwarded to unica.build.* as --database with no behaviour documented in the skills; prefer connection on operation config-init when working through unica.runtime.execute |
 | `dbPassword` | string | нет | String forwarded to unica.build.* as --db-password and redacted in reported commands; undocumented in the skills, and credentials belong in v8project.local.yaml, not tool arguments |
 | `dbUser` | string | нет | String forwarded to unica.build.* as --db-user; the skills document no behaviour for it beyond the flag name |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
+| `dryRun` | boolean | нет | Boolean preview switch for mutation tools; when omitted or true the tool only reports the change it would make, and false applies the mutation when the user requested execution. |
 | `format` | string | нет | On unica.runtime.execute this is the source format (designer or edt) recorded by config-init and no other runtime operation accepts it; on unica.code.* and the native XML tools `format` selects the report/output format instead (for example text, json or jsonl), and on unica.build.* it is an undocumented --format passthrough. |
 | `infobase` | string | нет | String forwarded to unica.build.* as --infobase with no behaviour documented in the skills; unica.runtime.execute has no such argument and reaches a database through connection at config-init |
 | `mode` | string | нет | Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full\|incremental\|partial for dump, load\|merge for load, designer-config\|designer-modules\|edt for syntax, and the client kind for an mcp or mcp-va launch, while every other tool defines its own values (for example analyze\|status\|catalog\|file\|workspace on unica.code.diagnostics) — always use the enum published in that tool's own schema. |
@@ -160,7 +160,7 @@ Apply built configuration changes through the internal build/runtime adapter.
 | `database` | string | нет | String forwarded to unica.build.* as --database with no behaviour documented in the skills; prefer connection on operation config-init when working through unica.runtime.execute |
 | `dbPassword` | string | нет | String forwarded to unica.build.* as --db-password and redacted in reported commands; undocumented in the skills, and credentials belong in v8project.local.yaml, not tool arguments |
 | `dbUser` | string | нет | String forwarded to unica.build.* as --db-user; the skills document no behaviour for it beyond the flag name |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
+| `dryRun` | boolean | нет | Boolean preview switch for mutation tools; when omitted or true the tool only reports the change it would make, and false applies the mutation when the user requested execution. |
 | `format` | string | нет | On unica.runtime.execute this is the source format (designer or edt) recorded by config-init and no other runtime operation accepts it; on unica.code.* and the native XML tools `format` selects the report/output format instead (for example text, json or jsonl), and on unica.build.* it is an undocumented --format passthrough. |
 | `infobase` | string | нет | String forwarded to unica.build.* as --infobase with no behaviour documented in the skills; unica.runtime.execute has no such argument and reaches a database through connection at config-init |
 | `mode` | string | нет | Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full\|incremental\|partial for dump, load\|merge for load, designer-config\|designer-modules\|edt for syntax, and the client kind for an mcp or mcp-va launch, while every other tool defines its own values (for example analyze\|status\|catalog\|file\|workspace on unica.code.diagnostics) — always use the enum published in that tool's own schema. |
@@ -206,7 +206,6 @@ Inspect root Configuration.xml.
 | `ConfigPath` | string | да | Path to `Configuration.xml` or the dump directory for `unica.cf.edit`, `unica.cf.info` and `unica.cf.validate`, and the path of the base configuration for `unica.cfe.init`/`borrow`/`diff`; relative to `cwd`. `unica.cf.init` ignores it and writes to `outputDir`. |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 
 **Результат сейчас:** `data`: идентичность, поддержка, свойства корня, состав и начальная страница (ADR-0023) (отвечают типизированным `data`)
 
@@ -239,7 +238,7 @@ Validate root configuration XML structure.
 | --- | --- | --- | --- |
 | `ConfigPath` | string | да | Path to `Configuration.xml` or the dump directory for `unica.cf.edit`, `unica.cf.info` and `unica.cf.validate`, and the path of the base configuration for `unica.cfe.init`/`borrow`/`diff`; relative to `cwd`. `unica.cf.init` ignores it and writes to `outputDir`. |
 
-Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
@@ -282,7 +281,6 @@ Inspect extension contents and transferred insertion blocks.
 | `ExtensionPath` | string | да | Path to the extension — its directory or its `Configuration.xml` — for every `unica.cfe.*` tool, relative to `cwd`; the base configuration goes in `configPath` instead |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 
 **Результат сейчас:** `data`: состав расширения со статусом каждого объекта, перехватчики и проверка переноса вставок (ADR-0023) (отвечают типизированным `data`)
 
@@ -336,7 +334,7 @@ Validate extension XML structure.
 | --- | --- | --- | --- |
 | `ExtensionPath` | string | да | Path to the extension — its directory or its `Configuration.xml` — for every `unica.cfe.*` tool, relative to `cwd`; the base configuration goes in `configPath` instead |
 
-Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
@@ -356,7 +354,6 @@ Find BSL method definitions through the typed Unica code index boundary.
 | --- | --- | --- | --- |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 | `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results). |
 | `moduleHint` | string | нет | Substring of a module path or object name that narrows unica.code.definition when the same method name exists in several modules; matched case-insensitively |
 | `name` | string | да | Name of the object being created (`cf.init`, `cfe.init`, `epf.init`, `erf.init`), or the drill-down target for `subsystem.info` and `dcs.info`; on `cf.info` it is an alias of `section` |
@@ -382,7 +379,6 @@ Run BSL diagnostics through the internal code analysis adapter.
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
 | `detail` | string | нет | How much detail to return, with a per-tool enum: names, signatures or bodies for unica.code.graph; concise or detailed for unica.code.diagnostics |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 | `format` | string | нет | On unica.runtime.execute this is the source format (designer or edt) recorded by config-init and no other runtime operation accepts it; on unica.code.* and the native XML tools `format` selects the report/output format instead (for example text, json or jsonl), and on unica.build.* it is an undocumented --format passthrough. |
 | `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results). |
 | `maxFiles` | integer | нет | Integer cap on how many files one unica.code.diagnostics read covers, forwarded to the analyzer as max_files |
@@ -413,7 +409,6 @@ Inspect BSL call graph through the typed Unica code analysis boundary.
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
 | `detail` | string | нет | How much detail to return, with a per-tool enum: names, signatures or bodies for unica.code.graph; concise or detailed for unica.code.diagnostics |
 | `dir` | string | нет | Edge direction to follow on unica.code.graph - in, out, or both; applies to the traversal modes such as neighbors, callers, and callees |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 | `edgeKinds` | array | нет | Array of graph edge-kind names, forwarded to the analyzer as edge_kinds; unica.code.graph only, and the Unica contract does not enumerate the accepted values |
 | `id` | string | нет | Standard id, alias or URL for standards.explain (lower-precedence alias of idOrAliasOrUrl), but a graph node id such as method:CommonModule.Sales.OnPost for code.graph; standards.search ignores it. |
 | `ids` | array | нет | Array of code-graph node ids for unica.code.graph, forwarded as ids alongside the single-node id argument; use it when one request targets several nodes |
@@ -441,7 +436,6 @@ Read compact BSL module outline from the current source file.
 | --- | --- | --- | --- |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 | `includeMethods` | boolean | нет | Boolean for unica.code.outline controlling whether method entries appear in the outline; defaults to true |
 | `path` | string | да | Workspace-relative file path whose meaning is tool-scoped: the required .cf or .cfe artifact for unica.runtime.execute operation load (.epf and .erf are rejected there), a module-relative file for the path-based unica.code.* tools — on unica.code.diagnostics only mode `file` reads one file, so every other mode rejects `path` instead of ignoring it — the canonical alias of the object/config path argument on the native XML tools, and a plain --path passthrough on unica.build.*. |
 | `sourceDir` | string | нет | Workspace-relative source root to work in: on path-based unica.code.* tools it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
@@ -464,7 +458,7 @@ Insert or replace BSL in one logically addressed Platform XML Configuration or E
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `content` | string | да | BSL text for unica.code.patch: inserted at the selector for operation insert, appended to the end of the module when insert names no selector, or written over the selected method or anchor for operation replace |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
+| `dryRun` | boolean | нет | Boolean preview switch for mutation tools; when omitted or true the tool only reports the change it would make, and false applies the mutation when the user requested execution. |
 | `metadataPath` | string | да | Canonical logical module address inside sourceSet, for example CommonModule.Service.Module or Catalog.Items.ObjectModule. |
 | `operation` | string | да | Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; `add-value-type`, `add-object-type`, `add-property`, `remove-type` or `remove-property` for `unica.xdto.edit` — read the enum published in the tool's own schema. |
 | `position` | string | нет | Where unica.code.patch places the content relative to the selector: before or after. Accepted only when insert names a selector |
@@ -489,7 +483,6 @@ Search code concurrently through provider-local RLM, bsl-analyzer, and literal g
 | --- | --- | --- | --- |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 | `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results). |
 | `query` | string | да | Search text: provider-neutral query for unica.code.search, node-lookup text for unica.code.graph mode=resolve, the required unica.standards.search string, and explain's last-resort fallback |
 | `sourceDir` | string | нет | Workspace-relative source root to work in: on path-based unica.code.* tools it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
@@ -546,7 +539,6 @@ Inspect Data Composition Schema Template.xml.
 | `TemplatePath` | string | да | Path to a `Template.xml`, or its directory which auto-resolves to `Ext/Template.xml`, for `unica.dcs.edit`/`info`/`validate` and `unica.mxl.info`/`validate`/`decompile`, relative to `cwd`; `unica.dcs.compile` writes through `outputPath` and ignores this argument. |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 
 **Результат сейчас:** `data`: наборы данных с полями и точным текстом запроса, связи, вычисляемые поля, ресурсы, параметры, варианты настроек и макеты — все секции сразу (отвечают типизированным `data`)
 
@@ -565,7 +557,7 @@ Validate Data Composition Schema Template.xml.
 | --- | --- | --- | --- |
 | `TemplatePath` | string | да | Path to a `Template.xml`, or its directory which auto-resolves to `Ext/Template.xml`, for `unica.dcs.edit`/`info`/`validate` and `unica.mxl.info`/`validate`/`decompile`, relative to `cwd`; `unica.dcs.compile` writes through `outputPath` and ignores this argument. |
 
-Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
@@ -586,7 +578,6 @@ Fetch the full text of a documentation search hit by its documentId locator.
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
 | `documentId` | string | да | Stable locator of a unica.documentation.search hit, passed verbatim to unica.documentation.get to fetch the full document text: configuration-help:<source-set>:<path> for the workspace configuration's embedded help, platform-syntax-help:<corpus>:<path> for the installed platform's help, an absolute https://kb.1ci.com/... page address for the vendor knowledge base, and an https://v8std.ru/... address for a development standard; the provider that minted the locator is the only one that resolves it. |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 | `language` | string | нет | Alias of `lang` for `unica.help.add`; on `unica.standards.explain` the same key instead names the language of the `snippet` being explained; on `unica.documentation.search` and `unica.documentation.get` it picks the locale of the platform help containers to read and of the signature returned with each hit, defaulting to ru, and each corpus falls back on its own to the installed locale (the English `root` container first) when the installation ships no containers in the requested one, so every section and document reports the locale that actually answered |
 | `platformVersion` | string | нет | Requested platform installation version for unica.documentation.search and unica.documentation.get, matched against an installation directory name exactly, for example 8.3.27.2074; when omitted the project's own tools.platform.version constrains the choice, and without that the numerically newest installation found under a configured platform root wins; a tools.platform.path pin names the installation directly instead of walking the roots, with the same version constraints applied to it. |
 
@@ -607,7 +598,6 @@ Search the workspace configuration's embedded help, platform help, and developme
 | --- | --- | --- | --- |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 | `language` | string | нет | Alias of `lang` for `unica.help.add`; on `unica.standards.explain` the same key instead names the language of the `snippet` being explained; on `unica.documentation.search` and `unica.documentation.get` it picks the locale of the platform help containers to read and of the signature returned with each hit, defaulting to ru, and each corpus falls back on its own to the installed locale (the English `root` container first) when the installation ships no containers in the requested one, so every section and document reports the locale that actually answered |
 | `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results). |
 | `platformVersion` | string | нет | Requested platform installation version for unica.documentation.search and unica.documentation.get, matched against an installation directory name exactly, for example 8.3.27.2074; when omitted the project's own tools.platform.version constrains the choice, and without that the numerically newest installation found under a configured platform root wins; a tools.platform.path pin names the installation directly instead of walking the roots, with the same version constraints applied to it. |
@@ -640,7 +630,7 @@ Create a make-ready external data processor scaffold in a Designer/platform-XML 
 | `Synonym` | string | нет | Human-readable synonym written into the generated XML; it defaults to the matching `name`, `formName` or `templateName` when omitted |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
+| `dryRun` | boolean | нет | Boolean preview switch for mutation tools; when omitted or true the tool only reports the change it would make, and false applies the mutation when the user requested execution. |
 
 **Результат сейчас:** `data`: созданные файлы заготовки внешней обработки (ADR-0023) (отвечают типизированным `data`)
 
@@ -664,7 +654,7 @@ Create a make-ready external report scaffold in a Designer/platform-XML external
 | `Synonym` | string | нет | Human-readable synonym written into the generated XML; it defaults to the matching `name`, `formName` or `templateName` when omitted |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
+| `dryRun` | boolean | нет | Boolean preview switch for mutation tools; when omitted or true the tool only reports the change it would make, and false applies the mutation when the user requested execution. |
 
 **Результат сейчас:** `data`: созданные файлы заготовки внешнего отчёта (ADR-0023) (отвечают типизированным `data`)
 
@@ -736,7 +726,6 @@ Inspect managed Form.xml.
 | `FormPath` | string | да | Path to an existing `Form.xml`, or the form directory that resolves to it, for `unica.form.info`, `unica.form.edit` and `unica.form.validate`, relative to `cwd` |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 
 **Результат сейчас:** `data`: свойства, события, полное дерево элементов без сворачивания, реквизиты с колонками, параметры и команды (отвечают типизированным `data`)
 
@@ -769,7 +758,7 @@ Validate managed Form.xml.
 | --- | --- | --- | --- |
 | `FormPath` | string | да | Path to an existing `Form.xml`, or the form directory that resolves to it, for `unica.form.info`, `unica.form.edit` and `unica.form.validate`, relative to `cwd` |
 
-Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
@@ -827,7 +816,7 @@ Validate CommandInterface.xml.
 | --- | --- | --- | --- |
 | `CIPath` | string | да | The `CIPath` spelling of the command-interface path: a subsystem's `Ext/CommandInterface.xml` or its directory, relative to `cwd`, for `unica.interface.edit`/`validate` |
 
-Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
@@ -959,7 +948,7 @@ Decompile spreadsheet Template.xml to JSON DSL.
 | --- | --- | --- | --- |
 | `TemplatePath` | string | да | Path to a `Template.xml`, or its directory which auto-resolves to `Ext/Template.xml`, for `unica.dcs.edit`/`info`/`validate` and `unica.mxl.info`/`validate`/`decompile`, relative to `cwd`; `unica.dcs.compile` writes through `outputPath` and ignores this argument. |
 
-Публикует **157** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **156** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
@@ -980,7 +969,6 @@ Inspect spreadsheet Template.xml.
 | `WithText` | boolean | нет | `unica.mxl.info` only: boolean including static cell text and template strings with `[Parameter]` substitutions in the report |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 | `withText` | boolean | нет | `unica.mxl.info` only: boolean including static cell text and template strings with `[Parameter]` substitutions in the report |
 
 **Результат сейчас:** `data`: области с границами и параметрами, наборы колонок, содержимое вне областей и счётчики (ADR-0023) (отвечают типизированным `data`)
@@ -1001,7 +989,7 @@ Validate spreadsheet Template.xml.
 | --- | --- | --- | --- |
 | `TemplatePath` | string | да | Path to a `Template.xml`, or its directory which auto-resolves to `Ext/Template.xml`, for `unica.dcs.edit`/`info`/`validate` and `unica.mxl.info`/`validate`/`decompile`, relative to `cwd`; `unica.dcs.compile` writes through `outputPath` and ignores this argument. |
 
-Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **158** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
@@ -1021,7 +1009,6 @@ Inspect configured source sets and effective source format per source set.
 | --- | --- | --- | --- |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 
 **Результат сейчас:** `data`: карта наборов исходников (ADR-0023) (отвечают типизированным `data`)
 
@@ -1041,7 +1028,6 @@ Inspect current Unica workspace, source set, and cache state.
 | --- | --- | --- | --- |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 
 **Результат сейчас:** `data`: корни рабочего пространства и наборы исходников (ADR-0023) (отвечают типизированным `data`)
 
@@ -1102,7 +1088,6 @@ Inspect role Rights.xml.
 | `RightsPath` | string | да | Path to a role's `Rights.xml`, or the role directory that resolves to it, for `unica.role.info` and `unica.role.validate`, relative to `cwd` |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 
 **Результат сейчас:** `data`: разрешённые и запрещённые права по видам объектов, RLS, шаблоны и поддержка (ADR-0023) (отвечают типизированным `data`)
 
@@ -1121,7 +1106,7 @@ Validate role Rights.xml.
 | --- | --- | --- | --- |
 | `RightsPath` | string | да | Path to a role's `Rights.xml`, or the role directory that resolves to it, for `unica.role.info` and `unica.role.validate`, relative to `cwd` |
 
-Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
@@ -1160,7 +1145,7 @@ Request safe cancellation for a durable runtime job.
 | --- | --- | --- | --- |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
+| `dryRun` | boolean | нет | Boolean preview switch for mutation tools; when omitted or true the tool only reports the change it would make, and false applies the mutation when the user requested execution. |
 | `jobId` | string | да | UUID of a durable runtime job as returned by unica.runtime.job.start; required by the job status, wait, logs and cancel tools |
 
 **Результат сейчас:** снимок задания в `job` (отвечают снимком задания в `job`)
@@ -1179,7 +1164,6 @@ List durable runtime job snapshots in the current workspace.
 | --- | --- | --- | --- |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 
 **Результат сейчас:** снимок задания в `job` (отвечают снимком задания в `job`)
 
@@ -1197,7 +1181,6 @@ Read bounded redacted stdout and stderr tails for a durable runtime job.
 | --- | --- | --- | --- |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 | `jobId` | string | да | UUID of a durable runtime job as returned by unica.runtime.job.start; required by the job status, wait, logs and cancel tools |
 | `tailChars` | integer | нет | Integer 1..32768 bounding how many trailing characters of stdout and stderr unica.runtime.job.logs returns, defaulting to 4096 |
 
@@ -1235,7 +1218,6 @@ Read a durable runtime job snapshot by jobId.
 | --- | --- | --- | --- |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 | `jobId` | string | да | UUID of a durable runtime job as returned by unica.runtime.job.start; required by the job status, wait, logs and cancel tools |
 
 **Результат сейчас:** снимок задания в `job` (отвечают снимком задания в `job`)
@@ -1254,7 +1236,6 @@ Wait for a durable runtime job with a caller-side bounded timeout.
 | --- | --- | --- | --- |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 | `jobId` | string | да | UUID of a durable runtime job as returned by unica.runtime.job.start; required by the job status, wait, logs and cancel tools |
 | `timeoutSeconds` | integer | нет | Integer seconds bounding a blocking call: 1..60 (default 30) for unica.runtime.job.wait, and 30..3600 for unica.code.diagnostics mode analyze; diagnostics falls back to operational.code_diagnostics.analyze_timeout_seconds from workspace config, then to 120. |
 
@@ -1277,7 +1258,6 @@ List exactly one level below a logical source-set root or metadata address.
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cursor` | string | нет | Opaque continuation token returned by the same source navigation request or source.resources snapshot page; do not inspect or reuse it with another request or snapshot |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 | `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results). |
 | `metadataPath` | string | нет | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
 | `sourceSet` | string | да | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
@@ -1299,7 +1279,6 @@ Recover the logical metadata address that owns one source path inside a named so
 | --- | --- | --- | --- |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 | `path` | string | да | Source file to look up, given either workspace-relative or relative to the named source set; the answer names the metadata address that owns it |
 | `sourceSet` | string | да | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 
@@ -1320,7 +1299,6 @@ Read one bounded byte range from a resource in an issued immutable snapshot.
 | --- | --- | --- | --- |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 | `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results). |
 | `offset` | integer | нет | Zero-based byte offset inside the immutable resource snapshot |
 | `resourceId` | string | да | Opaque resource identifier returned inside one source.resources snapshot; valid only together with the snapshotId that issued it |
@@ -1344,7 +1322,6 @@ Resolve an exact or prefix logical metadata query inside one named source set.
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cursor` | string | нет | Opaque continuation token returned by the same source navigation request or source.resources snapshot page; do not inspect or reuse it with another request or snapshot |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 | `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results). |
 | `mode` | string | нет | Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full\|incremental\|partial for dump, load\|merge for load, designer-config\|designer-modules\|edt for syntax, and the client kind for an mcp or mcp-va launch, while every other tool defines its own values (for example analyze\|status\|catalog\|file\|workspace on unica.code.diagnostics) — always use the enum published in that tool's own schema. |
 | `query` | string | да | Search text: provider-neutral query for unica.code.search, node-lookup text for unica.code.graph mode=resolve, the required unica.standards.search string, and explain's last-resort fallback |
@@ -1370,7 +1347,6 @@ Open or page an immutable bounded manifest for one logical source target.
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cursor` | string | нет | Opaque continuation token returned by the same source navigation request or source.resources snapshot page; do not inspect or reuse it with another request or snapshot |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 | `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results). |
 | `metadataPath` | string | нет | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
 | `scope` | string | нет | Bounded source.resources manifest scope: self, aggregate, or registrations |
@@ -1399,7 +1375,6 @@ Explain 1C diagnostics or standards through the internal standards adapter.
 | `codes` | array | нет | Array of diagnostic codes such as "АПК:142" or "LineLength"; on standards.explain it selects diagnostics mode and outranks snippet/id/query, on code.diagnostics it filters the catalog, and standards.search ignores it. |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 | `id` | string | нет | Standard id, alias or URL for standards.explain (lower-precedence alias of idOrAliasOrUrl), but a graph node id such as method:CommonModule.Sales.OnPost for code.graph; standards.search ignores it. |
 | `idOrAliasOrUrl` | string | нет | Standard number, alias or full URL (e.g. "644") that puts standards.explain in page-fetch mode; prefer it over id, which it overrides when both are passed, and standards.search ignores it. |
 | `language` | string | нет | Alias of `lang` for `unica.help.add`; on `unica.standards.explain` the same key instead names the language of the `snippet` being explained; on `unica.documentation.search` and `unica.documentation.get` it picks the locale of the platform help containers to read and of the signature returned with each hit, defaulting to ru, and each corpus falls back on its own to the installed locale (the English `root` container first) when the installation ships no containers in the requested one, so every section and document reports the locale that actually answered |
@@ -1429,7 +1404,6 @@ Search 1C standards through the internal standards adapter.
 | `codes` | array | нет | Array of diagnostic codes such as "АПК:142" or "LineLength"; on standards.explain it selects diagnostics mode and outranks snippet/id/query, on code.diagnostics it filters the catalog, and standards.search ignores it. |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 | `id` | string | нет | Standard id, alias or URL for standards.explain (lower-precedence alias of idOrAliasOrUrl), but a graph node id such as method:CommonModule.Sales.OnPost for code.graph; standards.search ignores it. |
 | `idOrAliasOrUrl` | string | нет | Standard number, alias or full URL (e.g. "644") that puts standards.explain in page-fetch mode; prefer it over id, which it overrides when both are passed, and standards.search ignores it. |
 | `language` | string | нет | Alias of `lang` for `unica.help.add`; on `unica.standards.explain` the same key instead names the language of the `snippet` being explained; on `unica.documentation.search` and `unica.documentation.get` it picks the locale of the platform help containers to read and of the signature returned with each hit, defaulting to ru, and each corpus falls back on its own to the installed locale (the English `root` container first) when the installation ships no containers in the requested one, so every section and document reports the locale that actually answered |
@@ -1495,7 +1469,6 @@ Inspect a registered subsystem tree from a directory, a focused registered tree 
 | `SubsystemPath` | string | да | Path to a subsystem XML or `Subsystems` directory, relative to `cwd`; `unica.subsystem.info` returns the registered tree for a directory, the ancestor chain plus descendants for a registered XML, and local data without `tree` for an unregistered XML |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 
 **Результат сейчас:** `data`: состав, группы, дочерние подсистемы и командный интерфейс; каталог `Subsystems` возвращает зарегистрированное `tree`, зарегистрированный XML — сфокусированное `tree` с цепочкой от корня до выбранного узла и всеми его потомками, а самостоятельный незарегистрированный XML — только локальные данные без `tree`; повреждение доказательства даёт `provider_unavailable`, а отмена и истечение срока сохраняют собственную типизированную семантику сбоя; ни один из этих случаев не публикует частичное дерево (ADR-0023, ADR-0036, INV-SOURCE-SUBSYSTEM-TOPOLOGY) (отвечают типизированным `data`)
 
@@ -1517,7 +1490,7 @@ Validate subsystem XML.
 | --- | --- | --- | --- |
 | `SubsystemPath` | string | да | Path to a subsystem XML or `Subsystems` directory, relative to `cwd`; `unica.subsystem.info` returns the registered tree for a directory, the ancestor chain plus descendants for a registered XML, and local data without `tree` for an unregistered XML |
 
-Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
@@ -1585,7 +1558,7 @@ Preview or apply a safe targeted mutation to one logically addressed 1C XDTO pac
 | `base` | string | нет | Prefixed lexical QName naming the base type of a new XDTO valueType in `unica.xdto.edit`, for example `xs:string`; an unprefixed name or surrounding whitespace is rejected. |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
+| `dryRun` | boolean | нет | Boolean preview switch for mutation tools; when omitted or true the tool only reports the change it would make, and false applies the mutation when the user requested execution. |
 | `metadataPath` | string | да | Logical address of an XDTO package in the form `XDTOPackage.<name>`; the physical `Package.bin` path is rejected. |
 | `name` | string | нет | Name of the object being created (`cf.init`, `cfe.init`, `epf.init`, `erf.init`), or the drill-down target for `subsystem.info` and `dcs.info`; on `cf.info` it is an alias of `section` |
 | `operation` | string | да | Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; `add-value-type`, `add-object-type`, `add-property`, `remove-type` or `remove-property` for `unica.xdto.edit` — read the enum published in the tool's own schema. |
@@ -1613,7 +1586,6 @@ Inspect one logically addressed 1C XDTO package schema.
 | `confirm` | boolean | нет | Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does |
 | `cursor` | string | нет | Opaque continuation token returned by the same source navigation request or source.resources snapshot page; do not inspect or reuse it with another request or snapshot |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution. |
 | `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results). |
 | `metadataPath` | string | да | Logical address of an XDTO package in the form `XDTOPackage.<name>`; the physical `Package.bin` path is rejected. |
 | `sourceSet` | string | да | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
