@@ -8,8 +8,8 @@
 сетевую политику ADR-0032, добавив операционные сроки ADR-0039 и устранив гонку
 между cancellation и ошибкой загрузчика.
 
-**Architecture:** Один инфраструктурный модуль разбирает синтаксис TOML,
-проверяет общую `version` и закрытый корень `version|operational|network|providers`.
+**Architecture:** Один инфраструктурный модуль разбирает синтаксис TOML и
+проверяет неверсионируемый закрытый корень `operational|network|providers`.
 Каждый потребитель строго проверяет только своё поддерево и сливает свои поля.
 Application проверяет cancellation после любого результата загрузчика до
 проекции ошибки конфигурации.
@@ -23,9 +23,15 @@ architecture guards.
   fields не добавляются.
 - `unica.toml` и `unica.local.toml` принадлежат общему контейнеру ADR-0032 и
   ADR-0039; второго config root нет.
-- Network-only файл без `version` остаётся совместимым.
-- Слой с `[operational]` требует `version = 1`; любая присутствующая `version`
-  обязана быть целым числом `1`.
+- Любой допустимый слой не содержит `version`; это имя отвергается как
+  неизвестное корневое поле.
+- Файловые операционные сроки — целые секунды `>= 1` без верхнего ограничения
+  политики. Умолчания 120/45/15/45/120 не являются потолками; сроки `RLM` и
+  `git-grep` не превышают общий срок поиска. Явный MCP `timeoutSeconds`
+  сохраняет отдельный диапазон `30..=3600`.
+- RLM с бюджетом вызывающей стороны не обрезается до 120 секунд; внутренний
+  протокол с `schema_version = 4` без потерь переносит `timeout_seconds` и
+  `timeout_nanos`, а умолчания обычных и управляющих путей сохраняются.
 - Неизвестный корневой ключ отказывает всем config-consuming вызовам;
   неизвестный ключ потребительского поддерева отказывает только его вызовам.
 - Для каждого дефекта сначала запускается тест, падающий на текущем коде по
@@ -107,9 +113,6 @@ Expected: PASS; функциональная несовместимость conf
 ```rust
 pub(crate) enum WorkspaceConfigRootErrorKind {
     InvalidToml,
-    MissingVersion,
-    InvalidVersionType,
-    UnsupportedVersion,
     UnknownField,
 }
 
@@ -123,9 +126,8 @@ pub(crate) fn parse_workspace_config_root(
 ) -> Result<toml::Table, WorkspaceConfigRootError>;
 ```
 
-`parse_workspace_config_root` принимает только корневые поля `version`,
-`operational`, `network`, `providers`; требует `version = 1` при наличии
-`operational` и проверяет любую присутствующую версию.
+`parse_workspace_config_root` принимает только корневые поля `operational`,
+`network`, `providers`; `version` отвергается как неизвестное поле.
 
 - [ ] **Step 1: Написать падающие consumer-level тесты совместимости**
 
@@ -137,9 +139,14 @@ fn network_only_layer_without_version_keeps_operational_defaults() {
 }
 
 #[test]
-fn mixed_versioned_container_serves_network_and_operational_consumers() {
-    // version = 1 + [network] + [operational.code_intelligence]
+fn mixed_unversioned_container_serves_network_and_operational_consumers() {
+    // [network] + [operational.code_intelligence] без version
     // оба настоящих loader-а обязаны успешно прочитать свои значения.
+}
+
+#[test]
+fn rejects_version_as_unknown_root_field() {
+    // version = 1 обязан завершиться UnknownField на общем корне.
 }
 
 #[test]
@@ -149,40 +156,37 @@ fn documentation_policy_ignores_valid_operational_subtree() {
 ```
 
 Production mutations caught: возврат независимых `ROOT_FIELDS` в одном из
-loader-ов, безусловное требование `version` для прежнего сетевого слоя и
-отклонение известной соседней секции.
+loader-ов, повторное разрешение `version` и отклонение известной соседней
+секции.
 
 - [ ] **Step 2: Запустить RED**
 
 ```bash
 cargo test -p unica-coder network_only_layer_without_version_keeps_operational_defaults
-cargo test -p unica-coder mixed_versioned_container_serves_network_and_operational_consumers
+cargo test -p unica-coder mixed_unversioned_container_serves_network_and_operational_consumers
+cargo test -p unica-coder rejects_version_as_unknown_root_field
 cargo test -p unica-coder documentation_policy_ignores_valid_operational_subtree
 ```
 
-Expected: FAIL — текущий operational parser отвергает `network`, а network
-parser отвергает `version`/`operational`.
+Expected на исходном head плана: FAIL — operational parser отвергает `network`,
+а network parser отвергает `operational`; общий parser ещё принимает `version`.
 
 - [ ] **Step 3: Реализовать минимальный общий root parser**
 
 ```rust
-const ROOT_FIELDS: &[&str] = &["version", "operational", "network", "providers"];
+const ROOT_FIELDS: &[&str] = &["operational", "network", "providers"];
 
 pub(crate) fn parse_workspace_config_root(
     contents: &str,
 ) -> Result<toml::Table, WorkspaceConfigRootError> {
     let root = contents.parse::<toml::Table>().map_err(|_| invalid_toml())?;
     reject_unknown_root_fields(&root, ROOT_FIELDS)?;
-    validate_present_version(&root)?;
-    if root.contains_key("operational") && !root.contains_key("version") {
-        return Err(missing_version());
-    }
     Ok(root)
 }
 ```
 
 `documentation_policy::parse_policy` обрабатывает `network|providers`, а
-`version|operational` пропускает как известные соседние поля. Operational
+`operational` пропускает как известное соседнее поле. Operational
 loader обрабатывает `operational`, а `network|providers` оставляет сетевому
 потребителю. Оба преобразуют общий error в свой существующий безопасный
 диагностический контракт.
@@ -284,8 +288,11 @@ git commit -m "fix(config): сохранить приоритет отмены �
 
 - [ ] **Step 1: Синхронизировать Rule обоих потребителей**
 
-В Rule явно закрепить общий закрытый корень, совместимость прежнего сетевого слоя,
-обязательную версию operational-слоя и локальность ошибок поддеревьев.
+В Rule явно закрепить общий неверсионируемый закрытый корень, локальность ошибок
+поддеревьев, файловые сроки `>= 1` без верхнего ограничения политики, умолчания
+не как потолки, отдельный явный диапазон диагностики и RLM с бюджетом
+вызывающей стороны без верхней границы, с полями `timeout_seconds` и
+`timeout_nanos` протокола `schema_version = 4`.
 
 - [ ] **Step 2: Проверить нормативные guards**
 
