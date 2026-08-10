@@ -1265,7 +1265,9 @@ mod tests {
         let error = capture_registered_subsystem_topology(&source_root, checkpoint).unwrap_err();
 
         assert!(
-            error.to_string().contains("symbolic links") || error.to_string().contains("missing"),
+            error.to_string().contains("symbolic links")
+                || error.to_string().contains("reparse point")
+                || error.to_string().contains("missing"),
             "{error}"
         );
     }
