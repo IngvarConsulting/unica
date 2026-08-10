@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- [ ] Proposal PR #426 не сливать. После явного подтверждения реализации закрыть #426 без merge, обновить `origin/main`, убедиться через `git cat-file -e origin/main:spec/decisions/0042-readers-ne-prinimayut-preview.md`, что ADR-0042 в `main` отсутствует, и создать `codex/issue-297-reader-invocation` непосредственно от `origin/main`. Перенести в implementation branch утверждённые design, ADR-0042 и этот план как обычные файлы того же связного changeset. Если ADR-0042 уже появилась в `main`, остановиться: менять её статус запрещает `INV-DOC-SUPERSEDE-NOT-EDIT`, а новый номер требует отдельного решения пользователя.
+- [ ] Proposal PR #426 не сливать. После явного подтверждения реализации закрыть #426 без merge, обновить `origin/main`, убедиться через `git cat-file -e origin/main:spec/decisions/0042-readers-ne-prinimayut-preview.md`, что ADR-0042 в `main` отсутствует, и в уже изолированном linked worktree Codex переключиться на новую ветку `codex/issue-297-reader-invocation` непосредственно от `origin/main`. Не создавать вложенный или соседний worktree без необходимости. Перенести в implementation branch утверждённые design, ADR-0042 и этот план как обычные файлы того же связного changeset. Если ADR-0042 уже появилась в `main`, остановиться: менять её статус запрещает `INV-DOC-SUPERSEDE-NOT-EDIT`, а новый номер требует отдельного решения пользователя.
 - [ ] Не включать #298–#301 и не менять контракт preview/apply мутаторов из #290: отсутствие `dryRun` у мутации по-прежнему означает preview, `true` — preview, `false` — apply.
 - [ ] Не сохранять alias `dryRun` у readers: версия 0.12.0 ещё не выпущена, совместимый двусмысленный маршрут не нужен.
 - [ ] Не добавлять `outputSchema`, не менять JSON-RPC code/shape ошибок и не подставлять `{}`, `null` либо иной синтетический `data`.
@@ -20,7 +20,7 @@
 
 ---
 
-### Task 0: Закрыть proposal без merge и создать независимую implementation branch
+### Task 0: Закрыть proposal без merge и переиспользовать изолированный worktree для implementation branch
 
 **Files:**
 
@@ -63,15 +63,27 @@ Expected: `git cat-file` завершается code 1. Code 0 — жёстка�
 запрос решения пользователя: существующую в target branch ADR-0042 менять
 нельзя.
 
-- [ ] **Step 4: Create an isolated implementation worktree from main.**
+- [ ] **Step 4: Reuse the existing isolated linked worktree and branch from main.**
 
-Use `superpowers:using-git-worktrees` and create branch
-`codex/issue-297-reader-invocation` from `origin/main`. Не переключать текущий
-proposal worktree и не переиспользовать его ветку.
+Use `superpowers:using-git-worktrees` to verify that `git rev-parse --git-dir`
+and `git rev-parse --git-common-dir` resolve to different directories and that
+`git rev-parse --show-superproject-working-tree` is empty. The current Codex
+worktree is therefore already the isolation boundary; creating another
+worktree would add topology without adding isolation. After the proposal branch
+is clean and #426 is closed, switch this worktree without carrying its ancestry:
+
+```bash
+git switch --detach origin/main
+git switch -c codex/issue-297-reader-invocation
+```
+
+Expected: the new branch points exactly at `origin/main` before the squash
+import, while the proposal branch remains available through its local and
+remote refs.
 
 - [ ] **Step 5: Import the reviewed proposal as a squash, not as a PR base.**
 
-В новом implementation worktree:
+В новой implementation branch того же изолированного worktree:
 
 ```bash
 git merge --squash origin/codex/issue-297-reader-invocation-design
