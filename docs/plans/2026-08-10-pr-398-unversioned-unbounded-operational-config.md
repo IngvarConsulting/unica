@@ -309,7 +309,7 @@ Expected: PASS.
 
 **Files:**
 - Modify: `docs/design/2026-08-09-operational-code-config-design.md`
-- Modify: `spec/decisions/0039-workspace-operational-config-snapshot.md`
+- Modify: `spec/decisions/0040-workspace-operational-config-snapshot.md`
 - Modify: `spec/architecture/invariants.md`
 - Modify: `spec/architecture/runtime.md`
 - Modify: `spec/architecture/building-blocks.md`
@@ -424,7 +424,7 @@ git merge --no-ff origin/main
 Expected: remote PR head всё ещё `e686f598`; актуальный `main` на старте Task 6
 равен `d7818b5e`. Если head автора изменился, сначала интегрировать его новые
 коммиты. Merge с `main` должен сохранять обе независимые ветки изменений без
-перенумерации ADR-0039, пока в актуальном `main` последний номер — ADR-0038.
+перенумерации ADR-0040, пока в актуальном `main` последний номер — ADR-0038.
 
 - [ ] **Step 3: Выполнить полный verification gate**
 

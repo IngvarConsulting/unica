@@ -420,7 +420,7 @@ Unica. Каждая запись формулирует одно нормати�
   `policy-denied` до единого обращения к сети; запрет `v8std` выключает и
   фасады `unica.standards.*` — движок, адрес сервера и политика у них общие.
   Поставщик, которому сеть не нужна, запретом не затрагивается.
-- **Decision:** ADR-0032, ADR-0039
+- **Decision:** ADR-0032, ADR-0040
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/documentation_policy.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/standards_documentation.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/kb_1ci.rs`
@@ -629,7 +629,7 @@ Unica. Каждая запись формулирует одно нормати�
   вызовы не разрешают `OperationalConfig` и не читают `[operational]`; отдельные
   потребители сетевой политики документации и стандартов продолжают читать те
   же файлы по `INV-APP-DOCUMENTATION-NETWORK-POLICY`.
-- **Decision:** ADR-0039
+- **Decision:** ADR-0040
 - **Check:** `ci-test` — `crates/unica-coder/src/application/operational_config.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/domain/operational_config.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/operational_config.rs`
