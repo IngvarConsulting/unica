@@ -168,7 +168,7 @@ use super::edit::ResolvedMetadataObject;
 use super::xml_model::{
     meta_event_subscription_source_node, meta_info_child, meta_info_child_text, meta_info_children,
     meta_info_inner_text, meta_info_ml_text, meta_info_normalize_cfg_prefix,
-    parse_meta_event_subscription_source,
+    parse_defined_type_event_sources, parse_meta_event_subscription_source,
 };
 
 /// Parse the descriptor image already acquired by the logical resolver. The
@@ -414,11 +414,14 @@ fn typed_event_source_dependency_images(
 ) -> Vec<MetadataResourceImage> {
     let mut resources = Vec::new();
     let mut seen = HashSet::new();
-    for source in sources {
+    let mut queue = sources.to_vec();
+    let mut cursor = 0usize;
+    while let Some(source) = queue.get(cursor).cloned() {
+        cursor += 1;
         if cancellation.is_cancelled() {
             break;
         }
-        let Some(metadata_path) = source.metadata_path() else {
+        let Some(metadata_path) = source.metadata_path().cloned() else {
             continue;
         };
         if !seen.insert(metadata_path.clone()) {
@@ -447,9 +450,14 @@ fn typed_event_source_dependency_images(
         let Ok(bytes) = fs::read(&evidence.target_path) else {
             continue;
         };
+        if matches!(source, MetaEventSource::DefinedType { .. }) {
+            if let Ok(members) = parse_defined_type_event_sources(&bytes) {
+                queue.extend(members);
+            }
+        }
         resources.push(MetadataResourceImage {
             role: MetadataResourceRole::Dependency {
-                target: metadata_path.clone(),
+                target: metadata_path,
             },
             bytes,
         });

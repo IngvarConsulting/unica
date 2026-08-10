@@ -58,7 +58,7 @@ use super::xml_model::{
     canonical_meta_event_sources, emit_meta_event_subscription_source, emit_meta_mltext,
     emit_meta_typed_fill_value, emit_meta_typed_value_type, event_source_generated_prefix,
     meta_event_subscription_source_node, meta_info_child, meta_info_child_text, meta_info_children,
-    meta_info_inner_text, parse_meta_event_subscription_source,
+    meta_info_inner_text, parse_defined_type_event_sources, parse_meta_event_subscription_source,
 };
 
 #[derive(Debug, Default)]
@@ -2309,21 +2309,37 @@ fn resolve_typed_relation_dependencies(
                 ));
             }
             let segments = dependency.segments().collect::<Vec<_>>();
-            let [expected_kind, expected_name] = segments.as_slice() else {
-                let mut diagnostic = typed_diagnostic(
-                    MetaDiagnosticCode::InvalidArguments,
-                    "EventSubscription Source dependency must identify one metadata object",
-                    Some(&diagnostic_field),
-                );
-                diagnostic.operation_index = origin.map(|(index, _)| index);
-                return Err(MetaFailure::from(
-                    diagnostic.with_metadata_path(metadata_path.clone()),
-                ));
+            let (
+                registration_kind,
+                registration_name,
+                descriptor_kind,
+                descriptor_name,
+                generated_name,
+            ) = match segments.as_slice() {
+                [kind, name] => (*kind, *name, *kind, *name, None),
+                ["CalculationRegister", register, "Recalculation", recalculation] => (
+                    "CalculationRegister",
+                    *register,
+                    "Recalculation",
+                    *recalculation,
+                    Some(format!("{register}.{recalculation}")),
+                ),
+                _ => {
+                    let mut diagnostic = typed_diagnostic(
+                        MetaDiagnosticCode::InvalidArguments,
+                        "EventSubscription Source dependency must identify one metadata object",
+                        Some(&diagnostic_field),
+                    );
+                    diagnostic.operation_index = origin.map(|(index, _)| index);
+                    return Err(MetaFailure::from(
+                        diagnostic.with_metadata_path(metadata_path.clone()),
+                    ));
+                }
             };
             validate_event_source_registration(
                 dependency_scope.owner_registration_preimage,
-                expected_kind,
-                expected_name,
+                registration_kind,
+                registration_name,
             )
             .and_then(|()| {
                 let prefixes = source_prefixes
@@ -2332,8 +2348,9 @@ fn resolve_typed_relation_dependencies(
                     .unwrap_or_default();
                 validate_event_source_dependency_descriptor(
                     &bytes,
-                    expected_kind,
-                    expected_name,
+                    descriptor_kind,
+                    descriptor_name,
+                    generated_name.as_deref(),
                     &prefixes,
                 )
             })
@@ -2355,6 +2372,24 @@ fn resolve_typed_relation_dependencies(
             modules: Vec::new(),
         });
     }
+    let defined_types = dependencies
+        .iter()
+        .filter(|dependency| dependency.target.segments().next() == Some("DefinedType"))
+        .map(|dependency| dependency.target.clone())
+        .collect::<Vec<_>>();
+    let mut expanded = std::collections::HashSet::new();
+    for defined_type in defined_types {
+        expand_defined_type_event_dependencies(
+            dependency_scope,
+            metadata_path,
+            context,
+            &defined_type,
+            &mut dependencies,
+            &mut seen,
+            &mut expanded,
+            &mut std::collections::HashSet::new(),
+        )?;
+    }
     if dependency_scope.include_handler_dependency
         && metadata_path.segments().next() == Some("EventSubscription")
     {
@@ -2371,6 +2406,181 @@ fn resolve_typed_relation_dependencies(
         }
     }
     Ok(dependencies)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn expand_defined_type_event_dependencies(
+    dependency_scope: &TypedOperationDependencyScope<'_>,
+    owner: &MetadataAddress,
+    context: &WorkspaceContext,
+    defined_type: &MetadataAddress,
+    dependencies: &mut Vec<TypedRelationDependency>,
+    seen: &mut std::collections::HashSet<MetadataAddress>,
+    expanded: &mut std::collections::HashSet<MetadataAddress>,
+    visiting: &mut std::collections::HashSet<MetadataAddress>,
+) -> Result<(), MetaFailure> {
+    if expanded.contains(defined_type) {
+        return Ok(());
+    }
+    if !visiting.insert(defined_type.clone()) {
+        return Err(defined_type_event_failure(
+            owner,
+            format!("DefinedType event source cycle contains `{defined_type}`"),
+            MetaDiagnosticCode::ValidationFailed,
+        ));
+    }
+    let bytes = dependencies
+        .iter()
+        .find(|dependency| &dependency.target == defined_type)
+        .map(|dependency| dependency.bytes.clone())
+        .ok_or_else(|| {
+            defined_type_event_failure(
+                owner,
+                format!("DefinedType event source `{defined_type}` evidence is unavailable"),
+                MetaDiagnosticCode::ProviderUnavailable,
+            )
+        })?;
+    let members = parse_defined_type_event_sources(&bytes).map_err(|message| {
+        defined_type_event_failure(owner, message, MetaDiagnosticCode::ValidationFailed)
+    })?;
+    for member in members {
+        let source_class = member.event_source_class().map_err(|message| {
+            defined_type_event_failure(owner, message, MetaDiagnosticCode::ValidationFailed)
+        })?;
+        let Some(target) = member.metadata_path().cloned() else {
+            if source_class.is_some() {
+                continue;
+            }
+            return Err(defined_type_event_failure(
+                owner,
+                "DefinedType member has no event source class",
+                MetaDiagnosticCode::ValidationFailed,
+            ));
+        };
+        if visiting.contains(&target) {
+            return Err(defined_type_event_failure(
+                owner,
+                format!("DefinedType event source cycle contains `{target}`"),
+                MetaDiagnosticCode::ValidationFailed,
+            ));
+        }
+        if seen.insert(target.clone()) {
+            let source_target = SourceTarget {
+                source_set: dependency_scope.source_set.to_string(),
+                metadata_path: Some(target.clone()),
+            };
+            let resolution =
+                resolve_platform_xml_target(context, &source_target, TargetKindPolicy::Any)
+                    .map_err(|_| {
+                        defined_type_event_failure(
+                            owner,
+                            format!(
+                        "DefinedType member `{target}` does not resolve in the selected source set"
+                    ),
+                            MetaDiagnosticCode::TargetNotFound,
+                        )
+                    })?;
+            let evidence =
+                platform_xml_resource_evidence(context, &resolution.handle).map_err(|_| {
+                    defined_type_event_failure(
+                        owner,
+                        format!("DefinedType member `{target}` evidence is unavailable"),
+                        MetaDiagnosticCode::ProviderUnavailable,
+                    )
+                })?;
+            if evidence.source_root != dependency_scope.owner_source_root
+                || evidence.registration_path != dependency_scope.owner_registration_path
+            {
+                return Err(defined_type_event_failure(
+                    owner,
+                    "DefinedType member must belong to the exact owner source set",
+                    MetaDiagnosticCode::InvalidArguments,
+                ));
+            }
+            let member_bytes = fs::read(&evidence.target_path).map_err(|_| {
+                defined_type_event_failure(
+                    owner,
+                    format!("DefinedType member `{target}` pre-image is unavailable"),
+                    MetaDiagnosticCode::ProviderUnavailable,
+                )
+            })?;
+            let (
+                registration_kind,
+                registration_name,
+                descriptor_kind,
+                descriptor_name,
+                generated_name,
+            ) = event_source_dependency_contract(&target).map_err(|message| {
+                defined_type_event_failure(owner, message, MetaDiagnosticCode::InvalidArguments)
+            })?;
+            validate_event_source_registration(
+                dependency_scope.owner_registration_preimage,
+                registration_kind,
+                registration_name,
+            )
+            .and_then(|()| {
+                validate_event_source_dependency_descriptor(
+                    &member_bytes,
+                    descriptor_kind,
+                    descriptor_name,
+                    generated_name.as_deref(),
+                    &[event_source_generated_prefix(&member).to_string()],
+                )
+            })
+            .map_err(|message| {
+                defined_type_event_failure(owner, message, MetaDiagnosticCode::ValidationFailed)
+            })?;
+            dependencies.push(TypedRelationDependency {
+                handle: resolution.handle,
+                path: evidence.target_path,
+                bytes: member_bytes,
+                target: target.clone(),
+                modules: Vec::new(),
+            });
+        }
+        if target.segments().next() == Some("DefinedType") {
+            expand_defined_type_event_dependencies(
+                dependency_scope,
+                owner,
+                context,
+                &target,
+                dependencies,
+                seen,
+                expanded,
+                visiting,
+            )?;
+        }
+    }
+    visiting.remove(defined_type);
+    expanded.insert(defined_type.clone());
+    Ok(())
+}
+
+fn defined_type_event_failure(
+    owner: &MetadataAddress,
+    message: impl Into<String>,
+    code: MetaDiagnosticCode,
+) -> MetaFailure {
+    MetaFailure::from(
+        typed_diagnostic(code, message, Some("relations.source")).with_metadata_path(owner.clone()),
+    )
+}
+
+fn event_source_dependency_contract(
+    target: &MetadataAddress,
+) -> Result<(&str, &str, &str, &str, Option<String>), &'static str> {
+    let segments = target.segments().collect::<Vec<_>>();
+    match segments.as_slice() {
+        [kind, name] => Ok((*kind, *name, *kind, *name, None)),
+        ["CalculationRegister", register, "Recalculation", recalculation] => Ok((
+            "CalculationRegister",
+            *register,
+            "Recalculation",
+            *recalculation,
+            Some(format!("{register}.{recalculation}")),
+        )),
+        _ => Err("event source dependency must identify one metadata object"),
+    }
 }
 
 fn resolve_typed_event_subscription_handler_dependency(
@@ -2426,7 +2636,7 @@ fn resolve_typed_event_subscription_handler_dependency(
         })?;
     let parts = handler.trim().split('.').collect::<Vec<_>>();
     let module_name = match parts.as_slice() {
-        ["CommonModule", module, _] | [module, _] => *module,
+        ["CommonModule", module, _] => *module,
         _ => {
             return Err(MetaFailure::from(
                 typed_diagnostic(
@@ -2755,7 +2965,21 @@ pub(crate) fn apply_typed_operations(
         // Capture before applying, but let the writer own invalid-operation
         // diagnostics. A missing remove/update target must stay target_not_found
         // rather than being replaced by an effect-projection failure.
-        let before = typed_operation_effect_value(&working, operation, false);
+        let before = match typed_operation_effect_value(&working, operation, false) {
+            Err(_)
+                if matches!(
+                    operation,
+                    MetaEditOperation::EditRelations {
+                        relation: MetaRelation::Source,
+                        mode: RelationEditMode::Replace,
+                        ..
+                    }
+                ) =>
+            {
+                Ok(Some(Value::Null))
+            }
+            other => other,
+        };
         if let Err(diagnostic) = apply_typed_operation(&mut working, operation, &mut counts) {
             let mut diagnostic = diagnostic.with_operation_index(operation_index);
             if let Some(field) = diagnostic.field.as_mut() {
@@ -4345,15 +4569,15 @@ fn apply_typed_event_subscription_source(
             Some("relation"),
         )
     })?;
-    let current = parse_meta_event_subscription_source(source_node).map_err(|message| {
-        typed_diagnostic(
-            MetaDiagnosticCode::ValidationFailed,
-            message,
-            Some("relation"),
-        )
-    })?;
+    // A replace operation is also the repair path for a syntactically readable
+    // legacy TypeDescription source. Failure to project the old wire value into
+    // the logical algebra must not prevent replacing it with a valid target.
+    let current = parse_meta_event_subscription_source(source_node).ok();
     let requested = canonical_meta_event_sources(&requested);
-    if canonical_meta_event_sources(&current) == requested {
+    if current
+        .as_deref()
+        .is_some_and(|current| canonical_meta_event_sources(current) == requested)
+    {
         return Ok(());
     }
     let range = source_node.range();

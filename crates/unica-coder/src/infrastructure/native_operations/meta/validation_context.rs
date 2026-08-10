@@ -114,6 +114,7 @@ pub(crate) fn validate_event_source_dependency_descriptor(
     descriptor_bytes: &[u8],
     expected_kind: &str,
     expected_name: &str,
+    expected_generated_name: Option<&str>,
     expected_generated_prefixes: &[String],
 ) -> Result<(), String> {
     let (source, document) = parse_metadata_image(descriptor_bytes)?;
@@ -173,7 +174,10 @@ pub(crate) fn validate_event_source_dependency_descriptor(
         ));
     };
     for expected_prefix in expected_generated_prefixes {
-        let expected_generated_type = format!("{expected_prefix}.{expected_name}");
+        let expected_generated_type = format!(
+            "{expected_prefix}.{}",
+            expected_generated_name.unwrap_or(expected_name)
+        );
         let expected_category = metadata_generated_types_8_3_27(expected_kind)
             .and_then(|contracts| {
                 contracts.iter().find_map(|(prefix, category)| {
@@ -689,6 +693,7 @@ mod tests {
             descriptor.as_bytes(),
             "Catalog",
             "Items",
+            None,
             &prefixes,
         )
         .unwrap();
@@ -699,6 +704,7 @@ mod tests {
             missing.as_bytes(),
             "Catalog",
             "Items",
+            None,
             &prefixes,
         )
         .unwrap_err()
@@ -709,6 +715,7 @@ mod tests {
             invalid_id.as_bytes(),
             "Catalog",
             "Items",
+            None,
             &prefixes,
         )
         .is_err());
@@ -730,6 +737,7 @@ mod tests {
                 nil_id.as_bytes(),
                 "Catalog",
                 "Items",
+                None,
                 &prefixes,
             )
             .expect_err("nil GeneratedType identifiers must be rejected");
@@ -753,6 +761,7 @@ mod tests {
                 version_one.as_bytes(),
                 "Catalog",
                 "Items",
+                None,
                 &prefixes,
             )
             .expect_err("non-v4 GeneratedType identifiers must be rejected");
@@ -775,6 +784,7 @@ mod tests {
             equal_ids.as_bytes(),
             "Catalog",
             "Items",
+            None,
             &prefixes,
         )
         .expect_err("equal GeneratedType identifiers must be rejected");

@@ -44,6 +44,9 @@ ADR-0038 закрепил `EventSubscription.Source` как типизирова
    допустимый логический `metadataPath`; `family` принимает только закрытый
    `sourceClass` из каталога событий. Примитивы, `valueStorage` и `reference`
    исключаются из мутационного контракта. Пустой итоговый `Source` отклоняется.
+   Исключение неоднозначности адреса: `manager` для `Constant.<Name>` обязан
+   дополнительно назвать `sourceClass` как `constantManager` или
+   `constantValueManager`; для других корней `manager` это поле запрещено.
 4. Профильный каталог классов, событий и сигнатур принадлежит
    `domain/metadata/event_subscription.rs`. Он не содержит XML QName или путей.
    `xml_model.rs` владеет только разбором и выпуском wire-представления, а

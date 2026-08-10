@@ -54,10 +54,12 @@ allowed-tools:
 
 У `EventSubscription` поле `data.relations.source` содержит массив того же
 закрытого размеченного объединения, которое принимают `meta.add` и
-`meta.edit`: примитивы возвращаются с квалификаторами, а `object`, `reference`,
-`recordSet` и `definedType` — с логическим `metadataPath`. Это обратное чтение
-фактически записанного `Properties/Source`, а не строка XML-типа. Массив —
-wire-представление набора: позиция элемента не входит в идентичность источника.
+`meta.edit`: `object`, `manager`, `recordSet` и `definedType` возвращаются с
+логическим `metadataPath`, `family` — с `sourceClass`. Для менеджера константы
+`sourceClass` различает `constantManager` и `constantValueManager`. Это обратное
+чтение логически допустимого `Properties/Source`, а не строка XML-типа. Примитив,
+ссылка или другой форматный тип не выдаётся как допустимая цель: чтение содержит
+диагностику. Позиция элемента массива не входит в идентичность источника.
 
 `data.functionalSubsystems` и `data.interfaceSubsystems` — только членства
 текущего объекта соответственно в функциональных и интерфейсных подсистемах.

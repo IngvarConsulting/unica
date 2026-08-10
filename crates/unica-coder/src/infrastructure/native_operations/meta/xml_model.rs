@@ -1,9 +1,8 @@
 use super::super::common::{escape_xml, multilang_text};
 use super::super::role::role_info_element;
 use crate::domain::metadata::{
-    metadata_identifier_is_valid, DateFractions, EventSourceClass, MetaEventSource,
-    MetaEventSourceDateFractions, MetaFillValue, MetadataType, MetadataTypeVariant, NumberSign,
-    StringLengthMode,
+    metadata_identifier_is_valid, DateFractions, EventSourceClass, MetaEventSource, MetaFillValue,
+    MetadataType, MetadataTypeVariant, NumberSign, StringLengthMode,
 };
 use crate::domain::source_target::{
     xml_ncname_is_valid, MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20,
@@ -215,6 +214,7 @@ enum EventSourceGeneratedKind {
     Manager,
     Reference,
     RecordSet,
+    RecalculationRecordSet,
     DefinedType,
 }
 
@@ -240,6 +240,7 @@ fn event_source_generated_contract(
         "CatalogManager" => ("Catalog", EventSourceGeneratedKind::Manager),
         "DocumentManager" => ("Document", EventSourceGeneratedKind::Manager),
         "EnumManager" => ("Enum", EventSourceGeneratedKind::Manager),
+        "ConstantManager" => ("Constant", EventSourceGeneratedKind::Manager),
         "ConstantValueManager" => ("Constant", EventSourceGeneratedKind::Manager),
         "InformationRegisterManager" => ("InformationRegister", EventSourceGeneratedKind::Manager),
         "AccumulationRegisterManager" => {
@@ -261,6 +262,8 @@ fn event_source_generated_contract(
         "DocumentJournalManager" => ("DocumentJournal", EventSourceGeneratedKind::Manager),
         "ReportManager" => ("Report", EventSourceGeneratedKind::Manager),
         "DataProcessorManager" => ("DataProcessor", EventSourceGeneratedKind::Manager),
+        "FilterCriterionManager" => ("FilterCriterion", EventSourceGeneratedKind::Manager),
+        "SettingsStorageManager" => ("SettingsStorage", EventSourceGeneratedKind::Manager),
         "CatalogRef" => ("Catalog", EventSourceGeneratedKind::Reference),
         "DocumentRef" => ("Document", EventSourceGeneratedKind::Reference),
         "EnumRef" => ("Enum", EventSourceGeneratedKind::Reference),
@@ -288,6 +291,11 @@ fn event_source_generated_contract(
         "CalculationRegisterRecordSet" => {
             ("CalculationRegister", EventSourceGeneratedKind::RecordSet)
         }
+        "SequenceRecordSet" => ("Sequence", EventSourceGeneratedKind::RecordSet),
+        "RecalculationRecordSet" => (
+            "CalculationRegister",
+            EventSourceGeneratedKind::RecalculationRecordSet,
+        ),
         "DefinedType" => ("DefinedType", EventSourceGeneratedKind::DefinedType),
         _ => return None,
     };
@@ -308,11 +316,6 @@ fn parse_event_source_generated(
     let (prefix, name) = generated.split_once('.').ok_or_else(|| {
         format!("EventSubscription Source configuration type {wire_type} is malformed")
     })?;
-    if name.contains('.') || !metadata_identifier_is_valid(name) {
-        return Err(format!(
-            "EventSubscription Source configuration type {wire_type} is malformed"
-        ));
-    }
     let (owner_kind, generated_kind) =
         event_source_generated_contract(prefix).ok_or_else(|| {
             format!("EventSubscription Source configuration type {wire_type} is unsupported")
@@ -327,18 +330,96 @@ fn parse_event_source_generated(
             "EventSubscription Source {wire_type} must use v8:{expected_tag}"
         ));
     }
-    let metadata_path = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{owner_kind}.{name}"),
-    )
-    .map_err(|_| format!("EventSubscription Source configuration type {wire_type} is malformed"))?;
+    let logical_path = if matches!(
+        generated_kind,
+        EventSourceGeneratedKind::RecalculationRecordSet
+    ) {
+        let parts = name.split('.').collect::<Vec<_>>();
+        let [register, recalculation] = parts.as_slice() else {
+            return Err(format!(
+                "EventSubscription Source configuration type {wire_type} is malformed"
+            ));
+        };
+        if !metadata_identifier_is_valid(register) || !metadata_identifier_is_valid(recalculation) {
+            return Err(format!(
+                "EventSubscription Source configuration type {wire_type} is malformed"
+            ));
+        }
+        format!("CalculationRegister.{register}.Recalculation.{recalculation}")
+    } else {
+        if name.contains('.') || !metadata_identifier_is_valid(name) {
+            return Err(format!(
+                "EventSubscription Source configuration type {wire_type} is malformed"
+            ));
+        }
+        format!("{owner_kind}.{name}")
+    };
+    let metadata_path = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &logical_path)
+        .map_err(|_| {
+            format!("EventSubscription Source configuration type {wire_type} is malformed")
+        })?;
     Ok(match generated_kind {
         EventSourceGeneratedKind::Object => MetaEventSource::Object { metadata_path },
-        EventSourceGeneratedKind::Manager => MetaEventSource::Manager { metadata_path },
-        EventSourceGeneratedKind::Reference => MetaEventSource::Reference { metadata_path },
-        EventSourceGeneratedKind::RecordSet => MetaEventSource::RecordSet { metadata_path },
+        EventSourceGeneratedKind::Manager => MetaEventSource::Manager {
+            metadata_path,
+            source_class: (owner_kind == "Constant")
+                .then(|| event_source_class_from_wire_name(prefix))
+                .flatten(),
+        },
+        EventSourceGeneratedKind::Reference => {
+            return Err(format!(
+                "EventSubscription Source configuration reference type {wire_type} is not a logical event source"
+            ));
+        }
+        EventSourceGeneratedKind::RecordSet | EventSourceGeneratedKind::RecalculationRecordSet => {
+            MetaEventSource::RecordSet { metadata_path }
+        }
         EventSourceGeneratedKind::DefinedType => MetaEventSource::DefinedType { metadata_path },
     })
+}
+
+pub(super) fn parse_defined_type_event_sources(
+    descriptor_bytes: &[u8],
+) -> Result<Vec<MetaEventSource>, String> {
+    let (_, document) = parse_metadata_image(descriptor_bytes)?;
+    let root = document.root_element();
+    let object = root
+        .children()
+        .find(|node| {
+            node.is_element()
+                && node.tag_name().namespace() == Some(MD_CLASSES_NS)
+                && node.tag_name().name() == "DefinedType"
+        })
+        .ok_or_else(|| "defined event source descriptor must contain DefinedType".to_string())?;
+    let properties = single_direct_md_child(object, "Properties", "DefinedType")?;
+    let type_node = single_direct_md_child(properties, "Type", "DefinedType Properties")?;
+    let mut sources = Vec::new();
+    for node in type_node.children().filter(roxmltree::Node::is_element) {
+        if node.tag_name().namespace() != Some(DATA_CORE_NS)
+            || !matches!(node.tag_name().name(), "Type" | "TypeSet")
+        {
+            return Err(
+                "DefinedType event source contains an unsupported type element".to_string(),
+            );
+        }
+        let tag = node.tag_name().name();
+        let wire_type = strict_leaf_text(node, &format!("DefinedType v8:{tag}"))?;
+        let qname = resolve_event_source_qname(node, &wire_type)?;
+        if qname.namespace != CURRENT_CONFIG_NS {
+            return Err(format!(
+                "DefinedType member {wire_type} has no event-capable source class"
+            ));
+        }
+        sources.push(parse_event_source_generated(
+            tag,
+            &wire_type,
+            &qname.local_name,
+        )?);
+    }
+    if sources.is_empty() {
+        return Err("DefinedType event source must contain at least one member".to_string());
+    }
+    Ok(sources)
 }
 
 /// Parse the exact direct contents of EventSubscription/Properties/Source.
@@ -356,6 +437,7 @@ pub(super) fn parse_meta_event_subscription_source(
 
     enum WireSource {
         Ready(MetaEventSource),
+        Unsupported(&'static str),
         String,
         Number,
         Date,
@@ -407,12 +489,10 @@ pub(super) fn parse_meta_event_subscription_source(
                 let parsed = match (tag, qname.namespace.as_str(), qname.local_name.as_str()) {
                     ("Type", XML_SCHEMA_NS, "string") => WireSource::String,
                     ("Type", XML_SCHEMA_NS, "decimal") => WireSource::Number,
-                    ("Type", XML_SCHEMA_NS, "boolean") => {
-                        WireSource::Ready(MetaEventSource::Boolean)
-                    }
+                    ("Type", XML_SCHEMA_NS, "boolean") => WireSource::Unsupported("boolean"),
                     ("Type", XML_SCHEMA_NS, "dateTime") => WireSource::Date,
                     ("Type", DATA_CORE_NS, "ValueStorage") => {
-                        WireSource::Ready(MetaEventSource::ValueStorage)
+                        WireSource::Unsupported("valueStorage")
                     }
                     (_, CURRENT_CONFIG_NS, generated) => {
                         WireSource::Ready(parse_event_source_generated(tag, &wire_type, generated)?)
@@ -479,8 +559,8 @@ pub(super) fn parse_meta_event_subscription_source(
                     "DateQualifiers" => {
                         let values = strict_qualifier_values(child, &["DateFractions"])?;
                         let fractions = match values[0].as_str() {
-                            "Date" => Ok(MetaEventSourceDateFractions::Date),
-                            "DateTime" => Ok(MetaEventSourceDateFractions::DateTime),
+                            "Date" => Ok("date"),
+                            "DateTime" => Ok("dateTime"),
                             other => Err(format!(
                                 "EventSubscription Source v8:DateFractions is unsupported: {other}"
                             )),
@@ -519,66 +599,56 @@ pub(super) fn parse_meta_event_subscription_source(
 
     let mut sources = Vec::with_capacity(wire_sources.len());
     for source in wire_sources {
-        sources.push(match source {
-            WireSource::Ready(source) => source,
+        match source {
+            WireSource::Ready(source) => sources.push(source),
+            WireSource::Unsupported(kind) => {
+                return Err(format!(
+                    "EventSubscription Source {kind} is a TypeDescription form, not a logical event source"
+                ));
+            }
             WireSource::String => {
                 let (length, allowed_length) = string_qualifier.ok_or_else(|| {
                     "EventSubscription Source string qualifiers are unavailable".to_string()
                 })?;
-                MetaEventSource::String {
-                    length,
-                    allowed_length,
+                if length != 0 || allowed_length != StringLengthMode::Variable {
+                    return Err(
+                        "EventSubscription Source string requires Length=0 and AllowedLength=Variable"
+                            .to_string(),
+                    );
                 }
+                return Err(
+                    "EventSubscription Source string is a TypeDescription form, not a logical event source"
+                        .to_string(),
+                );
             }
             WireSource::Number => {
-                let (digits, fraction, sign) = number_qualifier.ok_or_else(|| {
+                let (digits, fraction, _sign) = number_qualifier.ok_or_else(|| {
                     "EventSubscription Source number qualifiers are unavailable".to_string()
                 })?;
-                MetaEventSource::Number {
-                    digits,
-                    fraction,
-                    sign,
+                if digits > 38 || fraction > digits {
+                    return Err(
+                        "EventSubscription Source number requires Digits 0..=38 and FractionDigits not greater than Digits"
+                            .to_string(),
+                    );
                 }
+                return Err(
+                    "EventSubscription Source number is a TypeDescription form, not a logical event source"
+                        .to_string(),
+                );
             }
-            WireSource::Date => MetaEventSource::Date {
-                fractions: date_qualifier.ok_or_else(|| {
+            WireSource::Date => {
+                let _fractions = date_qualifier.ok_or_else(|| {
                     "EventSubscription Source date qualifiers are unavailable".to_string()
-                })?,
-            },
-        });
-    }
-    if sources.len() > 1
-        && sources
-            .iter()
-            .any(|source| matches!(source, MetaEventSource::ValueStorage))
-    {
-        return Err(
-            "ValueStorage must be the only platform type in an 8.3.27 EventSubscription Source"
-                .to_string(),
-        );
+                })?;
+                return Err(
+                    "EventSubscription Source date is a TypeDescription form, not a logical event source"
+                        .to_string(),
+                );
+            }
+        }
     }
     let mut identities = std::collections::HashSet::new();
     for source in &sources {
-        match source {
-            MetaEventSource::String {
-                length,
-                allowed_length,
-            } if *length != 0 || *allowed_length != StringLengthMode::Variable => {
-                return Err(
-                    "EventSubscription Source string requires Length=0 and AllowedLength=Variable"
-                        .to_string(),
-                )
-            }
-            MetaEventSource::Number {
-                digits, fraction, ..
-            } if *digits > 38 || *fraction > *digits => {
-                return Err(
-                    "EventSubscription Source number requires Digits 0..=38 and FractionDigits not greater than Digits"
-                        .to_string(),
-                )
-            }
-            _ => {}
-        }
         if !identities.insert(source.identity_key()) {
             return Err(format!(
                 "EventSubscription Source contains duplicate semantic identity {}",
@@ -591,46 +661,23 @@ pub(super) fn parse_meta_event_subscription_source(
 
 #[derive(Clone, Copy)]
 enum EventSourceWireNamespace {
-    Data,
     CurrentConfig,
-    XmlSchema,
 }
 
 fn event_source_wire_contract(
     source: &MetaEventSource,
 ) -> (&'static str, EventSourceWireNamespace, String) {
     match source {
-        MetaEventSource::String { .. } => (
-            "Type",
-            EventSourceWireNamespace::XmlSchema,
-            "string".to_string(),
-        ),
-        MetaEventSource::Number { .. } => (
-            "Type",
-            EventSourceWireNamespace::XmlSchema,
-            "decimal".to_string(),
-        ),
-        MetaEventSource::Boolean => (
-            "Type",
-            EventSourceWireNamespace::XmlSchema,
-            "boolean".to_string(),
-        ),
-        MetaEventSource::Date { .. } => (
-            "Type",
-            EventSourceWireNamespace::XmlSchema,
-            "dateTime".to_string(),
-        ),
-        MetaEventSource::ValueStorage => (
-            "Type",
-            EventSourceWireNamespace::Data,
-            "ValueStorage".to_string(),
-        ),
         MetaEventSource::Object { metadata_path }
-        | MetaEventSource::Manager { metadata_path }
-        | MetaEventSource::Reference { metadata_path }
+        | MetaEventSource::Manager { metadata_path, .. }
         | MetaEventSource::RecordSet { metadata_path } => {
             let prefix = event_source_generated_prefix(source);
-            let name = metadata_path.segments().nth(1).unwrap_or_default();
+            let segments = metadata_path.segments().collect::<Vec<_>>();
+            let name = if segments.len() == 4 && segments[2] == "Recalculation" {
+                format!("{}.{}", segments[1], segments[3])
+            } else {
+                segments.get(1).copied().unwrap_or_default().to_string()
+            };
             (
                 "Type",
                 EventSourceWireNamespace::CurrentConfig,
@@ -656,7 +703,6 @@ fn event_source_wire_contract(
 struct EventSourceEmissionNamespaces {
     data: String,
     current_config: Option<String>,
-    xml_schema: Option<String>,
     declarations: Vec<(String, &'static str)>,
 }
 
@@ -671,59 +717,28 @@ impl EventSourceEmissionNamespaces {
             &mut declarations,
             &mut allocated_prefixes,
         );
-        let current_config = sources
-            .iter()
-            .any(|source| {
-                source.metadata_path().is_some() || matches!(source, MetaEventSource::Family { .. })
-            })
-            .then(|| {
-                event_source_emission_prefix(
-                    context,
-                    "cfg",
-                    CURRENT_CONFIG_NS,
-                    &mut declarations,
-                    &mut allocated_prefixes,
-                )
-            });
-        let xml_schema = sources
-            .iter()
-            .any(|source| {
-                matches!(
-                    source,
-                    MetaEventSource::String { .. }
-                        | MetaEventSource::Number { .. }
-                        | MetaEventSource::Boolean
-                        | MetaEventSource::Date { .. }
-                )
-            })
-            .then(|| {
-                event_source_emission_prefix(
-                    context,
-                    "xs",
-                    XML_SCHEMA_NS,
-                    &mut declarations,
-                    &mut allocated_prefixes,
-                )
-            });
+        let current_config = (!sources.is_empty()).then(|| {
+            event_source_emission_prefix(
+                context,
+                "cfg",
+                CURRENT_CONFIG_NS,
+                &mut declarations,
+                &mut allocated_prefixes,
+            )
+        });
         Self {
             data,
             current_config,
-            xml_schema,
             declarations,
         }
     }
 
     fn wire_prefix(&self, namespace: EventSourceWireNamespace) -> &str {
         match namespace {
-            EventSourceWireNamespace::Data => &self.data,
             EventSourceWireNamespace::CurrentConfig => self
                 .current_config
                 .as_deref()
                 .expect("configuration source requires a configuration namespace"),
-            EventSourceWireNamespace::XmlSchema => self
-                .xml_schema
-                .as_deref()
-                .expect("primitive source requires an XML Schema namespace"),
         }
     }
 }
@@ -782,11 +797,15 @@ pub(super) fn event_source_generated_prefix(source: &MetaEventSource) -> &'stati
             "DataProcessor" => "DataProcessorObject",
             _ => "",
         },
-        MetaEventSource::Manager { .. } => match kind {
+        MetaEventSource::Manager { source_class, .. } => match kind {
             "Catalog" => "CatalogManager",
             "Document" => "DocumentManager",
             "Enum" => "EnumManager",
-            "Constant" => "ConstantValueManager",
+            "Constant" => match source_class {
+                Some(EventSourceClass::ConstantManager) => "ConstantManager",
+                Some(EventSourceClass::ConstantValueManager) => "ConstantValueManager",
+                _ => "",
+            },
             "InformationRegister" => "InformationRegisterManager",
             "AccumulationRegister" => "AccumulationRegisterManager",
             "AccountingRegister" => "AccountingRegisterManager",
@@ -800,34 +819,27 @@ pub(super) fn event_source_generated_prefix(source: &MetaEventSource) -> &'stati
             "DocumentJournal" => "DocumentJournalManager",
             "Report" => "ReportManager",
             "DataProcessor" => "DataProcessorManager",
+            "FilterCriterion" => "FilterCriterionManager",
+            "SettingsStorage" => "SettingsStorageManager",
             _ => "",
         },
-        MetaEventSource::Reference { .. } => match kind {
-            "Catalog" => "CatalogRef",
-            "Document" => "DocumentRef",
-            "Enum" => "EnumRef",
-            "ChartOfAccounts" => "ChartOfAccountsRef",
-            "ChartOfCharacteristicTypes" => "ChartOfCharacteristicTypesRef",
-            "ChartOfCalculationTypes" => "ChartOfCalculationTypesRef",
-            "ExchangePlan" => "ExchangePlanRef",
-            "BusinessProcess" => "BusinessProcessRef",
-            "Task" => "TaskRef",
-            _ => "",
-        },
-        MetaEventSource::RecordSet { .. } => match kind {
-            "InformationRegister" => "InformationRegisterRecordSet",
-            "AccumulationRegister" => "AccumulationRegisterRecordSet",
-            "AccountingRegister" => "AccountingRegisterRecordSet",
-            "CalculationRegister" => "CalculationRegisterRecordSet",
-            _ => "",
-        },
+        MetaEventSource::RecordSet { metadata_path } => {
+            let segments = metadata_path.segments().collect::<Vec<_>>();
+            if segments.len() == 4 && segments[2] == "Recalculation" {
+                "RecalculationRecordSet"
+            } else {
+                match kind {
+                    "InformationRegister" => "InformationRegisterRecordSet",
+                    "AccumulationRegister" => "AccumulationRegisterRecordSet",
+                    "AccountingRegister" => "AccountingRegisterRecordSet",
+                    "CalculationRegister" => "CalculationRegisterRecordSet",
+                    "Sequence" => "SequenceRecordSet",
+                    _ => "",
+                }
+            }
+        }
         MetaEventSource::DefinedType { .. } => "DefinedType",
         MetaEventSource::Family { source_class } => event_source_class_wire_name(*source_class),
-        MetaEventSource::String { .. }
-        | MetaEventSource::Number { .. }
-        | MetaEventSource::Boolean
-        | MetaEventSource::Date { .. }
-        | MetaEventSource::ValueStorage => "",
     }
 }
 
@@ -835,69 +847,14 @@ fn event_source_group_rank(source: &MetaEventSource) -> u8 {
     match source {
         MetaEventSource::Object { .. }
         | MetaEventSource::Manager { .. }
-        | MetaEventSource::Reference { .. }
         | MetaEventSource::RecordSet { .. } => 0,
-        MetaEventSource::Boolean => 1,
-        MetaEventSource::String { .. } => 2,
-        MetaEventSource::Date { .. } => 3,
-        MetaEventSource::Number { .. } => 4,
-        MetaEventSource::ValueStorage => 5,
         MetaEventSource::DefinedType { .. } => 6,
         MetaEventSource::Family { .. } => 6,
     }
 }
 
 fn event_source_semantic_key(source: &MetaEventSource) -> String {
-    match source {
-        MetaEventSource::String {
-            length,
-            allowed_length,
-        } => format!(
-            "string:{length}:{}",
-            match allowed_length {
-                StringLengthMode::Variable => "variable",
-                StringLengthMode::Fixed => "fixed",
-            }
-        ),
-        MetaEventSource::Number {
-            digits,
-            fraction,
-            sign,
-        } => format!(
-            "number:{digits}:{fraction}:{}",
-            match sign {
-                NumberSign::Any => "any",
-                NumberSign::NonNegative => "nonnegative",
-            }
-        ),
-        MetaEventSource::Boolean => "boolean".to_string(),
-        MetaEventSource::Date { fractions } => format!(
-            "date:{}",
-            match fractions {
-                MetaEventSourceDateFractions::Date => "date",
-                MetaEventSourceDateFractions::DateTime => "dateTime",
-            }
-        ),
-        MetaEventSource::ValueStorage => "valueStorage".to_string(),
-        MetaEventSource::Object { metadata_path } => {
-            format!("object:{}", metadata_path.as_str().to_lowercase())
-        }
-        MetaEventSource::Manager { metadata_path } => {
-            format!("manager:{}", metadata_path.as_str().to_lowercase())
-        }
-        MetaEventSource::Reference { metadata_path } => {
-            format!("reference:{}", metadata_path.as_str().to_lowercase())
-        }
-        MetaEventSource::RecordSet { metadata_path } => {
-            format!("recordSet:{}", metadata_path.as_str().to_lowercase())
-        }
-        MetaEventSource::DefinedType { metadata_path } => {
-            format!("definedType:{}", metadata_path.as_str().to_lowercase())
-        }
-        MetaEventSource::Family { source_class } => {
-            format!("family:{}", source_class.as_str())
-        }
-    }
+    source.identity_key()
 }
 
 fn event_source_class_wire_name(source_class: EventSourceClass) -> &'static str {
@@ -1001,63 +958,6 @@ pub(super) fn emit_meta_event_subscription_source(
                     escape_xml(&wire_type)
                 ));
             }
-        }
-    }
-    for source in &sources {
-        if let MetaEventSource::Number {
-            digits,
-            fraction,
-            sign,
-        } = source
-        {
-            lines.push(format!("{content_indent}<{data_prefix}:NumberQualifiers>"));
-            lines.push(format!(
-                "{content_indent}\t<{data_prefix}:Digits>{digits}</{data_prefix}:Digits>"
-            ));
-            lines.push(format!(
-                "{content_indent}\t<{data_prefix}:FractionDigits>{fraction}</{data_prefix}:FractionDigits>"
-            ));
-            lines.push(format!(
-                "{content_indent}\t<{data_prefix}:AllowedSign>{}</{data_prefix}:AllowedSign>",
-                match sign {
-                    NumberSign::Any => "Any",
-                    NumberSign::NonNegative => "Nonnegative",
-                }
-            ));
-            lines.push(format!("{content_indent}</{data_prefix}:NumberQualifiers>"));
-        }
-    }
-    for source in &sources {
-        if let MetaEventSource::String {
-            length,
-            allowed_length,
-        } = source
-        {
-            lines.push(format!("{content_indent}<{data_prefix}:StringQualifiers>"));
-            lines.push(format!(
-                "{content_indent}\t<{data_prefix}:Length>{length}</{data_prefix}:Length>"
-            ));
-            lines.push(format!(
-                "{content_indent}\t<{data_prefix}:AllowedLength>{}</{data_prefix}:AllowedLength>",
-                match allowed_length {
-                    StringLengthMode::Variable => "Variable",
-                    StringLengthMode::Fixed => "Fixed",
-                }
-            ));
-            lines.push(format!("{content_indent}</{data_prefix}:StringQualifiers>"));
-        }
-    }
-    for source in &sources {
-        if let MetaEventSource::Date { fractions } = source {
-            lines.push(format!("{content_indent}<{data_prefix}:DateQualifiers>"));
-            lines.push(format!(
-                "{content_indent}\t<{data_prefix}:DateFractions>{}</{data_prefix}:DateFractions>",
-                match fractions {
-                    MetaEventSourceDateFractions::Date => "Date",
-                    MetaEventSourceDateFractions::DateTime => "DateTime",
-                }
-            ));
-            lines.push(format!("{content_indent}</{data_prefix}:DateQualifiers>"));
         }
     }
     lines.push(format!("{indent}</Source>"));
@@ -1357,28 +1257,26 @@ mod tests {
             MetaEventSource::DefinedType {
                 metadata_path: metadata_path("DefinedType.Filter"),
             },
-            MetaEventSource::Number {
-                digits: 15,
-                fraction: 2,
-                sign: NumberSign::NonNegative,
-            },
             MetaEventSource::Object {
                 metadata_path: metadata_path("Catalog.Items"),
             },
-            MetaEventSource::Date {
-                fractions: MetaEventSourceDateFractions::Date,
+            MetaEventSource::Manager {
+                metadata_path: metadata_path("Constant.Setting"),
+                source_class: Some(EventSourceClass::ConstantManager),
             },
-            MetaEventSource::Reference {
-                metadata_path: metadata_path("Document.Sale"),
-            },
-            MetaEventSource::String {
-                length: 0,
-                allowed_length: StringLengthMode::Variable,
+            MetaEventSource::Manager {
+                metadata_path: metadata_path("Constant.Setting"),
+                source_class: Some(EventSourceClass::ConstantValueManager),
             },
             MetaEventSource::RecordSet {
                 metadata_path: metadata_path("InformationRegister.Events"),
             },
-            MetaEventSource::Boolean,
+            MetaEventSource::RecordSet {
+                metadata_path: metadata_path("CalculationRegister.Payroll.Recalculation.Main"),
+            },
+            MetaEventSource::Family {
+                source_class: EventSourceClass::SequenceRecordSet,
+            },
         ];
         let namespace_context_xml = event_subscription_xml("<Source/>");
         let namespace_context_document =
@@ -1393,22 +1291,17 @@ mod tests {
 
         assert_eq!(parsed, canonical_meta_event_sources(&requested));
         assert!(
-            source.find("cfg:CatalogObject.Items").unwrap() < source.find("xs:boolean").unwrap()
+            source.find("cfg:CatalogObject.Items").unwrap()
+                < source.find("cfg:DefinedType.Filter").unwrap()
         );
-        assert!(source.find("xs:boolean").unwrap() < source.find("xs:string").unwrap());
-        assert!(source.find("xs:string").unwrap() < source.find("xs:dateTime").unwrap());
-        assert!(source.find("xs:dateTime").unwrap() < source.find("xs:decimal").unwrap());
-        assert!(
-            source.find("xs:decimal").unwrap() < source.find("cfg:DefinedType.Filter").unwrap()
-        );
-        assert!(
-            source.find("NumberQualifiers").unwrap() < source.find("StringQualifiers").unwrap()
-        );
-        assert!(source.find("StringQualifiers").unwrap() < source.find("DateQualifiers").unwrap());
+        assert!(source.contains("cfg:ConstantManager.Setting"));
+        assert!(source.contains("cfg:ConstantValueManager.Setting"));
+        assert!(source.contains("cfg:RecalculationRecordSet.Payroll.Main"));
+        assert!(source.contains("cfg:SequenceRecordSet"));
     }
 
     #[test]
-    fn event_subscription_source_accepts_empty_self_closing_and_rejects_invalid_profile() {
+    fn event_subscription_source_reads_empty_and_rejects_format_only_sources() {
         let empty = event_subscription_xml("<Source/>");
         let document = roxmltree::Document::parse(&empty).unwrap();
         assert!(parse_meta_event_subscription_source(
@@ -1427,8 +1320,21 @@ mod tests {
         .unwrap_err()
         .contains("Length=0"));
 
+        for unsupported in [
+            "<Source><v8:Type>xs:boolean</v8:Type></Source>",
+            "<Source><v8:Type>cfg:CatalogRef.Items</v8:Type></Source>",
+        ] {
+            let xml = event_subscription_xml(unsupported);
+            let document = roxmltree::Document::parse(&xml).unwrap();
+            assert!(parse_meta_event_subscription_source(
+                meta_event_subscription_source_node(&document).unwrap()
+            )
+            .unwrap_err()
+            .contains("not a logical event source"));
+        }
+
         for shadowed in [
-            r#"<Source xmlns:cfg="urn:not-current-config"><v8:Type>cfg:CatalogRef.Items</v8:Type></Source>"#,
+            r#"<Source xmlns:cfg="urn:not-current-config"><v8:Type>cfg:CatalogObject.Items</v8:Type></Source>"#,
             r#"<Source><v8:Type xmlns:xs="urn:not-xml-schema">xs:boolean</v8:Type></Source>"#,
         ] {
             let xml = event_subscription_xml(shadowed);
@@ -1444,7 +1350,7 @@ mod tests {
     #[test]
     fn event_subscription_source_resolves_alias_qnames_by_namespace_uri() {
         let xml = format!(
-            r#"<MetaDataObject xmlns="{MD_CLASSES_NS}" xmlns:d="{DATA_CORE_NS}" xmlns:c="{CURRENT_CONFIG_NS}" xmlns:s="{XML_SCHEMA_NS}" version="2.20"><EventSubscription><Properties><Source><d:Type>c:CatalogRef.Items</d:Type><d:Type>s:boolean</d:Type></Source></Properties></EventSubscription></MetaDataObject>"#
+            r#"<MetaDataObject xmlns="{MD_CLASSES_NS}" xmlns:d="{DATA_CORE_NS}" xmlns:c="{CURRENT_CONFIG_NS}" version="2.20"><EventSubscription><Properties><Source><d:Type>c:CatalogObject.Items</d:Type></Source></Properties></EventSubscription></MetaDataObject>"#
         );
         let document = roxmltree::Document::parse(&xml).unwrap();
         let parsed = parse_meta_event_subscription_source(
@@ -1454,16 +1360,13 @@ mod tests {
 
         assert_eq!(
             parsed,
-            vec![
-                MetaEventSource::Reference {
-                    metadata_path: metadata_path("Catalog.Items"),
-                },
-                MetaEventSource::Boolean,
-            ]
+            vec![MetaEventSource::Object {
+                metadata_path: metadata_path("Catalog.Items"),
+            }]
         );
 
         let duplicate = format!(
-            r#"<MetaDataObject xmlns="{MD_CLASSES_NS}" xmlns:d="{DATA_CORE_NS}" xmlns:cfg="{CURRENT_CONFIG_NS}" xmlns:c="{CURRENT_CONFIG_NS}" version="2.20"><EventSubscription><Properties><Source><d:Type>cfg:CatalogRef.Items</d:Type><d:Type>c:CatalogRef.Items</d:Type></Source></Properties></EventSubscription></MetaDataObject>"#
+            r#"<MetaDataObject xmlns="{MD_CLASSES_NS}" xmlns:d="{DATA_CORE_NS}" xmlns:cfg="{CURRENT_CONFIG_NS}" xmlns:c="{CURRENT_CONFIG_NS}" version="2.20"><EventSubscription><Properties><Source><d:Type>cfg:CatalogObject.Items</d:Type><d:Type>c:CatalogObject.Items</d:Type></Source></Properties></EventSubscription></MetaDataObject>"#
         );
         let document = roxmltree::Document::parse(&duplicate).unwrap();
         assert!(parse_meta_event_subscription_source(
@@ -1480,7 +1383,7 @@ mod tests {
         );
         let document = roxmltree::Document::parse(&xml).unwrap();
         let source_node = meta_event_subscription_source_node(&document).unwrap();
-        let requested = vec![MetaEventSource::Reference {
+        let requested = vec![MetaEventSource::Object {
             metadata_path: metadata_path("Catalog.Items"),
         }];
 
@@ -1490,7 +1393,7 @@ mod tests {
         let rewritten_source = meta_event_subscription_source_node(&rewritten_document).unwrap();
 
         assert!(emitted.contains(&format!(r#"xmlns:cfg1="{CURRENT_CONFIG_NS}""#)));
-        assert!(emitted.contains("<cfg:Type>cfg1:CatalogRef.Items</cfg:Type>"));
+        assert!(emitted.contains("<cfg:Type>cfg1:CatalogObject.Items</cfg:Type>"));
         assert_eq!(
             parse_meta_event_subscription_source(rewritten_source).unwrap(),
             requested
@@ -1500,10 +1403,12 @@ mod tests {
     #[test]
     fn event_subscription_source_rejects_generated_names_that_are_not_1c_identifiers() {
         for generated in [
-            "CatalogRef.Bad Name",
-            "CatalogRef.1Bad",
-            "CatalogRef.Bad:Name",
-            "CatalogRef.Bad-Name",
+            "CatalogObject.Bad Name",
+            "CatalogObject.1Bad",
+            "CatalogObject.Bad:Name",
+            "CatalogObject.Bad-Name",
+            "RecalculationRecordSet.Register",
+            "RecalculationRecordSet.Register.Bad.Name",
         ] {
             let xml = event_subscription_xml(&format!(
                 "<Source><v8:Type>cfg:{generated}</v8:Type></Source>"

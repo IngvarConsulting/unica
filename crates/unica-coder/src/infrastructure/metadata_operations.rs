@@ -778,6 +778,57 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn meta_add_event_subscription_uses_explicit_final_handler_without_template_arity_gate() {
+        let (root, context) = empty_workspace("event-binding-add");
+        add_exported_event_handler(&root, &context);
+        fs::write(
+            root.join("src/CommonModules/EventHandlers/Ext/Module.bsl"),
+            "Procedure OnRecordSetEvent(Source, Cancel, Replacing) Export\nEndProcedure\n",
+        )
+        .unwrap();
+        let binding = MetaEditOperation::SetProperties {
+            values: MetaPropertyChanges::convert(
+                MetadataKind::EventSubscription,
+                vec![MetaPropertyInput::new(
+                    "Handler",
+                    MetaPropertyValue::String(
+                        "CommonModule.EventHandlers.OnRecordSetEvent".to_string(),
+                    ),
+                )],
+            )
+            .unwrap(),
+        };
+        let cancellation = CancellationToken::new();
+        let prepared = MetadataOperations::prepare_mutation(
+            &MetadataRequest::Add(MetaAddRequest {
+                source_set: "main".into(),
+                kind: MetadataKind::EventSubscription,
+                name: "RecordSetEvents".into(),
+                operations: vec![
+                    source_replace(vec![source_family(
+                        crate::domain::metadata::EventSourceClass::InformationRegisterRecordSet,
+                    )]),
+                    binding,
+                ],
+                dry_run: false,
+            }),
+            &context,
+            &cancellation,
+        )
+        .unwrap();
+        let validation =
+            MetadataOperations::validate(prepared.validation_subject(), &context, &cancellation);
+        assert_eq!(
+            validation.status,
+            MetaValidationStatus::Passed,
+            "{:?}",
+            validation.diagnostics
+        );
+        prepared.publish(&cancellation).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
     fn add_object_event_subscription(fixture: &Fixture, name: &str) -> MetadataAddress {
         add_exported_event_handler(&fixture.root, &fixture.context);
         let cancellation = CancellationToken::new();
@@ -802,6 +853,158 @@ mod tests {
             &format!("EventSubscription.{name}"),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn event_subscription_requires_explicit_non_global_server_module_facts() {
+        let fixture = Fixture::new("event-handler-context-facts");
+        let subscription = add_object_event_subscription(&fixture, "CatalogEvents");
+        let module_descriptor = fixture.root.join("src/CommonModules/EventHandlers.xml");
+        let descriptor = fs::read_to_string(&module_descriptor).unwrap();
+        let malformed = descriptor.replacen("\t\t\t<Global>false</Global>\n", "", 1);
+        assert_ne!(malformed, descriptor, "fixture must remove Global evidence");
+        fs::write(module_descriptor, malformed).unwrap();
+
+        let cancellation = CancellationToken::new();
+        let read = MetadataOperations::read_local(
+            &MetaInfoRequest {
+                source_set: "main".into(),
+                metadata_path: subscription,
+                sections: Vec::new(),
+                limit: 20,
+            },
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap();
+        let validation = MetadataOperations::validate_read(
+            &read.validation_subject,
+            &fixture.context,
+            &cancellation,
+        );
+        assert_eq!(validation.status, MetaValidationStatus::Failed);
+        assert!(
+            validation.diagnostics.iter().any(|diagnostic| {
+                diagnostic.field.as_deref() == Some("properties.handler")
+                    && diagnostic.message.contains("Global=false")
+            }),
+            "{:?}",
+            validation.diagnostics
+        );
+    }
+
+    fn replace_defined_type_members(root: &std::path::Path, name: &str, members: &[&str]) {
+        let path = root.join(format!("src/DefinedTypes/{name}.xml"));
+        let descriptor = fs::read_to_string(&path).unwrap();
+        let body = members
+            .iter()
+            .map(|member| {
+                let tag = if member.starts_with("DefinedType.") || !member.contains('.') {
+                    "TypeSet"
+                } else {
+                    "Type"
+                };
+                format!("\t\t\t\t<v8:{tag}>cfg:{member}</v8:{tag}>\n")
+            })
+            .collect::<String>();
+        let replacement = format!("\t\t\t<Type>\n{body}\t\t\t</Type>");
+        let changed = descriptor.replacen("\t\t\t<Type/>", &replacement, 1);
+        assert_ne!(changed, descriptor, "fixture must replace DefinedType Type");
+        fs::write(path, changed).unwrap();
+    }
+
+    #[test]
+    fn defined_type_event_source_expands_to_concrete_event_classes_and_dependencies() {
+        let fixture = Fixture::new("defined-type-event-source");
+        add_exported_event_handler(&fixture.root, &fixture.context);
+        let defined_type = fixture.add_object(MetadataKind::DefinedType, "CatalogObjects");
+        replace_defined_type_members(
+            &fixture.root,
+            "CatalogObjects",
+            &["CatalogObject.Editable", "CatalogObject"],
+        );
+        let cancellation = CancellationToken::new();
+        let prepared = MetadataOperations::prepare_mutation(
+            &MetadataRequest::Add(MetaAddRequest {
+                source_set: "main".into(),
+                kind: MetadataKind::EventSubscription,
+                name: "DefinedEvents".into(),
+                operations: vec![source_replace(vec![MetaEventSource::DefinedType {
+                    metadata_path: defined_type.clone(),
+                }])],
+                dry_run: false,
+            }),
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap();
+
+        for expected in [&defined_type, &fixture.target] {
+            assert!(
+                prepared
+                    .validation_subject()
+                    .resources
+                    .iter()
+                    .any(|resource| {
+                        matches!(
+                            &resource.role,
+                            MetadataResourceRole::Dependency { target } if target == expected
+                        )
+                    }),
+                "missing dependency evidence for {expected}"
+            );
+        }
+        let validation = MetadataOperations::validate(
+            prepared.validation_subject(),
+            &fixture.context,
+            &cancellation,
+        );
+        assert_eq!(
+            validation.status,
+            MetaValidationStatus::Passed,
+            "{:?}",
+            validation.diagnostics
+        );
+        prepared.publish(&cancellation).unwrap();
+    }
+
+    #[test]
+    fn defined_type_event_source_cycle_is_rejected_before_publication() {
+        let fixture = Fixture::new("defined-type-event-cycle");
+        add_exported_event_handler(&fixture.root, &fixture.context);
+        let first = fixture.add_object(MetadataKind::DefinedType, "First");
+        fixture.add_object(MetadataKind::DefinedType, "Second");
+        replace_defined_type_members(&fixture.root, "First", &["DefinedType.Second"]);
+        replace_defined_type_members(&fixture.root, "Second", &["DefinedType.First"]);
+        let cancellation = CancellationToken::new();
+        let failure = match MetadataOperations::prepare_mutation(
+            &MetadataRequest::Add(MetaAddRequest {
+                source_set: "main".into(),
+                kind: MetadataKind::EventSubscription,
+                name: "CyclicEvents".into(),
+                operations: vec![source_replace(vec![MetaEventSource::DefinedType {
+                    metadata_path: first,
+                }])],
+                dry_run: false,
+            }),
+            &fixture.context,
+            &cancellation,
+        ) {
+            Ok(_) => panic!("cyclic DefinedType event source unexpectedly prepared"),
+            Err(failure) => failure,
+        };
+        assert!(
+            failure.diagnostics.iter().any(|diagnostic| {
+                diagnostic.field.as_deref() == Some("relations.source")
+                    && diagnostic.message.contains("cycle")
+            }),
+            "{:?}",
+            failure.diagnostics
+        );
+        assert!(!fixture
+            .root
+            .join("src/EventSubscriptions/CyclicEvents.xml")
+            .exists());
     }
 
     fn assert_event_source_info_validation_fails(
@@ -918,12 +1121,10 @@ mod tests {
         )
         .unwrap();
         let sources = vec![
-            MetaEventSource::Manager {
-                metadata_path: fixture.target.clone(),
-            },
             MetaEventSource::Object {
                 metadata_path: fixture.target.clone(),
             },
+            source_family(crate::domain::metadata::EventSourceClass::CatalogObject),
         ];
         let request = MetadataRequest::Edit(MetaEditRequest {
             source_set: "main".into(),

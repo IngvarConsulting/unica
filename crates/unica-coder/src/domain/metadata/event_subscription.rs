@@ -659,6 +659,7 @@ const EVENT_SOURCE_PROFILES: &[EventSourceProfile] = &[
     profile!(TaskObject, TASK_OBJECT_EVENTS),
 ];
 
+#[cfg(test)]
 pub(crate) fn event_binding_row_count() -> usize {
     EVENT_SOURCE_PROFILES
         .iter()
@@ -678,6 +679,7 @@ pub(crate) fn event_definition(
         .find(|definition| definition.name == event)
 }
 
+#[cfg(test)]
 pub(crate) fn shared_event_names(source_classes: &[EventSourceClass]) -> Vec<&'static str> {
     let Some(first) = source_classes.first().and_then(|source_class| {
         EVENT_SOURCE_PROFILES

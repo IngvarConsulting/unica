@@ -9,9 +9,9 @@ use crate::application::SupportGuardRequirement;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::metadata::{
     metadata_identifier_is_valid, MetaDiagnostic, MetaDiagnosticCode, MetaEditOperation,
-    MetaMutationData, MetaMutationEffect, MetaPublicationAction, MetaPublicationPlanEntry,
-    MetaPublicationResource, MetaRelation, MetaValidationData, MetaValidationStatus,
-    RelationEditMode,
+    MetaMutationData, MetaMutationEffect, MetaPropertyKey, MetaPublicationAction,
+    MetaPublicationPlanEntry, MetaPublicationResource, MetaRelation, MetaValidationData,
+    MetaValidationStatus, RelationEditMode,
 };
 use crate::domain::source_target::MetadataAddress;
 use crate::domain::workspace::WorkspaceContext;
@@ -35,7 +35,7 @@ use super::edit::{
 use super::remove::{plan_typed_remove, TypedMetaRemovePlan};
 use super::template_catalog::{
     MetadataTemplateCatalog, MetadataTemplateFileMode, MetadataTemplateFileRole,
-    PlatformMetadataTemplateCatalog,
+    MetadataTemplateOperationOverrides, PlatformMetadataTemplateCatalog,
 };
 use crate::infrastructure::platform_xml_source_targets::{
     bind_metadata_add_source_evidence, resolve_metadata_add_source, revalidate_metadata_add_source,
@@ -551,11 +551,18 @@ pub(crate) fn prepare_meta_add(
             }
         )
     });
+    let handler_is_replaced_by_operation = request.operations.iter().any(|operation| {
+        matches!(operation, MetaEditOperation::SetProperties { values }
+            if values.entries().iter().any(|(key, _)| *key == MetaPropertyKey::Handler))
+    });
     let mut post_image = PlatformMetadataTemplateCatalog.minimal_object(
         &source,
         request.kind,
         &request.name,
-        source_is_replaced_by_operation,
+        MetadataTemplateOperationOverrides {
+            source: source_is_replaced_by_operation,
+            handler: handler_is_replaced_by_operation,
+        },
         &request.source_set,
         context,
     )?;
@@ -576,7 +583,7 @@ pub(crate) fn prepare_meta_add(
             &source.source_root,
             &source.owner_path,
             &source.owner_preimage,
-            false,
+            handler_is_replaced_by_operation,
         ),
         &descriptor_path,
         &target,

@@ -140,7 +140,7 @@ AST-сигнатуры и флагов общего модуля.
 | `kind` | Поля | Смысл |
 | --- | --- | --- |
 | `object` | `metadataPath` | порождённый объект конкретного объекта метаданных |
-| `manager` | `metadataPath` | менеджер или value-manager конкретного объекта метаданных |
+| `manager` | `metadataPath`; для `Constant` также `sourceClass` | менеджер или value-manager конкретного объекта метаданных |
 | `recordSet` | `metadataPath` | набор записей регистра, последовательности или перерасчёта |
 | `definedType` | `metadataPath` | определяемый тип, разворачиваемый до классов источников |
 | `family` | `sourceClass` | общий класс всех источников данного вида, который платформа хранит как `v8:TypeSet` |
@@ -148,6 +148,13 @@ AST-сигнатуры и флагов общего модуля.
 `sourceClass` — закрытое lower-camel-case перечисление доменного каталога, а не
 произвольный XML QName. Например, семейство всех объектов справочников
 выражается как `{"kind":"family","sourceClass":"catalogObject"}`.
+
+У константы один логический `metadataPath` порождает два разных платформенных
+класса с разными событиями. Поэтому только для
+`{"kind":"manager","metadataPath":"Constant.<Name>"}` поле `sourceClass`
+обязательно и принимает `constantManager` или `constantValueManager`. Для любого
+другого `manager` это поле запрещено: его класс однозначно выводится из корня
+адреса.
 
 Варианты `string`, `number`, `boolean`, `date`, `valueStorage` и `reference`
 удаляются из мутационного контракта: они описывают форму `TypeDescription`, но

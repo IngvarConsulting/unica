@@ -1262,45 +1262,36 @@ pub(crate) fn validate_metadata_relation_target_profile(
 
 fn validate_metadata_event_source(source: &MetaEventSource) -> Result<(), MetaDiagnostic> {
     match source {
-        MetaEventSource::String { .. }
-        | MetaEventSource::Number { .. }
-        | MetaEventSource::Boolean
-        | MetaEventSource::Date { .. }
-        | MetaEventSource::ValueStorage
-        | MetaEventSource::Reference { .. } => Err(invalid_operation(
-            "targets",
-            format!(
-                "{} is a TypeDescription form, not a logical event source",
-                source.as_str()
-            ),
-        )),
         MetaEventSource::Family { .. } => Ok(()),
         source => {
             let Some(metadata_path) = source.metadata_path() else {
                 return Ok(());
             };
-            if metadata_path.segments().count() != 2 {
+            let segments = metadata_path.segments().collect::<Vec<_>>();
+            let is_recalculation = matches!(source, MetaEventSource::RecordSet { .. })
+                && segments.len() == 4
+                && segments[0] == "CalculationRegister"
+                && segments[2] == "Recalculation";
+            if segments.len() != 2 && !is_recalculation {
                 return Err(invalid_operation(
                     "targets",
-                    "event source metadataPath must identify a top-level metadata object",
+                    "event source metadataPath must identify a top-level metadata object or calculation-register recalculation",
                 ));
             }
-            let name = metadata_path.segments().nth(1).unwrap_or_default();
-            if !metadata_identifier_is_valid(name) {
+            if segments
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| index % 2 == 1)
+                .any(|(_, name)| !metadata_identifier_is_valid(name))
+            {
                 return Err(invalid_operation(
                     "targets",
                     "event source metadataPath name must be a valid 1C identifier",
                 ));
             }
-            let target_kind = metadata_path
-                .segments()
-                .next()
-                .and_then(|name| MetadataKind::parse(name).ok());
-            if !target_kind.is_some_and(|kind| {
-                source
-                    .compatible_metadata_kinds()
-                    .is_some_and(|allowed| allowed.contains(&kind))
-            }) {
+            if matches!(source, MetaEventSource::DefinedType { .. })
+                && segments.first().copied() != Some("DefinedType")
+            {
                 return Err(invalid_operation(
                     "targets",
                     format!(
@@ -1309,6 +1300,11 @@ fn validate_metadata_event_source(source: &MetaEventSource) -> Result<(), MetaDi
                         metadata_path.as_str()
                     ),
                 ));
+            }
+            if let Err(message) = source.event_source_class() {
+                if !matches!(source, MetaEventSource::DefinedType { .. }) {
+                    return Err(invalid_operation("targets", message));
+                }
             }
             Ok(())
         }
@@ -1976,6 +1972,7 @@ mod tests {
             },
             MetaEventSource::Manager {
                 metadata_path: address("Constant.Setting"),
+                source_class: Some(EventSourceClass::ConstantValueManager),
             },
             MetaEventSource::RecordSet {
                 metadata_path: address("InformationRegister.Facts"),
@@ -2002,6 +1999,7 @@ mod tests {
             },
             MetaEventSource::Manager {
                 metadata_path: address("CommonModule.Utility"),
+                source_class: None,
             },
             MetaEventSource::RecordSet {
                 metadata_path: address("Catalog.Items"),

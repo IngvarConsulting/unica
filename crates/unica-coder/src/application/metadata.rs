@@ -3,16 +3,14 @@ use super::AdapterOutcome;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::events::{DomainEvent, DomainEventKind};
 use crate::domain::metadata::{
-    metadata_event_source_manager_kinds, metadata_event_source_object_kinds,
-    metadata_event_source_record_set_kinds, metadata_reference_type_kinds, metadata_relation_specs,
-    validate_metadata_kind_collection, validate_metadata_operation_capabilities, DateFractions,
-    EventSourceClass, MetaCollection, MetaDiagnostic, MetaDiagnosticCode, MetaEditOperation,
-    MetaEditOperationTag, MetaElementInput, MetaElementUpdateInput, MetaEventSource, MetaFillValue,
-    MetaPosition, MetaPropertyChanges, MetaPropertyInput, MetaPropertyValue, MetaPropertyValueKind,
-    MetaRelation, MetaRelationTarget, MetaRelationTargetPolicy, MetaScope, MetaValidationStatus,
-    MetadataFieldPath, MetadataKind, MetadataReference, MetadataType, MetadataTypeVariant,
-    NumberSign, RelationEditMode, StringLengthMode, METADATA_PROPERTY_SPECS,
-    METADATA_XS_DATETIME_PATTERN,
+    metadata_reference_type_kinds, metadata_relation_specs, validate_metadata_kind_collection,
+    validate_metadata_operation_capabilities, DateFractions, EventSourceClass, MetaCollection,
+    MetaDiagnostic, MetaDiagnosticCode, MetaEditOperation, MetaEditOperationTag, MetaElementInput,
+    MetaElementUpdateInput, MetaEventSource, MetaFillValue, MetaPosition, MetaPropertyChanges,
+    MetaPropertyInput, MetaPropertyValue, MetaPropertyValueKind, MetaRelation, MetaRelationTarget,
+    MetaRelationTargetPolicy, MetaScope, MetaValidationStatus, MetadataFieldPath, MetadataKind,
+    MetadataReference, MetadataType, MetadataTypeVariant, NumberSign, RelationEditMode,
+    StringLengthMode, METADATA_PROPERTY_SPECS, METADATA_XS_DATETIME_PATTERN,
 };
 use crate::domain::source_target::{
     metadata_address_kind_spellings, MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20,
@@ -1017,12 +1015,34 @@ fn parse_event_source(value: &Value, field: &str) -> Result<MetaEventSource, Met
             let metadata_path = parse_address(&raw, &path_field)?;
             let source = match kind.as_str() {
                 "object" => MetaEventSource::Object { metadata_path },
-                "manager" => MetaEventSource::Manager { metadata_path },
+                "manager" => {
+                    let source_class = object
+                        .get("sourceClass")
+                        .map(|value| {
+                            let class_field = format!("{field}.sourceClass");
+                            EventSourceClass::parse(value.as_str().ok_or_else(|| {
+                                invalid(&class_field, "sourceClass must be a string")
+                            })?)
+                            .map_err(|mut diagnostic| {
+                                diagnostic.field = Some(class_field);
+                                diagnostic
+                            })
+                        })
+                        .transpose()?;
+                    MetaEventSource::Manager {
+                        metadata_path,
+                        source_class,
+                    }
+                }
                 "recordSet" => MetaEventSource::RecordSet { metadata_path },
                 "definedType" => MetaEventSource::DefinedType { metadata_path },
                 _ => unreachable!("event source kind match is closed"),
             };
-            (&["kind", "metadataPath"][..], source)
+            if kind == "manager" {
+                (&["kind", "metadataPath", "sourceClass"][..], source)
+            } else {
+                (&["kind", "metadataPath"][..], source)
+            }
         }
         "family" => {
             let class_field = format!("{field}.sourceClass");
@@ -1785,7 +1805,7 @@ fn metadata_event_source_targets_schema() -> Value {
 }
 
 fn metadata_event_source_target_schema() -> Value {
-    let metadata_object = |kind: &str, kinds: &[MetadataKind]| {
+    let metadata_object = |kind: &str, pattern: String| {
         json!({
             "type": "object",
             "additionalProperties": false,
@@ -1794,16 +1814,93 @@ fn metadata_event_source_target_schema() -> Value {
                 "kind": {"const": kind},
                 "metadataPath": {
                     "type": "string",
-                    "pattern": metadata_kinds_xml_object_pattern(kinds),
+                    "pattern": pattern,
                 },
             },
         })
     };
+    let named = metadata_identifier_pattern_body();
+    let spelling_group = |values: &[&str]| {
+        values
+            .iter()
+            .flat_map(|value| {
+                metadata_address_kind_spellings(value)
+                    .unwrap_or_else(|| panic!("event source root {value} must be registered"))
+            })
+            .collect::<Vec<_>>()
+            .join("|")
+    };
+    let roots = |values: &[&str]| format!(r"^({})\.{named}$", spelling_group(values));
     let variants = vec![
-        metadata_object("object", metadata_event_source_object_kinds()),
-        metadata_object("manager", metadata_event_source_manager_kinds()),
-        metadata_object("recordSet", metadata_event_source_record_set_kinds()),
-        metadata_object("definedType", &[MetadataKind::DefinedType]),
+        metadata_object(
+            "object",
+            roots(&[
+                "Catalog",
+                "Document",
+                "ChartOfAccounts",
+                "ChartOfCharacteristicTypes",
+                "ChartOfCalculationTypes",
+                "ExchangePlan",
+                "BusinessProcess",
+                "Task",
+                "Report",
+                "DataProcessor",
+            ]),
+        ),
+        metadata_object(
+            "manager",
+            roots(&[
+                "Catalog",
+                "Document",
+                "Enum",
+                "InformationRegister",
+                "AccumulationRegister",
+                "AccountingRegister",
+                "CalculationRegister",
+                "ChartOfAccounts",
+                "ChartOfCharacteristicTypes",
+                "ChartOfCalculationTypes",
+                "BusinessProcess",
+                "Task",
+                "ExchangePlan",
+                "DocumentJournal",
+                "Report",
+                "DataProcessor",
+                "FilterCriterion",
+                "SettingsStorage",
+            ]),
+        ),
+        json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "metadataPath", "sourceClass"],
+            "properties": {
+                "kind": {"const": "manager"},
+                "metadataPath": {
+                    "type": "string",
+                    "pattern": roots(&["Constant"]),
+                },
+                "sourceClass": {
+                    "type": "string",
+                    "enum": ["constantManager", "constantValueManager"],
+                },
+            },
+        }),
+        metadata_object(
+            "recordSet",
+            format!(
+                r"^(({})\.{named}|({})\.{named}\.(Recalculation|Перерасчет|Перерасчёт)\.{named})$",
+                spelling_group(&[
+                    "InformationRegister",
+                    "AccumulationRegister",
+                    "AccountingRegister",
+                    "CalculationRegister",
+                    "Sequence",
+                ]),
+                spelling_group(&["CalculationRegister"]),
+            ),
+        ),
+        metadata_object("definedType", roots(&["DefinedType"])),
         json!({
             "type": "object",
             "additionalProperties": false,
@@ -1854,21 +1951,6 @@ fn metadata_kinds_object_pattern(kinds: &[MetadataKind]) -> String {
             })
             .collect::<Vec<_>>()
             .join("|")
-    )
-}
-
-fn metadata_kinds_xml_object_pattern(kinds: &[MetadataKind]) -> String {
-    format!(
-        r"^({})\.{}$",
-        kinds
-            .iter()
-            .flat_map(|kind| {
-                metadata_address_kind_spellings(kind.as_str())
-                    .expect("relation target kind must have registered spellings")
-            })
-            .collect::<Vec<_>>()
-            .join("|"),
-        metadata_identifier_pattern_body(),
     )
 }
 
@@ -3183,7 +3265,7 @@ mod tests {
         let source_variants = source_targets["items"]["oneOf"]
             .as_array()
             .expect("closed logical event source target union");
-        assert_eq!(source_variants.len(), 5);
+        assert_eq!(source_variants.len(), 6);
         assert_eq!(
             source_variants
                 .iter()
@@ -3195,6 +3277,16 @@ mod tests {
         );
         assert!(source_variants.iter().all(|variant| {
             variant["type"] == "object" && variant["additionalProperties"] == false
+        }));
+        let manager_variants = source_variants
+            .iter()
+            .filter(|variant| variant["properties"]["kind"]["const"] == "manager")
+            .collect::<Vec<_>>();
+        assert_eq!(manager_variants.len(), 2);
+        assert!(manager_variants.iter().any(|variant| {
+            variant["required"] == json!(["kind", "metadataPath", "sourceClass"])
+                && variant["properties"]["sourceClass"]["enum"]
+                    == json!(["constantManager", "constantValueManager"])
         }));
 
         for name in ["owners", "registerRecords", "basedOn", "inputByString"] {
@@ -4105,6 +4197,36 @@ mod tests {
         assert!(targets
             .iter()
             .all(|target| matches!(target, MetaRelationTarget::EventSource(_))));
+
+        for target in [
+            json!({"kind": "manager", "metadataPath": "Constant.Mode", "sourceClass": "constantManager"}),
+            json!({"kind": "manager", "metadataPath": "Constant.Mode", "sourceClass": "constantValueManager"}),
+            json!({"kind": "manager", "metadataPath": "FilterCriterion.Active"}),
+            json!({"kind": "manager", "metadataPath": "SettingsStorage.User"}),
+            json!({"kind": "recordSet", "metadataPath": "Sequence.Documents"}),
+            json!({"kind": "recordSet", "metadataPath": "CalculationRegister.Payroll.Recalculation.Main"}),
+            json!({"kind": "object", "metadataPath": "Справочник.Номенклатура"}),
+            json!({"kind": "manager", "metadataPath": "ХранилищеНастроек.Пользователь"}),
+            json!({"kind": "recordSet", "metadataPath": "РегистрРасчёта.Зарплата.Перерасчёт.Основной"}),
+        ] {
+            let request = call(json!([target]));
+            assert!(
+                validate_schema_and_parse(MetadataOperation::Edit, &request),
+                "logical platform source was rejected: {request}"
+            );
+        }
+
+        for target in [
+            json!({"kind": "manager", "metadataPath": "Constant.Mode"}),
+            json!({"kind": "manager", "metadataPath": "Catalog.Items", "sourceClass": "catalogManager"}),
+            json!({"kind": "object", "metadataPath": "ExternalDataSource.Remote.Table.Items"}),
+        ] {
+            let request = call(json!([target]));
+            assert!(
+                !validate_schema_and_parse(MetadataOperation::Edit, &request),
+                "ambiguous or unaddressable source was accepted: {request}"
+            );
+        }
 
         let empty = call(json!([]));
         assert!(

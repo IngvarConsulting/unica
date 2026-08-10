@@ -12,11 +12,14 @@ use crate::domain::format_profile::{
     classify_root_version, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
 };
 use crate::domain::metadata::{
-    metadata_kind_collections, MetaCollection, MetaDiagnostic, MetaDiagnosticCode,
-    MetaDiagnosticSeverity, MetaValidationData, MetaValidationStatus, MetadataKind,
+    metadata_kind_collections, validate_event_subscription_binding, EventBindingError,
+    EventHandlerFacts, EventHandlerMethodKind, EventSourceClass, MetaCollection, MetaDiagnostic,
+    MetaDiagnosticCode, MetaDiagnosticSeverity, MetaEventSource, MetaValidationData,
+    MetaValidationStatus, MetadataKind,
 };
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::bsl_outline::exact_bsl_method_facts;
 use crate::infrastructure::platform_xml_owner::{
     root_version_literal, PlatformXmlRootExpectation, DCS_ROOT, MXL_ROOT,
 };
@@ -44,7 +47,7 @@ use super::validation_context::{
 use super::xml_model::{
     event_source_generated_prefix, meta_event_subscription_source_node, meta_info_child,
     meta_info_child_text, meta_info_children, meta_info_inner_text,
-    parse_meta_event_subscription_source, parse_metadata_image,
+    parse_defined_type_event_sources, parse_meta_event_subscription_source, parse_metadata_image,
 };
 
 const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
@@ -433,6 +436,12 @@ impl MetadataValidator {
                     diagnostics.push(provider_diagnostic(subject, descriptor_index, error))
                 }
             }
+            if target_type == "EventSubscription" {
+                diagnostics.extend(validate_event_subscription_binding_subject(
+                    subject,
+                    &descriptor.bytes,
+                ));
+            }
         } else {
             for (index, resource) in subject.resources.iter().enumerate() {
                 match resource.role {
@@ -590,15 +599,31 @@ fn complete_read_proof_diagnostics(subject: &MetadataValidationSubject) -> Vec<M
                     continue;
                 };
                 let segments = target.segments().collect::<Vec<_>>();
-                let [expected_kind, expected_name] = segments.as_slice() else {
-                    diagnostics.push(complete_read_source_invalid(
-                        subject,
-                        index,
-                        format!(
-                            "EventSubscription Source dependency `{target}` is not a top-level metadata object"
-                        ),
-                    ));
-                    continue;
+                let (
+                    registration_kind,
+                    registration_name,
+                    descriptor_kind,
+                    descriptor_name,
+                    generated_name,
+                ) = match segments.as_slice() {
+                    [kind, name] => (*kind, *name, *kind, *name, None),
+                    ["CalculationRegister", register, "Recalculation", recalculation] => (
+                        "CalculationRegister",
+                        *register,
+                        "Recalculation",
+                        *recalculation,
+                        Some(format!("{register}.{recalculation}")),
+                    ),
+                    _ => {
+                        diagnostics.push(complete_read_source_invalid(
+                                subject,
+                                index,
+                                format!(
+                                    "EventSubscription Source dependency `{target}` is not an addressable metadata object"
+                                ),
+                            ));
+                        continue;
+                    }
                 };
                 let Some(registration) = registration else {
                     diagnostics.push(complete_read_source_missing(
@@ -611,14 +636,15 @@ fn complete_read_proof_diagnostics(subject: &MetadataValidationSubject) -> Vec<M
                 let generated_prefixes = vec![event_source_generated_prefix(source).to_string()];
                 if let Err(message) = validate_event_source_registration(
                     &registration.bytes,
-                    expected_kind,
-                    expected_name,
+                    registration_kind,
+                    registration_name,
                 )
                 .and_then(|()| {
                     validate_event_source_dependency_descriptor(
                         &dependency.bytes,
-                        expected_kind,
-                        expected_name,
+                        descriptor_kind,
+                        descriptor_name,
+                        generated_name.as_deref(),
                         &generated_prefixes,
                     )
                 }) {
@@ -1683,6 +1709,259 @@ fn require_exact_payload_root(
         ));
     }
     Ok(())
+}
+
+fn validate_event_subscription_binding_subject(
+    subject: &MetadataValidationSubject,
+    descriptor: &[u8],
+) -> Vec<MetaDiagnostic> {
+    let fail = |field: &str, message: String| vec![validation_diagnostic(subject, field, message)];
+    let (_, document) = match parse_metadata_image(descriptor) {
+        Ok(parsed) => parsed,
+        Err(message) => return fail("resources", message),
+    };
+    let source_node = match meta_event_subscription_source_node(&document) {
+        Ok(source) => source,
+        Err(message) => return fail("relations.source", message),
+    };
+    let sources = match parse_meta_event_subscription_source(source_node) {
+        Ok(sources) => sources,
+        Err(message) => return fail("relations.source", message),
+    };
+    let properties = match source_node.parent_element() {
+        Some(properties) => properties,
+        None => {
+            return fail(
+                "resources",
+                "EventSubscription Properties are unavailable".to_string(),
+            )
+        }
+    };
+    let event = meta_info_child_text(properties, "Event").unwrap_or_default();
+    if event.is_empty() {
+        return fail(
+            "properties.event",
+            "EventSubscription Event is empty".to_string(),
+        );
+    }
+    let handler = meta_info_child_text(properties, "Handler").unwrap_or_default();
+    let handler_parts = handler.split('.').collect::<Vec<_>>();
+    let ["CommonModule", module_name, procedure_name] = handler_parts.as_slice() else {
+        return fail(
+            "properties.handler",
+            "EventSubscription Handler must use CommonModule.<Module>.<Procedure>".to_string(),
+        );
+    };
+
+    let mut source_classes = Vec::new();
+    let mut visiting = HashSet::new();
+    for (index, source) in sources.iter().enumerate() {
+        if let Err(message) =
+            expand_event_source_classes(subject, source, &mut source_classes, &mut visiting)
+        {
+            return fail(&format!("relations.source[{index}]"), message);
+        }
+    }
+
+    let module_target = match MetadataAddress::parse(
+        PLATFORM_XML_8_3_27_FORMAT_2_20,
+        &format!("CommonModule.{module_name}"),
+    ) {
+        Ok(target) => target,
+        Err(_) => {
+            return fail(
+                "properties.handler",
+                "EventSubscription Handler CommonModule is invalid".to_string(),
+            )
+        }
+    };
+    let module_descriptor = subject.resources.iter().find(|resource| {
+        matches!(
+            &resource.role,
+            MetadataResourceRole::Dependency { target } if target == &module_target
+        )
+    });
+    let Some(module_descriptor) = module_descriptor else {
+        return fail(
+            "properties.handler",
+            format!("CommonModule `{module_name}` descriptor evidence is unavailable"),
+        );
+    };
+    let (_, module_document) = match parse_metadata_image(&module_descriptor.bytes) {
+        Ok(parsed) => parsed,
+        Err(message) => return fail("properties.handler", message),
+    };
+    let module_properties = module_document
+        .root_element()
+        .children()
+        .find(|node| node.is_element() && node.tag_name().name() == "CommonModule")
+        .and_then(|node| meta_info_child(node, "Properties"));
+    let Some(module_properties) = module_properties else {
+        return fail(
+            "properties.handler",
+            format!("CommonModule `{module_name}` properties are unavailable"),
+        );
+    };
+    let module_global = meta_info_child_text(module_properties, "Global");
+    if module_global.as_deref() != Some("false") {
+        return fail(
+            "properties.handler",
+            "EventSubscription handler CommonModule must have Global=false".to_string(),
+        );
+    }
+    let module_server = meta_info_child_text(module_properties, "Server");
+    if module_server.as_deref() != Some("true") {
+        return fail(
+            "properties.handler",
+            "EventSubscription handler CommonModule must have Server=true".to_string(),
+        );
+    }
+    let module = subject.resources.iter().find(|resource| {
+        matches!(&resource.role, MetadataResourceRole::Module { owner } if owner == &module_target)
+    });
+    let Some(module) = module else {
+        return fail(
+            "properties.handler",
+            format!("CommonModule `{module_name}` BSL evidence is unavailable"),
+        );
+    };
+    let content = match std::str::from_utf8(&module.bytes) {
+        Ok(content) => content,
+        Err(error) => {
+            return fail(
+                "properties.handler",
+                format!("handler module is not UTF-8: {error}"),
+            )
+        }
+    };
+    let method = match exact_bsl_method_facts(content, procedure_name) {
+        Ok(Some(method)) => method,
+        Ok(None) => {
+            return fail(
+                "properties.handler",
+                format!(
+                    "procedure `{procedure_name}` was not found in CommonModule `{module_name}`"
+                ),
+            )
+        }
+        Err(message) => return fail("properties.handler", message),
+    };
+    let facts = EventHandlerFacts {
+        module_global: false,
+        module_server: true,
+        method_kind: if method.is_procedure {
+            EventHandlerMethodKind::Procedure
+        } else {
+            EventHandlerMethodKind::Function
+        },
+        exported: method.is_export,
+        parameter_count: method.parameter_count,
+    };
+    match validate_event_subscription_binding(&source_classes, &event, facts) {
+        Ok(_) => Vec::new(),
+        Err(error) => {
+            let (field, message) = event_binding_error_message(error);
+            fail(field, message)
+        }
+    }
+}
+
+fn expand_event_source_classes(
+    subject: &MetadataValidationSubject,
+    source: &MetaEventSource,
+    classes: &mut Vec<EventSourceClass>,
+    visiting: &mut HashSet<MetadataAddress>,
+) -> Result<(), String> {
+    if let Some(source_class) = source.event_source_class()? {
+        classes.push(source_class);
+        return Ok(());
+    }
+    let target = source
+        .metadata_path()
+        .cloned()
+        .ok_or_else(|| "event source class is unavailable".to_string())?;
+    if !visiting.insert(target.clone()) {
+        return Err(format!(
+            "DefinedType event source cycle contains `{target}`"
+        ));
+    }
+    let descriptor = subject
+        .resources
+        .iter()
+        .find(|resource| {
+            matches!(
+                &resource.role,
+                MetadataResourceRole::Dependency { target: dependency } if dependency == &target
+            )
+        })
+        .ok_or_else(|| format!("DefinedType event source `{target}` evidence is unavailable"))?;
+    for member in parse_defined_type_event_sources(&descriptor.bytes)? {
+        expand_event_source_classes(subject, &member, classes, visiting)?;
+    }
+    visiting.remove(&target);
+    Ok(())
+}
+
+fn event_binding_error_message(error: EventBindingError) -> (&'static str, String) {
+    match error {
+        EventBindingError::EmptySource => (
+            "relations.source",
+            "EventSubscription Source must not be empty".to_string(),
+        ),
+        EventBindingError::EventUnavailable {
+            source_class,
+            event,
+        } => (
+            "properties.event",
+            format!(
+                "event `{event}` is unavailable for source class `{}`",
+                source_class.as_str()
+            ),
+        ),
+        EventBindingError::SignatureConflict {
+            event,
+            expected_class,
+            expected_parameters,
+            actual_class,
+            actual_parameters,
+        } => (
+            "properties.event",
+            format!(
+                "event `{event}` has incompatible signatures: `{}` ({}) versus `{}` ({})",
+                expected_class.as_str(),
+                expected_parameters.join(", "),
+                actual_class.as_str(),
+                actual_parameters.join(", ")
+            ),
+        ),
+        EventBindingError::HandlerModuleIsGlobal => (
+            "properties.handler",
+            "EventSubscription handler CommonModule must have Global=false".to_string(),
+        ),
+        EventBindingError::HandlerModuleIsNotServer => (
+            "properties.handler",
+            "EventSubscription handler CommonModule must have Server=true".to_string(),
+        ),
+        EventBindingError::HandlerIsNotProcedure => (
+            "properties.handler",
+            "EventSubscription handler must be a procedure".to_string(),
+        ),
+        EventBindingError::HandlerIsNotExported => (
+            "properties.handler",
+            "EventSubscription handler procedure must be exported".to_string(),
+        ),
+        EventBindingError::HandlerArity {
+            event,
+            event_parameter_count,
+            expected,
+            actual,
+        } => (
+            "properties.handler",
+            format!(
+                "handler for `{event}` must have {expected} parameters (Source plus {event_parameter_count} event parameters), got {actual}"
+            ),
+        ),
+    }
 }
 
 fn failed_validation(diagnostics: Vec<MetaDiagnostic>) -> MetadataValidationResult {

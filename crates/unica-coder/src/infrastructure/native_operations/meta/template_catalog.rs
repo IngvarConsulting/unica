@@ -12,6 +12,7 @@ use crate::domain::source_target::{
     MetadataAddress, SourceTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::bsl_outline::first_exported_bsl_procedure;
 use crate::infrastructure::metadata_kinds::metadata_layout;
 use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
 use crate::infrastructure::platform_xml_source_targets::{
@@ -27,10 +28,16 @@ pub(crate) trait MetadataTemplateCatalog {
         source: &ResolvedSourceSet,
         kind: MetadataKind,
         name: &str,
-        source_is_replaced_by_operation: bool,
+        overrides: MetadataTemplateOperationOverrides,
         source_set: &str,
         workspace: &WorkspaceContext,
     ) -> Result<MetadataPostImage, MetaFailure>;
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct MetadataTemplateOperationOverrides {
+    pub(crate) source: bool,
+    pub(crate) handler: bool,
 }
 
 pub(crate) struct PlatformMetadataTemplateCatalog;
@@ -81,7 +88,7 @@ impl MinimalTemplateContext {
         source: &ResolvedSourceSet,
         kind: MetadataKind,
         new_name: &str,
-        source_is_replaced_by_operation: bool,
+        overrides: MetadataTemplateOperationOverrides,
         source_set: &str,
         workspace: &WorkspaceContext,
     ) -> Result<Self, MetaFailure> {
@@ -174,18 +181,20 @@ impl MinimalTemplateContext {
                 context.dependencies.push(module_guard);
             }
             MetadataKind::EventSubscription => {
-                let (module, method, module_guard) =
-                    required_common_module_method(source, source_set, workspace, kind, 2)?;
-                context.event_handler = Some(format!("CommonModule.{module}.{method}"));
-                context.dependencies.push(read_dependency(
-                    source,
-                    "CommonModule",
-                    &module,
-                    MetadataTemplateFileMode::Guard,
-                    None,
-                )?);
-                context.dependencies.push(module_guard);
-                if !source_is_replaced_by_operation {
+                if !overrides.handler {
+                    let (module, method, module_guard) =
+                        required_common_module_method(source, source_set, workspace, kind, 2)?;
+                    context.event_handler = Some(format!("CommonModule.{module}.{method}"));
+                    context.dependencies.push(read_dependency(
+                        source,
+                        "CommonModule",
+                        &module,
+                        MetadataTemplateFileMode::Guard,
+                        None,
+                    )?);
+                    context.dependencies.push(module_guard);
+                }
+                if !overrides.source {
                     let catalog = required_registered_name(source, "Catalog", kind)?;
                     context.event_source = Some(format!("CatalogObject.{catalog}"));
                     context.dependencies.push(read_dependency(
@@ -247,7 +256,8 @@ fn required_common_module_method(
         let Ok(text) = std::str::from_utf8(&bytes) else {
             continue;
         };
-        let Some(method) = first_exported_procedure(text.trim_start_matches('\u{feff}'), arity)
+        let Ok(Some(method)) =
+            first_exported_bsl_procedure(text.trim_start_matches('\u{feff}'), arity)
         else {
             continue;
         };
@@ -277,38 +287,6 @@ fn required_common_module_method(
         ),
     )
     .into())
-}
-
-fn first_exported_procedure(source: &str, arity: usize) -> Option<String> {
-    source.lines().find_map(|line| {
-        let line = line.trim();
-        let lower = line.to_lowercase();
-        let signature = if lower.starts_with("procedure ") {
-            &line["procedure ".len()..]
-        } else if lower.starts_with("процедура ") {
-            &line["процедура ".len()..]
-        } else {
-            return None;
-        };
-        let open = signature.find('(')?;
-        let close = signature[open + 1..].find(')')? + open + 1;
-        let tail = signature[close + 1..].trim().to_lowercase();
-        if !tail
-            .split_whitespace()
-            .any(|part| matches!(part, "export" | "экспорт"))
-        {
-            return None;
-        }
-        let parameters = signature[open + 1..close].trim();
-        let actual_arity = if parameters.is_empty() {
-            0
-        } else {
-            parameters.split(',').count()
-        };
-        (actual_arity == arity)
-            .then(|| signature[..open].trim().to_string())
-            .filter(|name| is_1c_identifier(name))
-    })
 }
 
 fn required_registered_name(
@@ -482,7 +460,7 @@ impl MetadataTemplateCatalog for PlatformMetadataTemplateCatalog {
         source: &ResolvedSourceSet,
         kind: MetadataKind,
         name: &str,
-        source_is_replaced_by_operation: bool,
+        overrides: MetadataTemplateOperationOverrides,
         source_set: &str,
         workspace: &WorkspaceContext,
     ) -> Result<MetadataPostImage, MetaFailure> {
@@ -508,12 +486,7 @@ impl MetadataTemplateCatalog for PlatformMetadataTemplateCatalog {
             )
         })?;
         let context = MinimalTemplateContext::from_source(
-            source,
-            kind,
-            name,
-            source_is_replaced_by_operation,
-            source_set,
-            workspace,
+            source, kind, name, overrides, source_set, workspace,
         )?;
         let (xml, _) = minimal_metadata_xml(kind, name, &source.format_version, &context)
             .map_err(|message| template_failure(&metadata_path, message))?;
@@ -3199,17 +3172,21 @@ mod typed_template_tests {
     #[test]
     fn typed_minimal_catalog_selects_only_exported_procedures_with_required_arity() {
         let module = concat!(
+            "// Procedure Shadow() Export\n",
             "Function Ignore() Export\nEndFunction\n",
             "PROCEDURE Run() EXPORT\nEndProcedure\n",
             "Процедура Обработать(Источник, Отказ) Экспорт\nКонецПроцедуры\n",
             "Procedure Private(One, Two)\nEndProcedure\n",
         );
 
-        assert_eq!(first_exported_procedure(module, 0).as_deref(), Some("Run"));
         assert_eq!(
-            first_exported_procedure(module, 2).as_deref(),
+            first_exported_bsl_procedure(module, 0).unwrap().as_deref(),
+            Some("Run")
+        );
+        assert_eq!(
+            first_exported_bsl_procedure(module, 2).unwrap().as_deref(),
             Some("Обработать")
         );
-        assert_eq!(first_exported_procedure(module, 1), None);
+        assert_eq!(first_exported_bsl_procedure(module, 1).unwrap(), None);
     }
 }

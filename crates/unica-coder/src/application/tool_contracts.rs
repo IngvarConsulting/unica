@@ -3766,7 +3766,7 @@ mod tests {
         let target_variants = source_targets["items"]["oneOf"]
             .as_array()
             .expect("source targets publish a closed logical oneOf");
-        assert_eq!(target_variants.len(), 5);
+        assert_eq!(target_variants.len(), 6);
         for target in target_variants {
             assert_eq!(target["type"], "object");
             assert_eq!(target["additionalProperties"], false);
@@ -3781,8 +3781,21 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             event_kinds,
-            ["object", "manager", "recordSet", "definedType", "family",]
+            [
+                "object",
+                "manager",
+                "manager",
+                "recordSet",
+                "definedType",
+                "family",
+            ]
         );
+        assert!(target_variants.iter().any(|target| {
+            target["properties"]["kind"]["const"] == "manager"
+                && target["required"] == json!(["kind", "metadataPath", "sourceClass"])
+                && target["properties"]["sourceClass"]["enum"]
+                    == json!(["constantManager", "constantValueManager"])
+        }));
         for name in ["owners", "registerRecords", "basedOn", "inputByString"] {
             let branch = relation(name);
             assert_eq!(
