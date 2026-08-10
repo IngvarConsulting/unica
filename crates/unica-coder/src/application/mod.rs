@@ -44,6 +44,34 @@ impl ToolExecution {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvocationMode {
+    Read,
+    Preview,
+    Apply,
+}
+
+impl InvocationMode {
+    fn from_validated_args(spec: ToolSpec, args: &Map<String, Value>) -> Result<Self, String> {
+        match spec.execution {
+            ToolExecution::Read => Ok(Self::Read),
+            ToolExecution::Mutation => match args.get("dryRun") {
+                None | Some(Value::Bool(true)) => Ok(Self::Preview),
+                Some(Value::Bool(false)) => Ok(Self::Apply),
+                Some(_) => Err(format!("{} argument `dryRun` must be a boolean", spec.name)),
+            },
+        }
+    }
+
+    pub const fn is_preview(self) -> bool {
+        matches!(self, Self::Preview)
+    }
+
+    pub const fn is_apply(self) -> bool {
+        matches!(self, Self::Apply)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResultContract {
     Typed,
     ExternalStream,
@@ -762,16 +790,15 @@ fn call_tool(
 ) -> Result<OperationResult, String> {
     let normalized_args = tool_contracts::normalize_native_path_aliases(spec, args)?;
     let args = &normalized_args;
-    let dry_run = args
-        .get("dryRun")
-        .and_then(Value::as_bool)
-        .unwrap_or(spec.execution.is_mutating());
-    tool_contracts::validate_tool_arguments(spec, args, dry_run)?;
+    tool_contracts::validate_tool_argument_shape(spec, args)?;
+    let mode = InvocationMode::from_validated_args(spec, args)?;
+    tool_contracts::validate_tool_argument_semantics(spec, args, mode)?;
+    let dry_run = mode.is_preview();
     let cwd = args.get("cwd").and_then(Value::as_str).map(PathBuf::from);
     let context = ports.discover_workspace(cwd)?;
-    ports.validate_tool_context(spec, args, dry_run, &context)?;
+    ports.validate_tool_context(spec, args, mode, &context)?;
     let mut prepared =
-        ports.prepare_tool_invocation(spec, args, &context, dry_run, cancellation, deadline)?;
+        ports.prepare_tool_invocation(spec, args, &context, mode, cancellation, deadline)?;
     let xdto_target = XdtoLogicalTarget::from_call(spec, args);
     let role_target = RoleEditLogicalTarget::from_call(spec, args);
     let mut format_guard_warning = None;
@@ -869,7 +896,7 @@ fn call_tool(
             } else {
                 diagnostic
             };
-            let cache = ports.cache_report(&context, &[], dry_run, spec.cache_access)?;
+            let cache = ports.cache_report(&context, &[], mode, spec.cache_access)?;
             return Ok(OperationResult {
                 ok: outcome.ok,
                 summary: outcome.summary,
@@ -890,7 +917,7 @@ fn call_tool(
     if let Some(outcome) = runtime_xml_route_guard(spec, args, dry_run, cancellation)
         .or_else(|| source_sync_dump_guard(spec, args, dry_run, cancellation))
     {
-        let cache = ports.cache_report(&context, &[], dry_run, spec.cache_access)?;
+        let cache = ports.cache_report(&context, &[], mode, spec.cache_access)?;
         return Ok(OperationResult {
             ok: outcome.ok,
             summary: outcome.summary,
@@ -983,7 +1010,7 @@ fn call_tool(
                 if dry_run {
                     outcome.summary = format!("dry run: {}", outcome.summary);
                 }
-                let cache = ports.cache_report(&context, &[], dry_run, spec.cache_access)?;
+                let cache = ports.cache_report(&context, &[], mode, spec.cache_access)?;
                 return Ok(OperationResult {
                     ok: outcome.ok,
                     summary: outcome.summary,
@@ -1025,7 +1052,7 @@ fn call_tool(
             let diagnostic = serde_json::to_value(diagnostic).map_err(|serialize| {
                 format!("failed to serialize operational config diagnostic: {serialize}")
             })?;
-            let cache = ports.cache_report(&context, &[], dry_run, spec.cache_access)?;
+            let cache = ports.cache_report(&context, &[], mode, spec.cache_access)?;
             return Ok(OperationResult {
                 ok: false,
                 summary: format!("{} operational configuration is invalid", spec.name),
@@ -1085,7 +1112,7 @@ fn call_tool(
                 spec,
                 args,
                 &context,
-                dry_run,
+                mode,
                 operational_config.as_ref(),
                 cancellation,
             )?,
@@ -1162,7 +1189,7 @@ fn call_tool(
             Err(result) => return Ok(*result),
         }
     } else {
-        ports.cache_report(&context, &events, dry_run, spec.cache_access)?
+        ports.cache_report(&context, &events, mode, spec.cache_access)?
     };
     outcome.warnings.append(&mut cache.publication_warnings);
     if spec.execution.is_mutating() && !dry_run && outcome.ok && !events.is_empty() {
@@ -2766,6 +2793,130 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct RejectDiscoveryPorts {
+        discovery_calls: AtomicUsize,
+    }
+
+    impl ports::ApplicationPorts for RejectDiscoveryPorts {
+        fn discover_workspace(
+            &self,
+            _requested_cwd: Option<PathBuf>,
+        ) -> Result<WorkspaceContext, String> {
+            self.discovery_calls.fetch_add(1, Ordering::SeqCst);
+            panic!("reader argument validation must run before workspace discovery")
+        }
+
+        fn validate_tool_context(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _mode: InvocationMode,
+            _context: &WorkspaceContext,
+        ) -> Result<(), String> {
+            unreachable!("workspace discovery must not run")
+        }
+
+        fn evaluate_support_guard(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _context: &WorkspaceContext,
+        ) -> Result<SupportGuardCheck, String> {
+            unreachable!("workspace discovery must not run")
+        }
+
+        fn invoke_handler(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _context: &WorkspaceContext,
+            _mode: InvocationMode,
+            _cancellation: &CancellationToken,
+        ) -> Result<ports::HandlerOutcome, String> {
+            unreachable!("workspace discovery must not run")
+        }
+
+        fn cache_report(
+            &self,
+            _context: &WorkspaceContext,
+            _events: &[DomainEvent],
+            _mode: InvocationMode,
+            _cache_access: CacheAccess,
+        ) -> Result<CacheReport, String> {
+            unreachable!("workspace discovery must not run")
+        }
+
+        fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {
+            unreachable!("workspace discovery must not run")
+        }
+    }
+
+    #[test]
+    fn reader_rejects_dry_run_before_workspace_discovery() {
+        let ports = RejectDiscoveryPorts::default();
+
+        for spec in tools()
+            .into_iter()
+            .filter(|tool| tool.execution == ToolExecution::Read)
+        {
+            for value in [true, false] {
+                let mut args = Map::new();
+                args.insert("dryRun".to_string(), Value::Bool(value));
+
+                let error = call_tool(
+                    spec,
+                    &args,
+                    &ports,
+                    &CancellationToken::new(),
+                    ProviderDeadline::from_budget(Duration::from_secs(1)),
+                )
+                .expect_err("reader must reject dryRun");
+                let expected = if matches!(spec.handler, ToolHandler::Metadata { .. }) {
+                    "metadata operation does not accept argument `dryRun`"
+                } else {
+                    "does not accept argument `dryRun`"
+                };
+                assert!(error.contains(expected), "{}: {error}", spec.name);
+                assert_eq!(
+                    ports.discovery_calls.load(Ordering::SeqCst),
+                    0,
+                    "{} reached workspace discovery",
+                    spec.name,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn invocation_mode_is_derived_from_validated_tool_execution() {
+        let reader = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.project.status")
+            .expect("project.status reader exists");
+        let mutation = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.cf.edit")
+            .expect("cf.edit mutation exists");
+
+        assert_eq!(
+            InvocationMode::from_validated_args(reader, &Map::new()).unwrap(),
+            InvocationMode::Read,
+        );
+        assert_eq!(
+            InvocationMode::from_validated_args(mutation, &Map::new()).unwrap(),
+            InvocationMode::Preview,
+        );
+        assert_eq!(
+            InvocationMode::from_validated_args(
+                mutation,
+                serde_json::json!({"dryRun": false}).as_object().unwrap(),
+            )
+            .unwrap(),
+            InvocationMode::Apply,
+        );
+    }
+
+    #[derive(Default)]
     struct OperationalConfigRecordingPorts {
         load_calls: AtomicUsize,
         prepare_calls: AtomicUsize,
@@ -2876,7 +3027,7 @@ mod tests {
             &self,
             _spec: ToolSpec,
             _args: &Map<String, Value>,
-            _dry_run: bool,
+            _mode: InvocationMode,
             _context: &WorkspaceContext,
         ) -> Result<(), String> {
             Ok(())
@@ -2923,7 +3074,7 @@ mod tests {
             spec: ToolSpec,
             _args: &Map<String, Value>,
             _context: &WorkspaceContext,
-            _dry_run: bool,
+            _mode: InvocationMode,
             _cancellation: &CancellationToken,
             _deadline: ProviderDeadline,
         ) -> Result<ports::PreparedToolInvocation, String> {
@@ -2995,7 +3146,7 @@ mod tests {
             _spec: ToolSpec,
             _args: &Map<String, Value>,
             _context: &WorkspaceContext,
-            _dry_run: bool,
+            _mode: InvocationMode,
             _cancellation: &CancellationToken,
         ) -> Result<ports::HandlerOutcome, String> {
             self.handler_calls.fetch_add(1, Ordering::SeqCst);
@@ -3007,7 +3158,7 @@ mod tests {
             _spec: ToolSpec,
             _args: &Map<String, Value>,
             _context: &WorkspaceContext,
-            _dry_run: bool,
+            _mode: InvocationMode,
             operational_config: Option<&crate::domain::operational_config::OperationalConfig>,
             _cancellation: &CancellationToken,
         ) -> Result<ports::HandlerOutcome, String> {
@@ -3021,11 +3172,11 @@ mod tests {
             &self,
             context: &WorkspaceContext,
             _events: &[DomainEvent],
-            dry_run: bool,
+            mode: InvocationMode,
             _cache_access: CacheAccess,
         ) -> Result<CacheReport, String> {
             Ok(CacheReport {
-                mode: if dry_run { "dry-run" } else { "read" }.to_string(),
+                mode: if mode.is_preview() { "dry-run" } else { "read" }.to_string(),
                 root: context.cache_root.display().to_string(),
                 workspace_epoch: context.workspace_epoch,
                 events: Vec::new(),
@@ -3052,7 +3203,6 @@ mod tests {
         assert_eq!(ports.load_calls.load(Ordering::SeqCst), 0);
 
         let mut analyze = Map::new();
-        analyze.insert("dryRun".to_string(), json!(true));
         analyze.insert("timeoutSeconds".to_string(), json!(900));
         app.call_tool("unica.code.diagnostics", &analyze).unwrap();
         assert_eq!(ports.load_calls.load(Ordering::SeqCst), 1);
@@ -4180,7 +4330,7 @@ mod tests {
                 &self,
                 _spec: ToolSpec,
                 _args: &Map<String, Value>,
-                _dry_run: bool,
+                _mode: InvocationMode,
                 _context: &WorkspaceContext,
             ) -> Result<(), String> {
                 Ok(())
@@ -4200,7 +4350,7 @@ mod tests {
                 _spec: ToolSpec,
                 _args: &Map<String, Value>,
                 _context: &WorkspaceContext,
-                _dry_run: bool,
+                _mode: InvocationMode,
                 _cancellation: &CancellationToken,
             ) -> Result<ports::HandlerOutcome, String> {
                 Ok(ports::HandlerOutcome::with_data_and_events(
@@ -4217,11 +4367,16 @@ mod tests {
                 &self,
                 context: &WorkspaceContext,
                 events: &[DomainEvent],
-                dry_run: bool,
+                mode: InvocationMode,
                 _cache_access: CacheAccess,
             ) -> Result<CacheReport, String> {
                 Ok(CacheReport {
-                    mode: if dry_run { "dry-run" } else { "applied" }.to_string(),
+                    mode: if mode.is_preview() {
+                        "dry-run"
+                    } else {
+                        "applied"
+                    }
+                    .to_string(),
                     root: context.cache_root.display().to_string(),
                     workspace_epoch: context.workspace_epoch,
                     events: events
@@ -7808,7 +7963,7 @@ mod tests {
     }
 
     #[test]
-    fn public_subsystem_info_dry_run_does_not_read_a_missing_target() {
+    fn public_subsystem_info_rejects_dry_run_before_reading_target() {
         let root = test_workspace_root("unica-subsystem-dry-run-missing-target");
         let workspace = root.join("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
@@ -7827,22 +7982,23 @@ mod tests {
         ]);
 
         assert!(!missing.exists());
-        let result = UnicaApplication::new()
+        let error = UnicaApplication::new()
             .call_tool("unica.subsystem.info", &args)
-            .expect("dry-run must not require target or topology bytes");
+            .expect_err("reader must reject dryRun before target discovery");
 
-        assert!(result.ok, "{result:?}");
-        assert!(result.summary.contains("dry run"), "{result:?}");
-        assert!(result.data.is_none(), "{result:?}");
+        assert!(
+            error.contains("does not accept argument `dryRun`"),
+            "{error}"
+        );
         assert!(
             !missing.exists(),
-            "dry-run must not create the missing target"
+            "argument rejection must not create the missing target"
         );
         std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn public_subsystem_validate_dry_run_does_not_read_a_missing_target() {
+    fn public_subsystem_validate_rejects_dry_run_before_reading_target() {
         let root = test_workspace_root("unica-subsystem-validate-dry-run-missing-target");
         let workspace = root.join("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
@@ -7861,15 +8017,17 @@ mod tests {
         ]);
 
         assert!(!missing.exists());
-        let result = UnicaApplication::new()
+        let error = UnicaApplication::new()
             .call_tool("unica.subsystem.validate", &args)
-            .expect("read-only dry-run must not require target bytes");
+            .expect_err("reader must reject dryRun before target discovery");
 
-        assert!(result.ok, "{result:?}");
-        assert!(result.summary.contains("dry run"), "{result:?}");
+        assert!(
+            error.contains("does not accept argument `dryRun`"),
+            "{error}"
+        );
         assert!(
             !missing.exists(),
-            "dry-run must not create the missing target"
+            "argument rejection must not create the missing target"
         );
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -7889,7 +8047,6 @@ mod tests {
                 "SubsystemPath".to_string(),
                 Value::String("missing/Subsystem.xml".to_string()),
             ),
-            ("dryRun".to_string(), Value::Bool(false)),
         ]);
 
         let result = UnicaApplication::new()
@@ -9034,7 +9191,6 @@ mod tests {
             let mut args = Map::new();
             args.insert("cwd".into(), Value::String(root.display().to_string()));
             args.insert(alias.into(), Value::String(directory.display().to_string()));
-            args.insert("dryRun".into(), Value::Bool(true));
 
             let result = UnicaApplication::new().call_tool(tool, &args).unwrap();
             assert!(
@@ -9221,7 +9377,7 @@ mod tests {
                 &self,
                 _spec: ToolSpec,
                 args: &Map<String, Value>,
-                _dry_run: bool,
+                _mode: InvocationMode,
                 _context: &WorkspaceContext,
             ) -> Result<(), String> {
                 self.record("context", args);
@@ -9253,7 +9409,7 @@ mod tests {
                 _spec: ToolSpec,
                 args: &Map<String, Value>,
                 _context: &WorkspaceContext,
-                _dry_run: bool,
+                _mode: InvocationMode,
                 _cancellation: &CancellationToken,
             ) -> Result<ports::HandlerOutcome, String> {
                 self.record("handler", args);
@@ -9266,7 +9422,7 @@ mod tests {
                 &self,
                 context: &WorkspaceContext,
                 _events: &[DomainEvent],
-                _dry_run: bool,
+                _mode: InvocationMode,
                 _cache_access: CacheAccess,
             ) -> Result<CacheReport, String> {
                 Ok(CacheReport {
@@ -9289,7 +9445,7 @@ mod tests {
         let cases = [
             (
                 "unica.cf.info",
-                json!({"configPath": "src", "dryRun": false}),
+                json!({"configPath": "src"}),
                 &[("ConfigPath", "configPath")][..],
             ),
             (
@@ -9371,8 +9527,7 @@ mod tests {
     fn native_path_alias_normalization_accepts_equal_or_empty_duplicates_but_rejects_conflicts() {
         let same = json!({
             "ConfigPath": "src",
-            "configPath": "src",
-            "dryRun": false
+            "configPath": "src"
         });
         UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
             outcome: AdapterOutcome::ok("same aliases"),
@@ -9383,8 +9538,7 @@ mod tests {
 
         let empty_and_value = json!({
             "ConfigPath": "",
-            "configPath": "src",
-            "dryRun": false
+            "configPath": "src"
         });
         UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
             outcome: AdapterOutcome::ok("empty alias ignored"),
@@ -9395,8 +9549,7 @@ mod tests {
 
         let conflict = json!({
             "ConfigPath": "src-a",
-            "configPath": "src-b",
-            "dryRun": false
+            "configPath": "src-b"
         });
         let error = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
             outcome: AdapterOutcome::ok("must not run"),
@@ -9456,7 +9609,7 @@ mod tests {
                 &self,
                 _spec: ToolSpec,
                 _args: &Map<String, Value>,
-                _dry_run: bool,
+                _mode: InvocationMode,
                 _context: &WorkspaceContext,
             ) -> Result<(), String> {
                 Ok(())
@@ -9476,7 +9629,7 @@ mod tests {
                 _spec: ToolSpec,
                 _args: &Map<String, Value>,
                 _context: &WorkspaceContext,
-                _dry_run: bool,
+                _mode: InvocationMode,
                 cancellation: &CancellationToken,
             ) -> Result<ports::HandlerOutcome, String> {
                 *self.observed_cancelled.lock().unwrap() = Some(cancellation.is_cancelled());
@@ -9494,7 +9647,7 @@ mod tests {
                 &self,
                 context: &WorkspaceContext,
                 _events: &[DomainEvent],
-                _dry_run: bool,
+                _mode: InvocationMode,
                 _cache_access: CacheAccess,
             ) -> Result<CacheReport, String> {
                 Ok(CacheReport {
@@ -9571,7 +9724,7 @@ mod tests {
                 &self,
                 _spec: ToolSpec,
                 _args: &Map<String, Value>,
-                _dry_run: bool,
+                _mode: InvocationMode,
                 _context: &WorkspaceContext,
             ) -> Result<(), String> {
                 Ok(())
@@ -9591,7 +9744,7 @@ mod tests {
                 spec: ToolSpec,
                 _args: &Map<String, Value>,
                 _context: &WorkspaceContext,
-                _dry_run: bool,
+                _mode: InvocationMode,
                 _cancellation: &CancellationToken,
             ) -> Result<ports::HandlerOutcome, String> {
                 self.invoked.lock().unwrap().push(spec.name);
@@ -9604,12 +9757,17 @@ mod tests {
                 &self,
                 context: &WorkspaceContext,
                 events: &[DomainEvent],
-                dry_run: bool,
+                mode: InvocationMode,
                 cache_access: CacheAccess,
             ) -> Result<CacheReport, String> {
                 self.reported.lock().unwrap().extend(cache_access.writes);
                 Ok(CacheReport {
-                    mode: if dry_run { "dry-run" } else { "write" }.to_string(),
+                    mode: if mode.is_preview() {
+                        "dry-run"
+                    } else {
+                        "write"
+                    }
+                    .to_string(),
                     root: context.cache_root.display().to_string(),
                     workspace_epoch: context.workspace_epoch,
                     events: events
@@ -9683,7 +9841,7 @@ mod tests {
                 &self,
                 _spec: ToolSpec,
                 _args: &Map<String, Value>,
-                _dry_run: bool,
+                _mode: InvocationMode,
                 _context: &WorkspaceContext,
             ) -> Result<(), String> {
                 Ok(())
@@ -9703,7 +9861,7 @@ mod tests {
                 _spec: ToolSpec,
                 _args: &Map<String, Value>,
                 context: &WorkspaceContext,
-                _dry_run: bool,
+                _mode: InvocationMode,
                 _cancellation: &CancellationToken,
             ) -> Result<ports::HandlerOutcome, String> {
                 let event = DomainEvent::new(DomainEventKind::ModuleChanged, "src/Module.bsl");
@@ -9735,7 +9893,7 @@ mod tests {
                 &self,
                 _context: &WorkspaceContext,
                 _events: &[DomainEvent],
-                _dry_run: bool,
+                _mode: InvocationMode,
                 _cache_access: CacheAccess,
             ) -> Result<CacheReport, String> {
                 panic!("post-commit cache_report must not run after transactional persistence")
@@ -10544,7 +10702,7 @@ mod tests {
             &self,
             _spec: ToolSpec,
             _args: &Map<String, Value>,
-            _dry_run: bool,
+            _mode: InvocationMode,
             _context: &WorkspaceContext,
         ) -> Result<(), String> {
             Ok(())
@@ -10579,7 +10737,7 @@ mod tests {
             _spec: ToolSpec,
             _args: &Map<String, Value>,
             _context: &WorkspaceContext,
-            _dry_run: bool,
+            _mode: InvocationMode,
             _cancellation: &CancellationToken,
         ) -> Result<ports::HandlerOutcome, String> {
             Err("handler must not run after a guard evaluation error".to_string())
@@ -10589,11 +10747,16 @@ mod tests {
             &self,
             context: &WorkspaceContext,
             _events: &[DomainEvent],
-            dry_run: bool,
+            mode: InvocationMode,
             _cache_access: CacheAccess,
         ) -> Result<CacheReport, String> {
             Ok(CacheReport {
-                mode: if dry_run { "dry-run" } else { "applied" }.to_string(),
+                mode: if mode.is_preview() {
+                    "dry-run"
+                } else {
+                    "applied"
+                }
+                .to_string(),
                 root: context.cache_root.display().to_string(),
                 workspace_epoch: context.workspace_epoch,
                 events: Vec::new(),
@@ -10627,7 +10790,7 @@ mod tests {
             &self,
             _spec: ToolSpec,
             _args: &Map<String, Value>,
-            _dry_run: bool,
+            _mode: InvocationMode,
             _context: &WorkspaceContext,
         ) -> Result<(), String> {
             Ok(())
@@ -10647,7 +10810,7 @@ mod tests {
             _spec: ToolSpec,
             _args: &Map<String, Value>,
             _context: &WorkspaceContext,
-            _dry_run: bool,
+            _mode: InvocationMode,
             _cancellation: &CancellationToken,
         ) -> Result<ports::HandlerOutcome, String> {
             Ok(match self.data.clone() {
@@ -10660,13 +10823,13 @@ mod tests {
             &self,
             context: &WorkspaceContext,
             events: &[DomainEvent],
-            dry_run: bool,
+            mode: InvocationMode,
             _cache_access: CacheAccess,
         ) -> Result<CacheReport, String> {
             Ok(CacheReport {
                 mode: if events.is_empty() {
                     "read".to_string()
-                } else if dry_run {
+                } else if mode.is_preview() {
                     "dry-run".to_string()
                 } else {
                     "applied".to_string()

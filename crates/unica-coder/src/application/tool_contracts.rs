@@ -1,7 +1,9 @@
 use super::operation_descriptors::{native_operation_descriptor, native_path_alias_groups};
 use super::source_navigation::SOURCE_NAVIGATION_LIMIT_MAX;
+#[cfg(test)]
+use super::ToolExecution;
 use super::{
-    CodeIntelligenceOperation, RuntimeJobAction, SourceNavigationOperation,
+    CodeIntelligenceOperation, InvocationMode, RuntimeJobAction, SourceNavigationOperation,
     SourceResourceOperation, ToolHandler, ToolSpec,
 };
 use crate::domain::form_edit::{form_edit_definition_schema, validate_form_edit_definition};
@@ -781,22 +783,21 @@ fn is_empty_path_alias_value(value: &Value) -> bool {
     value.as_str().is_some_and(|value| value.trim().is_empty())
 }
 
-pub fn validate_tool_arguments(
+pub fn validate_tool_argument_shape(
     tool: ToolSpec,
     args: &Map<String, Value>,
-    dry_run: bool,
 ) -> Result<(), String> {
     if let ToolHandler::Metadata { operation } = tool.handler {
-        return super::metadata::parse_metadata_request(operation, args)
-            .map(|_| ())
-            .map_err(|failure| {
+        return super::metadata::validate_metadata_argument_shape(operation, args).map_err(
+            |failure| {
                 let detail = failure
                     .diagnostics
                     .first()
                     .map(|diagnostic| diagnostic.message.as_str())
                     .unwrap_or("metadata arguments are invalid");
                 format!("{} invalid arguments: {detail}", tool.name)
-            });
+            },
+        );
     }
     validate_removed_target_arguments(tool, args)?;
     let allowed = allowed_args(&tool).into_iter().collect::<BTreeSet<_>>();
@@ -814,6 +815,27 @@ pub fn validate_tool_arguments(
     for (key, value) in args {
         validate_argument_type(tool.name, key, value)?;
     }
+    Ok(())
+}
+
+pub fn validate_tool_argument_semantics(
+    tool: ToolSpec,
+    args: &Map<String, Value>,
+    mode: InvocationMode,
+) -> Result<(), String> {
+    if let ToolHandler::Metadata { operation } = tool.handler {
+        return super::metadata::parse_metadata_request_after_shape(operation, args)
+            .map(|_| ())
+            .map_err(|failure| {
+                let detail = failure
+                    .diagnostics
+                    .first()
+                    .map(|diagnostic| diagnostic.message.as_str())
+                    .unwrap_or("metadata arguments are invalid");
+                format!("{} invalid arguments: {detail}", tool.name)
+            });
+    }
+    let dry_run = mode.is_preview();
     if matches!(tool.handler, ToolHandler::RuntimeAdapter) {
         validate_runtime_arguments(tool.name, args, dry_run)?;
     }
@@ -851,6 +873,21 @@ fn validate_role_edit_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Re
     parse_role_edit_request(args)
         .map(|_| ())
         .map_err(|error| format!("{} invalid arguments: {error}", tool.name))
+}
+
+#[cfg(test)]
+fn validate_tool_arguments(
+    tool: ToolSpec,
+    args: &Map<String, Value>,
+    dry_run: bool,
+) -> Result<(), String> {
+    validate_tool_argument_shape(tool, args)?;
+    let mode = match (tool.execution, dry_run) {
+        (ToolExecution::Read, _) => InvocationMode::Read,
+        (ToolExecution::Mutation, true) => InvocationMode::Preview,
+        (ToolExecution::Mutation, false) => InvocationMode::Apply,
+    };
+    validate_tool_argument_semantics(tool, args, mode)
 }
 
 fn validate_xdto_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Result<(), String> {
@@ -6063,7 +6100,11 @@ mod tests {
         let args = Map::new();
         let error = validate_tool_arguments(definition, &args, false).unwrap_err();
         assert!(error.contains("requires `name`"));
-        validate_tool_arguments(definition, &args, true).unwrap();
+        let error = validate_tool_arguments(definition, &args, true).unwrap_err();
+        assert!(
+            error.contains("requires `name`"),
+            "reader validation cannot be weakened by a preview boolean: {error}"
+        );
     }
 
     #[test]

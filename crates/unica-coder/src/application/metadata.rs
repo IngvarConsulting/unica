@@ -346,7 +346,14 @@ pub(crate) fn parse_metadata_request(
     operation: MetadataOperation,
     args: &Map<String, Value>,
 ) -> Result<MetadataRequest, MetaFailure> {
-    reject_unknown_top_level(operation, args)?;
+    validate_metadata_argument_shape(operation, args)?;
+    parse_metadata_request_after_shape(operation, args)
+}
+
+pub(crate) fn parse_metadata_request_after_shape(
+    operation: MetadataOperation,
+    args: &Map<String, Value>,
+) -> Result<MetadataRequest, MetaFailure> {
     let source_set = required_string(args, "sourceSet")?;
     match operation {
         MetadataOperation::Info => {
@@ -425,6 +432,40 @@ pub(crate) fn parse_metadata_request(
             }))
         }
     }
+}
+
+pub(crate) fn validate_metadata_argument_shape(
+    operation: MetadataOperation,
+    args: &Map<String, Value>,
+) -> Result<(), MetaFailure> {
+    reject_unknown_top_level(operation, args)?;
+    let schema = metadata_input_schema(operation);
+    let properties = schema["properties"]
+        .as_object()
+        .expect("metadata schema properties are an object");
+    for (name, value) in args {
+        let expected = properties[name]["type"]
+            .as_str()
+            .expect("metadata top-level property declares one JSON type");
+        let matches = match expected {
+            "array" => value.is_array(),
+            "boolean" => value.is_boolean(),
+            "integer" => value.as_number().is_some_and(|number| {
+                number.as_i64().is_some()
+                    || number.as_u64().is_some()
+                    || number
+                        .as_f64()
+                        .is_some_and(|number| number.is_finite() && number.fract() == 0.0)
+            }),
+            "object" => value.is_object(),
+            "string" => value.is_string(),
+            other => panic!("unsupported metadata top-level JSON type: {other}"),
+        };
+        if !matches {
+            return Err(invalid(name, format!("`{name}` must be {expected}")).into());
+        }
+    }
+    Ok(())
 }
 
 fn parse_operations(
@@ -2576,7 +2617,7 @@ mod tests {
         MetadataResourceImage, MetadataResourceRole, MetadataValidationSubject,
         PreparedMetadataMutation, SupportGuardCheck,
     };
-    use crate::application::ToolSpec;
+    use crate::application::{InvocationMode, ToolSpec};
     use crate::domain::cache::{CacheAccess, CacheReport};
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
@@ -2752,7 +2793,7 @@ mod tests {
             &self,
             _spec: ToolSpec,
             _args: &Map<String, Value>,
-            _dry_run: bool,
+            _mode: InvocationMode,
             _context: &WorkspaceContext,
         ) -> Result<(), String> {
             Ok(())
@@ -2824,7 +2865,7 @@ mod tests {
             _spec: ToolSpec,
             _args: &Map<String, Value>,
             _context: &WorkspaceContext,
-            _dry_run: bool,
+            _mode: InvocationMode,
             _cancellation: &CancellationToken,
         ) -> Result<HandlerOutcome, String> {
             unreachable!("metadata has a dedicated coordinator")
@@ -2834,12 +2875,17 @@ mod tests {
             &self,
             context: &WorkspaceContext,
             events: &[DomainEvent],
-            dry_run: bool,
+            mode: InvocationMode,
             _cache_access: CacheAccess,
         ) -> Result<CacheReport, String> {
             *self.cache_events.lock().unwrap() = events.to_vec();
             Ok(CacheReport {
-                mode: if dry_run { "preview" } else { "apply" }.to_string(),
+                mode: if mode.is_preview() {
+                    "preview"
+                } else {
+                    "apply"
+                }
+                .to_string(),
                 root: context.cache_root.display().to_string(),
                 workspace_epoch: context.workspace_epoch,
                 events: events

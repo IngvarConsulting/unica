@@ -10,7 +10,8 @@ use crate::application::source_navigation::{
 };
 use crate::application::source_resources::{SourceReadRequest, SourceResourcesRequest};
 use crate::application::{
-    project_map, project_status, AdapterOutcome, ToolHandler, ToolSpec, TypedReadOutcome,
+    project_map, project_status, AdapterOutcome, InvocationMode, ToolExecution, ToolHandler,
+    ToolSpec, TypedReadOutcome,
 };
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
@@ -45,6 +46,16 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const NATIVE_TYPED_INVOCATION_DEADLINE: Duration = Duration::from_secs(5);
+
+fn adapter_dry_run(spec: ToolSpec, mode: InvocationMode) -> Result<bool, String> {
+    match (spec.execution, mode) {
+        (ToolExecution::Mutation, InvocationMode::Preview) => Ok(true),
+        (ToolExecution::Mutation, InvocationMode::Apply) => Ok(false),
+        (ToolExecution::Read, InvocationMode::Read) => Ok(false),
+        _ => Err(format!("invalid invocation mode for {}", spec.name)),
+    }
+}
+
 pub(crate) struct InfrastructureApplicationPorts {
     source_resources: crate::infrastructure::platform_xml_resources::PlatformXmlResourceProvider,
 }
@@ -70,9 +81,10 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         &self,
         spec: ToolSpec,
         args: &Map<String, Value>,
-        dry_run: bool,
+        mode: InvocationMode,
         context: &WorkspaceContext,
     ) -> Result<(), String> {
+        let dry_run = adapter_dry_run(spec, mode)?;
         crate::infrastructure::tool_context::validate_tool_context(spec, args, dry_run, context)
     }
 
@@ -251,10 +263,11 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         spec: ToolSpec,
         args: &Map<String, Value>,
         context: &WorkspaceContext,
-        dry_run: bool,
+        mode: InvocationMode,
         cancellation: &CancellationToken,
         deadline: ProviderDeadline,
     ) -> Result<PreparedToolInvocation, String> {
+        let dry_run = adapter_dry_run(spec, mode)?;
         let ToolHandler::NativeOperation {
             operation: "subsystem-info",
             ..
@@ -307,17 +320,10 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         spec: ToolSpec,
         args: &Map<String, Value>,
         context: &WorkspaceContext,
-        dry_run: bool,
+        mode: InvocationMode,
         cancellation: &CancellationToken,
     ) -> Result<HandlerOutcome, String> {
-        self.invoke_handler_with_operational_config(
-            spec,
-            args,
-            context,
-            dry_run,
-            None,
-            cancellation,
-        )
+        self.invoke_handler_with_operational_config(spec, args, context, mode, None, cancellation)
     }
 
     fn invoke_handler_with_operational_config(
@@ -325,10 +331,11 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         spec: ToolSpec,
         args: &Map<String, Value>,
         context: &WorkspaceContext,
-        dry_run: bool,
+        mode: InvocationMode,
         operational_config: Option<&OperationalConfig>,
         cancellation: &CancellationToken,
     ) -> Result<HandlerOutcome, String> {
+        let dry_run = adapter_dry_run(spec, mode)?;
         if cancellation.is_cancelled() {
             return Ok(HandlerOutcome::plain(AdapterOutcome::cancelled(format!(
                 "{} stopped before adapter execution",
@@ -659,10 +666,15 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         &self,
         context: &WorkspaceContext,
         events: &[DomainEvent],
-        dry_run: bool,
+        mode: InvocationMode,
         cache_access: CacheAccess,
     ) -> Result<CacheReport, String> {
-        WorkspaceStateRepository::new(context).report(context, events, dry_run, cache_access)
+        WorkspaceStateRepository::new(context).report(
+            context,
+            events,
+            mode.is_preview(),
+            cache_access,
+        )
     }
 
     fn notify_invalidation(&self, context: &WorkspaceContext, events: &[DomainEvent]) {
@@ -1184,7 +1196,7 @@ mod tests {
         verified_full_dump_invocation,
     };
     use crate::application::{
-        ResultContract, RuntimeJobAction, ToolExecution, ToolHandler, ToolSpec,
+        InvocationMode, ResultContract, RuntimeJobAction, ToolExecution, ToolHandler, ToolSpec,
     };
     use crate::domain::cache::CacheAccess;
     use crate::domain::cancellation::CancellationToken;
@@ -1785,7 +1797,7 @@ mod tests {
             ),
             &args,
             &context,
-            false,
+            InvocationMode::Apply,
             &crate::domain::cancellation::CancellationToken::default(),
         ) {
             Ok(_) => panic!("запрет политики обязан отказывать фасаду"),
@@ -2338,7 +2350,7 @@ mod tests {
                 ),
                 &args,
                 &context,
-                false,
+                InvocationMode::Apply,
                 &crate::domain::cancellation::CancellationToken::default(),
             )
             .expect("ветка обязана ответить");
@@ -2410,7 +2422,7 @@ mod tests {
                 ),
                 &args,
                 &context,
-                true,
+                InvocationMode::Preview,
                 &crate::domain::cancellation::CancellationToken::default(),
             )
             .expect("сухой прогон обязан ответить успехом");
@@ -2467,7 +2479,7 @@ mod tests {
             ),
             &Map::new(),
             &context,
-            true,
+            InvocationMode::Preview,
             &crate::domain::cancellation::CancellationToken::default(),
         ) {
             Ok(_) => panic!("сухой прогон без query обязан отказывать"),
@@ -2513,7 +2525,7 @@ mod tests {
                 ),
                 &args,
                 &context,
-                false,
+                InvocationMode::Apply,
                 &crate::domain::cancellation::CancellationToken::default(),
             )
             .expect("вызов с применимым фильтром обязан пройти");
@@ -2542,7 +2554,7 @@ mod tests {
             ),
             &alien,
             &context,
-            false,
+            InvocationMode::Apply,
             &crate::domain::cancellation::CancellationToken::default(),
         ) {
             Ok(_) => panic!("чужое значение sourceKinds обязано отклоняться"),
@@ -2567,7 +2579,7 @@ mod tests {
             ),
             &non_string,
             &context,
-            false,
+            InvocationMode::Apply,
             &crate::domain::cancellation::CancellationToken::default(),
         ) {
             Ok(_) => panic!("нестроковое значение sourceKinds обязано отклоняться"),
@@ -2616,7 +2628,7 @@ mod tests {
                 ),
                 &args,
                 &context,
-                false,
+                InvocationMode::Apply,
                 &crate::domain::cancellation::CancellationToken::default(),
             )
             .expect("ветка get обязана ответить");
@@ -2671,7 +2683,7 @@ mod tests {
                 ),
                 &args,
                 &context,
-                true,
+                InvocationMode::Preview,
                 &crate::domain::cancellation::CancellationToken::default(),
             )
             .expect("сухой прогон обязан ответить успехом");
@@ -2692,7 +2704,7 @@ mod tests {
             ),
             &Map::new(),
             &context,
-            true,
+            InvocationMode::Preview,
             &crate::domain::cancellation::CancellationToken::default(),
         ) {
             Ok(_) => panic!("сухой прогон без documentId обязан отказывать"),
@@ -2737,7 +2749,7 @@ mod tests {
             ),
             &args,
             &context,
-            true,
+            InvocationMode::Preview,
             &crate::domain::cancellation::CancellationToken::default(),
         ) {
             Ok(_) => panic!("пробельный query обязан отклоняться и всухую"),
