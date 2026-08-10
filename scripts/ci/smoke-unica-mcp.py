@@ -220,7 +220,7 @@ EXPECTED_SOURCE_INPUT_SCHEMAS = json.loads(
     "additionalProperties": false,
     "properties": {
       "confirm": {
-        "description": "Boolean acknowledgement accepted by every tool and stripped before the handler is called; it never selects preview or apply mode",
+        "description": "Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own.",
         "type": "boolean"
       },
       "cursor": {
@@ -261,7 +261,7 @@ EXPECTED_SOURCE_INPUT_SCHEMAS = json.loads(
     "additionalProperties": false,
     "properties": {
       "confirm": {
-        "description": "Boolean acknowledgement accepted by every tool and stripped before the handler is called; it never selects preview or apply mode",
+        "description": "Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own.",
         "type": "boolean"
       },
       "cwd": {
@@ -302,7 +302,7 @@ EXPECTED_SOURCE_INPUT_SCHEMAS = json.loads(
     "additionalProperties": false,
     "properties": {
       "confirm": {
-        "description": "Boolean acknowledgement accepted by every tool and stripped before the handler is called; it never selects preview or apply mode",
+        "description": "Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own.",
         "type": "boolean"
       },
       "cursor": {
@@ -406,7 +406,7 @@ EXPECTED_SOURCE_INPUT_SCHEMAS = json.loads(
     ],
     "properties": {
       "confirm": {
-        "description": "Boolean acknowledgement accepted by every tool and stripped before the handler is called; it never selects preview or apply mode",
+        "description": "Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own.",
         "type": "boolean"
       },
       "cursor": {
@@ -470,7 +470,7 @@ EXPECTED_XDTO_INPUT_SCHEMAS = json.loads(
     "properties": {
       "confirm": {
         "type": "boolean",
-        "description": "Boolean acknowledgement accepted by every tool and stripped before the handler is called; it never selects preview or apply mode"
+        "description": "Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own."
       },
       "cursor": {
         "type": "string",
@@ -539,7 +539,7 @@ EXPECTED_XDTO_INPUT_SCHEMAS = json.loads(
       },
       "confirm": {
         "type": "boolean",
-        "description": "Boolean acknowledgement accepted by every tool and stripped before the handler is called; it never selects preview or apply mode"
+        "description": "Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own."
       },
       "cwd": {
         "type": "string",
@@ -547,7 +547,8 @@ EXPECTED_XDTO_INPUT_SCHEMAS = json.loads(
       },
       "dryRun": {
         "type": "boolean",
-        "description": "Boolean preview switch for mutating tools; when omitted it defaults to true, so send false only when the user asked to apply the mutation."
+        "default": true,
+        "description": "Boolean preview switch for mutation tools; when omitted or true the tool only reports the change it would make, and false applies the mutation when the user requested execution."
       },
       "metadataPath": {
         "type": "string",

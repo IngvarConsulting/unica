@@ -39,6 +39,8 @@
   (`python3.12 scripts/ci/generate-tool-surface.py`).
 - [ ] `unica.code.search` сохраняет три независимые секции, их порядок и
   политику частичного успеха (`INV-MCP-CODE-SEARCH-SECTIONS`).
+- [ ] Reader не публикует и не принимает режим предпросмотра, а mutation
+  сохраняет preview по умолчанию (`INV-MCP-PREVIEW-MUTATION-ONLY`).
 
 ## Маршрутизация скиллов
 
@@ -50,8 +52,9 @@
   скилла Python-, PowerShell- или shell-файла операции (`INV-SKILL-NO-SCRIPT-ROUTE`).
 - [ ] Инструкции по изменяющим операциям сохраняют предпросмотр как путь по
   умолчанию (`INV-SKILL-DOCUMENTED-PREVIEW`).
-- [ ] Каждый пример `tools/call` в затронутом скилле по-прежнему исполняется как
-  сухой прогон MCP (`INV-SKILL-EXECUTABLE-EXAMPLES`).
+- [ ] Каждый пример `tools/call` в затронутом скилле исполняется по категории:
+  mutation — в preview, reader — как детерминированное чтение
+  (`INV-SKILL-EXECUTABLE-EXAMPLES`).
 - [ ] Ресурсный скилл выбирает предметный writer, а изменение BSL ведёт через
       `unica.code.patch`,
   объясняет fallback и делает предпросмотр (`INV-SKILL-SOURCE-FALLBACK`).

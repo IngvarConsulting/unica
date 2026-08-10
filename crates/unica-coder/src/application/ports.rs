@@ -1,4 +1,4 @@
-use super::{AdapterOutcome, ToolSpec};
+use super::{AdapterOutcome, InvocationMode, ToolSpec};
 use crate::application::metadata::{MetaFailure, MetaInfoRequest, MetadataRequest};
 use crate::application::source_navigation::{
     SourceChildrenRequest, SourceChildrenResult, SourceLocateRequest, SourceLocateResult,
@@ -466,7 +466,7 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         &self,
         spec: ToolSpec,
         args: &Map<String, Value>,
-        dry_run: bool,
+        mode: InvocationMode,
         context: &WorkspaceContext,
     ) -> Result<(), String>;
 
@@ -482,7 +482,7 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         _spec: ToolSpec,
         _args: &Map<String, Value>,
         _context: &WorkspaceContext,
-        _dry_run: bool,
+        _mode: InvocationMode,
         _cancellation: &CancellationToken,
         _deadline: ProviderDeadline,
     ) -> Result<PreparedToolInvocation, String> {
@@ -632,7 +632,7 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         spec: ToolSpec,
         args: &Map<String, Value>,
         context: &WorkspaceContext,
-        dry_run: bool,
+        mode: InvocationMode,
         cancellation: &CancellationToken,
     ) -> Result<HandlerOutcome, String>;
 
@@ -643,19 +643,19 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         spec: ToolSpec,
         args: &Map<String, Value>,
         context: &WorkspaceContext,
-        dry_run: bool,
+        mode: InvocationMode,
         operational_config: Option<&OperationalConfig>,
         cancellation: &CancellationToken,
     ) -> Result<HandlerOutcome, String> {
         let _ = operational_config;
-        self.invoke_handler(spec, args, context, dry_run, cancellation)
+        self.invoke_handler(spec, args, context, mode, cancellation)
     }
 
     fn cache_report(
         &self,
         context: &WorkspaceContext,
         events: &[DomainEvent],
-        dry_run: bool,
+        mode: InvocationMode,
         cache_access: CacheAccess,
     ) -> Result<CacheReport, String>;
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import collections
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 import unittest
@@ -19,6 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 GENERATOR = REPO_ROOT / "scripts/ci/generate-tool-surface.py"
 LEDGER = REPO_ROOT / "spec/architecture/tool-surface.md"
 REVIEW = REPO_ROOT / "spec/architecture/tool-surface-review.json"
+INVARIANTS = REPO_ROOT / "spec/architecture/invariants.md"
 BINARY = REPO_ROOT / "target/debug/unica"
 
 
@@ -420,6 +422,35 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
         )
         self.assertIn(
             f"- {self.module.CONTRACT_STATES['partial']}: **{len(partial)}**", text
+        )
+
+    def test_typed_result_invariant_names_the_registry_contract_check(self) -> None:
+        text = INVARIANTS.read_text(encoding="utf-8")
+        section = text.split("### INV-MCP-TYPED-RESULT", 1)[1].split("\n### ", 1)[0]
+        fields: dict[str, list[str]] = collections.defaultdict(list)
+        current_field: str | None = None
+        for line in section.splitlines():
+            match = re.match(r"- \*\*(Rule|Decision|Check):\*\*\s*(.*)", line)
+            if match:
+                current_field = match.group(1)
+                fields[current_field].append(match.group(2))
+            elif current_field is not None and line.startswith("  "):
+                fields[current_field][-1] += " " + line.strip()
+            else:
+                current_field = None
+
+        self.assertIn("typed_result_missing", " ".join(fields["Rule"]))
+        self.assertIn("ADR-0044", " ".join(fields["Decision"]))
+        self.assertIn(
+            "`crates/unica-coder/src/application/mod.rs`",
+            " ".join(fields["Check"]),
+        )
+        application_tests = (
+            REPO_ROOT / "crates/unica-coder/src/application/mod.rs"
+        ).read_text(encoding="utf-8")
+        self.assertRegex(
+            application_tests,
+            r"fn\s+tool_specs_match_reviewed_result_contracts\s*\(",
         )
 
 

@@ -32,6 +32,28 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
     );
     mcp.send(json!({"jsonrpc":"2.0","method":"notifications/initialized","params":{}}));
     mcp.send(tool_call(
+        10,
+        "unica.code.search",
+        json!({
+            "cwd": fixture.workspace,
+            "query": "Procedure",
+            "dryRun": true
+        }),
+    ));
+    let rejected_reader_preview = mcp.receive_ids(&[10], RESPONSE_DEADLINE);
+    assert!(
+        rejected_reader_preview[&10]["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("does not accept argument `dryRun`")),
+        "{:#}",
+        rejected_reader_preview[&10]
+    );
+    assert!(
+        fixture.service_records().is_empty(),
+        "rejected code.search preview must not start workspace services"
+    );
+
+    mcp.send(tool_call(
         11,
         "unica.code.search",
         json!({

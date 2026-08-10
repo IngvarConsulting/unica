@@ -3910,7 +3910,7 @@ fn live_public_mutators() -> BTreeMap<&'static str, &'static str> {
         .tools()
         .into_iter()
         .filter_map(|tool| {
-            if !tool.mutating {
+            if !tool.execution.is_mutating() {
                 return None;
             }
             let operation = match tool.handler {

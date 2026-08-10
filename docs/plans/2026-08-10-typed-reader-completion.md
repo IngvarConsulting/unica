@@ -3,16 +3,16 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: use `superpowers:executing-plans`
 > inline. Steps use checkbox syntax so the red-green evidence remains reviewable.
 
-**Goal:** Deliver issues #297, #291 and the still-current `code.definition` part
-of #292 in PR #425, together with ADR-0045, executable contracts and regression
-tests.
+**Goal:** Deliver #291 and the still-current `code.definition` part of #292 in
+PR #425, together with ADR-0045 and regression tests, on top of #297 already
+merged through PR #428 and ADR-0044.
 
-**Architecture:** The application registry derives a closed execution category
-and a four-value result contract for every public tool, rejects `dryRun` before
-dispatching readers, and applies one typed-reader postcondition after handler
-execution. Diagnostics `mode=analyze` uses a bounded line-streaming process path
-and a closed JSONL state machine. RLM preserves pre- and post-execution readiness
-as structured state until one public mapper constructs the definition outcome.
+**Architecture:** ADR-0044 supplies the closed execution category, two-value
+result contract, reader `dryRun` rejection and missing-data postcondition. This
+change adds the no-stdout postcondition. Diagnostics `mode=analyze` uses a
+bounded line-streaming process path and a closed JSONL state machine. RLM
+preserves pre- and post-execution readiness as structured state until one public
+mapper constructs the definition outcome.
 
 **Tech Stack:** Rust 2021, serde/serde_json, the existing `ManagedChild` process
 lifecycle, Python 3.12 architecture guards and GitHub Actions.
@@ -20,8 +20,8 @@ lifecycle, Python 3.12 architecture guards and GitHub Actions.
 ## Global constraints
 
 - The only public MCP server remains `unica`; no tool is added or renamed.
-- ADR-0023 remains immutable; ADR-0045 becomes the accepted owner of the new
-  execution enforcement and the diagnostics/RLM subject protocols.
+- ADR-0023 and ADR-0044 remain immutable; ADR-0045 becomes the accepted owner
+  of the no-stdout enforcement and diagnostics/RLM subject protocols.
 - Every production change follows a test that was observed failing for the
   intended reason.
 - `unica.meta.profile` is not restored and `unica.meta.info` does not acquire an
@@ -40,13 +40,14 @@ lifecycle, Python 3.12 architecture guards and GitHub Actions.
 - Test: unit tests in the same modules
 
 **Interfaces:**
-- Produces: `ToolExecution::{Read, Mutation}` and
-  `ResultContract::{Typed, Prose, Partial, Job}` derived from each `ToolSpec`.
-- Produces: one finalizer that returns `typed_result_missing:` before
-  `typed_result_textual:` for an otherwise successful `Read + Typed` outcome.
+- Consumes: `ToolExecution::{Read, Mutation}` and
+  `ResultContract::{Typed, ExternalStream}` from ADR-0044.
+- Produces: a finalizer extension that returns `typed_result_textual:` for an
+  otherwise successful `Read + Typed` outcome with a stdout duplicate, while
+  preserving the ADR-0044 priority of `typed_result_missing:`.
 
-- [x] Add a table test proving every registered tool maps one-to-one to the ledger's four
-  result values and every `mutating=false` tool maps to `Read`.
+- [x] Reuse the ADR-0044 table test proving every registered tool maps to its
+  executable category and typed/external-stream result contract.
 - [x] Run the table test and observe failure because the executable categories
   do not exist.
 - [x] Add schema/validation tests proving every reader omits and rejects
@@ -138,13 +139,13 @@ lifecycle, Python 3.12 architecture guards and GitHub Actions.
 **Interfaces:**
 - Consumes: all executable contracts and passing regression tests from Tasks
   1-3.
-- Produces: one mergeable implementation PR that relates to #297, fixes #291
-  and fixes the current `code.definition` part of #292.
+- Produces: one mergeable implementation PR based on merged #297 that fixes
+  #291 and the current `code.definition` part of #292.
 
-- [x] Change ADR-0045 to `accepted` and make it own the combined implementation
-  rather than depending on a separate PR.
-- [x] Change the design delivery boundary to the single-PR decision explicitly
-  approved by the user.
+- [x] Change ADR-0045 to `accepted` and make it own the diagnostics/RLM
+  implementation plus no-stdout guard without duplicating ADR-0044.
+- [x] Change the design delivery boundary to the final live ordering: merged
+  #297 as the base and one PR for #291/#292.
 - [x] Add the new executable check to `INV-MCP-TYPED-RESULT` without rewriting
   ADR-0023.
 - [x] Update the diagnostics skill with typed completion/error semantics.

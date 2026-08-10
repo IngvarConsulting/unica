@@ -1,7 +1,9 @@
 use super::operation_descriptors::{native_operation_descriptor, native_path_alias_groups};
 use super::source_navigation::SOURCE_NAVIGATION_LIMIT_MAX;
+#[cfg(test)]
+use super::ToolExecution;
 use super::{
-    CodeIntelligenceOperation, RuntimeJobAction, SourceNavigationOperation,
+    CodeIntelligenceOperation, InvocationMode, RuntimeJobAction, SourceNavigationOperation,
     SourceResourceOperation, ToolHandler, ToolSpec,
 };
 use crate::domain::form_edit::{form_edit_definition_schema, validate_form_edit_definition};
@@ -14,7 +16,8 @@ use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
-const COMMON_ARGS: &[&str] = &["cwd", "dryRun", "confirm"];
+const COMMON_ARGS: &[&str] = &["cwd", "confirm"];
+const MUTATION_ARGS: &[&str] = &["dryRun"];
 const CODE_PATCH_ARGS: &[&str] = &[
     "sourceSet",
     "metadataPath",
@@ -780,22 +783,21 @@ fn is_empty_path_alias_value(value: &Value) -> bool {
     value.as_str().is_some_and(|value| value.trim().is_empty())
 }
 
-pub fn validate_tool_arguments(
+pub fn validate_tool_argument_shape(
     tool: ToolSpec,
     args: &Map<String, Value>,
-    dry_run: bool,
 ) -> Result<(), String> {
     if let ToolHandler::Metadata { operation } = tool.handler {
-        return super::metadata::parse_metadata_request(operation, args)
-            .map(|_| ())
-            .map_err(|failure| {
+        return super::metadata::validate_metadata_argument_shape(operation, args).map_err(
+            |failure| {
                 let detail = failure
                     .diagnostics
                     .first()
                     .map(|diagnostic| diagnostic.message.as_str())
                     .unwrap_or("metadata arguments are invalid");
                 format!("{} invalid arguments: {detail}", tool.name)
-            });
+            },
+        );
     }
     validate_removed_target_arguments(tool, args)?;
     let allowed = allowed_args(&tool).into_iter().collect::<BTreeSet<_>>();
@@ -813,6 +815,27 @@ pub fn validate_tool_arguments(
     for (key, value) in args {
         validate_argument_type(tool.name, key, value)?;
     }
+    Ok(())
+}
+
+pub fn validate_tool_argument_semantics(
+    tool: ToolSpec,
+    args: &Map<String, Value>,
+    mode: InvocationMode,
+) -> Result<(), String> {
+    if let ToolHandler::Metadata { operation } = tool.handler {
+        return super::metadata::parse_metadata_request_after_shape(operation, args)
+            .map(|_| ())
+            .map_err(|failure| {
+                let detail = failure
+                    .diagnostics
+                    .first()
+                    .map(|diagnostic| diagnostic.message.as_str())
+                    .unwrap_or("metadata arguments are invalid");
+                format!("{} invalid arguments: {detail}", tool.name)
+            });
+    }
+    let dry_run = mode.is_preview();
     if matches!(tool.handler, ToolHandler::RuntimeAdapter) {
         validate_runtime_arguments(tool.name, args, dry_run)?;
     }
@@ -850,6 +873,21 @@ fn validate_role_edit_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Re
     parse_role_edit_request(args)
         .map(|_| ())
         .map_err(|error| format!("{} invalid arguments: {error}", tool.name))
+}
+
+#[cfg(test)]
+fn validate_tool_arguments(
+    tool: ToolSpec,
+    args: &Map<String, Value>,
+    dry_run: bool,
+) -> Result<(), String> {
+    validate_tool_argument_shape(tool, args)?;
+    let mode = match (tool.execution, dry_run) {
+        (ToolExecution::Read, _) => InvocationMode::Read,
+        (ToolExecution::Mutation, true) => InvocationMode::Preview,
+        (ToolExecution::Mutation, false) => InvocationMode::Apply,
+    };
+    validate_tool_argument_semantics(tool, args, mode)
 }
 
 fn validate_xdto_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Result<(), String> {
@@ -1839,12 +1877,13 @@ fn validate_runtime_operation_payload(
 ) -> Result<(), String> {
     let allowed = runtime_operation_args(operation);
     for key in args.keys() {
-        if COMMON_ARGS.contains(&key.as_str()) {
+        if COMMON_ARGS.contains(&key.as_str()) || MUTATION_ARGS.contains(&key.as_str()) {
             continue;
         }
         if !allowed.contains(&key.as_str()) {
             let mut accepted = allowed.to_vec();
             accepted.extend_from_slice(COMMON_ARGS);
+            accepted.extend_from_slice(MUTATION_ARGS);
             accepted.sort_unstable();
             accepted.dedup();
             return Err(format!(
@@ -2095,8 +2134,8 @@ fn argument_name_distance(left: &str, right: &str) -> usize {
 
 fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
     let mut names = COMMON_ARGS.to_vec();
-    if !tool.mutating {
-        names.retain(|name| *name != "dryRun");
+    if tool.execution.is_mutating() {
+        names.extend(MUTATION_ARGS);
     }
     match tool.handler {
         ToolHandler::Metadata { .. } => names.clear(),
@@ -2255,6 +2294,12 @@ fn runtime_job_required_args(action: RuntimeJobAction) -> Vec<&'static str> {
 }
 
 fn property_schema(name: &str) -> Value {
+    if name == "dryRun" {
+        return json!({
+            "type": "boolean",
+            "default": true
+        });
+    }
     if name == "waitTimeoutMs" {
         return json!({
             "type": "integer",
@@ -2265,8 +2310,7 @@ fn property_schema(name: &str) -> Value {
 
     let value_type = if matches!(
         name,
-        "dryRun"
-            | "confirm"
+        "confirm"
             | "Detailed"
             | "detailed"
             | "Force"
@@ -2503,7 +2547,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "confirm",
-        "Boolean acknowledgement accepted by every tool and stripped before the handler is called; it never selects preview or apply mode",
+        "Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own.",
     ),
     (
         "connection",
@@ -2579,7 +2623,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "dryRun",
-        "Boolean preview switch for mutating tools; when omitted it defaults to true, so send false only when the user asked to apply the mutation.",
+        "Boolean preview switch for mutation tools; when omitted or true the tool only reports the change it would make, and false applies the mutation when the user requested execution.",
     ),
     (
         "edgeKinds",
@@ -3380,6 +3424,13 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
         "unica.code.diagnostics" => match name {
             "mode" => return json!({ "type": "string", "enum": CODE_DIAGNOSTIC_MODES }),
             "format" => return json!({ "type": "string", "enum": ["json", "jsonl"] }),
+            "codes" => {
+                return json!({
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                    "uniqueItems": true
+                });
+            }
             "timeoutSeconds" => {
                 return json!({
                     "type": "integer",
@@ -3607,7 +3658,7 @@ fn expected_scalar_type(key: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
     use crate::application::metadata::MetadataOperation;
-    use crate::application::tools;
+    use crate::application::{tools, ResultContract, ToolExecution};
 
     fn metadata_tool(operation: MetadataOperation) -> ToolSpec {
         ToolSpec {
@@ -3618,7 +3669,12 @@ mod tests {
                 MetadataOperation::Remove => "unica.meta.remove",
             },
             description: "direct metadata contract test",
-            mutating: !matches!(operation, MetadataOperation::Info),
+            execution: if matches!(operation, MetadataOperation::Info) {
+                ToolExecution::Read
+            } else {
+                ToolExecution::Mutation
+            },
+            result_contract: ResultContract::Typed,
             cache_access: crate::domain::cache::CacheAccess::default(),
             handler: ToolHandler::Metadata { operation },
         }
@@ -3649,7 +3705,7 @@ mod tests {
         for tool in tools() {
             let schema = input_schema_for_tool(&tool);
             let publishes_dry_run = schema["properties"].get("dryRun").is_some();
-            match tool.execution() {
+            match tool.execution {
                 crate::application::ToolExecution::Read => {
                     assert!(!publishes_dry_run, "{}", tool.name);
                     let args = Map::from_iter([("dryRun".to_string(), json!(true))]);
@@ -5474,10 +5530,10 @@ mod tests {
     fn contracts_reject_wrong_scalar_type() {
         let tool = tools()
             .into_iter()
-            .find(|tool| tool.name == "unica.form.edit")
+            .find(|tool| tool.name == "unica.cf.edit")
             .unwrap();
         let mut args = Map::new();
-        args.insert("FormPath".to_string(), json!("Form.xml"));
+        args.insert("ConfigPath".to_string(), json!("Configuration.xml"));
         args.insert("dryRun".to_string(), json!("false"));
 
         let error = validate_tool_arguments(tool, &args, false).unwrap_err();
@@ -6114,7 +6170,11 @@ mod tests {
         let args = Map::new();
         let error = validate_tool_arguments(definition, &args, false).unwrap_err();
         assert!(error.contains("requires `name`"));
-        validate_tool_arguments(definition, &args, true).unwrap();
+        let error = validate_tool_arguments(definition, &args, true).unwrap_err();
+        assert!(
+            error.contains("requires `name`"),
+            "reader validation cannot be weakened by a preview boolean: {error}"
+        );
     }
 
     #[test]
@@ -6233,6 +6293,9 @@ mod tests {
         assert!(schema["properties"].get("cwd").is_some());
         assert!(schema["properties"].get("sourceDir").is_some());
         assert_eq!(schema["properties"]["codes"]["type"], "array");
+        assert_eq!(schema["properties"]["codes"]["items"]["type"], "string");
+        assert_eq!(schema["properties"]["codes"]["items"]["minLength"], 1);
+        assert_eq!(schema["properties"]["codes"]["uniqueItems"], true);
         assert_eq!(schema["properties"]["rangeStart"]["type"], "integer");
         assert_eq!(schema["properties"]["maxFiles"]["type"], "integer");
         assert_eq!(schema["properties"]["timeoutSeconds"]["type"], "integer");

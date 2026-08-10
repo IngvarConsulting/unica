@@ -146,7 +146,7 @@ def render_arguments(tool: dict) -> list[str]:
             " `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы."
         )
     elif not shown:
-        lines.append("Аргументов, кроме общих `cwd`/`dryRun`/`confirm`, нет.")
+        lines.append("Опубликованных аргументов нет.")
     return lines
 
 

@@ -10,7 +10,8 @@ use crate::application::source_navigation::{
 };
 use crate::application::source_resources::{SourceReadRequest, SourceResourcesRequest};
 use crate::application::{
-    project_map, project_status, AdapterOutcome, ToolHandler, ToolSpec, TypedReadOutcome,
+    project_map, project_status, AdapterOutcome, InvocationMode, ToolExecution, ToolHandler,
+    ToolSpec, TypedReadOutcome,
 };
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
@@ -45,6 +46,16 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const NATIVE_TYPED_INVOCATION_DEADLINE: Duration = Duration::from_secs(5);
+
+fn adapter_dry_run(spec: ToolSpec, mode: InvocationMode) -> Result<bool, String> {
+    match (spec.execution, mode) {
+        (ToolExecution::Mutation, InvocationMode::Preview) => Ok(true),
+        (ToolExecution::Mutation, InvocationMode::Apply) => Ok(false),
+        (ToolExecution::Read, InvocationMode::Read) => Ok(false),
+        _ => Err(format!("invalid invocation mode for {}", spec.name)),
+    }
+}
+
 pub(crate) struct InfrastructureApplicationPorts {
     source_resources: crate::infrastructure::platform_xml_resources::PlatformXmlResourceProvider,
 }
@@ -70,9 +81,10 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         &self,
         spec: ToolSpec,
         args: &Map<String, Value>,
-        dry_run: bool,
+        mode: InvocationMode,
         context: &WorkspaceContext,
     ) -> Result<(), String> {
+        let dry_run = adapter_dry_run(spec, mode)?;
         crate::infrastructure::tool_context::validate_tool_context(spec, args, dry_run, context)
     }
 
@@ -251,10 +263,13 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         spec: ToolSpec,
         args: &Map<String, Value>,
         context: &WorkspaceContext,
-        dry_run: bool,
+        mode: InvocationMode,
         cancellation: &CancellationToken,
         deadline: ProviderDeadline,
     ) -> Result<PreparedToolInvocation, String> {
+        // Validate the execution/mode pair before any preparation work. The
+        // preparation path itself does not branch on preview state.
+        adapter_dry_run(spec, mode)?;
         let ToolHandler::NativeOperation {
             operation: "subsystem-info",
             ..
@@ -266,16 +281,6 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         if let Err(error) = subsystem::ensure_subsystem_info_control(cancellation, deadline) {
             return prepared_subsystem_info_failure(error.to_string(), false);
         }
-        if dry_run {
-            return Ok(PreparedToolInvocation {
-                format_guard: Some(FormatGuardCheck::Allow),
-                handler: Some(HandlerOutcome::plain(AdapterOutcome::ok(format!(
-                    "dry run: {} would execute native XML/DSL operation",
-                    spec.name
-                )))),
-            });
-        }
-
         let prepared =
             match subsystem::prepare_subsystem_info(args, context, cancellation, deadline) {
                 Ok(prepared) => prepared,
@@ -307,17 +312,10 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         spec: ToolSpec,
         args: &Map<String, Value>,
         context: &WorkspaceContext,
-        dry_run: bool,
+        mode: InvocationMode,
         cancellation: &CancellationToken,
     ) -> Result<HandlerOutcome, String> {
-        self.invoke_handler_with_operational_config(
-            spec,
-            args,
-            context,
-            dry_run,
-            None,
-            cancellation,
-        )
+        self.invoke_handler_with_operational_config(spec, args, context, mode, None, cancellation)
     }
 
     fn invoke_handler_with_operational_config(
@@ -325,10 +323,11 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         spec: ToolSpec,
         args: &Map<String, Value>,
         context: &WorkspaceContext,
-        dry_run: bool,
+        mode: InvocationMode,
         operational_config: Option<&OperationalConfig>,
         cancellation: &CancellationToken,
     ) -> Result<HandlerOutcome, String> {
+        let dry_run = adapter_dry_run(spec, mode)?;
         if cancellation.is_cancelled() {
             return Ok(HandlerOutcome::plain(AdapterOutcome::cancelled(format!(
                 "{} stopped before adapter execution",
@@ -358,7 +357,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     args,
                     context,
                     dry_run,
-                    spec.mutating,
+                    spec.execution.is_mutating(),
                     NativeInvocationControl::new(
                         cancellation,
                         ProviderDeadline::new(Instant::now() + NATIVE_TYPED_INVOCATION_DEADLINE),
@@ -425,7 +424,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                         args,
                         context,
                         dry_run,
-                        spec.mutating,
+                        spec.execution.is_mutating(),
                         cancellation,
                     )
                     .map(HandlerOutcome::plain)
@@ -436,7 +435,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     args,
                     context,
                     dry_run,
-                    spec.mutating,
+                    spec.execution.is_mutating(),
                     cancellation,
                 )
                 .map(|outcome| match outcome.data {
@@ -489,7 +488,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                         args,
                         context,
                         dry_run,
-                        spec.mutating,
+                        spec.execution.is_mutating(),
                         cancellation,
                     )
                     .map(HandlerOutcome::plain)
@@ -528,9 +527,6 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     .get("documentId")
                     .and_then(Value::as_str)
                     .ok_or_else(|| "unica.documentation.get requires documentId".to_string())?;
-                // Пустой локатор отклоняется и всухую — тем же текстом, что и
-                // слой application: сломанный пример скилла обязан падать в
-                // parity-тесте, а не у живого пользователя.
                 if document_id.trim().is_empty() {
                     return Err(
                         "unica.documentation.get requires a non-blank documentId".to_string()
@@ -541,14 +537,6 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     .and_then(Value::as_str)
                     .unwrap_or("ru")
                     .to_string();
-                // Предпросмотр — до опроса поставщиков, как у search
-                // (INV-SKILL-EXECUTABLE-EXAMPLES).
-                if dry_run {
-                    return Ok(HandlerOutcome::plain(AdapterOutcome::ok(format!(
-                        "dry run: {} would fetch the document from its owning provider",
-                        spec.name
-                    ))));
-                }
                 let registry = documentation_registry(context, cancellation)?;
                 let requested_version = args.get("platformVersion").and_then(Value::as_str);
                 let context = documentation_context(
@@ -615,24 +603,8 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                         .unwrap_or("ru")
                         .to_string(),
                 };
-                // Пробельный query настоящий вызов отклоняет на слое
-                // application; сухой прогон обязан отклонять его так же,
-                // иначе сломанный пример скилла проходит parity-тест и
-                // падает только у живого пользователя. Текст отказа — тот же.
                 if request.query.trim().is_empty() {
                     return Err("unica.documentation.search requires a non-blank query".to_string());
-                }
-                // Предпросмотр — до разрешения установки и опроса реестра:
-                // parity-тест исполняет каждый пример скилла с dryRun, и
-                // «сухой» вызов не должен ни читать установку машины, ни
-                // зависеть от того, стоит ли на ней платформа
-                // (INV-SKILL-EXECUTABLE-EXAMPLES). Разбор аргументов выше
-                // остаётся настоящим, чтобы сломанный пример падал и всухую.
-                if dry_run {
-                    return Ok(HandlerOutcome::plain(AdapterOutcome::ok(format!(
-                        "dry run: {} would poll the documentation provider registry",
-                        spec.name
-                    ))));
                 }
                 // Реестр собирается по рабочему пространству ДО того, как имя
                 // `context` затенит DocumentationContext: политика unica.toml —
@@ -659,10 +631,15 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         &self,
         context: &WorkspaceContext,
         events: &[DomainEvent],
-        dry_run: bool,
+        mode: InvocationMode,
         cache_access: CacheAccess,
     ) -> Result<CacheReport, String> {
-        WorkspaceStateRepository::new(context).report(context, events, dry_run, cache_access)
+        WorkspaceStateRepository::new(context).report(
+            context,
+            events,
+            mode.is_preview(),
+            cache_access,
+        )
     }
 
     fn notify_invalidation(&self, context: &WorkspaceContext, events: &[DomainEvent]) {
@@ -1183,8 +1160,7 @@ mod tests {
         project_platform_version, select_installation_root, select_platform_version,
         verified_full_dump_invocation,
     };
-    use crate::application::{RuntimeJobAction, ToolHandler, ToolSpec};
-    use crate::domain::cache::CacheAccess;
+    use crate::application::{InvocationMode, RuntimeJobAction, ToolHandler, ToolSpec};
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::{
         CodeIntelligenceContext, CodeIntelligenceReadRequest, ProviderDeadline,
@@ -1202,13 +1178,62 @@ mod tests {
     use std::time::{Duration, Instant};
 
     fn spec(name: &'static str, handler: ToolHandler) -> ToolSpec {
-        ToolSpec {
-            name,
-            description: "test",
-            mutating: true,
-            cache_access: CacheAccess::default(),
-            handler,
+        let mut spec = crate::application::tools()
+            .into_iter()
+            .find(|spec| spec.name == name)
+            .unwrap_or_else(|| panic!("{name} must be registered"));
+        spec.handler = handler;
+        spec
+    }
+
+    #[test]
+    fn infrastructure_rejects_non_read_modes_for_a_reader() {
+        use crate::application::ports::ApplicationPorts;
+
+        let root = tempfile::tempdir().unwrap();
+        let context = WorkspaceContext {
+            cwd: root.path().to_path_buf(),
+            workspace_root: root.path().to_path_buf(),
+            cache_root: root.path().join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        for mode in [InvocationMode::Preview, InvocationMode::Apply] {
+            let error = match super::InfrastructureApplicationPorts::new().invoke_handler(
+                spec("unica.project.status", ToolHandler::ProjectStatus),
+                &Map::new(),
+                &context,
+                mode,
+                &CancellationToken::new(),
+            ) {
+                Ok(_) => panic!("reader unexpectedly accepted {mode:?}"),
+                Err(error) => error,
+            };
+            assert_eq!(error, "invalid invocation mode for unica.project.status");
         }
+    }
+
+    #[test]
+    fn infrastructure_rejects_read_mode_for_a_mutation() {
+        use crate::application::ports::ApplicationPorts;
+
+        let root = tempfile::tempdir().unwrap();
+        let context = WorkspaceContext {
+            cwd: root.path().to_path_buf(),
+            workspace_root: root.path().to_path_buf(),
+            cache_root: root.path().join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let error = match super::InfrastructureApplicationPorts::new().invoke_handler(
+            spec("unica.cf.edit", ToolHandler::ProjectStatus),
+            &Map::new(),
+            &context,
+            InvocationMode::Read,
+            &CancellationToken::new(),
+        ) {
+            Ok(_) => panic!("mutation unexpectedly accepted Read"),
+            Err(error) => error,
+        };
+        assert_eq!(error, "invalid invocation mode for unica.cf.edit");
     }
 
     fn subsystem_info_fixture(
@@ -1782,7 +1807,7 @@ mod tests {
             ),
             &args,
             &context,
-            false,
+            InvocationMode::Read,
             &crate::domain::cancellation::CancellationToken::default(),
         ) {
             Ok(_) => panic!("запрет политики обязан отказывать фасаду"),
@@ -2335,7 +2360,7 @@ mod tests {
                 ),
                 &args,
                 &context,
-                false,
+                InvocationMode::Read,
                 &crate::domain::cancellation::CancellationToken::default(),
             )
             .expect("ветка обязана ответить");
@@ -2371,15 +2396,10 @@ mod tests {
         );
     }
 
-    /// Каждый пример `tools/call` скилла исполняется parity-тестом как сухой
-    /// прогон MCP (`INV-SKILL-EXECUTABLE-EXAMPLES`), и до правки ветка
-    /// `Documentation` игнорировала `dry_run`: «сухой» вызов читал и
-    /// индексировал настоящую установку машины, а на машине без платформы
-    /// падал отказом реестра. Ответ сухого прогона обязан быть предпросмотром
-    /// до опроса поставщиков — как у `CliAdapter`, — и не зависеть от того,
-    /// какие платформы стоят на машине.
+    /// Reader не имеет invocation switch: штатный вызов обязан дойти до
+    /// provider registry и вернуть его типизированные секции.
     #[test]
-    fn the_documentation_branch_previews_instead_of_searching_on_dry_run() {
+    fn documentation_reader_polls_provider_without_an_invocation_switch() {
         use crate::application::ports::ApplicationPorts;
 
         let recorder = std::sync::Arc::new(RecordingProvider::default());
@@ -2407,37 +2427,31 @@ mod tests {
                 ),
                 &args,
                 &context,
-                true,
+                InvocationMode::Read,
                 &crate::domain::cancellation::CancellationToken::default(),
             )
-            .expect("сухой прогон обязан ответить успехом");
+            .expect("reader обязан ответить успехом");
 
         let seen = recorder
             .seen
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(seen.len(), 1, "reader обязан опросить provider ровно раз");
+        assert!(outcome.adapter.ok, "reader обязан вернуть успешный ответ");
         assert!(
-            seen.is_empty(),
-            "сухой прогон не должен опрашивать поставщиков, опрошено {} раз",
-            seen.len()
-        );
-        assert!(outcome.adapter.ok, "предпросмотр — успешный ответ");
-        assert!(
-            outcome.adapter.summary.contains("dry run"),
-            "ответ обязан называться сухим прогоном, получено {}",
+            !outcome.adapter.summary.contains("dry run"),
+            "reader не должен называться сухим прогоном: {}",
             outcome.adapter.summary
         );
         assert!(
-            outcome.data.is_none(),
-            "предпросмотр не публикует секций: их никто не искал"
+            outcome.data.is_some(),
+            "успешный documentation reader обязан вернуть data"
         );
     }
 
-    /// Сухой прогон остаётся честным к аргументам: пример без обязательного
-    /// `query` обязан падать и в предпросмотре, иначе parity-тест пропустит
-    /// сломанный пример скилла.
+    /// Обычный reader без обязательного `query` отказывается до provider-а.
     #[test]
-    fn the_documentation_dry_run_still_requires_the_query_argument() {
+    fn documentation_reader_requires_the_query_argument() {
         use crate::application::ports::ApplicationPorts;
 
         let recorder = std::sync::Arc::new(RecordingProvider::default());
@@ -2464,10 +2478,10 @@ mod tests {
             ),
             &Map::new(),
             &context,
-            true,
+            InvocationMode::Read,
             &crate::domain::cancellation::CancellationToken::default(),
         ) {
-            Ok(_) => panic!("сухой прогон без query обязан отказывать"),
+            Ok(_) => panic!("reader без query обязан отказывать"),
             Err(error) => error,
         };
         assert!(
@@ -2510,7 +2524,7 @@ mod tests {
                 ),
                 &args,
                 &context,
-                false,
+                InvocationMode::Read,
                 &crate::domain::cancellation::CancellationToken::default(),
             )
             .expect("вызов с применимым фильтром обязан пройти");
@@ -2539,7 +2553,7 @@ mod tests {
             ),
             &alien,
             &context,
-            false,
+            InvocationMode::Read,
             &crate::domain::cancellation::CancellationToken::default(),
         ) {
             Ok(_) => panic!("чужое значение sourceKinds обязано отклоняться"),
@@ -2564,7 +2578,7 @@ mod tests {
             ),
             &non_string,
             &context,
-            false,
+            InvocationMode::Read,
             &crate::domain::cancellation::CancellationToken::default(),
         ) {
             Ok(_) => panic!("нестроковое значение sourceKinds обязано отклоняться"),
@@ -2613,7 +2627,7 @@ mod tests {
                 ),
                 &args,
                 &context,
-                false,
+                InvocationMode::Read,
                 &crate::domain::cancellation::CancellationToken::default(),
             )
             .expect("ветка get обязана ответить");
@@ -2640,10 +2654,9 @@ mod tests {
         assert_eq!(data["document"]["text"], "Полный текст.");
     }
 
-    /// Сухой прогон `get` — предпросмотр до опроса поставщиков, но разбор
-    /// аргументов настоящий: пример без `documentId` обязан падать и всухую.
+    /// `get` reader опрашивает владельца локатора и требует `documentId`.
     #[test]
-    fn the_documentation_get_dry_run_previews_without_polling_and_requires_document_id() {
+    fn documentation_get_reader_polls_owner_and_requires_document_id() {
         use crate::application::ports::ApplicationPorts;
 
         let recorder = std::sync::Arc::new(RecordingProvider::default());
@@ -2659,7 +2672,10 @@ mod tests {
         };
 
         let mut args = Map::new();
-        args.insert("documentId".to_string(), json!("https://kb.1ci.com/x/"));
+        args.insert(
+            "documentId".to_string(),
+            json!("platform-syntax-help:syntax-context:page.html"),
+        );
         let outcome = super::InfrastructureApplicationPorts::new()
             .invoke_handler(
                 spec(
@@ -2668,19 +2684,24 @@ mod tests {
                 ),
                 &args,
                 &context,
-                true,
+                InvocationMode::Read,
                 &crate::domain::cancellation::CancellationToken::default(),
             )
-            .expect("сухой прогон обязан ответить успехом");
-        assert!(
+            .expect("reader обязан ответить успехом");
+        assert_eq!(
             recorder
                 .seen_gets
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .is_empty(),
-            "сухой прогон не должен опрашивать поставщиков"
+                .len(),
+            1,
+            "reader обязан опросить владельца ровно раз"
         );
-        assert!(outcome.adapter.summary.contains("dry run"));
+        assert!(!outcome.adapter.summary.contains("dry run"));
+        assert!(
+            outcome.data.is_some(),
+            "успешный get reader обязан вернуть data"
+        );
 
         let error = match super::InfrastructureApplicationPorts::new().invoke_handler(
             spec(
@@ -2689,10 +2710,10 @@ mod tests {
             ),
             &Map::new(),
             &context,
-            true,
+            InvocationMode::Read,
             &crate::domain::cancellation::CancellationToken::default(),
         ) {
-            Ok(_) => panic!("сухой прогон без documentId обязан отказывать"),
+            Ok(_) => panic!("reader без documentId обязан отказывать"),
             Err(error) => error,
         };
         assert!(
@@ -2701,13 +2722,9 @@ mod tests {
         );
     }
 
-    /// Пустой-но-присутствующий `query` («   ») настоящий вызов отклоняет на
-    /// слое application, а сухой прогон возвращался ДО этой проверки: пример
-    /// с пробельным запросом проходил parity-тест и падал только у живого
-    /// пользователя. Сухой прогон обязан быть честным к аргументам ровно в
-    /// той же мере, что и настоящий вызов.
+    /// Пустой-но-присутствующий `query` отклоняется до provider-а.
     #[test]
-    fn the_documentation_dry_run_refuses_a_blank_query_like_the_real_call_does() {
+    fn documentation_reader_refuses_a_blank_query() {
         use crate::application::ports::ApplicationPorts;
 
         let recorder = std::sync::Arc::new(RecordingProvider::default());
@@ -2734,10 +2751,10 @@ mod tests {
             ),
             &args,
             &context,
-            true,
+            InvocationMode::Read,
             &crate::domain::cancellation::CancellationToken::default(),
         ) {
-            Ok(_) => panic!("пробельный query обязан отклоняться и всухую"),
+            Ok(_) => panic!("reader обязан отклонять пробельный query"),
             Err(error) => error,
         };
         assert!(

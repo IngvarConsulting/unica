@@ -529,17 +529,24 @@ class MetaSurfaceContractTests(unittest.TestCase):
         blocks = registered_tool_blocks()
         meta = {name: block for name, block in blocks.items() if name.startswith("unica.meta.")}
         expected = {
-            "unica.meta.info": ("false", "Info"),
-            "unica.meta.add": ("true", "Add"),
-            "unica.meta.edit": ("true", "Edit"),
-            "unica.meta.remove": ("true", "Remove"),
+            "unica.meta.info": ("Read", "Info"),
+            "unica.meta.add": ("Mutation", "Add"),
+            "unica.meta.edit": ("Mutation", "Edit"),
+            "unica.meta.remove": ("Mutation", "Remove"),
         }
 
         self.assertEqual(set(meta), set(expected))
-        for name, (mutating, operation) in expected.items():
+        for name, (execution, operation) in expected.items():
             with self.subTest(name=name):
                 block = meta[name]
-                self.assertRegex(block, rf"mutating:\s*{mutating},")
+                self.assertRegex(
+                    block,
+                    rf"execution:\s*ToolExecution::{execution},",
+                )
+                self.assertRegex(
+                    block,
+                    r"result_contract:\s*ResultContract::Typed,",
+                )
                 self.assertIn("handler: ToolHandler::Metadata {", block)
                 self.assertRegex(
                     block,
@@ -672,11 +679,24 @@ class MetaSurfaceContractTests(unittest.TestCase):
     def test_metadata_handlers_bypass_native_alias_and_descriptor_contracts(self) -> None:
         contracts = TOOL_CONTRACTS.read_text(encoding="utf-8")
         schema_path = rust_function(contracts, "pub fn input_schema_for_tool")
-        validation_path = rust_function(contracts, "pub fn validate_tool_arguments")
+        shape_validation_path = rust_function(
+            contracts, "pub fn validate_tool_argument_shape"
+        )
+        semantic_validation_path = rust_function(
+            contracts, "pub fn validate_tool_argument_semantics"
+        )
         self.assertIn("ToolHandler::Metadata", schema_path)
         self.assertIn("metadata_input_schema(operation)", schema_path)
-        self.assertIn("ToolHandler::Metadata", validation_path)
-        self.assertIn("parse_metadata_request(operation, args)", validation_path)
+        self.assertIn("ToolHandler::Metadata", shape_validation_path)
+        self.assertIn(
+            "validate_metadata_argument_shape(operation, args)",
+            shape_validation_path,
+        )
+        self.assertIn("ToolHandler::Metadata", semantic_validation_path)
+        self.assertIn(
+            "parse_metadata_request_after_shape(operation, args)",
+            semantic_validation_path,
+        )
 
         descriptors = OPERATION_DESCRIPTORS.read_text(encoding="utf-8")
         registry = descriptors.index("NATIVE_OPERATION_DESCRIPTORS")

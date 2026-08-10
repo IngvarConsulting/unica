@@ -29,6 +29,47 @@ MCP_HANDSHAKE = [
     {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
 ]
 
+MUTATION_TOOL_NAMES = frozenset(
+    {
+        "unica.cf.edit",
+        "unica.cf.init",
+        "unica.support.edit",
+        "unica.cfe.borrow",
+        "unica.cfe.init",
+        "unica.epf.init",
+        "unica.erf.init",
+        "unica.cfe.patch_method",
+        "unica.meta.add",
+        "unica.meta.edit",
+        "unica.meta.remove",
+        "unica.help.add",
+        "unica.form.add",
+        "unica.form.compile",
+        "unica.form.edit",
+        "unica.form.remove",
+        "unica.interface.edit",
+        "unica.subsystem.compile",
+        "unica.subsystem.edit",
+        "unica.template.add",
+        "unica.template.remove",
+        "unica.dcs.compile",
+        "unica.dcs.edit",
+        "unica.mxl.compile",
+        "unica.role.compile",
+        "unica.role.edit",
+        "unica.build.dump",
+        "unica.build.load",
+        "unica.build.update",
+        "unica.build.make",
+        "unica.build.run",
+        "unica.runtime.execute",
+        "unica.runtime.job.start",
+        "unica.runtime.job.cancel",
+        "unica.code.patch",
+        "unica.xdto.edit",
+    }
+)
+
 
 def source_smoke_oracle():
     script = Path(__file__).resolve().parents[2] / "scripts/ci/smoke-unica-mcp.py"
@@ -288,6 +329,181 @@ class UnicaMcpSmokeTests(unittest.TestCase):
         self.assertIn("unica.build.load", tools)
         self.assertIn("unica.runtime.execute", tools)
         self.assertIn("unica.standards.explain", tools)
+
+    def test_tools_list_publishes_invocation_switch_only_for_mutations(self) -> None:
+        responses = self.call_mcp(
+            [{"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}]
+        )
+        tools = {
+            tool["name"]: tool for tool in responses[0]["result"]["tools"]
+        }
+
+        self.assertEqual(len(tools), 74)
+        self.assertEqual(len(MUTATION_TOOL_NAMES), 36)
+        self.assertEqual(len(set(tools) - MUTATION_TOOL_NAMES), 38)
+        self.assertEqual(MUTATION_TOOL_NAMES - set(tools), set())
+        for name, tool in sorted(tools.items()):
+            with self.subTest(tool=name):
+                properties = tool["inputSchema"]["properties"]
+                if confirm := properties.get("confirm"):
+                    self.assertNotIn(
+                        "dryrun",
+                        confirm["description"].casefold(),
+                    )
+                if name in MUTATION_TOOL_NAMES:
+                    dry_run = properties.get("dryRun")
+                    self.assertIsNotNone(dry_run)
+                    self.assertEqual(dry_run["type"], "boolean")
+                    self.assertIs(dry_run.get("default"), True)
+                else:
+                    self.assertNotIn("dryRun", properties)
+
+    def test_reader_dry_run_rejection_precedes_workspace_and_target_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "missing-workspace"
+            messages = []
+            request_id = 1
+            for name, base_arguments in [
+                ("unica.project.status", {}),
+                (
+                    "unica.subsystem.info",
+                    {"SubsystemPath": "missing/Subsystem.xml"},
+                ),
+            ]:
+                for value in (True, False):
+                    messages.append(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": request_id,
+                            "method": "tools/call",
+                            "params": {
+                                "name": name,
+                                "arguments": {
+                                    **base_arguments,
+                                    "cwd": str(missing),
+                                    "dryRun": value,
+                                },
+                            },
+                        }
+                    )
+                    request_id += 1
+
+            responses = self.call_mcp(messages, cache_dir=Path(tmp) / "cache")
+
+        self.assertEqual(len(responses), 4)
+        for response in responses:
+            with self.subTest(request_id=response["id"]):
+                self.assertEqual(response["error"]["code"], -32000, response)
+                self.assertIn(
+                    "does not accept argument `dryRun`",
+                    response["error"]["message"],
+                )
+
+    def test_representative_readers_execute_without_an_invocation_switch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            temp = Path(tmp)
+            root = temp / "workspace"
+            root.mkdir()
+            root = root.resolve()
+            with self.mcp_session(cache_dir=temp / "cache", workdir=root) as request:
+                next_id = 2
+
+                def call(name: str, arguments: dict) -> dict:
+                    nonlocal next_id
+                    response = request(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": next_id,
+                            "method": "tools/call",
+                            "params": {"name": name, "arguments": arguments},
+                        }
+                    )
+                    next_id += 1
+                    self.assertNotIn("error", response, response)
+                    return response
+
+                initialized = call(
+                    "unica.cf.init",
+                    {
+                        "cwd": str(root),
+                        "Name": "ReaderSmoke",
+                        "OutputDir": "src",
+                        "dryRun": False,
+                    },
+                )
+                self.assertTrue(
+                    json.loads(initialized["result"]["content"][0]["text"])["ok"]
+                )
+                (root / "v8project.yaml").write_text(
+                    "format: DESIGNER\n"
+                    "source-set:\n"
+                    "  - name: main\n"
+                    "    type: CONFIGURATION\n"
+                    "    path: src\n",
+                    encoding="utf-8",
+                )
+                added = call(
+                    "unica.meta.add",
+                    {
+                        "sourceSet": "main",
+                        "kind": "Catalog",
+                        "name": "Smoke",
+                        "dryRun": False,
+                    },
+                )
+                self.assertTrue(added["result"]["structuredContent"]["ok"])
+                subsystem = root / "standalone/Продажи.xml"
+                subsystem.parent.mkdir(parents=True, exist_ok=True)
+                (root / "standalone/Продажи/Ext").mkdir(parents=True)
+                subsystem.write_text(
+                    '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" '
+                    'version="2.20"><Subsystem><Properties><Name>Продажи</Name>'
+                    '<IncludeInCommandInterface>true</IncludeInCommandInterface>'
+                    '<Content xmlns:xr="http://v8.1c.ru/8.3/xcf/readable">'
+                    '<xr:Item>Catalog.Smoke</xr:Item></Content></Properties>'
+                    '</Subsystem></MetaDataObject>',
+                    encoding="utf-8",
+                )
+                before = snapshot_workspace_files(root)
+
+                calls = [
+                    ("unica.project.status", {"cwd": str(root)}),
+                    (
+                        "unica.source.resolve",
+                        {
+                            "cwd": str(root),
+                            "sourceSet": "main",
+                            "query": "Catalog.Smoke",
+                            "mode": "exact",
+                        },
+                    ),
+                    (
+                        "unica.meta.info",
+                        {"sourceSet": "main", "metadataPath": "Catalog.Smoke"},
+                    ),
+                    (
+                        "unica.subsystem.info",
+                        {
+                            "cwd": str(root),
+                            "SubsystemPath": "standalone/Продажи.xml",
+                        },
+                    ),
+                ]
+                for name, arguments in calls:
+                    with self.subTest(tool=name):
+                        response = call(name, arguments)
+                        payload = (
+                            response["result"]["structuredContent"]
+                            if name.startswith("unica.meta.")
+                            else json.loads(response["result"]["content"][0]["text"])
+                        )
+                        self.assertTrue(payload["ok"], payload)
+                        self.assertIn("data", payload)
+                        summary = payload["summary"].lower()
+                        self.assertNotIn("dry run", summary)
+                        self.assertNotIn("preview", summary)
+
+                self.assertEqual(snapshot_workspace_files(root), before)
 
     def test_meta_operations_stay_typed_without_conditional_evaluation(self) -> None:
         """The operation type must survive a host that renders only `properties`.
