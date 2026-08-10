@@ -141,6 +141,45 @@ def registered_tool_blocks() -> dict[str, str]:
 
 
 class MetaSurfaceContractTests(unittest.TestCase):
+    def test_meta_observation_and_mutation_capability_contract_is_published(
+        self,
+    ) -> None:
+        adr = (
+            REPO_ROOT
+            / "spec/decisions/0042-meta-observation-does-not-depend-on-mutation.md"
+        ).read_text(encoding="utf-8")
+        superseded = (
+            REPO_ROOT / "spec/decisions/0028-chtenie-meta-info-ne-teryaet-dannye.md"
+        ).read_text(encoding="utf-8")
+        invariants = (
+            REPO_ROOT / "spec/architecture/invariants.md"
+        ).read_text(encoding="utf-8")
+        surface = (
+            REPO_ROOT / "spec/architecture/tool-surface.md"
+        ).read_text(encoding="utf-8")
+        meta_info = (
+            REPO_ROOT / "plugins/unica/skills/meta-info/SKILL.md"
+        ).read_text(encoding="utf-8")
+        meta_edit = (
+            REPO_ROOT / "plugins/unica/skills/meta-edit/SKILL.md"
+        ).read_text(encoding="utf-8")
+        format_spec = (
+            REPO_ROOT / "plugins/unica/references/specs/1c-config-objects-spec.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("- Статус: `accepted`", adr)
+        self.assertIn("- Статус: `superseded`", superseded)
+        self.assertIn("ADR-0042", superseded)
+        self.assertIn("INV-MCP-META-OBSERVATION", invariants)
+        for text in (surface, meta_info):
+            for marker in ("mutationCapability", "editable", "readOnly", "uuid"):
+                self.assertIn(marker, text)
+        self.assertIn('{"kind": "uuid"}', meta_edit)
+        self.assertIn("Forms/<Имя>.xml", format_spec)
+        self.assertIn("Templates/<Имя>.xml", format_spec)
+        self.assertNotIn("Forms/<Имя>/<Имя>.xml", format_spec)
+        self.assertNotIn("Templates/<Имя>/<Имя>.xml", format_spec)
+
     def test_subsystem_membership_has_one_registered_topology_owner(self) -> None:
         ports = (REPO_ROOT / "crates/unica-coder/src/application/ports.rs").read_text(
             encoding="utf-8"

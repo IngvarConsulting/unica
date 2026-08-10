@@ -415,6 +415,13 @@ Platform-generated CDFI sidecar `ConfigDumpInfo.xml` с корнем
 <Type><v8:Type>v8:UUID</v8:Type></Type>
 ```
 
+В публичном writer UUID задаётся вариантом `{"kind":"uuid"}` и эмитируется
+точно как `v8:UUID`. Результат `unica.meta.info` отделён от входа writer:
+структурный тип содержит `mutationCapability` (`editable` или `readOnly`).
+Синтаксически корректный, но ещё не моделируемый QName отмечает только свой
+элемент как `incomplete` с предупреждением и не становится разрешённым входом
+мутации.
+
 **Составной тип (несколько типов):**
 ```xml
 <Type>
@@ -792,7 +799,7 @@ Platform-generated CDFI sidecar `ConfigDumpInfo.xml` с корнем
 <Form>ФормаЭлемента</Form>
 ```
 
-Полный дескриптор находится в `Forms/<Имя>/<Имя>.xml` и содержит:
+Полный дескриптор находится в `Forms/<Имя>.xml` и содержит:
 
 ```xml
 <Form uuid="...">
@@ -805,22 +812,20 @@ Platform-generated CDFI sidecar `ConfigDumpInfo.xml` с корнем
 </Form>
 ```
 
-Содержимое формы хранится в отдельных файлах: `Forms/<Имя>/<Имя>.xml` и `Forms/<Имя>/Ext/Form.xml`.
+Содержимое формы хранится в отдельных файлах: `Forms/<Имя>.xml` и `Forms/<Имя>/Ext/Form.xml`.
 
 ### 6.4. Макет (Template)
 
+В `ChildObjects` владельца макет представлен ссылкой:
+
 ```xml
-<Template uuid="...">
-    <Properties>
-        <Name>ОсновнаяСхемаКомпоновкиДанных</Name>
-        <Synonym>...</Synonym>
-        <Comment/>
-        <TemplateType>DataCompositionSchema</TemplateType>  <!-- DataCompositionSchema | SpreadsheetDocument | HTMLDocument | TextDocument | BinaryData | ActiveDocument -->
-    </Properties>
-</Template>
+<Template>ОсновнаяСхемаКомпоновкиДанных</Template>
 ```
 
-Тело макета: `Templates/<Имя>/Ext/Template.xml` (или другое расширение в зависимости от типа).
+Полный дескриптор с `Properties`, включая `TemplateType`, находится в
+`Templates/<Имя>.xml`. Тело макета хранится в
+`Templates/<Имя>/Ext/Template.xml` (или имеет другое расширение в зависимости
+от типа).
 
 Для `HTMLDocument` файл `Ext/Template.xml` является XML-дескриптором с
 элементами `<Page>`, а страницы находятся в `Ext/Template/<Page>.html`.
@@ -860,7 +865,7 @@ HTML-страница не разбирается как XML: допустимы
 </Command>
 ```
 
-Отдельного файла `Commands/<Имя>/<Имя>.xml` платформа не создаёт. Если у команды
+Отдельного файла `Commands/<Имя>.xml` платформа не создаёт. Если у команды
 есть модуль, он находится в `Commands/<Имя>/Ext/CommandModule.bsl`.
 
 ---

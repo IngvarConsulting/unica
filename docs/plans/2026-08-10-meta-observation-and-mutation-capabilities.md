@@ -205,7 +205,7 @@ git commit -m "fix(meta): separate observed types from mutation types"
 **Step 3: Run architecture and contract guards until green and commit**
 
 ```bash
-python3.12 scripts/ci/check-architecture-sync.py --base-ref origin/main --strict
+python3.12 scripts/ci/check-architecture-sync.py --base origin/main --strict
 python3.12 -m unittest tests.ci.test_architecture_sync_guard
 git add spec plugins tests/ci
 git commit -m "docs(meta): accept observation mutation boundary"
@@ -220,7 +220,7 @@ cargo fmt --all -- --check
 cargo test --workspace --all-targets
 python3.12 -m unittest discover -s tests/ci -p 'test_*.py'
 python3.12 -m unittest discover -s tests/dev -p 'test_*.py'
-python3.12 scripts/ci/check-architecture-sync.py --base-ref origin/main --strict
+python3.12 scripts/ci/check-architecture-sync.py --base origin/main --strict
 git diff --check origin/main...HEAD
 ```
 
