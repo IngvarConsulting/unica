@@ -679,11 +679,24 @@ class MetaSurfaceContractTests(unittest.TestCase):
     def test_metadata_handlers_bypass_native_alias_and_descriptor_contracts(self) -> None:
         contracts = TOOL_CONTRACTS.read_text(encoding="utf-8")
         schema_path = rust_function(contracts, "pub fn input_schema_for_tool")
-        validation_path = rust_function(contracts, "pub fn validate_tool_arguments")
+        shape_validation_path = rust_function(
+            contracts, "pub fn validate_tool_argument_shape"
+        )
+        semantic_validation_path = rust_function(
+            contracts, "pub fn validate_tool_argument_semantics"
+        )
         self.assertIn("ToolHandler::Metadata", schema_path)
         self.assertIn("metadata_input_schema(operation)", schema_path)
-        self.assertIn("ToolHandler::Metadata", validation_path)
-        self.assertIn("parse_metadata_request(operation, args)", validation_path)
+        self.assertIn("ToolHandler::Metadata", shape_validation_path)
+        self.assertIn(
+            "validate_metadata_argument_shape(operation, args)",
+            shape_validation_path,
+        )
+        self.assertIn("ToolHandler::Metadata", semantic_validation_path)
+        self.assertIn(
+            "parse_metadata_request_after_shape(operation, args)",
+            semantic_validation_path,
+        )
 
         descriptors = OPERATION_DESCRIPTORS.read_text(encoding="utf-8")
         registry = descriptors.index("NATIVE_OPERATION_DESCRIPTORS")
