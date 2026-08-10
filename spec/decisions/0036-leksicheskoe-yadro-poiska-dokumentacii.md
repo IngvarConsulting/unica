@@ -88,5 +88,7 @@
   прежние.
 - `cargo test -p unica-coder standards_documentation` — нормализация запроса,
   кеш с TTL, политика и отмена до кеша.
-- `UNICA_RETRIEVAL_GATE=1 cargo test -p unica-coder retrieval_gate -- --nocapture`
-  — golden-запросы против реальной установки 8.3.27; в CI не требуется.
+- `UNICA_PLATFORM_HELP_DIR=<корень установки> cargo test -p unica-coder retrieval_gate -- --nocapture`
+  — golden-запросы против реальной установки 8.3.27: recall@5 и бюджет тёплой
+  задержки; та же переменная, что у остальных проверок против материалов
+  вендора, в CI не требуется.
