@@ -1567,17 +1567,9 @@ fn validate_template_resource(
             html_template_page_names(bytes).map(|_| ())
         }
         (MetadataTemplateType::HtmlDocument, MetadataTemplateResourcePart::HtmlPage) => {
-            let text = std::str::from_utf8(bytes)
-                .map_err(|error| format!("HTML template page is not UTF-8: {error}"))?;
-            let source = text.trim_start_matches('\u{feff}');
-            require_utf8_xml_declaration(source, "HTML template page")?;
-            let document = Document::parse(source)
-                .map_err(|error| format!("HTML template page is malformed: {error}"))?;
-            let root = document.root_element();
-            if root.tag_name().namespace().is_some() || root.tag_name().name() != "html" {
-                return Err("HTML template page root must be html without a namespace".to_string());
-            }
-            Ok(())
+            std::str::from_utf8(bytes)
+                .map(|_| ())
+                .map_err(|error| format!("HTML template page is not UTF-8: {error}"))
         }
         _ => Err("template resource part does not match its TemplateType".to_string()),
     }
@@ -5741,6 +5733,36 @@ mod tests {
         let diagnostics = closed_child_diagnostics(&subject);
 
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    #[test]
+    fn html_template_page_accepts_registered_utf8_html_without_xml_grammar() {
+        let page = concat!(
+            "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.0 Transitional//EN\">\n",
+            "<html><head><title>Справка&nbsp;1С</title></head>",
+            "<body><p>Обычная HTML-страница<br></body></html>"
+        );
+
+        assert_eq!(
+            validate_template_resource(
+                MetadataTemplateType::HtmlDocument,
+                MetadataTemplateResourcePart::HtmlPage,
+                page.as_bytes(),
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn html_template_page_rejects_non_utf8_bytes() {
+        let error = validate_template_resource(
+            MetadataTemplateType::HtmlDocument,
+            MetadataTemplateResourcePart::HtmlPage,
+            b"<html>\xff</html>",
+        )
+        .unwrap_err();
+
+        assert!(error.contains("not UTF-8"), "{error}");
     }
 
     #[test]
