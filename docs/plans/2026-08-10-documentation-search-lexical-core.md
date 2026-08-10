@@ -45,7 +45,7 @@ fn tokenize_splits_camel_case_including_cyrillic() {
 ```
 
 - [ ] `cargo test -p unica-coder tokenize_splits` — FAIL (модуля нет).
-- [ ] Реализация: `rust-stemmers = "1.2"` в workspace (комментарий: лицензии MIT/BSD-3, офлайн-Snowball ru/en для ядра поиска документации, ADR-0037); `rust-stemmers.workspace = true` в крейте. `tokenize`: проход по `char`, граница токена — не-`char::is_alphanumeric`, дополнительный разрез при `prev.is_lowercase() && current.is_uppercase()`; `to_lowercase()` на каждом токене.
+- [ ] Реализация: `rust-stemmers = "1.2"` в workspace (комментарий: лицензии MIT/BSD-3, офлайн-Snowball ru/en для ядра поиска документации, ADR-0037); `rust-stemmers.workspace = true` в крейте. `tokenize`: проход по `char`, граница токена — не-`char::is_alphanumeric`, разрезы на двух границах CamelCase: `строчная→Заглавная` и конец аббревиатуры `ЗАГЛАВНЫЕ→Заглавная+строчная` (иначе `HTTPСоединение2` не разделится); `to_lowercase()` на каждом токене.
 - [ ] `cargo test -p unica-coder tokenize_splits` — PASS.
 - [ ] Коммит: `feat(documentation): токенизация лексического ядра поиска (#415)`.
 
@@ -145,10 +145,10 @@ fn ties_break_by_document_index_deterministically() { /* два одинаков
 ### Task 5: ADR-0037 и инвариант INV-MCP-SEARCH-SEMANTICS
 
 **Files:**
-- Create: `spec/decisions/0035-leksicheskoe-yadro-poiska-dokumentacii.md` (Статус accepted, Дата 2026-08-10, Задача #415; Решение: пункты 1–7 из issue; Неграницы: эмбеддинги, слияние секций, полнотекст kb, подмена серверной релевантности v8std; Верификация: имена cargo-тестов задач 1–10)
+- Create: `spec/decisions/0037-leksicheskoe-yadro-poiska-dokumentacii.md` (Статус accepted, Дата 2026-08-10, Задача #415; Решение: пункты 1–7 из issue; Неграницы: эмбеддинги, слияние секций, полнотекст kb, подмена серверной релевантности v8std; Верификация: имена cargo-тестов задач 1–10)
 - Modify: `spec/architecture/invariants.md` — новая запись в области MCP рядом с INV-MCP-DOCUMENTATION-SECTIONS: Rule — локальные корпуса `unica.documentation.search` сопоставляют запрос одним лексическим контрактом (пословность, CamelCase-токенизация, морфология ru/en, ограниченная нечёткость, детерминированный порядок; оценки локальны для секции); Decision: ADR-0037; Check: `ci-test` — `crates/unica-coder/src/infrastructure/documentation_retrieval.rs`; Scope: source, runtime.
 
-- [ ] Написать обе записи; `python3.12 -m pytest tests/ci/test_architecture_registry.py tests/ci/test_design_documents.py` (через /opt/homebrew/bin/python3.12) — PASS; проверить требования индексов (INV-DOC-INDEX-SYNC) — если реестр ведёт индекс, обновить.
+- [ ] Написать обе записи; `python3.12 -m unittest tests.ci.test_architecture_registry tests.ci.test_design_documents` — PASS; проверить требования индексов (INV-DOC-INDEX-SYNC) — если реестр ведёт индекс, обновить.
 - [ ] Коммит: `docs(spec): ADR-0037 — лексическое ядро поиска документации (#415)`.
 
 ### Task 6: Двуязычный лексикон из заголовков корпуса
@@ -226,11 +226,11 @@ fn lexicon_maps_ru_tokens_to_en_segment_tokens() {
 - Create: `crates/unica-coder/src/infrastructure/platform_help/retrieval_gate.rs` (`#[cfg(test)]`; модуль объявляется рядом с provider)
 
 **Interfaces:**
-- Запуск по образцу живого kb-прогона: без `UNICA_RETRIEVAL_GATE=1` тест сразу выходит с пометкой пропуска; корень установки — `UNICA_RETRIEVAL_ROOT` (по умолчанию `/opt/1cv8/8.3.27.2074`).
+- Запуск по образцу живого kb-прогона: без `UNICA_PLATFORM_HELP_DIR` тест сразу выходит с пометкой пропуска; переменная несёт корень установки — та же, что у остальных проверок против материалов вендора.
 - Golden-набор — таблица из #415 плюс ожидания: каждый запрос несёт ожидаемую подстроку пути/заголовка и корпус; assert: ожидание в топ-5 секции. Латентность: после первого (холодного) вызова каждый тёплый запрос обязан укладываться в 1 с; холодное построение печатается в вывод.
 
 - [ ] Написать гейт с запросами: `СтрНайти`→`StrFind` в топ-5 syntax-context; `свернуть таблицу значений`→`GroupBy` (ValueTable); `как удалить элемент массива`→`Array.Delete`; `регистр сведений срез последних`→`SliceLast`; `ValueTable GroupBy`→страница метода; `СтрНайтти`→`StrFind`; `Свернуть`→`ValueTable.GroupBy` в топ-5.
-- [ ] `UNICA_RETRIEVAL_GATE=1 cargo test -p unica-coder retrieval_gate -- --nocapture` — PASS на этой машине (это и есть «сначала красный»: до задач 7–9 гейт падает, прогнать в обе стороны).
+- [ ] `UNICA_PLATFORM_HELP_DIR=<корень установки> cargo test -p unica-coder retrieval_gate -- --nocapture` — PASS на этой машине (это и есть «сначала красный»: до задач 7–9 гейт падает, прогнать в обе стороны).
 - [ ] Коммит: `test(platform-help): ретривал-гейт golden-запросов против установки 8.3.27 (#415)`.
 
 ### Task 12: Скилл, ведомость, полные прогоны
@@ -239,7 +239,7 @@ fn lexicon_maps_ru_tokens_to_en_segment_tokens() {
 - Modify: `plugins/unica/skills/platform-help/SKILL.md` — шаг 2 Workflow: имя объекта/члена ИЛИ естественная формулировка; добавить MCP-пример с запросом `"свернуть таблицу значений"`.
 - Проверки: `python3.12 scripts/ci/generate-tool-surface.py --check` (дескрипторы не менялись — обязан пройти без регенерации).
 
-- [ ] Обновить скилл; `cargo test -p unica-coder` целиком; `/opt/homebrew/bin/python3.12 -m pytest tests/ci -q`; `/opt/homebrew/bin/python3.12 -m pytest tests/dev -q`; `cargo clippy -p unica-coder -- -D warnings`; повторить живой замер из #415 probe-скриптом и сохранить «после»-таблицу для PR.
+- [ ] Обновить скилл; `cargo test -p unica-coder` целиком; `python3.12 -m unittest discover -s tests/ci`; `python3.12 -m unittest discover -s tests/dev`; `cargo clippy -p unica-coder -- -D warnings`; повторить живой замер из #415 probe-скриптом и сохранить «после»-таблицу для PR.
 - [ ] Коммит: `docs(skills): platform-help — естественные формулировки запросов (#415)`.
 
 ### Task 13: Pull request

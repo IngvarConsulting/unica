@@ -60,9 +60,16 @@ pub struct V8StdDocumentationProvider {
 /// процесс. На диск не пишется ничего.
 pub const V8STD_SEARCH_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
 
+/// Предел числа записей кеша поиска: поток уникальных запросов долгоживущего
+/// процесса не раздувает память — при переполнении вытесняется запись с
+/// ближайшим сроком, истёкшие вычищаются при каждой записи.
+pub(crate) const V8STD_SEARCH_CACHE_CAP: usize = 128;
+
 /// Ключ кеша поиска: endpoint, нормализованный запрос, лимит.
 type SearchCacheKey = (String, String, usize);
-/// Запись кеша: момент записи и сырое тело успешного ответа сервера.
+/// Запись кеша: срок годности и сырое тело успешного ответа сервера. Срок
+/// вычисляется при записи из TTL записавшего провайдера — чтение и чистка
+/// не зависят от того, чей TTL действовал.
 type SearchCacheEntry = (std::time::Instant, String);
 
 /// Кеш успешных ответов `v8std_search`. Политика и отмена проверяются ДО
@@ -75,6 +82,24 @@ static V8STD_SEARCH_CACHE: std::sync::Mutex<
 /// кеш не плодит записи на каждую расстановку пробелов.
 pub(crate) fn normalized_query(query: &str) -> String {
     query.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+#[cfg(test)]
+pub(crate) fn v8std_search_cache_len() -> usize {
+    V8STD_SEARCH_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .len()
+}
+
+#[cfg(test)]
+pub(crate) fn v8std_search_cache_len_for(endpoint: &str) -> usize {
+    V8STD_SEARCH_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .keys()
+        .filter(|(cached_endpoint, _, _)| cached_endpoint == endpoint)
+        .count()
 }
 
 const CORPUS: &str = "public-standards";
@@ -252,8 +277,8 @@ impl DocumentationProvider for V8StdDocumentationProvider {
             let cache = V8STD_SEARCH_CACHE
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            cache.get(&cache_key).and_then(|(born, body)| {
-                (born.elapsed() < self.search_cache_ttl).then(|| body.clone())
+            cache.get(&cache_key).and_then(|(deadline, body)| {
+                (std::time::Instant::now() < *deadline).then(|| body.clone())
             })
         };
         let from_cache = cached_body.is_some();
@@ -321,12 +346,27 @@ impl DocumentationProvider for V8StdDocumentationProvider {
             )];
         };
         // Разбор дошёл до results — ответ настоящий, его можно переиспользовать.
-        // Неуспехи выше до этой строки не доходят и не кешируются.
+        // Неуспехи выше до этой строки не доходят и не кешируются. Каждая
+        // запись сопровождается чисткой истёкших и вытеснением при
+        // переполнении: кеш процесса ограничен сверху, а не растёт на каждый
+        // уникальный запрос до рестарта.
         if !from_cache {
             let mut cache = V8STD_SEARCH_CACHE
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            cache.insert(cache_key, (std::time::Instant::now(), body.clone()));
+            let now = std::time::Instant::now();
+            cache.retain(|_, (deadline, _)| now < *deadline);
+            while cache.len() >= V8STD_SEARCH_CACHE_CAP {
+                let Some(nearest_deadline) = cache
+                    .iter()
+                    .min_by_key(|(_, (deadline, _))| *deadline)
+                    .map(|(key, _)| key.clone())
+                else {
+                    break;
+                };
+                cache.remove(&nearest_deadline);
+            }
+            cache.insert(cache_key, (now + self.search_cache_ttl, body.clone()));
         }
         // Локатор попадания — контракт владельца: чужой адрес из сетевого
         // ответа маршрутизировался бы другому поставщику при получении.
@@ -522,6 +562,39 @@ mod tests {
             denied[0].status
         );
         assert_eq!(http.calls.load(Ordering::SeqCst), 1, "сеть не тронута");
+    }
+
+    /// Кеш ограничен по числу записей и вычищает истёкшие при записи:
+    /// у долгоживущего процесса поток уникальных запросов не раздувает
+    /// память безгранично (ревью PR #416).
+    #[test]
+    fn the_search_cache_is_bounded_and_purges_expired_entries() {
+        let (bounded_provider, _http) = provider(NetworkAccess::Allow, Ok(LIVE_BODY.to_string()));
+        let mut unique = request();
+        for index in 0..(V8STD_SEARCH_CACHE_CAP + 16) {
+            unique.query = format!("уникальный запрос {index}");
+            bounded_provider.search(&unique, &context());
+        }
+        assert!(
+            v8std_search_cache_len() <= V8STD_SEARCH_CACHE_CAP,
+            "кеш обязан быть ограничен: {} записей при пределе {}",
+            v8std_search_cache_len(),
+            V8STD_SEARCH_CACHE_CAP
+        );
+
+        let (mut expired_provider, _http) =
+            provider(NetworkAccess::Allow, Ok(LIVE_BODY.to_string()));
+        expired_provider.search_cache_ttl = Duration::ZERO;
+        let mut query = request();
+        query.query = "истекающий один".to_string();
+        expired_provider.search(&query, &context());
+        query.query = "истекающий два".to_string();
+        expired_provider.search(&query, &context());
+        assert_eq!(
+            v8std_search_cache_len_for(&expired_provider.endpoint),
+            1,
+            "истёкшая запись обязана вычищаться при следующей записи"
+        );
     }
 
     /// Запрос нормализуется по пробелам до отправки: сервер видит один

@@ -109,9 +109,6 @@ struct InstallationIndex {
     /// Параллелен `CORPUS_SPECS` по порядку и длине: длину держит компилятор
     /// (см. `build_index`), порядок задан там же одним местом.
     corpora: Vec<IndexedCorpus>,
-    /// Лексикон ru↔en из двуязычных заголовков Синтакс-помощника — для
-    /// расширения русских запросов к англоязычным корпусам (ADR-0037 п.4).
-    lexicon: Arc<BilingualLexicon>,
 }
 
 /// Ключ индекса — каталог установки и сами ВЫБРАННЫЕ контейнеры обоих
@@ -239,32 +236,49 @@ fn build_index(corpora: &InstallationCorpora) -> InstallationIndex {
     // пока его контейнеры не названы.
     let sources: [&CorpusContainers; CORPUS_SPECS.len()] =
         [&corpora.syntax_context, &corpora.platform_guides];
-    let corpora_indexed: Vec<IndexedCorpus> = sources.into_iter().map(index_corpus).collect();
-    // Лексикон ru↔en строится из двуязычных заголовков Синтакс-помощника
-    // (первый корпус) и живёт вместе с индексом: тот же ключ, та же память
-    // процесса (ADR-0037 п.4).
-    let lexicon = Arc::new(BilingualLexicon::from_titles(
-        corpora_indexed[0]
-            .pages
-            .iter()
-            .map(|page| page.title.as_str()),
-    ));
     InstallationIndex {
         version: corpora.version.clone(),
-        corpora: corpora_indexed,
-        lexicon,
+        corpora: sources.into_iter().map(index_corpus).collect(),
     }
 }
 
+/// Слот лексикона отделён от слота индекса корпуса намеренно: лексикон
+/// всегда строится из русского Синтакс-помощника, а индекс — из контейнеров
+/// локали запроса. Живи они в одном слоте, английский вызов
+/// `documentation.search` выселял бы en-индекс ru-лексиконом kb и обратно на
+/// каждом вызове (ревью PR #416). Слот один на процесс, перестраивается при
+/// смене ключа; на диск не пишется ничего (ADR-0029 п.11).
+type LexiconSlot = Option<(IndexKey, Arc<BilingualLexicon>)>;
+
+static LEXICON_SLOT: OnceLock<Mutex<LexiconSlot>> = OnceLock::new();
+
+fn lexicon_slot() -> &'static Mutex<LexiconSlot> {
+    LEXICON_SLOT.get_or_init(|| Mutex::new(None))
+}
+
 /// Двуязычный лексикон установки для чужих корпусов с английскими
-/// заголовками (kb-1ci): отвечает из того же процессного индекса, что и
-/// поиск, поэтому не читает установку повторно. `None` — установка не
-/// разрешилась или без Синтакс-помощника; вызывающий честно деградирует до
-/// запроса без расширения.
+/// заголовками (kb-1ci). `None` — установка не разрешилась или без
+/// Синтакс-помощника; вызывающий честно деградирует до запроса без
+/// расширения. Разбор ru-корпуса — свой, в обход общего слота индекса:
+/// цена — один дополнительный разбор на процесс, зато никакого пинг-понга
+/// слота между локалями.
 pub(crate) fn bilingual_lexicon_for(root: &Path) -> Option<Arc<BilingualLexicon>> {
     let corpora = discover(root, "ru").ok()?;
-    let index = indexed(IndexKey::for_corpora(root, &corpora), &corpora);
-    Some(Arc::clone(&index.lexicon))
+    let key = IndexKey::for_corpora(root, &corpora);
+    let mut slot = lexicon_slot()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((cached_key, lexicon)) = slot.as_ref() {
+        if *cached_key == key {
+            return Some(Arc::clone(lexicon));
+        }
+    }
+    let corpus = index_corpus(&corpora.syntax_context);
+    let lexicon = Arc::new(BilingualLexicon::from_titles(
+        corpus.pages.iter().map(|page| page.title.as_str()),
+    ));
+    *slot = Some((key, Arc::clone(&lexicon)));
+    Some(lexicon)
 }
 
 /// Индекс установки под ключом. Перестройка идёт под замком: одновременные
@@ -1425,6 +1439,45 @@ mod tests {
             .expect("контейнер");
         }
         root
+    }
+
+    /// Лексикон kb не выселяет процессный индекс корпуса: иначе каждый
+    /// англоязычный вызов `documentation.search` перечитывал бы установку
+    /// дважды — en-корпус для своей секции и ru-корпус для лексикона, — и
+    /// слот пинг-понгом перестраивался бы на каждом вызове (ревью PR #416).
+    #[test]
+    fn the_lexicon_does_not_evict_the_corpus_index_slot() {
+        let _serial = index_test_lock();
+        let dir = tempfile::tempdir().expect("каталог");
+        let root = bilingual_installation(dir.path());
+        let provider = PlatformSyntaxHelpProvider::new();
+        let context = DocumentationContext {
+            platform_version: Some("8.3.27.2074".to_string()),
+            installation_root: Some(root.clone()),
+        };
+        let first = provider.search(&request_in("Alpha", "en"), &context);
+        assert!(
+            matches!(
+                syntax_section(&first).status,
+                DocumentationSectionStatus::Ok
+            ),
+            "{:?}",
+            syntax_section(&first).status
+        );
+        // Контейнеры портятся с сохранением отпечатка: перечитать их
+        // осмысленно нельзя, и выживший ответ доказывает ответ из кеша.
+        corrupt_preserving_fingerprint(&root.join("shcntx_ru.hbk"));
+        corrupt_preserving_fingerprint(&root.join("shcntx_en.hbk"));
+        let _ = bilingual_lexicon_for(&root);
+        let second = provider.search(&request_in("Alpha", "en"), &context);
+        assert!(
+            matches!(
+                syntax_section(&second).status,
+                DocumentationSectionStatus::Ok
+            ),
+            "лексикон не должен выселять индекс корпуса: {:?}",
+            syntax_section(&second).status
+        );
     }
 
     /// Аргумент `language` отбирает контейнеры, а не только локаль сигнатуры.
