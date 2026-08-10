@@ -4,8 +4,8 @@ use crate::application::ports::{
 };
 use crate::domain::format_profile::ACTIVE_FORMAT_PROFILE;
 use crate::domain::metadata::{
-    canonical_predefined_uuid, metadata_decimal_shape, MetaDiagnostic, MetaDiagnosticCode,
-    MetaEditOperation, MetaMutationEffect, MetaPredefinedAccountType,
+    canonical_predefined_uuid, metadata_decimal_shape, metadata_name_eq, MetaDiagnostic,
+    MetaDiagnosticCode, MetaEditOperation, MetaMutationEffect, MetaPredefinedAccountType,
     MetaPredefinedExtDimensionType, MetaPredefinedExtDimensionTypeData, MetaPredefinedFields,
     MetaPredefinedItemAdd, MetaPredefinedItemData, MetaPredefinedItemUpdate,
     MetaPredefinedItemsData, MetaPropertyKey, MetaPublicationAction, MetaPublicationPlanEntry,
@@ -406,6 +406,40 @@ pub(super) fn plan_predefined_resource_after_descriptor_edit(
         post_image.extend_from_slice(b"\xef\xbb\xbf");
     }
     post_image.extend_from_slice(text.as_bytes());
+
+    // Пустой `PredefinedData` платформе не принадлежит: импортировав его,
+    // 8.3.27.2074 при выгрузке файл не пишет вовсе. Поэтому уход последнего
+    // элемента — удаление файла, а не запись пустого документа; и создавать
+    // такой файл ради одного `CodeType` тоже нечего.
+    if !document_has_items(&text).map_err(|message| {
+        failure(
+            owner,
+            MetaDiagnosticCode::ValidationFailed,
+            message,
+            None,
+            None,
+        )
+    })? {
+        let mut resources = TypedChildResourcePlan::default();
+        match original {
+            Some(original) => {
+                resources.file_mutations.push(TypedChildFileMutation {
+                    path: path.clone(),
+                    pre_image: Some(original),
+                    post_image: None,
+                });
+                resources.publication_plan.push(MetaPublicationPlanEntry {
+                    action: MetaPublicationAction::Remove,
+                    resource: MetaPublicationResource::PredefinedData,
+                    metadata_path: Some(owner.clone()),
+                });
+                resources.absent_path_guards.push(path);
+            }
+            None => resources.absent_path_guards.push(path),
+        }
+        return Ok(PlannedPredefinedResource { resources, effects });
+    }
+
     let changed = original.as_deref() != Some(post_image.as_slice());
     let mut resources = TypedChildResourcePlan::default();
     resources.validation_resources.push(MetadataResourceImage {
@@ -437,6 +471,13 @@ pub(super) fn plan_predefined_resource_after_descriptor_edit(
         resources.exact_file_guards.push((path, original));
     }
     Ok(PlannedPredefinedResource { resources, effects })
+}
+
+fn document_has_items(text: &str) -> Result<bool, String> {
+    let document = Document::parse(text).map_err(|error| format!("Predefined.xml: {error}"))?;
+    Ok(document
+        .descendants()
+        .any(|node| is_predefined_element(node, "Item")))
 }
 
 fn predefined_code_type(
@@ -871,9 +912,13 @@ fn parse_flags(container: Option<Node<'_, '_>>) -> Result<BTreeMap<String, bool>
             "false" => false,
             _ => return Err("predefined Flag value is not boolean".to_string()),
         };
-        if flags.insert(name.to_string(), value).is_some() {
+        if flags
+            .keys()
+            .any(|existing: &String| metadata_name_eq(existing, name))
+        {
             return Err("predefined Flag ref is duplicated".to_string());
         }
+        flags.insert(name.to_string(), value);
     }
     Ok(flags)
 }
@@ -1267,7 +1312,7 @@ fn patch_fields(
         let render_context = if let Some(location) =
             fragment_direct_child_location(item, "Type", None, fragment_context)?
         {
-            let FragmentChildLocation { range, context } = location;
+            let FragmentChildLocation { range, context, .. } = location;
             context.reserve_descendant_prefixes(&item[range])?
         } else {
             fragment_context.clone()
@@ -2170,13 +2215,16 @@ fn merge_flags_container(
     let indent = format!("{}\t", child_indent(parent));
     expand_self_closing(&mut container, &container_qname, eol, &child_indent(parent));
     for (name, value) in requested {
-        let rendered = format!("<Flag ref=\"{}\">{value}</Flag>", escape_xml(name));
         if let Some(flag_location) = fragment_direct_child_location(
             &container,
             "Flag",
             Some(("ref", name.as_str())),
             &container_context,
         )? {
+            // Имя метаданных сравнивается без регистра, но в файле остаётся
+            // написание источника: правка значения не переименовывает ссылку.
+            let stored_name = flag_location.matched_attribute.as_deref().unwrap_or(name);
+            let rendered = format!("<Flag ref=\"{}\">{value}</Flag>", escape_xml(stored_name));
             let flag_range = flag_location.range;
             let existing_qname = lexical_element_name(&container[flag_range.clone()])?;
             let rendered = qualify_generated_predefined_elements(
@@ -2192,6 +2240,7 @@ fn merge_flags_container(
                 container.replace_range(flag_range, &rendered);
             }
         } else {
+            let rendered = format!("<Flag ref=\"{}\">{value}</Flag>", escape_xml(name));
             let rendered = qualify_generated_predefined_elements(&rendered, container_prefix);
             let close = container
                 .rfind(&format!("</{container_qname}>"))
@@ -2603,6 +2652,10 @@ fn predefined_field_rank(parent: &str, tag: &str) -> usize {
 struct FragmentChildLocation {
     range: Range<usize>,
     context: FragmentXmlContext,
+    /// Написание значения атрибута, уже лежащее в источнике. Имена метаданных
+    /// 1С сравниваются без учёта регистра, но переписывать чужое написание
+    /// мутация не должна.
+    matched_attribute: Option<String>,
 }
 
 fn fragment_direct_child_location(
@@ -2621,7 +2674,10 @@ fn fragment_direct_child_location(
         .ok_or_else(|| "predefined XML fragment has no element".to_string())?;
     let Some(node) = parent.children().find(|node| {
         is_predefined_element(*node, tag)
-            && attribute.is_none_or(|(name, value)| node.attribute(name) == Some(value))
+            && attribute.is_none_or(|(name, value)| {
+                node.attribute(name)
+                    .is_some_and(|existing| metadata_name_eq(existing, value))
+            })
     }) else {
         return Ok(None);
     };
@@ -2631,6 +2687,9 @@ fn fragment_direct_child_location(
         range: range.start - fragment_context.wrapper_start.len()
             ..range.end - fragment_context.wrapper_start.len(),
         context: parent_context.with_local_declarations(&wrapped, node)?,
+        matched_attribute: attribute
+            .and_then(|(name, _)| node.attribute(name))
+            .map(str::to_string),
     }))
 }
 
@@ -3838,6 +3897,34 @@ mod tests {
     }
 
     #[test]
+    fn metadata_name_case_is_one_policy_for_flags_and_ext_dimensions() {
+        // Имена метаданных 1С сравниваются без учёта регистра. Обновление
+        // существующего флага другим написанием обязано попасть в него, а не
+        // дописать семантический дубль; написание источника при этом остаётся.
+        let context = FragmentXmlContext::platform_default();
+        let mut item = r#"<Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Main</Name><AccountingFlags><Flag ref="Debit">false</Flag></AccountingFlags></Item>"#.to_string();
+        merge_flags_container(
+            &mut item,
+            "AccountingFlags",
+            &BTreeMap::from([("debit".to_string(), true)]),
+            "\n",
+            &context,
+        )
+        .unwrap();
+        assert_eq!(item.matches("<Flag ").count(), 1, "{item}");
+        assert!(item.contains(r#"<Flag ref="Debit">true</Flag>"#), "{item}");
+
+        // Дубликат, отличающийся только регистром, отвергается на чтении —
+        // как и у ExtDimensionType.
+        let document = Document::parse(
+            r#"<AccountingFlags xmlns="http://v8.1c.ru/8.3/xcf/predef"><Flag ref="Debit">true</Flag><Flag ref="debit">false</Flag></AccountingFlags>"#,
+        )
+        .unwrap();
+        let error = parse_flags(Some(document.root_element())).unwrap_err();
+        assert!(error.contains("duplicated"), "{error}");
+    }
+
+    #[test]
     fn remove_of_a_parent_and_its_descendant_is_order_independent() {
         let base = r#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CatalogPredefinedItems" version="2.20"><Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Parent</Name><ChildItems><Item id="b7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Child</Name></Item></ChildItems></Item><Item id="c7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Kept</Name></Item></PredefinedData>"#;
         let owner = owner("Catalog");
@@ -3982,6 +4069,54 @@ mod tests {
         .unwrap();
         assert!(second.resources.file_mutations.is_empty());
         assert_eq!(second.resources.exact_file_guards.len(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn removing_the_last_item_deletes_the_file_like_the_platform_export() {
+        // Импортировав пустой `PredefinedData`, 8.3.27.2074 при выгрузке файл
+        // не пишет: канонический вид «нет предопределённых» — отсутствие
+        // файла, а не пустой документ.
+        let root = temp_root("remove-last");
+        let descriptor = root.join("Catalogs/Items.xml");
+        let path = descriptor.with_extension("").join("Ext/Predefined.xml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let before = concat!(
+            "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+            "<PredefinedData xmlns=\"http://v8.1c.ru/8.3/xcf/predef\" ",
+            "xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" ",
+            "xsi:type=\"CatalogPredefinedItems\" version=\"2.20\">\n",
+            "\t<Item id=\"a7d2e6fc-3824-4b56-b4be-ae6be4944c0e\"><Name>Main</Name></Item>\n",
+            "</PredefinedData>"
+        );
+        fs::write(&path, before.as_bytes()).unwrap();
+
+        let operation = MetaEditOperation::remove_predefined_items(vec![
+            "a7d2e6fc-3824-4b56-b4be-ae6be4944c0e".to_string(),
+        ])
+        .unwrap();
+        let planned = plan_predefined_resource(
+            &root,
+            &descriptor,
+            &owner("Catalog"),
+            MetadataKind::Catalog,
+            &descriptor_image(MetadataKind::Catalog, "String"),
+            std::slice::from_ref(&operation),
+        )
+        .unwrap();
+
+        assert_eq!(planned.resources.file_mutations.len(), 1);
+        let mutation = &planned.resources.file_mutations[0];
+        assert_eq!(mutation.path, path);
+        assert!(mutation.pre_image.is_some());
+        assert!(mutation.post_image.is_none(), "файл должен удаляться");
+        assert_eq!(planned.resources.publication_plan.len(), 1);
+        assert_eq!(
+            planned.resources.publication_plan[0].action,
+            MetaPublicationAction::Remove
+        );
+        assert_eq!(planned.resources.absent_path_guards, vec![path]);
+        assert!(planned.resources.expected_post_images.is_empty());
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -63,6 +63,32 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
         cls.tools = cls.module.read_registry(BINARY)
         cls.review = json.loads(REVIEW.read_text(encoding="utf-8"))
 
+    def test_published_patterns_stay_inside_the_ecmascript_dialect(self) -> None:
+        """JSON Schema `pattern` — это ECMA-262.
+
+        Без флага `u` конструкция `\\p{...}` там значит литеральную `p`, а не
+        класс символов, поэтому хост молча примет неверный вход или отвергнет
+        верный. Юникодные классы остаются во внутренних Rust-проверках.
+        """
+
+        offenders = []
+
+        def walk(node: object, path: str) -> None:
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    if key == "pattern" and isinstance(value, str) and "\\p{" in value:
+                        offenders.append(f"{path}: {value}")
+                    walk(value, f"{path}.{key}")
+            elif isinstance(node, list):
+                for index, value in enumerate(node):
+                    walk(value, f"{path}[{index}]")
+
+        for tool in self.tools:
+            walk(tool.get("inputSchema"), f"{tool['name']}.inputSchema")
+            walk(tool.get("outputSchema"), f"{tool['name']}.outputSchema")
+
+        self.assertEqual(offenders, [])
+
     def test_every_published_tool_has_a_review_entry(self) -> None:
         published = {tool["name"] for tool in self.tools}
         self.assertEqual(published - set(self.review), set())
@@ -133,7 +159,7 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
         self.assertIs(schema["properties"]["dryRun"]["default"], True)
         self.assertEqual(
             schema["properties"]["metadataPath"]["pattern"],
-            r"^Role\.[\p{L}_][\p{L}\p{N}_]*$",
+            r"^Role\.[^.]+$",
         )
 
         operations = schema["properties"]["operations"]

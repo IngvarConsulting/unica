@@ -6484,11 +6484,38 @@ mod tests {
         assert!(validator.is_valid(&cyrillic), "schema rejected {cyrillic}");
         validate_tool_arguments(tool, cyrillic.as_object().unwrap(), true).unwrap();
 
+        // Публикуемый `pattern` читает ECMA-262, где `\p{...}` без флага `u`
+        // не класс символов. Наружу поэтому уходит сегментная форма соседних
+        // `meta.*`-схем: она ловит форму адреса, а идентификатор 1С остаётся
+        // за парсером — тем же разделением обязанностей, что и в ADR-0025.
         for (field, invalid) in [
             ("metadataPath", "Role.123"),
             ("objectName", "Catalog.123"),
             ("metadataPath", "Role.Ⅻ"),
             ("objectName", "Catalog.Ⅻ"),
+        ] {
+            let mut call = valid.clone();
+            if field == "metadataPath" {
+                call[field] = json!(invalid);
+            } else {
+                call["operations"][0][field] = json!(invalid);
+            }
+            assert!(
+                validator.is_valid(&call),
+                "coarse schema shape must accept `{invalid}`"
+            );
+            assert!(
+                validate_tool_arguments(tool, call.as_object().unwrap(), true).is_err(),
+                "parser must reject `{invalid}`"
+            );
+        }
+
+        // Форму адреса схема по-прежнему держит сама.
+        for (field, invalid) in [
+            ("metadataPath", "Role"),
+            ("metadataPath", "Catalog.Demo"),
+            ("objectName", "Catalog"),
+            ("objectName", "Catalog.Demo.Attribute"),
         ] {
             let mut call = valid.clone();
             if field == "metadataPath" {
