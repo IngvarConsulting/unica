@@ -230,7 +230,7 @@ fn evaluate_resolved_format_owners(
         let actual = compatibility.actual().to_string();
         let (code, warning) = match compatibility {
             FormatCompatibility::Older { .. } => {
-                let access = if spec.mutating {
+                let access = if spec.execution.is_mutating() {
                     "Изменение отменено."
                 } else {
                     "Доступен только режим чтения."
@@ -310,7 +310,7 @@ fn output_path_arg(args: &Map<String, Value>, context: &WorkspaceContext) -> Opt
 }
 
 fn format_check(spec: ToolSpec, warning: String, diagnostic: Value) -> FormatGuardCheck {
-    if !spec.mutating {
+    if !spec.execution.is_mutating() {
         return FormatGuardCheck::Warn {
             warning,
             diagnostic,

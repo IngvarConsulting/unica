@@ -31,11 +31,58 @@ pub use tool_contracts::input_schema_for_tool;
 
 const PUBLIC_INVOCATION_DEADLINE: Duration = Duration::from_secs(5);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolExecution {
+    Read,
+    Mutation,
+}
+
+impl ToolExecution {
+    pub const fn is_mutating(self) -> bool {
+        matches!(self, Self::Mutation)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvocationMode {
+    Read,
+    Preview,
+    Apply,
+}
+
+impl InvocationMode {
+    fn from_validated_args(spec: ToolSpec, args: &Map<String, Value>) -> Result<Self, String> {
+        match spec.execution {
+            ToolExecution::Read => Ok(Self::Read),
+            ToolExecution::Mutation => match args.get("dryRun") {
+                None | Some(Value::Bool(true)) => Ok(Self::Preview),
+                Some(Value::Bool(false)) => Ok(Self::Apply),
+                Some(_) => Err(format!("{} argument `dryRun` must be a boolean", spec.name)),
+            },
+        }
+    }
+
+    pub const fn is_preview(self) -> bool {
+        matches!(self, Self::Preview)
+    }
+
+    pub const fn is_apply(self) -> bool {
+        matches!(self, Self::Apply)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResultContract {
+    Typed,
+    ExternalStream,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ToolSpec {
     pub name: &'static str,
     pub description: &'static str,
-    pub mutating: bool,
+    pub execution: ToolExecution,
+    pub result_contract: ResultContract,
     pub cache_access: CacheAccess,
     pub handler: ToolHandler,
 }
@@ -374,7 +421,8 @@ pub fn tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.project.status",
             description: "Inspect current Unica workspace, source set, and cache state.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::Typed,
             cache_access: CacheAccess::default(),
             handler: ToolHandler::ProjectStatus,
         },
@@ -382,7 +430,8 @@ pub fn tools() -> Vec<ToolSpec> {
             name: "unica.project.map",
             description:
                 "Inspect configured source sets and effective source format per source set.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::Typed,
             cache_access: CacheAccess {
                 reads: &["workspace_graph"],
                 writes: &[],
@@ -393,7 +442,8 @@ pub fn tools() -> Vec<ToolSpec> {
             name: "unica.source.resolve",
             description:
                 "Resolve an exact or prefix logical metadata query inside one named source set.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::Typed,
             cache_access: CacheAccess {
                 reads: &["workspace_graph", "metadata_graph"],
                 writes: &[],
@@ -406,7 +456,8 @@ pub fn tools() -> Vec<ToolSpec> {
             name: "unica.source.children",
             description:
                 "List exactly one level below a logical source-set root or metadata address.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::Typed,
             cache_access: CacheAccess {
                 reads: &["workspace_graph", "metadata_graph"],
                 writes: &[],
@@ -419,7 +470,8 @@ pub fn tools() -> Vec<ToolSpec> {
             name: "unica.source.locate",
             description:
                 "Recover the logical metadata address that owns one source path inside a named source set.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::Typed,
             cache_access: CacheAccess {
                 reads: &["workspace_graph", "metadata_graph"],
                 writes: &[],
@@ -432,7 +484,8 @@ pub fn tools() -> Vec<ToolSpec> {
             name: "unica.source.resources",
             description:
                 "Open or page an immutable bounded manifest for one logical source target.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::Typed,
             cache_access: CacheAccess::default(),
             handler: ToolHandler::SourceResources {
                 operation: SourceResourceOperation::Resources,
@@ -442,7 +495,8 @@ pub fn tools() -> Vec<ToolSpec> {
             name: "unica.source.read",
             description:
                 "Read one bounded byte range from a resource in an issued immutable snapshot.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::Typed,
             cache_access: CacheAccess::default(),
             handler: ToolHandler::SourceResources {
                 operation: SourceResourceOperation::Read,
@@ -451,7 +505,8 @@ pub fn tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.build.dump",
             description: "Dump source set through the internal build/runtime adapter.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::ExternalStream,
             cache_access: CacheAccess {
                 reads: &[],
                 writes: &["workspace_graph", "metadata_graph"],
@@ -464,7 +519,8 @@ pub fn tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.build.load",
             description: "Load/build XML source set through the internal build/runtime adapter.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::ExternalStream,
             cache_access: CacheAccess {
                 reads: &[],
                 writes: &["workspace_graph", "metadata_graph"],
@@ -478,7 +534,8 @@ pub fn tools() -> Vec<ToolSpec> {
             name: "unica.build.update",
             description:
                 "Apply built configuration changes through the internal build/runtime adapter.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::ExternalStream,
             cache_access: CacheAccess {
                 reads: &[],
                 writes: &["workspace_graph", "metadata_graph"],
@@ -491,7 +548,8 @@ pub fn tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.build.make",
             description: "Create CF/CFE artifact through the internal build/runtime adapter.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::ExternalStream,
             cache_access: CacheAccess::default(),
             handler: ToolHandler::BuildRuntime {
                 command: &["make"],
@@ -502,7 +560,8 @@ pub fn tools() -> Vec<ToolSpec> {
             name: "unica.build.run",
             description:
                 "Launch 1C runtime or Designer through the internal build/runtime adapter.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::ExternalStream,
             cache_access: CacheAccess::default(),
             handler: ToolHandler::BuildRuntime {
                 command: &["launch"],
@@ -513,7 +572,8 @@ pub fn tools() -> Vec<ToolSpec> {
             name: "unica.runtime.execute",
             description:
                 "Execute typed v8-runner runtime workflows through the single Unica MCP boundary.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::ExternalStream,
             cache_access: CacheAccess {
                 reads: &[],
                 writes: &["workspace_graph", "metadata_graph"],
@@ -524,7 +584,8 @@ pub fn tools() -> Vec<ToolSpec> {
             name: "unica.runtime.job.start",
             description:
                 "Start a durable typed v8-runner runtime job without changing runtime.execute.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::ExternalStream,
             cache_access: CacheAccess::default(),
             handler: ToolHandler::RuntimeJob {
                 action: RuntimeJobAction::Start,
@@ -533,7 +594,8 @@ pub fn tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.runtime.job.status",
             description: "Read a durable runtime job snapshot by jobId.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::ExternalStream,
             cache_access: CacheAccess::default(),
             handler: ToolHandler::RuntimeJob {
                 action: RuntimeJobAction::Status,
@@ -542,7 +604,8 @@ pub fn tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.runtime.job.wait",
             description: "Wait for a durable runtime job with a caller-side bounded timeout.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::ExternalStream,
             cache_access: CacheAccess::default(),
             handler: ToolHandler::RuntimeJob {
                 action: RuntimeJobAction::Wait,
@@ -551,7 +614,8 @@ pub fn tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.runtime.job.logs",
             description: "Read bounded redacted stdout and stderr tails for a durable runtime job.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::ExternalStream,
             cache_access: CacheAccess::default(),
             handler: ToolHandler::RuntimeJob {
                 action: RuntimeJobAction::Logs,
@@ -560,7 +624,8 @@ pub fn tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.runtime.job.cancel",
             description: "Request safe cancellation for a durable runtime job.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::ExternalStream,
             cache_access: CacheAccess::default(),
             handler: ToolHandler::RuntimeJob {
                 action: RuntimeJobAction::Cancel,
@@ -569,7 +634,8 @@ pub fn tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.runtime.job.list",
             description: "List durable runtime job snapshots in the current workspace.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::ExternalStream,
             cache_access: CacheAccess::default(),
             handler: ToolHandler::RuntimeJob {
                 action: RuntimeJobAction::List,
@@ -578,7 +644,8 @@ pub fn tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.code.search",
             description: "Search code concurrently through provider-local RLM, bsl-analyzer, and literal git-grep sections. Migration: use sourceDir instead of the former path/config fields and a per-provider limit from 1 to 50.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::Typed,
             cache_access: CacheAccess {
                 reads: &["bsl_index", "workspace_graph"],
                 writes: &[],
@@ -590,7 +657,8 @@ pub fn tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.code.definition",
             description: "Find BSL method definitions through the typed Unica code index boundary.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::Typed,
             cache_access: CacheAccess {
                 reads: &["bsl_index"],
                 writes: &[],
@@ -602,7 +670,8 @@ pub fn tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.code.outline",
             description: "Read compact BSL module outline from the current source file.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::Typed,
             // ADR-0020: the outline is parsed from the file on disk, so this tool
             // neither reads nor writes any workspace cache.
             cache_access: CacheAccess {
@@ -617,7 +686,8 @@ pub fn tools() -> Vec<ToolSpec> {
             name: "unica.code.patch",
             description:
                 "Insert or replace BSL in one logically addressed Platform XML Configuration or Extension module.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::Typed,
             cache_access: cache_access_for("code-patch", Some(DomainEventKind::ModuleChanged)),
             handler: ToolHandler::NativeOperation {
                 operation: "code-patch",
@@ -627,21 +697,24 @@ pub fn tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.xdto.info",
             description: "Inspect one logically addressed 1C XDTO package schema.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::Typed,
             cache_access: CacheAccess::default(),
             handler: ToolHandler::NativeOperation { operation: "xdto-info", event: None },
         },
         ToolSpec {
             name: "unica.xdto.edit",
             description: "Preview or apply a safe targeted mutation to one logically addressed 1C XDTO package schema.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::Typed,
             cache_access: cache_access_for("xdto-edit", Some(DomainEventKind::MetadataChanged)),
             handler: ToolHandler::NativeOperation { operation: "xdto-edit", event: Some(DomainEventKind::MetadataChanged) },
         },
         ToolSpec {
             name: "unica.code.graph",
             description: "Inspect BSL call graph through the typed Unica code analysis boundary.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::Typed,
             cache_access: CacheAccess {
                 reads: &["workspace_graph", "bsl_diagnostics"],
                 writes: &[],
@@ -653,7 +726,8 @@ pub fn tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.code.diagnostics",
             description: "Run BSL diagnostics through the internal code analysis adapter.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::Typed,
             cache_access: CacheAccess {
                 reads: &["bsl_diagnostics"],
                 writes: &[],
@@ -665,7 +739,8 @@ pub fn tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.standards.search",
             description: "Search 1C standards through the internal standards adapter.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::Typed,
             cache_access: CacheAccess::default(),
             handler: ToolHandler::StandardsAdapter {
                 operation: "search",
@@ -675,7 +750,8 @@ pub fn tools() -> Vec<ToolSpec> {
             name: "unica.standards.explain",
             description:
                 "Explain 1C diagnostics or standards through the internal standards adapter.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::Typed,
             cache_access: CacheAccess::default(),
             handler: ToolHandler::StandardsAdapter {
                 operation: "explain",
@@ -685,7 +761,8 @@ pub fn tools() -> Vec<ToolSpec> {
             name: "unica.documentation.search",
             description:
                 "Search the workspace configuration's embedded help, platform help, and development standards across documentation providers.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::Typed,
             cache_access: CacheAccess::default(),
             handler: ToolHandler::Documentation {
                 operation: "search",
@@ -695,7 +772,8 @@ pub fn tools() -> Vec<ToolSpec> {
             name: "unica.documentation.get",
             description:
                 "Fetch the full text of a documentation search hit by its documentId locator.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::Typed,
             cache_access: CacheAccess::default(),
             handler: ToolHandler::Documentation { operation: "get" },
         },
@@ -712,16 +790,15 @@ fn call_tool(
 ) -> Result<OperationResult, String> {
     let normalized_args = tool_contracts::normalize_native_path_aliases(spec, args)?;
     let args = &normalized_args;
-    let dry_run = args
-        .get("dryRun")
-        .and_then(Value::as_bool)
-        .unwrap_or(spec.mutating);
-    tool_contracts::validate_tool_arguments(spec, args, dry_run)?;
+    tool_contracts::validate_tool_argument_shape(spec, args)?;
+    let mode = InvocationMode::from_validated_args(spec, args)?;
+    tool_contracts::validate_tool_argument_semantics(spec, args, mode)?;
+    let dry_run = mode.is_preview();
     let cwd = args.get("cwd").and_then(Value::as_str).map(PathBuf::from);
     let context = ports.discover_workspace(cwd)?;
-    ports.validate_tool_context(spec, args, dry_run, &context)?;
+    ports.validate_tool_context(spec, args, mode, &context)?;
     let mut prepared =
-        ports.prepare_tool_invocation(spec, args, &context, dry_run, cancellation, deadline)?;
+        ports.prepare_tool_invocation(spec, args, &context, mode, cancellation, deadline)?;
     let xdto_target = XdtoLogicalTarget::from_call(spec, args);
     let role_target = RoleEditLogicalTarget::from_call(spec, args);
     let mut format_guard_warning = None;
@@ -739,7 +816,7 @@ fn call_tool(
                         &context,
                         target,
                         &[],
-                        dry_run,
+                        mode,
                         spec.cache_access,
                     ) {
                         Ok(cache) => cache,
@@ -792,7 +869,7 @@ fn call_tool(
                     &context,
                     target,
                     &[],
-                    dry_run,
+                    mode,
                     spec.cache_access,
                 ) {
                     Ok(cache) => cache,
@@ -819,7 +896,7 @@ fn call_tool(
             } else {
                 diagnostic
             };
-            let cache = ports.cache_report(&context, &[], dry_run, spec.cache_access)?;
+            let cache = ports.cache_report(&context, &[], mode, spec.cache_access)?;
             return Ok(OperationResult {
                 ok: outcome.ok,
                 summary: outcome.summary,
@@ -840,7 +917,7 @@ fn call_tool(
     if let Some(outcome) = runtime_xml_route_guard(spec, args, dry_run, cancellation)
         .or_else(|| source_sync_dump_guard(spec, args, dry_run, cancellation))
     {
-        let cache = ports.cache_report(&context, &[], dry_run, spec.cache_access)?;
+        let cache = ports.cache_report(&context, &[], mode, spec.cache_access)?;
         return Ok(OperationResult {
             ok: outcome.ok,
             summary: outcome.summary,
@@ -857,7 +934,7 @@ fn call_tool(
             job: None,
         });
     }
-    let support_guard_warning = if spec.mutating {
+    let support_guard_warning = if spec.execution.is_mutating() {
         let support_guard = match ports.evaluate_support_guard(spec, args, &context) {
             Ok(check) => check,
             Err(error) => {
@@ -868,7 +945,7 @@ fn call_tool(
                         &context,
                         target,
                         &[],
-                        dry_run,
+                        mode,
                         spec.cache_access,
                     ) {
                         Ok(cache) => cache,
@@ -910,7 +987,7 @@ fn call_tool(
                         &context,
                         target,
                         &[],
-                        dry_run,
+                        mode,
                         spec.cache_access,
                     ) {
                         Ok(cache) => cache,
@@ -933,7 +1010,7 @@ fn call_tool(
                 if dry_run {
                     outcome.summary = format!("dry run: {}", outcome.summary);
                 }
-                let cache = ports.cache_report(&context, &[], dry_run, spec.cache_access)?;
+                let cache = ports.cache_report(&context, &[], mode, spec.cache_access)?;
                 return Ok(OperationResult {
                     ok: outcome.ok,
                     summary: outcome.summary,
@@ -975,7 +1052,7 @@ fn call_tool(
             let diagnostic = serde_json::to_value(diagnostic).map_err(|serialize| {
                 format!("failed to serialize operational config diagnostic: {serialize}")
             })?;
-            let cache = ports.cache_report(&context, &[], dry_run, spec.cache_access)?;
+            let cache = ports.cache_report(&context, &[], mode, spec.cache_access)?;
             return Ok(OperationResult {
                 ok: false,
                 summary: format!("{} operational configuration is invalid", spec.name),
@@ -1005,7 +1082,6 @@ fn call_tool(
                 ports,
                 args,
                 &context,
-                dry_run,
                 operational_config.as_ref().ok_or_else(|| {
                     "code intelligence call is missing operational config".to_string()
                 })?,
@@ -1018,7 +1094,6 @@ fn call_tool(
                     operation,
                     args,
                     workspace: &context,
-                    dry_run,
                     operational_config: operational_config.as_ref().ok_or_else(|| {
                         "code intelligence call is missing operational config".to_string()
                     })?,
@@ -1029,18 +1104,19 @@ fn call_tool(
                 source_navigation::invoke(operation, ports, args, &context, cancellation)?
             }
             ToolHandler::SourceResources { operation } => {
-                source_resources::invoke(operation, ports, args, &context, dry_run, cancellation)?
+                source_resources::invoke(operation, ports, args, &context, cancellation)?
             }
             _ => ports.invoke_handler_with_operational_config(
                 spec,
                 args,
                 &context,
-                dry_run,
+                mode,
                 operational_config.as_ref(),
                 cancellation,
             )?,
         },
     };
+    enforce_result_contract(spec, mode, &handler_outcome)?;
     let mut outcome = handler_outcome.adapter;
     let handler_events = handler_outcome.events;
     let projected_events = handler_outcome.projected_events;
@@ -1087,7 +1163,7 @@ fn call_tool(
     }
     let events = if dry_run && !projected_events.is_empty() {
         projected_events
-    } else if !dry_run && spec.mutating && outcome.ok && !handler_events.is_empty() {
+    } else if !dry_run && spec.execution.is_mutating() && outcome.ok && !handler_events.is_empty() {
         handler_events
     } else if should_emit_events(spec, args, dry_run, &outcome, handler_data.as_ref()) {
         if handler_events.is_empty() {
@@ -1107,15 +1183,15 @@ fn call_tool(
         }
         cache
     } else if let Some(target) = role_target.as_ref() {
-        match role_cache_report(ports, &context, target, &events, dry_run, spec.cache_access) {
+        match role_cache_report(ports, &context, target, &events, mode, spec.cache_access) {
             Ok(cache) => cache,
             Err(result) => return Ok(*result),
         }
     } else {
-        ports.cache_report(&context, &events, dry_run, spec.cache_access)?
+        ports.cache_report(&context, &events, mode, spec.cache_access)?
     };
     outcome.warnings.append(&mut cache.publication_warnings);
-    if spec.mutating && !dry_run && outcome.ok && !events.is_empty() {
+    if spec.execution.is_mutating() && !dry_run && outcome.ok && !events.is_empty() {
         ports.notify_invalidation(&context, &events);
     }
     let diagnostics = merge_handler_diagnostics(
@@ -1158,6 +1234,24 @@ fn call_tool(
             handler_outcome.job
         },
     })
+}
+
+fn enforce_result_contract(
+    spec: ToolSpec,
+    mode: InvocationMode,
+    outcome: &ports::HandlerOutcome,
+) -> Result<(), String> {
+    if mode == InvocationMode::Read
+        && spec.result_contract == ResultContract::Typed
+        && outcome.adapter.ok
+        && outcome.data.is_none()
+    {
+        return Err(format!(
+            "typed_result_missing: {} returned ok without OperationResult.data",
+            spec.name
+        ));
+    }
+    Ok(())
 }
 
 fn invalid_metadata_arguments_result(failure: metadata::MetaFailure) -> OperationResult {
@@ -1272,11 +1366,12 @@ fn role_cache_report(
     context: &WorkspaceContext,
     target: &RoleEditLogicalTarget,
     events: &[DomainEvent],
-    dry_run: bool,
+    mode: InvocationMode,
     access: CacheAccess,
 ) -> Result<CacheReport, Box<OperationResult>> {
+    let dry_run = mode.is_preview();
     ports
-        .cache_report(context, events, dry_run, access)
+        .cache_report(context, events, mode, access)
         .map_err(|_| {
             Box::new(target.failed_result(
                 CacheReport {
@@ -1427,20 +1522,10 @@ fn invoke_code_intelligence_search(
     ports: &dyn ApplicationPorts,
     args: &Map<String, Value>,
     workspace: &WorkspaceContext,
-    dry_run: bool,
     operational_config: &crate::domain::operational_config::OperationalConfig,
     cancellation: &CancellationToken,
 ) -> Result<ports::HandlerOutcome, String> {
     let context = ports.resolve_code_intelligence_context(workspace, args)?;
-    if dry_run {
-        let mut outcome = AdapterOutcome::ok(
-            "dry run: unica.code.search would run the provider-neutral search coordinator",
-        );
-        outcome
-            .artifacts
-            .push(context.source_root.path.display().to_string());
-        return Ok(ports::HandlerOutcome::plain(outcome));
-    }
     let request = SearchRequest {
         query: args
             .get("query")
@@ -1495,7 +1580,6 @@ struct CodeIntelligenceReadInvocation<'a> {
     operation: CodeIntelligenceOperation,
     args: &'a Map<String, Value>,
     workspace: &'a WorkspaceContext,
-    dry_run: bool,
     operational_config: &'a crate::domain::operational_config::OperationalConfig,
     cancellation: &'a CancellationToken,
 }
@@ -1509,20 +1593,10 @@ fn invoke_code_intelligence_read(
         operation,
         args,
         workspace,
-        dry_run,
         operational_config,
         cancellation,
     } = invocation;
     let context = ports.resolve_code_intelligence_context(workspace, args)?;
-    if dry_run {
-        let mut outcome = AdapterOutcome::ok(format!(
-            "dry run: {tool_name} would use the provider-neutral code intelligence registry"
-        ));
-        outcome
-            .artifacts
-            .push(context.source_root.path.display().to_string());
-        return Ok(ports::HandlerOutcome::plain(outcome));
-    }
     let request = ports.normalize_code_intelligence_read_request(
         code_intelligence_read_request(operation, args)?,
         &context,
@@ -1800,7 +1874,7 @@ fn should_emit_events(
     outcome: &AdapterOutcome,
     data: Option<&Value>,
 ) -> bool {
-    if !spec.mutating || !outcome.ok {
+    if !spec.execution.is_mutating() || !outcome.ok {
         return false;
     }
     if !dry_run {
@@ -2117,7 +2191,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
             name: "unica.cf.edit",
             description:
                 "Edit root Configuration.xml properties, ChildObjects, panels, and home page.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::Typed,
             cache_access: cache_access_for("cf-edit", Some(DomainEventKind::ConfigXmlChanged)),
             handler: ToolHandler::NativeOperation {
                 operation: "cf-edit",
@@ -2127,7 +2202,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.cf.info",
             description: "Inspect root Configuration.xml.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::Typed,
             cache_access: cache_access_for("cf-info", None),
             handler: ToolHandler::NativeOperation {
                 operation: "cf-info",
@@ -2137,7 +2213,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.cf.init",
             description: "Create empty 1C configuration XML scaffold.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::Typed,
             cache_access: cache_access_for("cf-init", Some(DomainEventKind::ConfigXmlChanged)),
             handler: ToolHandler::NativeOperation {
                 operation: "cf-init",
@@ -2147,7 +2224,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.cf.validate",
             description: "Validate root configuration XML structure.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::ExternalStream,
             cache_access: cache_access_for("cf-validate", None),
             handler: ToolHandler::NativeOperation {
                 operation: "cf-validate",
@@ -2157,7 +2235,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.support.edit",
             description: "Toggle 1C vendor support editing capability or per-object support rule.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::Typed,
             cache_access: cache_access_for("support-edit", Some(DomainEventKind::ConfigXmlChanged)),
             handler: ToolHandler::NativeOperation {
                 operation: "support-edit",
@@ -2167,7 +2246,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.cfe.borrow",
             description: "Borrow configuration objects/forms into an extension.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::Typed,
             cache_access: cache_access_for("cfe-borrow", Some(DomainEventKind::CfeChanged)),
             handler: ToolHandler::NativeOperation {
                 operation: "cfe-borrow",
@@ -2177,7 +2257,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.cfe.diff",
             description: "Inspect extension contents and transferred insertion blocks.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::Typed,
             cache_access: cache_access_for("cfe-diff", None),
             handler: ToolHandler::NativeOperation {
                 operation: "cfe-diff",
@@ -2187,7 +2268,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.cfe.init",
             description: "Create extension XML scaffold.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::Typed,
             cache_access: cache_access_for("cfe-init", Some(DomainEventKind::CfeChanged)),
             handler: ToolHandler::NativeOperation {
                 operation: "cfe-init",
@@ -2198,7 +2280,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
             name: "unica.epf.init",
             description:
                 "Create a make-ready external data processor scaffold in a Designer/platform-XML external source-set, optionally with a managed form.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::Typed,
             cache_access: cache_access_for(
                 "epf-init",
                 Some(DomainEventKind::SourceSetChanged),
@@ -2212,7 +2295,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
             name: "unica.erf.init",
             description:
                 "Create a make-ready external report scaffold in a Designer/platform-XML external source-set, optionally with a managed form.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::Typed,
             cache_access: cache_access_for(
                 "erf-init",
                 Some(DomainEventKind::SourceSetChanged),
@@ -2226,7 +2310,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
             name: "unica.cfe.patch_method",
             description:
                 "Generate a CFE Before/After interceptor for a caller-verified existing parameterless procedure on a registered adopted object.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::Typed,
             cache_access: cache_access_for(
                 "cfe-patch-method",
                 Some(DomainEventKind::ModuleChanged),
@@ -2239,7 +2324,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.cfe.validate",
             description: "Validate extension XML structure.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::ExternalStream,
             cache_access: cache_access_for("cfe-validate", None),
             handler: ToolHandler::NativeOperation {
                 operation: "cfe-validate",
@@ -2249,7 +2335,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.meta.info",
             description: "Inspect one metadata object with validation, proven subsystem memberships, and source-tree usage.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::Typed,
             cache_access: CacheAccess {
                 reads: &["workspace_graph", "metadata_graph"],
                 writes: &[],
@@ -2261,7 +2348,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.meta.add",
             description: "Create one metadata object from a typed internal template and optionally configure it atomically with ordered operations.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::Typed,
             cache_access: CacheAccess {
                 reads: &[],
                 writes: &["workspace_graph", "metadata_graph"],
@@ -2273,7 +2361,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.meta.edit",
             description: "Apply ordered typed metadata edit operations atomically.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::Typed,
             cache_access: CacheAccess {
                 reads: &[],
                 writes: &["workspace_graph", "metadata_graph"],
@@ -2285,7 +2374,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.meta.remove",
             description: "Remove one metadata object through a logical guarded target.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::Typed,
             cache_access: CacheAccess {
                 reads: &[],
                 writes: &["workspace_graph", "metadata_graph"],
@@ -2297,7 +2387,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.help.add",
             description: "Add built-in help metadata and page to a 1C object.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::Typed,
             cache_access: cache_access_for("help-add", Some(DomainEventKind::FormChanged)),
             handler: ToolHandler::NativeOperation {
                 operation: "help-add",
@@ -2307,7 +2398,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.form.add",
             description: "Add managed form metadata and files.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::Typed,
             cache_access: cache_access_for("form-add", Some(DomainEventKind::FormChanged)),
             handler: ToolHandler::NativeOperation {
                 operation: "form-add",
@@ -2317,7 +2409,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.form.compile",
             description: "Compile managed Form.xml from JSON DSL or metadata.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::ExternalStream,
             cache_access: cache_access_for("form-compile", Some(DomainEventKind::FormChanged)),
             handler: ToolHandler::NativeOperation {
                 operation: "form-compile",
@@ -2328,7 +2421,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
             name: "unica.form.edit",
             description:
                 "Edit managed Form.xml elements, attributes, commands, and validated events.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::Typed,
             cache_access: cache_access_for("form-edit", Some(DomainEventKind::FormChanged)),
             handler: ToolHandler::NativeOperation {
                 operation: "form-edit",
@@ -2338,7 +2432,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.form.info",
             description: "Inspect managed Form.xml.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::Typed,
             cache_access: cache_access_for("form-info", None),
             handler: ToolHandler::NativeOperation {
                 operation: "form-info",
@@ -2348,7 +2443,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.form.remove",
             description: "Remove a managed form and registration.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::Typed,
             cache_access: cache_access_for("form-remove", Some(DomainEventKind::FormChanged)),
             handler: ToolHandler::NativeOperation {
                 operation: "form-remove",
@@ -2358,7 +2454,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.form.validate",
             description: "Validate managed Form.xml.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::ExternalStream,
             cache_access: cache_access_for("form-validate", None),
             handler: ToolHandler::NativeOperation {
                 operation: "form-validate",
@@ -2368,7 +2465,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.interface.edit",
             description: "Edit subsystem CommandInterface.xml.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::Typed,
             cache_access: cache_access_for(
                 "interface-edit",
                 Some(DomainEventKind::SubsystemChanged),
@@ -2381,7 +2479,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.interface.validate",
             description: "Validate CommandInterface.xml.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::ExternalStream,
             cache_access: cache_access_for("interface-validate", None),
             handler: ToolHandler::NativeOperation {
                 operation: "interface-validate",
@@ -2391,7 +2490,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.subsystem.compile",
             description: "Compile subsystem XML from JSON DSL.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::ExternalStream,
             cache_access: cache_access_for(
                 "subsystem-compile",
                 Some(DomainEventKind::SubsystemChanged),
@@ -2404,7 +2504,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.subsystem.edit",
             description: "Edit subsystem XML content and hierarchy.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::Typed,
             cache_access: cache_access_for(
                 "subsystem-edit",
                 Some(DomainEventKind::SubsystemChanged),
@@ -2417,7 +2518,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.subsystem.info",
             description: "Inspect a registered subsystem tree from a directory, a focused registered tree from XML, or an unregistered XML locally.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::Typed,
             cache_access: cache_access_for("subsystem-info", None),
             handler: ToolHandler::NativeOperation {
                 operation: "subsystem-info",
@@ -2427,7 +2529,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.subsystem.validate",
             description: "Validate subsystem XML.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::ExternalStream,
             cache_access: cache_access_for("subsystem-validate", None),
             handler: ToolHandler::NativeOperation {
                 operation: "subsystem-validate",
@@ -2437,7 +2540,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.template.add",
             description: "Add a template to an object and register it.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::Typed,
             cache_access: cache_access_for("template-add", Some(DomainEventKind::TemplateChanged)),
             handler: ToolHandler::NativeOperation {
                 operation: "template-add",
@@ -2447,7 +2551,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.template.remove",
             description: "Remove a template from an object.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::Typed,
             cache_access: cache_access_for(
                 "template-remove",
                 Some(DomainEventKind::TemplateChanged),
@@ -2460,7 +2565,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.dcs.compile",
             description: "Compile Data Composition Schema XML from JSON DSL.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::ExternalStream,
             cache_access: cache_access_for("dcs-compile", Some(DomainEventKind::DcsChanged)),
             handler: ToolHandler::NativeOperation {
                 operation: "dcs-compile",
@@ -2470,7 +2576,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.dcs.edit",
             description: "Edit Data Composition Schema Template.xml.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::Typed,
             cache_access: cache_access_for("dcs-edit", Some(DomainEventKind::DcsChanged)),
             handler: ToolHandler::NativeOperation {
                 operation: "dcs-edit",
@@ -2480,7 +2587,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.dcs.info",
             description: "Inspect Data Composition Schema Template.xml.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::Typed,
             cache_access: cache_access_for("dcs-info", None),
             handler: ToolHandler::NativeOperation {
                 operation: "dcs-info",
@@ -2490,7 +2598,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.dcs.validate",
             description: "Validate Data Composition Schema Template.xml.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::ExternalStream,
             cache_access: cache_access_for("dcs-validate", None),
             handler: ToolHandler::NativeOperation {
                 operation: "dcs-validate",
@@ -2500,7 +2609,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.mxl.compile",
             description: "Compile spreadsheet Template.xml from JSON DSL.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::ExternalStream,
             cache_access: cache_access_for("mxl-compile", Some(DomainEventKind::MxlChanged)),
             handler: ToolHandler::NativeOperation {
                 operation: "mxl-compile",
@@ -2510,7 +2620,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.mxl.decompile",
             description: "Decompile spreadsheet Template.xml to JSON DSL.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::ExternalStream,
             cache_access: cache_access_for("mxl-decompile", None),
             handler: ToolHandler::NativeOperation {
                 operation: "mxl-decompile",
@@ -2520,7 +2631,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.mxl.info",
             description: "Inspect spreadsheet Template.xml.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::Typed,
             cache_access: cache_access_for("mxl-info", None),
             handler: ToolHandler::NativeOperation {
                 operation: "mxl-info",
@@ -2530,7 +2642,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.mxl.validate",
             description: "Validate spreadsheet Template.xml.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::ExternalStream,
             cache_access: cache_access_for("mxl-validate", None),
             handler: ToolHandler::NativeOperation {
                 operation: "mxl-validate",
@@ -2540,7 +2653,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.role.compile",
             description: "Compile role metadata and Rights.xml from JSON DSL.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::ExternalStream,
             cache_access: cache_access_for("role-compile", Some(DomainEventKind::RoleChanged)),
             handler: ToolHandler::NativeOperation {
                 operation: "role-compile",
@@ -2550,7 +2664,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.role.edit",
             description: "Edit role rights through a closed logical typed contract.",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::Typed,
             cache_access: CacheAccess {
                 reads: &[],
                 writes: &["metadata_graph", "rights_graph"],
@@ -2563,7 +2678,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.role.info",
             description: "Inspect role Rights.xml.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::Typed,
             cache_access: cache_access_for("role-info", None),
             handler: ToolHandler::NativeOperation {
                 operation: "role-info",
@@ -2573,7 +2689,8 @@ fn configuration_tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.role.validate",
             description: "Validate role Rights.xml.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::ExternalStream,
             cache_access: cache_access_for("role-validate", None),
             handler: ToolHandler::NativeOperation {
                 operation: "role-validate",
@@ -2674,6 +2791,130 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct RejectDiscoveryPorts {
+        discovery_calls: AtomicUsize,
+    }
+
+    impl ports::ApplicationPorts for RejectDiscoveryPorts {
+        fn discover_workspace(
+            &self,
+            _requested_cwd: Option<PathBuf>,
+        ) -> Result<WorkspaceContext, String> {
+            self.discovery_calls.fetch_add(1, Ordering::SeqCst);
+            panic!("reader argument validation must run before workspace discovery")
+        }
+
+        fn validate_tool_context(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _mode: InvocationMode,
+            _context: &WorkspaceContext,
+        ) -> Result<(), String> {
+            unreachable!("workspace discovery must not run")
+        }
+
+        fn evaluate_support_guard(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _context: &WorkspaceContext,
+        ) -> Result<SupportGuardCheck, String> {
+            unreachable!("workspace discovery must not run")
+        }
+
+        fn invoke_handler(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _context: &WorkspaceContext,
+            _mode: InvocationMode,
+            _cancellation: &CancellationToken,
+        ) -> Result<ports::HandlerOutcome, String> {
+            unreachable!("workspace discovery must not run")
+        }
+
+        fn cache_report(
+            &self,
+            _context: &WorkspaceContext,
+            _events: &[DomainEvent],
+            _mode: InvocationMode,
+            _cache_access: CacheAccess,
+        ) -> Result<CacheReport, String> {
+            unreachable!("workspace discovery must not run")
+        }
+
+        fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {
+            unreachable!("workspace discovery must not run")
+        }
+    }
+
+    #[test]
+    fn reader_rejects_dry_run_before_workspace_discovery() {
+        let ports = RejectDiscoveryPorts::default();
+
+        for spec in tools()
+            .into_iter()
+            .filter(|tool| tool.execution == ToolExecution::Read)
+        {
+            for value in [true, false] {
+                let mut args = Map::new();
+                args.insert("dryRun".to_string(), Value::Bool(value));
+
+                let error = call_tool(
+                    spec,
+                    &args,
+                    &ports,
+                    &CancellationToken::new(),
+                    ProviderDeadline::from_budget(Duration::from_secs(1)),
+                )
+                .expect_err("reader must reject dryRun");
+                let expected = if matches!(spec.handler, ToolHandler::Metadata { .. }) {
+                    "metadata operation does not accept argument `dryRun`"
+                } else {
+                    "does not accept argument `dryRun`"
+                };
+                assert!(error.contains(expected), "{}: {error}", spec.name);
+                assert_eq!(
+                    ports.discovery_calls.load(Ordering::SeqCst),
+                    0,
+                    "{} reached workspace discovery",
+                    spec.name,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn invocation_mode_is_derived_from_validated_tool_execution() {
+        let reader = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.project.status")
+            .expect("project.status reader exists");
+        let mutation = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.cf.edit")
+            .expect("cf.edit mutation exists");
+
+        assert_eq!(
+            InvocationMode::from_validated_args(reader, &Map::new()).unwrap(),
+            InvocationMode::Read,
+        );
+        assert_eq!(
+            InvocationMode::from_validated_args(mutation, &Map::new()).unwrap(),
+            InvocationMode::Preview,
+        );
+        assert_eq!(
+            InvocationMode::from_validated_args(
+                mutation,
+                serde_json::json!({"dryRun": false}).as_object().unwrap(),
+            )
+            .unwrap(),
+            InvocationMode::Apply,
+        );
+    }
+
+    #[derive(Default)]
     struct OperationalConfigRecordingPorts {
         load_calls: AtomicUsize,
         prepare_calls: AtomicUsize,
@@ -2743,11 +2984,37 @@ mod tests {
 
         fn read(
             &self,
-            _request: &CodeIntelligenceReadRequest,
+            request: &CodeIntelligenceReadRequest,
             _context: &crate::domain::code_intelligence::CodeIntelligenceContext,
             _deadline: ProviderDeadline,
             _cancellation: &CancellationToken,
         ) -> Result<crate::domain::code_intelligence::ProviderReadOutcome, String> {
+            let data = match request {
+                CodeIntelligenceReadRequest::Definition { name, .. } => {
+                    crate::domain::code_intelligence::CodeIntelligenceReadData::Definition(
+                        crate::domain::code_intelligence::CodeDefinitionResult {
+                            name: name.clone(),
+                            definitions: Vec::new(),
+                        },
+                    )
+                }
+                CodeIntelligenceReadRequest::Outline { path, .. } => {
+                    crate::domain::code_intelligence::CodeIntelligenceReadData::Outline(
+                        crate::domain::code_intelligence::CodeOutlineResult {
+                            module: path.clone(),
+                            identity: Default::default(),
+                            totals: crate::domain::code_intelligence::CodeOutlineTotals {
+                                methods: 0,
+                                exports: 0,
+                                regions: 0,
+                                loc: 0,
+                            },
+                            regions: Vec::new(),
+                            methods: Vec::new(),
+                        },
+                    )
+                }
+            };
             Ok(crate::domain::code_intelligence::ProviderReadOutcome {
                 provider: crate::domain::code_intelligence::ProviderId::Rlm,
                 ok: true,
@@ -2757,7 +3024,7 @@ mod tests {
                 artifacts: Vec::new(),
                 stdout: None,
                 stderr: None,
-                data: None,
+                data: Some(data),
             })
         }
     }
@@ -2784,7 +3051,7 @@ mod tests {
             &self,
             _spec: ToolSpec,
             _args: &Map<String, Value>,
-            _dry_run: bool,
+            _mode: InvocationMode,
             _context: &WorkspaceContext,
         ) -> Result<(), String> {
             Ok(())
@@ -2831,7 +3098,7 @@ mod tests {
             spec: ToolSpec,
             _args: &Map<String, Value>,
             _context: &WorkspaceContext,
-            _dry_run: bool,
+            _mode: InvocationMode,
             _cancellation: &CancellationToken,
             _deadline: ProviderDeadline,
         ) -> Result<ports::PreparedToolInvocation, String> {
@@ -2839,9 +3106,10 @@ mod tests {
             if self.prepared_code_search_handler && spec.name == "unica.code.search" {
                 return Ok(ports::PreparedToolInvocation {
                     format_guard: None,
-                    handler: Some(ports::HandlerOutcome::plain(AdapterOutcome::ok(
-                        "prepared code search",
-                    ))),
+                    handler: Some(ports::HandlerOutcome::with_data(
+                        AdapterOutcome::ok("prepared code search"),
+                        json!({"sections": []}),
+                    )),
                 });
             }
             Ok(ports::PreparedToolInvocation::empty())
@@ -2900,40 +3168,58 @@ mod tests {
 
         fn invoke_handler(
             &self,
-            _spec: ToolSpec,
+            spec: ToolSpec,
             _args: &Map<String, Value>,
             _context: &WorkspaceContext,
-            _dry_run: bool,
+            _mode: InvocationMode,
             _cancellation: &CancellationToken,
         ) -> Result<ports::HandlerOutcome, String> {
             self.handler_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(ports::HandlerOutcome::plain(AdapterOutcome::ok("handled")))
+            let outcome = AdapterOutcome::ok("handled");
+            Ok(
+                if spec.execution == ToolExecution::Read
+                    && spec.result_contract == ResultContract::Typed
+                {
+                    ports::HandlerOutcome::with_data(outcome, json!({"fixture": true}))
+                } else {
+                    ports::HandlerOutcome::plain(outcome)
+                },
+            )
         }
 
         fn invoke_handler_with_operational_config(
             &self,
-            _spec: ToolSpec,
+            spec: ToolSpec,
             _args: &Map<String, Value>,
             _context: &WorkspaceContext,
-            _dry_run: bool,
+            _mode: InvocationMode,
             operational_config: Option<&crate::domain::operational_config::OperationalConfig>,
             _cancellation: &CancellationToken,
         ) -> Result<ports::HandlerOutcome, String> {
             self.handler_calls.fetch_add(1, Ordering::SeqCst);
             *self.observed_analyze_timeout.lock().unwrap() =
                 operational_config.map(|config| config.code_diagnostics().analyze_timeout());
-            Ok(ports::HandlerOutcome::plain(AdapterOutcome::ok("handled")))
+            let outcome = AdapterOutcome::ok("handled");
+            Ok(
+                if spec.execution == ToolExecution::Read
+                    && spec.result_contract == ResultContract::Typed
+                {
+                    ports::HandlerOutcome::with_data(outcome, json!({"fixture": true}))
+                } else {
+                    ports::HandlerOutcome::plain(outcome)
+                },
+            )
         }
 
         fn cache_report(
             &self,
             context: &WorkspaceContext,
             _events: &[DomainEvent],
-            dry_run: bool,
+            mode: InvocationMode,
             _cache_access: CacheAccess,
         ) -> Result<CacheReport, String> {
             Ok(CacheReport {
-                mode: if dry_run { "dry-run" } else { "read" }.to_string(),
+                mode: if mode.is_preview() { "dry-run" } else { "read" }.to_string(),
                 root: context.cache_root.display().to_string(),
                 workspace_epoch: context.workspace_epoch,
                 events: Vec::new(),
@@ -2960,7 +3246,6 @@ mod tests {
         assert_eq!(ports.load_calls.load(Ordering::SeqCst), 0);
 
         let mut analyze = Map::new();
-        analyze.insert("dryRun".to_string(), json!(true));
         analyze.insert("timeoutSeconds".to_string(), json!(900));
         app.call_tool("unica.code.diagnostics", &analyze).unwrap();
         assert_eq!(ports.load_calls.load(Ordering::SeqCst), 1);
@@ -3170,7 +3455,10 @@ mod tests {
 
         for (name, operation) in expected {
             let tool = tools().into_iter().find(|tool| tool.name == name).unwrap();
-            assert!(!tool.mutating, "{name} must remain read-only");
+            assert!(
+                !tool.execution.is_mutating(),
+                "{name} must remain read-only"
+            );
             assert!(matches!(
                 tool.handler,
                 ToolHandler::SourceNavigation {
@@ -3189,7 +3477,10 @@ mod tests {
 
         for (name, operation) in expected {
             let tool = tools().into_iter().find(|tool| tool.name == name).unwrap();
-            assert!(!tool.mutating, "{name} must remain read-only");
+            assert!(
+                !tool.execution.is_mutating(),
+                "{name} must remain read-only"
+            );
             assert!(
                 tool.cache_access.reads.is_empty(),
                 "{name} must not read cache"
@@ -4082,7 +4373,7 @@ mod tests {
                 &self,
                 _spec: ToolSpec,
                 _args: &Map<String, Value>,
-                _dry_run: bool,
+                _mode: InvocationMode,
                 _context: &WorkspaceContext,
             ) -> Result<(), String> {
                 Ok(())
@@ -4102,7 +4393,7 @@ mod tests {
                 _spec: ToolSpec,
                 _args: &Map<String, Value>,
                 _context: &WorkspaceContext,
-                _dry_run: bool,
+                _mode: InvocationMode,
                 _cancellation: &CancellationToken,
             ) -> Result<ports::HandlerOutcome, String> {
                 Ok(ports::HandlerOutcome::with_data_and_events(
@@ -4119,11 +4410,16 @@ mod tests {
                 &self,
                 context: &WorkspaceContext,
                 events: &[DomainEvent],
-                dry_run: bool,
+                mode: InvocationMode,
                 _cache_access: CacheAccess,
             ) -> Result<CacheReport, String> {
                 Ok(CacheReport {
-                    mode: if dry_run { "dry-run" } else { "applied" }.to_string(),
+                    mode: if mode.is_preview() {
+                        "dry-run"
+                    } else {
+                        "applied"
+                    }
+                    .to_string(),
                     root: context.cache_root.display().to_string(),
                     workspace_epoch: context.workspace_epoch,
                     events: events
@@ -4474,7 +4770,8 @@ mod tests {
         let spec = ToolSpec {
             name: "unica.cf.edit",
             description: "test",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::Typed,
             cache_access: cache_access_for("cf-edit", Some(DomainEventKind::ConfigXmlChanged)),
             handler: ToolHandler::NativeOperation {
                 operation: "cf-edit",
@@ -4500,7 +4797,8 @@ mod tests {
         let code_patch_spec = ToolSpec {
             name: "unica.code.patch",
             description: "test",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::Typed,
             cache_access: cache_access_for("code-patch", Some(DomainEventKind::ModuleChanged)),
             handler: ToolHandler::NativeOperation {
                 operation: "code-patch",
@@ -4518,7 +4816,8 @@ mod tests {
         let form_edit_spec = ToolSpec {
             name: "unica.form.edit",
             description: "test",
-            mutating: true,
+            execution: ToolExecution::Mutation,
+            result_contract: ResultContract::Typed,
             cache_access: cache_access_for("form-edit", Some(DomainEventKind::FormChanged)),
             handler: ToolHandler::NativeOperation {
                 operation: "form-edit",
@@ -7088,7 +7387,7 @@ mod tests {
             .find(|tool| tool.name == "unica.code.outline")
             .expect("code-outline tool exists");
 
-        assert!(!tool.mutating);
+        assert!(!tool.execution.is_mutating());
         assert!(tool.cache_access.reads.is_empty());
         assert!(tool.cache_access.writes.is_empty());
         assert!(!tool.description.contains("index"), "{}", tool.description);
@@ -7101,7 +7400,7 @@ mod tests {
             .find(|tool| tool.name == "unica.support.edit")
             .expect("support-edit tool exists");
 
-        assert!(tool.mutating);
+        assert!(tool.execution.is_mutating());
         assert_eq!(tool.cache_access.writes, &["metadata_graph"]);
         match tool.handler {
             ToolHandler::NativeOperation { operation, event } => {
@@ -7111,6 +7410,54 @@ mod tests {
             other => {
                 panic!("unica.support.edit should route through native operation, got {other:?}")
             }
+        }
+    }
+
+    #[test]
+    fn reader_schemas_never_publish_dry_run_and_mutations_keep_it() {
+        for tool in tools() {
+            let schema = input_schema_for_tool(&tool);
+            let properties = schema["properties"]
+                .as_object()
+                .expect("tool input schema properties are an object");
+            assert_eq!(
+                properties.contains_key("dryRun"),
+                tool.execution.is_mutating(),
+                "{} publishes the wrong invocation switch",
+                tool.name,
+            );
+            if tool.execution.is_mutating() {
+                assert_eq!(
+                    properties["dryRun"]["default"], true,
+                    "{} publishes the wrong preview default",
+                    tool.name,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tool_specs_match_reviewed_result_contracts() {
+        let review: Value = serde_json::from_str(include_str!(
+            "../../../../spec/architecture/tool-surface-review.json"
+        ))
+        .expect("tool-surface review is valid JSON");
+        let review = review
+            .as_object()
+            .expect("tool-surface review is a tool-name object");
+        let registered = tools();
+        assert_eq!(review.len(), registered.len());
+
+        for tool in registered {
+            let entry = review
+                .get(tool.name)
+                .unwrap_or_else(|| panic!("{} has no tool-surface review", tool.name));
+            let expected = if entry["scope"] == "in" && entry["result"]["contract"] == "typed" {
+                ResultContract::Typed
+            } else {
+                ResultContract::ExternalStream
+            };
+            assert_eq!(tool.result_contract, expected, "{}", tool.name);
         }
     }
 
@@ -7175,7 +7522,7 @@ mod tests {
     #[test]
     fn mutating_native_descriptors_declare_write_path_policy() {
         for tool in tools() {
-            if !tool.mutating {
+            if !tool.execution.is_mutating() {
                 continue;
             }
             let ToolHandler::NativeOperation { operation, .. } = tool.handler else {
@@ -7196,7 +7543,10 @@ mod tests {
 
         let mut guarded = Vec::new();
         let mut exempt = Vec::new();
-        for tool in tools().into_iter().filter(|tool| tool.mutating) {
+        for tool in tools()
+            .into_iter()
+            .filter(|tool| tool.execution.is_mutating())
+        {
             let ToolHandler::NativeOperation { operation, .. } = tool.handler else {
                 continue;
             };
@@ -7403,7 +7753,7 @@ mod tests {
 
         let mut actual_operations = tools()
             .into_iter()
-            .filter(|tool| tool.mutating)
+            .filter(|tool| tool.execution.is_mutating())
             .filter_map(|tool| {
                 let ToolHandler::NativeOperation { operation, .. } = tool.handler else {
                     return None;
@@ -7434,7 +7784,10 @@ mod tests {
             );
         }
 
-        for tool in tools().into_iter().filter(|tool| tool.mutating) {
+        for tool in tools()
+            .into_iter()
+            .filter(|tool| tool.execution.is_mutating())
+        {
             let ToolHandler::NativeOperation { operation, .. } = tool.handler else {
                 continue;
             };
@@ -7685,7 +8038,7 @@ mod tests {
     }
 
     #[test]
-    fn public_subsystem_info_dry_run_does_not_read_a_missing_target() {
+    fn public_subsystem_info_rejects_dry_run_before_reading_target() {
         let root = test_workspace_root("unica-subsystem-dry-run-missing-target");
         let workspace = root.join("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
@@ -7704,22 +8057,23 @@ mod tests {
         ]);
 
         assert!(!missing.exists());
-        let result = UnicaApplication::new()
+        let error = UnicaApplication::new()
             .call_tool("unica.subsystem.info", &args)
-            .expect("dry-run must not require target or topology bytes");
+            .expect_err("reader must reject dryRun before target discovery");
 
-        assert!(result.ok, "{result:?}");
-        assert!(result.summary.contains("dry run"), "{result:?}");
-        assert!(result.data.is_none(), "{result:?}");
+        assert!(
+            error.contains("does not accept argument `dryRun`"),
+            "{error}"
+        );
         assert!(
             !missing.exists(),
-            "dry-run must not create the missing target"
+            "argument rejection must not create the missing target"
         );
         std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn public_subsystem_validate_dry_run_does_not_read_a_missing_target() {
+    fn public_subsystem_validate_rejects_dry_run_before_reading_target() {
         let root = test_workspace_root("unica-subsystem-validate-dry-run-missing-target");
         let workspace = root.join("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
@@ -7738,15 +8092,17 @@ mod tests {
         ]);
 
         assert!(!missing.exists());
-        let result = UnicaApplication::new()
+        let error = UnicaApplication::new()
             .call_tool("unica.subsystem.validate", &args)
-            .expect("read-only dry-run must not require target bytes");
+            .expect_err("reader must reject dryRun before target discovery");
 
-        assert!(result.ok, "{result:?}");
-        assert!(result.summary.contains("dry run"), "{result:?}");
+        assert!(
+            error.contains("does not accept argument `dryRun`"),
+            "{error}"
+        );
         assert!(
             !missing.exists(),
-            "dry-run must not create the missing target"
+            "argument rejection must not create the missing target"
         );
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -7766,7 +8122,6 @@ mod tests {
                 "SubsystemPath".to_string(),
                 Value::String("missing/Subsystem.xml".to_string()),
             ),
-            ("dryRun".to_string(), Value::Bool(false)),
         ]);
 
         let result = UnicaApplication::new()
@@ -8911,7 +9266,6 @@ mod tests {
             let mut args = Map::new();
             args.insert("cwd".into(), Value::String(root.display().to_string()));
             args.insert(alias.into(), Value::String(directory.display().to_string()));
-            args.insert("dryRun".into(), Value::Bool(true));
 
             let result = UnicaApplication::new().call_tool(tool, &args).unwrap();
             assert!(
@@ -9098,7 +9452,7 @@ mod tests {
                 &self,
                 _spec: ToolSpec,
                 args: &Map<String, Value>,
-                _dry_run: bool,
+                _mode: InvocationMode,
                 _context: &WorkspaceContext,
             ) -> Result<(), String> {
                 self.record("context", args);
@@ -9127,23 +9481,30 @@ mod tests {
 
             fn invoke_handler(
                 &self,
-                _spec: ToolSpec,
+                spec: ToolSpec,
                 args: &Map<String, Value>,
                 _context: &WorkspaceContext,
-                _dry_run: bool,
+                _mode: InvocationMode,
                 _cancellation: &CancellationToken,
             ) -> Result<ports::HandlerOutcome, String> {
                 self.record("handler", args);
-                Ok(ports::HandlerOutcome::plain(AdapterOutcome::ok(
-                    "alias recording",
-                )))
+                let outcome = AdapterOutcome::ok("alias recording");
+                Ok(
+                    if spec.execution == ToolExecution::Read
+                        && spec.result_contract == ResultContract::Typed
+                    {
+                        ports::HandlerOutcome::with_data(outcome, json!({"fixture": true}))
+                    } else {
+                        ports::HandlerOutcome::plain(outcome)
+                    },
+                )
             }
 
             fn cache_report(
                 &self,
                 context: &WorkspaceContext,
                 _events: &[DomainEvent],
-                _dry_run: bool,
+                _mode: InvocationMode,
                 _cache_access: CacheAccess,
             ) -> Result<CacheReport, String> {
                 Ok(CacheReport {
@@ -9166,7 +9527,7 @@ mod tests {
         let cases = [
             (
                 "unica.cf.info",
-                json!({"configPath": "src", "dryRun": false}),
+                json!({"configPath": "src"}),
                 &[("ConfigPath", "configPath")][..],
             ),
             (
@@ -9248,32 +9609,29 @@ mod tests {
     fn native_path_alias_normalization_accepts_equal_or_empty_duplicates_but_rejects_conflicts() {
         let same = json!({
             "ConfigPath": "src",
-            "configPath": "src",
-            "dryRun": false
+            "configPath": "src"
         });
         UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
             outcome: AdapterOutcome::ok("same aliases"),
-            data: None,
+            data: Some(json!({"fixture": true})),
         }))
         .call_tool("unica.cf.info", same.as_object().unwrap())
         .expect("equal path aliases must collapse to one canonical value");
 
         let empty_and_value = json!({
             "ConfigPath": "",
-            "configPath": "src",
-            "dryRun": false
+            "configPath": "src"
         });
         UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
             outcome: AdapterOutcome::ok("empty alias ignored"),
-            data: None,
+            data: Some(json!({"fixture": true})),
         }))
         .call_tool("unica.cf.info", empty_and_value.as_object().unwrap())
         .expect("one non-empty path alias must win over empty aliases");
 
         let conflict = json!({
             "ConfigPath": "src-a",
-            "configPath": "src-b",
-            "dryRun": false
+            "configPath": "src-b"
         });
         let error = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
             outcome: AdapterOutcome::ok("must not run"),
@@ -9333,7 +9691,7 @@ mod tests {
                 &self,
                 _spec: ToolSpec,
                 _args: &Map<String, Value>,
-                _dry_run: bool,
+                _mode: InvocationMode,
                 _context: &WorkspaceContext,
             ) -> Result<(), String> {
                 Ok(())
@@ -9353,7 +9711,7 @@ mod tests {
                 _spec: ToolSpec,
                 _args: &Map<String, Value>,
                 _context: &WorkspaceContext,
-                _dry_run: bool,
+                _mode: InvocationMode,
                 cancellation: &CancellationToken,
             ) -> Result<ports::HandlerOutcome, String> {
                 *self.observed_cancelled.lock().unwrap() = Some(cancellation.is_cancelled());
@@ -9371,7 +9729,7 @@ mod tests {
                 &self,
                 context: &WorkspaceContext,
                 _events: &[DomainEvent],
-                _dry_run: bool,
+                _mode: InvocationMode,
                 _cache_access: CacheAccess,
             ) -> Result<CacheReport, String> {
                 Ok(CacheReport {
@@ -9448,7 +9806,7 @@ mod tests {
                 &self,
                 _spec: ToolSpec,
                 _args: &Map<String, Value>,
-                _dry_run: bool,
+                _mode: InvocationMode,
                 _context: &WorkspaceContext,
             ) -> Result<(), String> {
                 Ok(())
@@ -9468,7 +9826,7 @@ mod tests {
                 spec: ToolSpec,
                 _args: &Map<String, Value>,
                 _context: &WorkspaceContext,
-                _dry_run: bool,
+                _mode: InvocationMode,
                 _cancellation: &CancellationToken,
             ) -> Result<ports::HandlerOutcome, String> {
                 self.invoked.lock().unwrap().push(spec.name);
@@ -9481,12 +9839,17 @@ mod tests {
                 &self,
                 context: &WorkspaceContext,
                 events: &[DomainEvent],
-                dry_run: bool,
+                mode: InvocationMode,
                 cache_access: CacheAccess,
             ) -> Result<CacheReport, String> {
                 self.reported.lock().unwrap().extend(cache_access.writes);
                 Ok(CacheReport {
-                    mode: if dry_run { "dry-run" } else { "write" }.to_string(),
+                    mode: if mode.is_preview() {
+                        "dry-run"
+                    } else {
+                        "write"
+                    }
+                    .to_string(),
                     root: context.cache_root.display().to_string(),
                     workspace_epoch: context.workspace_epoch,
                     events: events
@@ -9560,7 +9923,7 @@ mod tests {
                 &self,
                 _spec: ToolSpec,
                 _args: &Map<String, Value>,
-                _dry_run: bool,
+                _mode: InvocationMode,
                 _context: &WorkspaceContext,
             ) -> Result<(), String> {
                 Ok(())
@@ -9580,7 +9943,7 @@ mod tests {
                 _spec: ToolSpec,
                 _args: &Map<String, Value>,
                 context: &WorkspaceContext,
-                _dry_run: bool,
+                _mode: InvocationMode,
                 _cancellation: &CancellationToken,
             ) -> Result<ports::HandlerOutcome, String> {
                 let event = DomainEvent::new(DomainEventKind::ModuleChanged, "src/Module.bsl");
@@ -9612,7 +9975,7 @@ mod tests {
                 &self,
                 _context: &WorkspaceContext,
                 _events: &[DomainEvent],
-                _dry_run: bool,
+                _mode: InvocationMode,
                 _cache_access: CacheAccess,
             ) -> Result<CacheReport, String> {
                 panic!("post-commit cache_report must not run after transactional persistence")
@@ -10421,7 +10784,7 @@ mod tests {
             &self,
             _spec: ToolSpec,
             _args: &Map<String, Value>,
-            _dry_run: bool,
+            _mode: InvocationMode,
             _context: &WorkspaceContext,
         ) -> Result<(), String> {
             Ok(())
@@ -10456,7 +10819,7 @@ mod tests {
             _spec: ToolSpec,
             _args: &Map<String, Value>,
             _context: &WorkspaceContext,
-            _dry_run: bool,
+            _mode: InvocationMode,
             _cancellation: &CancellationToken,
         ) -> Result<ports::HandlerOutcome, String> {
             Err("handler must not run after a guard evaluation error".to_string())
@@ -10466,11 +10829,16 @@ mod tests {
             &self,
             context: &WorkspaceContext,
             _events: &[DomainEvent],
-            dry_run: bool,
+            mode: InvocationMode,
             _cache_access: CacheAccess,
         ) -> Result<CacheReport, String> {
             Ok(CacheReport {
-                mode: if dry_run { "dry-run" } else { "applied" }.to_string(),
+                mode: if mode.is_preview() {
+                    "dry-run"
+                } else {
+                    "applied"
+                }
+                .to_string(),
                 root: context.cache_root.display().to_string(),
                 workspace_epoch: context.workspace_epoch,
                 events: Vec::new(),
@@ -10504,7 +10872,7 @@ mod tests {
             &self,
             _spec: ToolSpec,
             _args: &Map<String, Value>,
-            _dry_run: bool,
+            _mode: InvocationMode,
             _context: &WorkspaceContext,
         ) -> Result<(), String> {
             Ok(())
@@ -10524,7 +10892,7 @@ mod tests {
             _spec: ToolSpec,
             _args: &Map<String, Value>,
             _context: &WorkspaceContext,
-            _dry_run: bool,
+            _mode: InvocationMode,
             _cancellation: &CancellationToken,
         ) -> Result<ports::HandlerOutcome, String> {
             Ok(match self.data.clone() {
@@ -10537,13 +10905,13 @@ mod tests {
             &self,
             context: &WorkspaceContext,
             events: &[DomainEvent],
-            dry_run: bool,
+            mode: InvocationMode,
             _cache_access: CacheAccess,
         ) -> Result<CacheReport, String> {
             Ok(CacheReport {
                 mode: if events.is_empty() {
                     "read".to_string()
-                } else if dry_run {
+                } else if mode.is_preview() {
                     "dry-run".to_string()
                 } else {
                     "applied".to_string()
@@ -10564,6 +10932,68 @@ mod tests {
         }
 
         fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
+    }
+
+    #[test]
+    fn successful_typed_reader_without_data_fails_closed() {
+        let error = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
+            outcome: AdapterOutcome::ok("reader omitted its typed payload"),
+            data: None,
+        }))
+        .call_tool("unica.project.status", &Map::new())
+        .expect_err("successful typed reader without data must fail closed");
+
+        assert_eq!(
+            error,
+            "typed_result_missing: unica.project.status returned ok without OperationResult.data"
+        );
+    }
+
+    #[test]
+    fn failed_typed_reader_may_omit_data() {
+        let mut outcome = AdapterOutcome::ok("reader failed before producing data");
+        outcome.ok = false;
+        outcome.errors.push("invalid source input".to_string());
+
+        let result = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
+            outcome,
+            data: None,
+        }))
+        .call_tool("unica.project.status", &Map::new())
+        .expect("typed reader failure may omit data");
+
+        assert!(!result.ok);
+        assert!(result.data.is_none());
+    }
+
+    #[test]
+    fn successful_typed_mutation_may_omit_data() {
+        let result = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
+            outcome: AdapterOutcome::ok("mutation completed without a typed receipt"),
+            data: None,
+        }))
+        .call_tool("unica.cf.edit", &Map::new())
+        .expect("typed mutation remains outside the reader postcondition");
+
+        assert!(result.ok);
+        assert!(result.data.is_none());
+    }
+
+    #[test]
+    fn successful_external_stream_reader_may_omit_data() {
+        let args = Map::from_iter([(
+            "ConfigPath".to_string(),
+            Value::String("src/Configuration.xml".to_string()),
+        )]);
+        let result = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
+            outcome: AdapterOutcome::ok("validator reported through its external stream"),
+            data: None,
+        }))
+        .call_tool("unica.cf.validate", &args)
+        .expect("external-stream reader remains outside the typed postcondition");
+
+        assert!(result.ok);
+        assert!(result.data.is_none());
     }
 
     fn call_runtime_with_outcome(

@@ -202,7 +202,7 @@ mod tests {
         MetadataResourceRole, MetadataTemplateResourcePart, MetadataTemplateType,
         SupportGuardCheck,
     };
-    use crate::application::{ToolSpec, UnicaApplication};
+    use crate::application::{InvocationMode, ToolSpec, UnicaApplication};
     use crate::domain::cache::{CacheAccess, CacheReport};
     use crate::domain::events::DomainEvent;
     use crate::domain::metadata::{
@@ -252,11 +252,10 @@ mod tests {
             &self,
             spec: ToolSpec,
             args: &Map<String, serde_json::Value>,
-            dry_run: bool,
+            mode: InvocationMode,
             context: &WorkspaceContext,
         ) -> Result<(), String> {
-            self.inner
-                .validate_tool_context(spec, args, dry_run, context)
+            self.inner.validate_tool_context(spec, args, mode, context)
         }
 
         fn prepare_metadata_mutation(
@@ -301,22 +300,21 @@ mod tests {
             spec: ToolSpec,
             args: &Map<String, serde_json::Value>,
             context: &WorkspaceContext,
-            dry_run: bool,
+            mode: InvocationMode,
             cancellation: &CancellationToken,
         ) -> Result<HandlerOutcome, String> {
             self.inner
-                .invoke_handler(spec, args, context, dry_run, cancellation)
+                .invoke_handler(spec, args, context, mode, cancellation)
         }
 
         fn cache_report(
             &self,
             context: &WorkspaceContext,
             events: &[DomainEvent],
-            dry_run: bool,
+            mode: InvocationMode,
             cache_access: CacheAccess,
         ) -> Result<CacheReport, String> {
-            self.inner
-                .cache_report(context, events, dry_run, cache_access)
+            self.inner.cache_report(context, events, mode, cache_access)
         }
 
         fn notify_invalidation(&self, context: &WorkspaceContext, events: &[DomainEvent]) {

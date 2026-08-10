@@ -222,49 +222,41 @@ impl NativeOperationAdapter {
                 }
             }
         }
-        // A dry run keeps its placeholder outcome: previewing a read must not
-        // perform it, even though these reads change nothing.
-        if !dry_run {
-            match operation {
-                "cf-info" => {
-                    let execution = cf::analyze_cf_info(args, context);
-                    return typed_operation_result(execution.outcome, execution.data, "cf info");
-                }
-                "role-info" => {
-                    let execution = role::analyze_role_info(args, context);
-                    return typed_operation_result(execution.outcome, execution.data, "role info");
-                }
-                "cfe-diff" => {
-                    let execution = cfe::diff_cfe(args, context);
-                    return typed_operation_result(execution.outcome, execution.data, "cfe diff");
-                }
-                "dcs-info" => {
-                    let execution = super::dcs::analyze_dcs_info_with_data(args, context);
-                    return typed_operation_result(execution.outcome, execution.data, "dcs info");
-                }
-                "form-info" => {
-                    let execution = form::analyze_form_info_with_data(args, context);
-                    return typed_operation_result(execution.outcome, execution.data, "form info");
-                }
-                "mxl-info" => {
-                    let execution = mxl::analyze_mxl_info(args, context);
-                    return typed_operation_result(execution.outcome, execution.data, "mxl info");
-                }
-                "subsystem-info" => {
-                    let execution = subsystem::analyze_subsystem_info_cancellable(
-                        args,
-                        context,
-                        control.cancellation,
-                        control.deadline,
-                    );
-                    return typed_operation_result(
-                        execution.outcome,
-                        execution.data,
-                        "subsystem info",
-                    );
-                }
-                _ => {}
+        match operation {
+            "cf-info" => {
+                let execution = cf::analyze_cf_info(args, context);
+                return typed_operation_result(execution.outcome, execution.data, "cf info");
             }
+            "role-info" => {
+                let execution = role::analyze_role_info(args, context);
+                return typed_operation_result(execution.outcome, execution.data, "role info");
+            }
+            "cfe-diff" => {
+                let execution = cfe::diff_cfe(args, context);
+                return typed_operation_result(execution.outcome, execution.data, "cfe diff");
+            }
+            "dcs-info" => {
+                let execution = super::dcs::analyze_dcs_info_with_data(args, context);
+                return typed_operation_result(execution.outcome, execution.data, "dcs info");
+            }
+            "form-info" => {
+                let execution = form::analyze_form_info_with_data(args, context);
+                return typed_operation_result(execution.outcome, execution.data, "form info");
+            }
+            "mxl-info" => {
+                let execution = mxl::analyze_mxl_info(args, context);
+                return typed_operation_result(execution.outcome, execution.data, "mxl info");
+            }
+            "subsystem-info" => {
+                let execution = subsystem::analyze_subsystem_info_cancellable(
+                    args,
+                    context,
+                    control.cancellation,
+                    control.deadline,
+                );
+                return typed_operation_result(execution.outcome, execution.data, "subsystem info");
+            }
+            _ => {}
         }
 
         Self::invoke(operation, tool_name, args, context, dry_run, mutating).map(|adapter| {

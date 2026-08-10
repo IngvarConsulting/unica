@@ -363,6 +363,7 @@ impl Drop for InFlightGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::{ResultContract, ToolExecution};
     use crate::domain::cache::CacheReport;
     use serde_json::json;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -803,7 +804,8 @@ mod tests {
         let listed = tool_definitions(&[ToolSpec {
             name: "unica.meta.future",
             description: "Synthetic metadata registry entry.",
-            mutating: false,
+            execution: ToolExecution::Read,
+            result_contract: ResultContract::Typed,
             cache_access: crate::domain::cache::CacheAccess::default(),
             handler: crate::application::ToolHandler::Metadata {
                 operation: crate::application::metadata::MetadataOperation::Info,
@@ -981,7 +983,7 @@ mod tests {
     }
 
     #[test]
-    fn native_tool_schema_is_typed_and_does_not_expose_raw_args() {
+    fn native_reader_schema_is_typed_and_has_no_invocation_switch() {
         let listed = tool_definitions(&crate::application::tools());
         let cf_info = listed
             .iter()
@@ -992,7 +994,7 @@ mod tests {
         assert_eq!(schema["additionalProperties"], false);
         assert!(schema["properties"].get("ConfigPath").is_some());
         assert!(schema["properties"].get("cwd").is_some());
-        assert!(schema["properties"].get("dryRun").is_some());
+        assert!(schema["properties"].get("dryRun").is_none());
         assert!(schema["properties"].get("args").is_none());
     }
 
@@ -1298,6 +1300,49 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("unknown unica tool"));
+
+        client
+            .send(json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "unica.project.status",
+                    "arguments": {"cwd": "/missing/workspace", "dryRun": true}
+                }
+            }))
+            .await;
+        let response = client.receive().await;
+        assert_eq!(response["error"]["code"], TOOL_EXECUTION_ERROR);
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("does not accept argument `dryRun`"));
+        client.shutdown().await;
+
+        let handler: Arc<ToolCallHandler> = Arc::new(|_, _, _| {
+            Err((
+                TOOL_EXECUTION_ERROR,
+                "typed_result_missing: unica.project.status returned ok without OperationResult.data"
+                    .to_string(),
+            ))
+        });
+        let (mut client, _) = spawn_server(handler);
+        client.initialize().await;
+        client
+            .send(json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": "unica.project.status", "arguments": {}}
+            }))
+            .await;
+        let response = client.receive().await;
+        assert_eq!(response["error"]["code"], TOOL_EXECUTION_ERROR);
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("typed_result_missing:"));
         client.shutdown().await;
     }
 

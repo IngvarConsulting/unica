@@ -40,11 +40,17 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
             "dryRun": true
         }),
     ));
-    let dry_run = mcp.receive_ids(&[10], RESPONSE_DEADLINE);
-    assert_tool_ok(&dry_run[&10], "provider-neutral search coordinator");
+    let rejected_reader_preview = mcp.receive_ids(&[10], RESPONSE_DEADLINE);
+    assert!(
+        rejected_reader_preview[&10]["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("does not accept argument `dryRun`")),
+        "{:#}",
+        rejected_reader_preview[&10]
+    );
     assert!(
         fixture.service_records().is_empty(),
-        "code.search dryRun must not start workspace services"
+        "rejected code.search preview must not start workspace services"
     );
 
     mcp.send(tool_call(
