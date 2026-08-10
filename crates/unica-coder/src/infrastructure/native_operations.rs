@@ -36,6 +36,11 @@ impl NativeOperationAdapter {
         dry_run: bool,
         mutating: bool,
     ) -> Result<AdapterOutcome, String> {
+        if operation == "subsystem-info" {
+            return Err(
+                "subsystem-info requires the controlled prepared invocation path".to_string(),
+            );
+        }
         let form_edit_without_payload_preview =
             operation == "form-edit" && dry_run && !form::has_edit_payload(args);
         if registry::typed_mutation_handler(operation).is_some()

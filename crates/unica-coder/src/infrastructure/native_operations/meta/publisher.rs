@@ -284,6 +284,7 @@ impl PreparedMetaEdit {
             resources: validation_resources,
             child_footprints: child_resources.validation_footprints,
             registrar_evidence: Default::default(),
+            subsystem_evidence: Default::default(),
         };
         Ok(Box::new(Self {
             preview: MetaMutationData {
@@ -764,6 +765,7 @@ pub(crate) fn prepare_meta_add(
             resources: validation_resources,
             child_footprints: child_resources.validation_footprints,
             registrar_evidence: Default::default(),
+            subsystem_evidence: Default::default(),
         },
         transaction,
         context: context.clone(),

@@ -875,4 +875,17 @@ mod tests {
             })
         );
     }
+
+    #[test]
+    fn nested_subsystem_paths_do_not_extend_the_metadata_address_grammar() {
+        let profile = AddressProfile::new(PLATFORM_XML_8_3_27_FORMAT_2_20).unwrap();
+
+        assert!(profile.parse("Subsystem.A.B").is_err());
+        assert!(
+            MetadataAddressPrefix::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Subsystem.A.B").is_err()
+        );
+
+        let top_level = profile.parse("Subsystem.A").unwrap();
+        assert_eq!(top_level.target_kind(), TargetKind::MetadataObject);
+    }
 }

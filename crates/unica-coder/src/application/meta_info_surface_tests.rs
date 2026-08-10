@@ -1,5 +1,9 @@
 use super::{OperationResult, UnicaApplication};
-use crate::composition::testing::{with_registrar_processing_hook, RegistrarProcessingPhase};
+use crate::composition::testing::{
+    with_meta_info_descriptor_image_hook, with_registrar_processing_hook,
+    with_subsystem_evidence_processing_hook, RegistrarProcessingPhase,
+    SubsystemEvidenceProcessingPhase,
+};
 use crate::domain::cancellation::CancellationToken;
 use crate::test_support::ProcessCwdGuard;
 use serde_json::{Map, Value};
@@ -262,6 +266,8 @@ fn info_without_sections_is_local_only() {
     assert!(!data["properties"].as_array().unwrap().is_empty());
     assert!(data["relations"]["owners"].as_array().unwrap().is_empty());
     assert_eq!(data["validation"]["status"], "passed");
+    assert_eq!(data["functionalSubsystems"], serde_json::json!([]));
+    assert_eq!(data["interfaceSubsystems"], serde_json::json!([]));
     assert_eq!(
         data["collections"]["attributes"].as_array().unwrap().len(),
         2
@@ -293,6 +299,537 @@ fn info_without_sections_is_local_only() {
     assert!(data.get("related").is_none());
     assert_eq!(data["usage"], serde_json::json!({}));
     assert!(result.stdout.is_none());
+}
+
+#[test]
+fn info_groups_only_the_current_objects_subsystem_memberships() {
+    let workspace = create_info_workspace("object-subsystem-memberships");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Служебные",
+        "false",
+        &content_item("Catalog.Inspectable"),
+    );
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Продажи",
+        "true",
+        &content_item("Catalog.Inspectable"),
+    );
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems/Продажи/Subsystems",
+        "ОптовыеПродажи",
+        "true",
+        &content_item("Catalog.Inspectable"),
+    );
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Посторонняя",
+        "true",
+        &content_item("Catalog.Other"),
+    );
+
+    let result = call_info(workspace.path(), []);
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.expect("typed metadata info data");
+    assert_eq!(
+        data["functionalSubsystems"],
+        serde_json::json!(["Служебные"])
+    );
+    assert_eq!(
+        data["interfaceSubsystems"],
+        serde_json::json!(["Продажи", "Продажи.ОптовыеПродажи"])
+    );
+    let serialized = serde_json::to_string(&data).unwrap();
+    assert!(!serialized.contains("Посторонняя"), "{serialized}");
+}
+
+#[test]
+fn info_matches_subsystem_memberships_by_address_or_root_descriptor_uuid() {
+    let workspace = create_info_workspace("object-subsystem-uuid-memberships");
+    let target_uuid = metadata_object_uuid(workspace.path(), "Catalogs/Inspectable.xml");
+    let different_uuid = "11111111-2222-4333-8444-555555555555";
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "ПоUUID",
+        "false",
+        &format!(
+            "{}{}",
+            content_item("Catalog.Other"),
+            content_item(&target_uuid)
+        ),
+    );
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "ПоАдресу",
+        "true",
+        &format!(
+            "{}{}",
+            content_item("Catalog.Inspectable"),
+            content_item(different_uuid)
+        ),
+    );
+
+    let result = call_info(workspace.path(), []);
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.expect("typed metadata info data");
+    assert_eq!(data["functionalSubsystems"], serde_json::json!(["ПоUUID"]));
+    assert_eq!(data["interfaceSubsystems"], serde_json::json!(["ПоАдресу"]));
+}
+
+#[test]
+fn info_returns_proved_empty_memberships_for_a_nonmatching_valid_uuid() {
+    let workspace = create_info_workspace("object-subsystem-nonmatching-uuid");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Посторонняя",
+        "true",
+        &content_item("11111111-2222-4333-8444-555555555555"),
+    );
+
+    let result = call_info(workspace.path(), []);
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.expect("typed metadata info data");
+    assert_eq!(data["functionalSubsystems"], serde_json::json!([]));
+    assert_eq!(data["interfaceSubsystems"], serde_json::json!([]));
+}
+
+#[test]
+fn info_omits_memberships_when_registered_content_reference_is_malformed() {
+    let workspace = create_info_workspace("object-subsystem-malformed-content-reference");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Поврежденная",
+        "true",
+        &content_item("not-a-metadata-reference"),
+    );
+
+    let result = call_info(workspace.path(), []);
+
+    assert!(!result.ok);
+    let data = result
+        .data
+        .as_ref()
+        .expect("partial typed metadata info data");
+    assert!(data.get("functionalSubsystems").is_none());
+    assert!(data.get("interfaceSubsystems").is_none());
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_omits_memberships_when_content_type_prefix_has_a_foreign_namespace() {
+    let workspace = create_info_workspace("object-subsystem-foreign-content-qname");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Поврежденная",
+        "true",
+        concat!(
+            "<readable:Item xmlns:readable=\"http://v8.1c.ru/8.3/xcf/readable\" ",
+            "xmlns:xr=\"urn:foreign\" xsi:type=\"xr:MDObjectRef\">",
+            "Catalog.Inspectable</readable:Item>"
+        ),
+    );
+
+    let result = call_info(workspace.path(), []);
+
+    assert!(!result.ok);
+    let data = result
+        .data
+        .as_ref()
+        .expect("partial typed metadata info data");
+    assert!(data.get("functionalSubsystems").is_none());
+    assert!(data.get("interfaceSubsystems").is_none());
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_omits_memberships_when_content_value_contains_a_nested_element() {
+    let workspace = create_info_workspace("object-subsystem-mixed-content-value");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Поврежденная",
+        "true",
+        concat!(
+            "<xr:Item xsi:type=\"xr:MDObjectRef\">Catalog.Inspectable",
+            "<foreign:Decoy xmlns:foreign=\"urn:foreign\"/>",
+            "</xr:Item>"
+        ),
+    );
+
+    let result = call_info(workspace.path(), []);
+
+    assert!(!result.ok);
+    let data = result
+        .data
+        .as_ref()
+        .expect("partial typed metadata info data");
+    assert!(data.get("functionalSubsystems").is_none());
+    assert!(data.get("interfaceSubsystems").is_none());
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_omits_memberships_when_content_contains_raw_direct_text() {
+    let workspace = create_info_workspace("object-subsystem-raw-content-text");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Поврежденная",
+        "true",
+        "Catalog.Inspectable",
+    );
+
+    let result = call_info(workspace.path(), []);
+
+    assert!(!result.ok);
+    let data = result.data.as_ref().expect("partial local metadata data");
+    assert!(data.get("functionalSubsystems").is_none());
+    assert!(data.get("interfaceSubsystems").is_none());
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_omits_memberships_when_child_objects_contains_raw_direct_text() {
+    let workspace = create_info_workspace("object-subsystem-raw-registration-text");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Поврежденная",
+        "true",
+        &content_item("Catalog.Inspectable"),
+    );
+    let configuration = workspace.path().join("src/Configuration.xml");
+    let malformed = std::fs::read_to_string(&configuration)
+        .unwrap()
+        .replace("<Subsystem>Поврежденная</Subsystem>", "Поврежденная");
+    std::fs::write(&configuration, malformed).unwrap();
+
+    let result = call_info(workspace.path(), []);
+
+    assert!(!result.ok);
+    let data = result.data.as_ref().expect("partial local metadata data");
+    assert!(data.get("functionalSubsystems").is_none());
+    assert!(data.get("interfaceSubsystems").is_none());
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_rejects_an_invalid_root_descriptor_uuid_instead_of_matching_by_address_only() {
+    let workspace = create_info_workspace("object-invalid-root-uuid");
+    let relative_descriptor = "Catalogs/Inspectable.xml";
+    let descriptor_path = workspace.path().join("src").join(relative_descriptor);
+    let target_uuid = metadata_object_uuid(workspace.path(), relative_descriptor);
+    let descriptor = std::fs::read_to_string(&descriptor_path).unwrap().replacen(
+        &format!("uuid=\"{target_uuid}\""),
+        "uuid=\"not-a-uuid\"",
+        1,
+    );
+    std::fs::write(&descriptor_path, descriptor).unwrap();
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "ПоАдресу",
+        "true",
+        &content_item("Catalog.Inspectable"),
+    );
+
+    let result = call_info(workspace.path(), []);
+
+    assert!(!result.ok);
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("functionalSubsystems").is_none()));
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("interfaceSubsystems").is_none()));
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_rejects_a_missing_root_descriptor_uuid_instead_of_matching_by_address_only() {
+    let workspace = create_info_workspace("object-missing-root-uuid");
+    let relative_descriptor = "Catalogs/Inspectable.xml";
+    let descriptor_path = workspace.path().join("src").join(relative_descriptor);
+    let target_uuid = metadata_object_uuid(workspace.path(), relative_descriptor);
+    let descriptor = std::fs::read_to_string(&descriptor_path).unwrap().replacen(
+        &format!(" uuid=\"{target_uuid}\""),
+        "",
+        1,
+    );
+    std::fs::write(&descriptor_path, descriptor).unwrap();
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "ПоАдресу",
+        "true",
+        &content_item("Catalog.Inspectable"),
+    );
+
+    let result = call_info(workspace.path(), []);
+
+    assert!(!result.ok);
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("functionalSubsystems").is_none()));
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("interfaceSubsystems").is_none()));
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_rejects_a_root_descriptor_name_that_disagrees_with_the_target() {
+    let workspace = create_info_workspace("object-root-name-mismatch");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "ПоАдресу",
+        "true",
+        &content_item("Catalog.Inspectable"),
+    );
+
+    let result = with_meta_info_descriptor_image_hook(
+        |bytes| {
+            std::str::from_utf8(bytes)
+                .unwrap()
+                .replacen("<Name>Inspectable</Name>", "<Name>Other</Name>", 1)
+                .into_bytes()
+        },
+        || call_info(workspace.path(), []),
+    );
+
+    assert!(!result.ok);
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("functionalSubsystems").is_none()));
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("interfaceSubsystems").is_none()));
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_rejects_non_exact_properties_and_name_identity_proofs() {
+    type IdentityMutation = (&'static str, fn(&str) -> String);
+    let cases: [IdentityMutation; 3] = [
+        ("foreign-properties", |xml| {
+            xml.replacen(
+                "<Properties>",
+                "<foreign:Properties xmlns:foreign=\"urn:foreign\">",
+                1,
+            )
+            .replacen("</Properties>", "</foreign:Properties>", 1)
+        }),
+        ("foreign-name", |xml| {
+            xml.replacen(
+                "<Name>Inspectable</Name>",
+                "<foreign:Name xmlns:foreign=\"urn:foreign\">Inspectable</foreign:Name>",
+                1,
+            )
+        }),
+        ("mixed-name", |xml| {
+            xml.replacen(
+                "<Name>Inspectable</Name>",
+                "<Name>Inspectable<foreign:Decoy xmlns:foreign=\"urn:foreign\"/></Name>",
+                1,
+            )
+        }),
+    ];
+
+    for (label, mutate) in cases {
+        let workspace = create_info_workspace(&format!("object-{label}"));
+        write_subsystem(
+            workspace.path(),
+            "src/Subsystems",
+            "ПоАдресу",
+            "true",
+            &content_item("Catalog.Inspectable"),
+        );
+        let result = with_meta_info_descriptor_image_hook(
+            move |bytes| mutate(std::str::from_utf8(bytes).unwrap()).into_bytes(),
+            || call_info(workspace.path(), []),
+        );
+
+        assert!(!result.ok, "{label}: {result:?}");
+        assert!(
+            result
+                .data
+                .as_ref()
+                .is_none_or(|data| data.get("functionalSubsystems").is_none()),
+            "{label}: {:?}",
+            result.data
+        );
+        assert!(
+            result
+                .data
+                .as_ref()
+                .is_none_or(|data| data.get("interfaceSubsystems").is_none()),
+            "{label}: {:?}",
+            result.data
+        );
+        assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+    }
+}
+
+#[test]
+fn info_rejects_a_foreign_namespace_descriptor_root_before_publishing_memberships() {
+    let workspace = create_info_workspace("object-foreign-descriptor-root");
+    let relative_descriptor = "Catalogs/Inspectable.xml";
+    let target_uuid = metadata_object_uuid(workspace.path(), relative_descriptor);
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "ПоUUID",
+        "true",
+        &content_item(&target_uuid),
+    );
+
+    let result = with_meta_info_descriptor_image_hook(
+        |bytes| {
+            let xml = std::str::from_utf8(bytes).unwrap();
+            xml.replacen(
+                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\"",
+                "<MetaDataObject xmlns=\"urn:foreign\"",
+                1,
+            )
+            .replacen(
+                "<Catalog uuid=",
+                "<Catalog xmlns=\"http://v8.1c.ru/8.3/MDClasses\" uuid=",
+                1,
+            )
+            .into_bytes()
+        },
+        || call_info(workspace.path(), []),
+    );
+
+    assert!(!result.ok);
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("functionalSubsystems").is_none()));
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("interfaceSubsystems").is_none()));
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_rejects_a_foreign_direct_descriptor_artifact_before_publishing_memberships() {
+    let workspace = create_info_workspace("object-foreign-direct-descriptor-artifact");
+    let relative_descriptor = "Catalogs/Inspectable.xml";
+    let target_uuid = metadata_object_uuid(workspace.path(), relative_descriptor);
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "ПоUUID",
+        "true",
+        &content_item(&target_uuid),
+    );
+
+    let result = with_meta_info_descriptor_image_hook(
+        |bytes| {
+            let xml = std::str::from_utf8(bytes).unwrap();
+            let closing = xml
+                .rfind("</MetaDataObject>")
+                .expect("metadata descriptor root closes");
+            let mut ambiguous = xml.to_string();
+            ambiguous.insert_str(closing, "<foreign:Decoy xmlns:foreign=\"urn:foreign\"/>");
+            ambiguous.into_bytes()
+        },
+        || call_info(workspace.path(), []),
+    );
+
+    assert!(!result.ok);
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("functionalSubsystems").is_none()));
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("interfaceSubsystems").is_none()));
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_rejects_duplicate_direct_metadata_objects_before_publishing_memberships() {
+    let workspace = create_info_workspace("object-duplicate-direct-metadata-object");
+    let relative_descriptor = "Catalogs/Inspectable.xml";
+    let target_uuid = metadata_object_uuid(workspace.path(), relative_descriptor);
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "ПоUUID",
+        "true",
+        &content_item(&target_uuid),
+    );
+
+    let result = with_meta_info_descriptor_image_hook(
+        move |bytes| {
+            let xml = std::str::from_utf8(bytes).unwrap();
+            let document = roxmltree::Document::parse(xml).unwrap();
+            let object = document
+                .root_element()
+                .children()
+                .find(roxmltree::Node::is_element)
+                .expect("metadata descriptor has one direct object");
+            let duplicate = xml[object.range()].replacen(
+                &target_uuid,
+                "11111111-2222-4333-8444-555555555555",
+                1,
+            );
+            let closing = xml
+                .rfind("</MetaDataObject>")
+                .expect("metadata descriptor root closes");
+            let mut ambiguous = xml.to_string();
+            ambiguous.insert_str(closing, &duplicate);
+            ambiguous.into_bytes()
+        },
+        || call_info(workspace.path(), []),
+    );
+
+    assert!(!result.ok);
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("functionalSubsystems").is_none()));
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("interfaceSubsystems").is_none()));
+    let diagnostics = result
+        .diagnostics
+        .as_ref()
+        .and_then(Value::as_array)
+        .expect("structured diagnostics");
+    assert!(
+        diagnostics.iter().any(|diagnostic| {
+            diagnostic["code"] == "provider_unavailable"
+                && diagnostic["metadataPath"] == "Catalog.Inspectable"
+                && diagnostic["field"] == "uuid"
+        }),
+        "{diagnostics:?}"
+    );
 }
 
 #[test]
@@ -1042,6 +1579,481 @@ fn meta_info_post_capture_cancellation_before_complete_return_is_provider_unavai
     assert_eq!(result.data.as_ref().unwrap()["name"], "SubordinateRegister");
     assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
     assert_no_error_diagnostic(&result, "validation_failed");
+}
+
+const COMMAND_INTERFACE_RULE: &str = "reaches no command interface section";
+
+fn append_subsystem_registration(path: &Path, name: &str) {
+    let xml = std::fs::read_to_string(path).unwrap();
+    let closing = xml
+        .rfind("</ChildObjects>")
+        .expect("registration owner has ChildObjects");
+    let mut updated = xml;
+    updated.insert_str(closing, &format!("<Subsystem>{name}</Subsystem>"));
+    std::fs::write(path, updated).unwrap();
+}
+
+fn register_subsystem(workspace: &Path, relative_dir: &str, name: &str) {
+    let directory = Path::new(relative_dir);
+    assert_eq!(
+        directory.file_name().and_then(|value| value.to_str()),
+        Some("Subsystems")
+    );
+    let owner = if directory == Path::new("src/Subsystems") {
+        workspace.join("src/Configuration.xml")
+    } else {
+        let relative_owner = directory
+            .parent()
+            .expect("nested Subsystems has a parent subsystem")
+            .with_extension("xml");
+        workspace.join(relative_owner)
+    };
+    append_subsystem_registration(&owner, name);
+}
+
+fn write_subsystem_file(
+    workspace: &Path,
+    relative_dir: &str,
+    file_name: &str,
+    descriptor_name: &str,
+    include: Option<&str>,
+    content: &str,
+    registered: bool,
+) {
+    if registered {
+        register_subsystem(workspace, relative_dir, file_name);
+    }
+    let include = include
+        .map(|value| {
+            format!("\t\t\t<IncludeInCommandInterface>{value}</IncludeInCommandInterface>\n")
+        })
+        .unwrap_or_default();
+    let dir = workspace.join(relative_dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join(format!("{file_name}.xml")),
+        format!(
+            concat!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" ",
+                "xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" ",
+                "xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" ",
+                "xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.20\">\n",
+                "\t<Subsystem uuid=\"77777777-7777-4777-8777-777777777777\">\n",
+                "\t\t<Properties>\n",
+                "\t\t\t<Name>{}</Name>\n",
+                "{}",
+                "\t\t\t<Content>\n",
+                "{}",
+                "\t\t\t</Content>\n",
+                "\t\t</Properties>\n",
+                "\t\t<ChildObjects></ChildObjects>\n",
+                "\t</Subsystem>\n",
+                "</MetaDataObject>\n"
+            ),
+            descriptor_name, include, content
+        ),
+    )
+    .unwrap();
+}
+
+fn write_subsystem(workspace: &Path, relative_dir: &str, name: &str, include: &str, content: &str) {
+    write_subsystem_file(
+        workspace,
+        relative_dir,
+        name,
+        name,
+        Some(include),
+        content,
+        true,
+    );
+}
+
+fn content_item(reference: &str) -> String {
+    format!("\t\t\t\t<xr:Item xsi:type=\"xr:MDObjectRef\">{reference}</xr:Item>\n")
+}
+
+fn metadata_object_uuid(workspace: &Path, relative_descriptor: &str) -> String {
+    let xml = std::fs::read_to_string(workspace.join("src").join(relative_descriptor)).unwrap();
+    let document = roxmltree::Document::parse(&xml).unwrap();
+    document
+        .root_element()
+        .children()
+        .find(roxmltree::Node::is_element)
+        .and_then(|object| object.attribute("uuid"))
+        .expect("metadata object root has uuid")
+        .to_string()
+}
+
+fn add_command_interface_register(workspace: &Path, name: &str) {
+    {
+        let _cwd = ProcessCwdGuard::enter(workspace).unwrap();
+        let added = UnicaApplication::new()
+            .call_tool(
+                "unica.meta.add",
+                &Map::from_iter([
+                    ("sourceSet".to_string(), Value::String("main".to_string())),
+                    (
+                        "kind".to_string(),
+                        Value::String("InformationRegister".to_string()),
+                    ),
+                    ("name".to_string(), Value::String(name.to_string())),
+                    (
+                        // Object integrity (ADR-0030) requires a register to
+                        // carry at least one dimension, resource or attribute.
+                        "operations".to_string(),
+                        serde_json::json!([{
+                            "op": "add",
+                            "collection": "dimensions",
+                            "elements": [{
+                                "name": "Period",
+                                "type": {"variants": [{
+                                    "kind": "string",
+                                    "length": 9,
+                                    "allowedLength": "variable"
+                                }]}
+                            }]
+                        }]),
+                    ),
+                    ("dryRun".to_string(), Value::Bool(false)),
+                ]),
+            )
+            .unwrap();
+        assert!(added.ok, "{name}: {:?}", added.errors);
+    }
+}
+
+fn register_command_interface_result(workspace: &Path, name: &str) -> OperationResult {
+    add_command_interface_register(workspace, name);
+    call_info_path(workspace, &format!("InformationRegister.{name}"), [])
+}
+
+fn register_command_interface_result_cancellable(
+    workspace: &Path,
+    name: &str,
+    cancellation: CancellationToken,
+) -> OperationResult {
+    add_command_interface_register(workspace, name);
+    call_info_path_cancellable(
+        workspace,
+        &format!("InformationRegister.{name}"),
+        [],
+        cancellation,
+    )
+}
+
+fn register_command_interface_warnings(workspace: &Path, name: &str) -> Vec<String> {
+    let result = register_command_interface_result(workspace, name);
+    assert!(result.ok, "{name}: {:?}", result.errors);
+    let data = result.data.expect("typed meta.info data");
+    data["validation"]["diagnostics"]
+        .as_array()
+        .expect("validation diagnostics")
+        .iter()
+        .filter(|diagnostic| diagnostic["severity"] == "warning")
+        .map(|diagnostic| diagnostic["message"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn info_does_not_treat_an_unregistered_subsystem_file_as_membership() {
+    let workspace = create_info_workspace("unregistered-subsystem");
+    write_subsystem_file(
+        workspace.path(),
+        "src/Subsystems",
+        "Stray",
+        "Stray",
+        Some("true"),
+        &content_item("InformationRegister.Unregistered"),
+        false,
+    );
+
+    let warnings = register_command_interface_warnings(workspace.path(), "Unregistered");
+
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.contains(COMMAND_INTERFACE_RULE)),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn info_reports_unavailable_when_a_registered_subsystem_descriptor_is_missing() {
+    let workspace = create_info_workspace("missing-registered-subsystem");
+    register_subsystem(workspace.path(), "src/Subsystems", "Missing");
+
+    let result = register_command_interface_result(workspace.path(), "MissingDescriptor");
+
+    assert!(!result.ok, "{:?}", result.data);
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+    let data = result
+        .data
+        .as_ref()
+        .expect("local data survives validation failure");
+    assert!(data.get("functionalSubsystems").is_none());
+    assert!(data.get("interfaceSubsystems").is_none());
+    assert!(!serde_json::to_string(&result.data)
+        .unwrap()
+        .contains(COMMAND_INTERFACE_RULE));
+}
+
+#[test]
+fn info_reports_unavailable_for_missing_or_noncanonical_subsystem_boolean() {
+    for (label, include) in [("missing", None), ("noncanonical", Some("True"))] {
+        let workspace = create_info_workspace(&format!("{label}-subsystem-boolean"));
+        write_subsystem_file(
+            workspace.path(),
+            "src/Subsystems",
+            "Sales",
+            "Sales",
+            include,
+            &content_item(&format!("InformationRegister.{label}")),
+            true,
+        );
+
+        let result = register_command_interface_result(workspace.path(), label);
+
+        assert!(!result.ok, "{label}: {:?}", result.data);
+        assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+        assert!(!serde_json::to_string(&result.data)
+            .unwrap()
+            .contains(COMMAND_INTERFACE_RULE));
+    }
+}
+
+#[test]
+fn info_reports_unavailable_when_registration_and_descriptor_names_disagree() {
+    let workspace = create_info_workspace("renamed-registered-subsystem");
+    write_subsystem_file(
+        workspace.path(),
+        "src/Subsystems",
+        "Sales",
+        "Renamed",
+        Some("true"),
+        &content_item("InformationRegister.RenamedDescriptor"),
+        true,
+    );
+
+    let result = register_command_interface_result(workspace.path(), "RenamedDescriptor");
+
+    assert!(!result.ok, "{:?}", result.data);
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+    assert!(!serde_json::to_string(&result.data)
+        .unwrap()
+        .contains(COMMAND_INTERFACE_RULE));
+}
+
+#[test]
+fn subsystem_evidence_cancellation_after_registered_topology_is_unavailable() {
+    let workspace = create_info_workspace("subsystem-final-cancel");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Sales",
+        "true",
+        &content_item("InformationRegister.FinalCancel"),
+    );
+    let cancellation = CancellationToken::new();
+    let cancellation_for_hook = cancellation.clone();
+
+    let result = with_subsystem_evidence_processing_hook(
+        move |phase| {
+            if phase == &SubsystemEvidenceProcessingPhase::BeforeCompleteReturn {
+                cancellation_for_hook.cancel();
+            }
+        },
+        || {
+            register_command_interface_result_cancellable(
+                workspace.path(),
+                "FinalCancel",
+                cancellation,
+            )
+        },
+    );
+
+    assert!(!result.ok, "{:?}", result.data);
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+    assert!(!serde_json::to_string(&result.data)
+        .unwrap()
+        .contains(COMMAND_INTERFACE_RULE));
+}
+
+#[test]
+fn subsystem_evidence_cancellation_after_empty_topology_is_unavailable() {
+    let workspace = create_info_workspace("empty-subsystem-final-cancel");
+    let cancellation = CancellationToken::new();
+    let cancellation_for_hook = cancellation.clone();
+
+    let result = with_subsystem_evidence_processing_hook(
+        move |phase| {
+            if phase == &SubsystemEvidenceProcessingPhase::BeforeCompleteReturn {
+                cancellation_for_hook.cancel();
+            }
+        },
+        || {
+            register_command_interface_result_cancellable(
+                workspace.path(),
+                "EmptyFinalCancel",
+                cancellation,
+            )
+        },
+    );
+
+    assert!(!result.ok, "{:?}", result.data);
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+    assert!(!serde_json::to_string(&result.data)
+        .unwrap()
+        .contains(COMMAND_INTERFACE_RULE));
+}
+
+#[test]
+fn info_warns_when_an_included_subsystem_sits_under_an_excluded_ancestor() {
+    let workspace = create_info_workspace("included-under-excluded");
+    // Mirrors InformationRegister.ДанныеКонтрагентовСоздаваемыхБезусловно of a
+    // real configuration: the owning subsystem carries the flag, but a library
+    // root above it is excluded, so the register reaches no section.
+    write_subsystem(workspace.path(), "src/Subsystems", "Library", "false", "");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems/Library/Subsystems",
+        "Service",
+        "true",
+        &content_item("InformationRegister.UnderExcluded"),
+    );
+    let warnings = register_command_interface_warnings(workspace.path(), "UnderExcluded");
+
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.contains(COMMAND_INTERFACE_RULE)),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn info_warns_when_the_chain_breaks_below_the_root() {
+    let workspace = create_info_workspace("chain-breaks-midway");
+    write_subsystem(workspace.path(), "src/Subsystems", "Top", "true", "");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems/Top/Subsystems",
+        "Middle",
+        "false",
+        "",
+    );
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems/Top/Subsystems/Middle/Subsystems",
+        "Leaf",
+        "true",
+        &content_item("InformationRegister.BrokenChain"),
+    );
+    let warnings = register_command_interface_warnings(workspace.path(), "BrokenChain");
+
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.contains(COMMAND_INTERFACE_RULE)),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn info_tells_same_named_subsystems_apart_by_their_path() {
+    let workspace = create_info_workspace("same-named-levels");
+    // Both levels are named Sales; only the nested one lists the register, and
+    // the excluded outer one must not lend it its own verdict either way.
+    write_subsystem(workspace.path(), "src/Subsystems", "Sales", "true", "");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems/Sales/Subsystems",
+        "Sales",
+        "true",
+        &content_item("InformationRegister.SameNamed"),
+    );
+    let warnings = register_command_interface_warnings(workspace.path(), "SameNamed");
+
+    assert!(
+        !warnings
+            .iter()
+            .any(|warning| warning.contains(COMMAND_INTERFACE_RULE)),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn info_warns_when_a_command_interface_register_is_in_no_subsystem() {
+    let workspace = create_info_workspace("register-without-subsystem");
+    let warnings = register_command_interface_warnings(workspace.path(), "Orphan");
+
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.contains(COMMAND_INTERFACE_RULE)),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn info_accepts_a_register_listed_in_a_command_interface_subsystem() {
+    let workspace = create_info_workspace("register-in-subsystem");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Sales",
+        "true",
+        &content_item("InformationRegister.Listed"),
+    );
+    let warnings = register_command_interface_warnings(workspace.path(), "Listed");
+
+    assert!(
+        !warnings
+            .iter()
+            .any(|warning| warning.contains(COMMAND_INTERFACE_RULE)),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn info_warns_when_the_only_subsystem_is_excluded_from_the_command_interface() {
+    let workspace = create_info_workspace("register-in-excluded-subsystem");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Service",
+        "false",
+        &content_item("InformationRegister.Excluded"),
+    );
+    let warnings = register_command_interface_warnings(workspace.path(), "Excluded");
+
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.contains(COMMAND_INTERFACE_RULE)),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn info_accepts_a_register_listed_in_a_nested_subsystem() {
+    let workspace = create_info_workspace("register-in-nested-subsystem");
+    write_subsystem(workspace.path(), "src/Subsystems", "Parent", "true", "");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems/Parent/Subsystems",
+        "Child",
+        "true",
+        &content_item("InformationRegister.Nested"),
+    );
+    let warnings = register_command_interface_warnings(workspace.path(), "Nested");
+
+    assert!(
+        !warnings
+            .iter()
+            .any(|warning| warning.contains(COMMAND_INTERFACE_RULE)),
+        "{warnings:?}"
+    );
 }
 
 fn add_enum_with_presentations(

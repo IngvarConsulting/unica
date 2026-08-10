@@ -4,8 +4,9 @@ use super::edit::{
 };
 use crate::application::ports::{
     MetadataAuxiliaryXmlKind, MetadataChildProfile, MetadataChildResourceKind,
-    MetadataEvidenceAvailability, MetadataResourceRole, MetadataTemplateResourcePart,
-    MetadataTemplateType, MetadataValidationResult, MetadataValidationSubject,
+    MetadataEvidenceAvailability, MetadataResourceRole, MetadataSubsystemEvidence,
+    MetadataTemplateResourcePart, MetadataTemplateType, MetadataValidationResult,
+    MetadataValidationSubject,
 };
 use crate::domain::format_profile::{
     classify_root_version, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
@@ -37,7 +38,7 @@ use super::info::resolve_meta_info_path;
 use super::validation_context::{
     inspect_metadata_image_identity, inspect_metadata_language_image,
     inspect_metadata_registration_image, meta_validate_registrar_document_scan,
-    meta_validate_types_with_list_presentation,
+    meta_validate_types_with_list_presentation, MetaValidationImageIdentityError,
 };
 use super::xml_model::{
     meta_info_child, meta_info_child_text, meta_info_children, meta_info_inner_text,
@@ -144,6 +145,11 @@ impl MetadataValidator {
         let mut result = self.validate(subject, context);
         let mut completeness = complete_read_proof_diagnostics(subject);
         if let MetadataEvidenceAvailability::Unavailable(diagnostics) = &subject.registrar_evidence
+        {
+            completeness.extend(diagnostics.clone());
+        }
+        if let Some(MetadataSubsystemEvidence::Unavailable(diagnostics)) =
+            &subject.subsystem_evidence
         {
             completeness.extend(diagnostics.clone());
         }
@@ -280,16 +286,51 @@ impl MetadataValidator {
         let (target_type, target_name) = subject_target_identity(subject);
         if let Some(descriptor_index) = descriptor_indices.first().copied() {
             let descriptor = &subject.resources[descriptor_index];
-            if let Ok(identity) = inspect_metadata_image_identity(&descriptor.bytes) {
-                if identity.object_type != target_type || identity.object_name != target_name {
-                    diagnostics.push(validation_diagnostic(
-                        subject,
-                        &format!("resources[{descriptor_index}].bytes"),
-                        format!(
-                            "descriptor identity {}.{} does not match target {}",
-                            identity.object_type, identity.object_name, subject.target
+            match inspect_metadata_image_identity(&descriptor.bytes) {
+                Ok(identity) => {
+                    if identity.object_type != target_type || identity.object_name != target_name {
+                        diagnostics.push(validation_diagnostic(
+                            subject,
+                            &format!("resources[{descriptor_index}].bytes"),
+                            format!(
+                                "descriptor identity {}.{} does not match target {}",
+                                identity.object_type, identity.object_name, subject.target
+                            ),
+                        ));
+                    }
+                }
+                Err(error) => {
+                    let closed_owner_namespace_error = matches!(
+                        &error,
+                        MetaValidationImageIdentityError::ForeignProperties(_)
+                            | MetaValidationImageIdentityError::ForeignName(_)
+                    );
+                    let message = match &error {
+                        MetaValidationImageIdentityError::ForeignProperties(_) => format!(
+                            "owner descriptor contains Properties outside the MDClasses namespace: {}",
+                            subject.target
                         ),
-                    ));
+                        MetaValidationImageIdentityError::ForeignName(_) => format!(
+                            "owner descriptor contains Name outside the MDClasses namespace: {}",
+                            subject.target
+                        ),
+                        _ => format!("metadata descriptor identity is invalid: {error}"),
+                    };
+                    if !error.is_structural() {
+                        diagnostics.push(validation_diagnostic(
+                            subject,
+                            &format!("resources[{descriptor_index}].bytes"),
+                            message,
+                        ));
+                    } else if closed_owner_namespace_error {
+                        diagnostics.push(
+                            MetaDiagnostic::error(MetaDiagnosticCode::ProviderUnavailable, message)
+                                .with_metadata_path(subject.target.clone())
+                                .with_field("resources"),
+                        );
+                    } else {
+                        diagnostics.push(provider_diagnostic(subject, descriptor_index, message));
+                    }
                 }
             }
 
@@ -458,15 +499,23 @@ fn complete_read_proof_diagnostics(subject: &MetadataValidationSubject) -> Vec<M
             "metadata descriptor proof is unavailable",
         )];
     };
-    let Ok((_, document)) = parse_metadata_image(&descriptor.bytes) else {
-        return Vec::new();
+    let (_, document) = match parse_metadata_image(&descriptor.bytes) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            return vec![complete_read_missing(
+                subject,
+                format!("metadata descriptor proof is invalid: {error}"),
+            )]
+        }
     };
-    let Some(object) = document
-        .root_element()
-        .children()
-        .find(|node| node.is_element() && node.tag_name().namespace() == Some(MD_CLASSES_NS))
-    else {
-        return Vec::new();
+    let object = match exact_metadata_artifact(&document) {
+        Ok(object) => object,
+        Err(error) => {
+            return vec![complete_read_missing(
+                subject,
+                format!("metadata descriptor proof is invalid: {error}"),
+            )]
+        }
     };
     let object_type = object.tag_name().name();
     let properties = meta_info_child(object, "Properties");
@@ -2874,6 +2923,14 @@ pub(super) fn meta_validate_check_cross_properties(
         obj_name,
         &mut issues,
     );
+    meta_validate_check_register_command_interface(
+        report,
+        md_type,
+        props_node,
+        proof_subject,
+        obj_name,
+        &mut issues,
+    );
     if check_ok && issues == 0 {
         report.ok("10. Cross-property consistency");
     }
@@ -2980,6 +3037,51 @@ pub(super) fn meta_validate_check_register_registrar(
     if !has_registrar {
         report.warn(format!(
             "10. {md_type}: no registrar document found (none references '{reg_ref}' in RegisterRecords)"
+        ));
+        *issues += 1;
+    }
+}
+
+pub(super) fn meta_validate_check_register_command_interface(
+    report: &mut MetaValidationReporter,
+    md_type: &str,
+    props_node: roxmltree::Node<'_, '_>,
+    proof_subject: Option<&MetadataValidationSubject>,
+    obj_name: &str,
+    issues: &mut usize,
+) {
+    if !matches!(
+        md_type,
+        "AccumulationRegister"
+            | "AccountingRegister"
+            | "CalculationRegister"
+            | "InformationRegister"
+    ) || obj_name == "(unknown)"
+    {
+        return;
+    }
+    if meta_info_child_text(props_node, "UseStandardCommands").as_deref() != Some("true") {
+        return;
+    }
+    // A subordinate information register is not shown in the command interface at
+    // all, so subsystem membership is not required — that pairing has its own rule.
+    if md_type == "InformationRegister"
+        && meta_info_child_text(props_node, "WriteMode").as_deref() == Some("RecorderSubordinate")
+    {
+        return;
+    }
+    let Some(MetadataSubsystemEvidence::Complete {
+        interface_subsystems,
+        ..
+    }) = proof_subject.and_then(|subject| subject.subsystem_evidence.as_ref())
+    else {
+        return;
+    };
+    let object_ref = format!("{md_type}.{obj_name}");
+    let shown_in_command_interface = !interface_subsystems.is_empty();
+    if !shown_in_command_interface {
+        report.warn(format!(
+            "10. {md_type}: UseStandardCommands=true but '{object_ref}' reaches no command interface section (a section is a subsystem whose whole chain to the root stays included; a service subsystem groups objects and is not made a section by its own flag)"
         ));
         *issues += 1;
     }
@@ -3777,10 +3879,12 @@ mod tests {
     use super::*;
     use crate::application::ports::{
         MetadataAuxiliaryXmlKind, MetadataChildDirectoryKind, MetadataChildFootprintEvidence,
-        MetadataResourceImage, MetadataResourceRole, MetadataValidationSubject,
+        MetadataResourceImage, MetadataResourceRole, MetadataSubsystemEvidence,
+        MetadataValidationSubject,
     };
     use crate::domain::metadata::{MetaDiagnosticCode, MetaValidationStatus};
     use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use crate::domain::subsystem::SubsystemAddress;
 
     const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
@@ -3834,7 +3938,104 @@ mod tests {
             resources,
             child_footprints: Vec::new(),
             registrar_evidence: Default::default(),
+            subsystem_evidence: Default::default(),
         }
+    }
+
+    fn command_interface_rule_warnings(subject: &MetadataValidationSubject) -> Vec<String> {
+        let document = Document::parse(
+            r#"<Properties xmlns="http://v8.1c.ru/8.3/MDClasses"><UseStandardCommands>true</UseStandardCommands><WriteMode>Independent</WriteMode></Properties>"#,
+        )
+        .unwrap();
+        let mut reporter = MetaValidationReporter::new(30);
+        let mut issues = 0;
+        meta_validate_check_register_command_interface(
+            &mut reporter,
+            "InformationRegister",
+            document.root_element(),
+            Some(subject),
+            "Ledger",
+            &mut issues,
+        );
+        reporter.warnings
+    }
+
+    fn command_interface_subject(
+        evidence: Option<MetadataSubsystemEvidence>,
+    ) -> MetadataValidationSubject {
+        MetadataValidationSubject {
+            target: address("InformationRegister.Ledger"),
+            resources: Vec::new(),
+            child_footprints: Vec::new(),
+            registrar_evidence: MetadataEvidenceAvailability::Complete,
+            subsystem_evidence: evidence,
+        }
+    }
+
+    #[test]
+    fn command_interface_rule_distinguishes_absence_presence_and_uncollected_evidence() {
+        let missing = command_interface_subject(Some(MetadataSubsystemEvidence::Complete {
+            functional_subsystems: Vec::new(),
+            interface_subsystems: Vec::new(),
+        }));
+        assert!(command_interface_rule_warnings(&missing)
+            .iter()
+            .any(|warning| warning.contains("reaches no command interface section")));
+
+        let present = command_interface_subject(Some(MetadataSubsystemEvidence::Complete {
+            functional_subsystems: Vec::new(),
+            interface_subsystems: vec![SubsystemAddress::parse("Sales.Registers").unwrap()],
+        }));
+        assert!(!command_interface_rule_warnings(&present)
+            .iter()
+            .any(|warning| warning.contains("reaches no command interface section")));
+
+        let uncollected = command_interface_subject(None);
+        assert!(command_interface_rule_warnings(&uncollected).is_empty());
+    }
+
+    #[test]
+    fn unavailable_subsystem_evidence_is_not_a_semantic_absence() {
+        let diagnostic = MetaDiagnostic::error(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "subsystem topology could not be proved",
+        )
+        .with_metadata_path(address("InformationRegister.Ledger"))
+        .with_field("subsystemEvidence");
+        let subject =
+            command_interface_subject(Some(MetadataSubsystemEvidence::Unavailable(vec![
+                diagnostic,
+            ])));
+
+        assert!(command_interface_rule_warnings(&subject).is_empty());
+        let result = MetadataValidator.validate_complete_read(&subject, &context());
+        assert!(result.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == MetaDiagnosticCode::ProviderUnavailable
+                && diagnostic.field.as_deref() == Some("subsystemEvidence")
+        }));
+        assert!(!result.diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("reaches no command interface section")));
+    }
+
+    #[test]
+    fn generic_dependency_does_not_stand_in_for_subsystem_evidence() {
+        let mut subject = command_interface_subject(Some(MetadataSubsystemEvidence::Complete {
+            functional_subsystems: Vec::new(),
+            interface_subsystems: Vec::new(),
+        }));
+        subject.resources.push(image(
+            MetadataResourceRole::Dependency {
+                target: address("Subsystem.Main"),
+            },
+            format!(
+                r#"<MetaDataObject xmlns="{MD_NS}"><Subsystem><Properties><Name>Main</Name></Properties></Subsystem></MetaDataObject>"#
+            ),
+        ));
+
+        assert!(command_interface_rule_warnings(&subject)
+            .iter()
+            .any(|warning| warning.contains("reaches no command interface section")));
     }
 
     fn common_module(name: &str) -> String {
@@ -3925,6 +4126,7 @@ mod tests {
                 )],
                 child_footprints: Vec::new(),
                 registrar_evidence: Default::default(),
+            subsystem_evidence: Default::default(),
             };
 
             let result = MetadataValidator.validate(&subject, &context());
@@ -4092,6 +4294,7 @@ mod tests {
                 retained: Vec::new(),
             }],
             registrar_evidence: Default::default(),
+            subsystem_evidence: Default::default(),
         }
     }
 
@@ -5399,6 +5602,7 @@ mod tests {
             )],
             child_footprints: Vec::new(),
             registrar_evidence: Default::default(),
+            subsystem_evidence: Default::default(),
         };
 
         let result = MetadataValidator.validate(&incomplete, &context());
@@ -5496,6 +5700,7 @@ mod tests {
             resources,
             child_footprints: Vec::new(),
             registrar_evidence: Default::default(),
+            subsystem_evidence: Default::default(),
         };
 
         let result = MetadataValidator.validate(&inaccessible, &context());
@@ -5850,6 +6055,7 @@ mod tests {
                 ],
                 child_footprints: Vec::new(),
                 registrar_evidence: Default::default(),
+                subsystem_evidence: Default::default(),
             };
 
             let result = MetadataValidator.validate(&invalid, &context());
