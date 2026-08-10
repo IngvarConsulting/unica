@@ -1086,7 +1086,9 @@ class UnicaMcpSmokeTests(unittest.TestCase):
                     "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">"
                     "<Catalog uuid=\"7e082488-1a41-4d06-b4be-66265c55ca16\">"
                     "<Properties><Name>Goods</Name>"
-                    "<Owners><xr:Item xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\">"
+                    "<Owners><xr:Item xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" "
+                    "xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" "
+                    "xsi:type=\"xr:MDObjectRef\">"
                     "Catalog.Kinds</xr:Item></Owners>"
                     "</Properties></Catalog></MetaDataObject>"
                 ).encode()
