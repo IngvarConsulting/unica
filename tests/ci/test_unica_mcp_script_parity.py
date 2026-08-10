@@ -3,8 +3,10 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import hashlib
+import io
 import json
 import os
+import platform
 import queue
 import re
 import shutil
@@ -16,7 +18,9 @@ import time
 import unittest
 import uuid
 import xml.etree.ElementTree as ET
+import zipfile
 from collections.abc import Callable, Iterable
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
@@ -82,6 +86,39 @@ BSP_MXL_POWER_OF_ATTORNEY_FIXTURE = (
     "bsp/mxl/Catalogs__МашиночитаемыеДоверенности__"
     "ПФ_MXL_Доверенность/Template.xml"
 )
+READER_STANDINS_ROOT = FIXTURES_ROOT / "reader-standins"
+DOCUMENTED_READER_TOOL_NAMES = {
+    "unica.cf.info",
+    "unica.cf.validate",
+    "unica.cfe.diff",
+    "unica.cfe.validate",
+    "unica.code.definition",
+    "unica.code.graph",
+    "unica.code.search",
+    "unica.dcs.info",
+    "unica.dcs.validate",
+    "unica.documentation.get",
+    "unica.documentation.search",
+    "unica.form.info",
+    "unica.form.validate",
+    "unica.interface.validate",
+    "unica.meta.info",
+    "unica.mxl.decompile",
+    "unica.mxl.info",
+    "unica.mxl.validate",
+    "unica.role.info",
+    "unica.role.validate",
+    "unica.subsystem.info",
+    "unica.subsystem.validate",
+    "unica.xdto.info",
+}
+TYPED_CONTRACT_TOOL_NAMES = {
+    name
+    for name, review in json.loads(
+        (REPO_ROOT / "spec/architecture/tool-surface-review.json").read_text(encoding="utf-8")
+    ).items()
+    if review["result"]["contract"] == "typed"
+}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1127,6 +1164,7 @@ MCP_HANDSHAKE = [
 
 class UnicaMcpScriptParityTests(unittest.TestCase):
     unica_bin: Path
+    execution_by_tool: dict[str, str] | None = None
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -1536,7 +1574,7 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
                 rf"\s*\([^)]*\)\s+(?:Export|Экспорт)\s*$",
             )
 
-    def test_every_skill_tools_call_example_executes_as_mcp_dry_run(self) -> None:
+    def test_every_skill_tools_call_example_executes_by_tool_mode(self) -> None:
         examples = list(iter_skill_mcp_examples())
         self.assertGreater(len(examples), 0)
 
@@ -1544,6 +1582,7 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
             temp_root = Path(temp)
             workspace = temp_root / "workspace"
             workspace.mkdir()
+            workspace = workspace.resolve()
             source_roots = {
                 "main": workspace / "src" / "cf",
                 "myExtension": workspace / "src" / "cfe",
@@ -1562,6 +1601,41 @@ source-set:
 """,
                 encoding="utf-8",
             )
+            _plugin_root, extra_env, standin_call_log = prepare_reader_standins(temp_root)
+            v8std = V8StdStandin()
+            extra_env["UNICA_STANDARDS_MCP_URL"] = v8std.start()
+            self.addCleanup(v8std.stop)
+            prepare_platform_help_installation(temp_root, workspace)
+            (workspace / "unica.toml").write_text(
+                """[network]
+default = "deny"
+
+[providers.v8std]
+network = "allow"
+""",
+                encoding="utf-8",
+            )
+            tool_list_responses = self.call_mcp_messages(
+                [
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/list",
+                        "params": {},
+                    }
+                ],
+                temp_root / "cache",
+                process_cwd=workspace,
+                extra_env=extra_env,
+            )
+            execution_by_tool = {
+                tool["name"]: (
+                    "mutation"
+                    if "dryRun" in tool["inputSchema"]["properties"]
+                    else "read"
+                )
+                for tool in tool_list_responses[1]["result"]["tools"]
+            }
             shutil.copyfile(
                 FIXTURES_ROOT / "meta-remove" / "Configuration.xml",
                 workspace / "src" / "cf" / "Configuration.xml",
@@ -1777,23 +1851,61 @@ source-set:
                 if example.payload["params"]["name"] == "unica.meta.info":
                     prepare_meta_info_skill_example(source_roots, arguments)
             self.assertEqual(code_patch_source_sets, {"main", "myExtension"})
+            prepare_skill_reader_fixtures(
+                examples,
+                execution_by_tool,
+                workspace,
+                source_roots,
+            )
             messages = [
-                dry_run_message_for_example(example, index + 1, workspace)
+                execution_message_for_example(
+                    example,
+                    index + 1,
+                    workspace,
+                    execution_by_tool,
+                )
                 for index, example in enumerate(examples)
             ]
             # No example needs a live snapshot any more: the source surface is
             # read-only and the source-access skill previews through
             # unica.code.patch like every other writer example.
             workspace_before_calls = snapshot_workspace_bytes(workspace)
-            responses = self.call_mcp_messages(
+            transport_messages = sorted(
                 messages,
+                key=lambda message: message["params"]["name"] == "unica.code.definition",
+            )
+            responses = self.call_mcp_messages(
+                transport_messages,
                 temp_root / "cache",
                 process_cwd=workspace,
+                extra_env=extra_env,
             )
             self.assertEqual(
                 snapshot_workspace_bytes(workspace),
                 workspace_before_calls,
             )
+            standin_calls = [
+                json.loads(line)
+                for line in standin_call_log.read_text(encoding="utf-8").splitlines()
+            ]
+            called_tools = {call["tool"] for call in standin_calls}
+            self.assertIn("graph", called_tools)
+            self.assertIn("rlm_execute", called_tools)
+            self.assertTrue(
+                any(
+                    "find_definition" in str(call["arguments"].get("code", ""))
+                    for call in standin_calls
+                    if call["tool"] == "rlm_execute"
+                ),
+                standin_calls,
+            )
+            self.assertGreater(len(v8std.calls), 0)
+            self.assertEqual({call["path"] for call in v8std.calls}, {"/mcp"})
+            self.assertTrue(
+                all(str(call["host"]).startswith("127.0.0.1:") for call in v8std.calls),
+                v8std.calls,
+            )
+            v8std.stop()
         self.assertEqual(len(responses), len(examples))
         for example, message in zip(examples, messages):
             with self.subTest(skill=example.skill, line=example.line):
@@ -1837,6 +1949,14 @@ source-set:
                 elif tool_name.startswith("unica.meta."):
                     if result["ok"]:
                         self.assertIn("preview", result["summary"])
+                elif execution_by_tool[tool_name] == "read":
+                    if tool_name in TYPED_CONTRACT_TOOL_NAMES:
+                        self.assertIn(
+                            "data",
+                            result,
+                            json.dumps(result, ensure_ascii=False, indent=2),
+                        )
+                    self.assertNotRegex(result["summary"].lower(), r"preview|dry run")
                 else:
                     self.assertIn("dry run", result["summary"])
                 if example.skill == "code-patch":
@@ -2126,7 +2246,31 @@ source-set:
     ) -> dict[str, Any]:
         arguments = dict(arguments)
         arguments["cwd"] = str(workspace)
-        arguments["dryRun"] = False
+        if type(self).execution_by_tool is None:
+            listed = self.call_mcp_messages(
+                [
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/list",
+                        "params": {},
+                    }
+                ],
+                cache_dir,
+                process_cwd=workspace,
+            )
+            type(self).execution_by_tool = {
+                entry["name"]: (
+                    "mutation"
+                    if "dryRun" in entry["inputSchema"]["properties"]
+                    else "read"
+                )
+                for entry in listed[1]["result"]["tools"]
+            }
+        if type(self).execution_by_tool[tool] == "mutation":
+            arguments["dryRun"] = False
+        else:
+            arguments.pop("dryRun", None)
         message = {
             "jsonrpc": "2.0",
             "id": 1,
@@ -2248,10 +2392,13 @@ source-set:
         messages: list[dict[str, Any]],
         cache_dir: Path,
         process_cwd: Path = REPO_ROOT,
+        extra_env: dict[str, str] | None = None,
     ) -> dict[int, dict[str, Any]]:
         env = os.environ.copy()
         env["UNICA_PLUGIN_ROOT"] = str(PLUGIN_ROOT)
         env["UNICA_CACHE_DIR"] = str(cache_dir)
+        if extra_env is not None:
+            env.update(extra_env)
         responses = []
         for start in range(0, len(messages), 32):
             batch = messages[start : start + 32]
@@ -2746,10 +2893,11 @@ def iter_skill_mcp_examples() -> list[SkillMcpExample]:
     return iter_documented_mcp_examples(SKILLS_ROOT.glob("*/SKILL.md"))
 
 
-def dry_run_message_for_example(
+def execution_message_for_example(
     example: SkillMcpExample,
     request_id: int,
     workspace: Path,
+    execution_by_tool: dict[str, str],
 ) -> dict[str, Any]:
     message = json.loads(json.dumps(example.payload, ensure_ascii=False))
     message["id"] = request_id
@@ -2759,14 +2907,472 @@ def dry_run_message_for_example(
     tool_name = params.get("name", "")
     if tool_name.startswith("unica.meta.") or tool_name == "unica.role.edit":
         arguments.pop("cwd", None)
-        if tool_name == "unica.meta.info":
-            arguments.pop("dryRun", None)
-        else:
-            arguments["dryRun"] = True
     else:
         arguments["cwd"] = str(workspace)
+    if execution_by_tool[tool_name] == "mutation":
         arguments["dryRun"] = True
+    else:
+        arguments.pop("dryRun", None)
     return message
+
+
+def copy_reader_fixture(source: str, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(FIXTURES_ROOT / source, target)
+    if target.suffix.lower() == ".xml":
+        data = target.read_bytes()
+        target.write_bytes(data.replace(b'version="2.17"', b'version="2.20"'))
+
+
+def reader_content_path(raw_path: str, leaf: str) -> Path:
+    path = Path(raw_path)
+    return path if path.suffix.lower() == ".xml" else path / "Ext" / leaf
+
+
+def replace_reader_placeholder(
+    arguments: dict[str, Any],
+    key: str,
+    example: SkillMcpExample,
+    replacement: str,
+) -> str:
+    value = str(arguments[key])
+    if value.startswith("<") and value.endswith(">"):
+        arguments[key] = replacement
+        return replacement
+    return value
+
+
+def register_configuration_child(configuration: Path, kind: str, name: str) -> None:
+    text = configuration.read_text(encoding="utf-8-sig")
+    registration = f"\t\t\t<{kind}>{name}</{kind}>\n"
+    if registration in text:
+        return
+    marker = "\t\t</ChildObjects>"
+    if marker not in text:
+        raise AssertionError(f"configuration fixture has no ChildObjects marker: {configuration}")
+    configuration.write_text(
+        text.replace(marker, registration + marker, 1),
+        encoding="utf-8",
+    )
+
+
+def add_extension_internal_info(configuration: Path) -> None:
+    text = configuration.read_text(encoding="utf-8-sig")
+    if "<InternalInfo>" in text:
+        return
+    donor = (FIXTURES_ROOT / "cf-validate/Configuration.xml").read_text(encoding="utf-8")
+    internal_info = re.search(r"\t\t<InternalInfo>.*?\t\t</InternalInfo>\n", donor, re.S)
+    if internal_info is None:
+        raise AssertionError("cf-validate fixture lost its InternalInfo donor block")
+    marker = re.search(r"\t<Configuration[^>]*>\n", text)
+    if marker is None:
+        raise AssertionError(f"extension fixture has no Configuration root: {configuration}")
+    configuration.write_text(
+        text[: marker.end()] + internal_info.group(0) + text[marker.end() :],
+        encoding="utf-8",
+    )
+
+
+def write_named_subsystem_fixture(target: Path, name: str, child: str | None = None) -> None:
+    source = (FIXTURES_ROOT / BSP_SUBSYSTEM_FIXTURE).read_text(encoding="utf-8-sig")
+    source = source.replace("Администрирование", name)
+    if child is not None:
+        source = source.replace("КонтрольРаботыПользователей", child)
+    else:
+        source = source.replace(
+            "\t\t<ChildObjects>\n\t\t\t<Subsystem>КонтрольРаботыПользователей</Subsystem>\n\t\t</ChildObjects>\n",
+            "\t\t<ChildObjects>\n\t\t</ChildObjects>\n",
+        )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(source, encoding="utf-8")
+    copy_reader_fixture(
+        BSP_SUBSYSTEM_COMMAND_INTERFACE_FIXTURE,
+        target.with_suffix("") / "Ext" / "CommandInterface.xml",
+    )
+
+
+def prepare_skill_reader_fixtures(
+    examples: list[SkillMcpExample],
+    execution_by_tool: dict[str, str],
+    workspace: Path,
+    source_roots: dict[str, Path],
+) -> None:
+    readers = {
+        example.payload["params"]["name"]
+        for example in examples
+        if execution_by_tool[example.payload["params"]["name"]] == "read"
+    }
+    if readers != DOCUMENTED_READER_TOOL_NAMES:
+        locations = {
+            example.payload["params"]["name"]: f"{example.document}:{example.line}"
+            for example in examples
+            if execution_by_tool[example.payload["params"]["name"]] == "read"
+        }
+        raise AssertionError(
+            f"documented reader fixture routing changed: readers={sorted(readers)}; "
+            f"locations={locations}"
+        )
+
+    for relative in [
+        "src/Configuration.xml",
+        "test-tmp/cf/Configuration.xml",
+        "upload/cfempty/Configuration.xml",
+    ]:
+        copy_reader_fixture("cf-validate/Configuration.xml", workspace / relative)
+    for relative in ["src/cfe/Configuration.xml", "src/extensions/MyExtension/Configuration.xml"]:
+        configuration = workspace / relative
+        copy_reader_fixture("cfe-diff/mode-b/src-cfe/Configuration.xml", configuration)
+        add_extension_internal_info(configuration)
+    code_module = source_roots["main"] / "CommonModules" / "ParitySearch" / "Ext" / "Module.bsl"
+    code_module.parent.mkdir(parents=True, exist_ok=True)
+    code_module.write_text(
+        """Procedure ОбработкаПроведения() Export
+    СведенияОВнешнейОбработке = True;
+    Запрос = "ВЫБРАТЬ 1";
+    ВыполнитьОбменСКонтрагентом();
+EndProcedure
+""",
+        encoding="utf-8",
+    )
+    (source_roots["main"] / "CommonModules" / "ParitySearch.xml").write_text(
+        """<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <CommonModule><Properties><Name>ParitySearch</Name></Properties></CommonModule>
+</MetaDataObject>
+""",
+        encoding="utf-8",
+    )
+    register_configuration_child(source_roots["main"] / "Configuration.xml", "CommonModule", "ParitySearch")
+
+    interface_fixture = "interface-validate/Sales/Ext/CommandInterface.xml"
+    role_rights_fixture = BSP_ROLE_ADMIN_RIGHTS_FIXTURE
+    handled: set[str] = set()
+    for example in examples:
+        tool_name = example.payload["params"]["name"]
+        if execution_by_tool[tool_name] != "read":
+            continue
+        handled.add(tool_name)
+        arguments = example.payload["params"]["arguments"]
+
+        if tool_name in {"unica.cf.info", "unica.cf.validate", "unica.cfe.diff"}:
+            continue
+        if tool_name == "unica.cfe.validate":
+            extension_path = str(arguments["ExtensionPath"])
+            if extension_path == "src":
+                arguments["ExtensionPath"] = "src/cfe"
+            elif extension_path == "src/Configuration.xml":
+                arguments["ExtensionPath"] = "src/cfe/Configuration.xml"
+            continue
+        if tool_name in {"unica.code.search", "unica.code.graph", "unica.code.definition"}:
+            continue
+        if tool_name in {"unica.meta.info", "unica.xdto.info"}:
+            continue
+        if tool_name in {"unica.dcs.info", "unica.dcs.validate"}:
+            raw = replace_reader_placeholder(
+                arguments,
+                "TemplatePath",
+                example,
+                f"reader-fixtures/dcs/{example.line}",
+            )
+            copy_reader_fixture(
+                BSP_DCS_OBJECT_FIXTURE,
+                workspace / reader_content_path(raw, "Template.xml"),
+            )
+            continue
+        if tool_name in {"unica.form.info", "unica.form.validate"}:
+            raw = replace_reader_placeholder(
+                arguments,
+                "FormPath",
+                example,
+                f"reader-fixtures/forms/{example.line}",
+            )
+            copy_reader_fixture(
+                BSP_FORM_BUSINESS_PROCESS_FIXTURE,
+                workspace / reader_content_path(raw, "Form.xml"),
+            )
+            continue
+        if tool_name == "unica.interface.validate":
+            raw = replace_reader_placeholder(
+                arguments,
+                "CIPath",
+                example,
+                f"reader-fixtures/interfaces/{example.line}",
+            )
+            copy_reader_fixture(
+                interface_fixture,
+                workspace / reader_content_path(raw, "CommandInterface.xml"),
+            )
+            continue
+        if tool_name in {"unica.mxl.info", "unica.mxl.decompile"}:
+            if "SrcDir" in arguments:
+                arguments.pop("SrcDir")
+                raw = f"reader-fixtures/mxl/{example.line}/Ext/Template.xml"
+                arguments["TemplatePath"] = raw
+            else:
+                raw = replace_reader_placeholder(
+                    arguments,
+                    "TemplatePath",
+                    example,
+                    f"reader-fixtures/mxl/{example.line}/Ext/Template.xml",
+                )
+                path = Path(raw)
+                if path.suffix.lower() != ".xml":
+                    raw = (path / "Ext" / "Template.xml").as_posix()
+                    arguments["TemplatePath"] = raw
+            target = workspace / raw
+            copy_reader_fixture(BSP_MXL_RECEIPT_FIXTURE, target)
+            continue
+        if tool_name == "unica.mxl.validate":
+            raw = replace_reader_placeholder(
+                arguments,
+                "TemplatePath",
+                example,
+                f"reader-fixtures/mxl/{example.line}",
+            )
+            target = workspace / reader_content_path(raw, "Template.xml")
+            copy_reader_fixture(BSP_MXL_RECEIPT_FIXTURE, target)
+            continue
+        if tool_name in {"unica.role.info", "unica.role.validate"}:
+            raw = replace_reader_placeholder(
+                arguments,
+                "RightsPath",
+                example,
+                f"src/Roles/ReaderParity{example.line}/Ext/Rights.xml",
+            )
+            rights = workspace / raw
+            if rights.suffix.lower() != ".xml":
+                rights = rights / "Ext" / "Rights.xml"
+                arguments["RightsPath"] = str(rights.relative_to(workspace))
+            copy_reader_fixture(role_rights_fixture, rights)
+            role_dir = rights.parent.parent
+            copy_reader_fixture("role-info/SalesReader.xml", role_dir.with_suffix(".xml"))
+            if "MetadataPath" in arguments:
+                arguments["MetadataPath"] = "src/Configuration.xml"
+            continue
+        if tool_name in {"unica.subsystem.info", "unica.subsystem.validate"}:
+            raw = str(arguments["SubsystemPath"])
+            if not raw.startswith("src/cf/"):
+                raw = raw.removeprefix("src/")
+                arguments["SubsystemPath"] = f"src/cf/{raw}"
+            continue
+        if tool_name in {"unica.documentation.search", "unica.documentation.get"}:
+            continue
+        raise AssertionError(f"unhandled reader fixture: {example.document}:{example.line} {tool_name}")
+
+    if handled != readers:
+        raise AssertionError(f"reader fixture helpers missed tools: {sorted(readers - handled)}")
+
+    for root in [workspace, source_roots["main"]]:
+        subsystems = root / "Subsystems"
+        write_named_subsystem_fixture(subsystems / "Sales.xml", "Sales")
+        write_named_subsystem_fixture(subsystems / "Администрирование.xml", "Администрирование")
+        write_named_subsystem_fixture(
+            subsystems / "Продажи.xml",
+            "Продажи",
+            child="ОптовыеПродажи",
+        )
+        write_named_subsystem_fixture(
+            subsystems / "Продажи" / "Subsystems" / "ОптовыеПродажи.xml",
+            "ОптовыеПродажи",
+        )
+    register_configuration_child(source_roots["main"] / "Configuration.xml", "Subsystem", "Продажи")
+    register_configuration_child(source_roots["main"] / "Configuration.xml", "Subsystem", "Администрирование")
+
+
+def current_reader_standin_target() -> tuple[str, str, str]:
+    machine = platform.machine().lower()
+    if sys.platform == "darwin" and machine in {"arm64", "aarch64"}:
+        return "darwin-arm64", "aarch64-apple-darwin", ""
+    if sys.platform.startswith("linux") and machine in {"x86_64", "amd64"}:
+        return "linux-x64", "x86_64-unknown-linux-gnu", ""
+    if os.name == "nt" and machine in {"x86_64", "amd64"}:
+        return "win-x64", "x86_64-pc-windows-msvc", ".exe"
+    raise AssertionError(f"reader stand-ins do not support {sys.platform}/{machine}")
+
+
+def prepare_reader_standins(temp_root: Path) -> tuple[Path, dict[str, str], Path]:
+    plugin_root = temp_root / "plugin" / "unica"
+    (plugin_root / "skills").mkdir(parents=True)
+    shutil.copytree(PLUGIN_ROOT / "references", plugin_root / "references")
+    for manifest_name in [
+        ".mcp.json",
+        ".codex-plugin/plugin.json",
+        ".claude-plugin/plugin.json",
+    ]:
+        source = PLUGIN_ROOT / manifest_name
+        target = plugin_root / manifest_name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+
+    target_id, target_triple, suffix = current_reader_standin_target()
+    binary_dir = plugin_root / "bin" / target_id
+    binary_dir.mkdir(parents=True)
+    binaries = {
+        f"bsl-analyzer{suffix}": READER_STANDINS_ROOT / "bsl_mcp.py",
+        f"rlm-tools-bsl{suffix}": READER_STANDINS_ROOT / "bsl_mcp.py",
+        f"rlm-bsl-index{suffix}": READER_STANDINS_ROOT / "rlm_index.py",
+    }
+    manifest_tools = []
+    for binary_name, source in binaries.items():
+        target = binary_dir / binary_name
+        shutil.copyfile(source, target)
+        target.chmod(0o755)
+        digest = hashlib.sha256(target.read_bytes()).hexdigest()
+        tool_name = binary_name.removesuffix(suffix)
+        manifest_tools.append(
+            {
+                "name": tool_name,
+                "binaries": {
+                    target_id: {
+                        "targetTriple": target_triple,
+                        "binaryPath": target.relative_to(plugin_root).as_posix(),
+                        "sha256": digest,
+                    }
+                },
+            }
+        )
+    third_party = plugin_root / "third-party"
+    third_party.mkdir()
+    (third_party / "manifest.json").write_text(
+        json.dumps({"schemaVersion": 2, "tools": manifest_tools}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    lock = json.loads((PLUGIN_ROOT / "third-party/tools.lock.json").read_text(encoding="utf-8"))
+    digest_by_name = {
+        entry["name"]: entry["binaries"][target_id]["sha256"] for entry in manifest_tools
+    }
+    for tool in lock["tools"]:
+        if tool["name"] in digest_by_name:
+            tool["assets"][target_id]["sha256"] = digest_by_name[tool["name"]]
+    (third_party / "tools.lock.json").write_text(
+        json.dumps(lock, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    call_log = temp_root / "reader-standin-calls.jsonl"
+    return plugin_root, {
+        "UNICA_PLUGIN_ROOT": str(plugin_root),
+        "UNICA_READER_STANDIN_LOG": str(call_log),
+    }, call_log
+
+
+def v8_block(data: bytes, next_block: int = 0x7FFF_FFFF) -> bytes:
+    return (
+        b"\r\n"
+        + f"{len(data):08x} {len(data):08x} {next_block:08x} ".encode()
+        + b"\r\n"
+        + data
+    )
+
+
+def v8_entry_header(name: str) -> bytes:
+    return b"\0" * 20 + name.encode("utf-16-le") + b"\0\0\0\0"
+
+
+def v8_container(entries: list[tuple[str, bytes]]) -> bytes:
+    toc_len = 12 * len(entries)
+    cursor = 16 + 31 + toc_len
+    addresses: list[tuple[int, int]] = []
+    body = bytearray()
+    for name, data in entries:
+        header = v8_block(v8_entry_header(name))
+        payload = v8_block(data)
+        addresses.append((cursor, cursor + len(header)))
+        cursor += len(header) + len(payload)
+        body.extend(header)
+        body.extend(payload)
+    toc = bytearray()
+    for header_address, data_address in addresses:
+        for field in [header_address, data_address, 0x7FFF_FFFF]:
+            toc.extend(field.to_bytes(4, "little"))
+    return (
+        cursor.to_bytes(4, "little")
+        + (512).to_bytes(4, "little")
+        + b"\0" * 8
+        + v8_block(bytes(toc))
+        + bytes(body)
+    )
+
+
+def hbk_bytes(pages: dict[str, str]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, html in pages.items():
+            archive.writestr(name, html)
+    return v8_container([("FileStorage", buffer.getvalue())])
+
+
+def prepare_platform_help_installation(temp_root: Path, workspace: Path) -> Path:
+    installation = temp_root / "platform" / "8.3.27.2074"
+    installation.mkdir(parents=True)
+    locator = "objects/catalog238/ValueTable/methods/GroupBy1290.html"
+    pages = {
+        "global/StringFind.html": (
+            "<html><body><h1>СтрНайти</h1><p>СтрНайти выполняет поиск строки.</p></body></html>"
+        ),
+        locator: (
+            "<html><body><h1>ТаблицаЗначений.Свернуть</h1>"
+            "<p>ТаблицаЗначений Свернуть GroupBy удаляет дубли группировкой.</p></body></html>"
+        ),
+        "collections/ArrayDelete.html": (
+            "<html><body><h1>Массив.Удалить</h1><p>Как удалить элемент массива.</p></body></html>"
+        ),
+    }
+    (installation / "shcntx_ru.hbk").write_bytes(hbk_bytes(pages))
+    (installation / "1cv8_ru.hbk").write_bytes(
+        hbk_bytes({"guides/local.html": "<html><body><h1>Локальная справка</h1></body></html>"})
+    )
+    with (workspace / "v8project.yaml").open("a", encoding="utf-8") as config:
+        config.write(
+            "tools:\n"
+            "  platform:\n"
+            "    version: '8.3.27.2074'\n"
+            f"    path: '{installation.as_posix()}'\n"
+        )
+    return installation
+
+
+class V8StdStandin:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self.server: ThreadingHTTPServer | None = None
+        self.thread: threading.Thread | None = None
+
+    def start(self) -> str:
+        fixture = json.loads(
+            (READER_STANDINS_ROOT / "v8std_response.json").read_text(encoding="utf-8")
+        )
+        owner = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length))
+                owner.calls.append(
+                    {"host": self.headers.get("Host"), "path": self.path, "payload": payload}
+                )
+                response = json.loads(json.dumps(fixture))
+                response["id"] = payload.get("id")
+                body = json.dumps(response).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, _format: str, *_args: object) -> None:
+                pass
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        host, port = self.server.server_address
+        return f"http://{host}:{port}/mcp"
+
+    def stop(self) -> None:
+        if self.server is not None:
+            self.server.shutdown()
+            self.server.server_close()
+        if self.thread is not None:
+            self.thread.join(timeout=5)
 
 
 META_INFO_SKILL_EXAMPLE_DIRECTORIES = {
