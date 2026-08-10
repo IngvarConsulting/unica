@@ -4187,6 +4187,7 @@ fn source_resource_reads_preserve_every_corpus_byte() {
     let app = UnicaApplication::new();
     for source_set in ["main", "extension"] {
         let mut resources_args = common_args(&workspace);
+        resources_args.remove("dryRun");
         resources_args.insert("sourceSet".to_string(), json!(source_set));
         resources_args.insert(
             "metadataPath".to_string(),
@@ -4200,6 +4201,7 @@ fn source_resource_reads_preserve_every_corpus_byte() {
         let resource = &page["resources"][0];
         assert_eq!(resource["access"], json!(["read"]));
         let mut read_args = common_args(&workspace);
+        read_args.remove("dryRun");
         read_args.insert("snapshotId".to_string(), page["snapshotId"].clone());
         read_args.insert("resourceId".to_string(), resource["resourceId"].clone());
         let read = app.call_tool("unica.source.read", &read_args).unwrap();
