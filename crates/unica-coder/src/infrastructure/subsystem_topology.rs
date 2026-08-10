@@ -330,6 +330,7 @@ fn content_items(
     content: Node<'_, '_>,
     logical_path: &str,
 ) -> Result<Vec<ContentReference>, SubsystemTopologyError> {
+    reject_non_whitespace_direct_text(content, logical_path, "Content")?;
     content
         .children()
         .filter(Node::is_element)
@@ -539,6 +540,7 @@ fn registered_children(
     child_objects: Node<'_, '_>,
     logical_path: &str,
 ) -> Result<Vec<String>, SubsystemTopologyError> {
+    reject_non_whitespace_direct_text(child_objects, logical_path, "ChildObjects")?;
     child_objects
         .children()
         .filter(Node::is_element)
@@ -567,6 +569,24 @@ fn registered_children(
             }
         })
         .collect()
+}
+
+fn reject_non_whitespace_direct_text(
+    container: Node<'_, '_>,
+    logical_path: &str,
+    container_name: &str,
+) -> Result<(), SubsystemTopologyError> {
+    if container
+        .children()
+        .filter(Node::is_text)
+        .filter_map(|node| node.text())
+        .any(|text| !text.trim().is_empty())
+    {
+        return Err(SubsystemTopologyError::new(format!(
+            "`{logical_path}` contains raw text in {container_name}"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1064,6 +1084,42 @@ mod tests {
             .expect_err("a foreign direct artifact makes the object identity ambiguous");
 
         assert!(error.to_string().contains("exactly one"), "{error}");
+    }
+
+    #[test]
+    fn content_container_rejects_non_whitespace_direct_text() {
+        let root = tempfile::tempdir().unwrap();
+        write_configuration(root.path(), &["Sales"]);
+        write_subsystem(root.path(), &[], "Sales", "true", &[], &[]);
+        let descriptor = root.path().join("Subsystems/Sales.xml");
+        let malformed = fs::read_to_string(&descriptor)
+            .unwrap()
+            .replace("<Content></Content>", "<Content>Catalog.Goods</Content>");
+        fs::write(&descriptor, malformed).unwrap();
+        let source_root = root.path().canonicalize().unwrap();
+
+        let error = capture_registered_subsystem_topology(&source_root, checkpoint)
+            .expect_err("raw Content text is not a typed metadata reference");
+
+        assert!(error.to_string().contains("Content"), "{error}");
+    }
+
+    #[test]
+    fn child_objects_container_rejects_non_whitespace_direct_text() {
+        let root = tempfile::tempdir().unwrap();
+        write_configuration(root.path(), &["Sales"]);
+        write_subsystem(root.path(), &[], "Sales", "true", &[], &[]);
+        let configuration = root.path().join("Configuration.xml");
+        let malformed = fs::read_to_string(&configuration)
+            .unwrap()
+            .replace("<Subsystem>Sales</Subsystem>", "Sales");
+        fs::write(&configuration, malformed).unwrap();
+        let source_root = root.path().canonicalize().unwrap();
+
+        let error = capture_registered_subsystem_topology(&source_root, checkpoint)
+            .expect_err("raw ChildObjects text is not a subsystem registration");
+
+        assert!(error.to_string().contains("ChildObjects"), "{error}");
     }
 
     #[test]

@@ -38,7 +38,7 @@ use super::info::resolve_meta_info_path;
 use super::validation_context::{
     inspect_metadata_image_identity, inspect_metadata_language_image,
     inspect_metadata_registration_image, meta_validate_registrar_document_scan,
-    meta_validate_types_with_list_presentation,
+    meta_validate_types_with_list_presentation, MetaValidationImageIdentityError,
 };
 use super::xml_model::{
     meta_info_child, meta_info_child_text, meta_info_children, meta_info_inner_text,
@@ -278,13 +278,34 @@ impl MetadataValidator {
                     }
                 }
                 Err(error) => {
-                    let message = format!("metadata descriptor identity is invalid: {error}");
+                    let closed_owner_namespace_error = matches!(
+                        &error,
+                        MetaValidationImageIdentityError::ForeignProperties(_)
+                            | MetaValidationImageIdentityError::ForeignName(_)
+                    );
+                    let message = match &error {
+                        MetaValidationImageIdentityError::ForeignProperties(_) => format!(
+                            "owner descriptor contains Properties outside the MDClasses namespace: {}",
+                            subject.target
+                        ),
+                        MetaValidationImageIdentityError::ForeignName(_) => format!(
+                            "owner descriptor contains Name outside the MDClasses namespace: {}",
+                            subject.target
+                        ),
+                        _ => format!("metadata descriptor identity is invalid: {error}"),
+                    };
                     if !error.is_structural() {
                         diagnostics.push(validation_diagnostic(
                             subject,
                             &format!("resources[{descriptor_index}].bytes"),
                             message,
                         ));
+                    } else if closed_owner_namespace_error {
+                        diagnostics.push(
+                            MetaDiagnostic::error(MetaDiagnosticCode::ProviderUnavailable, message)
+                                .with_metadata_path(subject.target.clone())
+                                .with_field("resources"),
+                        );
                     } else {
                         diagnostics.push(provider_diagnostic(subject, descriptor_index, message));
                     }

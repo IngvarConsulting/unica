@@ -8,6 +8,9 @@ use crate::domain::format_profile::{classify_root_version, FormatCompatibility};
 use crate::domain::project_sources::SourceSetKind;
 use crate::domain::subsystem::SubsystemAddress;
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::platform::secure_read::{
+    RetainedRootSecureRead, SecureTreeCaptureLimits,
+};
 use crate::infrastructure::platform_xml_owner::root_version_literal;
 use crate::infrastructure::project_sources::discover_project_source_map;
 use crate::infrastructure::source_roots::normalize_path_identity;
@@ -22,6 +25,8 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+const SUBSYSTEM_INFO_MAX_FILE_BYTES: usize = 64 * 1024 * 1024;
 
 use super::common::*;
 use super::compile_transaction::{CompileTransaction, RegistrationStatus};
@@ -1391,6 +1396,9 @@ pub(crate) fn validate_subsystem_owner_path(
 #[cfg(test)]
 mod subsystem_info_typed_result_tests {
     use super::*;
+    use crate::infrastructure::platform::secure_read::{
+        with_secure_tree_test_hook, SecureTreePhase,
+    };
     use crate::infrastructure::platform::testing::{
         create_dir_symlink_for_test, create_file_symlink_for_test,
     };
@@ -1890,6 +1898,59 @@ mod subsystem_info_typed_result_tests {
             "{:?}",
             execution.outcome
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn xml_beneath_an_intermediate_directory_symlink_is_not_a_local_target() {
+        let (context, root) = workspace("xml-intermediate-directory-symlink", false);
+        let external = root.join("external");
+        fs::create_dir_all(&external).unwrap();
+        fs::write(
+            external.join("Local.xml"),
+            child_subsystem_stub_xml("Local", "2.20"),
+        )
+        .unwrap();
+        let alias = root.join("src/Alias");
+        if !create_directory_symlink_or_skip(&external, &alias) {
+            let _ = fs::remove_dir_all(root);
+            return;
+        }
+        let args = Map::from_iter([("SubsystemPath".to_string(), json!("src/Alias/Local.xml"))]);
+
+        let execution = analyze_subsystem_info(&args, &context);
+
+        assert!(!execution.outcome.ok, "{:?}", execution.outcome);
+        assert!(execution.data.is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn xml_replaced_by_a_symlink_between_check_and_open_is_rejected() {
+        let (context, root) = workspace("xml-check-open-swap", false);
+        let target = root.join("src/Subsystems/Local.xml");
+        fs::write(&target, child_subsystem_stub_xml("Local", "2.20")).unwrap();
+        let external = root.join("external.xml");
+        fs::write(&external, child_subsystem_stub_xml("External", "2.20")).unwrap();
+        let target_for_hook = target.clone();
+        let external_for_hook = external.clone();
+        let args = Map::from_iter([(
+            "SubsystemPath".to_string(),
+            json!("src/Subsystems/Local.xml"),
+        )]);
+
+        let execution = with_secure_tree_test_hook(
+            move |phase| {
+                if phase == &SecureTreePhase::BeforeOpenEntry(PathBuf::from("Local.xml")) {
+                    fs::remove_file(&target_for_hook).unwrap();
+                    let _ = create_file_symlink_for_test(&external_for_hook, &target_for_hook);
+                }
+            },
+            || analyze_subsystem_info(&args, &context),
+        );
+
+        assert!(!execution.outcome.ok, "{:?}", execution.outcome);
+        assert!(execution.data.is_none());
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2410,11 +2471,30 @@ fn read_subsystem_info_file(
     path: &Path,
     mut checkpoint: impl FnMut() -> io::Result<()>,
 ) -> Result<Vec<u8>, String> {
-    checkpoint().map_err(subsystem_info_checkpoint_message)?;
-    let bytes =
-        fs::read(path).map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-    checkpoint().map_err(subsystem_info_checkpoint_message)?;
-    Ok(bytes)
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("subsystem info path has no parent: {}", path.display()))?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| format!("subsystem info path has no file name: {}", path.display()))?;
+    let mut reader = RetainedRootSecureRead::open(
+        parent,
+        SecureTreeCaptureLimits {
+            maximum_depth: 0,
+            maximum_entries: 1,
+            maximum_files: 1,
+            maximum_bytes: SUBSYSTEM_INFO_MAX_FILE_BYTES,
+        },
+        &mut checkpoint,
+    )
+    .map_err(|error| format!("failed to open {} securely: {error}", path.display()))?;
+    let read = reader
+        .read_regular_file(Path::new(file_name), &mut checkpoint)
+        .map_err(|error| format!("failed to read {} securely: {error}", path.display()))?;
+    reader
+        .complete(&mut checkpoint)
+        .map_err(|error| format!("failed to prove {} securely: {error}", path.display()))?;
+    Ok(read.bytes)
 }
 
 fn topology_format_documents(

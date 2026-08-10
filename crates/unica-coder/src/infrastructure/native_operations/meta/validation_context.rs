@@ -20,6 +20,8 @@ pub(crate) struct MetaValidationImageIdentity {
 pub(crate) enum MetaValidationImageIdentityError {
     Structural(String),
     Ambiguous(String),
+    ForeignProperties(String),
+    ForeignName(String),
     UnsupportedKind(String),
     MissingName(String),
     InvalidUuid(String),
@@ -27,7 +29,13 @@ pub(crate) enum MetaValidationImageIdentityError {
 
 impl MetaValidationImageIdentityError {
     pub(crate) fn is_structural(&self) -> bool {
-        matches!(self, Self::Structural(_) | Self::Ambiguous(_))
+        matches!(
+            self,
+            Self::Structural(_)
+                | Self::Ambiguous(_)
+                | Self::ForeignProperties(_)
+                | Self::ForeignName(_)
+        )
     }
 
     pub(crate) fn field(&self) -> Option<&'static str> {
@@ -40,6 +48,8 @@ impl fmt::Display for MetaValidationImageIdentityError {
         match self {
             Self::Structural(message)
             | Self::Ambiguous(message)
+            | Self::ForeignProperties(message)
+            | Self::ForeignName(message)
             | Self::UnsupportedKind(message)
             | Self::MissingName(message)
             | Self::InvalidUuid(message) => formatter.write_str(message),
@@ -88,13 +98,69 @@ pub(crate) fn inspect_metadata_image_identity(
             "unrecognized metadata type: {object_type}"
         )));
     }
-    let object_name = meta_info_child(*artifact, "Properties")
-        .and_then(|properties| meta_info_child(properties, "Name"))
-        .map(meta_info_inner_text)
-        .filter(|name| !name.is_empty())
-        .ok_or_else(|| {
+    let properties = artifact
+        .children()
+        .filter(roxmltree::Node::is_element)
+        .filter(|child| child.tag_name().name() == "Properties")
+        .collect::<Vec<_>>();
+    if properties
+        .iter()
+        .any(|child| child.tag_name().namespace() != Some(MD_CLASSES_NS))
+    {
+        return Err(MetaValidationImageIdentityError::ForeignProperties(
+            format!("{object_type} Properties is outside the MDClasses namespace"),
+        ));
+    }
+    let [properties] = properties.as_slice() else {
+        return Err(if properties.is_empty() {
+            MetaValidationImageIdentityError::Structural(format!(
+                "{object_type} must contain exactly one MDClasses Properties"
+            ))
+        } else {
+            MetaValidationImageIdentityError::Ambiguous(format!(
+                "{object_type} contains ambiguous Properties"
+            ))
+        });
+    };
+    let names = properties
+        .children()
+        .filter(roxmltree::Node::is_element)
+        .filter(|child| child.tag_name().name() == "Name")
+        .collect::<Vec<_>>();
+    if names
+        .iter()
+        .any(|child| child.tag_name().namespace() != Some(MD_CLASSES_NS))
+    {
+        return Err(MetaValidationImageIdentityError::ForeignName(format!(
+            "{object_type} Name is outside the MDClasses namespace"
+        )));
+    }
+    let [name] = names.as_slice() else {
+        return Err(if names.is_empty() {
             MetaValidationImageIdentityError::MissingName(format!("{object_type} Name is missing"))
-        })?;
+        } else {
+            MetaValidationImageIdentityError::Ambiguous(format!(
+                "{object_type} contains ambiguous Name properties"
+            ))
+        });
+    };
+    if name.children().any(|child| child.is_element()) {
+        return Err(MetaValidationImageIdentityError::Structural(format!(
+            "{object_type} Name is not one scalar MDClasses value"
+        )));
+    }
+    let object_name = name
+        .children()
+        .filter(roxmltree::Node::is_text)
+        .filter_map(|child| child.text())
+        .collect::<String>()
+        .trim()
+        .to_string();
+    if object_name.is_empty() {
+        return Err(MetaValidationImageIdentityError::MissingName(format!(
+            "{object_type} Name is missing"
+        )));
+    }
     let object_uuid = artifact
         .attribute("uuid")
         .and_then(|value| Uuid::parse_str(value).ok())

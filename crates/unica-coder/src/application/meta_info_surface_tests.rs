@@ -482,6 +482,51 @@ fn info_omits_memberships_when_content_value_contains_a_nested_element() {
 }
 
 #[test]
+fn info_omits_memberships_when_content_contains_raw_direct_text() {
+    let workspace = create_info_workspace("object-subsystem-raw-content-text");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Поврежденная",
+        "true",
+        "Catalog.Inspectable",
+    );
+
+    let result = call_info(workspace.path(), []);
+
+    assert!(!result.ok);
+    let data = result.data.as_ref().expect("partial local metadata data");
+    assert!(data.get("functionalSubsystems").is_none());
+    assert!(data.get("interfaceSubsystems").is_none());
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_omits_memberships_when_child_objects_contains_raw_direct_text() {
+    let workspace = create_info_workspace("object-subsystem-raw-registration-text");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Поврежденная",
+        "true",
+        &content_item("Catalog.Inspectable"),
+    );
+    let configuration = workspace.path().join("src/Configuration.xml");
+    let malformed = std::fs::read_to_string(&configuration)
+        .unwrap()
+        .replace("<Subsystem>Поврежденная</Subsystem>", "Поврежденная");
+    std::fs::write(&configuration, malformed).unwrap();
+
+    let result = call_info(workspace.path(), []);
+
+    assert!(!result.ok);
+    let data = result.data.as_ref().expect("partial local metadata data");
+    assert!(data.get("functionalSubsystems").is_none());
+    assert!(data.get("interfaceSubsystems").is_none());
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
 fn info_rejects_an_invalid_root_descriptor_uuid_instead_of_matching_by_address_only() {
     let workspace = create_info_workspace("object-invalid-root-uuid");
     let relative_descriptor = "Catalogs/Inspectable.xml";
@@ -580,6 +625,69 @@ fn info_rejects_a_root_descriptor_name_that_disagrees_with_the_target() {
         .as_ref()
         .is_none_or(|data| data.get("interfaceSubsystems").is_none()));
     assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_rejects_non_exact_properties_and_name_identity_proofs() {
+    type IdentityMutation = (&'static str, fn(&str) -> String);
+    let cases: [IdentityMutation; 3] = [
+        ("foreign-properties", |xml| {
+            xml.replacen(
+                "<Properties>",
+                "<foreign:Properties xmlns:foreign=\"urn:foreign\">",
+                1,
+            )
+            .replacen("</Properties>", "</foreign:Properties>", 1)
+        }),
+        ("foreign-name", |xml| {
+            xml.replacen(
+                "<Name>Inspectable</Name>",
+                "<foreign:Name xmlns:foreign=\"urn:foreign\">Inspectable</foreign:Name>",
+                1,
+            )
+        }),
+        ("mixed-name", |xml| {
+            xml.replacen(
+                "<Name>Inspectable</Name>",
+                "<Name>Inspectable<foreign:Decoy xmlns:foreign=\"urn:foreign\"/></Name>",
+                1,
+            )
+        }),
+    ];
+
+    for (label, mutate) in cases {
+        let workspace = create_info_workspace(&format!("object-{label}"));
+        write_subsystem(
+            workspace.path(),
+            "src/Subsystems",
+            "ПоАдресу",
+            "true",
+            &content_item("Catalog.Inspectable"),
+        );
+        let result = with_meta_info_descriptor_image_hook(
+            move |bytes| mutate(std::str::from_utf8(bytes).unwrap()).into_bytes(),
+            || call_info(workspace.path(), []),
+        );
+
+        assert!(!result.ok, "{label}: {result:?}");
+        assert!(
+            result
+                .data
+                .as_ref()
+                .is_none_or(|data| data.get("functionalSubsystems").is_none()),
+            "{label}: {:?}",
+            result.data
+        );
+        assert!(
+            result
+                .data
+                .as_ref()
+                .is_none_or(|data| data.get("interfaceSubsystems").is_none()),
+            "{label}: {:?}",
+            result.data
+        );
+        assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+    }
 }
 
 #[test]
