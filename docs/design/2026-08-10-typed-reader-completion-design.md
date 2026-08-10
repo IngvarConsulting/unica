@@ -78,21 +78,23 @@ Unica, а типизированная RLM-ошибка сохраняет readi
 
 ## Live-контракт результата
 
-`ToolSpec` получает обязательный `result_contract`. Минимальный закрытый набор
-значений:
+`ToolSpec` получает обязательный `result_contract`, который исчерпывающе и
+однозначно повторяет четыре действующих значения ledger:
 
-- `Typed` — предметный результат принадлежит `OperationResult.data`;
-- `ExternalProcessStream` — текст является потоком внешнего процесса, который
-  ADR-0023 сознательно не типизирует;
-- `Legacy` — инструмент находится вне принятой typed-границы.
+- `Typed` ↔ `typed`;
+- `Prose` ↔ `prose`;
+- `Partial` ↔ `partial`;
+- `Job` ↔ `job`.
 
-CI сопоставляет `ToolSpec.result_contract` с `scope` и `result.contract` из
-`tool-surface-review.json`. Новая декларация не становится вторым ручным
-ledger: Rust владеет исполняемым видом результата, JSON — ревью-состоянием и
-сценариями, а тест доказывает их совпадение.
+CI проверяет это соответствие для каждого зарегистрированного инструмента;
+`scope` остаётся отдельной ортогональной декларацией и также сверяется с
+`tool-surface-review.json`. Rust владеет исполняемым видом результата, JSON —
+ревью-состоянием и сценариями, а исчерпывающий parity-test не допускает
+неявного many-to-one преобразования.
 
 После handler и до публикации cache/events application-finalizer проверяет
-каждый немутирующий `Typed` tool:
+каждый реально выполненный немутирующий `Typed` tool, то есть вызов с
+`dryRun=false`:
 
 - `ok=true` требует `data.is_some()`;
 - `ok=true` требует отсутствующий `stdout`;
@@ -100,11 +102,14 @@ ledger: Rust владеет исполняемым видом результат
   `typed_result_violation:`, очищает `stdout` и не создаёт сфабрикованный
   `data`;
 - `ok=false` может нести типизированное `data` о состоянии отказа, но не
-  обязано его синтезировать для process spawn, timeout или cancellation.
+  обязано его синтезировать для ошибки запуска процесса, timeout или
+  cancellation.
 
-`dryRun` не имеет смысла для немутирующего typed-reader. Такой аргумент должен
-отклоняться validation-слоем, а не запускать успешный placeholder без данных.
-Preview-контракт typed mutations этим решением не меняется и остаётся в #290.
+Совместимость `dryRun=true` у readers этим решением не меняется: #291 прямо
+исключает её удаление, а общий preview-контракт требует отдельной инвентаризации
+всей поверхности. Финализатор ADR-0041 не объявляет такой preview выполненным
+чтением и не переклассифицирует его результат. Preview типизированных мутаций
+также остаётся в #290.
 
 ## Контракт `code.diagnostics mode=analyze`
 
@@ -125,26 +130,59 @@ Preview-контракт typed mutations этим решением не меня
 Так существующий вызов с `format=json` продолжает работать, но старый prose
 нельзя вернуть случайным selector-ом.
 
-### Изолированный parser
+### Потоковый runner и изолированный parser
 
-JSONL-разбор выносится из уже крупного `internal_adapters.rs` в отдельный
-инфраструктурный модуль. Он принимает полную stdout-строку завершившегося
-процесса и строит доменный `DiagnosticsAnalyzeData`; CLI runner по-прежнему
-владеет командой, timeout, cancellation, redaction и stderr.
+Обычный `ManagedChild::wait_for_output` хранит только хвост stdout размером
+`1 MiB` и помечает остальное усечённым. Он не может быть транспортом JSONL:
+корректный большой workspace потеряет начало потока прежде, чем parser увидит
+`start`, а `limit` результата этого не предотвращает.
 
-Допустимый автомат событий закрыт:
+Для analyze вводится `DiagnosticsJsonlRunner`. Он использует тот же
+`ManagedChild`, process-tree cleanup, deadline и cancellation, но конкурентно
+дренирует stdout построчно в автомат протокола и stderr — в существующий
+ограниченный очищаемый хвост. Raw stdout целиком не накапливается и не попадает
+в `ManagedOutput`. Одна физическая JSONL-строка ограничена `8 MiB`, тем же
+пределом, что строка ответа workspace service; превышение даёт
+`diagnostics_invalid:` после полного дренирования pipe. Parser хранит
+счётчики, множество нормализованных путей и не более `limit` лучших элементов
+в bounded top-K, а не все findings. Поэтому общий размер stdout может превышать
+`1 MiB`, не меняя объём публичного ответа.
 
-1. ровно один `start` первым;
-2. ноль или больше `file` с уникальным `path`;
-3. ровно один `done` последним;
-4. после `done` нет событий;
-5. число `file` равно `start.total_files` и `done.total_files`;
-6. сумма diagnostics и число file-errors равны totals из `done`;
-7. числовые поля неотрицательны, `elapsed_secs` конечен.
+После первой ошибки протокола runner продолжает дренировать оба pipe, чтобы не
+заблокировать child, но больше не публикует элементы. Приоритет исходов:
+cancellation, timeout и ненулевой exit сохраняют собственную process-семантику;
+только успешный exit классифицируется автоматом JSONL.
 
-Неизвестный event, невалидная строка, повторный path, лишний terminal event и
-противоречивые totals не отбрасываются как warning: без доказанного terminal
-состояния они не могут означать чистый код.
+Разбор выносится из уже крупного `internal_adapters.rs` в отдельный
+инфраструктурный модуль. Локальные serde-структуры используют
+`deny_unknown_fields`, потому что бинарник и его JSONL-протокол зафиксированы
+одним `tools.lock`; добавление upstream-поля требует явной миграции адаптера.
+Закрытая форма событий:
+
+1. `start` содержит ровно `type`, неотрицательный `total_files` и непустой
+   `version`; он встречается один раз первым;
+2. каждый `file` содержит ровно `type`, непустой `path`, массив `diagnostics`,
+   опциональные `metrics` и `error`; абсолютный path допустим только внутри
+   выбранного source root, после чего публикуется нормализованно относительно
+   него с `/`; escape, пустой и повторный нормализованный path запрещены;
+3. `metrics`, когда присутствует, содержит только неотрицательные `functions`,
+   `complexity` и `cognitive_complexity`;
+4. каждый diagnostic содержит непустые `code` и `message`, одну из семи
+   upstream severity (`Blocker`, `Critical`, `Major`, `Error`, `Warning`,
+   `Information`, `Hint`), координаты `usize` и опциональные уникальные tags из
+   `Unnecessary|Deprecated`; конец range не предшествует началу;
+5. непустой `error` взаимоисключается с diagnostics и metrics; его текст
+   проходит redaction до сохранения как `fileFailure`;
+6. `done` содержит ровно `type`, конечный неотрицательный `elapsed_secs` и
+   неотрицательные `total_files`, `total_diagnostics`, `failed_files`; он
+   встречается один раз последним, после него событий нет;
+7. число `file` совпадает с обоими `total_files`, сумма diagnostics — с
+   `total_diagnostics`, а число `file.error` — с `failed_files`.
+
+Неизвестный event/field, неверный scalar, невалидная строка, слишком длинная
+строка, повтор, отсутствующий terminal event и противоречивый total не
+отбрасываются как warning: без доказанного terminal состояния они не могут
+означать чистый код.
 
 ### Публичное `data`
 
@@ -192,17 +230,43 @@ JSONL-разбор выносится из уже крупного `internal_ada
 `items` — закрытый union:
 
 - `kind=diagnostic` несёт path и finding в форме, совместимой по смыслу с
-  `mode=file`: четырёхуровневую severity, 0-based range и tags; detailed-mode
-  дополнительно может нести `internalSeverity`;
+  `mode=file`: четырёхуровневую severity, 0-based range и tags; при
+  `detail=detailed` дополнительно публикуется исходная семиуровневая
+  `internalSeverity`;
 - `kind=fileFailure` несёт path и redacted message файла, анализ которого
   upstream не завершил.
 
-`codes` и `minSeverity` применяются к diagnostics после разбора полного
-потока. File failures фильтром не скрываются. `limit` затем ограничивает
-объединённые предметные `items` в детерминированном порядке потока, а не строки
-JSONL. `itemsTotal`, `itemsReturned` и `truncated` делают срез наблюдаемым;
-`diagnostics.reported` сохраняет полный terminal total, а `matched` показывает
-результат фильтров до `limit`.
+Семиуровневая severity отображается ровно так же, как в upstream MCP:
+`Blocker|Critical|Major|Error → error`, `Warning → warning`,
+`Information → info`, `Hint → hint`. Tags публично нормализуются в
+`unnecessary|deprecated`.
+
+Фильтры и ограничение имеют закрытую семантику:
+
+- отсутствующий или пустой `codes` означает все коды; элементы массива —
+  непустые уникальные строки и сравниваются с `diagnostic.code` точно, с учётом
+  регистра;
+- `minSeverity` по умолчанию `warning` и задаёт включающий нижний порог по
+  четырём публичным уровням;
+- `detail` по умолчанию `concise`;
+- `limit` — целое `1..=200`, по умолчанию `200`, как действующий default
+  upstream MCP; он ограничивает объединённые предметные сущности, не строки;
+- file failures не скрываются `codes` и `minSeverity`.
+
+До `limit` элементы сортируются по стабильному ключу: нормализованный `path`,
+затем `fileFailure` перед `diagnostic`, затем start/end range, `code` и
+`message`. Потоковый runner может поддерживать первые `limit` элементов этим
+же ключом через bounded top-K; порядок discovery upstream публичным контрактом
+не является.
+
+Счётчики определены формулами: `diagnostics.reported` равен
+`done.total_diagnostics`; `diagnostics.matched` — число диагностик после
+`codes` и `minSeverity`, но до `limit`; `itemsTotal = matched + failed`;
+`itemsReturned = items.length`; `truncated = itemsReturned < itemsTotal`.
+`files.discovered` равен `start.total_files`, `files.failed` —
+`done.failed_files`, `files.processed = discovered - failed`. Поэтому «полный
+результат до среза» означает отфильтрованное множество diagnostics вместе со
+всеми file failures, а не исходный upstream total.
 
 ### Незавершённые состояния
 
@@ -246,15 +310,19 @@ process outcomes. Cancellation не превращается в protocol failure
 | --- | --- |
 | `Ready` и helper ответил | `ok=true`, `CodeDefinitionResult` в `data` |
 | `Building` | `ok=false`, `index_pending:`, retry hint, без `data`/`stdout` |
-| `Missing` | `ok=false`, `index_unavailable: index is missing`, recovery hint |
+| `Missing` | `ok=false`, `index_unavailable: index is missing`, без retry hint |
 | `Stale` | `ok=false`, `index_unavailable:` с нормализованным status |
 | `Failed` | `ok=false`, `index_unavailable:` с redacted причиной |
 | `Unavailable` | `ok=false`, `index_unavailable:` с redacted причиной |
 | cancellation | отдельный cancelled outcome |
 
 `index_pending:` сам является документированным retryable-кодом.
-`index_unavailable:` не обещает, что повтор поможет; recovery hint добавляется
-только когда service доказал, что build/update действительно запрошен.
+`index_unavailable:` имеет `retryable=false` и не обещает, что повтор поможет.
+Текущий service умеет поставить в очередь поток, который ещё только попробует
+запустить maintenance, но не возвращает доказательство фактического build или
+update. Поэтому ADR-0041 не публикует recovery hint для `Missing`, `Stale`,
+`Failed` или `Unavailable`; отдельный типизированный maintenance-disposition
+понадобится прежде, чем такой hint станет честным.
 
 Готовый индекс с `definitions=[]` остаётся успешным typed-result. Это
 единственный пустой результат: неготовность индекса больше нельзя прочитать как
@@ -262,12 +330,16 @@ process outcomes. Cancellation не превращается в protocol failure
 
 ## Изменения по слоям
 
-- `application/mod.rs`: live result contract и общий typed-reader finalizer;
-- `application/tool_contracts.rs`: mode-scoped `format`, отказ `dryRun` у
-  typed readers и точная diagnostics validation;
-- новый изолированный infrastructure parser JSONL;
-- `internal_adapters.rs`: принудительный jsonl route и преобразование parser
-  result в `BslAnalyzerOutcome`;
+- `application/mod.rs`: исчерпывающий live result contract и finalizer реально
+  выполненного typed-reader;
+- `application/tool_contracts.rs`: mode-scoped `format`, закрытые defaults и
+  bounds для filters/limit; reader `dryRun` остаётся совместимым;
+- `infrastructure/platform/process.rs` и новый изолированный JSONL-модуль:
+  общий lifecycle child с отдельным потоковым drain/parser без stdout-tail;
+  платформенная реализация остаётся за границей ADR-0009 и стражем
+  `check-rust-platform-boundary.py`;
+- `internal_adapters.rs`: принудительный jsonl route и преобразование результата
+  потокового runner в `BslAnalyzerOutcome`;
 - `workspace_services.rs`: сохранение structured readiness на execution
   boundary;
 - `rlm_navigation.rs`: единый mapper readiness и typed definition success;
@@ -282,18 +354,23 @@ process outcomes. Cancellation не превращается в protocol failure
 
 ## Красно-зелёная проверка реализации
 
-До изменения production-кода должны упасть:
+Каждая строка сначала добавляется как падающий test на текущем коде и только
+потом получает production-изменение:
 
-1. application-test, передающий `ok=true` без `data` для typed-reader;
-2. command-test default и explicit analyze, требующий `--format jsonl`;
-3. parser fixtures для clean, findings, file failure, zero files, only-start,
-   missing-done, malformed line, duplicate event/path и inconsistent totals;
-4. limit-test по предметным items, доказывающий totals и truncation;
-5. табличная матрица всех `IndexReadiness` для `code.definition`;
-6. post-execution stale-generation test, доказывающий тот же mapper;
-7. MCP smoke default analyze и unready definition, проверяющий публичный
-   `OperationResult`, а не только adapter outcome;
-8. ledger parity test для live `result_contract`.
+| Правило | Красная проверка |
+| --- | --- |
+| live contract | parity всех зарегистрированных tools с четырьмя ledger-значениями; `Typed` success без `data` и с `stdout` падает при `dryRun=false`, существующий reader preview при `dryRun=true` не переклассифицируется |
+| command | default и explicit analyze добавляют `--format jsonl`; отсутствие/`json`/`jsonl` эквивалентны; `console`, неизвестный `format` и `format` в другом mode отвергаются |
+| transport | валидный JSONL суммарно больше `1 MiB` завершается typed success; одна строка больше `8 MiB` fail-closed; stdout нигде не удерживается и не публикуется |
+| process priority | cancellation, timeout и ненулевой exit побеждают накопленное состояние parser и сохраняют существующие redacted outcomes |
+| platform boundary | потоковый child lifecycle проходит одинаковые fake-process tests на macOS, Linux и Windows; новые `cfg` не выходят из `infrastructure/platform` |
+| event grammar | fixtures clean/findings/file failure/zero files/only-start/missing-done, unknown event/field, malformed scalar/line, duplicate start/done/path и inconsistent totals |
+| diagnostic semantics | пустые path/code/message, escape path, семь допустимых и неизвестная severity, неверный range, неизвестный/повторный tag, error вместе с diagnostics/metrics |
+| projection | точная 7→4 severity и tags mapping; defaults `warning`/`concise`/`200`; case-sensitive codes; file failures обходят filters |
+| limit | стабильный результат при разном upstream discovery order; `itemsTotal = matched + failed`, `itemsReturned`, `truncated` и file counters на границах 1 и 200 |
+| readiness | табличная матрица всех `IndexReadiness`, `retryable=true` только для `Building`, без recovery hint у остальных; готовый empty definitions — success |
+| freshness | post-execution stale generation проходит тот же mapper, не публикует helper output и не маскируется transport-строкой |
+| public envelope | MCP smoke default analyze и unready definition проверяет полный `OperationResult`, отсутствие stdout/partial data и стабильные error prefixes |
 
 После реализации выполняются целевые Rust-тесты, полный
 `cargo test -p unica-coder -- --test-threads=1`, MCP smoke, architecture guards,
