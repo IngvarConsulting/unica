@@ -22,7 +22,7 @@
 - Публичный `call_tool` без снятого аргумента `Mode` обязан охватывать format guard-ом `Configuration.xml` и все фактически читаемые зарегистрированные descriptors.
 - Builder наблюдает cancellation и bounded deadline на каждом шаге и перед terminal `Complete`.
 - Каждый дефект проходит RED → GREEN: тест должен падать на исходном коде по ожидаемой причине до production-правки. RED и GREEN команды фиксируются в отчёте задачи.
-- Существующая ADR-0033 ещё не находится в `main`, поэтому уточняется на месте, а не заменяется новой ADR.
+- После обновления `origin/main` номера ADR-0033 и ADR-0034 уже заняты; решение этой ветки в `main` не попадало, поэтому до слияния оно перенумеровано в ADR-0035 без создания истории замещения.
 
 ---
 
@@ -30,13 +30,13 @@
 
 **Files:**
 - Modify: `docs/design/2026-08-09-subsystem-address-and-effective-role-design.md`
-- Modify: `spec/decisions/0033-subsystem-address-and-effective-role.md`
+- Modify: `spec/decisions/0035-subsystem-address-and-effective-role.md`
 - Modify: `spec/architecture/invariants.md`
 - Modify: `spec/architecture/building-blocks.md`
 - Modify: `docs/plans/2026-08-10-pr-386-review-remediation.md`
 
 **Interfaces:**
-- Produces: уточнённые ADR-0033 и `INV-SOURCE-SUBSYSTEM-TOPOLOGY`.
+- Produces: уточнённые ADR-0035 и `INV-SOURCE-SUBSYSTEM-TOPOLOGY`.
 
 - [x] **Step 1: Закрепить типизированную идентичность**
 

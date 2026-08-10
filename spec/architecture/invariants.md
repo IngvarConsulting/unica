@@ -723,7 +723,7 @@ Unica. Каждая запись формулирует одно нормати�
   каждый доказанный узел принадлежит ровно одной эффективной роли. Недопустимый элемент,
   ошибка, отмена, истечение срока или неполное чтение не публикуются как пустая
   доказанная проекция, а сбор зависимостей формата не зависит от снятого `Mode`.
-- **Decision:** ADR-0033
+- **Decision:** ADR-0035
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/subsystem.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/application/meta_info_surface_tests.rs`
 - **Scope:** source, runtime
