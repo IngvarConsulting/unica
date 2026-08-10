@@ -1428,6 +1428,17 @@ class UnicaSkillRoutingTests(unittest.TestCase):
 
         self.assertEqual(offenders, [])
 
+    def test_code_diagnostics_describes_operational_config_fallback(self) -> None:
+        text = (self.skill_root() / "code-diagnostics" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("operational.code_diagnostics.analyze_timeout_seconds", text)
+        self.assertIn("unica.local.toml", text)
+        self.assertIn("unica.toml", text)
+        self.assertIn("compiled 120-second fallback", text)
+        self.assertIn("do not read this operational config", text)
+
     def test_unica_owned_guidance_contains_required_operational_concepts(self) -> None:
         docs = {
             "code-search": self.skill_root() / "code-search" / "SKILL.md",

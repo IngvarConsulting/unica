@@ -2995,7 +2995,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "timeoutSeconds",
-        "Integer seconds bounding a blocking call: 1..60 (default 30) for unica.runtime.job.wait, and 30..3600 (default 120) for unica.code.diagnostics, which accepts it only with mode analyze.",
+        "Integer seconds bounding a blocking call: 1..60 (default 30) for unica.runtime.job.wait, and 30..3600 for unica.code.diagnostics mode analyze; diagnostics falls back to operational.code_diagnostics.analyze_timeout_seconds from workspace config, then to 120.",
     ),
     (
         "tool",
@@ -3284,7 +3284,7 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
                     "type": "integer",
                     "minimum": DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
                     "maximum": DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS,
-                    "description": "Only supported for mode analyze. Defaults to 120 seconds."
+                    "description": "Only supported for mode analyze. Overrides operational.code_diagnostics.analyze_timeout_seconds from workspace config, whose compiled fallback is 120 seconds."
                 });
             }
             "minSeverity" => {
@@ -6069,7 +6069,7 @@ mod tests {
     }
 
     #[test]
-    fn bsl_diagnostics_contract_exposes_modes_and_keeps_analyze_default() {
+    fn bsl_diagnostics_contract_exposes_modes_and_configured_analyze_fallback() {
         let diagnostics = tools()
             .into_iter()
             .find(|tool| tool.name == "unica.code.diagnostics")
@@ -6087,6 +6087,10 @@ mod tests {
         assert_eq!(schema["properties"]["timeoutSeconds"]["type"], "integer");
         assert_eq!(schema["properties"]["timeoutSeconds"]["minimum"], 30);
         assert_eq!(schema["properties"]["timeoutSeconds"]["maximum"], 3600);
+        assert!(schema["properties"]["timeoutSeconds"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("operational.code_diagnostics.analyze_timeout_seconds"));
         assert!(schema.get("oneOf").is_none());
         assert!(schema["properties"]["mode"]["enum"]
             .as_array()

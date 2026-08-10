@@ -13,6 +13,10 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use crate::infrastructure::workspace_config::{
+    parse_workspace_config_root, WorkspaceConfigRootError, WorkspaceConfigRootErrorKind,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetworkAccess {
     Allow,
@@ -45,7 +49,18 @@ impl DocumentationPolicy {
                 // Отсутствие файла — умолчания; любой ДРУГОЙ отказ чтения —
                 // жёсткий отказ: право на чтение, снятое с файла запрета,
                 // иначе превращалось бы в молчаливое разрешение.
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    match std::fs::symlink_metadata(&path) {
+                        Err(metadata_error)
+                            if metadata_error.kind() == std::io::ErrorKind::NotFound =>
+                        {
+                            continue;
+                        }
+                        Ok(_) | Err(_) => {
+                            return Err(format!("{file_name}: файл не читается"));
+                        }
+                    }
+                }
                 Err(error) => {
                     return Err(format!("{file_name}: файл не читается: {error}"));
                 }
@@ -103,18 +118,13 @@ fn network_access(value: &toml::Value) -> Result<NetworkAccess, String> {
     }
 }
 
-/// Строгий разбор одного файла. Через `toml::Value`, а не derive: файл
-/// запрета обязан отказывать на неизвестных секциях и ключах, а derive
-/// молча их отбрасывает.
+/// Строгий разбор одного файла. Общий парсер корня отвергает неизвестные
+/// соседние секции, а этот потребитель отвергает неизвестные поля сети:
+/// derive здесь молча отбросил бы оба класса ошибок.
 fn parse_policy(text: &str, known: &[&str]) -> Result<DocumentationPolicy, String> {
-    let value = text
-        .parse::<toml::Value>()
-        .map_err(|error| format!("файл не разбирается: {error}"))?;
-    let table = value
-        .as_table()
-        .ok_or_else(|| "корень файла обязан быть таблицей".to_string())?;
+    let table = parse_workspace_config_root(text).map_err(root_error_message)?;
     let mut policy = DocumentationPolicy::default();
-    for (section, body) in table {
+    for (section, body) in &table {
         match section.as_str() {
             "network" => {
                 let network = body
@@ -165,17 +175,30 @@ fn parse_policy(text: &str, known: &[&str]) -> Result<DocumentationPolicy, Strin
                     policy.providers.insert(id.clone(), provider);
                 }
             }
-            other => {
-                return Err(format!("неизвестная секция [{other}]"));
-            }
+            // Секции общего корня, которыми владеют другие потребители.
+            _ => {}
         }
     }
     Ok(policy)
 }
 
+fn root_error_message(error: WorkspaceConfigRootError) -> String {
+    match error.kind() {
+        WorkspaceConfigRootErrorKind::InvalidToml => "файл не разбирается".to_string(),
+        WorkspaceConfigRootErrorKind::UnknownField => {
+            format!("неизвестная секция [{}]", error.field_path())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infrastructure::operational_config::load_operational_config;
+    use crate::infrastructure::platform::testing::{
+        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+    };
+    use std::time::Duration;
 
     const KNOWN: &[&str] = &["v8std", "kb-1ci"];
 
@@ -190,6 +213,102 @@ mod tests {
         assert_eq!(policy.network("v8std"), NetworkAccess::Allow);
         assert_eq!(policy.network("kb-1ci"), NetworkAccess::Allow);
         assert_eq!(policy.endpoint("v8std"), None);
+    }
+
+    #[test]
+    fn mixed_unversioned_container_serves_network_and_operational_consumers() {
+        let dir = workspace();
+        std::fs::write(
+            dir.path().join("unica.toml"),
+            "[network]\ndefault = \"deny\"\n\n[operational.code_intelligence]\nsearch_total_timeout_seconds = 90\n",
+        )
+        .expect("write mixed workspace config");
+
+        let policy = DocumentationPolicy::load(dir.path(), KNOWN)
+            .expect("network consumer must accept a valid operational sibling");
+        let operational = load_operational_config(dir.path())
+            .expect("operational consumer must accept a valid network sibling");
+
+        assert_eq!(policy.network("v8std"), NetworkAccess::Deny);
+        assert_eq!(
+            operational.code_intelligence().search_total_timeout(),
+            Duration::from_secs(90)
+        );
+    }
+
+    #[test]
+    fn documentation_policy_ignores_valid_operational_subtree() {
+        let dir = workspace();
+        std::fs::write(
+            dir.path().join("unica.toml"),
+            "[network]\ndefault = \"deny\"\n\n[operational.code_diagnostics]\nanalyze_timeout_seconds = 60\n",
+        )
+        .expect("write mixed workspace config");
+
+        let policy = DocumentationPolicy::load(dir.path(), KNOWN)
+            .expect("operational sibling must not be an unknown network section");
+
+        assert_eq!(policy.network("v8std"), NetworkAccess::Deny);
+    }
+
+    /// Characterizes consumer locality: the policy reader owns `network` and
+    /// `providers`, while a syntactically present operational sibling is not
+    /// part of its subtree contract.
+    #[test]
+    fn characterization_policy_ignores_invalid_operational_subtree() {
+        let dir = workspace();
+        std::fs::write(
+            dir.path().join("unica.toml"),
+            "[network]\ndefault = \"deny\"\n\n[operational.code_intelligence]\nunknown_timeout = 60\n",
+        )
+        .expect("write mixed workspace config");
+
+        let policy = DocumentationPolicy::load(dir.path(), KNOWN)
+            .expect("operational subtree errors belong to the operational consumer");
+
+        assert_eq!(policy.network("v8std"), NetworkAccess::Deny);
+    }
+
+    /// Characterizes the converse locality boundary: operational configuration
+    /// ignores network/provider bodies, but the policy consumer must refuse
+    /// their invalid contents.
+    #[test]
+    fn characterization_operational_loader_ignores_invalid_policy_subtrees() {
+        let cases = [
+            ("[network]\nunknown = \"deny\"\n", "unknown"),
+            ("[providers.v8std]\nnetwork = \"maybe\"\n", "maybe"),
+        ];
+
+        for (contents, policy_error_fragment) in cases {
+            let dir = workspace();
+            std::fs::write(dir.path().join("unica.toml"), contents)
+                .expect("write policy-owned invalid subtree");
+
+            load_operational_config(dir.path())
+                .expect("policy subtree errors must not change operational defaults");
+            let error = DocumentationPolicy::load(dir.path(), KNOWN)
+                .expect_err("policy consumer must refuse its invalid subtree");
+
+            assert!(
+                error.contains(policy_error_fragment),
+                "unexpected error: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn documentation_policy_rejects_unknown_root_fields_after_shared_root_validation() {
+        let dir = workspace();
+        std::fs::write(
+            dir.path().join("unica.toml"),
+            "[network]\ndefault = \"deny\"\n\n[transport]\nretry = 3\n",
+        )
+        .expect("write invalid workspace config");
+
+        let error = DocumentationPolicy::load(dir.path(), KNOWN)
+            .expect_err("unknown root must remain a policy refusal");
+
+        assert!(error.contains("transport"), "unexpected error: {error}");
     }
 
     #[test]
@@ -220,6 +339,27 @@ mod tests {
             error.contains("unica.toml"),
             "отказ обязан назвать файл, получено {error}"
         );
+    }
+
+    #[test]
+    fn dangling_policy_config_links_fail_closed_as_present_files() {
+        for file_name in ["unica.toml", "unica.local.toml"] {
+            let dir = workspace();
+            let outcome = create_file_link_fixture_for_test(
+                dir.path().join("missing-policy-target.toml"),
+                dir.path().join(file_name),
+            )
+            .expect("create dangling policy config link fixture");
+            if outcome != FileLinkFixtureOutcome::Created {
+                return;
+            }
+
+            let error = DocumentationPolicy::load(dir.path(), KNOWN)
+                .expect_err("a present but unreadable policy layer must fail closed");
+
+            assert!(error.contains(file_name), "unexpected error: {error}");
+            assert!(error.contains("не читается"), "unexpected error: {error}");
+        }
     }
 
     #[test]

@@ -4,6 +4,7 @@ use crate::domain::code_intelligence::{
     CodeIntelligenceRegistry, CodeSearchResult, ProviderDeadline, ProviderId, ProviderReadOutcome,
     ProviderSearchSection, ProviderSectionStatus, SearchRequest,
 };
+use crate::domain::operational_config::CodeIntelligenceDeadlines;
 use std::any::Any;
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -11,10 +12,6 @@ use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const PUBLIC_SEARCH_BUDGET: Duration = Duration::from_secs(120);
-const RLM_SEARCH_BUDGET: Duration = Duration::from_secs(45);
-const GIT_GREP_SEARCH_BUDGET: Duration = Duration::from_secs(15);
-const PROVIDER_READ_BUDGET: Duration = Duration::from_secs(45);
 const MAX_CONCURRENT_WORKERS_PER_PROVIDER: usize = 32;
 
 #[derive(Debug)]
@@ -27,16 +24,28 @@ pub(crate) struct CodeSearchExecution {
 
 pub(crate) struct CodeSearchCoordinator {
     registry: CodeIntelligenceRegistry,
-    public_search_budget: Duration,
+    deadlines: CodeIntelligenceDeadlines,
     worker_admission: Arc<ProviderWorkerAdmission>,
     worker_lifecycle: Arc<ProviderWorkerLifecycle>,
 }
 
 impl CodeSearchCoordinator {
+    #[cfg(test)]
     pub(crate) fn new(registry: CodeIntelligenceRegistry) -> Self {
+        Self::with_deadlines(
+            registry,
+            crate::domain::operational_config::OperationalConfig::compiled_defaults()
+                .code_intelligence(),
+        )
+    }
+
+    pub(crate) fn with_deadlines(
+        registry: CodeIntelligenceRegistry,
+        deadlines: CodeIntelligenceDeadlines,
+    ) -> Self {
         Self {
             registry,
-            public_search_budget: PUBLIC_SEARCH_BUDGET,
+            deadlines,
             worker_admission: global_provider_worker_admission(),
             worker_lifecycle: global_provider_worker_lifecycle(),
         }
@@ -51,7 +60,7 @@ impl CodeSearchCoordinator {
     ) -> Self {
         Self {
             registry,
-            public_search_budget,
+            deadlines: CodeIntelligenceDeadlines::for_test(public_search_budget),
             worker_admission,
             worker_lifecycle,
         }
@@ -74,12 +83,13 @@ impl CodeSearchCoordinator {
             .iter()
             .map(|provider| provider.id())
             .collect::<Vec<_>>();
-        let public_deadline = Instant::now() + self.public_search_budget;
+        let started_at = Instant::now();
+        let public_search_budget = self.deadlines.search_total_timeout();
         let (tx, rx) = mpsc::channel();
         let mut slots = vec![None; providers.len()];
-        let provider_deadlines = provider_ids
+        let provider_budgets = provider_ids
             .iter()
-            .map(|provider| public_deadline.min(Instant::now() + provider_budget(*provider)))
+            .map(|provider| self.provider_budget(*provider).min(public_search_budget))
             .collect::<Vec<_>>();
         let provider_cancellations = provider_ids
             .iter()
@@ -97,7 +107,7 @@ impl CodeSearchCoordinator {
             let tx = tx.clone();
             let request = request.clone();
             let context = context.clone();
-            let deadline = provider_deadlines[index];
+            let budget = provider_budgets[index];
             let worker_cancellation = provider_cancellations[index].clone();
             let spawn_result = thread::Builder::new()
                 .name(format!("unica-code-search-{}", provider_id.as_str()))
@@ -107,7 +117,7 @@ impl CodeSearchCoordinator {
                         provider.search(
                             &request,
                             &context,
-                            ProviderDeadline::new(deadline),
+                            ProviderDeadline::from_started_at(started_at, budget),
                             &worker_cancellation,
                         )
                     }))
@@ -147,13 +157,13 @@ impl CodeSearchCoordinator {
                 ));
             }
 
-            let now = Instant::now();
+            let elapsed = started_at.elapsed();
             for (index, slot) in slots.iter_mut().enumerate() {
-                if slot.is_none() && now >= provider_deadlines[index] {
+                if slot.is_none() && elapsed >= provider_budgets[index] {
                     provider_cancellations[index].cancel();
                     *slot = Some(provider_timeout_section(
                         provider_ids[index],
-                        provider_budget(provider_ids[index]).min(self.public_search_budget),
+                        provider_budgets[index],
                     ));
                 }
             }
@@ -165,12 +175,10 @@ impl CodeSearchCoordinator {
                 .iter()
                 .enumerate()
                 .filter(|(_, slot)| slot.is_none())
-                .map(|(index, _)| provider_deadlines[index])
+                .filter_map(|(index, _)| provider_budgets[index].checked_sub(started_at.elapsed()))
                 .min()
-                .unwrap_or(public_deadline);
-            let wait = next_deadline
-                .saturating_duration_since(Instant::now())
-                .min(Duration::from_millis(50));
+                .unwrap_or(Duration::ZERO);
+            let wait = next_deadline.min(Duration::from_millis(50));
             match rx.recv_timeout(wait) {
                 Ok((index, section)) if slots[index].is_none() => slots[index] = Some(section),
                 Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -239,6 +247,14 @@ impl CodeSearchCoordinator {
             warnings,
             errors,
         })
+    }
+
+    fn provider_budget(&self, provider: ProviderId) -> Duration {
+        match provider {
+            ProviderId::Rlm => self.deadlines.search_rlm_timeout(),
+            ProviderId::BslAnalyzer => self.deadlines.search_total_timeout(),
+            ProviderId::GitGrep => self.deadlines.search_git_grep_timeout(),
+        }
     }
 }
 
@@ -421,13 +437,14 @@ pub(crate) fn execute_provider_read(
     provider: Arc<dyn CodeIntelligenceProvider>,
     request: CodeIntelligenceReadRequest,
     context: CodeIntelligenceContext,
+    budget: Duration,
     cancellation: &CancellationToken,
 ) -> Result<ProviderReadOutcome, String> {
     execute_provider_read_with_policy(
         provider,
         request,
         context,
-        PROVIDER_READ_BUDGET,
+        budget,
         global_provider_worker_admission(),
         global_provider_worker_lifecycle(),
         cancellation,
@@ -458,7 +475,7 @@ fn execute_provider_read_with_policy(
     })?;
     let worker_cancellation = cancellation.linked_child();
     let worker_token = worker_cancellation.clone();
-    let deadline = Instant::now() + budget;
+    let started_at = Instant::now();
     let (tx, rx) = mpsc::sync_channel(1);
     let handle = thread::Builder::new()
         .name(format!("unica-code-read-{}", provider_id.as_str()))
@@ -468,7 +485,7 @@ fn execute_provider_read_with_policy(
                 provider.read(
                     &request,
                     &context,
-                    ProviderDeadline::new(deadline),
+                    ProviderDeadline::from_started_at(started_at, budget),
                     &worker_token,
                 )
             }))
@@ -498,7 +515,9 @@ fn execute_provider_read_with_policy(
                 "code intelligence read stopped while provider was running",
             ));
         }
-        let remaining = deadline.saturating_duration_since(Instant::now());
+        let remaining = budget
+            .checked_sub(started_at.elapsed())
+            .unwrap_or(Duration::ZERO);
         if remaining.is_zero() {
             worker_cancellation.cancel();
             return Err(format!(
@@ -509,6 +528,8 @@ fn execute_provider_read_with_policy(
         }
         match rx.recv_timeout(remaining.min(Duration::from_millis(25))) {
             Ok(result) => {
+                let result =
+                    arbitrate_provider_read_result(result, cancellation, &worker_cancellation);
                 worker_lifecycle.reap();
                 return result;
             }
@@ -522,6 +543,20 @@ fn execute_provider_read_with_policy(
             }
         }
     }
+}
+
+fn arbitrate_provider_read_result(
+    result: Result<ProviderReadOutcome, String>,
+    cancellation: &CancellationToken,
+    worker_cancellation: &CancellationToken,
+) -> Result<ProviderReadOutcome, String> {
+    if cancellation.is_cancelled() {
+        worker_cancellation.cancel();
+        return Err(cancelled_error(
+            "code intelligence read stopped while provider was running",
+        ));
+    }
+    result
 }
 
 #[cfg(test)]
@@ -557,14 +592,6 @@ fn provider_admission_exhausted_section(
     }
 }
 
-fn provider_budget(provider: ProviderId) -> Duration {
-    match provider {
-        ProviderId::Rlm => RLM_SEARCH_BUDGET,
-        ProviderId::BslAnalyzer => PUBLIC_SEARCH_BUDGET,
-        ProviderId::GitGrep => GIT_GREP_SEARCH_BUDGET,
-    }
-}
-
 fn failed_after_panic(provider: ProviderId, panic: Box<dyn Any + Send>) -> ProviderSearchSection {
     let detail = panic
         .downcast_ref::<&str>()
@@ -592,8 +619,8 @@ fn section_problem(section: &ProviderSearchSection) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        execute_provider_read_with_policy, CodeSearchCoordinator, ProviderWorkerAdmission,
-        ProviderWorkerLifecycle,
+        arbitrate_provider_read_result, execute_provider_read_with_policy, CodeSearchCoordinator,
+        ProviderWorkerAdmission, ProviderWorkerLifecycle,
     };
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::{
@@ -602,6 +629,7 @@ mod tests {
         ProviderReadOutcome, ProviderSearchHit, ProviderSearchSection, ProviderSectionStatus,
         SearchRequest,
     };
+    use crate::domain::operational_config::CodeIntelligenceDeadlines;
     use crate::domain::source_roots::ResolvedSourceRoot;
     use crate::domain::workspace::WorkspaceContext;
     use serde_json::Map;
@@ -976,6 +1004,62 @@ mod tests {
         );
     }
 
+    #[test]
+    fn coordinator_projects_each_configured_provider_budget_without_hidden_caps() {
+        let deadlines = CodeIntelligenceDeadlines::for_test_values(
+            Duration::from_secs(100),
+            Duration::from_secs(30),
+            Duration::from_secs(70),
+            Duration::from_secs(40),
+        );
+        let coordinator = CodeSearchCoordinator::with_deadlines(
+            CodeIntelligenceRegistry::new(Vec::new()).unwrap(),
+            deadlines,
+        );
+
+        assert_eq!(
+            coordinator.provider_budget(ProviderId::BslAnalyzer),
+            Duration::from_secs(100)
+        );
+        assert_eq!(
+            coordinator.provider_budget(ProviderId::Rlm),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            coordinator.provider_budget(ProviderId::GitGrep),
+            Duration::from_secs(70)
+        );
+        assert_eq!(deadlines.provider_read_timeout(), Duration::from_secs(40));
+    }
+
+    #[test]
+    fn coordinator_accepts_full_positive_i64_config_budget_without_instant_overflow() {
+        let maximum = Duration::from_secs(i64::MAX as u64);
+        let deadlines = CodeIntelligenceDeadlines::for_test(maximum);
+        let coordinator = CodeSearchCoordinator::with_deadlines(
+            CodeIntelligenceRegistry::new(vec![static_provider(
+                ProviderId::GitGrep,
+                ProviderSectionStatus::Empty,
+                "",
+            )])
+            .unwrap(),
+            deadlines,
+        );
+
+        let execution = coordinator
+            .search(
+                &SearchRequest {
+                    query: "Post".to_string(),
+                    limit: 20,
+                },
+                &context(),
+                &CancellationToken::new(),
+            )
+            .expect("a valid configured budget must not overflow Instant");
+
+        assert!(execution.ok, "{execution:?}");
+    }
+
     struct DeadlineIgnoringProvider;
 
     impl CodeIntelligenceProvider for DeadlineIgnoringProvider {
@@ -1075,6 +1159,48 @@ mod tests {
         assert_eq!(admission.active_count(ProviderId::BslAnalyzer), 0);
     }
 
+    struct StaticReadProvider;
+
+    impl CodeIntelligenceProvider for StaticReadProvider {
+        fn id(&self) -> ProviderId {
+            ProviderId::Rlm
+        }
+
+        fn capabilities(&self) -> &[ProviderCapability] {
+            &[ProviderCapability::Definition, ProviderCapability::Outline]
+        }
+
+        fn search(
+            &self,
+            _request: &SearchRequest,
+            _context: &CodeIntelligenceContext,
+            _deadline: ProviderDeadline,
+            _cancellation: &CancellationToken,
+        ) -> ProviderSearchSection {
+            unreachable!("read-only fixture")
+        }
+
+        fn read(
+            &self,
+            _request: &CodeIntelligenceReadRequest,
+            _context: &CodeIntelligenceContext,
+            _deadline: ProviderDeadline,
+            _cancellation: &CancellationToken,
+        ) -> Result<ProviderReadOutcome, String> {
+            Ok(ProviderReadOutcome {
+                provider: ProviderId::Rlm,
+                ok: true,
+                summary: "read".to_string(),
+                warnings: Vec::new(),
+                errors: Vec::new(),
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: None,
+                data: None,
+            })
+        }
+    }
+
     struct DeadlineIgnoringReadProvider;
 
     impl CodeIntelligenceProvider for DeadlineIgnoringReadProvider {
@@ -1144,6 +1270,53 @@ mod tests {
         assert_eq!(admission.active_count(ProviderId::Rlm), 1);
         assert!(lifecycle.drain(Duration::from_secs(2)));
         assert_eq!(admission.active_count(ProviderId::Rlm), 0);
+    }
+
+    #[test]
+    fn read_coordinator_accepts_full_positive_i64_config_budget_without_instant_overflow() {
+        let admission = Arc::new(ProviderWorkerAdmission::new(1));
+        let lifecycle = Arc::new(ProviderWorkerLifecycle::new());
+
+        let outcome = execute_provider_read_with_policy(
+            Arc::new(StaticReadProvider),
+            CodeIntelligenceReadRequest::Definition {
+                name: "Post".to_string(),
+                module_hint: String::new(),
+                limit: 50,
+            },
+            context(),
+            Duration::from_secs(i64::MAX as u64),
+            admission,
+            Arc::clone(&lifecycle),
+            &CancellationToken::new(),
+        )
+        .expect("a valid configured read budget must not overflow Instant");
+
+        assert!(outcome.ok, "{outcome:?}");
+        assert!(lifecycle.drain(Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn post_receive_arbitration_gives_parent_cancellation_priority_over_ok_result() {
+        let cancellation = CancellationToken::new();
+        let worker_cancellation = cancellation.linked_child();
+        cancellation.cancel();
+        let result = Ok(ProviderReadOutcome {
+            provider: ProviderId::Rlm,
+            ok: true,
+            summary: "result published after parent cancellation".to_string(),
+            warnings: Vec::new(),
+            errors: Vec::new(),
+            artifacts: Vec::new(),
+            stdout: None,
+            stderr: None,
+            data: None,
+        });
+
+        let error = arbitrate_provider_read_result(result, &cancellation, &worker_cancellation)
+            .expect_err("parent cancellation must win over a received Ok result");
+
+        assert!(error.starts_with("cancelled:"), "{error}");
     }
 
     struct PanickingProvider;
