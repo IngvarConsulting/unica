@@ -1291,8 +1291,7 @@ mod provider_tests {
     fn kb_an_english_query_matches_title_tokens_not_the_whole_substring() {
         let _serial = kb_test_lock();
         let base = "https://kb.tokens";
-        let (provider, _transport) =
-            provider_over(base, standard_site(base), NetworkAccess::Allow);
+        let (provider, _transport) = provider_over(base, standard_site(base), NetworkAccess::Allow);
         let (request, context) = request("formats URL", Some("8.3.27"));
         let sections = provider.search(&request, &context);
         let developer = corpus_section(&sections, "kb-developer-guide");
@@ -1319,9 +1318,7 @@ mod provider_tests {
                 &self,
                 _context: &crate::domain::documentation::DocumentationContext,
             ) -> Option<
-                std::sync::Arc<
-                    crate::infrastructure::documentation_retrieval::BilingualLexicon,
-                >,
+                std::sync::Arc<crate::infrastructure::documentation_retrieval::BilingualLexicon>,
             > {
                 Some(std::sync::Arc::new(
                     crate::infrastructure::documentation_retrieval::BilingualLexicon::from_titles(

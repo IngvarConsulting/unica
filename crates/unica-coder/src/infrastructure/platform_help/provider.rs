@@ -244,7 +244,10 @@ fn build_index(corpora: &InstallationCorpora) -> InstallationIndex {
     // (первый корпус) и живёт вместе с индексом: тот же ключ, та же память
     // процесса (ADR-0036 п.4).
     let lexicon = Arc::new(BilingualLexicon::from_titles(
-        corpora_indexed[0].pages.iter().map(|page| page.title.as_str()),
+        corpora_indexed[0]
+            .pages
+            .iter()
+            .map(|page| page.title.as_str()),
     ));
     InstallationIndex {
         version: corpora.version.clone(),

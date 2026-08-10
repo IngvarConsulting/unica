@@ -249,10 +249,8 @@ impl DocumentationProvider for ConfigurationHelpProvider {
         // одной конфигурации, единицы и десятки, поэтому индекс строится на
         // вызов: кешировать его значило бы завести ключ по файлам выгрузки
         // ради экономии, которую здесь не с чего собирать.
-        let locale_pages: Vec<&HelpPage> = pages
-            .iter()
-            .filter(|page| page.locale == locale)
-            .collect();
+        let locale_pages: Vec<&HelpPage> =
+            pages.iter().filter(|page| page.locale == locale).collect();
         let retrieval = RetrievalIndex::build(locale_pages.iter().map(|page| RetrievalFields {
             title: &page.title,
             signature: "",
@@ -475,12 +473,14 @@ mod tests {
     #[test]
     fn natural_phrasing_with_morphology_finds_the_page() {
         let root = workspace();
-        let sections = provider(&root).search(
-            &request("единицы измерения номенклатуры", "ru"),
-            &context(),
-        );
+        let sections =
+            provider(&root).search(&request("единицы измерения номенклатуры", "ru"), &context());
         let section = &sections[0];
-        assert_eq!(section.status, DocumentationSectionStatus::Ok, "{section:?}");
+        assert_eq!(
+            section.status,
+            DocumentationSectionStatus::Ok,
+            "{section:?}"
+        );
         assert!(
             section.hits[0].document_id.contains("Номенклатура"),
             "{:?}",

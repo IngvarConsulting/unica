@@ -483,10 +483,7 @@ mod tests {
             1,
             "второй одинаковый запрос обязан ответить из кеша"
         );
-        assert!(matches!(
-            second[0].status,
-            DocumentationSectionStatus::Ok
-        ));
+        assert!(matches!(second[0].status, DocumentationSectionStatus::Ok));
         assert_eq!(first[0].hits.len(), second[0].hits.len());
     }
 

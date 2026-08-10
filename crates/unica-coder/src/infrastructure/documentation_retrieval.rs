@@ -224,7 +224,12 @@ impl RetrievalIndex {
     /// (уже стеммированные, например английские имена из двуязычного
     /// лексикона). Они прибавляют оценку документам, где найдены, и не
     /// штрафуют документы, где их нет.
-    pub fn query(&self, query: &str, limit: usize, expansions: &[Vec<String>]) -> Vec<RetrievalHit> {
+    pub fn query(
+        &self,
+        query: &str,
+        limit: usize,
+        expansions: &[Vec<String>],
+    ) -> Vec<RetrievalHit> {
         let document_count = self.weighted_lengths.len();
         if document_count == 0 || limit == 0 {
             return Vec::new();
@@ -238,8 +243,8 @@ impl RetrievalIndex {
         let mut contributions: std::collections::BTreeMap<usize, f32> =
             std::collections::BTreeMap::new();
         let merge = |contributions: &mut std::collections::BTreeMap<usize, f32>,
-                         term_id: usize,
-                         multiplier: f32| {
+                     term_id: usize,
+                     multiplier: f32| {
             let entry = contributions.entry(term_id).or_insert(0.0);
             if multiplier > *entry {
                 *entry = multiplier;
@@ -421,7 +426,10 @@ mod tests {
         let expansions = lexicon.expansions("свернуть таблицу");
         assert_eq!(expansions.len(), 2);
         assert_eq!(expansions[0], vec![stem_token("group"), stem_token("by")]);
-        assert_eq!(expansions[1], vec![stem_token("value"), stem_token("table")]);
+        assert_eq!(
+            expansions[1],
+            vec![stem_token("value"), stem_token("table")]
+        );
         let empty = lexicon.expansions("group by");
         assert!(empty.iter().all(Vec::is_empty), "{empty:?}");
     }
@@ -441,7 +449,10 @@ mod tests {
                 "ТаблицаЗначений.Свернуть (ValueTable.GroupBy)",
                 "Группирует строки таблицы значений по колонкам.",
             ),
-            ("Массив.Удалить (Array.Delete)", "Удаляет элемент массива по индексу."),
+            (
+                "Массив.Удалить (Array.Delete)",
+                "Удаляет элемент массива по индексу.",
+            ),
         ]);
         let hits = index.query("свернуть таблицу значений", 5, &[]);
         assert_eq!(hits[0].document, 0, "{hits:?}");
@@ -489,7 +500,10 @@ mod tests {
     #[test]
     fn expansions_add_terms_without_penalizing_originals() {
         let index = corpus(&[
-            ("Working with value tables", "How to group rows of a value table."),
+            (
+                "Working with value tables",
+                "How to group rows of a value table.",
+            ),
             ("Working with arrays", "How to delete an element."),
         ]);
         let without = index.query("свернуть таблицу значений", 5, &[]);
@@ -518,10 +532,19 @@ mod tests {
 
     #[test]
     fn bounded_distance_respects_cap_and_transposition() {
-        assert_eq!(bounded_damerau_levenshtein("стрнайтти", "стрнайти", 2), Some(1));
-        assert_eq!(bounded_damerau_levenshtein("свренуть", "свернуть", 2), Some(1));
+        assert_eq!(
+            bounded_damerau_levenshtein("стрнайтти", "стрнайти", 2),
+            Some(1)
+        );
+        assert_eq!(
+            bounded_damerau_levenshtein("свренуть", "свернуть", 2),
+            Some(1)
+        );
         assert_eq!(bounded_damerau_levenshtein("массив", "запрос", 2), None);
-        assert_eq!(bounded_damerau_levenshtein("одинаковый", "одинаковый", 1), Some(0));
+        assert_eq!(
+            bounded_damerau_levenshtein("одинаковый", "одинаковый", 1),
+            Some(0)
+        );
         assert_eq!(bounded_damerau_levenshtein("кот", "котлета", 2), None);
         assert_eq!(fuzzy_cap(3), 0);
         assert_eq!(fuzzy_cap(4), 1);
