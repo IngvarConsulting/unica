@@ -12,7 +12,7 @@ use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 pub(crate) use tool_contracts::{
     DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS, DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
 };
@@ -216,7 +216,7 @@ impl UnicaApplication {
         args: &Map<String, Value>,
         cancellation: CancellationToken,
     ) -> Result<OperationResult, String> {
-        let deadline = ProviderDeadline::new(Instant::now() + PUBLIC_INVOCATION_DEADLINE);
+        let deadline = ProviderDeadline::from_budget(PUBLIC_INVOCATION_DEADLINE);
         let spec = tools()
             .into_iter()
             .find(|tool| tool.name == name)
@@ -2251,6 +2251,7 @@ mod tests {
         fail_load: bool,
         cancellation_on_load: Option<CancellationToken>,
         prepared_code_search_handler: bool,
+        full_range_workspace: Option<PathBuf>,
         observed_analyze_timeout: Mutex<Option<Duration>>,
     }
 
@@ -2276,6 +2277,58 @@ mod tests {
                 ..Self::default()
             }
         }
+
+        fn with_full_range_code_provider(workspace: PathBuf) -> Self {
+            Self {
+                full_range_workspace: Some(workspace),
+                ..Self::default()
+            }
+        }
+    }
+
+    struct FullRangeReadProvider;
+
+    impl crate::domain::code_intelligence::CodeIntelligenceProvider for FullRangeReadProvider {
+        fn id(&self) -> crate::domain::code_intelligence::ProviderId {
+            crate::domain::code_intelligence::ProviderId::Rlm
+        }
+
+        fn capabilities(&self) -> &[crate::domain::code_intelligence::ProviderCapability] {
+            &[
+                crate::domain::code_intelligence::ProviderCapability::Definition,
+                crate::domain::code_intelligence::ProviderCapability::Outline,
+            ]
+        }
+
+        fn search(
+            &self,
+            _request: &SearchRequest,
+            _context: &crate::domain::code_intelligence::CodeIntelligenceContext,
+            _deadline: ProviderDeadline,
+            _cancellation: &CancellationToken,
+        ) -> crate::domain::code_intelligence::ProviderSearchSection {
+            unreachable!("read-only fixture")
+        }
+
+        fn read(
+            &self,
+            _request: &CodeIntelligenceReadRequest,
+            _context: &crate::domain::code_intelligence::CodeIntelligenceContext,
+            _deadline: ProviderDeadline,
+            _cancellation: &CancellationToken,
+        ) -> Result<crate::domain::code_intelligence::ProviderReadOutcome, String> {
+            Ok(crate::domain::code_intelligence::ProviderReadOutcome {
+                provider: crate::domain::code_intelligence::ProviderId::Rlm,
+                ok: true,
+                summary: "read".to_string(),
+                warnings: Vec::new(),
+                errors: Vec::new(),
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: None,
+                data: None,
+            })
+        }
     }
 
     impl ports::ApplicationPorts for OperationalConfigRecordingPorts {
@@ -2283,7 +2336,11 @@ mod tests {
             &self,
             requested_cwd: Option<PathBuf>,
         ) -> Result<WorkspaceContext, String> {
-            let cwd = requested_cwd.unwrap_or_else(|| PathBuf::from("/workspace"));
+            let cwd = self
+                .full_range_workspace
+                .clone()
+                .or(requested_cwd)
+                .unwrap_or_else(|| PathBuf::from("/workspace"));
             Ok(WorkspaceContext {
                 cwd: cwd.clone(),
                 workspace_root: cwd.clone(),
@@ -2322,6 +2379,19 @@ mod tests {
                     ),
                 );
             }
+            if self.full_range_workspace.is_some() {
+                let mut layer =
+                    crate::domain::operational_config::OperationalConfigLayer::default();
+                layer.set_timeout_seconds(
+                    crate::domain::operational_config::OperationalConfigField::ProviderRead,
+                    i64::MAX,
+                    crate::domain::operational_config::OperationalConfigDiagnosticSource::Shared,
+                )?;
+                return crate::domain::operational_config::OperationalConfig::from_layers(
+                    Some(&layer),
+                    None,
+                );
+            }
             Ok(crate::domain::operational_config::OperationalConfig::compiled_defaults())
         }
 
@@ -2357,11 +2427,44 @@ mod tests {
 
         fn resolve_code_intelligence_context(
             &self,
-            _context: &WorkspaceContext,
+            context: &WorkspaceContext,
             _args: &Map<String, Value>,
         ) -> Result<crate::domain::code_intelligence::CodeIntelligenceContext, String> {
             self.code_context_calls.fetch_add(1, Ordering::SeqCst);
+            if self.full_range_workspace.is_some() {
+                return Ok(
+                    crate::domain::code_intelligence::CodeIntelligenceContext::new(
+                        context.clone(),
+                        crate::domain::source_roots::ResolvedSourceRoot {
+                            source_set: Some("main".to_string()),
+                            path: context.workspace_root.join("src"),
+                        },
+                    ),
+                );
+            }
             Err("code intelligence context should not be resolved in this test".to_string())
+        }
+
+        fn normalize_code_intelligence_read_request(
+            &self,
+            request: CodeIntelligenceReadRequest,
+            _context: &crate::domain::code_intelligence::CodeIntelligenceContext,
+        ) -> Result<CodeIntelligenceReadRequest, String> {
+            if self.full_range_workspace.is_some() {
+                return Ok(request);
+            }
+            Err("code intelligence request should not be normalized in this test".to_string())
+        }
+
+        fn code_intelligence_registry(
+            &self,
+        ) -> Result<crate::domain::code_intelligence::CodeIntelligenceRegistry, String> {
+            if self.full_range_workspace.is_some() {
+                return crate::domain::code_intelligence::CodeIntelligenceRegistry::new(vec![
+                    Arc::new(FullRangeReadProvider),
+                ]);
+            }
+            Err("code intelligence registry should not be read in this test".to_string())
         }
 
         fn invoke_handler(
@@ -2521,6 +2624,27 @@ mod tests {
             error.starts_with(crate::domain::cancellation::CANCELLED_PREFIX),
             "{error}"
         );
+    }
+
+    #[test]
+    fn public_definition_and_outline_accept_full_positive_i64_config_budget() {
+        let workspace = std::env::temp_dir().join(format!(
+            "unica-public-full-range-read-{}",
+            std::process::id()
+        ));
+        let app = UnicaApplication::with_ports(Arc::new(
+            OperationalConfigRecordingPorts::with_full_range_code_provider(workspace.clone()),
+        ));
+
+        for (tool_name, args) in [
+            ("unica.code.definition", json!({"name": "Needle"})),
+            ("unica.code.outline", json!({"path": "Module.bsl"})),
+        ] {
+            let result = app
+                .call_tool(tool_name, args.as_object().unwrap())
+                .expect("valid full-range config must not panic public dispatch");
+            assert!(result.ok, "{tool_name}: {result:?}");
+        }
     }
 
     #[test]

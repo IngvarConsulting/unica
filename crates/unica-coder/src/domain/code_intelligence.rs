@@ -86,14 +86,21 @@ impl CodeIntelligenceContext {
 
 #[derive(Debug, Clone, Copy)]
 pub struct ProviderDeadline {
-    deadline: Instant,
+    started_at: Instant,
+    budget: Duration,
     #[cfg(test)]
     now: fn() -> Instant,
 }
 
 impl PartialEq for ProviderDeadline {
     fn eq(&self, other: &Self) -> bool {
-        self.deadline == other.deadline
+        if self.started_at <= other.started_at {
+            self.budget.checked_sub(other.budget)
+                == other.started_at.checked_duration_since(self.started_at)
+        } else {
+            other.budget.checked_sub(self.budget)
+                == self.started_at.checked_duration_since(other.started_at)
+        }
     }
 }
 
@@ -101,8 +108,21 @@ impl Eq for ProviderDeadline {}
 
 impl ProviderDeadline {
     pub fn new(deadline: Instant) -> Self {
+        let started_at = Instant::now();
+        let budget = deadline
+            .checked_duration_since(started_at)
+            .unwrap_or(Duration::ZERO);
+        Self::from_started_at(started_at, budget)
+    }
+
+    pub(crate) fn from_budget(budget: Duration) -> Self {
+        Self::from_started_at(Instant::now(), budget)
+    }
+
+    pub(crate) fn from_started_at(started_at: Instant, budget: Duration) -> Self {
         Self {
-            deadline,
+            started_at,
+            budget,
             #[cfg(test)]
             now: Instant::now,
         }
@@ -113,12 +133,23 @@ impl ProviderDeadline {
         let now = (self.now)();
         #[cfg(not(test))]
         let now = Instant::now();
-        self.deadline.saturating_duration_since(now)
+        let elapsed = now
+            .checked_duration_since(self.started_at)
+            .unwrap_or(Duration::ZERO);
+        self.budget.checked_sub(elapsed).unwrap_or(Duration::ZERO)
     }
 
     #[cfg(test)]
     pub(crate) fn with_clock(deadline: Instant, now: fn() -> Instant) -> Self {
-        Self { deadline, now }
+        let started_at = now();
+        let budget = deadline
+            .checked_duration_since(started_at)
+            .unwrap_or(Duration::ZERO);
+        Self {
+            started_at,
+            budget,
+            now,
+        }
     }
 }
 

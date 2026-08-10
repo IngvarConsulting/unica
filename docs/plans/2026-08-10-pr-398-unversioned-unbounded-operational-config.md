@@ -12,9 +12,11 @@
 **Architecture:** Общий root parser принимает только `operational`, `network`
 и `providers`; `version` является неизвестным полем. Домен хранит положительные
 конечные `Duration` без policy-maximum, сохраняя только compiled defaults и
-отношение provider deadline ≤ total deadline. Пути workspace service,
-получившие caller budget, используют именно этот абсолютный бюджет; внутренние
-control/start defaults остаются 120-секундными.
+отношение provider deadline ≤ total deadline. Исполнители хранят момент начала
+рядом с длительностью и вычисляют остаток вычитанием прошедшего времени, поэтому
+не переполняют `Instant` на полном положительном диапазоне `i64` секунд. Рабочие
+пути анализатора и RLM передают этот остаток без потерь как секунды и наносекунды;
+внутренние control/start defaults остаются 120-секундными.
 
 **Tech Stack:** Rust 2021, `toml = "0.8"`, Cargo workspace tests, Python 3.12
 architecture guards, GitHub CLI.

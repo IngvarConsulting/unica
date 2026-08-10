@@ -355,7 +355,7 @@ impl<'a> WorkspaceServiceManager<'a> {
                 &deadline,
             )?;
             let send_budget = deadline.remaining(cancellation)?;
-            let attempt_timeout_millis = duration_timeout_millis(call.timeout.min(send_budget));
+            let attempt_timeout = call.timeout.min(send_budget);
             let send_result = self.connector.send(
                 &record,
                 ServiceRequest {
@@ -364,7 +364,8 @@ impl<'a> WorkspaceServiceManager<'a> {
                         operation_id: Uuid::new_v4().to_string(),
                         tool_name: call.tool_name.to_string(),
                         tool_args: call.tool_args.clone(),
-                        timeout_millis: attempt_timeout_millis,
+                        timeout_seconds: attempt_timeout.as_secs(),
+                        timeout_nanos: attempt_timeout.subsec_nanos(),
                     },
                 },
                 cancellation,
@@ -635,11 +636,17 @@ fn duration_timeout_millis(duration: Duration) -> u64 {
 fn duration_from_timeout_parts(seconds: u64, nanos: u32) -> Result<Duration, String> {
     if nanos >= 1_000_000_000 {
         return Err(format!(
-            "workspace service RLM timeout has invalid nanoseconds: {nanos}"
+            "workspace service timeout has invalid nanoseconds: {nanos}"
+        ));
+    }
+    if seconds > i64::MAX as u64 || (seconds == i64::MAX as u64 && nanos != 0) {
+        return Err(format!(
+            "workspace service timeout exceeds the positive i64-second configuration domain: maximum is {} seconds",
+            i64::MAX
         ));
     }
     if seconds == 0 && nanos == 0 {
-        return Err("workspace service RLM timeout must be positive".to_string());
+        return Err("workspace service timeout must be positive".to_string());
     }
     Ok(Duration::new(seconds, nanos))
 }
@@ -1584,12 +1591,17 @@ impl WorkspaceServiceRuntime {
         &self,
         tool_name: &str,
         tool_args: Value,
-        timeout_millis: u64,
+        timeout_seconds: u64,
+        timeout_nanos: u32,
         cancellation: &CancellationToken,
     ) -> ServiceResponse {
         if cancellation.is_cancelled() {
             return ServiceResponse::error(cancelled_error("workspace analyzer operation stopped"));
         }
+        let timeout = match duration_from_timeout_parts(timeout_seconds, timeout_nanos) {
+            Ok(timeout) => timeout,
+            Err(error) => return ServiceResponse::error(error),
+        };
         let _lane = match self.acquire_analyzer_lane(cancellation) {
             Ok(lane) => lane,
             Err(error) => return ServiceResponse::error(error),
@@ -1626,7 +1638,6 @@ impl WorkspaceServiceRuntime {
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
         }
-        let timeout = Duration::from_millis(timeout_millis.max(1));
         let result = (|| {
             if analyzer.is_none() {
                 *analyzer = Some((self.analyzer_starter)(
@@ -1713,6 +1724,10 @@ impl WorkspaceServiceRuntime {
         if cancellation.is_cancelled() {
             return ServiceResponse::error(cancelled_error("workspace RLM operation stopped"));
         }
+        let timeout = match duration_from_timeout_parts(timeout_seconds, timeout_nanos) {
+            Ok(timeout) => timeout,
+            Err(error) => return ServiceResponse::error(error),
+        };
         let _lane = match self.acquire_rlm_lane(cancellation) {
             Ok(lane) => lane,
             Err(error) => return ServiceResponse::error(error),
@@ -1751,10 +1766,6 @@ impl WorkspaceServiceRuntime {
             let warnings = self.request_rlm_index_maintenance(cancellation);
             return ServiceResponse::unavailable_rlm_execution(pre_execution_readiness, warnings);
         }
-        let timeout = match duration_from_timeout_parts(timeout_seconds, timeout_nanos) {
-            Ok(timeout) => timeout,
-            Err(error) => return ServiceResponse::error(error),
-        };
         let result = (|| {
             if rlm.is_none() {
                 *rlm = Some((self.rlm_starter)(
@@ -1974,9 +1985,16 @@ impl WorkspaceServiceOperationExecutor for SystemWorkspaceServiceOperationExecut
             ServiceRequestKind::BslMcp {
                 tool_name,
                 tool_args,
-                timeout_millis,
+                timeout_seconds,
+                timeout_nanos,
                 ..
-            } => runtime.handle_bsl_mcp(&tool_name, tool_args, timeout_millis, cancellation),
+            } => runtime.handle_bsl_mcp(
+                &tool_name,
+                tool_args,
+                timeout_seconds,
+                timeout_nanos,
+                cancellation,
+            ),
             ServiceRequestKind::RlmReady { args, .. } => {
                 runtime.handle_rlm_ready(args, cancellation)
             }
@@ -2005,7 +2023,8 @@ enum ServiceRequestKind {
         operation_id: String,
         tool_name: String,
         tool_args: Value,
-        timeout_millis: u64,
+        timeout_seconds: u64,
+        timeout_nanos: u32,
     },
     RlmReady {
         operation_id: String,
@@ -2640,7 +2659,7 @@ impl RlmMcpSession {
         let timeout = remaining_rlm_time(deadline, cancellation)?;
         let output = self.transport.call(
             "rlm_start",
-            rlm_start_arguments(&self.source_root, query_hint, timeout),
+            rlm_start_arguments(&self.source_root, query_hint, timeout)?,
             timeout,
             cancellation,
         )?;
@@ -2735,20 +2754,30 @@ impl RlmMcpSession {
     }
 }
 
-fn duration_seconds_ceil(duration: Duration) -> u64 {
-    duration.as_secs() + u64::from(duration.subsec_nanos() != 0)
+fn duration_seconds_ceil(duration: Duration) -> Result<u64, String> {
+    duration
+        .as_secs()
+        .checked_add(u64::from(duration.subsec_nanos() != 0))
+        .ok_or_else(|| {
+            "workspace service timeout cannot be rounded up to whole seconds".to_string()
+        })
 }
 
-fn rlm_start_arguments(source_root: &Path, query: &str, timeout: Duration) -> Value {
-    json!({
+fn rlm_start_arguments(
+    source_root: &Path,
+    query: &str,
+    timeout: Duration,
+) -> Result<Value, String> {
+    let execution_timeout_seconds = duration_seconds_ceil(timeout)?;
+    Ok(json!({
         "path": source_root.display().to_string(),
         "query": query,
         "effort": "low",
         "max_output_chars": 100_000,
         "max_execute_calls": 10_000,
-        "execution_timeout_seconds": duration_seconds_ceil(timeout),
+        "execution_timeout_seconds": execution_timeout_seconds,
         "include_metadata": false
-    })
+    }))
 }
 
 impl Drop for RlmMcpSession {
@@ -3870,7 +3899,8 @@ mod tests {
             Path::new("/workspace/src"),
             "needle",
             Duration::from_millis(299_001),
-        );
+        )
+        .unwrap();
 
         assert_eq!(args["execution_timeout_seconds"], 300);
     }
@@ -3953,6 +3983,64 @@ mod tests {
         let request: ServiceRequestKind = serde_json::from_value(wire.clone()).unwrap();
 
         assert_eq!(serde_json::to_value(request).unwrap(), wire);
+    }
+
+    #[test]
+    fn bsl_protocol_roundtrips_full_positive_i64_seconds() {
+        let wire = json!({
+            "type": "bsl-mcp",
+            "operation_id": "max-timeout",
+            "tool_name": "search",
+            "tool_args": {"query": "needle"},
+            "timeout_seconds": i64::MAX,
+            "timeout_nanos": 0
+        });
+
+        let request: ServiceRequestKind = serde_json::from_value(wire.clone()).unwrap();
+
+        assert_eq!(serde_json::to_value(request).unwrap(), wire);
+    }
+
+    #[test]
+    fn service_timeout_parts_reject_seconds_outside_positive_i64_config_domain() {
+        let error = duration_from_timeout_parts(u64::MAX, 1)
+            .expect_err("wire timeout must stay inside the accepted config domain");
+
+        assert!(error.contains("exceeds"), "{error}");
+        assert!(error.contains(&i64::MAX.to_string()), "{error}");
+    }
+
+    #[test]
+    fn duration_seconds_ceil_reports_overflow_instead_of_panicking() {
+        let error = duration_seconds_ceil(Duration::new(u64::MAX, 1))
+            .expect_err("invalid wire-derived duration must not panic or wrap");
+
+        assert!(error.contains("rounded up"), "{error}");
+    }
+
+    #[test]
+    fn rlm_wire_boundary_rejects_out_of_domain_timeout_before_runtime_work() {
+        let context = test_context("rlm-out-of-domain-wire-timeout");
+        let source_root = context.workspace_root.join("src");
+        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
+        let runtime = WorkspaceServiceRuntime::new(identity, &record);
+
+        let response = runtime.handle_rlm_mcp(
+            WorkspaceRlmOperation::Search {
+                query: "needle".to_string(),
+                limit: 20,
+            },
+            u64::MAX,
+            1,
+            &CancellationToken::new(),
+        );
+
+        cleanup(&context);
+        assert!(!response.ok, "{response:?}");
+        let error = response.error.expect("protocol error");
+        assert!(error.contains("exceeds"), "{error}");
+        assert!(error.contains(&i64::MAX.to_string()), "{error}");
     }
 
     #[test]
@@ -4831,7 +4919,8 @@ mod tests {
                 operation_id: "analyzer-holder-1".to_string(),
                 tool_name: "hold".to_string(),
                 tool_args: json!({}),
-                timeout_millis: 30_000,
+                timeout_seconds: 30,
+                timeout_nanos: 0,
             },
         );
         executor.wait_holder();
@@ -4841,7 +4930,8 @@ mod tests {
                 operation_id: "analyzer-waiter-2".to_string(),
                 tool_name: "wait".to_string(),
                 tool_args: json!({}),
-                timeout_millis: 30_000,
+                timeout_seconds: 30,
+                timeout_nanos: 0,
             },
         );
         let cancel_started = Instant::now();
@@ -5375,15 +5465,25 @@ mod tests {
             command.args([&pid_file_for_start, &completion_file_for_start]);
             PersistentMcpSession::start_with_command(command, cancellation)
         });
-        let first =
-            runtime.handle_bsl_mcp("unica.code.search", json!({}), 2, &CancellationToken::new());
+        let first = runtime.handle_bsl_mcp(
+            "unica.code.search",
+            json!({}),
+            0,
+            2_000_000,
+            &CancellationToken::new(),
+        );
         assert!(first.ok, "{:?}", first.error);
         let first_pid = wait_for_recorded_pid(&pid_file);
         wait_for_file(&completion_file, Duration::from_secs(2));
         wait_for_runtime_reader_terminal(&runtime, Duration::from_secs(2));
 
-        let second =
-            runtime.handle_bsl_mcp("unica.code.search", json!({}), 2, &CancellationToken::new());
+        let second = runtime.handle_bsl_mcp(
+            "unica.code.search",
+            json!({}),
+            0,
+            2_000_000,
+            &CancellationToken::new(),
+        );
         assert!(second.ok, "{:?}", second.error);
         assert!(wait_for_process_exit(first_pid, Duration::from_secs(2)));
         let pids = fs::read_to_string(&pid_file).unwrap();
@@ -5415,15 +5515,25 @@ mod tests {
             }
         });
 
-        let first =
-            runtime.handle_bsl_mcp("unica.code.search", json!({}), 2, &CancellationToken::new());
+        let first = runtime.handle_bsl_mcp(
+            "unica.code.search",
+            json!({}),
+            0,
+            2_000_000,
+            &CancellationToken::new(),
+        );
         assert!(first.ok, "{:?}", first.error);
         let first_pid = wait_for_recorded_pid(&pid_file);
         wait_for_file(&terminal_marker, Duration::from_secs(5));
         wait_for_runtime_reader_terminal(&runtime, Duration::from_secs(5));
 
-        let second =
-            runtime.handle_bsl_mcp("unica.code.search", json!({}), 2, &CancellationToken::new());
+        let second = runtime.handle_bsl_mcp(
+            "unica.code.search",
+            json!({}),
+            0,
+            2_000_000,
+            &CancellationToken::new(),
+        );
         assert!(second.ok, "{:?}", second.error);
         assert!(wait_for_process_exit(first_pid, Duration::from_secs(2)));
         let pids = fs::read_to_string(&pid_file).unwrap();
@@ -6234,7 +6344,8 @@ fn main() {
                 operation_id: "work-budget".to_string(),
                 tool_name: "search".to_string(),
                 tool_args: json!({}),
-                timeout_millis: 120_000,
+                timeout_seconds: 120,
+                timeout_nanos: 0,
             }),
             &cancellation,
             SERVICE_REQUEST_TIMEOUT,
@@ -6462,7 +6573,8 @@ fn main() {
                         operation_id: "race-operation".to_string(),
                         tool_name: "search".to_string(),
                         tool_args: json!({}),
-                        timeout_millis: 120_000,
+                        timeout_seconds: 120,
+                        timeout_nanos: 0,
                     }),
                     &cancellation,
                     SERVICE_REQUEST_TIMEOUT,
@@ -6504,7 +6616,8 @@ fn main() {
             operation_id: Uuid::new_v4().to_string(),
             tool_name: "search".to_string(),
             tool_args: json!({"query": "needle"}),
-            timeout_millis: 5_000,
+            timeout_seconds: 5,
+            timeout_nanos: 0,
         };
         let rlm = ServiceRequestKind::RlmReady {
             operation_id: Uuid::new_v4().to_string(),
@@ -6629,7 +6742,8 @@ fn main() {
                         operation_id: operation_id.clone(),
                         tool_name: "search".to_string(),
                         tool_args: json!({}),
-                        timeout_millis: 120_000,
+                        timeout_seconds: 120,
+                        timeout_nanos: 0,
                     },
                 },
                 &caller_token,
@@ -7007,8 +7121,8 @@ fn main() {
     }
 
     #[test]
-    fn service_record_v3_is_not_reused_after_lossless_rlm_timeout_protocol() {
-        let context = test_context("lossless-rlm-timeout-record-version");
+    fn service_record_v3_is_not_reused_after_lossless_worker_timeout_protocol() {
+        let context = test_context("lossless-worker-timeout-record-version");
         let source_root = context.workspace_root.join("src");
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
         let mut record = test_record(&identity, 34567, env!("CARGO_PKG_VERSION"));
@@ -7016,7 +7130,7 @@ fn main() {
 
         assert!(
             !record.matches(&identity, env!("CARGO_PKG_VERSION")),
-            "the millisecond-saturated RLM service protocol must not be reused"
+            "the millisecond-saturated worker timeout protocol must not be reused"
         );
         cleanup(&context);
     }
@@ -7539,6 +7653,47 @@ fn main() {
     }
 
     #[test]
+    fn bsl_request_preserves_budget_beyond_u64_max_milliseconds() {
+        let context = test_context("bsl-caller-budget-beyond-u64-millis");
+        let source_root = context.workspace_root.join("src");
+        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        write_record(
+            &identity,
+            test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
+        );
+        let connector = RecordingConnector {
+            ping_ok: true,
+            ..RecordingConnector::default()
+        };
+        let spawner = RecordingSpawner::default();
+        let manager = WorkspaceServiceManager::with_io(&connector, &spawner);
+
+        manager
+            .call_bsl_mcp_cancellable_with_budget(
+                &context,
+                &source_root,
+                WorkspaceServiceBslCall {
+                    tool_name: "search",
+                    tool_args: json!({"query": "needle"}),
+                    timeout: Duration::from_secs(i64::MAX as u64),
+                    request_budget: Duration::from_secs(i64::MAX as u64),
+                },
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        let budget = *connector.budgets.borrow().last().unwrap();
+        let request = serde_json::to_value(connector.requests.borrow().last().unwrap()).unwrap();
+        let wire_timeout = Duration::new(
+            request["timeout_seconds"].as_u64().unwrap(),
+            request["timeout_nanos"].as_u64().unwrap() as u32,
+        );
+        cleanup(&context);
+        assert!(wire_timeout > Duration::from_millis(u64::MAX));
+        assert_eq!(wire_timeout, budget);
+    }
+
+    #[test]
     fn rlm_readiness_preserves_caller_budget_above_service_default() {
         let context = test_context("rlm-readiness-caller-budget");
         let source_root = context.workspace_root.join("src");
@@ -7714,10 +7869,12 @@ fn main() {
         assert!(bsl_budgets[0] <= ping_budgets[0]);
         assert!(ping_budgets[1] < bsl_budgets[0]);
         assert!(bsl_budgets[1] <= ping_budgets[1]);
-        let timeout_millis = connector.bsl_timeout_millis.borrow();
-        assert_eq!(timeout_millis.len(), 2);
-        assert!(timeout_millis.iter().all(|timeout| *timeout <= 1_000));
-        assert!(timeout_millis[1] < timeout_millis[0]);
+        let timeouts = connector.bsl_timeouts.borrow();
+        assert_eq!(timeouts.len(), 2);
+        assert!(timeouts
+            .iter()
+            .all(|timeout| *timeout <= Duration::from_secs(1)));
+        assert!(timeouts[1] < timeouts[0]);
         assert_eq!(*spawner.spawns.borrow(), 0);
         cleanup(&context);
     }
@@ -8106,7 +8263,7 @@ fn main() {
         operation_ids: std::cell::RefCell<Vec<String>>,
         ping_budgets: std::cell::RefCell<Vec<Duration>>,
         bsl_budgets: std::cell::RefCell<Vec<Duration>>,
-        bsl_timeout_millis: std::cell::RefCell<Vec<u64>>,
+        bsl_timeouts: std::cell::RefCell<Vec<Duration>>,
         bsl_record_tokens: std::cell::RefCell<Vec<String>>,
         bsl_request_tokens: std::cell::RefCell<Vec<String>>,
     }
@@ -8216,12 +8373,15 @@ fn main() {
                 }
                 ServiceRequestKind::BslMcp {
                     operation_id,
-                    timeout_millis,
+                    timeout_seconds,
+                    timeout_nanos,
                     ..
                 } => {
                     self.operation_ids.borrow_mut().push(operation_id);
                     self.bsl_budgets.borrow_mut().push(budget);
-                    self.bsl_timeout_millis.borrow_mut().push(timeout_millis);
+                    self.bsl_timeouts
+                        .borrow_mut()
+                        .push(Duration::new(timeout_seconds, timeout_nanos));
                     self.bsl_record_tokens
                         .borrow_mut()
                         .push(record.token.clone());

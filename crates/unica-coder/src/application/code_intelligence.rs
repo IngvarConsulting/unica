@@ -85,16 +85,11 @@ impl CodeSearchCoordinator {
             .collect::<Vec<_>>();
         let started_at = Instant::now();
         let public_search_budget = self.deadlines.search_total_timeout();
-        let public_deadline = started_at + public_search_budget;
         let (tx, rx) = mpsc::channel();
         let mut slots = vec![None; providers.len()];
         let provider_budgets = provider_ids
             .iter()
             .map(|provider| self.provider_budget(*provider).min(public_search_budget))
-            .collect::<Vec<_>>();
-        let provider_deadlines = provider_budgets
-            .iter()
-            .map(|budget| public_deadline.min(started_at + *budget))
             .collect::<Vec<_>>();
         let provider_cancellations = provider_ids
             .iter()
@@ -112,7 +107,7 @@ impl CodeSearchCoordinator {
             let tx = tx.clone();
             let request = request.clone();
             let context = context.clone();
-            let deadline = provider_deadlines[index];
+            let budget = provider_budgets[index];
             let worker_cancellation = provider_cancellations[index].clone();
             let spawn_result = thread::Builder::new()
                 .name(format!("unica-code-search-{}", provider_id.as_str()))
@@ -122,7 +117,7 @@ impl CodeSearchCoordinator {
                         provider.search(
                             &request,
                             &context,
-                            ProviderDeadline::new(deadline),
+                            ProviderDeadline::from_started_at(started_at, budget),
                             &worker_cancellation,
                         )
                     }))
@@ -162,9 +157,9 @@ impl CodeSearchCoordinator {
                 ));
             }
 
-            let now = Instant::now();
+            let elapsed = started_at.elapsed();
             for (index, slot) in slots.iter_mut().enumerate() {
-                if slot.is_none() && now >= provider_deadlines[index] {
+                if slot.is_none() && elapsed >= provider_budgets[index] {
                     provider_cancellations[index].cancel();
                     *slot = Some(provider_timeout_section(
                         provider_ids[index],
@@ -180,12 +175,10 @@ impl CodeSearchCoordinator {
                 .iter()
                 .enumerate()
                 .filter(|(_, slot)| slot.is_none())
-                .map(|(index, _)| provider_deadlines[index])
+                .filter_map(|(index, _)| provider_budgets[index].checked_sub(started_at.elapsed()))
                 .min()
-                .unwrap_or(public_deadline);
-            let wait = next_deadline
-                .saturating_duration_since(Instant::now())
-                .min(Duration::from_millis(50));
+                .unwrap_or(Duration::ZERO);
+            let wait = next_deadline.min(Duration::from_millis(50));
             match rx.recv_timeout(wait) {
                 Ok((index, section)) if slots[index].is_none() => slots[index] = Some(section),
                 Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -482,7 +475,7 @@ fn execute_provider_read_with_policy(
     })?;
     let worker_cancellation = cancellation.linked_child();
     let worker_token = worker_cancellation.clone();
-    let deadline = Instant::now() + budget;
+    let started_at = Instant::now();
     let (tx, rx) = mpsc::sync_channel(1);
     let handle = thread::Builder::new()
         .name(format!("unica-code-read-{}", provider_id.as_str()))
@@ -492,7 +485,7 @@ fn execute_provider_read_with_policy(
                 provider.read(
                     &request,
                     &context,
-                    ProviderDeadline::new(deadline),
+                    ProviderDeadline::from_started_at(started_at, budget),
                     &worker_token,
                 )
             }))
@@ -522,7 +515,9 @@ fn execute_provider_read_with_policy(
                 "code intelligence read stopped while provider was running",
             ));
         }
-        let remaining = deadline.saturating_duration_since(Instant::now());
+        let remaining = budget
+            .checked_sub(started_at.elapsed())
+            .unwrap_or(Duration::ZERO);
         if remaining.is_zero() {
             worker_cancellation.cancel();
             return Err(format!(
@@ -1037,6 +1032,34 @@ mod tests {
         assert_eq!(deadlines.provider_read_timeout(), Duration::from_secs(40));
     }
 
+    #[test]
+    fn coordinator_accepts_full_positive_i64_config_budget_without_instant_overflow() {
+        let maximum = Duration::from_secs(i64::MAX as u64);
+        let deadlines = CodeIntelligenceDeadlines::for_test(maximum);
+        let coordinator = CodeSearchCoordinator::with_deadlines(
+            CodeIntelligenceRegistry::new(vec![static_provider(
+                ProviderId::GitGrep,
+                ProviderSectionStatus::Empty,
+                "",
+            )])
+            .unwrap(),
+            deadlines,
+        );
+
+        let execution = coordinator
+            .search(
+                &SearchRequest {
+                    query: "Post".to_string(),
+                    limit: 20,
+                },
+                &context(),
+                &CancellationToken::new(),
+            )
+            .expect("a valid configured budget must not overflow Instant");
+
+        assert!(execution.ok, "{execution:?}");
+    }
+
     struct DeadlineIgnoringProvider;
 
     impl CodeIntelligenceProvider for DeadlineIgnoringProvider {
@@ -1136,6 +1159,48 @@ mod tests {
         assert_eq!(admission.active_count(ProviderId::BslAnalyzer), 0);
     }
 
+    struct StaticReadProvider;
+
+    impl CodeIntelligenceProvider for StaticReadProvider {
+        fn id(&self) -> ProviderId {
+            ProviderId::Rlm
+        }
+
+        fn capabilities(&self) -> &[ProviderCapability] {
+            &[ProviderCapability::Definition, ProviderCapability::Outline]
+        }
+
+        fn search(
+            &self,
+            _request: &SearchRequest,
+            _context: &CodeIntelligenceContext,
+            _deadline: ProviderDeadline,
+            _cancellation: &CancellationToken,
+        ) -> ProviderSearchSection {
+            unreachable!("read-only fixture")
+        }
+
+        fn read(
+            &self,
+            _request: &CodeIntelligenceReadRequest,
+            _context: &CodeIntelligenceContext,
+            _deadline: ProviderDeadline,
+            _cancellation: &CancellationToken,
+        ) -> Result<ProviderReadOutcome, String> {
+            Ok(ProviderReadOutcome {
+                provider: ProviderId::Rlm,
+                ok: true,
+                summary: "read".to_string(),
+                warnings: Vec::new(),
+                errors: Vec::new(),
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: None,
+                data: None,
+            })
+        }
+    }
+
     struct DeadlineIgnoringReadProvider;
 
     impl CodeIntelligenceProvider for DeadlineIgnoringReadProvider {
@@ -1205,6 +1270,30 @@ mod tests {
         assert_eq!(admission.active_count(ProviderId::Rlm), 1);
         assert!(lifecycle.drain(Duration::from_secs(2)));
         assert_eq!(admission.active_count(ProviderId::Rlm), 0);
+    }
+
+    #[test]
+    fn read_coordinator_accepts_full_positive_i64_config_budget_without_instant_overflow() {
+        let admission = Arc::new(ProviderWorkerAdmission::new(1));
+        let lifecycle = Arc::new(ProviderWorkerLifecycle::new());
+
+        let outcome = execute_provider_read_with_policy(
+            Arc::new(StaticReadProvider),
+            CodeIntelligenceReadRequest::Definition {
+                name: "Post".to_string(),
+                module_hint: String::new(),
+                limit: 50,
+            },
+            context(),
+            Duration::from_secs(i64::MAX as u64),
+            admission,
+            Arc::clone(&lifecycle),
+            &CancellationToken::new(),
+        )
+        .expect("a valid configured read budget must not overflow Instant");
+
+        assert!(outcome.ok, "{outcome:?}");
+        assert!(lifecycle.drain(Duration::from_secs(1)));
     }
 
     #[test]
