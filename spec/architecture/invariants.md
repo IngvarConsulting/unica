@@ -206,7 +206,7 @@ Unica. Каждая запись формулирует одно нормати�
   того же точного владельца регистрацию, описатель и совпадающий
   `GeneratedType` каждой конфигурационной цели и связывает их точные байты с
   транзакцией, а `unica.meta.info` возвращает тот же типизированный wire-массив.
-- **Decision:** ADR-0036
+- **Decision:** ADR-0038
 - **Check:** `ci-test` — `tests/ci/test_meta_surface_contract.py`
 - **Check:** `ci-test` — `crates/unica-coder/src/application/metadata.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/metadata_operations.rs`
@@ -419,6 +419,25 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/documentation_policy.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/standards_documentation.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/kb_1ci.rs`
+- **Scope:** source, runtime
+
+### INV-MCP-SEARCH-SEMANTICS — Локальные корпуса документации сопоставляются одним лексическим контрактом
+
+- **Rule:** Локальные поставщики `unica.documentation.search` сопоставляют
+  запрос со своим корпусом единственным общим ядром, и его контракт один на
+  всех: токены по не-алфавитно-цифровым символам и границам `CamelCase`, включая
+  кириллический; морфология `Snowball` `ru`/`en` по письменности токена;
+  ограниченная нечёткость по словарю термов индекса с порогом от длины токена
+  и дисконтом против точного совпадения; `BM25F` с весом заголовка выше
+  сигнатуры и текста; детерминированный порядок при равных оценках. Пословное
+  покрытие суммируется: частичное не отбрасывается, каждый покрытый терм
+  прибавляет оценку, и при прочих равных полное покрытие выше частичного —
+  без строгого приоритета покрытия над весом поля и редкостью терма.
+  Оценки остаются локальными для секции, индексы ядра живут только в памяти
+  процесса. Провайдерное сопоставление всего запроса как одной подстроки
+  запрещено.
+- **Decision:** ADR-0037
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/documentation_retrieval.rs`
 - **Scope:** source, runtime
 
 ### INV-MCP-OUTLINE-DATA — Outline возвращает типизированные данные
@@ -777,6 +796,24 @@ Unica. Каждая запись формулирует одно нормати�
 - **Decision:** ADR-0021
 - **Check:** `ci-test` — `crates/unica-coder/src/domain/source_target.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs`
+- **Scope:** source, runtime
+
+### INV-SOURCE-SUBSYSTEM-TOPOLOGY — Публичные проекции подсистем выводятся из регистрации
+
+- **Rule:** Единый построитель под одним удерживаемым корнем, открытым без
+  перехода по символическим ссылкам, читает `Configuration.xml` и только транзитивно зарегистрированные
+  дескрипторы из `Configuration/ChildObjects` и `Subsystem/ChildObjects`: только они
+  расходуют бюджеты и образуют зависимости формата, а незарегистрированная раскладка не
+  влияет на доказательство. Каждый элемент `Content` имеет тип `MetadataAddress | UUID`,
+  и `meta.info` публикует только членства текущего дескриптора, сопоставляя обе его
+  идентичности. `subsystem.info` публикует только дерево с адресами `SubsystemAddress` в
+  диалекте БСП, выведенными из физического пути под доказанным корнем, а
+  каждый доказанный узел принадлежит ровно одной эффективной роли. Недопустимый элемент,
+  ошибка, отмена, истечение срока или неполное чтение не публикуются как пустая
+  доказанная проекция, а сбор зависимостей формата не зависит от снятого `Mode`.
+- **Decision:** ADR-0036
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/subsystem.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/application/meta_info_surface_tests.rs`
 - **Scope:** source, runtime
 
 ### INV-SOURCE-WRITE-TARGET-KIND — Писатель принимает только терминал модуля

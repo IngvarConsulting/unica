@@ -3,6 +3,7 @@ use super::{
     MetadataKind, MetadataType,
 };
 use crate::domain::source_target::MetadataAddress;
+use crate::domain::subsystem::SubsystemAddress;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -133,6 +134,14 @@ pub(crate) struct MetaInfoData {
     pub(crate) properties: Vec<MetaPropertyData>,
     pub(crate) relations: MetaRelationsData,
     pub(crate) collections: MetaCollectionsData,
+    /// Registered functional subsystems whose own `Content` contains this
+    /// object. `None` means the topology was not proved, not an empty set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) functional_subsystems: Option<Vec<SubsystemAddress>>,
+    /// Registered interface subsystems whose own `Content` contains this
+    /// object. The role already includes every ancestor flag.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) interface_subsystems: Option<Vec<SubsystemAddress>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) predefined_items: Option<MetaPredefinedItemsData>,
     pub(crate) usage: MetaUsageData,

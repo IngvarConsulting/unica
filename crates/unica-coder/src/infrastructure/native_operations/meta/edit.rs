@@ -7739,6 +7739,7 @@ mod tests {
             resources,
             child_footprints: plan.validation_footprints,
             registrar_evidence: Default::default(),
+            subsystem_evidence: Default::default(),
         };
         let context = WorkspaceContext {
             cwd: root.to_path_buf(),

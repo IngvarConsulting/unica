@@ -1,9 +1,12 @@
 use super::NativeOperationAdapter;
+use crate::domain::cancellation::CancellationToken;
+use crate::domain::code_intelligence::ProviderDeadline;
+use crate::infrastructure::native_operations::typed_result::NativeInvocationControl;
 use crate::infrastructure::workspace::discover_workspace;
 use serde_json::{json, Map};
 use std::fs;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[test]
 fn missing_native_mutation_handler_is_contract_error() {
@@ -42,6 +45,37 @@ fn code_patch_cannot_use_the_data_dropping_plain_dispatch_path() {
     .unwrap_err();
 
     assert!(error.contains("typed native-operation result path"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn subsystem_info_cannot_use_the_uncontrolled_plain_dispatch_path() {
+    let root = temp_root("subsystem-info-plain-dispatch");
+    let descriptor = root.join("Sales.xml");
+    fs::write(
+        &descriptor,
+        crate::infrastructure::native_operations::subsystem::child_subsystem_stub_xml(
+            "Sales", "2.20",
+        ),
+    )
+    .unwrap();
+    let context = discover_workspace(Some(root.clone())).unwrap();
+    let args = serde_json::from_value(json!({
+        "SubsystemPath": descriptor.display().to_string()
+    }))
+    .unwrap();
+
+    let error = NativeOperationAdapter::invoke(
+        "subsystem-info",
+        "unica.subsystem.info",
+        &args,
+        &context,
+        false,
+        false,
+    )
+    .expect_err("subsystem.info must require the controlled prepared path");
+
+    assert!(error.contains("controlled prepared"), "{error}");
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -95,6 +129,7 @@ fn read_only_native_dispatch_does_not_honor_legacy_outfile() {
     }))
     .unwrap();
 
+    let cancellation = CancellationToken::new();
     let result = NativeOperationAdapter::invoke_with_data(
         "cf-info",
         "unica.cf.info",
@@ -102,6 +137,10 @@ fn read_only_native_dispatch_does_not_honor_legacy_outfile() {
         &context,
         false,
         false,
+        NativeInvocationControl::new(
+            &cancellation,
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),
+        ),
     )
     .unwrap();
 

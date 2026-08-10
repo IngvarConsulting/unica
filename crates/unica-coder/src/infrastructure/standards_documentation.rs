@@ -51,6 +51,55 @@ pub struct V8StdDocumentationProvider {
     /// Токен вызова MCP: сетевой поставщик проверяет его перед обращением,
     /// отмена не публикует результатов (ADR-0032 п.10).
     pub cancellation: crate::domain::cancellation::CancellationToken,
+    /// Срок жизни кеша поиска стандартов в памяти процесса (ADR-0037 п.5).
+    pub search_cache_ttl: std::time::Duration,
+}
+
+/// Продовый срок жизни кеша поиска стандартов — как у kb-кешей: часы держат
+/// цену повторных запросов сессии около нуля, а протухание не переживает
+/// процесс. На диск не пишется ничего.
+pub const V8STD_SEARCH_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
+
+/// Предел числа записей кеша поиска: поток уникальных запросов долгоживущего
+/// процесса не раздувает память — при переполнении вытесняется запись с
+/// ближайшим сроком, истёкшие вычищаются при каждой записи.
+pub(crate) const V8STD_SEARCH_CACHE_CAP: usize = 128;
+
+/// Ключ кеша поиска: endpoint, нормализованный запрос, лимит.
+type SearchCacheKey = (String, String, usize);
+/// Запись кеша: срок годности и сырое тело успешного ответа сервера. Срок
+/// вычисляется при записи из TTL записавшего провайдера — чтение и чистка
+/// не зависят от того, чей TTL действовал.
+type SearchCacheEntry = (std::time::Instant, String);
+
+/// Кеш успешных ответов `v8std_search`. Политика и отмена проверяются ДО
+/// кеша, неуспех не кешируется.
+static V8STD_SEARCH_CACHE: std::sync::Mutex<
+    std::collections::BTreeMap<SearchCacheKey, SearchCacheEntry>,
+> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Нормализация запроса по пробелам: сервер видит один канонический текст,
+/// кеш не плодит записи на каждую расстановку пробелов.
+pub(crate) fn normalized_query(query: &str) -> String {
+    query.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+#[cfg(test)]
+pub(crate) fn v8std_search_cache_len() -> usize {
+    V8STD_SEARCH_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .len()
+}
+
+#[cfg(test)]
+pub(crate) fn v8std_search_cache_len_for(endpoint: &str) -> usize {
+    V8STD_SEARCH_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .keys()
+        .filter(|(cached_endpoint, _, _)| cached_endpoint == endpoint)
+        .count()
 }
 
 const CORPUS: &str = "public-standards";
@@ -220,25 +269,43 @@ impl DocumentationProvider for V8StdDocumentationProvider {
                 Vec::new(),
             )];
         }
-        let payload = json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {
-                "name": "v8std_search",
-                "arguments": { "query": request.query, "limit": request.limit },
-            }
-        });
-        let body = match self.http.post_json(&self.endpoint, &payload) {
-            Ok(body) => body,
-            Err(error) => {
-                return vec![self.section(
-                    "ru",
-                    DocumentationSectionStatus::Failed {
-                        diagnostic: format!("сервер стандартов недоступен: {error}"),
-                    },
-                    Vec::new(),
-                )];
+        let query = normalized_query(&request.query);
+        let cache_key = (self.endpoint.clone(), query.clone(), request.limit);
+        // Кеш читается ПОСЛЕ политики и отмены: запрет отвечает запретом, а
+        // не вчерашним успехом (ADR-0037 п.5).
+        let cached_body = {
+            let cache = V8STD_SEARCH_CACHE
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            cache.get(&cache_key).and_then(|(deadline, body)| {
+                (std::time::Instant::now() < *deadline).then(|| body.clone())
+            })
+        };
+        let from_cache = cached_body.is_some();
+        let body = match cached_body {
+            Some(body) => body,
+            None => {
+                let payload = json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "v8std_search",
+                        "arguments": { "query": query, "limit": request.limit },
+                    }
+                });
+                match self.http.post_json(&self.endpoint, &payload) {
+                    Ok(body) => body,
+                    Err(error) => {
+                        return vec![self.section(
+                            "ru",
+                            DocumentationSectionStatus::Failed {
+                                diagnostic: format!("сервер стандартов недоступен: {error}"),
+                            },
+                            Vec::new(),
+                        )];
+                    }
+                }
             }
         };
         // Конверт JSON-RPC разбирает тот же код, что и у фасадов: один
@@ -278,6 +345,29 @@ impl DocumentationProvider for V8StdDocumentationProvider {
                 Vec::new(),
             )];
         };
+        // Разбор дошёл до results — ответ настоящий, его можно переиспользовать.
+        // Неуспехи выше до этой строки не доходят и не кешируются. Каждая
+        // запись сопровождается чисткой истёкших и вытеснением при
+        // переполнении: кеш процесса ограничен сверху, а не растёт на каждый
+        // уникальный запрос до рестарта.
+        if !from_cache {
+            let mut cache = V8STD_SEARCH_CACHE
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let now = std::time::Instant::now();
+            cache.retain(|_, (deadline, _)| now < *deadline);
+            while cache.len() >= V8STD_SEARCH_CACHE_CAP {
+                let Some(nearest_deadline) = cache
+                    .iter()
+                    .min_by_key(|(_, (deadline, _))| *deadline)
+                    .map(|(key, _)| key.clone())
+                else {
+                    break;
+                };
+                cache.remove(&nearest_deadline);
+            }
+            cache.insert(cache_key, (now + self.search_cache_ttl, body.clone()));
+        }
         // Локатор попадания — контракт владельца: чужой адрес из сетевого
         // ответа маршрутизировался бы другому поставщику при получении.
         // Такое попадание пропускается и называется предупреждением секции.
@@ -332,6 +422,7 @@ impl DocumentationProvider for V8StdDocumentationProvider {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     /// Канон ответа живого сервера (зонд 2026-08-09): JSON-RPC конверт, в
     /// `result.content[0].text` — JSON-строка с массивом `results`.
@@ -340,11 +431,13 @@ mod tests {
     struct FakeHttp {
         body: Result<String, String>,
         calls: AtomicUsize,
+        last_payload: std::sync::Mutex<Option<Value>>,
     }
 
     impl HttpClient for FakeHttp {
-        fn post_json(&self, _endpoint: &str, _payload: &Value) -> Result<String, String> {
+        fn post_json(&self, _endpoint: &str, payload: &Value) -> Result<String, String> {
             self.calls.fetch_add(1, Ordering::SeqCst);
+            *self.last_payload.lock().expect("payload lock") = Some(payload.clone());
             self.body.clone()
         }
     }
@@ -353,16 +446,22 @@ mod tests {
         network: NetworkAccess,
         body: Result<String, String>,
     ) -> (V8StdDocumentationProvider, Arc<FakeHttp>) {
+        // Endpoint уникален на тест: кеш поиска — процессный, и общий адрес
+        // делил бы записи между независимыми тестами.
+        static ENDPOINTS: AtomicUsize = AtomicUsize::new(0);
+        let unique = ENDPOINTS.fetch_add(1, Ordering::SeqCst);
         let http = Arc::new(FakeHttp {
             body,
             calls: AtomicUsize::new(0),
+            last_payload: std::sync::Mutex::new(None),
         });
         (
             V8StdDocumentationProvider {
-                endpoint: "http://stand.in/mcp".to_string(),
+                endpoint: format!("http://stand.in/{unique}/mcp"),
                 network,
                 http: Arc::clone(&http) as Arc<dyn HttpClient + Send + Sync>,
                 cancellation: crate::domain::cancellation::CancellationToken::default(),
+                search_cache_ttl: Duration::from_secs(3600),
             },
             http,
         )
@@ -410,6 +509,114 @@ mod tests {
         );
         assert!(first.signature.is_none());
         assert!(first.provider_score > section.hits[1].provider_score);
+    }
+
+    /// Повторный одинаковый запрос сессии отвечается кешем процесса, без
+    /// второго обращения к серверу (ADR-0037 п.5).
+    #[test]
+    fn a_repeated_search_answers_from_the_process_cache() {
+        let (provider, http) = provider(NetworkAccess::Allow, Ok(LIVE_BODY.to_string()));
+        let first = provider.search(&request(), &context());
+        let second = provider.search(&request(), &context());
+        assert_eq!(
+            http.calls.load(Ordering::SeqCst),
+            1,
+            "второй одинаковый запрос обязан ответить из кеша"
+        );
+        assert!(matches!(second[0].status, DocumentationSectionStatus::Ok));
+        assert_eq!(first[0].hits.len(), second[0].hits.len());
+    }
+
+    /// Протухшая запись кеша перечитывается: TTL — не вечность.
+    #[test]
+    fn an_expired_search_cache_entry_is_refetched() {
+        let (mut provider, http) = provider(NetworkAccess::Allow, Ok(LIVE_BODY.to_string()));
+        provider.search_cache_ttl = Duration::ZERO;
+        provider.search(&request(), &context());
+        provider.search(&request(), &context());
+        assert_eq!(
+            http.calls.load(Ordering::SeqCst),
+            2,
+            "нулевой срок жизни обязан перечитывать сервер"
+        );
+    }
+
+    /// Запрет политики не читает кеш: `policy-denied` означает «обращение
+    /// запрещено», а не «ответим вчерашним» (ADR-0037 п.5).
+    #[test]
+    fn policy_deny_does_not_answer_from_the_search_cache() {
+        let (mut provider, http) = provider(NetworkAccess::Allow, Ok(LIVE_BODY.to_string()));
+        provider.search(&request(), &context());
+        assert_eq!(http.calls.load(Ordering::SeqCst), 1, "кеш прогрет");
+        provider.network = NetworkAccess::Deny;
+        let denied = provider.search(&request(), &context());
+        assert!(
+            matches!(
+                denied[0].status,
+                DocumentationSectionStatus::Unavailable {
+                    reason: UnavailableReason::PolicyDenied,
+                    ..
+                }
+            ),
+            "запрет не подменяется кешированным успехом: {:?}",
+            denied[0].status
+        );
+        assert_eq!(http.calls.load(Ordering::SeqCst), 1, "сеть не тронута");
+    }
+
+    /// Кеш ограничен по числу записей и вычищает истёкшие при записи:
+    /// у долгоживущего процесса поток уникальных запросов не раздувает
+    /// память безгранично (ревью PR #416).
+    #[test]
+    fn the_search_cache_is_bounded_and_purges_expired_entries() {
+        let (bounded_provider, _http) = provider(NetworkAccess::Allow, Ok(LIVE_BODY.to_string()));
+        let mut unique = request();
+        for index in 0..(V8STD_SEARCH_CACHE_CAP + 16) {
+            unique.query = format!("уникальный запрос {index}");
+            bounded_provider.search(&unique, &context());
+        }
+        assert!(
+            v8std_search_cache_len() <= V8STD_SEARCH_CACHE_CAP,
+            "кеш обязан быть ограничен: {} записей при пределе {}",
+            v8std_search_cache_len(),
+            V8STD_SEARCH_CACHE_CAP
+        );
+
+        let (mut expired_provider, _http) =
+            provider(NetworkAccess::Allow, Ok(LIVE_BODY.to_string()));
+        expired_provider.search_cache_ttl = Duration::ZERO;
+        let mut query = request();
+        query.query = "истекающий один".to_string();
+        expired_provider.search(&query, &context());
+        query.query = "истекающий два".to_string();
+        expired_provider.search(&query, &context());
+        assert_eq!(
+            v8std_search_cache_len_for(&expired_provider.endpoint),
+            1,
+            "истёкшая запись обязана вычищаться при следующей записи"
+        );
+    }
+
+    /// Запрос нормализуется по пробелам до отправки: сервер видит один
+    /// канонический текст, и кеш не плодит записи на каждую расстановку
+    /// пробелов.
+    #[test]
+    fn the_query_is_normalized_before_the_server_call() {
+        let (provider, http) = provider(NetworkAccess::Allow, Ok(LIVE_BODY.to_string()));
+        let mut spaced = request();
+        spaced.query = "  навигационная \t ссылка  ".to_string();
+        provider.search(&spaced, &context());
+        let payload = http
+            .last_payload
+            .lock()
+            .expect("payload lock")
+            .clone()
+            .expect("вызов состоялся");
+        assert_eq!(
+            payload["params"]["arguments"]["query"],
+            json!("навигационная ссылка"),
+            "{payload}"
+        );
     }
 
     /// Запрет политики — отказ ДО транспорта: сам смысл `policy-denied` в том,

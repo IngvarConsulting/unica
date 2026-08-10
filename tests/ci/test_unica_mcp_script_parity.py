@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import unittest
+import uuid
 import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -2790,6 +2791,7 @@ def prepare_meta_info_skill_example(
         write_meta_event_subscription_fixture(descriptor, name)
         register_meta_skill_object(source_root, kind, name)
         return
+    descriptor_uuid = uuid.uuid5(uuid.NAMESPACE_URL, f"unica-skill-example:{kind}.{name}")
     drill = arguments.get("Name")
     children = ""
     if drill and kind == "HTTPService":
@@ -2813,7 +2815,7 @@ def prepare_meta_info_skill_example(
         )
     descriptor.write_text(
         '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">'
-        f"<{kind}><Properties><Name>{name}</Name></Properties>"
+        f'<{kind} uuid="{descriptor_uuid}"><Properties><Name>{name}</Name></Properties>'
         f"<ChildObjects>{children}</ChildObjects></{kind}></MetaDataObject>\n",
         encoding="utf-8",
     )

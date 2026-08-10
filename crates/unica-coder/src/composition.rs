@@ -19,13 +19,18 @@ pub(crate) mod testing {
     pub(crate) use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
     pub(crate) use crate::infrastructure::native_operations::meta::{
         with_meta_add_after_authorization_hook, with_meta_edit_before_reauthorization_hook,
-        with_meta_remove_before_reauthorization_hook, with_registrar_processing_hook,
-        RegistrarProcessingPhase,
+        with_meta_info_descriptor_image_hook, with_meta_remove_before_reauthorization_hook,
+        with_registrar_processing_hook, with_subsystem_evidence_processing_hook,
+        RegistrarProcessingPhase, SubsystemEvidenceProcessingPhase,
     };
     pub(crate) use crate::infrastructure::native_operations::single_file_publisher::{
         with_publication_lock_contention_signal, with_publication_lock_pause,
     };
+    pub(crate) use crate::infrastructure::native_operations::subsystem::child_subsystem_stub_xml;
     pub(crate) use crate::infrastructure::platform::filesystem::prepare_file_for_removal;
+    pub(crate) use crate::infrastructure::platform::secure_read::{
+        with_secure_tree_test_hook, SecureTreePhase,
+    };
     pub(crate) use crate::infrastructure::platform::testing::{
         create_file_link_fixture_for_test, file_identity_for_test, set_unix_mode_for_test,
         unix_mode_for_test, FileLinkFixtureOutcome,

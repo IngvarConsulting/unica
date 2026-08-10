@@ -909,6 +909,45 @@ fn meta_edit_warning_is_derived_from_late_support_authorization() {
     );
 }
 
+#[test]
+fn add_does_not_judge_subsystem_membership() {
+    let workspace = create_configuration_workspace("register-add-membership");
+    let mut args = add_args(workspace.path(), "AccumulationRegister", "Fresh", false);
+    args.insert(
+        "operations".to_string(),
+        json!([{
+            "op": "add",
+            "collection": "dimensions",
+            "elements": [{
+                "name": "Period",
+                "type": {"variants": [{
+                    "kind": "string",
+                    "length": 9,
+                    "allowedLength": "variable"
+                }]}
+            }]
+        }]),
+    );
+    let result = call_add_with_args(workspace.path(), &args);
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.expect("typed mutation data");
+    // A mutation gathers no subsystem evidence, and the subsystem may well be
+    // created by the next call, so creation says nothing about membership.
+    let warnings = data["validation"]["diagnostics"]
+        .as_array()
+        .expect("validation diagnostics")
+        .iter()
+        .filter_map(|diagnostic| diagnostic["message"].as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        !warnings
+            .iter()
+            .any(|warning| warning.contains("reaches no command interface section")),
+        "{warnings:?}"
+    );
+}
+
 fn add_with_synonym(workspace: &TempWorkspace, name: &str, synonym: &str) -> Vec<Value> {
     let mut args = add_args(workspace.path(), "Catalog", name, false);
     args.insert(

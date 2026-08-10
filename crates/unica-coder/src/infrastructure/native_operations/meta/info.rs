@@ -1,7 +1,7 @@
 use crate::application::metadata::MetaFailure;
 use crate::application::ports::{
     MetaLocalInfo, MetadataEvidenceAvailability, MetadataResourceImage, MetadataResourceRole,
-    MetadataValidationSubject,
+    MetadataSubsystemEvidence, MetadataValidationSubject,
 };
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
@@ -26,10 +26,45 @@ use std::path::{Path, PathBuf};
 use crate::infrastructure::platform::secure_read::{
     capture_root_relative_regular_files, SecureTreeCaptureLimits,
 };
+use crate::infrastructure::subsystem_topology::{
+    capture_registered_subsystem_topology, MetadataObjectIdentity,
+};
 
 const REGISTRAR_SCAN_MAX_ENTRIES: usize = 20_000;
 const REGISTRAR_SCAN_MAX_FILES: usize = 20_000;
 const REGISTRAR_SCAN_MAX_BYTES: usize = 64 * 1024 * 1024;
+
+#[cfg(test)]
+type MetaInfoDescriptorImageHook = Box<dyn FnOnce(&[u8]) -> Vec<u8>>;
+
+#[cfg(test)]
+thread_local! {
+    static META_INFO_DESCRIPTOR_IMAGE_HOOK:
+        std::cell::RefCell<Option<MetaInfoDescriptorImageHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn with_meta_info_descriptor_image_hook<T>(
+    hook: impl FnOnce(&[u8]) -> Vec<u8> + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<MetaInfoDescriptorImageHook>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            META_INFO_DESCRIPTOR_IMAGE_HOOK.with(|slot| slot.replace(self.0.take()));
+        }
+    }
+
+    let previous = META_INFO_DESCRIPTOR_IMAGE_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
+    let _reset = Reset(previous);
+    action()
+}
+
+#[cfg(test)]
+fn meta_info_descriptor_image_for_test(bytes: &[u8]) -> Option<Vec<u8>> {
+    META_INFO_DESCRIPTOR_IMAGE_HOOK.with(|slot| slot.borrow_mut().take().map(|hook| hook(bytes)))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RegistrarProcessingPhase {
@@ -84,6 +119,50 @@ fn emit_registrar_processing_phase(phase: RegistrarProcessingPhase) {
     let _ = phase;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SubsystemEvidenceProcessingPhase {
+    BeforeCompleteReturn,
+}
+
+#[cfg(test)]
+type SubsystemEvidenceProcessingHook = Box<dyn FnMut(&SubsystemEvidenceProcessingPhase)>;
+
+#[cfg(test)]
+thread_local! {
+    static SUBSYSTEM_EVIDENCE_PROCESSING_HOOK:
+        std::cell::RefCell<Option<SubsystemEvidenceProcessingHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn with_subsystem_evidence_processing_hook<T>(
+    hook: impl FnMut(&SubsystemEvidenceProcessingPhase) + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<SubsystemEvidenceProcessingHook>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            SUBSYSTEM_EVIDENCE_PROCESSING_HOOK.with(|slot| slot.replace(self.0.take()));
+        }
+    }
+
+    let previous =
+        SUBSYSTEM_EVIDENCE_PROCESSING_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
+    let _reset = Reset(previous);
+    action()
+}
+
+fn emit_subsystem_evidence_processing_phase(phase: SubsystemEvidenceProcessingPhase) {
+    #[cfg(test)]
+    SUBSYSTEM_EVIDENCE_PROCESSING_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().as_mut() {
+            hook(&phase);
+        }
+    });
+    #[cfg(not(test))]
+    let _ = phase;
+}
+
 use super::super::common::object_support_state;
 use super::edit::ResolvedMetadataObject;
 use super::xml_model::{
@@ -103,55 +182,60 @@ pub(crate) fn read_typed_meta_info(
     deadline: ProviderDeadline,
     cancellation: &CancellationToken,
 ) -> Result<(MetaLocalInfo, MetadataValidationSubject), MetaFailure> {
-    let text = std::str::from_utf8(&resolved.descriptor_preimage).map_err(|_| {
-        MetaFailure::from(
-            MetaDiagnostic::error(
+    #[cfg(test)]
+    let test_descriptor_image = meta_info_descriptor_image_for_test(&resolved.descriptor_preimage);
+    #[cfg(test)]
+    let descriptor_preimage = test_descriptor_image
+        .as_deref()
+        .unwrap_or(&resolved.descriptor_preimage);
+    #[cfg(not(test))]
+    let descriptor_preimage = resolved.descriptor_preimage.as_slice();
+    let identity = super::validation_context::inspect_metadata_image_identity(descriptor_preimage)
+        .map_err(|error| {
+            let diagnostic = MetaDiagnostic::error(
                 MetaDiagnosticCode::ProviderUnavailable,
-                "metadata descriptor image is not UTF-8",
+                format!("metadata descriptor identity proof is invalid: {error}"),
             )
-            .with_metadata_path(target.clone()),
-        )
-    })?;
-    let xml = text.trim_start_matches('\u{feff}');
-    let doc = Document::parse(xml).map_err(|_| {
-        MetaFailure::from(
-            MetaDiagnostic::error(
-                MetaDiagnosticCode::ProviderUnavailable,
-                "metadata descriptor image is not valid XML",
-            )
-            .with_metadata_path(target.clone()),
-        )
-    })?;
-    let root = doc.root_element();
-    if root.tag_name().name() != "MetaDataObject" {
-        return Err(MetaDiagnostic::error(
-            MetaDiagnosticCode::ProviderUnavailable,
-            "metadata descriptor root is not MetaDataObject",
-        )
-        .with_metadata_path(target.clone())
-        .into());
-    }
-    let object = root
-        .children()
-        .find(|node| {
-            node.is_element()
-                && node.tag_name().namespace() == Some("http://v8.1c.ru/8.3/MDClasses")
-        })
-        .ok_or_else(|| {
-            MetaFailure::from(
-                MetaDiagnostic::error(
-                    MetaDiagnosticCode::ProviderUnavailable,
-                    "metadata descriptor has no MDClasses object",
-                )
-                .with_metadata_path(target.clone()),
-            )
+            .with_metadata_path(target.clone());
+            MetaFailure::from(match error.field() {
+                Some(field) => diagnostic.with_field(field),
+                None => diagnostic,
+            })
         })?;
-    let kind = MetadataKind::parse(object.tag_name().name()).map_err(|diagnostic| {
+    let text = std::str::from_utf8(descriptor_preimage)
+        .expect("the exact metadata identity proof parsed these bytes as UTF-8");
+    let xml = text.trim_start_matches('\u{feff}');
+    let doc = Document::parse(xml)
+        .expect("the exact metadata identity proof parsed the same XML document");
+    let object = doc
+        .root_element()
+        .children()
+        .find(|node| node.is_element())
+        .expect("the exact metadata identity proof found one object");
+    let kind = MetadataKind::parse(&identity.object_type).map_err(|diagnostic| {
         MetaFailure::from(
             MetaDiagnostic::error(MetaDiagnosticCode::ProviderUnavailable, diagnostic.message)
                 .with_metadata_path(target.clone()),
         )
     })?;
+    let mut expected = target.segments();
+    let expected_type = expected.next().unwrap_or_default();
+    let expected_name = expected.next().unwrap_or_default();
+    if identity.object_type != expected_type || identity.object_name != expected_name {
+        return Err(MetaDiagnostic::error(
+            MetaDiagnosticCode::ProviderUnavailable,
+            format!(
+                "metadata descriptor identity {}.{} does not match target {target}",
+                identity.object_type, identity.object_name
+            ),
+        )
+        .with_metadata_path(target.clone())
+        .into());
+    }
+    let object_identity = MetadataObjectIdentity {
+        address: target.clone(),
+        uuid: identity.object_uuid,
+    };
     let properties = meta_info_child(object, "Properties");
     let child_objects = meta_info_child(object, "ChildObjects");
     let name = properties
@@ -267,7 +351,7 @@ pub(crate) fn read_typed_meta_info(
     let mut validation_resources = vec![
         MetadataResourceImage {
             role: MetadataResourceRole::Descriptor,
-            bytes: resolved.descriptor_preimage.clone(),
+            bytes: descriptor_preimage.to_vec(),
         },
         MetadataResourceImage {
             role: MetadataResourceRole::Registration,
@@ -277,7 +361,7 @@ pub(crate) fn read_typed_meta_info(
     validation_resources.extend(typed_registered_language_images(resolved));
     let _ = super::validation::add_descriptor_references(
         &mut validation_resources,
-        &resolved.descriptor_preimage,
+        descriptor_preimage,
         Some(&resolved.source_root),
     );
     validation_resources.extend(typed_event_source_dependency_images(
@@ -290,6 +374,12 @@ pub(crate) fn read_typed_meta_info(
     let (registrar_resources, registrar_evidence) =
         typed_registrar_document_images(resolved, kind, properties, target, deadline, cancellation);
     validation_resources.extend(registrar_resources);
+    let subsystem_evidence = Some(typed_subsystem_evidence(
+        resolved,
+        &object_identity,
+        deadline,
+        cancellation,
+    ));
     let child_resources = match super::edit::plan_typed_child_resources(
         &resolved.descriptor_path,
         target,
@@ -310,6 +400,7 @@ pub(crate) fn read_typed_meta_info(
         resources: validation_resources,
         child_footprints: child_resources.validation_footprints,
         registrar_evidence,
+        subsystem_evidence,
     };
     Ok((local, validation_subject))
 }
@@ -533,6 +624,73 @@ fn registrar_evidence_unavailable(
         .with_metadata_path(target.clone())
         .with_field("registrarEvidence")]),
     )
+}
+
+fn subsystem_evidence_unavailable(
+    target: &MetadataAddress,
+    message: &str,
+) -> MetadataSubsystemEvidence {
+    MetadataSubsystemEvidence::Unavailable(vec![MetaDiagnostic::error(
+        MetaDiagnosticCode::ProviderUnavailable,
+        message,
+    )
+    .with_metadata_path(target.clone())
+    .with_field("subsystemEvidence")])
+}
+
+/// Collects all registered subsystem memberships of the current object. The
+/// same complete evidence is serialized by `meta.info` and consumed by the
+/// command-interface rule when the object is an eligible register.
+fn typed_subsystem_evidence(
+    resolved: &ResolvedMetadataObject,
+    identity: &MetadataObjectIdentity,
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+) -> MetadataSubsystemEvidence {
+    if resolved
+        .owner_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        != Some("Configuration.xml")
+    {
+        emit_subsystem_evidence_processing_phase(
+            SubsystemEvidenceProcessingPhase::BeforeCompleteReturn,
+        );
+        if registrar_scan_checkpoint(deadline, cancellation).is_err() {
+            return subsystem_evidence_unavailable(
+                &identity.address,
+                "registered subsystem topology processing was interrupted",
+            );
+        }
+        return MetadataSubsystemEvidence::Complete {
+            functional_subsystems: Vec::new(),
+            interface_subsystems: Vec::new(),
+        };
+    }
+    let topology = match capture_registered_subsystem_topology(&resolved.source_root, || {
+        registrar_scan_checkpoint(deadline, cancellation)
+    }) {
+        Ok(topology) => topology,
+        Err(_) => {
+            return subsystem_evidence_unavailable(
+                &identity.address,
+                "registered subsystem topology cannot be proved completely",
+            )
+        }
+    };
+    emit_subsystem_evidence_processing_phase(
+        SubsystemEvidenceProcessingPhase::BeforeCompleteReturn,
+    );
+    if registrar_scan_checkpoint(deadline, cancellation).is_err() {
+        return subsystem_evidence_unavailable(
+            &identity.address,
+            "registered subsystem topology processing was interrupted",
+        );
+    }
+    MetadataSubsystemEvidence::Complete {
+        functional_subsystems: topology.functional_memberships_for(identity),
+        interface_subsystems: topology.interface_memberships_for(identity),
+    }
 }
 
 fn typed_registered_language_images(

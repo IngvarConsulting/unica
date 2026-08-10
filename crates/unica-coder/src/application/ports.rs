@@ -9,6 +9,7 @@ use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::{
     CodeIntelligenceContext, CodeIntelligenceReadRequest, CodeIntelligenceRegistry,
+    ProviderDeadline,
 };
 use crate::domain::events::DomainEvent;
 use crate::domain::metadata::{
@@ -20,6 +21,7 @@ use crate::domain::source_resources::{
     ResourceManifestPage, SourceReadResult, SourceResourceError,
 };
 use crate::domain::source_target::MetadataAddress;
+use crate::domain::subsystem::SubsystemAddress;
 use crate::domain::workspace::WorkspaceContext;
 use serde_json::{Map, Value};
 use std::fmt;
@@ -90,6 +92,20 @@ impl HandlerOutcome {
             projected_events,
             recorded_cache: None,
             diagnostics: None,
+        }
+    }
+}
+
+pub(crate) struct PreparedToolInvocation {
+    pub(crate) format_guard: Option<FormatGuardCheck>,
+    pub(crate) handler: Option<HandlerOutcome>,
+}
+
+impl PreparedToolInvocation {
+    pub(crate) fn empty() -> Self {
+        Self {
+            format_guard: None,
+            handler: None,
         }
     }
 }
@@ -224,6 +240,20 @@ pub(crate) struct MetadataValidationSubject {
     pub(crate) resources: Vec<MetadataResourceImage>,
     pub(crate) child_footprints: Vec<MetadataChildFootprintEvidence>,
     pub(crate) registrar_evidence: MetadataEvidenceAvailability,
+    /// `None` — подсистемы не просматривались: субъект ничего не утверждает о
+    /// членствах объекта. `meta.info` собирает обе ролевые группы, а мутации
+    /// оставляют поле пустым; полнота по умолчанию сделала бы несобранное
+    /// доказанным.
+    pub(crate) subsystem_evidence: Option<MetadataSubsystemEvidence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MetadataSubsystemEvidence {
+    Complete {
+        functional_subsystems: Vec<SubsystemAddress>,
+        interface_subsystems: Vec<SubsystemAddress>,
+    },
+    Unavailable(Vec<MetaDiagnostic>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -251,6 +281,8 @@ impl MetaLocalInfo {
         self,
         validation: MetaValidationData,
         enrichment: MetaEnrichment,
+        functional_subsystems: Option<Vec<SubsystemAddress>>,
+        interface_subsystems: Option<Vec<SubsystemAddress>>,
     ) -> MetaInfoData {
         MetaInfoData {
             metadata_path: self.metadata_path,
@@ -261,6 +293,8 @@ impl MetaLocalInfo {
             properties: self.properties,
             relations: self.relations,
             collections: self.collections,
+            functional_subsystems,
+            interface_subsystems,
             predefined_items: enrichment.predefined_items,
             usage: enrichment.usage,
             validation,
@@ -415,6 +449,18 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         dry_run: bool,
         context: &WorkspaceContext,
     ) -> Result<(), String>;
+
+    fn prepare_tool_invocation(
+        &self,
+        _spec: ToolSpec,
+        _args: &Map<String, Value>,
+        _context: &WorkspaceContext,
+        _dry_run: bool,
+        _cancellation: &CancellationToken,
+        _deadline: ProviderDeadline,
+    ) -> Result<PreparedToolInvocation, String> {
+        Ok(PreparedToolInvocation::empty())
+    }
 
     fn read_metadata_local(
         &self,
