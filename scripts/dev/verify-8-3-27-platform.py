@@ -96,12 +96,12 @@ EXPECTED_IBCMD_SHA256 = "e00f3c945fb6f60bb2802151df1b4e7ee4f3caaf7c9e24a981020af
 EXPECTED_PLATFORM_INSTALL_SHA256 = "5eb8897c4f7e95876572f2f36943439b0d57e47688314b622f5771e5a22df0ef"
 EXPECTED_PLATFORM_INSTALL_FILE_COUNT = 4337
 LAST_VERIFIED_CASE_CONTRACT_SHA256 = (
-    "5fa87fe0fa55a3960b61c8adf089f7e50ffa4726b1e1c28674fbd660dec4c8a5"
+    "67832c726d5343561e8911f462c695aa5cab1fdfc7431e6578c09b2c699dd01c"
 )
-# The next required inventory adds the EventSubscription source relation. Pin
-# it only after two independently generated corpora have the same normalized
-# digest and the exact 8.3.27.2074 gate passes.
-EXPECTED_CASE_CONTRACT_SHA256: str | None = None
+# The verified inventory includes the EventSubscription source relation. Two
+# independently generated corpora produced this same normalized digest and the
+# full exact 8.3.27.2074 gate passed all 67 checkpoints.
+EXPECTED_CASE_CONTRACT_SHA256: str | None = LAST_VERIFIED_CASE_CONTRACT_SHA256
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 300.0
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 CASE_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
