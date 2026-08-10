@@ -14,7 +14,7 @@
 - Toolchain release identity: `v8-runner-nightly-master-build.2`; existing tags/releases are immutable and must not be moved or overwritten.
 - Targets: `darwin-arm64`, `linux-x64`, `win-x64`; Unica lock changes only after all three assets are published and verified.
 - License remains `AGPL-3.0-only`; packaged license text remains `plugins/unica/third-party/licenses/v8-runner/LICENSE`.
-- Unica `version` remains `0.5.1`; nightly identity is carried by `sourceTag`, `sourceCommit`, and `assetTag`.
+- The `v8-runner` version remains `0.5.1`; nightly identity is carried by `sourceTag`, `sourceCommit`, and `assetTag`. Unica's package version remains `0.12.0` as declared by both plugin manifests and is not changed by this refresh.
 - Keep applied `mode=incremental|partial` fail-closed and keep `source_sync_dump_guard`; upstream issue `#30` and PR `#39` are not in the pinned commit.
 - Do not expose `noBuild`, `dependsOn`, raw runner flags, or any other new MCP argument in this change.
 - This is a config/data refresh: update existing general contract tests, but do not add a test whose sole purpose is to duplicate build revision `2` or a release checksum outside `tools.lock.json`.
@@ -130,31 +130,33 @@ Expected: merged manifest contains build revision `2` and the exact approved com
 
 ```bash
 merge_sha=$(gh api repos/IngvarConsulting/unica-toolchain/commits/main --jq .sha)
-gh workflow run release-tool.yml \
+run_url=$(gh workflow run release-tool.yml \
   --repo IngvarConsulting/unica-toolchain \
   --ref main \
-  -f tool=v8-runner
-gh run list \
+  -f tool=v8-runner)
+run_id=${run_url##*/}
+test -n "$run_id"
+case "$run_id" in *[!0-9]*) exit 1 ;; esac
+test "$(gh run view "$run_id" \
   --repo IngvarConsulting/unica-toolchain \
-  --workflow "Build tool release" \
-  --limit 3 \
-  --json databaseId,headSha,status,conclusion,createdAt,url
+  --json event --jq .event)" = "workflow_dispatch"
+test "$(gh run view "$run_id" \
+  --repo IngvarConsulting/unica-toolchain \
+  --json headSha --jq .headSha)" = "$merge_sha"
+test "$(gh run view "$run_id" \
+  --repo IngvarConsulting/unica-toolchain \
+  --json url --jq .url)" = "$run_url"
 ```
 
-Verify `merge_sha` is the Task 1 merge commit. Select only a new run whose
-`headSha` equals `merge_sha`; do not infer identity from list order.
+Verify `merge_sha` is the Task 1 merge commit. Preserve the exact run URL
+returned by the dispatch command, reject a missing or malformed run identity,
+and verify that run's event, `headSha`, and URL before monitoring it. Do not
+recover a run by list order; if the installed `gh` cannot return the dispatched
+run URL, stop and identify the run unambiguously before continuing.
 
 - [ ] **Step 2: Wait for all matrix jobs and release publication**
 
 ```bash
-run_id=$(gh run list \
-  --repo IngvarConsulting/unica-toolchain \
-  --workflow "Build tool release" \
-  --commit "$merge_sha" \
-  --limit 10 \
-  --json databaseId \
-  --jq '.[0].databaseId')
-test -n "$run_id"
 gh run watch "$run_id" --repo IngvarConsulting/unica-toolchain --exit-status
 gh release view v8-runner-nightly-master-build.2 \
   --repo IngvarConsulting/unica-toolchain \
@@ -178,15 +180,20 @@ Expected files include exactly one binary, checksum, and provenance record for e
 - [ ] **Step 4: Verify checksums and provenance before touching Unica**
 
 ```bash
+set -euo pipefail
 cd "$release_dir"
 shasum -a 256 v8-runner-darwin-arm64 v8-runner-linux-x64 v8-runner-win-x64.exe
-for checksum in checksums-v8-runner-*.txt; do shasum -a 256 --check "$checksum"; done
-jq -e \
-  '.releaseTag == "v8-runner-nightly-master-build.2"
-   and .source.ref == "master"
-   and .source.commit == "7ce1b062843d86644fe55741dbe0ee79f7ca767d"
-   and .builder.rust == "1.95.0"' \
-  provenance-v8-runner-*.json
+for checksum in checksums-v8-runner-*.txt; do
+  shasum -a 256 --check "$checksum"
+done
+for provenance in provenance-v8-runner-*.json; do
+  jq -e \
+    '.releaseTag == "v8-runner-nightly-master-build.2"
+     and .source.ref == "master"
+     and .source.commit == "7ce1b062843d86644fe55741dbe0ee79f7ca767d"
+     and .builder.rust == "1.95.0"' \
+    "$provenance" >/dev/null
+done
 ```
 
 Expected: every checksum verifies and every provenance document names the same source commit, release identity, and Rust toolchain. Preserve the three printed binary SHA-256 values for Task 3.

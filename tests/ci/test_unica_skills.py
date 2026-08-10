@@ -2102,23 +2102,31 @@ Use `.claude/commands/xdto.md` as the execution route.
         v8project = (self.reference_root() / "tooling" / "v8project.md").read_text(
             encoding="utf-8"
         )
+        config_and_backends = (
+            self.skill_root()
+            / "v8-runner"
+            / "references"
+            / "config-and-backends.md"
+        ).read_text(encoding="utf-8")
         runtime_build = (
             self.reference_root() / "tooling" / "runtime-build.md"
         ).read_text(encoding="utf-8")
         v8_runner_docs = "\n".join(
-            path.read_text(encoding="utf-8")
-            for path in [
-                self.skill_root() / "v8-runner" / "SKILL.md",
-                self.skill_root()
-                / "v8-runner"
-                / "references"
-                / "config-and-backends.md",
-                self.skill_root()
-                / "v8-runner"
-                / "references"
-                / "command-selection.md",
-                self.skill_root() / "v8-runner" / "references" / "testing.md",
-                self.reference_root() / "tooling" / "v8project.md",
+            [
+                (self.skill_root() / "v8-runner" / "SKILL.md").read_text(
+                    encoding="utf-8"
+                ),
+                config_and_backends,
+                (
+                    self.skill_root()
+                    / "v8-runner"
+                    / "references"
+                    / "command-selection.md"
+                ).read_text(encoding="utf-8"),
+                (
+                    self.skill_root() / "v8-runner" / "references" / "testing.md"
+                ).read_text(encoding="utf-8"),
+                v8project,
             ]
         )
 
@@ -2128,9 +2136,17 @@ Use `.claude/commands/xdto.md` as the execution route.
         self.assertIn("tools-download", v8_runner_docs)
         self.assertIn("fullOutput", v8_runner_docs)
         self.assertIn("features", v8_runner_docs)
-        self.assertIn("tools.platform.strict", v8_runner_docs)
-        self.assertIn("strict: true", v8_runner_docs)
-        self.assertIn("fail-closed", v8_runner_docs)
+        for document, content in {
+            "plugins/unica/references/tooling/v8project.md": v8project,
+            (
+                "plugins/unica/skills/v8-runner/references/"
+                "config-and-backends.md"
+            ): config_and_backends,
+        }.items():
+            with self.subTest(document=document):
+                self.assertIn("tools.platform.strict", content)
+                self.assertIn("strict: true", content)
+                self.assertIn("fail-closed", content)
         self.assertNotRegex(v8project, r"(?m)^connection:")
         self.assertNotIn("mode=load|merge|update", v8project)
         self.assertIn("tools.platform.version", runtime_build)
