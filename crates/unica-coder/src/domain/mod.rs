@@ -6,6 +6,7 @@ pub mod events;
 pub mod form_edit;
 pub mod format_profile;
 pub(crate) mod metadata;
+pub mod operational_config;
 pub mod project_sources;
 pub mod source_resources;
 pub mod source_roots;

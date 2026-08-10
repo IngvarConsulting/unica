@@ -84,16 +84,72 @@ impl CodeIntelligenceContext {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ProviderDeadline(Instant);
+#[derive(Debug, Clone, Copy)]
+pub struct ProviderDeadline {
+    started_at: Instant,
+    budget: Duration,
+    #[cfg(test)]
+    now: fn() -> Instant,
+}
+
+impl PartialEq for ProviderDeadline {
+    fn eq(&self, other: &Self) -> bool {
+        if self.started_at <= other.started_at {
+            self.budget.checked_sub(other.budget)
+                == other.started_at.checked_duration_since(self.started_at)
+        } else {
+            other.budget.checked_sub(self.budget)
+                == self.started_at.checked_duration_since(other.started_at)
+        }
+    }
+}
+
+impl Eq for ProviderDeadline {}
 
 impl ProviderDeadline {
     pub fn new(deadline: Instant) -> Self {
-        Self(deadline)
+        let started_at = Instant::now();
+        let budget = deadline
+            .checked_duration_since(started_at)
+            .unwrap_or(Duration::ZERO);
+        Self::from_started_at(started_at, budget)
+    }
+
+    pub(crate) fn from_budget(budget: Duration) -> Self {
+        Self::from_started_at(Instant::now(), budget)
+    }
+
+    pub(crate) fn from_started_at(started_at: Instant, budget: Duration) -> Self {
+        Self {
+            started_at,
+            budget,
+            #[cfg(test)]
+            now: Instant::now,
+        }
     }
 
     pub fn remaining(self) -> Duration {
-        self.0.saturating_duration_since(Instant::now())
+        #[cfg(test)]
+        let now = (self.now)();
+        #[cfg(not(test))]
+        let now = Instant::now();
+        let elapsed = now
+            .checked_duration_since(self.started_at)
+            .unwrap_or(Duration::ZERO);
+        self.budget.checked_sub(elapsed).unwrap_or(Duration::ZERO)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_clock(deadline: Instant, now: fn() -> Instant) -> Self {
+        let started_at = now();
+        let budget = deadline
+            .checked_duration_since(started_at)
+            .unwrap_or(Duration::ZERO);
+        Self {
+            started_at,
+            budget,
+            now,
+        }
     }
 }
 
@@ -553,5 +609,17 @@ mod tests {
         );
         assert!(provider_deadline.remaining() <= Duration::from_secs(120));
         assert!(provider_deadline.remaining() > Duration::from_secs(119));
+    }
+
+    #[test]
+    fn provider_deadline_preserves_its_equality_contract() {
+        fn assert_eq_contract<T: Eq>() {}
+
+        assert_eq_contract::<ProviderDeadline>();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        assert_eq!(
+            ProviderDeadline::new(deadline),
+            ProviderDeadline::new(deadline)
+        );
     }
 }

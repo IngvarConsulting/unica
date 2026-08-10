@@ -126,6 +126,7 @@
 - **Decision:** n/a
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/redaction.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/runtime_jobs.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/operational_config.rs`
 - **Scope:** runtime
 
 ### REQ-SAFETY-SUPPORT-LOCK — Объекты поставщика на поддержке защищены до планирования

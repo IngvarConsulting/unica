@@ -19,6 +19,7 @@ use crate::domain::code_intelligence::{
     CodeIntelligenceRegistry, ProviderDeadline,
 };
 use crate::domain::events::DomainEvent;
+use crate::domain::operational_config::{OperationalConfig, OperationalConfigDiagnostic};
 use crate::domain::source_resources::{
     ResourceManifestPage, SourceReadResult, SourceResourceError,
 };
@@ -73,6 +74,13 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         context: &WorkspaceContext,
     ) -> Result<(), String> {
         crate::infrastructure::tool_context::validate_tool_context(spec, args, dry_run, context)
+    }
+
+    fn load_operational_config(
+        &self,
+        context: &WorkspaceContext,
+    ) -> Result<OperationalConfig, OperationalConfigDiagnostic> {
+        crate::infrastructure::operational_config::load_operational_config(&context.workspace_root)
     }
 
     fn read_metadata_local(
@@ -302,6 +310,25 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         dry_run: bool,
         cancellation: &CancellationToken,
     ) -> Result<HandlerOutcome, String> {
+        self.invoke_handler_with_operational_config(
+            spec,
+            args,
+            context,
+            dry_run,
+            None,
+            cancellation,
+        )
+    }
+
+    fn invoke_handler_with_operational_config(
+        &self,
+        spec: ToolSpec,
+        args: &Map<String, Value>,
+        context: &WorkspaceContext,
+        dry_run: bool,
+        operational_config: Option<&OperationalConfig>,
+        cancellation: &CancellationToken,
+    ) -> Result<HandlerOutcome, String> {
         if cancellation.is_cancelled() {
             return Ok(HandlerOutcome::plain(AdapterOutcome::cancelled(format!(
                 "{} stopped before adapter execution",
@@ -438,7 +465,14 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
             ToolHandler::CodeAdapter {
                 command: ["graph"] | ["analyze"],
             } => BslAnalyzerMcpAdapter::new()
-                .invoke_cancellable(spec.name, args, context, dry_run, cancellation)
+                .invoke_cancellable_with_operational_config(
+                    spec.name,
+                    args,
+                    context,
+                    dry_run,
+                    operational_config,
+                    cancellation,
+                )
                 .map(|analyzer| match analyzer.data {
                     Some(data) => HandlerOutcome::with_data(analyzer.outcome, data),
                     None => HandlerOutcome::plain(analyzer.outcome),

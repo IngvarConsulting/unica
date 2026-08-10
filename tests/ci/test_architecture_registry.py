@@ -1531,6 +1531,33 @@ class IndexSynchronizationTests(unittest.TestCase):
             "the checklist cites a registry record that does not exist",
         )
 
+    def test_operational_checklist_preserves_network_policy_file_reads(self) -> None:
+        """Operational locality must not disable documentation network policy.
+
+        Documentation and standards calls do not resolve ``OperationalConfig``,
+        but they still read the shared workspace files for ``network`` and
+        ``providers`` before any network access.
+        """
+        checklist = (
+            REPO_ROOT / "spec" / "architecture" / "change-checklist.md"
+        ).read_text(encoding="utf-8")
+        checklist_words = " ".join(checklist.split())
+
+        self.assertIn(
+            "остальные вызовы не разрешают `OperationalConfig` и не читают "
+            "`[operational]`",
+            checklist_words,
+        )
+        self.assertIn(
+            "Потребители сетевой политики документации и стандартов независимо "
+            "читают `network` и `providers` из тех же файлов до сетевого "
+            "обращения",
+            checklist_words,
+        )
+        self.assertNotIn(
+            "остальные вызовы не читают его файловые слои", checklist_words
+        )
+
     def test_spec_index_mentions_every_active_architecture_and_acceptance_document(
         self,
     ) -> None:
