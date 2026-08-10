@@ -391,7 +391,7 @@ Unica. Каждая запись формулирует одно нормати�
   успешный `Read + Typed`; записи с
   `scope: "retiring"` и `scope: "runtime"` находятся вне границы этого правила
   до собственного решения.
-- **Decision:** ADR-0020, ADR-0023, ADR-0044
+- **Decision:** ADR-0020, ADR-0023, ADR-0045
 - **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/diagnostics_jsonl.rs`
