@@ -35,6 +35,9 @@ ACTIVE_FORMAT_SPECS = (
     "1c-role-spec.md",
     "1c-spreadsheet-spec.md",
 )
+CONFIG_OBJECTS_SPEC = (
+    ROOT / "plugins/unica/references/specs/1c-config-objects-spec.md"
+)
 
 
 def without_legacy_format_references(text: str) -> str:
@@ -132,6 +135,21 @@ class FormatProfileContractTests(unittest.TestCase):
                 current = without_legacy_format_references(text)
                 self.assertNotIn("2.17", current)
                 self.assertNotIn("http://v8.3/", current)
+
+    def test_reference_specs_keep_platform_child_storage_and_html_boundaries(self):
+        config_objects = " ".join(
+            CONFIG_OBJECTS_SPEC.read_text(encoding="utf-8").split()
+        )
+        self.assertIn(
+            "Отдельного XML-дескриптора команды на диске нет",
+            config_objects,
+        )
+        self.assertIn(
+            "полный дескриптор `<Command>` хранится внутри `ChildObjects` владельца",
+            config_objects,
+        )
+        self.assertIn("HTML-страница не разбирается как XML", config_objects)
+        self.assertIn("сохраняется побайтово", config_objects)
 
 
 if __name__ == "__main__":
