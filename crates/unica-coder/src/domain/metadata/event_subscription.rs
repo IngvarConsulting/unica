@@ -172,8 +172,8 @@ pub(crate) enum EventHandlerMethodKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EventHandlerFacts {
-    pub(crate) module_global: bool,
-    pub(crate) module_server: bool,
+    pub(crate) module_global: Option<bool>,
+    pub(crate) module_server: Option<bool>,
     pub(crate) method_kind: EventHandlerMethodKind,
     pub(crate) exported: bool,
     pub(crate) parameter_count: usize,
@@ -731,10 +731,10 @@ pub(crate) fn validate_event_subscription_binding(
             });
         }
     }
-    if handler.module_global {
+    if handler.module_global != Some(false) {
         return Err(EventBindingError::HandlerModuleIsGlobal);
     }
-    if !handler.module_server {
+    if handler.module_server != Some(true) {
         return Err(EventBindingError::HandlerModuleIsNotServer);
     }
     if handler.method_kind != EventHandlerMethodKind::Procedure {
@@ -993,7 +993,7 @@ mod event_subscription_binding_tests {
                 &classes,
                 "BeforeWrite",
                 EventHandlerFacts {
-                    module_global: true,
+                    module_global: Some(true),
                     ..valid_handler(2)
                 },
             ),
@@ -1004,7 +1004,29 @@ mod event_subscription_binding_tests {
                 &classes,
                 "BeforeWrite",
                 EventHandlerFacts {
-                    module_server: false,
+                    module_server: Some(false),
+                    ..valid_handler(2)
+                },
+            ),
+            Err(EventBindingError::HandlerModuleIsNotServer)
+        ));
+        assert!(matches!(
+            validate_event_subscription_binding(
+                &classes,
+                "BeforeWrite",
+                EventHandlerFacts {
+                    module_global: None,
+                    ..valid_handler(2)
+                },
+            ),
+            Err(EventBindingError::HandlerModuleIsGlobal)
+        ));
+        assert!(matches!(
+            validate_event_subscription_binding(
+                &classes,
+                "BeforeWrite",
+                EventHandlerFacts {
+                    module_server: None,
                     ..valid_handler(2)
                 },
             ),
@@ -1026,8 +1048,8 @@ mod event_subscription_binding_tests {
 
     fn valid_handler(parameter_count: usize) -> EventHandlerFacts {
         EventHandlerFacts {
-            module_global: false,
-            module_server: true,
+            module_global: Some(false),
+            module_server: Some(true),
             method_kind: EventHandlerMethodKind::Procedure,
             exported: true,
             parameter_count,

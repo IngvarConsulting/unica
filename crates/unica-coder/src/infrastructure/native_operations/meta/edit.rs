@@ -52,7 +52,8 @@ use super::template_catalog::{
     MetadataAttributeTemplate, MetadataEnumValueTemplate, MetadataTabularSectionTemplate,
 };
 use super::validation_context::{
-    validate_event_source_dependency_descriptor, validate_event_source_registration,
+    event_source_dependency_contract, validate_event_source_dependency_descriptor,
+    validate_event_source_registration,
 };
 use super::xml_model::{
     canonical_meta_event_sources, emit_meta_event_subscription_source, emit_meta_mltext,
@@ -2213,17 +2214,27 @@ fn resolve_typed_relation_dependencies(
     }
     let final_graph = parse_typed_final_relation_graph(owner_post_image, metadata_path)?;
     let mut source_prefixes = BTreeMap::<String, BTreeSet<String>>::new();
-    for (_, _, target) in &final_graph {
+    for (_, relation_index, target) in &final_graph {
         let crate::domain::metadata::MetaRelationTarget::EventSource(source) = target else {
             continue;
         };
         let Some(dependency) = source.metadata_path() else {
             continue;
         };
+        let generated_prefix = event_source_generated_prefix(source).map_err(|message| {
+            MetaFailure::from(
+                typed_diagnostic(
+                    MetaDiagnosticCode::InvalidArguments,
+                    message,
+                    Some(&format!("relations.source[{relation_index}]")),
+                )
+                .with_metadata_path(metadata_path.clone()),
+            )
+        })?;
         source_prefixes
             .entry(dependency.as_str().to_string())
             .or_default()
-            .insert(event_source_generated_prefix(source).to_string());
+            .insert(generated_prefix.to_string());
     }
     for (relation, relation_index, target) in final_graph {
         let origin = request_origins
@@ -2308,34 +2319,21 @@ fn resolve_typed_relation_dependencies(
                     diagnostic.with_metadata_path(metadata_path.clone()),
                 ));
             }
-            let segments = dependency.segments().collect::<Vec<_>>();
             let (
                 registration_kind,
                 registration_name,
                 descriptor_kind,
                 descriptor_name,
                 generated_name,
-            ) = match segments.as_slice() {
-                [kind, name] => (*kind, *name, *kind, *name, None),
-                ["CalculationRegister", register, "Recalculation", recalculation] => (
-                    "CalculationRegister",
-                    *register,
-                    "Recalculation",
-                    *recalculation,
-                    Some(format!("{register}.{recalculation}")),
-                ),
-                _ => {
-                    let mut diagnostic = typed_diagnostic(
-                        MetaDiagnosticCode::InvalidArguments,
-                        "EventSubscription Source dependency must identify one metadata object",
-                        Some(&diagnostic_field),
-                    );
-                    diagnostic.operation_index = origin.map(|(index, _)| index);
-                    return Err(MetaFailure::from(
-                        diagnostic.with_metadata_path(metadata_path.clone()),
-                    ));
-                }
-            };
+            ) = event_source_dependency_contract(dependency).map_err(|_| {
+                let mut diagnostic = typed_diagnostic(
+                    MetaDiagnosticCode::InvalidArguments,
+                    "EventSubscription Source dependency must identify one metadata object",
+                    Some(&diagnostic_field),
+                );
+                diagnostic.operation_index = origin.map(|(index, _)| index);
+                MetaFailure::from(diagnostic.with_metadata_path(metadata_path.clone()))
+            })?;
             validate_event_source_registration(
                 dependency_scope.owner_registration_preimage,
                 registration_kind,
@@ -2513,6 +2511,9 @@ fn expand_defined_type_event_dependencies(
             ) = event_source_dependency_contract(&target).map_err(|message| {
                 defined_type_event_failure(owner, message, MetaDiagnosticCode::InvalidArguments)
             })?;
+            let generated_prefix = event_source_generated_prefix(&member).map_err(|message| {
+                defined_type_event_failure(owner, message, MetaDiagnosticCode::InvalidArguments)
+            })?;
             validate_event_source_registration(
                 dependency_scope.owner_registration_preimage,
                 registration_kind,
@@ -2524,7 +2525,7 @@ fn expand_defined_type_event_dependencies(
                     descriptor_kind,
                     descriptor_name,
                     generated_name.as_deref(),
-                    &[event_source_generated_prefix(&member).to_string()],
+                    &[generated_prefix.to_string()],
                 )
             })
             .map_err(|message| {
@@ -2564,23 +2565,6 @@ fn defined_type_event_failure(
     MetaFailure::from(
         typed_diagnostic(code, message, Some("relations.source")).with_metadata_path(owner.clone()),
     )
-}
-
-fn event_source_dependency_contract(
-    target: &MetadataAddress,
-) -> Result<(&str, &str, &str, &str, Option<String>), &'static str> {
-    let segments = target.segments().collect::<Vec<_>>();
-    match segments.as_slice() {
-        [kind, name] => Ok((*kind, *name, *kind, *name, None)),
-        ["CalculationRegister", register, "Recalculation", recalculation] => Ok((
-            "CalculationRegister",
-            *register,
-            "Recalculation",
-            *recalculation,
-            Some(format!("{register}.{recalculation}")),
-        )),
-        _ => Err("event source dependency must identify one metadata object"),
-    }
 }
 
 fn resolve_typed_event_subscription_handler_dependency(
@@ -4609,7 +4593,14 @@ fn apply_typed_event_subscription_source(
                 Some("relation"),
             )
         })?;
-    let replacement = emit_meta_event_subscription_source(&indent, &requested, source_node);
+    let replacement = emit_meta_event_subscription_source(&indent, &requested, source_node)
+        .map_err(|message| {
+            typed_diagnostic(
+                MetaDiagnosticCode::InvalidArguments,
+                message,
+                Some("relation"),
+            )
+        })?;
     let replacement = meta_edit_lf_to_eol(replacement.trim_start(), replacement_eol);
     drop(document);
     xml_text.replace_range(range, &replacement);

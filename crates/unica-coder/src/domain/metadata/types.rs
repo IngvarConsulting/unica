@@ -135,9 +135,9 @@ impl MetaEventSource {
         }
     }
 
-    /// Stable platform identity used for duplicate detection. Primitive
-    /// qualifiers describe the one primitive identity and therefore do not
-    /// make a second string/number/date source distinct.
+    /// Stable platform identity used for duplicate detection. A classified
+    /// `Manager` is distinct per source class, so the two Constant manager
+    /// classes over one path stay two identities.
     pub(crate) fn identity_key(&self) -> String {
         match self {
             Self::Family { source_class } => {

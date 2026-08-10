@@ -666,37 +666,37 @@ enum EventSourceWireNamespace {
 
 fn event_source_wire_contract(
     source: &MetaEventSource,
-) -> (&'static str, EventSourceWireNamespace, String) {
+) -> Result<(&'static str, EventSourceWireNamespace, String), &'static str> {
     match source {
         MetaEventSource::Object { metadata_path }
         | MetaEventSource::Manager { metadata_path, .. }
         | MetaEventSource::RecordSet { metadata_path } => {
-            let prefix = event_source_generated_prefix(source);
+            let prefix = event_source_generated_prefix(source)?;
             let segments = metadata_path.segments().collect::<Vec<_>>();
             let name = if segments.len() == 4 && segments[2] == "Recalculation" {
                 format!("{}.{}", segments[1], segments[3])
             } else {
                 segments.get(1).copied().unwrap_or_default().to_string()
             };
-            (
+            Ok((
                 "Type",
                 EventSourceWireNamespace::CurrentConfig,
                 format!("{prefix}.{name}"),
-            )
+            ))
         }
         MetaEventSource::DefinedType { metadata_path } => {
             let name = metadata_path.segments().nth(1).unwrap_or_default();
-            (
+            Ok((
                 "TypeSet",
                 EventSourceWireNamespace::CurrentConfig,
                 format!("DefinedType.{name}"),
-            )
+            ))
         }
-        MetaEventSource::Family { source_class } => (
+        MetaEventSource::Family { source_class } => Ok((
             "TypeSet",
             EventSourceWireNamespace::CurrentConfig,
             event_source_class_wire_name(*source_class).to_string(),
-        ),
+        )),
     }
 }
 
@@ -778,69 +778,16 @@ fn event_source_emission_prefix(
     prefix
 }
 
-pub(super) fn event_source_generated_prefix(source: &MetaEventSource) -> &'static str {
-    let kind = source
-        .metadata_path()
-        .and_then(|path| path.segments().next())
-        .unwrap_or_default();
-    match source {
-        MetaEventSource::Object { .. } => match kind {
-            "Catalog" => "CatalogObject",
-            "Document" => "DocumentObject",
-            "ChartOfAccounts" => "ChartOfAccountsObject",
-            "ChartOfCharacteristicTypes" => "ChartOfCharacteristicTypesObject",
-            "ChartOfCalculationTypes" => "ChartOfCalculationTypesObject",
-            "ExchangePlan" => "ExchangePlanObject",
-            "BusinessProcess" => "BusinessProcessObject",
-            "Task" => "TaskObject",
-            "Report" => "ReportObject",
-            "DataProcessor" => "DataProcessorObject",
-            _ => "",
-        },
-        MetaEventSource::Manager { source_class, .. } => match kind {
-            "Catalog" => "CatalogManager",
-            "Document" => "DocumentManager",
-            "Enum" => "EnumManager",
-            "Constant" => match source_class {
-                Some(EventSourceClass::ConstantManager) => "ConstantManager",
-                Some(EventSourceClass::ConstantValueManager) => "ConstantValueManager",
-                _ => "",
-            },
-            "InformationRegister" => "InformationRegisterManager",
-            "AccumulationRegister" => "AccumulationRegisterManager",
-            "AccountingRegister" => "AccountingRegisterManager",
-            "CalculationRegister" => "CalculationRegisterManager",
-            "ChartOfAccounts" => "ChartOfAccountsManager",
-            "ChartOfCharacteristicTypes" => "ChartOfCharacteristicTypesManager",
-            "ChartOfCalculationTypes" => "ChartOfCalculationTypesManager",
-            "BusinessProcess" => "BusinessProcessManager",
-            "Task" => "TaskManager",
-            "ExchangePlan" => "ExchangePlanManager",
-            "DocumentJournal" => "DocumentJournalManager",
-            "Report" => "ReportManager",
-            "DataProcessor" => "DataProcessorManager",
-            "FilterCriterion" => "FilterCriterionManager",
-            "SettingsStorage" => "SettingsStorageManager",
-            _ => "",
-        },
-        MetaEventSource::RecordSet { metadata_path } => {
-            let segments = metadata_path.segments().collect::<Vec<_>>();
-            if segments.len() == 4 && segments[2] == "Recalculation" {
-                "RecalculationRecordSet"
-            } else {
-                match kind {
-                    "InformationRegister" => "InformationRegisterRecordSet",
-                    "AccumulationRegister" => "AccumulationRegisterRecordSet",
-                    "AccountingRegister" => "AccountingRegisterRecordSet",
-                    "CalculationRegister" => "CalculationRegisterRecordSet",
-                    "Sequence" => "SequenceRecordSet",
-                    _ => "",
-                }
-            }
-        }
-        MetaEventSource::DefinedType { .. } => "DefinedType",
-        MetaEventSource::Family { source_class } => event_source_class_wire_name(*source_class),
+pub(super) fn event_source_generated_prefix(
+    source: &MetaEventSource,
+) -> Result<&'static str, &'static str> {
+    if matches!(source, MetaEventSource::DefinedType { .. }) {
+        return Ok("DefinedType");
     }
+    source
+        .event_source_class()?
+        .map(event_source_class_wire_name)
+        .ok_or("event source has no concrete generated type")
 }
 
 fn event_source_group_rank(source: &MetaEventSource) -> u8 {
@@ -848,13 +795,8 @@ fn event_source_group_rank(source: &MetaEventSource) -> u8 {
         MetaEventSource::Object { .. }
         | MetaEventSource::Manager { .. }
         | MetaEventSource::RecordSet { .. } => 0,
-        MetaEventSource::DefinedType { .. } => 6,
-        MetaEventSource::Family { .. } => 6,
+        MetaEventSource::DefinedType { .. } | MetaEventSource::Family { .. } => 1,
     }
-}
-
-fn event_source_semantic_key(source: &MetaEventSource) -> String {
-    source.identity_key()
 }
 
 fn event_source_class_wire_name(source_class: EventSourceClass) -> &'static str {
@@ -917,7 +859,7 @@ pub(super) fn canonical_meta_event_sources(sources: &[MetaEventSource]) -> Vec<M
     canonical.sort_by(|left, right| {
         event_source_group_rank(left)
             .cmp(&event_source_group_rank(right))
-            .then_with(|| event_source_semantic_key(left).cmp(&event_source_semantic_key(right)))
+            .then_with(|| left.identity_key().cmp(&right.identity_key()))
     });
     canonical
 }
@@ -928,9 +870,9 @@ pub(super) fn emit_meta_event_subscription_source(
     indent: &str,
     sources: &[MetaEventSource],
     namespace_context: roxmltree::Node<'_, '_>,
-) -> String {
+) -> Result<String, &'static str> {
     if sources.is_empty() {
-        return format!("{indent}<Source/>");
+        return Ok(format!("{indent}<Source/>"));
     }
     let sources = canonical_meta_event_sources(sources);
     // The complete old Source node is replaced, so only declarations on its
@@ -950,7 +892,7 @@ pub(super) fn emit_meta_event_subscription_source(
     let data_prefix = &namespaces.data;
     for expected_tag in ["Type", "TypeSet"] {
         for source in &sources {
-            let (tag, namespace, local_name) = event_source_wire_contract(source);
+            let (tag, namespace, local_name) = event_source_wire_contract(source)?;
             if tag == expected_tag {
                 let wire_type = format!("{}:{local_name}", namespaces.wire_prefix(namespace));
                 lines.push(format!(
@@ -961,7 +903,7 @@ pub(super) fn emit_meta_event_subscription_source(
         }
     }
     lines.push(format!("{indent}</Source>"));
-    lines.join("\n")
+    Ok(lines.join("\n"))
 }
 
 pub(super) fn meta_info_ml_text(node: roxmltree::Node<'_, '_>) -> String {
@@ -1283,7 +1225,8 @@ mod tests {
             roxmltree::Document::parse(&namespace_context_xml).unwrap();
         let namespace_context =
             meta_event_subscription_source_node(&namespace_context_document).unwrap();
-        let source = emit_meta_event_subscription_source("\t", &requested, namespace_context);
+        let source =
+            emit_meta_event_subscription_source("\t", &requested, namespace_context).unwrap();
         let xml = event_subscription_xml(&source);
         let document = roxmltree::Document::parse(&xml).unwrap();
         let source_node = meta_event_subscription_source_node(&document).unwrap();
@@ -1298,6 +1241,23 @@ mod tests {
         assert!(source.contains("cfg:ConstantValueManager.Setting"));
         assert!(source.contains("cfg:RecalculationRecordSet.Payroll.Main"));
         assert!(source.contains("cfg:SequenceRecordSet"));
+    }
+
+    #[test]
+    fn event_subscription_source_emitter_does_not_publish_an_unmapped_generated_prefix() {
+        let requested = vec![MetaEventSource::Object {
+            metadata_path: metadata_path("InformationRegister.Facts"),
+        }];
+        let namespace_context_xml = event_subscription_xml("<Source/>");
+        let namespace_context_document =
+            roxmltree::Document::parse(&namespace_context_xml).unwrap();
+        let namespace_context =
+            meta_event_subscription_source_node(&namespace_context_document).unwrap();
+
+        let error = emit_meta_event_subscription_source("", &requested, namespace_context)
+            .expect_err("an unmapped logical source must fail closed");
+
+        assert!(error.contains("object source metadata root"), "{error}");
     }
 
     #[test]
@@ -1387,7 +1347,7 @@ mod tests {
             metadata_path: metadata_path("Catalog.Items"),
         }];
 
-        let emitted = emit_meta_event_subscription_source("", &requested, source_node);
+        let emitted = emit_meta_event_subscription_source("", &requested, source_node).unwrap();
         let rewritten = xml.replace("<Source/>", &emitted);
         let rewritten_document = roxmltree::Document::parse(&rewritten).unwrap();
         let rewritten_source = meta_event_subscription_source_node(&rewritten_document).unwrap();

@@ -892,6 +892,7 @@ pub(crate) fn metadata_generated_types_8_3_27(
             ("CalculationRegisterRecordKey", "RecordKey"),
             ("RecalculationsManager", "Recalcs"),
         ]),
+        "Recalculation" => Some(&[("RecalculationRecordSet", "RecordSet")]),
         "ChartOfAccounts" => Some(&[
             ("ChartOfAccountsObject", "Object"),
             ("ChartOfAccountsRef", "Ref"),

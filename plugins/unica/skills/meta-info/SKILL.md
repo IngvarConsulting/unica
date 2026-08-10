@@ -53,8 +53,8 @@ allowed-tools:
 мутацией.
 
 У `EventSubscription` поле `data.relations.source` содержит массив того же
-закрытого размеченного объединения, которое принимают `meta.add` и
-`meta.edit`: `object`, `manager`, `recordSet` и `definedType` возвращаются с
+закрытого размеченного объединения, которое принимают `unica.meta.add` и
+`unica.meta.edit`: `object`, `manager`, `recordSet` и `definedType` возвращаются с
 логическим `metadataPath`, `family` — с `sourceClass`. Для менеджера константы
 `sourceClass` различает `constantManager` и `constantValueManager`. Это обратное
 чтение логически допустимого `Properties/Source`, а не строка XML-типа. Примитив,

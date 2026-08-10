@@ -110,6 +110,23 @@ pub(crate) fn validate_event_source_registration(
     Ok(())
 }
 
+pub(crate) fn event_source_dependency_contract(
+    target: &crate::domain::source_target::MetadataAddress,
+) -> Result<(&str, &str, &str, &str, Option<String>), &'static str> {
+    let segments = target.segments().collect::<Vec<_>>();
+    match segments.as_slice() {
+        [kind, name] => Ok((*kind, *name, *kind, *name, None)),
+        ["CalculationRegister", register, "Recalculation", recalculation] => Ok((
+            "CalculationRegister",
+            *register,
+            "Recalculation",
+            *recalculation,
+            Some(format!("{register}.{recalculation}")),
+        )),
+        _ => Err("event source dependency must identify one metadata object"),
+    }
+}
+
 pub(crate) fn validate_event_source_dependency_descriptor(
     descriptor_bytes: &[u8],
     expected_kind: &str,
@@ -719,6 +736,23 @@ mod tests {
             &prefixes,
         )
         .is_err());
+    }
+
+    #[test]
+    fn event_source_dependency_uses_the_nested_recalculation_generated_name() {
+        let descriptor = format!(
+            r#"<MetaDataObject xmlns="{MD_CLASSES_NS}" xmlns:xr="{READABLE_NS}" version="2.20"><Recalculation><InternalInfo><xr:GeneratedType name="RecalculationRecordSet.Payroll.Main" category="RecordSet"><xr:TypeId>2f141d6b-a37b-4528-af7b-b70d3b63b011</xr:TypeId><xr:ValueId>e36ad3f3-d8e3-467a-849a-f549adbe56d1</xr:ValueId></xr:GeneratedType></InternalInfo><Properties><Name>Main</Name></Properties></Recalculation></MetaDataObject>"#
+        );
+        let prefixes = vec!["RecalculationRecordSet".to_string()];
+
+        validate_event_source_dependency_descriptor(
+            descriptor.as_bytes(),
+            "Recalculation",
+            "Main",
+            Some("Payroll.Main"),
+            &prefixes,
+        )
+        .unwrap();
     }
 
     #[test]

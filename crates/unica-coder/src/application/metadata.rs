@@ -14,6 +14,7 @@ use crate::domain::metadata::{
 };
 use crate::domain::source_target::{
     metadata_address_kind_spellings, MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20,
+    RECALCULATION_KIND_SPELLINGS,
 };
 use crate::domain::workspace::WorkspaceContext;
 use serde_json::{json, Map, Value};
@@ -1889,7 +1890,7 @@ fn metadata_event_source_target_schema() -> Value {
         metadata_object(
             "recordSet",
             format!(
-                r"^(({})\.{named}|({})\.{named}\.(Recalculation|Перерасчет|Перерасчёт)\.{named})$",
+                r"^(({})\.{named}|({})\.{named}\.({})\.{named})$",
                 spelling_group(&[
                     "InformationRegister",
                     "AccumulationRegister",
@@ -1898,6 +1899,7 @@ fn metadata_event_source_target_schema() -> Value {
                     "Sequence",
                 ]),
                 spelling_group(&["CalculationRegister"]),
+                RECALCULATION_KIND_SPELLINGS.join("|"),
             ),
         ),
         metadata_object("definedType", roots(&["DefinedType"])),
@@ -4205,9 +4207,11 @@ mod tests {
             json!({"kind": "manager", "metadataPath": "SettingsStorage.User"}),
             json!({"kind": "recordSet", "metadataPath": "Sequence.Documents"}),
             json!({"kind": "recordSet", "metadataPath": "CalculationRegister.Payroll.Recalculation.Main"}),
+            json!({"kind": "recordSet", "metadataPath": "CalculationRegister.Payroll.Recalculations.Main"}),
             json!({"kind": "object", "metadataPath": "Справочник.Номенклатура"}),
             json!({"kind": "manager", "metadataPath": "ХранилищеНастроек.Пользователь"}),
             json!({"kind": "recordSet", "metadataPath": "РегистрРасчёта.Зарплата.Перерасчёт.Основной"}),
+            json!({"kind": "recordSet", "metadataPath": "РегистрРасчёта.Зарплата.Перерасчёты.Основной"}),
         ] {
             let request = call(json!([target]));
             assert!(

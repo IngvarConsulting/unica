@@ -969,6 +969,76 @@ mod tests {
     }
 
     #[test]
+    fn meta_info_surfaces_a_strict_defined_type_member_parse_failure() {
+        let fixture = Fixture::new("defined-type-event-source-invalid-member");
+        add_exported_event_handler(&fixture.root, &fixture.context);
+        let defined_type = fixture.add_object(MetadataKind::DefinedType, "CatalogObjects");
+        replace_defined_type_members(&fixture.root, "CatalogObjects", &["CatalogObject.Editable"]);
+        let cancellation = CancellationToken::new();
+        MetadataOperations::prepare_mutation(
+            &MetadataRequest::Add(MetaAddRequest {
+                source_set: "main".into(),
+                kind: MetadataKind::EventSubscription,
+                name: "DefinedEvents".into(),
+                operations: vec![source_replace(vec![MetaEventSource::DefinedType {
+                    metadata_path: defined_type,
+                }])],
+                dry_run: false,
+            }),
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap()
+        .publish(&cancellation)
+        .unwrap();
+        let subscription = MetadataAddress::parse(
+            PLATFORM_XML_8_3_27_FORMAT_2_20,
+            "EventSubscription.DefinedEvents",
+        )
+        .unwrap();
+        let defined_type_descriptor = fixture.root.join("src/DefinedTypes/CatalogObjects.xml");
+        let descriptor = fs::read_to_string(&defined_type_descriptor).unwrap();
+        let malformed = descriptor.replacen("cfg:CatalogObject.Editable", "cfg:String", 1);
+        assert_ne!(
+            malformed, descriptor,
+            "fixture must corrupt DefinedType member"
+        );
+        fs::write(defined_type_descriptor, malformed).unwrap();
+
+        let read = MetadataOperations::read_local(
+            &MetaInfoRequest {
+                source_set: "main".into(),
+                metadata_path: subscription,
+                sections: Vec::new(),
+                limit: 20,
+            },
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap();
+        let validation = MetadataOperations::validate_read(
+            &read.validation_subject,
+            &fixture.context,
+            &cancellation,
+        );
+
+        assert_eq!(validation.status, MetaValidationStatus::Failed);
+        assert!(
+            validation.diagnostics.iter().any(|diagnostic| {
+                diagnostic
+                    .field
+                    .as_deref()
+                    .is_some_and(|field| field.starts_with("relations.source"))
+                    && diagnostic
+                        .message
+                        .contains("configuration type cfg:String is malformed")
+            }),
+            "{:?}",
+            validation.diagnostics
+        );
+    }
+
+    #[test]
     fn defined_type_event_source_cycle_is_rejected_before_publication() {
         let fixture = Fixture::new("defined-type-event-cycle");
         add_exported_event_handler(&fixture.root, &fixture.context);
@@ -1094,6 +1164,37 @@ mod tests {
             fixture.target.clone(),
             "GeneratedType",
         );
+    }
+
+    #[test]
+    fn meta_info_event_source_dependency_scan_honors_an_expired_deadline() {
+        let fixture = Fixture::new("event-source-info-deadline");
+        let subscription = add_object_event_subscription(&fixture, "CatalogEvents");
+        let cancellation = CancellationToken::new();
+        let resolved = resolve_typed_metadata_object(
+            "main",
+            &subscription,
+            "info",
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap();
+
+        let (local, _) = read_typed_meta_info(
+            &resolved,
+            "main",
+            &subscription,
+            &fixture.context,
+            ProviderDeadline::new(std::time::Instant::now() - std::time::Duration::from_millis(1)),
+            &cancellation,
+        )
+        .unwrap();
+
+        assert!(local.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == MetaDiagnosticCode::ProviderUnavailable
+                && diagnostic.field.as_deref() == Some("relations.source")
+                && diagnostic.message.contains("deadline")
+        }));
     }
 
     #[test]

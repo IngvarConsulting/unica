@@ -39,10 +39,11 @@ use super::format_contract::{
 };
 use super::info::resolve_meta_info_path;
 use super::validation_context::{
-    inspect_metadata_image_identity, inspect_metadata_language_image,
-    inspect_metadata_registration_image, meta_validate_registrar_document_scan,
-    meta_validate_types_with_list_presentation, validate_event_source_dependency_descriptor,
-    validate_event_source_registration, MetaValidationImageIdentityError,
+    event_source_dependency_contract, inspect_metadata_image_identity,
+    inspect_metadata_language_image, inspect_metadata_registration_image,
+    meta_validate_registrar_document_scan, meta_validate_types_with_list_presentation,
+    validate_event_source_dependency_descriptor, validate_event_source_registration,
+    MetaValidationImageIdentityError,
 };
 use super::xml_model::{
     event_source_generated_prefix, meta_event_subscription_source_node, meta_info_child,
@@ -598,22 +599,14 @@ fn complete_read_proof_diagnostics(subject: &MetadataValidationSubject) -> Vec<M
                     ));
                     continue;
                 };
-                let segments = target.segments().collect::<Vec<_>>();
                 let (
                     registration_kind,
                     registration_name,
                     descriptor_kind,
                     descriptor_name,
                     generated_name,
-                ) = match segments.as_slice() {
-                    [kind, name] => (*kind, *name, *kind, *name, None),
-                    ["CalculationRegister", register, "Recalculation", recalculation] => (
-                        "CalculationRegister",
-                        *register,
-                        "Recalculation",
-                        *recalculation,
-                        Some(format!("{register}.{recalculation}")),
-                    ),
+                ) = match event_source_dependency_contract(target) {
+                    Ok(contract) => contract,
                     _ => {
                         diagnostics.push(complete_read_source_invalid(
                                 subject,
@@ -633,7 +626,13 @@ fn complete_read_proof_diagnostics(subject: &MetadataValidationSubject) -> Vec<M
                     ));
                     continue;
                 };
-                let generated_prefixes = vec![event_source_generated_prefix(source).to_string()];
+                let generated_prefixes = match event_source_generated_prefix(source) {
+                    Ok(prefix) => vec![prefix.to_string()],
+                    Err(message) => {
+                        diagnostics.push(complete_read_source_invalid(subject, index, message));
+                        continue;
+                    }
+                };
                 if let Err(message) = validate_event_source_registration(
                     &registration.bytes,
                     registration_kind,
@@ -1802,20 +1801,12 @@ fn validate_event_subscription_binding_subject(
             format!("CommonModule `{module_name}` properties are unavailable"),
         );
     };
-    let module_global = meta_info_child_text(module_properties, "Global");
-    if module_global.as_deref() != Some("false") {
-        return fail(
-            "properties.handler",
-            "EventSubscription handler CommonModule must have Global=false".to_string(),
-        );
-    }
-    let module_server = meta_info_child_text(module_properties, "Server");
-    if module_server.as_deref() != Some("true") {
-        return fail(
-            "properties.handler",
-            "EventSubscription handler CommonModule must have Server=true".to_string(),
-        );
-    }
+    let module_global = meta_info_child_text(module_properties, "Global")
+        .as_deref()
+        .and_then(explicit_boolean_property);
+    let module_server = meta_info_child_text(module_properties, "Server")
+        .as_deref()
+        .and_then(explicit_boolean_property);
     let module = subject.resources.iter().find(|resource| {
         matches!(&resource.role, MetadataResourceRole::Module { owner } if owner == &module_target)
     });
@@ -1847,8 +1838,8 @@ fn validate_event_subscription_binding_subject(
         Err(message) => return fail("properties.handler", message),
     };
     let facts = EventHandlerFacts {
-        module_global: false,
-        module_server: true,
+        module_global,
+        module_server,
         method_kind: if method.is_procedure {
             EventHandlerMethodKind::Procedure
         } else {
@@ -1863,6 +1854,14 @@ fn validate_event_subscription_binding_subject(
             let (field, message) = event_binding_error_message(error);
             fail(field, message)
         }
+    }
+}
+
+fn explicit_boolean_property(value: &str) -> Option<bool> {
+    match value {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
     }
 }
 
