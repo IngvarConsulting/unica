@@ -209,6 +209,7 @@ impl<'a> CliAdapter<'a> {
         }
     }
 
+    #[cfg(test)]
     fn with_runner(
         tool_name: &'static str,
         default_command: &'static [&'static str],

@@ -367,11 +367,17 @@ Unica. Каждая запись формулирует одно нормати�
 - **Rule:** Успешный вызов публичного инструмента, чья запись в
   `spec/architecture/tool-surface-review.json` имеет `scope: "in"` и
   `result.contract: "typed"`, публикует результат только как
-  `OperationResult.data` без текстового дубля в `stdout`; записи с
+  `OperationResult.data` без текстового дубля в `stdout`; исполняемый контракт
+  Rust взаимно однозначно повторяет четыре значения ведомости, инструмент чтения не
+  публикует и не принимает `dryRun`, а общий финализатор проверяет каждый
+  успешный `Read + Typed`; записи с
   `scope: "retiring"` и `scope: "runtime"` находятся вне границы этого правила
   до собственного решения.
-- **Decision:** ADR-0020, ADR-0023
+- **Decision:** ADR-0020, ADR-0023, ADR-0043
 - **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/diagnostics_jsonl.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/rlm_navigation.rs`
 - **Check:** `ci-test` — `tests/ci/test_tool_surface_ledger.py`
 - **Scope:** source, runtime
 
