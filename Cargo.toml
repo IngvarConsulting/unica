@@ -44,6 +44,7 @@ tempfile = "3"
 # `default-features = false`, — поэтому чистый Rust-backend включается явной
 # зависимостью `flate2` у крейта-потребителя.
 zip = { version = "2", default-features = false, features = ["deflate-flate2", "flate2"] }
+regex = "1"
 ureq = { version = "2.12", features = ["json"] }
 uuid = { version = "1", features = ["v4"] }
 windows-sys = { version = "0.59", features = [

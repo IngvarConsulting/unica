@@ -111,11 +111,11 @@ impl PreparedToolInvocation {
     }
 }
 
-#[allow(dead_code)] // Concrete providers land after this orchestration seam.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MetadataAuxiliaryXmlKind {
     ExchangePlanContent,
     BusinessProcessFlowchart,
+    PredefinedData(MetadataKind),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -272,6 +272,9 @@ pub(crate) struct MetaLocalInfo {
     pub(crate) synonym: Option<String>,
     pub(crate) support: MetaSupportStatus,
     pub(crate) properties: Vec<MetaPropertyData>,
+    /// Internal owner context needed to validate typed Predefined.xml values.
+    /// It is deliberately not copied into the public `meta.info` result.
+    pub(crate) predefined_code_type: Option<String>,
     pub(crate) relations: MetaRelationsData,
     pub(crate) collections: MetaCollectionsData,
     pub(crate) diagnostics: Vec<MetaDiagnostic>,
@@ -318,6 +321,7 @@ pub(crate) struct MetadataRead {
 pub(crate) struct MetaEnrichment {
     pub(crate) predefined_items: Option<MetaPredefinedItemsData>,
     pub(crate) usage: MetaUsageData,
+    pub(crate) diagnostics: Vec<MetaDiagnostic>,
 }
 
 pub(crate) type MetaRelatedData = MetaEnrichment;
@@ -325,6 +329,21 @@ pub(crate) type MetadataValidationResult = MetaValidationData;
 
 pub(crate) struct MetaPublishReport {
     pub(crate) data: MetaMutationData,
+    pub(crate) events: Vec<DomainEvent>,
+    pub(crate) recorded_cache: Option<CacheReport>,
+    pub(crate) warnings: Vec<String>,
+}
+
+impl MetaPublishReport {
+    #[cfg(test)]
+    pub(crate) fn source_only(data: MetaMutationData) -> Self {
+        Self {
+            data,
+            events: Vec::new(),
+            recorded_cache: None,
+            warnings: Vec::new(),
+        }
+    }
 }
 
 pub(crate) trait PreparedMetadataMutation: Send {

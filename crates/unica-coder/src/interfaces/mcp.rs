@@ -8,7 +8,8 @@
 
 use crate::application::{
     input_schema_for_tool, metadata_argument_failure_result, operation_result_output_schema,
-    OperationResult, ToolHandler, ToolSpec, UnicaApplication,
+    role_edit_argument_failure_result, role_edit_output_schema, OperationResult, ToolHandler,
+    ToolSpec, UnicaApplication,
 };
 use crate::domain::cancellation::CancellationToken;
 use rmcp::model::{
@@ -105,9 +106,7 @@ impl UnicaServer {
             in_flight: Arc::new(InFlightRegistry::default()),
             structured_tools: crate::application::tools()
                 .into_iter()
-                .filter_map(|spec| {
-                    matches!(spec.handler, ToolHandler::Metadata { .. }).then_some(spec.name)
-                })
+                .filter_map(|spec| has_structured_output(&spec).then_some(spec.name))
                 .collect(),
         }
     }
@@ -115,6 +114,21 @@ impl UnicaServer {
     fn in_flight(&self) -> Arc<InFlightRegistry> {
         Arc::clone(&self.in_flight)
     }
+}
+
+fn structured_output_schema(spec: &ToolSpec) -> Option<Value> {
+    match spec.handler {
+        ToolHandler::Metadata { .. } => Some(operation_result_output_schema()),
+        ToolHandler::NativeOperation {
+            operation: "role-edit",
+            ..
+        } => Some(role_edit_output_schema()),
+        _ => None,
+    }
+}
+
+fn has_structured_output(spec: &ToolSpec) -> bool {
+    structured_output_schema(spec).is_some()
 }
 
 impl ServerHandler for UnicaServer {
@@ -190,8 +204,8 @@ pub fn tool_definitions(specs: &[ToolSpec]) -> Vec<Tool> {
                 }
             };
             let tool = Tool::new(spec.name, spec.description, schema);
-            if matches!(spec.handler, ToolHandler::Metadata { .. }) {
-                let output_schema = match operation_result_output_schema() {
+            if let Some(schema) = structured_output_schema(spec) {
+                let output_schema = match schema {
                     Value::Object(schema) => schema,
                     other => unreachable!("OperationResult produced a non-object schema: {other}"),
                 };
@@ -227,6 +241,9 @@ fn call_tool_result(
     args: &Map<String, Value>,
     cancellation: CancellationToken,
 ) -> Result<OperationResult, (i32, String)> {
+    if let Some(result) = role_edit_argument_failure_result(name, args) {
+        return Ok(result);
+    }
     if let Some(result) = metadata_argument_failure_result(name, args) {
         return Ok(result);
     }
@@ -794,6 +811,173 @@ mod tests {
         }]);
 
         assert!(listed[0].output_schema.is_some());
+    }
+
+    #[test]
+    fn role_edit_alone_adds_closed_native_structured_output_schema() {
+        let listed = tool_definitions(&crate::application::tools());
+        let role_edit = listed
+            .iter()
+            .find(|tool| tool.name == "unica.role.edit")
+            .expect("role.edit must be listed");
+        let output = role_edit
+            .output_schema
+            .as_ref()
+            .expect("role.edit must publish outputSchema");
+        assert_eq!(output["properties"]["data"]["additionalProperties"], false);
+        assert_eq!(
+            output["properties"]["cache"]["properties"]["root"],
+            json!({"const": ""})
+        );
+        assert!(output["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("data")));
+        for forbidden in ["stdout", "stderr", "command", "diagnostics", "job"] {
+            assert!(
+                output["properties"].get(forbidden).is_none(),
+                "role.edit must not publish legacy `{forbidden}` output"
+            );
+        }
+        assert_eq!(
+            output["properties"]["data"]["required"],
+            json!([
+                "metadataPath",
+                "changed",
+                "effects",
+                "validation",
+                "diagnostics"
+            ])
+        );
+        let role_info = listed
+            .iter()
+            .find(|tool| tool.name == "unica.role.info")
+            .unwrap();
+        assert!(role_info.output_schema.is_none());
+    }
+
+    #[tokio::test]
+    async fn role_edit_mcp_calls_return_structured_success_and_error() {
+        let handler: Arc<ToolCallHandler> = Arc::new(|name, arguments, _| {
+            assert_eq!(name, "unica.role.edit");
+            let rejected = arguments
+                .get("operations")
+                .and_then(Value::as_array)
+                .and_then(|operations| operations.first())
+                .and_then(|operation| operation.get("value"))
+                .and_then(Value::as_bool)
+                == Some(true);
+            let mut result = successful_test_result(if rejected {
+                "role edit rejected"
+            } else {
+                "role edit applied"
+            });
+            result.cache.root.clear();
+            result.ok = !rejected;
+            if rejected {
+                result.errors.push("unsupported_right".to_string());
+            }
+            result.data = Some(json!({
+                "metadataPath": "Role.Demo",
+                "changed": !rejected,
+                "effects": if rejected { json!([]) } else { json!([{
+                    "operationIndex": 0,
+                    "operation": "setRight",
+                    "objectName": "Catalog.Demo",
+                    "right": "Delete",
+                    "before": true,
+                    "after": false,
+                    "action": "setRight",
+                    "changed": true
+                }]) },
+                "validation": {"status": if rejected { "failed" } else { "passed" }},
+                "diagnostics": if rejected { json!([{
+                    "code": "unsupported_right",
+                    "severity": "error",
+                    "message": "right is not supported",
+                    "operationIndex": 0
+                }]) } else { json!([]) }
+            }));
+            Ok(result)
+        });
+        let (mut client, _) = spawn_server(handler);
+        client.initialize().await;
+
+        for (id, value, expected_error) in [(1, false, false), (2, true, true)] {
+            client
+                .send(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "unica.role.edit",
+                        "arguments": {
+                            "sourceSet": "main",
+                            "metadataPath": "Role.Demo",
+                            "operations": [{
+                                "op": "setRight",
+                                "objectName": "Catalog.Demo",
+                                "right": "Delete",
+                                "value": value
+                            }]
+                        }
+                    }
+                }))
+                .await;
+            let response = client.receive().await;
+            assert!(response.get("error").is_none(), "{response}");
+            assert_eq!(response["result"]["isError"], expected_error);
+            assert_eq!(
+                response["result"]["structuredContent"]["ok"],
+                !expected_error
+            );
+            assert_eq!(
+                response["result"]["structuredContent"]["data"]["metadataPath"],
+                "Role.Demo"
+            );
+            assert_eq!(response["result"]["structuredContent"]["cache"]["root"], "");
+        }
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn role_edit_mcp_projects_owner_matrix_rejection_with_operation_index() {
+        let (mut client, _) = spawn_server(application_handler());
+        client.initialize().await;
+        client
+            .send(json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "unica.role.edit",
+                    "arguments": {
+                        "sourceSet": "main",
+                        "metadataPath": "Role.Demo",
+                        "operations": [{
+                            "op": "setRight",
+                            "objectName": "DataProcessor.Worker",
+                            "right": "Delete",
+                            "value": false
+                        }]
+                    }
+                }
+            }))
+            .await;
+        let response = client.receive().await;
+        assert!(response.get("error").is_none(), "{response}");
+        assert_eq!(response["result"]["isError"], true);
+        let structured = &response["result"]["structuredContent"];
+        assert_eq!(structured["ok"], false);
+        assert_eq!(structured["cache"]["root"], "");
+        assert_eq!(structured["data"]["metadataPath"], "Role.Demo");
+        assert_eq!(structured["data"]["validation"]["status"], "failed");
+        assert_eq!(
+            structured["data"]["diagnostics"][0]["code"],
+            "unsupported_right"
+        );
+        assert_eq!(structured["data"]["diagnostics"][0]["operationIndex"], 0);
+        client.shutdown().await;
     }
 
     #[test]

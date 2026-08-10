@@ -47,7 +47,7 @@ use super::single_file_publisher::{
     with_publication_locks_mode_and_guard_targets, write_exact_new_file_in_directory,
     CleanupArtifact, CleanupWarning, PreparedCreate, PreparedPublication, PreparedReplace,
     PublicationLockToken, PublicationTreeLockMode, PublishError, PublishErrorKind, PublishMode,
-    PublishRequest,
+    PublishPhase, PublishRequest,
 };
 
 #[cfg(test)]
@@ -143,6 +143,7 @@ impl From<String> for CommitFailure {
 #[derive(Debug)]
 struct PlannedCreate {
     path: PathBuf,
+    identity: PathBuf,
     bytes: Vec<u8>,
 }
 
@@ -296,9 +297,10 @@ impl CompileTransaction {
                 ));
             }
         }
-        self.record_planned_path(identity, PlannedPathKind::Create);
+        self.record_planned_path(identity.clone(), PlannedPathKind::Create);
         self.creates.push(PlannedCreate {
             path,
+            identity,
             bytes: bytes.into(),
         });
         Ok(())
@@ -578,40 +580,32 @@ impl CompileTransaction {
         expected_preimage: impl AsRef<[u8]>,
         replacement: impl Into<Vec<u8>>,
     ) -> Result<(), String> {
+        self.replace_bytes_classified(path, expected_preimage, replacement)
+            .map_err(CommitFailure::into_message)
+    }
+
+    /// Plan an exact replacement while retaining the typed reason a target
+    /// cannot be bound. Logical mutation APIs use this form to distinguish a
+    /// stale/missing/link-swapped preimage from an unavailable provider.
+    pub(crate) fn replace_bytes_classified(
+        &mut self,
+        path: impl Into<PathBuf>,
+        expected_preimage: impl AsRef<[u8]>,
+        replacement: impl Into<Vec<u8>>,
+    ) -> Result<(), CommitFailure> {
         let path = path.into();
-        let identity = self.reject_duplicate_plan_path(&path)?;
-        let metadata = fs::symlink_metadata(&path).map_err(|error| {
-            format!(
-                "failed to inspect replacement target {}: {error}",
-                path.display()
-            )
-        })?;
-        if metadata_is_link_or_reparse_point(&metadata) {
-            return Err(format!(
-                "replacement target must not be a symbolic link or reparse point: {}",
-                path.display()
-            ));
-        }
-        if !metadata.is_file() {
-            return Err(format!(
-                "replacement target is not a regular file: {}",
-                path.display()
-            ));
-        }
-        let original = fs::read(&path).map_err(|error| {
-            format!(
-                "failed to read replacement target {}: {error}",
-                path.display()
-            )
-        })?;
-        if original != expected_preimage.as_ref() {
-            return Err(format!(
-                "replacement target changed while planning: {}",
-                path.display()
-            ));
-        }
+        let identity = self
+            .reject_duplicate_plan_path(&path)
+            .map_err(CommitFailure::provider)?;
+        let original = expected_preimage.as_ref().to_vec();
+        super::single_file_publisher::validate_replace_target(
+            &path,
+            &original,
+            PublishPhase::Inspect,
+        )
+        .map_err(|error| adapt_publish_error(&error, PublicationRole::Registration))?;
         let updated = replacement.into();
-        validate_xml_when_applicable(&path, &updated)?;
+        validate_xml_when_applicable(&path, &updated).map_err(CommitFailure::provider)?;
         self.registrations.insert(
             identity.clone(),
             PlannedRegistration {
@@ -951,6 +945,8 @@ impl CompileTransaction {
         F: FnOnce() -> Result<(), CommitFailure>,
     {
         let mut state = PublishState::default();
+        self.recheck_planned_path_identities("before parent preparation")
+            .map_err(CommitFailure::concurrent)?;
         self.semantic_preflight().map_err(CommitFailure::provider)?;
 
         for create in &self.creates {
@@ -1035,6 +1031,8 @@ impl CompileTransaction {
             VecDeque::new();
 
         let operation = (|| -> Result<CommitReport, CommitFailure> {
+            self.recheck_planned_path_identities("under publication lock")
+                .map_err(CommitFailure::concurrent)?;
             self.recheck_exact_read_guards("before publication")
                 .map_err(CommitFailure::concurrent)?;
             self.recheck_absence_guards("before publication")
@@ -1370,6 +1368,28 @@ impl CompileTransaction {
         }
         for registration in self.registrations.values().filter(|item| item.changed()) {
             validate_xml_when_applicable(&registration.path, &registration.updated)?;
+        }
+        Ok(())
+    }
+
+    fn recheck_planned_path_identities(&self, phase: &str) -> Result<(), String> {
+        for create in &self.creates {
+            recheck_planned_path_identity(&create.path, &create.identity, phase)?;
+        }
+        for (identity, registration) in &self.registrations {
+            recheck_planned_path_identity(&registration.path, identity, phase)?;
+        }
+        for (identity, guard) in &self.read_guards {
+            recheck_planned_path_identity(&guard.path, identity, phase)?;
+        }
+        for removal in &self.removals {
+            recheck_planned_path_identity(&removal.path, &removal.identity, phase)?;
+        }
+        for identity in &self.absence_guards {
+            recheck_planned_path_identity(identity, identity, phase)?;
+        }
+        for (identity, guard) in &self.directory_membership_guards {
+            recheck_planned_path_identity(&guard.directory, identity, phase)?;
         }
         Ok(())
     }
@@ -2695,6 +2715,21 @@ fn normalize_transaction_path_identity(path: &Path) -> Result<PathBuf, String> {
             path.display()
         )
     })
+}
+
+fn recheck_planned_path_identity(
+    path: &Path,
+    planned_identity: &Path,
+    phase: &str,
+) -> Result<(), String> {
+    let current_identity = normalize_transaction_path_identity(path)?;
+    if current_identity == planned_identity {
+        return Ok(());
+    }
+    Err(format!(
+        "publication target identity changed after planning ({phase}): {}",
+        path.display()
+    ))
 }
 
 fn find_overlapping_planned_identity<'a>(
@@ -4539,6 +4574,109 @@ mod tests {
         assert_eq!(report.updated, vec![target.clone()]);
         assert_eq!(fs::read(&target).unwrap(), replacement);
         assert!(transaction_debris(&root).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn replacement_rejects_parent_symlink_swap_after_planning_before_locking() {
+        let root = temp_root("replacement-parent-symlink-swap");
+        let role_dir = root.join("safe/Role");
+        let saved_role_dir = root.join("saved-role");
+        let outside_role_dir = root.join("outside-role");
+        let target = role_dir.join("Ext/Rights.xml");
+        let saved_target = saved_role_dir.join("Ext/Rights.xml");
+        let outside_target = outside_role_dir.join("Ext/Rights.xml");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::create_dir_all(outside_target.parent().unwrap()).unwrap();
+        let before = b"<Rights><value>true</value></Rights>\n".to_vec();
+        let after = b"<Rights><value>false</value></Rights>\n".to_vec();
+        fs::write(&target, &before).unwrap();
+        fs::write(&outside_target, &before).unwrap();
+
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .replace_bytes(&target, &before, after)
+            .expect("safe replacement must plan");
+
+        fs::rename(&role_dir, &saved_role_dir).unwrap();
+        let Some(link_result) = testing::create_dir_symlink_for_test(&outside_role_dir, &role_dir)
+        else {
+            fs::rename(&saved_role_dir, &role_dir).unwrap();
+            fs::remove_dir_all(root).unwrap();
+            return;
+        };
+        if link_result.is_err() {
+            fs::rename(&saved_role_dir, &role_dir).unwrap();
+            fs::remove_dir_all(root).unwrap();
+            return;
+        }
+
+        let error = transaction
+            .commit()
+            .expect_err("a changed canonical route must reject publication");
+        assert!(
+            error.contains("publication target identity changed after planning"),
+            "{error}"
+        );
+        assert_eq!(fs::read(&saved_target).unwrap(), before);
+        assert_eq!(fs::read(&outside_target).unwrap(), before);
+
+        testing::remove_dir_symlink_for_test(&role_dir).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn transaction_rejects_cache_create_parent_symlink_swap_before_touching_either_target() {
+        let root = temp_root("cache-create-parent-symlink-swap");
+        let rights = root.join("src/Roles/Demo/Ext/Rights.xml");
+        let build_dir = root.join(".build");
+        let saved_build_dir = root.join("saved-build");
+        let outside_build_dir = root.join("outside-build");
+        let cache = build_dir.join("unica/state.json");
+        let saved_cache = saved_build_dir.join("unica/state.json");
+        let outside_cache = outside_build_dir.join("unica/state.json");
+        fs::create_dir_all(rights.parent().unwrap()).unwrap();
+        fs::create_dir_all(cache.parent().unwrap()).unwrap();
+        fs::create_dir_all(outside_cache.parent().unwrap()).unwrap();
+        let before = b"<Rights><value>true</value></Rights>\n".to_vec();
+        let after = b"<Rights><value>false</value></Rights>\n".to_vec();
+        fs::write(&rights, &before).unwrap();
+
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .replace_bytes(&rights, &before, after)
+            .expect("rights replacement must plan");
+        transaction
+            .create_bytes(&cache, br#"{"workspaceEpoch":1}"#.to_vec())
+            .expect("cache creation must plan");
+
+        fs::rename(&build_dir, &saved_build_dir).unwrap();
+        let Some(link_result) =
+            testing::create_dir_symlink_for_test(&outside_build_dir, &build_dir)
+        else {
+            fs::rename(&saved_build_dir, &build_dir).unwrap();
+            fs::remove_dir_all(root).unwrap();
+            return;
+        };
+        if link_result.is_err() {
+            fs::rename(&saved_build_dir, &build_dir).unwrap();
+            fs::remove_dir_all(root).unwrap();
+            return;
+        }
+
+        let error = transaction
+            .commit()
+            .expect_err("a changed cache route must reject the complete transaction");
+        assert!(
+            error.contains("publication target identity changed after planning"),
+            "{error}"
+        );
+        assert_eq!(fs::read(&rights).unwrap(), before);
+        assert!(!saved_cache.exists());
+        assert!(!outside_cache.exists());
+        assert!(transaction_debris(&root).is_empty());
+
+        testing::remove_dir_symlink_for_test(&build_dir).unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 

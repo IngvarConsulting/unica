@@ -173,6 +173,80 @@ pub fn operation_result_output_schema() -> Value {
     })
 }
 
+/// Closed transport schema for the logical typed `unica.role.edit` payload.
+/// Valid calls always return the same required typed `data`, including guard
+/// failures. The common cache envelope remains, but its physical root is
+/// deliberately redacted for this logical-only API.
+pub fn role_edit_output_schema() -> Value {
+    let mut schema = operation_result_output_schema();
+    if let Some(properties) = schema["properties"].as_object_mut() {
+        for forbidden in ["stdout", "stderr", "command", "diagnostics", "job"] {
+            properties.remove(forbidden);
+        }
+    }
+    schema["properties"]["cache"]["properties"]["root"] = json!({"const": ""});
+    schema["properties"]["data"] = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "metadataPath": {
+                "type": "string",
+                "pattern": crate::domain::role::ROLE_METADATA_PATH_PATTERN
+            },
+            "changed": {"type": "boolean"},
+            "effects": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "operationIndex": {"type": "integer", "minimum": 0},
+                        "operation": {"const": "setRight"},
+                        "objectName": {"type": "string", "minLength": 3},
+                        "right": {"type": "string", "minLength": 1},
+                        "before": {"type": ["boolean", "null"]},
+                        "after": {"type": "boolean"},
+                        "action": {"type": "string", "enum": ["setRight", "removeObject"]},
+                        "changed": {"type": "boolean"}
+                    },
+                    "required": [
+                        "operationIndex", "operation", "objectName", "right", "before",
+                        "after", "action", "changed"
+                    ]
+                }
+            },
+            "validation": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "status": {"type": "string", "enum": ["passed", "failed"]}
+                },
+                "required": ["status"]
+            },
+            "diagnostics": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "code": {"type": "string", "minLength": 1},
+                        "severity": {"type": "string", "enum": ["error", "warning"]},
+                        "message": {"type": "string"},
+                        "operationIndex": {"type": "integer", "minimum": 0}
+                    },
+                    "required": ["code", "severity", "message"]
+                }
+            }
+        },
+        "required": ["metadataPath", "changed", "effects", "validation", "diagnostics"]
+    });
+    schema["required"]
+        .as_array_mut()
+        .expect("OperationResult required fields are an array")
+        .push(json!("data"));
+    schema
+}
+
 /// Project invalid Meta arguments into the stable operation envelope for an
 /// MCP adapter without changing the direct application-call error contract.
 pub fn metadata_argument_failure_result(
@@ -186,6 +260,61 @@ pub fn metadata_argument_failure_result(
     metadata::parse_metadata_request(operation, args)
         .err()
         .map(invalid_metadata_arguments_result)
+}
+
+/// Preserve the typed role result for operation-level parser failures that
+/// cannot be expressed by the host-visible owner-independent right union.
+///
+/// Top-level/address failures remain transport errors: they have no canonical
+/// `metadataPath` that could satisfy the role output schema. An operation-level
+/// error is only produced after the parser has accepted that logical address,
+/// so it can be returned with its exact `operationIndex`.
+pub fn role_edit_argument_failure_result(
+    name: &str,
+    args: &Map<String, Value>,
+) -> Option<OperationResult> {
+    if name != "unica.role.edit" {
+        return None;
+    }
+    let error = crate::domain::role::parse_role_edit_request(args).err()?;
+    let operation_index = error.operation_index?;
+    let metadata_path = args.get("metadataPath")?.as_str()?.to_string();
+    let message = error.message.clone();
+    let data = crate::domain::role::RoleEditData::failed(
+        metadata_path,
+        error.code,
+        message.clone(),
+        Some(operation_index),
+    );
+    Some(OperationResult {
+        ok: false,
+        summary: "unica.role.edit rejected invalid operation".to_string(),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: vec![format!("{}: {message}", error.code)],
+        artifacts: Vec::new(),
+        cache: CacheReport {
+            mode: "read".to_string(),
+            root: String::new(),
+            workspace_epoch: 0,
+            events: Vec::new(),
+            invalidated: Vec::new(),
+            refreshed: Vec::new(),
+            lazy_rebuilt: Vec::new(),
+            stale: Vec::new(),
+            fresh: Vec::new(),
+            publication_warnings: Vec::new(),
+        },
+        stdout: None,
+        stderr: None,
+        command: None,
+        diagnostics: None,
+        data: Some(
+            serde_json::to_value(data)
+                .expect("typed role edit diagnostics are always serializable"),
+        ),
+        job: None,
+    })
 }
 
 /// Public application entry point.
@@ -594,13 +723,38 @@ fn call_tool(
     let mut prepared =
         ports.prepare_tool_invocation(spec, args, &context, dry_run, cancellation, deadline)?;
     let xdto_target = XdtoLogicalTarget::from_call(spec, args);
+    let role_target = RoleEditLogicalTarget::from_call(spec, args);
     let mut format_guard_warning = None;
     let mut format_diagnostic = None;
     let format_guard = match prepared.format_guard.take() {
         Some(check) => check,
-        None => ports
-            .evaluate_format_guard(spec, args, &context)
-            .map_err(|error| project_xdto_format_guard_error(xdto_target.as_ref(), error))?,
+        None => match ports.evaluate_format_guard(spec, args, &context) {
+            Ok(check) => check,
+            Err(error) => {
+                if let Some(target) = role_target.as_ref() {
+                    let public = error.to_string();
+                    let code = role_guard_error_code(&public, "format_guard_failed");
+                    let cache = match role_cache_report(
+                        ports,
+                        &context,
+                        target,
+                        &[],
+                        dry_run,
+                        spec.cache_access,
+                    ) {
+                        Ok(cache) => cache,
+                        Err(result) => return Ok(*result),
+                    };
+                    return Ok(target.failed_result(
+                        cache,
+                        dry_run,
+                        code,
+                        role_guard_failure_reason(code),
+                    ));
+                }
+                return Err(project_xdto_format_guard_error(xdto_target.as_ref(), error));
+            }
+        },
     };
     match format_guard {
         FormatGuardCheck::Allow => {}
@@ -608,7 +762,12 @@ fn call_tool(
             warning,
             diagnostic,
         } => {
-            if let Some(target) = xdto_target.as_ref() {
+            if let Some(target) = role_target.as_ref() {
+                format_guard_warning = Some(target.warning(
+                    "format_guard_warning",
+                    "the role export is outside the supported platform 8.3.27 / format 2.20 profile",
+                ));
+            } else if let Some(target) = xdto_target.as_ref() {
                 format_guard_warning = Some(target.warning(
                     "format_guard_warning",
                     "the source export format is outside the supported profile",
@@ -623,6 +782,29 @@ fn call_tool(
             mut outcome,
             diagnostic,
         } => {
+            if let Some(target) = role_target.as_ref() {
+                let code = diagnostic
+                    .get("code")
+                    .and_then(Value::as_str)
+                    .unwrap_or("format_incompatible");
+                let cache = match role_cache_report(
+                    ports,
+                    &context,
+                    target,
+                    &[],
+                    dry_run,
+                    spec.cache_access,
+                ) {
+                    Ok(cache) => cache,
+                    Err(result) => return Ok(*result),
+                };
+                return Ok(target.failed_result(
+                    cache,
+                    dry_run,
+                    code,
+                    role_guard_failure_reason(code),
+                ));
+            }
             let diagnostic = if let Some(target) = xdto_target.as_ref() {
                 let code = diagnostic
                     .get("code")
@@ -676,23 +858,71 @@ fn call_tool(
         });
     }
     let support_guard_warning = if spec.mutating {
-        let support_guard =
-            ports
-                .evaluate_support_guard(spec, args, &context)
-                .map_err(|error| {
-                    project_xdto_guard_error(xdto_target.as_ref(), "support_guard_failed", error)
-                })?;
+        let support_guard = match ports.evaluate_support_guard(spec, args, &context) {
+            Ok(check) => check,
+            Err(error) => {
+                if let Some(target) = role_target.as_ref() {
+                    let code = role_guard_error_code(&error, "support_guard_failed");
+                    let cache = match role_cache_report(
+                        ports,
+                        &context,
+                        target,
+                        &[],
+                        dry_run,
+                        spec.cache_access,
+                    ) {
+                        Ok(cache) => cache,
+                        Err(result) => return Ok(*result),
+                    };
+                    return Ok(target.failed_result(
+                        cache,
+                        dry_run,
+                        code,
+                        role_guard_failure_reason(code),
+                    ));
+                }
+                return Err(project_xdto_guard_error(
+                    xdto_target.as_ref(),
+                    "support_guard_failed",
+                    error,
+                ));
+            }
+        };
         match support_guard {
             SupportGuardCheck::Allow => None,
-            SupportGuardCheck::Warn(warning) => Some(if let Some(target) = xdto_target.as_ref() {
+            SupportGuardCheck::Warn(warning) => Some(if let Some(target) = role_target.as_ref() {
                 target.warning(
                     "support_guard_warning",
-                    "the target is protected by support policy; the operation continues in warn mode",
+                    "the role is protected by support policy; the operation continues in warn mode",
                 )
+            } else if let Some(target) = xdto_target.as_ref() {
+                target.warning(
+                        "support_guard_warning",
+                        "the target is protected by support policy; the operation continues in warn mode",
+                    )
             } else {
                 warning
             }),
             SupportGuardCheck::Block(mut outcome) => {
+                if let Some(target) = role_target.as_ref() {
+                    let cache = match role_cache_report(
+                        ports,
+                        &context,
+                        target,
+                        &[],
+                        dry_run,
+                        spec.cache_access,
+                    ) {
+                        Ok(cache) => cache,
+                        Err(result) => return Ok(*result),
+                    };
+                    return Ok(target.failed_result(
+                        cache,
+                        dry_run,
+                        "support_locked",
+                        role_guard_failure_reason("support_locked"),
+                    ));
+                }
                 if let Some(target) = xdto_target.as_ref() {
                     outcome = target.blocked_outcome(
                         spec,
@@ -816,8 +1046,41 @@ fn call_tool(
     let projected_events = handler_outcome.projected_events;
     let recorded_cache = handler_outcome.recorded_cache;
     let handler_diagnostics = handler_outcome.diagnostics;
+    let mut handler_data = handler_outcome.data;
+    if let Some(target) = role_target.as_ref().filter(|_| handler_data.is_none()) {
+        let code = "handler_contract_failed";
+        outcome = AdapterOutcome {
+            ok: false,
+            summary: "unica.role.edit handler violated its typed result contract".to_string(),
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: vec![format!(
+                "{code}: {} — the role mutation returned no typed data",
+                target.identity()
+            )],
+            artifacts: Vec::new(),
+            stdout: None,
+            stderr: None,
+            command: None,
+        };
+        handler_data = Some(
+            serde_json::to_value(crate::domain::role::RoleEditData::failed(
+                target.metadata_path.clone(),
+                code,
+                "the role mutation returned no typed data",
+                None,
+            ))
+            .expect("typed role edit diagnostics are always serializable"),
+        );
+    }
     if let Some(warning) = support_guard_warning {
-        outcome.warnings.insert(0, warning);
+        if !outcome
+            .warnings
+            .iter()
+            .any(|existing| existing.starts_with("support_guard_warning:"))
+        {
+            outcome.warnings.insert(0, warning);
+        }
     }
     if let Some(warning) = format_guard_warning {
         outcome.warnings.insert(0, warning);
@@ -826,7 +1089,7 @@ fn call_tool(
         projected_events
     } else if !dry_run && spec.mutating && outcome.ok && !handler_events.is_empty() {
         handler_events
-    } else if should_emit_events(spec, args, dry_run, &outcome, handler_outcome.data.as_ref()) {
+    } else if should_emit_events(spec, args, dry_run, &outcome, handler_data.as_ref()) {
         if handler_events.is_empty() {
             domain_events(spec, args)
         } else {
@@ -843,6 +1106,11 @@ fn call_tool(
             ));
         }
         cache
+    } else if let Some(target) = role_target.as_ref() {
+        match role_cache_report(ports, &context, target, &events, dry_run, spec.cache_access) {
+            Ok(cache) => cache,
+            Err(result) => return Ok(*result),
+        }
     } else {
         ports.cache_report(&context, &events, dry_run, spec.cache_access)?
     };
@@ -853,31 +1121,42 @@ fn call_tool(
     let diagnostics = merge_handler_diagnostics(
         handler_diagnostics,
         merge_diagnostics(
-            runtime_result_diagnostics(
-                spec,
-                args,
-                &context,
-                &outcome,
-                handler_outcome.data.as_ref(),
-            ),
+            runtime_result_diagnostics(spec, args, &context, &outcome, handler_data.as_ref()),
             format_diagnostic,
         ),
     );
 
+    let role_typed = role_target.is_some();
+    if role_typed {
+        cache.root.clear();
+    }
+    let artifacts = if let Some(target) = role_target.as_ref() {
+        if outcome.ok && !outcome.artifacts.is_empty() {
+            vec![target.identity()]
+        } else {
+            Vec::new()
+        }
+    } else {
+        outcome.artifacts
+    };
     Ok(OperationResult {
         ok: outcome.ok,
         summary: outcome.summary,
         changes: outcome.changes,
         warnings: outcome.warnings,
         errors: outcome.errors,
-        artifacts: outcome.artifacts,
+        artifacts,
         cache,
-        stdout: outcome.stdout,
-        stderr: outcome.stderr,
-        command: outcome.command,
-        diagnostics,
-        data: handler_outcome.data,
-        job: handler_outcome.job,
+        stdout: if role_typed { None } else { outcome.stdout },
+        stderr: if role_typed { None } else { outcome.stderr },
+        command: if role_typed { None } else { outcome.command },
+        diagnostics: if role_typed { None } else { diagnostics },
+        data: handler_data,
+        job: if role_typed {
+            None
+        } else {
+            handler_outcome.job
+        },
     })
 }
 
@@ -921,6 +1200,134 @@ fn invalid_metadata_arguments_result(failure: metadata::MetaFailure) -> Operatio
 struct XdtoLogicalTarget {
     source_set: String,
     metadata_path: String,
+}
+
+#[derive(Clone, Debug)]
+struct RoleEditLogicalTarget {
+    source_set: String,
+    metadata_path: String,
+}
+
+impl RoleEditLogicalTarget {
+    fn from_call(spec: ToolSpec, args: &Map<String, Value>) -> Option<Self> {
+        if spec.name != "unica.role.edit" {
+            return None;
+        }
+        Some(Self {
+            source_set: args.get("sourceSet")?.as_str()?.to_string(),
+            metadata_path: args.get("metadataPath")?.as_str()?.to_string(),
+        })
+    }
+
+    fn identity(&self) -> String {
+        format!("{} + {}", self.source_set, self.metadata_path)
+    }
+
+    fn warning(&self, code: &str, reason: &str) -> String {
+        format!("{code}: {} — {reason}", self.identity())
+    }
+
+    fn failed_result(
+        &self,
+        mut cache: CacheReport,
+        dry_run: bool,
+        code: &str,
+        reason: &str,
+    ) -> OperationResult {
+        cache.root.clear();
+        let message = format!("{code}: {} — {reason}", self.identity());
+        let data = crate::domain::role::RoleEditData::failed(
+            self.metadata_path.clone(),
+            code,
+            reason,
+            None,
+        );
+        OperationResult {
+            ok: false,
+            summary: format!(
+                "{}unica.role.edit blocked for {} ({code})",
+                if dry_run { "dry run: " } else { "" },
+                self.identity()
+            ),
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: vec![message],
+            artifacts: Vec::new(),
+            cache,
+            stdout: None,
+            stderr: None,
+            command: None,
+            diagnostics: None,
+            data: Some(
+                serde_json::to_value(data)
+                    .expect("typed role edit diagnostics are always serializable"),
+            ),
+            job: None,
+        }
+    }
+}
+
+fn role_cache_report(
+    ports: &dyn ApplicationPorts,
+    context: &WorkspaceContext,
+    target: &RoleEditLogicalTarget,
+    events: &[DomainEvent],
+    dry_run: bool,
+    access: CacheAccess,
+) -> Result<CacheReport, Box<OperationResult>> {
+    ports
+        .cache_report(context, events, dry_run, access)
+        .map_err(|_| {
+            Box::new(target.failed_result(
+                CacheReport {
+                    mode: if dry_run { "dry-run" } else { "read" }.to_string(),
+                    root: String::new(),
+                    workspace_epoch: context.workspace_epoch,
+                    events: Vec::new(),
+                    invalidated: Vec::new(),
+                    refreshed: Vec::new(),
+                    lazy_rebuilt: Vec::new(),
+                    stale: Vec::new(),
+                    fresh: Vec::new(),
+                    publication_warnings: Vec::new(),
+                },
+                dry_run,
+                "cache_unavailable",
+                role_guard_failure_reason("cache_unavailable"),
+            ))
+        })
+}
+
+fn role_guard_error_code(error: &str, fallback: &'static str) -> &'static str {
+    [
+        "source_set_unknown",
+        "target_not_found",
+        "not_a_role",
+        "provider_unavailable",
+        "containment_denied",
+        "profile_unsupported",
+    ]
+    .into_iter()
+    .find(|code| error.starts_with(&format!("{code}:")))
+    .unwrap_or(fallback)
+}
+
+fn role_guard_failure_reason(code: &str) -> &'static str {
+    match code {
+        "source_set_unknown" => "the requested source set is unavailable",
+        "target_not_found" => "the logical role target was not found",
+        "not_a_role" => "metadataPath does not identify a role",
+        "provider_unavailable" => "the logical source provider is unavailable",
+        "containment_denied" => "the logical role target failed containment checks",
+        "profile_unsupported" => "the logical address profile is unsupported",
+        "support_locked" => "the logical role target is protected by support policy",
+        "support_guard_failed" => "the support policy could not be evaluated safely",
+        "cache_unavailable" => "the logical cache projection is unavailable",
+        "formatMigrationAvailable" | "platformVersionUnsupported" | "formatVersionInvalid" => {
+            "the role export is outside the supported platform 8.3.27 / format 2.20 profile"
+        }
+        _ => "the role mutation could not pass its preflight checks",
+    }
 }
 
 impl XdtoLogicalTarget {
@@ -1397,13 +1804,24 @@ fn should_emit_events(
         return false;
     }
     if !dry_run {
-        return if spec.name == "unica.xdto.edit" {
+        return if spec.name == "unica.role.edit" {
+            data.and_then(|data| data.get("changed"))
+                .and_then(Value::as_bool)
+                == Some(true)
+        } else if spec.name == "unica.xdto.edit" {
             data.and_then(|data| data.get("noOp"))
                 .and_then(Value::as_bool)
                 == Some(false)
         } else {
             !outcome.changes.is_empty()
         };
+    }
+
+    if spec.name == "unica.role.edit" {
+        return data
+            .and_then(|data| data.get("changed"))
+            .and_then(Value::as_bool)
+            == Some(true);
     }
 
     if spec.name == "unica.xdto.edit" {
@@ -2126,6 +2544,19 @@ fn configuration_tools() -> Vec<ToolSpec> {
             cache_access: cache_access_for("role-compile", Some(DomainEventKind::RoleChanged)),
             handler: ToolHandler::NativeOperation {
                 operation: "role-compile",
+                event: Some(DomainEventKind::RoleChanged),
+            },
+        },
+        ToolSpec {
+            name: "unica.role.edit",
+            description: "Edit role rights through a closed logical typed contract.",
+            mutating: true,
+            cache_access: CacheAccess {
+                reads: &[],
+                writes: &["metadata_graph", "rights_graph"],
+            },
+            handler: ToolHandler::NativeOperation {
+                operation: "role-edit",
                 event: Some(DomainEventKind::RoleChanged),
             },
         },
@@ -4166,6 +4597,302 @@ mod tests {
     }
 
     #[test]
+    fn role_edit_event_selector_uses_typed_changed_state_for_preview_apply_and_noop() {
+        let spec = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.role.edit")
+            .unwrap();
+        let args = Map::new();
+        let changed = json!({"changed": true});
+        let no_op = json!({"changed": false});
+        let successful = AdapterOutcome::ok("typed role edit");
+
+        for dry_run in [true, false] {
+            assert!(should_emit_events(
+                spec,
+                &args,
+                dry_run,
+                &successful,
+                Some(&changed),
+            ));
+            assert!(!should_emit_events(
+                spec,
+                &args,
+                dry_run,
+                &successful,
+                Some(&no_op),
+            ));
+        }
+        let impact = crate::domain::cache::CacheImpact::from_events(&[DomainEvent::new(
+            DomainEventKind::RoleChanged,
+            "main + Role.Demo",
+        )]);
+        assert!(impact.invalidated.contains("rights_graph"));
+        assert!(impact.eager_refresh.contains("rights_graph"));
+    }
+
+    fn role_edit_application_workspace(
+        label: &str,
+        descriptor_version: &str,
+        support_locked: bool,
+    ) -> (PathBuf, PathBuf, Map<String, Value>) {
+        let root = test_workspace_root(label);
+        let workspace = root.join("workspace");
+        let src = workspace.join("src");
+        let rights = src.join("Roles/Demo/Ext/Rights.xml");
+        std::fs::create_dir_all(rights.parent().unwrap()).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("Configuration.xml"),
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="{descriptor_version}"><Configuration uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"><Properties><Name>Main</Name></Properties><ChildObjects><Role>Demo</Role></ChildObjects></Configuration></MetaDataObject>"#
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("Roles/Demo.xml"),
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="{descriptor_version}"><Role uuid="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"><Properties><Name>Demo</Name></Properties></Role></MetaDataObject>"#
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            &rights,
+            concat!(
+                "<Rights xmlns=\"http://v8.1c.ru/8.2/roles\" ",
+                "xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" ",
+                "xsi:type=\"Rights\" version=\"2.20\">",
+                "<setForNewObjects>false</setForNewObjects>",
+                "<setForAttributesByDefault>true</setForAttributesByDefault>",
+                "<independentRightsOfChildObjects>false</independentRightsOfChildObjects>",
+                "<object><name>Catalog.Demo</name><right><name>Delete</name>",
+                "<value>true</value></right></object></Rights>"
+            ),
+        )
+        .unwrap();
+        if support_locked {
+            std::fs::create_dir_all(src.join("Ext")).unwrap();
+            std::fs::write(
+                src.join("Ext/ParentConfigurations.bin"),
+                support_test_parent_configurations_bin(
+                    "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                    "cccccccc-cccc-cccc-cccc-cccccccccccc",
+                ),
+            )
+            .unwrap();
+        }
+        let args = json!({
+            "sourceSet": "main",
+            "metadataPath": "Role.Demo",
+            "operations": [{
+                "op": "setRight",
+                "objectName": "Catalog.Demo",
+                "right": "Delete",
+                "value": false
+            }]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        (root, workspace, args)
+    }
+
+    fn assert_typed_role_edit_failure(
+        result: &OperationResult,
+        workspace: &std::path::Path,
+        expected_metadata_path: &str,
+        expected_code: &str,
+    ) {
+        assert!(!result.ok, "{result:?}");
+        let value = serde_json::to_value(result).unwrap();
+        assert_eq!(
+            value
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>(),
+            std::collections::BTreeSet::from([
+                "artifacts",
+                "cache",
+                "changes",
+                "data",
+                "errors",
+                "ok",
+                "summary",
+                "warnings",
+            ])
+        );
+        assert_eq!(value["artifacts"], json!([]));
+        assert_eq!(value["cache"]["root"], "");
+        assert_eq!(value["data"]["metadataPath"], expected_metadata_path);
+        assert_eq!(value["data"]["changed"], false);
+        assert_eq!(value["data"]["effects"], json!([]));
+        assert_eq!(value["data"]["validation"], json!({"status":"failed"}));
+        assert_eq!(value["data"]["diagnostics"][0]["code"], expected_code);
+        assert!(jsonschema::validator_for(&role_edit_output_schema())
+            .unwrap()
+            .is_valid(&value));
+        let encoded = serde_json::to_string(&value).unwrap();
+        assert!(
+            !encoded.contains(&workspace.display().to_string()),
+            "{encoded}"
+        );
+        assert!(!encoded.contains("Rights.xml"), "{encoded}");
+    }
+
+    #[test]
+    fn role_edit_application_projects_2_19_and_2_21_format_blocks_to_typed_data() {
+        for (version, code) in [
+            ("2.19", "formatMigrationAvailable"),
+            ("2.21", "platformVersionUnsupported"),
+        ] {
+            let (root, workspace, args) = role_edit_application_workspace(
+                &format!("unica-role-edit-format-{version}"),
+                version,
+                false,
+            );
+            let before = std::fs::read(workspace.join("src/Roles/Demo/Ext/Rights.xml")).unwrap();
+            let result =
+                call_public_tool_from_workspace(&workspace, "unica.role.edit", &args).unwrap();
+            assert_typed_role_edit_failure(&result, &workspace, "Role.Demo", code);
+            assert_eq!(
+                std::fs::read(workspace.join("src/Roles/Demo/Ext/Rights.xml")).unwrap(),
+                before
+            );
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn role_edit_application_uses_transactionally_recorded_cache_and_noop_does_not_republish() {
+        let (root, workspace, mut args) =
+            role_edit_application_workspace("unica-role-edit-recorded-cache", "2.20", false);
+        args.insert("dryRun".to_string(), json!(false));
+        let applied =
+            call_public_tool_from_workspace(&workspace, "unica.role.edit", &args).unwrap();
+        assert!(applied.ok, "{applied:?}");
+        assert_eq!(applied.cache.root, "");
+        assert_eq!(applied.cache.mode, "applied");
+        assert_eq!(applied.cache.events, ["RoleChanged"]);
+        assert!(applied
+            .cache
+            .invalidated
+            .contains(&"rights_graph".to_string()));
+        assert!(applied
+            .cache
+            .refreshed
+            .contains(&"rights_graph".to_string()));
+        assert_eq!(applied.data.as_ref().unwrap()["changed"], true);
+        let state_path = workspace.join(".build/unica/state.json");
+        let state_after_apply = std::fs::read(&state_path).unwrap();
+
+        let repeated =
+            call_public_tool_from_workspace(&workspace, "unica.role.edit", &args).unwrap();
+        assert!(repeated.ok, "{repeated:?}");
+        assert_eq!(repeated.cache.root, "");
+        assert!(repeated.cache.events.is_empty());
+        assert_eq!(repeated.data.as_ref().unwrap()["changed"], false);
+        assert_eq!(std::fs::read(&state_path).unwrap(), state_after_apply);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn role_edit_application_projects_cache_read_failure_without_physical_paths() {
+        let (root, workspace, args) =
+            role_edit_application_workspace("unica-role-edit-cache-failure", "2.20", false);
+        let rights = workspace.join("src/Roles/Demo/Ext/Rights.xml");
+        let before = std::fs::read(&rights).unwrap();
+        std::fs::create_dir_all(workspace.join(".build/unica/state.json")).unwrap();
+
+        let result = call_public_tool_from_workspace(&workspace, "unica.role.edit", &args).unwrap();
+
+        assert_typed_role_edit_failure(&result, &workspace, "Role.Demo", "cache_unavailable");
+        assert_eq!(std::fs::read(&rights).unwrap(), before);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn role_edit_application_reports_one_stable_support_warning() {
+        let (root, workspace, mut args) =
+            role_edit_application_workspace("unica-role-edit-support-warn", "2.20", true);
+        std::fs::write(
+            workspace.join(".v8-project.json"),
+            r#"{"editingAllowedCheck":"warn"}"#,
+        )
+        .unwrap();
+        args.insert("dryRun".to_string(), json!(false));
+
+        let result = call_public_tool_from_workspace(&workspace, "unica.role.edit", &args).unwrap();
+
+        assert!(result.ok, "{result:?}");
+        assert_eq!(
+            result
+                .warnings
+                .iter()
+                .filter(|warning| warning.starts_with("support_guard_warning:"))
+                .count(),
+            1,
+            "{result:?}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn role_edit_application_projects_support_block_to_typed_data() {
+        let (root, workspace, args) =
+            role_edit_application_workspace("unica-role-edit-support", "2.20", true);
+        let rights = workspace.join("src/Roles/Demo/Ext/Rights.xml");
+        let before = std::fs::read(&rights).unwrap();
+        let result = call_public_tool_from_workspace(&workspace, "unica.role.edit", &args).unwrap();
+        assert_typed_role_edit_failure(&result, &workspace, "Role.Demo", "support_locked");
+        assert_eq!(std::fs::read(&rights).unwrap(), before);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn role_edit_application_projects_missing_logical_target_to_typed_data() {
+        let (root, workspace, mut args) =
+            role_edit_application_workspace("unica-role-edit-missing", "2.20", false);
+        args.insert("metadataPath".to_string(), json!("Role.Missing"));
+        let result = call_public_tool_from_workspace(&workspace, "unica.role.edit", &args).unwrap();
+        assert_typed_role_edit_failure(&result, &workspace, "Role.Missing", "target_not_found");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn role_edit_application_projects_format_and_support_guard_errors_to_typed_data() {
+        let args = json!({
+            "sourceSet": "main",
+            "metadataPath": "Role.Demo",
+            "operations": [{
+                "op": "setRight",
+                "objectName": "Catalog.Demo",
+                "right": "Delete",
+                "value": false
+            }]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let hidden = PathBuf::from("/private/provider/workspace");
+        for (guard, code) in [
+            (FailingXdtoGuard::Format, "format_guard_failed"),
+            (FailingXdtoGuard::Support, "support_guard_failed"),
+        ] {
+            let result = UnicaApplication::with_ports(Arc::new(FailingXdtoGuardPorts { guard }))
+                .call_tool("unica.role.edit", &args)
+                .unwrap();
+            assert_typed_role_edit_failure(&result, &hidden, "Role.Demo", code);
+        }
+    }
+
+    #[test]
     fn runtime_failure_result_includes_structured_exit_diagnostics() {
         let root = test_workspace_root("runtime-exit-diagnostics");
         let result = call_runtime_with_outcome(
@@ -4466,6 +5193,7 @@ mod tests {
         const TYPED_RESULT_TOOLS: &[&str] = &[
             "unica.cf.info",
             "unica.role.info",
+            "unica.role.edit",
             "unica.subsystem.info",
             "unica.mxl.info",
             "unica.cfe.diff",
@@ -6485,7 +7213,7 @@ mod tests {
                     match policy {
                         SupportGuardPolicy::HandlerResolved { requirement } => {
                             assert!(
-                                matches!(operation, "code-patch" | "xdto-edit"),
+                                matches!(operation, "code-patch" | "xdto-edit" | "role-edit"),
                                 "{operation} unexpectedly delegates support resolution"
                             );
                             assert_eq!(requirement, SupportGuardRequirement::Editable);
@@ -6539,6 +7267,7 @@ mod tests {
                 "interface-edit",
                 "mxl-compile",
                 "role-compile",
+                "role-edit",
                 "subsystem-compile",
                 "subsystem-edit",
                 "template-add",
@@ -6579,6 +7308,7 @@ mod tests {
         let expected = [
             ("code-patch", &[][..], "HandlerResolved"),
             ("xdto-edit", &[][..], "HandlerResolved"),
+            ("role-edit", &[][..], "HandlerResolved"),
             (
                 "cf-edit",
                 &["ConfigPath", "configPath", "Path", "path"][..],
@@ -8317,6 +9047,10 @@ mod tests {
     fn native_descriptors_expose_required_adapter_arguments() {
         let required_by_operation = [
             ("role-compile", &["JsonPath", "OutputDir"][..]),
+            (
+                "role-edit",
+                &["sourceSet", "metadataPath", "operations"][..],
+            ),
             ("mxl-compile", &["JsonPath", "OutputPath"][..]),
         ];
 
@@ -9730,12 +10464,23 @@ mod tests {
 
         fn cache_report(
             &self,
-            _context: &WorkspaceContext,
+            context: &WorkspaceContext,
             _events: &[DomainEvent],
-            _dry_run: bool,
+            dry_run: bool,
             _cache_access: CacheAccess,
         ) -> Result<CacheReport, String> {
-            Err("cache report must not run after a guard evaluation error".to_string())
+            Ok(CacheReport {
+                mode: if dry_run { "dry-run" } else { "applied" }.to_string(),
+                root: context.cache_root.display().to_string(),
+                workspace_epoch: context.workspace_epoch,
+                events: Vec::new(),
+                invalidated: Vec::new(),
+                refreshed: Vec::new(),
+                lazy_rebuilt: Vec::new(),
+                stale: Vec::new(),
+                fresh: Vec::new(),
+                publication_warnings: Vec::new(),
+            })
         }
 
         fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}

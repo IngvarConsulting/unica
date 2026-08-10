@@ -1,6 +1,9 @@
-use super::usage_scan::{scan_local_enrichment, LocalSection};
+use super::usage_scan::{
+    scan_local_enrichment as scan_local_enrichment_by_address, LocalEnrichment, LocalSection,
+};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::metadata::MetadataKind;
+use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -24,6 +27,30 @@ fn write(root: &Path, relative: &str, body: &str) {
     let path = root.join(relative);
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, body).unwrap();
+}
+
+fn scan_local_enrichment(
+    source_root: &Path,
+    kind: MetadataKind,
+    name: &str,
+    sections: &[LocalSection],
+    limit: usize,
+    cancellation: &CancellationToken,
+) -> LocalEnrichment {
+    let metadata_path = MetadataAddress::parse(
+        PLATFORM_XML_8_3_27_FORMAT_2_20,
+        &format!("{}.{name}", kind.as_str()),
+    )
+    .unwrap();
+    scan_local_enrichment_by_address(
+        source_root,
+        kind,
+        &metadata_path,
+        Some("String"),
+        sections,
+        limit,
+        cancellation,
+    )
 }
 
 fn role(root: &Path, name: &str, subjects: &[&str]) {
@@ -217,14 +244,18 @@ fn a_kind_that_cannot_be_a_source_collects_no_subscriptions() {
 fn predefined_items_report_the_exact_total_and_their_own_truncation() {
     let root = temp_root("predefined");
     let items = (0..5)
-        .map(|index| format!("<Item><Name>Item{index}</Name></Item>"))
+        .map(|index| {
+            format!(
+                "<Item id=\"00000000-0000-0000-0000-00000000000{index}\"><Name>Item{index}</Name></Item>"
+            )
+        })
         .collect::<String>();
     write(
         &root,
         "Catalogs/Goods/Ext/Predefined.xml",
         &format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
-<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" version="2.20">{items}</PredefinedData>"#
+<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CatalogPredefinedItems" version="2.20">{items}</PredefinedData>"#
         ),
     );
 
@@ -242,7 +273,13 @@ fn predefined_items_report_the_exact_total_and_their_own_truncation() {
     assert_eq!(page.total, 5);
     assert_eq!(page.returned, 2);
     assert!(page.truncated);
-    assert_eq!(names(&page.items), vec!["Item0", "Item1"]);
+    assert_eq!(
+        page.items
+            .iter()
+            .map(|item| item.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Item0", "Item1"]
+    );
 
     let whole = scan_local_enrichment(
         &root,
@@ -271,6 +308,80 @@ fn predefined_items_report_the_exact_total_and_their_own_truncation() {
     .unwrap();
     assert_eq!(empty.total, 0);
     assert!(!empty.truncated);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn requested_malformed_predefined_data_reports_validation_diagnostic() {
+    let root = temp_root("malformed-predefined");
+    write(
+        &root,
+        "Catalogs/Goods/Ext/Predefined.xml",
+        r#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="ChartOfAccountsPredefinedItems" version="2.20"/>"#,
+    );
+    let found = scan_local_enrichment(
+        &root,
+        MetadataKind::Catalog,
+        "Goods",
+        &[LocalSection::PredefinedItems],
+        50,
+        &CancellationToken::new(),
+    );
+    assert!(found.predefined_items.is_none());
+    assert_eq!(found.diagnostics.len(), 1);
+    assert_eq!(
+        found.diagnostics[0].code,
+        crate::domain::metadata::MetaDiagnosticCode::ValidationFailed
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn predefined_items_are_validated_against_the_owner_code_type() {
+    let root = temp_root("numeric-predefined");
+    write(
+        &root,
+        "Catalogs/Goods/Ext/Predefined.xml",
+        r#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CatalogPredefinedItems" version="2.20"><Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Main</Name><Code>ABC</Code></Item></PredefinedData>"#,
+    );
+    let metadata_path =
+        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Goods").unwrap();
+    let found = scan_local_enrichment_by_address(
+        &root,
+        MetadataKind::Catalog,
+        &metadata_path,
+        Some("Number"),
+        &[LocalSection::PredefinedItems],
+        50,
+        &CancellationToken::new(),
+    );
+    assert!(found.predefined_items.is_none());
+    assert_eq!(found.diagnostics.len(), 1);
+    assert_eq!(
+        found.diagnostics[0].code,
+        crate::domain::metadata::MetaDiagnosticCode::ValidationFailed
+    );
+    assert!(found.diagnostics[0].message.contains("numeric Code"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn predefined_section_on_unsupported_owner_reports_unsupported_kind() {
+    let root = temp_root("unsupported-predefined-owner");
+    let found = scan_local_enrichment(
+        &root,
+        MetadataKind::Document,
+        "Order",
+        &[LocalSection::PredefinedItems],
+        50,
+        &CancellationToken::new(),
+    );
+    assert!(found.predefined_items.is_none());
+    assert_eq!(found.diagnostics.len(), 1);
+    assert_eq!(
+        found.diagnostics[0].code,
+        crate::domain::metadata::MetaDiagnosticCode::UnsupportedKind
+    );
     fs::remove_dir_all(root).unwrap();
 }
 

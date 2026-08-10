@@ -41,6 +41,21 @@ def write(path: Path, text: str) -> Path:
     return path
 
 
+class DocumentedContractTests(unittest.TestCase):
+    def test_current_case_contract_digest_is_documented(self):
+        verifier = load_verifier()
+        expected = f"`{verifier.EXPECTED_CASE_CONTRACT_SHA256}`"
+        documents = (
+            ROOT / "spec/acceptance/format-profile-8-3-27.md",
+            ROOT
+            / "docs/design/2026-08-07-typed-predefined-items-and-role-edit-design.md",
+        )
+
+        for path in documents:
+            with self.subTest(path=path.relative_to(ROOT).as_posix()):
+                self.assertIn(expected, path.read_text(encoding="utf-8"))
+
+
 CONFIG_XML = '''<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="11111111-1111-1111-1111-111111111111"/></MetaDataObject>'''
 
 
@@ -951,6 +966,18 @@ class SemanticDirectoryTests(unittest.TestCase):
 
 
 class CorpusAdapterTests(unittest.TestCase):
+    def test_xdto_package_bin_is_classified_as_platform_xml(self):
+        verifier = load_verifier()
+
+        package = Path("src/XDTOPackages/Sample/Ext/Package.bin")
+        unrelated = Path("src/Catalogs/Sample/Ext/Package.bin")
+        self.assertTrue(verifier._is_xml_payload_path(package))
+        self.assertFalse(verifier._is_xml_payload_path(unrelated))
+        self.assertEqual(
+            verifier.XML_FAMILY_BY_ROOT_QNAME["{http://v8.1c.ru/8.1/xdto}package"],
+            "xdto-package",
+        )
+
     def test_mandatory_corpus_includes_order_sensitive_dcs_edits(self):
         verifier = load_verifier()
 
@@ -1000,7 +1027,7 @@ class CorpusAdapterTests(unittest.TestCase):
     def test_mandatory_corpus_includes_every_cfe_patch_module_layout(self):
         verifier = load_verifier()
 
-        self.assertEqual(len(verifier.MANDATORY_CASE_IDS), 67)
+        self.assertEqual(len(verifier.MANDATORY_CASE_IDS), 69)
         self.assertTrue(
             {
                 "cfe-patch-method-bsl-only",
@@ -1009,6 +1036,9 @@ class CorpusAdapterTests(unittest.TestCase):
                 "cfe-patch-method-information-register-record-set-module",
                 "cfe-patch-method-catalog-form-module",
                 "cfe-patch-method-constant-value-manager-module",
+                "meta-edit-predefined-items",
+                "role-edit-set-right",
+                "xdto-add-nested-property",
             }.issubset(verifier.MANDATORY_CASE_IDS)
         )
 
@@ -1021,7 +1051,7 @@ class CorpusAdapterTests(unittest.TestCase):
         verifier = load_verifier()
         self.assertEqual(
             verifier.EXPECTED_CASE_CONTRACT_SHA256,
-            "67832c726d5343561e8911f462c695aa5cab1fdfc7431e6578c09b2c699dd01c",
+            "1c4afc7adf86cdb8a0e94c1f87e2166e4759387158317848746de0cee678bedf",
         )
         self.assertEqual(
             verifier.LAST_VERIFIED_CASE_CONTRACT_SHA256,
