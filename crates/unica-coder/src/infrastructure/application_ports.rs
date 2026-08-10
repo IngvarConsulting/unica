@@ -759,6 +759,8 @@ fn documentation_registry(
         }),
         Arc::new(
             crate::infrastructure::standards_documentation::V8StdDocumentationProvider {
+                search_cache_ttl:
+                    crate::infrastructure::standards_documentation::V8STD_SEARCH_CACHE_TTL,
                 endpoint,
                 network: policy.network("v8std"),
                 http: crate::infrastructure::internal_adapters::shared_http_client(),
