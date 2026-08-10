@@ -3,11 +3,13 @@ use super::AdapterOutcome;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::events::{DomainEvent, DomainEventKind};
 use crate::domain::metadata::{
-    metadata_reference_type_kinds, validate_metadata_kind_collection,
-    validate_metadata_operation_capabilities, DateFractions, MetaCollection, MetaDiagnostic,
-    MetaDiagnosticCode, MetaEditOperation, MetaEditOperationTag, MetaElementInput,
-    MetaElementUpdateInput, MetaFillValue, MetaPosition, MetaPropertyChanges, MetaPropertyInput,
-    MetaPropertyValue, MetaPropertyValueKind, MetaRelation, MetaRelationTarget, MetaScope,
+    metadata_event_source_object_kinds, metadata_event_source_record_set_kinds,
+    metadata_event_source_reference_kinds, metadata_reference_type_kinds, metadata_relation_specs,
+    validate_metadata_kind_collection, validate_metadata_operation_capabilities, DateFractions,
+    MetaCollection, MetaDiagnostic, MetaDiagnosticCode, MetaEditOperation, MetaEditOperationTag,
+    MetaElementInput, MetaElementUpdateInput, MetaEventSource, MetaEventSourceDateFractions,
+    MetaFillValue, MetaPosition, MetaPropertyChanges, MetaPropertyInput, MetaPropertyValue,
+    MetaPropertyValueKind, MetaRelation, MetaRelationTarget, MetaRelationTargetPolicy, MetaScope,
     MetaValidationStatus, MetadataFieldPath, MetadataKind, MetadataReference, MetadataType,
     MetadataTypeVariant, NumberSign, RelationEditMode, StringLengthMode, METADATA_PROPERTY_SPECS,
     METADATA_XS_DATETIME_PATTERN,
@@ -569,10 +571,18 @@ fn parse_edit_operation(
                 .enumerate()
                 .map(|(index, target)| {
                     let field = format!("targets[{index}]");
-                    if relation == MetaRelation::InputByString {
-                        parse_field_reference(target, &field).map(MetaRelationTarget::Field)
-                    } else {
-                        parse_reference(target, &field).map(MetaRelationTarget::Object)
+                    match relation {
+                        MetaRelation::InputByString => {
+                            parse_field_reference(target, &field).map(MetaRelationTarget::Field)
+                        }
+                        MetaRelation::Source => {
+                            parse_event_source(target, &field).map(MetaRelationTarget::EventSource)
+                        }
+                        MetaRelation::Owners
+                        | MetaRelation::RegisterRecords
+                        | MetaRelation::BasedOn => {
+                            parse_reference(target, &field).map(MetaRelationTarget::Object)
+                        }
                     }
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -993,6 +1003,97 @@ fn parse_field_reference(value: &Value, field: &str) -> Result<MetadataFieldPath
         diagnostic.field = Some(path_field);
         diagnostic
     })
+}
+
+fn parse_event_source(value: &Value, field: &str) -> Result<MetaEventSource, MetaDiagnostic> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| invalid(field, "event source target must be an object"))?;
+    let kind = required_string_at(object, "kind", &format!("{field}.kind"))?;
+    let (allowed, source) = match kind.as_str() {
+        "string" => (
+            &["kind", "length", "allowedLength"][..],
+            MetaEventSource::String {
+                length: required_u32(object, "length", field)?,
+                allowed_length: match required_string_at(
+                    object,
+                    "allowedLength",
+                    &format!("{field}.allowedLength"),
+                )?
+                .as_str()
+                {
+                    "variable" => StringLengthMode::Variable,
+                    value => {
+                        return Err(invalid(
+                            format!("{field}.allowedLength"),
+                            format!("unsupported event source allowedLength `{value}`"),
+                        ));
+                    }
+                },
+            },
+        ),
+        "number" => (
+            &["kind", "digits", "fraction", "sign"][..],
+            MetaEventSource::Number {
+                digits: required_u32(object, "digits", field)?,
+                fraction: required_u32(object, "fraction", field)?,
+                sign: match required_string_at(object, "sign", &format!("{field}.sign"))?.as_str() {
+                    "any" => NumberSign::Any,
+                    "nonNegative" => NumberSign::NonNegative,
+                    value => {
+                        return Err(invalid(
+                            format!("{field}.sign"),
+                            format!("unsupported event source number sign `{value}`"),
+                        ));
+                    }
+                },
+            },
+        ),
+        "boolean" => (&["kind"][..], MetaEventSource::Boolean),
+        "date" => (
+            &["kind", "fractions"][..],
+            MetaEventSource::Date {
+                fractions: match required_string_at(
+                    object,
+                    "fractions",
+                    &format!("{field}.fractions"),
+                )?
+                .as_str()
+                {
+                    "date" => MetaEventSourceDateFractions::Date,
+                    "dateTime" => MetaEventSourceDateFractions::DateTime,
+                    value => {
+                        return Err(invalid(
+                            format!("{field}.fractions"),
+                            format!("unsupported event source date fractions `{value}`"),
+                        ));
+                    }
+                },
+            },
+        ),
+        "valueStorage" => (&["kind"][..], MetaEventSource::ValueStorage),
+        "object" | "reference" | "recordSet" | "definedType" => {
+            let path_field = format!("{field}.metadataPath");
+            let raw = required_string_at(object, "metadataPath", &path_field)?;
+            let metadata_path = parse_address(&raw, &path_field)?;
+            let source = match kind.as_str() {
+                "object" => MetaEventSource::Object { metadata_path },
+                "reference" => MetaEventSource::Reference { metadata_path },
+                "recordSet" => MetaEventSource::RecordSet { metadata_path },
+                "definedType" => MetaEventSource::DefinedType { metadata_path },
+                _ => unreachable!("event source kind match is closed"),
+            };
+            (&["kind", "metadataPath"][..], source)
+        }
+        _ => {
+            return Err(invalid(
+                format!("{field}.kind"),
+                format!("unsupported event source kind `{kind}`"),
+            ));
+        }
+    };
+    reject_unknown_fields(object, allowed, &format!("{field}."))?;
+    Ok(source)
 }
 
 fn metadata_kind_for_address(address: &MetadataAddress) -> Result<MetadataKind, MetaDiagnostic> {
@@ -1612,25 +1713,227 @@ fn host_visible_operation_schema() -> Value {
                     "items": {"type": "string", "minLength": 1},
                 }),
             ),
-            {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["op", "relation", "mode", "targets"],
-                "properties": {
-                    "op": {"type": "string", "enum": [MetaEditOperationTag::EditRelations.as_str()]},
-                    "relation": {
-                        "type": "string",
-                        "enum": MetaRelation::ALL.iter().copied().map(MetaRelation::as_str).collect::<Vec<_>>(),
-                    },
-                    "mode": {
-                        "type": "string",
-                        "enum": RelationEditMode::ALL.iter().copied().map(RelationEditMode::as_str).collect::<Vec<_>>(),
-                    },
-                    "targets": {"type": "array", "minItems": 1, "items": {"type": "object"}},
+            metadata_relation_operation_schema(),
+        ],
+        "description": "Exactly one typed metadata edit operation. Legal collections, root properties and relations are narrowed by the object kind. The source relation is replace-only; targets=[] clears the EventSubscription source.",
+    })
+}
+
+fn metadata_relation_operation_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Edit one relation. Each relation selects its own mode and target contract; EventSubscription source is replace-only and targets=[] clears it.",
+        "required": ["op", "relation", "mode", "targets"],
+        "properties": {
+            "op": {"type": "string", "enum": [MetaEditOperationTag::EditRelations.as_str()]},
+            "relation": {
+                "type": "string",
+                "enum": MetaRelation::ALL.iter().copied().map(MetaRelation::as_str).collect::<Vec<_>>(),
+            },
+            "mode": {
+                "type": "string",
+                "enum": RelationEditMode::ALL.iter().copied().map(RelationEditMode::as_str).collect::<Vec<_>>(),
+            },
+            "targets": {
+                "type": "array",
+                "uniqueItems": true,
+            },
+        },
+        "oneOf": MetaRelation::ALL
+            .iter()
+            .copied()
+            .map(metadata_relation_schema_branch)
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn metadata_relation_schema_branch(relation: MetaRelation) -> Value {
+    let targets = if relation == MetaRelation::Source {
+        metadata_event_source_targets_schema()
+    } else {
+        json!({
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": metadata_relation_target_schema(relation),
+        })
+    };
+    let modes = if relation == MetaRelation::Source {
+        vec![RelationEditMode::Replace.as_str()]
+    } else {
+        RelationEditMode::ALL
+            .iter()
+            .copied()
+            .map(RelationEditMode::as_str)
+            .collect()
+    };
+    json!({
+        "properties": {
+            "relation": {"const": relation.as_str()},
+            "mode": {"type": "string", "enum": modes},
+            "targets": targets,
+        },
+    })
+}
+
+fn metadata_relation_target_schema(relation: MetaRelation) -> Value {
+    let policies = MetadataKind::ALL
+        .iter()
+        .copied()
+        .flat_map(metadata_relation_specs)
+        .filter(|spec| spec.relation == relation)
+        .map(|spec| spec.target_policy)
+        .collect::<Vec<_>>();
+    let policy = *policies
+        .first()
+        .expect("every public relation has a capability policy");
+    assert!(
+        policies.iter().all(|candidate| *candidate == policy),
+        "one public relation must not publish conflicting target policies"
+    );
+    match policy {
+        MetaRelationTargetPolicy::MetadataKinds(kinds) => json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["metadataPath"],
+            "properties": {
+                "metadataPath": {
+                    "type": "string",
+                    "pattern": metadata_kinds_object_pattern(kinds),
                 },
             },
+        }),
+        MetaRelationTargetPolicy::SameOwnerField => json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["fieldPath"],
+            "properties": {
+                "fieldPath": {
+                    "type": "string",
+                    "pattern": r"^[^.]+\.[^.]+\.(Attribute|StandardAttribute)\.[^.]+$",
+                },
+            },
+        }),
+        MetaRelationTargetPolicy::EventSources => metadata_event_source_target_schema(true),
+    }
+}
+
+fn metadata_event_source_targets_schema() -> Value {
+    json!({
+        "oneOf": [
+            {
+                "type": "array",
+                "maxItems": 0,
+            },
+            {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": metadata_event_source_target_schema(false),
+            },
+            {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 1,
+                "items": metadata_event_source_value_storage_schema(),
+            },
         ],
-        "description": "Exactly one typed metadata edit operation. Legal collections, root properties and relations are narrowed by the object kind.",
+        "description": "Clear the source, replace it with non-storage typed targets, or use ValueStorage as the sole target.",
+    })
+}
+
+fn metadata_event_source_value_storage_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind"],
+        "properties": {"kind": {"const": "valueStorage"}},
+    })
+}
+
+fn metadata_event_source_target_schema(include_value_storage: bool) -> Value {
+    let metadata_object = |kind: &str, kinds: &[MetadataKind]| {
+        json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "metadataPath"],
+            "properties": {
+                "kind": {"const": kind},
+                "metadataPath": {
+                    "type": "string",
+                    "pattern": metadata_kinds_xml_object_pattern(kinds),
+                },
+            },
+        })
+    };
+    let mut number = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "digits", "fraction", "sign"],
+        "properties": {
+            "kind": {"const": "number"},
+            "digits": {"type": "integer", "minimum": 0, "maximum": 38},
+            "fraction": {"type": "integer", "minimum": 0, "maximum": 38},
+            "sign": {"type": "string", "enum": ["any", "nonNegative"]},
+        },
+    });
+    number
+        .as_object_mut()
+        .expect("event source number schema is always an object")
+        .insert(
+            "anyOf".into(),
+            Value::Array(
+                (0..=38)
+                    .map(|digits| {
+                        json!({
+                            "properties": {
+                                "digits": {"const": digits},
+                                "fraction": {"maximum": digits},
+                            },
+                        })
+                    })
+                    .collect(),
+            ),
+        );
+    let mut variants = vec![
+        json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "length", "allowedLength"],
+            "properties": {
+                "kind": {"const": "string"},
+                "length": {"const": 0},
+                "allowedLength": {"const": "variable"},
+            },
+        }),
+        number,
+        json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind"],
+            "properties": {"kind": {"const": "boolean"}},
+        }),
+        json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "fractions"],
+            "properties": {
+                "kind": {"const": "date"},
+                "fractions": {"type": "string", "enum": ["date", "dateTime"]},
+            },
+        }),
+        metadata_object("object", metadata_event_source_object_kinds()),
+        metadata_object("reference", metadata_event_source_reference_kinds()),
+        metadata_object("recordSet", metadata_event_source_record_set_kinds()),
+        metadata_object("definedType", &[MetadataKind::DefinedType]),
+    ];
+    if include_value_storage {
+        variants.push(metadata_event_source_value_storage_schema());
+    }
+    json!({
+        "oneOf": variants,
+        "description": "One member of the closed typed EventSubscription source algebra.",
     })
 }
 
@@ -1662,6 +1965,25 @@ fn metadata_kinds_object_pattern(kinds: &[MetadataKind]) -> String {
             .collect::<Vec<_>>()
             .join("|")
     )
+}
+
+fn metadata_kinds_xml_object_pattern(kinds: &[MetadataKind]) -> String {
+    format!(
+        r"^({})\.{}$",
+        kinds
+            .iter()
+            .flat_map(|kind| {
+                metadata_address_kind_spellings(kind.as_str())
+                    .expect("relation target kind must have registered spellings")
+            })
+            .collect::<Vec<_>>()
+            .join("|"),
+        metadata_identifier_pattern_body(),
+    )
+}
+
+fn metadata_identifier_pattern_body() -> &'static str {
+    r"[_A-Za-zА-Яа-яЁё][_A-Za-zА-Яа-яЁё0-9]*"
 }
 
 fn position_schema() -> Value {
@@ -2929,6 +3251,142 @@ mod tests {
     }
 
     #[test]
+    fn relation_schema_correlates_source_mode_and_target_algebra() {
+        let add = published_operation_union(MetadataOperation::Add);
+        let edit = published_operation_union(MetadataOperation::Edit);
+        assert_eq!(
+            add, edit,
+            "meta.add and meta.edit share one operation algebra"
+        );
+        let operations = edit["oneOf"].as_array().expect("closed operation union");
+        assert_eq!(operations.len(), MetaEditOperationTag::ALL.len());
+        assert_eq!(
+            operations
+                .iter()
+                .map(|operation| operation["properties"]["op"]["enum"][0]
+                    .as_str()
+                    .expect("operation tag"))
+                .collect::<HashSet<_>>(),
+            HashSet::from(["setProperties", "add", "update", "remove", "editRelations",]),
+        );
+
+        let relation_operation = operations
+            .iter()
+            .find(|operation| operation["properties"]["op"]["enum"] == json!(["editRelations"]))
+            .expect("editRelations operation");
+        let relations = relation_operation["oneOf"]
+            .as_array()
+            .expect("relation-correlated operation union");
+        assert_eq!(relations.len(), MetaRelation::ALL.len());
+        let relation = |name: &str| {
+            relations
+                .iter()
+                .find(|branch| branch["properties"]["relation"]["const"] == name)
+                .unwrap_or_else(|| panic!("missing {name} relation branch"))
+        };
+
+        let source = relation("source");
+        assert_eq!(source["properties"]["mode"]["enum"], json!(["replace"]));
+        let source_targets = &source["properties"]["targets"];
+        let source_arrays = source_targets["oneOf"]
+            .as_array()
+            .expect("closed event source array union");
+        assert_eq!(source_arrays.len(), 3);
+        assert!(source_arrays.iter().any(|branch| branch["maxItems"] == 0));
+        let non_storage = source_arrays
+            .iter()
+            .find(|branch| branch["minItems"] == 1 && branch.get("maxItems").is_none())
+            .expect("non-storage event source array branch");
+        let source_variants = non_storage["items"]["oneOf"]
+            .as_array()
+            .expect("closed non-storage event source target union");
+        assert_eq!(source_variants.len(), 8);
+        assert_eq!(
+            source_variants
+                .iter()
+                .map(|variant| variant["properties"]["kind"]["const"]
+                    .as_str()
+                    .expect("event source kind"))
+                .collect::<HashSet<_>>(),
+            HashSet::from([
+                "string",
+                "number",
+                "boolean",
+                "date",
+                "object",
+                "reference",
+                "recordSet",
+                "definedType",
+            ]),
+        );
+        let value_storage = source_arrays
+            .iter()
+            .find(|branch| branch["minItems"] == 1 && branch["maxItems"] == 1)
+            .expect("sole ValueStorage event source array branch");
+        assert_eq!(
+            value_storage["items"]["properties"]["kind"]["const"],
+            "valueStorage"
+        );
+        assert!(source_variants.iter().all(|variant| {
+            variant["type"] == "object" && variant["additionalProperties"] == false
+        }));
+
+        for name in ["owners", "registerRecords", "basedOn", "inputByString"] {
+            let ordinary = relation(name);
+            assert_eq!(
+                ordinary["properties"]["mode"]["enum"],
+                json!(["add", "remove", "replace"]),
+                "{name} modes"
+            );
+            assert_eq!(ordinary["properties"]["targets"]["minItems"], 1);
+        }
+        for name in ["owners", "registerRecords", "basedOn"] {
+            assert_eq!(
+                relation(name)["properties"]["targets"]["items"]["required"],
+                json!(["metadataPath"]),
+                "{name} target shape"
+            );
+        }
+        assert_eq!(
+            relation("inputByString")["properties"]["targets"]["items"]["required"],
+            json!(["fieldPath"]),
+        );
+
+        let validator = jsonschema::validator_for(&metadata_input_schema(MetadataOperation::Edit))
+            .expect("published edit schema");
+        let call = |relation: &str, mode: &str, targets: Value| {
+            json!({
+                "sourceSet": "main",
+                "metadataPath": "EventSubscription.Notify",
+                "operations": [{
+                    "op": "editRelations",
+                    "relation": relation,
+                    "mode": mode,
+                    "targets": targets,
+                }],
+            })
+        };
+        assert!(validator.is_valid(&call("source", "replace", json!([]))));
+        for invalid in [
+            call("source", "add", json!([{"kind": "boolean"}])),
+            call(
+                "source",
+                "replace",
+                json!([{"metadataPath": "Catalog.Items"}]),
+            ),
+            call("owners", "replace", json!([])),
+            call("owners", "replace", json!([{"kind": "boolean"}])),
+            call(
+                "inputByString",
+                "replace",
+                json!([{"metadataPath": "Catalog.Items"}]),
+            ),
+        ] {
+            assert!(!validator.is_valid(&invalid), "schema accepted {invalid}");
+        }
+    }
+
+    #[test]
     fn property_schema_publishes_closed_enum_domains_for_retired_scalars() {
         let values = published_root_property_values(MetadataOperation::Edit);
         let properties = values["properties"]
@@ -3518,11 +3976,16 @@ mod tests {
                     MetaRelationTargetPolicy::SameOwnerField => json!({
                         "fieldPath": format!("{}.Object.Attribute.Code", kind.as_str()),
                     }),
+                    MetaRelationTargetPolicy::EventSources => json!({"kind": "boolean"}),
                 };
                 common_operations.push(json!({
                     "op": "editRelations",
                     "relation": spec.relation.as_str(),
-                    "mode": "add",
+                    "mode": if spec.target_policy == MetaRelationTargetPolicy::EventSources {
+                        "replace"
+                    } else {
+                        "add"
+                    },
                     "targets": [target],
                 }));
             }
@@ -3675,6 +4138,7 @@ mod tests {
                     MetaRelationTargetPolicy::SameOwnerField => json!({
                         "fieldPath": format!("{}.Attribute.Code", owner),
                     }),
+                    MetaRelationTargetPolicy::EventSources => json!({"kind": "boolean"}),
                 };
                 let operation = json!({
                     "op": "editRelations",
@@ -3723,6 +4187,216 @@ mod tests {
             validate_schema_and_parse(MetadataOperation::Edit, &cross_kind_based_on),
             "the platform BasedOn generation matrix permits cross-kind targets"
         );
+    }
+
+    #[test]
+    fn source_parser_accepts_the_closed_event_source_algebra_and_clear() {
+        let call = |targets: Value| {
+            json!({
+                "sourceSet": "main",
+                "metadataPath": "EventSubscription.Notify",
+                "operations": [{
+                    "op": "editRelations",
+                    "relation": "source",
+                    "mode": "replace",
+                    "targets": targets,
+                }],
+            })
+        };
+        let all_non_storage = call(json!([
+            {"kind": "string", "length": 0, "allowedLength": "variable"},
+            {"kind": "number", "digits": 15, "fraction": 2, "sign": "any"},
+            {"kind": "boolean"},
+            {"kind": "date", "fractions": "dateTime"},
+            {"kind": "object", "metadataPath": "Document.Order"},
+            {"kind": "reference", "metadataPath": "Catalog.Items"},
+            {"kind": "recordSet", "metadataPath": "InformationRegister.Facts"},
+            {"kind": "definedType", "metadataPath": "DefinedType.Identifier"}
+        ]));
+        assert!(validate_schema_and_parse(
+            MetadataOperation::Edit,
+            &all_non_storage
+        ));
+        let MetadataRequest::Edit(request) = parse_metadata_request(
+            MetadataOperation::Edit,
+            all_non_storage.as_object().unwrap(),
+        )
+        .unwrap() else {
+            panic!("expected edit request")
+        };
+        let MetaEditOperation::EditRelations {
+            relation,
+            mode,
+            targets,
+        } = &request.operations[0]
+        else {
+            panic!("expected relation operation")
+        };
+        assert_eq!(*relation, MetaRelation::Source);
+        assert_eq!(*mode, RelationEditMode::Replace);
+        assert_eq!(targets.len(), 8);
+        assert!(targets
+            .iter()
+            .all(|target| matches!(target, MetaRelationTarget::EventSource(_))));
+
+        for targets in [json!([]), json!([{"kind": "valueStorage"}])] {
+            let call = call(targets);
+            assert!(
+                validate_schema_and_parse(MetadataOperation::Edit, &call),
+                "source clear and standalone ValueStorage are legal: {call}"
+            );
+        }
+
+        let unicode_name = call(json!([
+            {"kind": "reference", "metadataPath": "Catalog.Основной"}
+        ]));
+        assert!(
+            validate_schema_and_parse(MetadataOperation::Edit, &unicode_name),
+            "source metadata names retain the Unicode XML NCName range"
+        );
+    }
+
+    #[test]
+    fn source_parser_rejects_modes_composites_duplicates_and_incompatible_paths() {
+        let call = |mode: &str, targets: Value| {
+            json!({
+                "sourceSet": "main",
+                "metadataPath": "EventSubscription.Notify",
+                "operations": [{
+                    "op": "editRelations",
+                    "relation": "source",
+                    "mode": mode,
+                    "targets": targets,
+                }],
+            })
+        };
+        for invalid_call in [
+            call("add", json!([{"kind": "boolean"}])),
+            call(
+                "replace",
+                json!([{"kind": "valueStorage"}, {"kind": "boolean"}]),
+            ),
+            call(
+                "replace",
+                json!([
+                    {"kind": "object", "metadataPath": "Catalog.Items"},
+                    {"kind": "object", "metadataPath": "Catalog.items"}
+                ]),
+            ),
+            call(
+                "replace",
+                json!([{"kind": "recordSet", "metadataPath": "Catalog.Items"}]),
+            ),
+            call(
+                "replace",
+                json!([{"kind": "number", "digits": 5, "fraction": 6, "sign": "any"}]),
+            ),
+            call(
+                "replace",
+                json!([{"kind": "string", "length": 1, "allowedLength": "variable"}]),
+            ),
+            call(
+                "replace",
+                json!([{"kind": "reference", "metadataPath": "Catalog.Bad Name"}]),
+            ),
+            call(
+                "replace",
+                json!([{"kind": "reference", "metadataPath": "Catalog.1Bad"}]),
+            ),
+            call(
+                "replace",
+                json!([{"kind": "reference", "metadataPath": "Catalog.Bad:Name"}]),
+            ),
+            call(
+                "replace",
+                json!([{"kind": "reference", "metadataPath": "Catalog.Bad-Name"}]),
+            ),
+        ] {
+            assert!(
+                !validate_schema_and_parse(MetadataOperation::Edit, &invalid_call),
+                "invalid source operation was accepted: {invalid_call}"
+            );
+        }
+
+        let schema = metadata_input_schema(MetadataOperation::Edit);
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        for invalid_call in [
+            call(
+                "replace",
+                json!([{"kind": "valueStorage"}, {"kind": "boolean"}]),
+            ),
+            call(
+                "replace",
+                json!([{"kind": "number", "digits": 5, "fraction": 6, "sign": "any"}]),
+            ),
+        ] {
+            assert!(
+                !validator.is_valid(&invalid_call),
+                "published schema accepted an impossible source state: {invalid_call}"
+            );
+        }
+
+        let ordinary_clear = json!({
+            "sourceSet": "main",
+            "metadataPath": "Catalog.Items",
+            "operations": [{
+                "op": "editRelations",
+                "relation": "owners",
+                "mode": "replace",
+                "targets": [],
+            }],
+        });
+        assert!(!validate_schema_and_parse(
+            MetadataOperation::Edit,
+            &ordinary_clear
+        ));
+
+        let wrong_owner = json!({
+            "sourceSet": "main",
+            "metadataPath": "Document.Order",
+            "operations": [{
+                "op": "editRelations",
+                "relation": "source",
+                "mode": "replace",
+                "targets": [{"kind": "boolean"}],
+            }],
+        });
+        assert!(!validate_schema_and_parse(
+            MetadataOperation::Edit,
+            &wrong_owner
+        ));
+    }
+
+    #[test]
+    fn source_target_schema_rejects_open_or_retired_shapes() {
+        let schema = metadata_input_schema(MetadataOperation::Edit);
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let call = |target: Value| {
+            json!({
+                "sourceSet": "main",
+                "metadataPath": "EventSubscription.Notify",
+                "operations": [{
+                    "op": "editRelations",
+                    "relation": "source",
+                    "mode": "replace",
+                    "targets": [target],
+                }],
+            })
+        };
+        for target in [
+            json!({"kind": "date", "fractions": "time"}),
+            json!({"kind": "boolean", "extra": true}),
+            json!({"kind": "recordSet"}),
+            json!({"generatedType": "InformationRegisterRecordSet.Facts"}),
+            json!("InformationRegisterRecordSet.Facts"),
+        ] {
+            let call = call(target);
+            assert!(!validator.is_valid(&call), "schema accepted {call}");
+            assert!(
+                parse_metadata_request(MetadataOperation::Edit, call.as_object().unwrap()).is_err(),
+                "parser accepted {call}"
+            );
+        }
     }
 
     #[test]
@@ -4479,8 +5153,14 @@ mod tests {
                     "Catalog.Items",
                     json!({"fieldPath": "Catalog.Items.StandardAttribute.Code"}),
                 ),
+                MetaRelation::Source => ("EventSubscription.Notify", json!({"kind": "boolean"})),
             };
-            for mode in RelationEditMode::ALL {
+            let modes = if *relation == MetaRelation::Source {
+                &[RelationEditMode::Replace][..]
+            } else {
+                RelationEditMode::ALL
+            };
+            for mode in modes {
                 let mode_name = mode.as_str();
                 let MetadataRequest::Edit(request) = parse_metadata_request(
                     MetadataOperation::Edit,

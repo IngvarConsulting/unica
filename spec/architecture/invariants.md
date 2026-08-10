@@ -195,6 +195,23 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/application/metadata.rs`
 - **Scope:** source, packaged, runtime
 
+### INV-MCP-EVENT-SOURCE — Источник подписки является типизированным отношением
+
+- **Rule:** `unica.meta.add` и `unica.meta.edit` заменяют
+  `EventSubscription.Source` только существующей операцией `editRelations` с
+  `relation: "source"`, `mode: "replace"` и закрытым типизированным массивом
+  `targets`, причём число и имена пяти значений `op` не меняются; применение
+  сравнивает цели как набор без учёта порядка, при изменении детерминированно
+  выпускает `v8:Type` или `v8:TypeSet` по виду цели, до публикации доказывает у
+  того же точного владельца регистрацию, описатель и совпадающий
+  `GeneratedType` каждой конфигурационной цели и связывает их точные байты с
+  транзакцией, а `unica.meta.info` возвращает тот же типизированный wire-массив.
+- **Decision:** ADR-0038
+- **Check:** `ci-test` — `tests/ci/test_meta_surface_contract.py`
+- **Check:** `ci-test` — `crates/unica-coder/src/application/metadata.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/metadata_operations.rs`
+- **Scope:** source, packaged, runtime
+
 ### INV-MCP-META-FINDINGS — Перенесённые находки метаданных имеют устойчивую идентичность
 
 - **Rule:** Каждое перенесённое из строкового контура языковое предупреждение
@@ -405,7 +422,7 @@ Unica. Каждая запись формулирует одно нормати�
   `policy-denied` до единого обращения к сети; запрет `v8std` выключает и
   фасады `unica.standards.*` — движок, адрес сервера и политика у них общие.
   Поставщик, которому сеть не нужна, запретом не затрагивается.
-- **Decision:** ADR-0032, ADR-0038
+- **Decision:** ADR-0032, ADR-0039
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/documentation_policy.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/standards_documentation.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/kb_1ci.rs`
@@ -604,7 +621,7 @@ Unica. Каждая запись формулирует одно нормати�
   останавливает затронутый вызов до запуска поставщика или процесса. Отмена
   имеет приоритет над одновременно полученной ошибкой загрузки; остальные
   вызовы конфигурационные файлы не читают.
-- **Decision:** ADR-0038
+- **Decision:** ADR-0039
 - **Check:** `ci-test` — `crates/unica-coder/src/application/operational_config.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/operational_config.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`

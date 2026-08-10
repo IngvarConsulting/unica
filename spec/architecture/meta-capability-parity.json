@@ -709,8 +709,8 @@
     "legacyKinds": [
       "EventSubscription"
     ],
-    "status": "removed",
-    "removalReason": "EventSubscription Source is a composite set of object types with no typed relation or property representation; select event sources in Designer."
+    "status": "supported",
+    "typedOperation": "unica.meta.edit.editRelations.source"
   },
   {
     "legacyKey": "subordinationUse",

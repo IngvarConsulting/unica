@@ -5,7 +5,7 @@
 > checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Довести PR #398 до совместимого с текущим `main` состояния, сохранив
-сетевую политику ADR-0032, добавив операционные сроки ADR-0038 и устранив гонку
+сетевую политику ADR-0032, добавив операционные сроки ADR-0039 и устранив гонку
 между cancellation и ошибкой загрузчика.
 
 **Architecture:** Один инфраструктурный модуль разбирает синтаксис TOML,
@@ -22,7 +22,7 @@ architecture guards.
 - Публичный MCP остаётся одним сервером `unica`; новые tools, arguments и result
   fields не добавляются.
 - `unica.toml` и `unica.local.toml` принадлежат общему контейнеру ADR-0032 и
-  ADR-0038; второго config root нет.
+  ADR-0039; второго config root нет.
 - Network-only файл без `version` остаётся совместимым.
 - Слой с `[operational]` требует `version = 1`; любая присутствующая `version`
   обязана быть целым числом `1`.
@@ -48,14 +48,14 @@ architecture guards.
 - Produces: одна история существующего PR с сохранёнными
   `prepare_tool_invocation` current main и operational snapshot PR #398.
 
-- [ ] **Step 1: Зафиксировать одобренные design, ADR-0038 и этот план**
+- [ ] **Step 1: Зафиксировать одобренные design, ADR-0039 и этот план**
 
 ```bash
 git add docs/design/2026-08-09-operational-code-config-design.md \
   docs/plans/2026-08-10-pr-398-operational-config-integration.md \
   spec/architecture/invariants.md spec/decisions/README.md \
   spec/decisions/0033-workspace-operational-config-snapshot.md \
-  spec/decisions/0038-workspace-operational-config-snapshot.md
+  spec/decisions/0039-workspace-operational-config-snapshot.md
 git commit -m "docs(config): согласовать операционный снимок с ADR-0032"
 ```
 
@@ -275,12 +275,12 @@ git commit -m "fix(config): сохранить приоритет отмены �
 - Modify: `spec/architecture/runtime.md`
 - Modify: `spec/architecture/building-blocks.md`
 - Modify: `spec/decisions/README.md`
-- Modify: `spec/decisions/0038-workspace-operational-config-snapshot.md`
+- Modify: `spec/decisions/0039-workspace-operational-config-snapshot.md`
 - Modify: `docs/design/2026-08-09-operational-code-config-design.md`
 
 **Interfaces:**
-- Produces: `INV-APP-CONFIG-SNAPSHOT` с владельцем ADR-0038 и
-  `INV-APP-DOCUMENTATION-NETWORK-POLICY` со ссылками ADR-0032 + ADR-0038.
+- Produces: `INV-APP-CONFIG-SNAPSHOT` с владельцем ADR-0039 и
+  `INV-APP-DOCUMENTATION-NETWORK-POLICY` со ссылками ADR-0032 + ADR-0039.
 
 - [ ] **Step 1: Синхронизировать Rule обоих потребителей**
 
@@ -303,7 +303,7 @@ Expected: PASS.
 
 ```bash
 git add docs/design docs/plans spec/architecture spec/decisions
-git commit -m "docs(config): закрепить общий контейнер ADR-0038"
+git commit -m "docs(config): закрепить общий контейнер ADR-0039"
 ```
 
 ### Task 5: Полная проверка и доставка в существующий PR
@@ -332,7 +332,7 @@ Expected: все команды PASS; статус содержит только
 
 Reviewer обязан проверить общий root parser, потребительскую локальность
 ошибок, сохранение `prepare_tool_invocation`, cancellation arbitration и
-соответствие ADR-0032/ADR-0038.
+соответствие ADR-0032/ADR-0039.
 
 - [ ] **Step 3: Обновить именно существующую head-ветку PR**
 

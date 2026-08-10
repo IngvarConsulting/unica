@@ -19,6 +19,12 @@ allowed-tools:
 - Когда объект должен быть настроен уже при создании, передайте `operations`
   того же закрытого типизированного контракта, что у `unica.meta.edit`. Шаблон,
   операции, дочерние ресурсы и регистрация публикуются одной транзакцией.
+- Источник `EventSubscription` задаётся при создании тем же вариантом
+  `editRelations`, что и при последующем редактировании: `relation: "source"`,
+  `mode: "replace"` и типизированный массив `targets`. Отдельного шестого
+  значения `op` для источника нет. В наборе исходников уже должна быть
+  экспортная процедура общего модуля с двумя параметрами: минимальный шаблон
+  выбирает её как обработчик подписки до применения `operations`.
 - Для изменений уже существующего объекта используйте `unica.meta.edit`.
 - Успешный и предметно неуспешный `tools/call` возвращает `structuredContent`;
   `isError == !structuredContent.ok`. Читайте проверку из
@@ -58,6 +64,34 @@ allowed-tools:
               },
               "required": true
             }
+          ]
+        }
+      ],
+      "dryRun": true
+    }
+  }
+}
+```
+
+### Создать подписку с типизированным источником
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.meta.add",
+    "arguments": {
+      "sourceSet": "main",
+      "kind": "EventSubscription",
+      "name": "ОбработкаБулевыхИзменений",
+      "operations": [
+        {
+          "op": "editRelations",
+          "relation": "source",
+          "mode": "replace",
+          "targets": [
+            {"kind": "boolean"}
           ]
         }
       ],

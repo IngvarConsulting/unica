@@ -8,10 +8,12 @@ use crate::application::ports::{
 use crate::application::SupportGuardRequirement;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::metadata::{
-    metadata_identifier_is_valid, MetaDiagnostic, MetaDiagnosticCode, MetaMutationData,
-    MetaMutationEffect, MetaPublicationAction, MetaPublicationPlanEntry, MetaPublicationResource,
-    MetaValidationData, MetaValidationStatus,
+    metadata_identifier_is_valid, MetaDiagnostic, MetaDiagnosticCode, MetaEditOperation,
+    MetaMutationData, MetaMutationEffect, MetaPublicationAction, MetaPublicationPlanEntry,
+    MetaPublicationResource, MetaRelation, MetaValidationData, MetaValidationStatus,
+    RelationEditMode,
 };
+use crate::domain::source_target::MetadataAddress;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::metadata_kinds::metadata_layout;
 use roxmltree::Document;
@@ -23,12 +25,12 @@ use std::path::{Path, PathBuf};
 
 use super::super::common::guard_resolved_platform_xml_target_dependencies;
 use super::super::compile_transaction::{
-    CommitFailure, CommitFailureKind, CompileTransaction, DirectoryMembershipSnapshot,
-    RegistrationStatus,
+    snapshot_directory_membership, CommitFailure, CommitFailureKind, CompileTransaction,
+    DirectoryMembershipSelector, DirectoryMembershipSnapshot, RegistrationStatus,
 };
 use super::edit::{
     build_typed_operation_post_image, resolve_typed_metadata_object, ResolvedMetadataObject,
-    TypedChildResourcePlan, TypedOperationPostImage,
+    TypedChildResourcePlan, TypedOperationDependencyScope, TypedOperationPostImage,
 };
 use super::remove::{plan_typed_remove, TypedMetaRemovePlan};
 use super::template_catalog::{
@@ -37,7 +39,7 @@ use super::template_catalog::{
 };
 use crate::infrastructure::platform_xml_source_targets::{
     bind_metadata_add_source_evidence, resolve_metadata_add_source, revalidate_metadata_add_source,
-    revalidate_platform_xml_target, ResolvedSourceSet,
+    revalidate_platform_xml_target, ClosedPlatformXmlTarget, ResolvedSourceSet,
 };
 use crate::infrastructure::support_guard::{
     bind_resolved_support_guard_evidence, evaluate_resolved_support_guard,
@@ -118,6 +120,7 @@ pub(crate) struct PreparedMetaAdd {
     transaction: CompileTransaction,
     context: WorkspaceContext,
     source: ResolvedSourceSet,
+    prerequisite_handles: Vec<ClosedPlatformXmlTarget>,
 }
 
 pub(crate) struct PreparedMetaEdit {
@@ -127,6 +130,7 @@ pub(crate) struct PreparedMetaEdit {
     context: WorkspaceContext,
     resolved: ResolvedMetadataObject,
     expected_post_image: Vec<u8>,
+    relation_dependency_handles: Vec<ClosedPlatformXmlTarget>,
 }
 
 pub(crate) struct PreparedMetaRemove {
@@ -212,9 +216,9 @@ impl PreparedMetaEdit {
             context,
         )
         .map_err(|message| provider_failure(&target, message))?;
-        for (path, snapshot) in child_resources.directory_guards {
+        for (path, selector, snapshot) in child_resources.directory_guards {
             transaction
-                .guard_or_verify_directory_topology(path, snapshot)
+                .guard_or_verify_directory_membership(path, selector, snapshot)
                 .map_err(|message| provider_failure(&target, message))?;
         }
         for (path, bytes) in child_resources.exact_file_guards {
@@ -246,6 +250,7 @@ impl PreparedMetaEdit {
                 bytes: resolved.owner_preimage.clone(),
             },
         ];
+        let mut relation_dependency_handles = Vec::new();
         for dependency in child_resources.relation_dependencies {
             transaction
                 .guard_or_verify_exact_preimage(&dependency.path, &dependency.bytes)
@@ -256,6 +261,25 @@ impl PreparedMetaEdit {
                 context,
             )
             .map_err(|message| provider_failure(&target, message))?;
+            relation_dependency_handles.push(dependency.handle.clone());
+            for module in dependency.modules {
+                guard_resolved_platform_xml_target_dependencies(
+                    &mut transaction,
+                    &module.handle,
+                    context,
+                )
+                .map_err(|message| provider_failure(&target, message))?;
+                transaction
+                    .guard_or_verify_exact_preimage(&module.path, &module.bytes)
+                    .map_err(|message| provider_failure(&target, message))?;
+                relation_dependency_handles.push(module.handle);
+                validation_resources.push(MetadataResourceImage {
+                    role: MetadataResourceRole::Module {
+                        owner: dependency.target.clone(),
+                    },
+                    bytes: module.bytes,
+                });
+            }
             validation_resources.push(MetadataResourceImage {
                 role: MetadataResourceRole::Dependency {
                     target: dependency.target,
@@ -311,6 +335,7 @@ impl PreparedMetaEdit {
             context: context.clone(),
             resolved,
             expected_post_image: post_image,
+            relation_dependency_handles,
         }))
     }
 }
@@ -346,9 +371,21 @@ impl PreparedMetadataMutation for PreparedMetaEdit {
                 .with_metadata_path(target.clone()),
             )
         })?;
+        for dependency in &self.relation_dependency_handles {
+            revalidate_platform_xml_target(&self.context, dependency).map_err(|_| {
+                MetaFailure::from(
+                    MetaDiagnostic::error(
+                        MetaDiagnosticCode::ConcurrentModification,
+                        "metadata relation dependency topology changed after editing was prepared",
+                    )
+                    .with_metadata_path(target.clone()),
+                )
+            })?;
+        }
         let descriptor_path = self.resolved.descriptor_path.clone();
         let expected = self.expected_post_image.clone();
         let handle = &self.resolved.handle;
+        let dependency_handles = &self.relation_dependency_handles;
         let context = &self.context;
         self.transaction
             .commit_with_classified_post_validation(|| {
@@ -364,7 +401,15 @@ impl PreparedMetadataMutation for PreparedMetaEdit {
                     .map(|_| ())
                     .map_err(|_| {
                         CommitFailure::concurrent("metadata target changed during publication")
-                    })
+                    })?;
+                for dependency in dependency_handles {
+                    revalidate_platform_xml_target(context, dependency).map_err(|_| {
+                        CommitFailure::concurrent(
+                            "metadata relation dependency changed during publication",
+                        )
+                    })?;
+                }
+                Ok(())
             })
             .map_err(|failure| publication_failure(&target, failure.kind()))?;
         Ok(MetaPublishReport { data: self.preview })
@@ -496,8 +541,24 @@ pub(crate) fn prepare_meta_add(
             .into());
         }
     }
-    let mut post_image =
-        PlatformMetadataTemplateCatalog.minimal_object(&source, request.kind, &request.name)?;
+    let source_is_replaced_by_operation = request.operations.iter().any(|operation| {
+        matches!(
+            operation,
+            MetaEditOperation::EditRelations {
+                relation: MetaRelation::Source,
+                mode: RelationEditMode::Replace,
+                ..
+            }
+        )
+    });
+    let mut post_image = PlatformMetadataTemplateCatalog.minimal_object(
+        &source,
+        request.kind,
+        &request.name,
+        source_is_replaced_by_operation,
+        &request.source_set,
+        context,
+    )?;
     let target = post_image.metadata_path.clone();
     let descriptor_file = post_image
         .files
@@ -510,7 +571,13 @@ pub(crate) fn prepare_meta_add(
         child_resources,
         effects,
     } = build_typed_operation_post_image(
-        &request.source_set,
+        TypedOperationDependencyScope::new(
+            &request.source_set,
+            &source.source_root,
+            &source.owner_path,
+            &source.owner_preimage,
+            false,
+        ),
         &descriptor_path,
         &target,
         &descriptor_file.bytes,
@@ -588,9 +655,9 @@ pub(crate) fn prepare_meta_add(
             .map_err(|_| already_exists(&target))?;
     }
 
-    for (path, snapshot) in child_resources.directory_guards {
+    for (path, selector, snapshot) in child_resources.directory_guards {
         transaction
-            .guard_or_verify_directory_topology(path, snapshot)
+            .guard_or_verify_directory_membership(path, selector, snapshot)
             .map_err(|message| provider_failure(&target, message))?;
     }
     for (path, bytes) in child_resources.exact_file_guards {
@@ -600,6 +667,9 @@ pub(crate) fn prepare_meta_add(
     }
 
     for file in &post_image.files {
+        if file.guard_handle.is_some() {
+            continue;
+        }
         let path = source.source_root.join(&file.relative_path);
         match file.mode {
             MetadataTemplateFileMode::Create => transaction
@@ -640,6 +710,24 @@ pub(crate) fn prepare_meta_add(
     if registration != RegistrationStatus::Added {
         return Err(already_exists(&target));
     }
+    for file in &post_image.files {
+        let Some(handle) = &file.guard_handle else {
+            continue;
+        };
+        if file.mode != MetadataTemplateFileMode::Guard {
+            return Err(provider_failure(
+                &target,
+                "resolved metadata prerequisite must be a read guard".to_string(),
+            ));
+        }
+        guard_resolved_platform_xml_target_dependencies(&mut transaction, handle, context)
+            .map_err(|message| provider_failure(&target, message))?;
+        let path = source.source_root.join(&file.relative_path);
+        bind_prerequisite_ancestor_topology(&mut transaction, &source.source_root, &path, &target)?;
+        transaction
+            .guard_or_verify_exact_preimage(path, file.preimage.as_deref().unwrap_or(&file.bytes))
+            .map_err(|message| provider_failure(&target, message))?;
+    }
     bind_metadata_add_source_evidence(&mut transaction, context, &source)?;
     let registration_image = transaction
         .planned_registration_image(&source.owner_path)
@@ -652,7 +740,11 @@ pub(crate) fn prepare_meta_add(
 
     let mut validation_resources = child_resources.validation_resources;
     let mut publication_plan = child_resources.publication_plan;
-    for file in post_image.files {
+    let mut prerequisite_handles = Vec::new();
+    for mut file in post_image.files {
+        if let Some(handle) = file.guard_handle.take() {
+            prerequisite_handles.push(handle);
+        }
         let (validation_role, publication_resource, publication_target) = match file.role {
             MetadataTemplateFileRole::Descriptor => (
                 Some(MetadataResourceRole::Descriptor),
@@ -723,6 +815,25 @@ pub(crate) fn prepare_meta_add(
             context,
         )
         .map_err(|message| provider_failure(&target, message))?;
+        prerequisite_handles.push(dependency.handle.clone());
+        for module in dependency.modules {
+            guard_resolved_platform_xml_target_dependencies(
+                &mut transaction,
+                &module.handle,
+                context,
+            )
+            .map_err(|message| provider_failure(&target, message))?;
+            transaction
+                .guard_or_verify_exact_preimage(&module.path, &module.bytes)
+                .map_err(|message| provider_failure(&target, message))?;
+            prerequisite_handles.push(module.handle);
+            validation_resources.push(MetadataResourceImage {
+                role: MetadataResourceRole::Module {
+                    owner: dependency.target.clone(),
+                },
+                bytes: module.bytes,
+            });
+        }
         validation_resources.push(MetadataResourceImage {
             role: MetadataResourceRole::Dependency {
                 target: dependency.target,
@@ -770,7 +881,42 @@ pub(crate) fn prepare_meta_add(
         transaction,
         context: context.clone(),
         source,
+        prerequisite_handles,
     }))
+}
+
+fn bind_prerequisite_ancestor_topology(
+    transaction: &mut CompileTransaction,
+    source_root: &Path,
+    prerequisite: &Path,
+    target: &MetadataAddress,
+) -> Result<(), MetaFailure> {
+    if !prerequisite.starts_with(source_root) {
+        return Err(provider_failure(
+            target,
+            "metadata prerequisite is outside its selected source set".to_string(),
+        ));
+    }
+    let mut directory = prerequisite.parent();
+    while let Some(ancestor) = directory {
+        if ancestor == source_root {
+            break;
+        }
+        if !ancestor.starts_with(source_root) {
+            return Err(provider_failure(
+                target,
+                "metadata prerequisite ancestry left its selected source set".to_string(),
+            ));
+        }
+        let snapshot =
+            snapshot_directory_membership(ancestor, DirectoryMembershipSelector::AllDirectEntries)
+                .map_err(|message| provider_failure(target, message))?;
+        transaction
+            .guard_or_verify_directory_topology(ancestor, snapshot)
+            .map_err(|message| provider_failure(target, message))?;
+        directory = ancestor.parent();
+    }
+    Ok(())
 }
 
 fn registered_language_images(
@@ -855,10 +1001,32 @@ impl PreparedMetadataMutation for PreparedMetaAdd {
         }
         revalidate_metadata_add_source(&self.context, &self.source)?;
         let target = self.preview.metadata_path.clone();
+        for handle in &self.prerequisite_handles {
+            revalidate_platform_xml_target(&self.context, handle).map_err(|_| {
+                MetaFailure::from(
+                    MetaDiagnostic::error(
+                        MetaDiagnosticCode::ConcurrentModification,
+                        "metadata prerequisite topology changed after creation was prepared",
+                    )
+                    .with_metadata_path(target.clone()),
+                )
+            })?;
+        }
+        let context = &self.context;
+        let source = &self.source;
+        let prerequisite_handles = &self.prerequisite_handles;
         self.transaction
             .commit_with_classified_post_validation(|| {
-                revalidate_metadata_add_source(&self.context, &self.source)
-                    .map_err(|failure| commit_failure_from_meta(&failure))
+                revalidate_metadata_add_source(context, source)
+                    .map_err(|failure| commit_failure_from_meta(&failure))?;
+                for handle in prerequisite_handles {
+                    revalidate_platform_xml_target(context, handle).map_err(|_| {
+                        CommitFailure::concurrent(
+                            "metadata prerequisite changed during publication",
+                        )
+                    })?;
+                }
+                Ok(())
             })
             .map_err(|failure| publication_failure(&target, failure.kind()))?;
         Ok(MetaPublishReport { data: self.preview })
@@ -1326,6 +1494,118 @@ mod typed_add_publication_tests {
                 .unwrap()
                 .contains("concurrent edit"),
             "concurrent prerequisite edit must be preserved"
+        );
+    }
+
+    #[test]
+    fn meta_add_event_subscription_rejects_handler_ancestor_symlink_after_selection() {
+        let fixture = Fixture::new("event-handler-ancestor-symlink");
+        let handler = b"Procedure Handle(Source, Cancel) Export\nEndProcedure\n";
+        fixture.seed_common_module("Proof", handler);
+        let cancellation = CancellationToken::new();
+        let owner = fixture.root.join("src/Configuration.xml");
+        let owner_before = fs::read(&owner).unwrap();
+        let module_directory = fixture.root.join("src/CommonModules/Proof");
+        let outside_directory = fixture.root.join("outside-handler");
+        let module_directory_for_hook = module_directory.clone();
+        let outside_directory_for_hook = outside_directory.clone();
+        let request = MetaAddRequest {
+            source_set: "main".to_string(),
+            kind: MetadataKind::EventSubscription,
+            name: "Events".to_string(),
+            operations: vec![MetaEditOperation::edit_relations(
+                MetaRelation::Source,
+                RelationEditMode::Replace,
+                Vec::new(),
+            )
+            .unwrap()],
+            dry_run: true,
+        };
+
+        let result = with_meta_add_after_authorization_hook(
+            move || {
+                fs::rename(&module_directory_for_hook, &outside_directory_for_hook).unwrap();
+                crate::infrastructure::platform::testing::create_dir_symlink_for_test(
+                    &outside_directory_for_hook,
+                    &module_directory_for_hook,
+                )
+                .expect("directory symlinks are supported by the test platform")
+                .unwrap();
+            },
+            || prepare_meta_add(&request, &fixture.context, &cancellation),
+        );
+
+        let failure = match result {
+            Ok(_) => panic!("symlinked handler ancestor unexpectedly prepared metadata"),
+            Err(failure) => failure,
+        };
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::ProviderUnavailable
+        );
+        assert_eq!(fs::read(owner).unwrap(), owner_before);
+        assert!(!fixture
+            .root
+            .join("src/EventSubscriptions/Events.xml")
+            .exists());
+        assert_eq!(
+            fs::read(outside_directory.join("Ext/Module.bsl")).unwrap(),
+            handler
+        );
+    }
+
+    #[test]
+    fn meta_add_event_subscription_rejects_handler_ancestor_symlink_after_prepare() {
+        let fixture = Fixture::new("event-handler-post-prepare-symlink");
+        let handler = b"Procedure Handle(Source, Cancel) Export\nEndProcedure\n";
+        fixture.seed_common_module("Proof", handler);
+        let cancellation = CancellationToken::new();
+        let owner = fixture.root.join("src/Configuration.xml");
+        let owner_before = fs::read(&owner).unwrap();
+        let prepared = prepare_meta_add(
+            &MetaAddRequest {
+                source_set: "main".to_string(),
+                kind: MetadataKind::EventSubscription,
+                name: "Events".to_string(),
+                operations: vec![MetaEditOperation::edit_relations(
+                    MetaRelation::Source,
+                    RelationEditMode::Replace,
+                    Vec::new(),
+                )
+                .unwrap()],
+                dry_run: true,
+            },
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap();
+        let module_directory = fixture.root.join("src/CommonModules/Proof");
+        let outside_directory = fixture.root.join("outside-handler");
+        fs::rename(&module_directory, &outside_directory).unwrap();
+        crate::infrastructure::platform::testing::create_dir_symlink_for_test(
+            &outside_directory,
+            &module_directory,
+        )
+        .expect("directory symlinks are supported by the test platform")
+        .unwrap();
+
+        let failure = match prepared.publish(&cancellation) {
+            Ok(_) => panic!("post-prepare handler symlink unexpectedly published metadata"),
+            Err(failure) => failure,
+        };
+
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::ConcurrentModification
+        );
+        assert_eq!(fs::read(owner).unwrap(), owner_before);
+        assert!(!fixture
+            .root
+            .join("src/EventSubscriptions/Events.xml")
+            .exists());
+        assert_eq!(
+            fs::read(outside_directory.join("Ext/Module.bsl")).unwrap(),
+            handler
         );
     }
 
