@@ -1,13 +1,13 @@
 - Date: `2026-08-10`
 - Status: `approved`
-- Decision: `ADR-0041`
+- Decision: `ADR-0043`
 
 # Завершённость типизированных readers для diagnostics и RLM
 
 ## Результат исследования
 
 Issue [#291](https://github.com/IngvarConsulting/unica/issues/291) полностью
-воспроизводится на `origin/main` (`b0205624`). Default-ветка
+воспроизводится на `origin/main` (`4c3e4733`). Default-ветка
 `unica.code.diagnostics` выбирает `mode=analyze`, запускает отдельный
 `bsl-analyzer analyze` и возвращает `BslAnalyzerOutcome::plain`. Без аргумента
 `format` upstream печатает console report; с `format=json` Unica только
@@ -48,8 +48,22 @@ issue было бы новой регрессией.
    но не default-маршрут analyze и не матрицу readiness.
 
 ADR-0023 уже запрещает такой успех. Переписывать принятую ADR задним числом
-нельзя; новое решение ADR-0041 выбирает исполняемую границу и конкретные
+нельзя; новое решение ADR-0043 выбирает исполняемую границу и конкретные
 протоколы двух readers.
+
+Пока шло исследование, отдельный design PR #426 по #297 получил явное
+одобрение и был закрыт без merge перед реализацией. Он выбирает
+`ToolExecution::Read | Mutation`, режимы `Read | Preview | Apply`, удаление
+`dryRun` у readers и постусловие успешного typed-read. ADR-0043 не принимает
+конкурирующий preview-контракт и требует сначала доставить #297.
+
+В одобренном проекте #426 при этом есть логическая неполнота: предложенный
+`ResultContract::Typed | ExternalStream` не соответствует текущей ведомости,
+где находятся 47 `typed`, 19 `prose`, 1 `partial` и 6 `job`. Схлопывание трёх
+последних значений в один вариант снова сделало бы live-реестр слабее
+проверяемого контракта. ADR-0043 уточняет эту часть до взаимно однозначного
+четырёхзначного перечисления; #297 продолжает владеть категорией исполнения и
+режимом вызова.
 
 ## Рассмотренные подходы
 
@@ -93,23 +107,26 @@ CI проверяет это соответствие для каждого за
 неявного many-to-one преобразования.
 
 После handler и до публикации cache/events application-finalizer проверяет
-каждый реально выполненный немутирующий `Typed` tool, то есть вызов с
-`dryRun=false`:
+каждый вызов `ToolExecution::Read + ResultContract::Typed`:
 
 - `ok=true` требует `data.is_some()`;
 - `ok=true` требует отсутствующий `stdout`;
-- нарушение превращается в `ok=false` с кодом
-  `typed_result_violation:`, очищает `stdout` и не создаёт сфабрикованный
-  `data`;
+- отсутствие данных превращается в `ok=false` с кодом
+  `typed_result_missing:`, а текстовый дубль при существующем `data` — с кодом
+  `typed_result_textual:`; если нарушены оба постусловия, первым сообщается
+  `typed_result_missing:`; финализатор очищает `stdout` и не создаёт
+  сфабрикованный `data`;
 - `ok=false` может нести типизированное `data` о состоянии отказа, но не
   обязано его синтезировать для ошибки запуска процесса, timeout или
   cancellation.
 
-Совместимость `dryRun=true` у readers этим решением не меняется: #291 прямо
-исключает её удаление, а общий preview-контракт требует отдельной инвентаризации
-всей поверхности. Финализатор ADR-0041 не объявляет такой preview выполненным
-чтением и не переклассифицирует его результат. Preview типизированных мутаций
-также остаётся в #290.
+`dryRun` у readers не меняется в рамках #291: формулировка issue исключает его
+удаление именно из этой работы. Отдельная #297 уже владеет сужением публичной
+схемы и не противоречит этой негранице. Реализация ADR-0043 начинается только
+после #297: reader не имеет режима preview, ручной `dryRun` отклоняется до
+workspace/provider/backend, а каждый допустимый `Read + Typed` проходит общее
+постусловие. Это устраняет прежнее исключение `dryRun=true` из guard без
+синтетического предметного результата и без повторного архитектурного выбора.
 
 ## Контракт `code.diagnostics mode=analyze`
 
@@ -320,7 +337,7 @@ process outcomes. Cancellation не превращается в protocol failure
 `index_unavailable:` имеет `retryable=false` и не обещает, что повтор поможет.
 Текущий service умеет поставить в очередь поток, который ещё только попробует
 запустить maintenance, но не возвращает доказательство фактического build или
-update. Поэтому ADR-0041 не публикует recovery hint для `Missing`, `Stale`,
+update. Поэтому ADR-0043 не публикует recovery hint для `Missing`, `Stale`,
 `Failed` или `Unavailable`; отдельный типизированный maintenance-disposition
 понадобится прежде, чем такой hint станет честным.
 
@@ -330,10 +347,11 @@ update. Поэтому ADR-0041 не публикует recovery hint для `Mi
 
 ## Изменения по слоям
 
-- `application/mod.rs`: исчерпывающий live result contract и finalizer реально
-  выполненного typed-reader;
+- `application/mod.rs`: исчерпывающий live result contract и finalizer
+  `Read + Typed` поверх границы исполнения из #297;
 - `application/tool_contracts.rs`: mode-scoped `format`, закрытые defaults и
-  bounds для filters/limit; reader `dryRun` остаётся совместимым;
+  bounds для filters/limit; категория исполнения и reader `dryRun` принадлежат
+  реализации #297;
 - `infrastructure/platform/process.rs` и новый изолированный JSONL-модуль:
   общий lifecycle child с отдельным потоковым drain/parser без stdout-tail;
   платформенная реализация остаётся за границей ADR-0009 и стражем
@@ -345,7 +363,7 @@ update. Поэтому ADR-0041 не публикует recovery hint для `Mi
 - `rlm_navigation.rs`: единый mapper readiness и typed definition success;
 - `code-diagnostics` и `code-search` skills, acceptance и tool-surface ledger:
   актуальные данные и коды вместо старого prose;
-- при реализации ADR-0041 переводится в `accepted`, а существующее правило
+- при реализации ADR-0043 переводится в `accepted`, а существующее правило
   `INV-MCP-TYPED-RESULT` получает ссылку на новый исполняемый guard.
 
 `meta.profile` нигде не восстанавливается. При последующей реализации результат
@@ -359,7 +377,7 @@ update. Поэтому ADR-0041 не публикует recovery hint для `Mi
 
 | Правило | Красная проверка |
 | --- | --- |
-| live contract | parity всех зарегистрированных tools с четырьмя ledger-значениями; `Typed` success без `data` и с `stdout` падает при `dryRun=false`, существующий reader preview при `dryRun=true` не переклассифицируется |
+| live contract | после реализации #297 parity всех зарегистрированных tools с четырьмя ledger-значениями; `Read + Typed` success без `data` даёт `typed_result_missing:`, с `data` и `stdout` — `typed_result_textual:`, оба нарушения выбирают `typed_result_missing:`; ручной reader `dryRun` отвергается до workspace/provider/backend проверками #297 |
 | command | default и explicit analyze добавляют `--format jsonl`; отсутствие/`json`/`jsonl` эквивалентны; `console`, неизвестный `format` и `format` в другом mode отвергаются |
 | transport | валидный JSONL суммарно больше `1 MiB` завершается typed success; одна строка больше `8 MiB` fail-closed; stdout нигде не удерживается и не публикуется |
 | process priority | cancellation, timeout и ненулевой exit побеждают накопленное состояние parser и сохраняют существующие redacted outcomes |
@@ -378,8 +396,8 @@ skill tests, `cargo fmt --check`, `cargo clippy` и `git diff --check`.
 
 ## Граница доставки
 
-Этот PR фиксирует одобренный проект и proposed ADR-0041. Он не меняет runtime,
+Этот PR фиксирует одобренный проект и proposed ADR-0043. Он не меняет runtime,
 поэтому использует `Relates to #291` и `Relates to #292`, не закрывает issue и
-не называется исправлением. Реализация начинается только после ревью этой
-записки; тогда ADR, инвариант, код, fixtures, skills и acceptance должны войти
-в один самостоятельно проверяемый implementation PR.
+не называется исправлением. Реализация начинается только после доставки #297
+и ревью этой записки; тогда ADR, инвариант, код, fixtures, skills и acceptance
+должны войти в один самостоятельно проверяемый implementation PR.
