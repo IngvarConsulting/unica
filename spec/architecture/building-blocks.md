@@ -204,10 +204,19 @@ runtime для операций платформы, поставляемый а�
   отслеживания в git через него, а не запускают `git` сами (INV-APP-NO-DIRECT-GIT).
 - `code_intelligence` — инфраструктурные поставщики `rlm`, `bsl-analyzer` и
   `git-grep`, их команды, разбор ответов и отображение состояний.
-- `operational_config` — чтение `unica.toml` и `unica.local.toml` от
-  `workspaceRoot`, разбор закрытой TOML-схемы и отображение ошибок в
-  диагностику без абсолютного пути и сырого значения
-  (INV-APP-CONFIG-SNAPSHOT, REQ-SAFETY-SECRET-REDACTION).
+- `workspace_config` — общий разбор закрытого корня `unica.toml` и
+  `unica.local.toml`: синтаксис TOML, `version` и только поля `version`,
+  `operational`, `network`, `providers`; прежний слой только с сетевой
+  политикой допустим без версии, но `[operational]` требует `version = 1`
+  (INV-APP-CONFIG-SNAPSHOT, INV-APP-DOCUMENTATION-NETWORK-POLICY).
+- `operational_config` — чтение слоёв от `workspaceRoot`, проверка только
+  поддерева `[operational]` и отображение его ошибок в диагностику без
+  абсолютного пути и сырого значения; ошибка `network` или `providers` не
+  меняет операционный снимок (INV-APP-CONFIG-SNAPSHOT,
+  REQ-SAFETY-SECRET-REDACTION).
+- `documentation_policy` — проверка только поддеревьев `network` и
+  `providers` поверх общего корня; ошибка `[operational]` не меняет сетевую
+  политику (INV-APP-DOCUMENTATION-NETWORK-POLICY).
 - `rlm_navigation` — типизированные definition, outline и object-profile поверх
   поддерживаемой MCP-сессии RLM без чтения частной SQLite-схемы.
 - `native_operations` — фасад над нативными операциями над XML и DSL,
