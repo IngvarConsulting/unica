@@ -1630,14 +1630,26 @@ fn seed_event_handlers(workspace: &Path) -> Result<(), String> {
     )?;
     fs::write(
         workspace.join("src/CommonModules/EventHandlers/Ext/Module.bsl"),
-        concat!(
-            "\u{feff}Procedure RunJob() Export\r\n",
-            "EndProcedure\r\n\r\n",
-            "Procedure OnBeforeWrite(Source, Cancel) Export\r\n",
-            "EndProcedure\r\n"
-        ),
+        event_handlers_module(false),
     )
     .map_err(|error| format!("cannot seed EventHandlers module: {error}"))
+}
+
+fn event_handlers_module(include_record_set_handler: bool) -> String {
+    let mut module = concat!(
+        "\u{feff}Procedure RunJob() Export\r\n",
+        "EndProcedure\r\n\r\n",
+        "Procedure OnBeforeWrite(Source, Cancel) Export\r\n",
+        "EndProcedure\r\n"
+    )
+    .to_string();
+    if include_record_set_handler {
+        module.push_str(concat!(
+            "\r\nProcedure OnBeforeWriteRecordSet(Source, Cancel, Replacing) Export\r\n",
+            "EndProcedure\r\n"
+        ));
+    }
+    module
 }
 
 fn template_args(workspace: &Path, template_name: &str, template_type: &str) -> Map<String, Value> {
@@ -2357,6 +2369,11 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
 
     if case.id == "meta-edit-event-source" {
         seed_event_handlers(workspace)?;
+        fs::write(
+            workspace.join("src/CommonModules/EventHandlers/Ext/Module.bsl"),
+            event_handlers_module(true),
+        )
+        .map_err(|error| format!("cannot extend EventHandlers module: {error}"))?;
         seed_catalog(workspace)?;
         seed_metadata(
             workspace,
@@ -2382,15 +2399,23 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
         );
         args.insert(
             "operations".to_string(),
-            json!([{
-                "op": "editRelations",
-                "relation": "source",
-                "mode": "replace",
-                "targets": [{
-                    "kind": "recordSet",
-                    "metadataPath": "InformationRegister.CorpusInformationRegister"
-                }]
-            }]),
+            json!([
+                {
+                    "op": "setProperties",
+                    "values": {
+                        "Handler": "CommonModule.EventHandlers.OnBeforeWriteRecordSet"
+                    }
+                },
+                {
+                    "op": "editRelations",
+                    "relation": "source",
+                    "mode": "replace",
+                    "targets": [{
+                        "kind": "recordSet",
+                        "metadataPath": "InformationRegister.CorpusInformationRegister"
+                    }]
+                }
+            ]),
         );
         return Ok(args);
     }
@@ -4877,15 +4902,23 @@ fn meta_edit_event_source_case_executes_public_writer_and_binds_exact_delta() {
     .unwrap();
     assert_eq!(
         report["publicArguments"]["operations"],
-        json!([{
-            "op": "editRelations",
-            "relation": "source",
-            "mode": "replace",
-            "targets": [{
-                "kind": "recordSet",
-                "metadataPath": "InformationRegister.CorpusInformationRegister"
-            }]
-        }])
+        json!([
+            {
+                "op": "setProperties",
+                "values": {
+                    "Handler": "CommonModule.EventHandlers.OnBeforeWriteRecordSet"
+                }
+            },
+            {
+                "op": "editRelations",
+                "relation": "source",
+                "mode": "replace",
+                "targets": [{
+                    "kind": "recordSet",
+                    "metadataPath": "InformationRegister.CorpusInformationRegister"
+                }]
+            }
+        ])
     );
     let generated_descriptor = generation_a.join(
         "cases/meta-edit-event-source/workspace/src/EventSubscriptions/CorpusEventSubscription.xml",

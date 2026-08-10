@@ -168,7 +168,7 @@ use super::edit::ResolvedMetadataObject;
 use super::xml_model::{
     meta_event_subscription_source_node, meta_info_child, meta_info_child_text, meta_info_children,
     meta_info_inner_text, meta_info_ml_text, meta_info_normalize_cfg_prefix,
-    parse_meta_event_subscription_source,
+    parse_defined_type_event_sources, parse_meta_event_subscription_source,
 };
 
 /// Parse the descriptor image already acquired by the logical resolver. The
@@ -364,13 +364,16 @@ pub(crate) fn read_typed_meta_info(
         descriptor_preimage,
         Some(&resolved.source_root),
     );
-    validation_resources.extend(typed_event_source_dependency_images(
+    let (event_source_resources, event_source_diagnostics) = typed_event_source_dependency_images(
         resolved,
         source_set,
         &local.relations.source,
         context,
+        deadline,
         cancellation,
-    ));
+    );
+    validation_resources.extend(event_source_resources);
+    local.diagnostics.extend(event_source_diagnostics);
     let (registrar_resources, registrar_evidence) =
         typed_registrar_document_images(resolved, kind, properties, target, deadline, cancellation);
     validation_resources.extend(registrar_resources);
@@ -410,15 +413,30 @@ fn typed_event_source_dependency_images(
     source_set: &str,
     sources: &[MetaEventSource],
     context: &WorkspaceContext,
+    deadline: ProviderDeadline,
     cancellation: &CancellationToken,
-) -> Vec<MetadataResourceImage> {
+) -> (Vec<MetadataResourceImage>, Vec<MetaDiagnostic>) {
     let mut resources = Vec::new();
+    let mut diagnostics = Vec::new();
     let mut seen = HashSet::new();
-    for source in sources {
-        if cancellation.is_cancelled() {
+    let mut queue = sources.to_vec();
+    let mut cursor = 0usize;
+    while let Some(source) = queue.get(cursor).cloned() {
+        cursor += 1;
+        if let Err(error) = registrar_scan_checkpoint(deadline, cancellation) {
+            let message = if error.kind() == io::ErrorKind::TimedOut {
+                "EventSubscription Source dependency scan deadline elapsed"
+            } else {
+                "EventSubscription Source dependency scan was interrupted"
+            };
+            diagnostics.push(
+                MetaDiagnostic::error(MetaDiagnosticCode::ProviderUnavailable, message)
+                    .with_metadata_path(resolved.metadata_path.clone())
+                    .with_field("relations.source"),
+            );
             break;
         }
-        let Some(metadata_path) = source.metadata_path() else {
+        let Some(metadata_path) = source.metadata_path().cloned() else {
             continue;
         };
         if !seen.insert(metadata_path.clone()) {
@@ -447,14 +465,32 @@ fn typed_event_source_dependency_images(
         let Ok(bytes) = fs::read(&evidence.target_path) else {
             continue;
         };
+        if let Err(error) = registrar_scan_checkpoint(deadline, cancellation) {
+            let message = if error.kind() == io::ErrorKind::TimedOut {
+                "EventSubscription Source dependency scan deadline elapsed"
+            } else {
+                "EventSubscription Source dependency scan was interrupted"
+            };
+            diagnostics.push(
+                MetaDiagnostic::error(MetaDiagnosticCode::ProviderUnavailable, message)
+                    .with_metadata_path(resolved.metadata_path.clone())
+                    .with_field("relations.source"),
+            );
+            break;
+        }
+        if matches!(source, MetaEventSource::DefinedType { .. }) {
+            if let Ok(members) = parse_defined_type_event_sources(&bytes) {
+                queue.extend(members);
+            }
+        }
         resources.push(MetadataResourceImage {
             role: MetadataResourceRole::Dependency {
-                target: metadata_path.clone(),
+                target: metadata_path,
             },
             bytes,
         });
     }
-    resources
+    (resources, diagnostics)
 }
 
 fn typed_registrar_document_images(

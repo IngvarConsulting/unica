@@ -1142,13 +1142,18 @@ fn object_descriptor_evidence(parts: &[&str]) -> Option<ObjectDescriptorEvidence
             })
         }
         [kind, name, child_kind, child_name]
-            if matches!(*child_kind, "Form" | "Template" | "Command") =>
+            if matches!(
+                *child_kind,
+                "Form" | "Template" | "Command" | "Recalculation"
+            ) =>
         {
             let kind = metadata_kind(kind)?;
             let child_directory = match *child_kind {
                 "Form" => "Forms",
                 "Template" => "Templates",
                 "Command" => "Commands",
+                "Recalculation" if kind.tag == "CalculationRegister" => "Recalculations",
+                "Recalculation" => return None,
                 _ => unreachable!("nested metadata kind match is closed"),
             };
             Some(ObjectDescriptorEvidence {
@@ -2392,7 +2397,7 @@ fn object_registration_evidence(
     let source_owner_version = source_owner_evidence.version().map(str::to_owned);
 
     let parts = address.segments().collect::<Vec<_>>();
-    let [owner_kind, owner_name, child_kind @ ("Form" | "Template" | "Command"), child_name] =
+    let [owner_kind, owner_name, child_kind @ ("Form" | "Template" | "Command" | "Recalculation"), child_name] =
         parts.as_slice()
     else {
         return match parts.as_slice() {
@@ -5149,6 +5154,46 @@ mod tests {
             normalize_path_identity(&root.join("Catalogs/Items.xml")).unwrap()
         );
         assert!(resolution.handle.module_owner.is_none());
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_recalculation_target_resolves_to_nested_descriptor() {
+        let context = fixture(
+            "recalculation-object-target",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        fs::create_dir_all(root.join("CalculationRegisters/Payroll/Recalculations")).unwrap();
+        fs::write(
+            root.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><ChildObjects><CalculationRegister>Payroll</CalculationRegister></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("CalculationRegisters/Payroll.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CalculationRegister><Properties><Name>Payroll</Name></Properties><ChildObjects><Recalculation>Main</Recalculation></ChildObjects></CalculationRegister></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("CalculationRegisters/Payroll/Recalculations/Main.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Recalculation><Properties><Name>Main</Name></Properties></Recalculation></MetaDataObject>"#,
+        )
+        .unwrap();
+
+        let resolution = resolve_platform_xml_object_target(
+            &context,
+            &target("main", "CalculationRegister.Payroll.Recalculation.Main"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolution.handle.target_path,
+            normalize_path_identity(
+                &root.join("CalculationRegisters/Payroll/Recalculations/Main.xml")
+            )
+            .unwrap()
+        );
         cleanup(&context);
     }
 

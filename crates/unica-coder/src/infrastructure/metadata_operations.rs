@@ -389,6 +389,10 @@ mod tests {
         .unwrap()
     }
 
+    fn source_family(source_class: crate::domain::metadata::EventSourceClass) -> MetaEventSource {
+        MetaEventSource::Family { source_class }
+    }
+
     fn prepared_event_subscription_source_change(
         label: &str,
     ) -> (PathBuf, Box<dyn PreparedMetadataMutation>, PathBuf, Vec<u8>) {
@@ -400,7 +404,9 @@ mod tests {
                 source_set: "main".into(),
                 kind: MetadataKind::EventSubscription,
                 name: "Events".into(),
-                operations: vec![source_replace(vec![MetaEventSource::Boolean])],
+                operations: vec![source_replace(vec![source_family(
+                    crate::domain::metadata::EventSourceClass::CatalogObject,
+                )])],
                 dry_run: false,
             }),
             &context,
@@ -418,7 +424,9 @@ mod tests {
             &MetadataRequest::Edit(MetaEditRequest {
                 source_set: "main".into(),
                 metadata_path: target,
-                operations: vec![source_replace(Vec::new())],
+                operations: vec![source_replace(vec![source_family(
+                    crate::domain::metadata::EventSourceClass::DocumentObject,
+                )])],
                 dry_run: false,
             }),
             &context,
@@ -698,7 +706,9 @@ mod tests {
             source_set: "main".into(),
             kind: MetadataKind::EventSubscription,
             name: "AllEvents".into(),
-            operations: vec![source_replace(vec![MetaEventSource::Boolean])],
+            operations: vec![source_replace(vec![source_family(
+                crate::domain::metadata::EventSourceClass::CatalogObject,
+            )])],
             dry_run: false,
         });
 
@@ -720,12 +730,14 @@ mod tests {
             .iter()
             .find(|resource| matches!(resource.role, MetadataResourceRole::Descriptor))
             .unwrap();
-        assert!(
-            String::from_utf8_lossy(&descriptor.bytes).contains("<v8:Type>xs:boolean</v8:Type>")
-        );
+        assert!(String::from_utf8_lossy(&descriptor.bytes)
+            .contains("<v8:TypeSet>cfg:CatalogObject</v8:TypeSet>"));
         assert_eq!(
             prepared.preview().effects[1].after,
-            Some(json!([{ "kind": "boolean" }]))
+            Some(json!([{
+                "kind": "family",
+                "sourceClass": "catalogObject",
+            }]))
         );
         prepared.publish(&cancellation).unwrap();
 
@@ -740,13 +752,20 @@ mod tests {
             &cancellation,
         )
         .unwrap();
-        assert_eq!(read.local.relations.source, vec![MetaEventSource::Boolean]);
+        assert_eq!(
+            read.local.relations.source,
+            vec![source_family(
+                crate::domain::metadata::EventSourceClass::CatalogObject,
+            )]
+        );
 
         let noop = MetadataOperations::prepare_mutation(
             &MetadataRequest::Edit(MetaEditRequest {
                 source_set: "main".into(),
                 metadata_path: target,
-                operations: vec![source_replace(vec![MetaEventSource::Boolean])],
+                operations: vec![source_replace(vec![source_family(
+                    crate::domain::metadata::EventSourceClass::CatalogObject,
+                )])],
                 dry_run: false,
             }),
             &context,
@@ -759,7 +778,58 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    fn add_reference_event_subscription(fixture: &Fixture, name: &str) -> MetadataAddress {
+    #[test]
+    fn meta_add_event_subscription_uses_explicit_final_handler_without_template_arity_gate() {
+        let (root, context) = empty_workspace("event-binding-add");
+        add_exported_event_handler(&root, &context);
+        fs::write(
+            root.join("src/CommonModules/EventHandlers/Ext/Module.bsl"),
+            "Procedure OnRecordSetEvent(Source, Cancel, Replacing) Export\nEndProcedure\n",
+        )
+        .unwrap();
+        let binding = MetaEditOperation::SetProperties {
+            values: MetaPropertyChanges::convert(
+                MetadataKind::EventSubscription,
+                vec![MetaPropertyInput::new(
+                    "Handler",
+                    MetaPropertyValue::String(
+                        "CommonModule.EventHandlers.OnRecordSetEvent".to_string(),
+                    ),
+                )],
+            )
+            .unwrap(),
+        };
+        let cancellation = CancellationToken::new();
+        let prepared = MetadataOperations::prepare_mutation(
+            &MetadataRequest::Add(MetaAddRequest {
+                source_set: "main".into(),
+                kind: MetadataKind::EventSubscription,
+                name: "RecordSetEvents".into(),
+                operations: vec![
+                    source_replace(vec![source_family(
+                        crate::domain::metadata::EventSourceClass::InformationRegisterRecordSet,
+                    )]),
+                    binding,
+                ],
+                dry_run: false,
+            }),
+            &context,
+            &cancellation,
+        )
+        .unwrap();
+        let validation =
+            MetadataOperations::validate(prepared.validation_subject(), &context, &cancellation);
+        assert_eq!(
+            validation.status,
+            MetaValidationStatus::Passed,
+            "{:?}",
+            validation.diagnostics
+        );
+        prepared.publish(&cancellation).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn add_object_event_subscription(fixture: &Fixture, name: &str) -> MetadataAddress {
         add_exported_event_handler(&fixture.root, &fixture.context);
         let cancellation = CancellationToken::new();
         MetadataOperations::prepare_mutation(
@@ -767,7 +837,7 @@ mod tests {
                 source_set: "main".into(),
                 kind: MetadataKind::EventSubscription,
                 name: name.into(),
-                operations: vec![source_replace(vec![MetaEventSource::Reference {
+                operations: vec![source_replace(vec![MetaEventSource::Object {
                     metadata_path: fixture.target.clone(),
                 }])],
                 dry_run: false,
@@ -783,6 +853,228 @@ mod tests {
             &format!("EventSubscription.{name}"),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn event_subscription_requires_explicit_non_global_server_module_facts() {
+        let fixture = Fixture::new("event-handler-context-facts");
+        let subscription = add_object_event_subscription(&fixture, "CatalogEvents");
+        let module_descriptor = fixture.root.join("src/CommonModules/EventHandlers.xml");
+        let descriptor = fs::read_to_string(&module_descriptor).unwrap();
+        let malformed = descriptor.replacen("\t\t\t<Global>false</Global>\n", "", 1);
+        assert_ne!(malformed, descriptor, "fixture must remove Global evidence");
+        fs::write(module_descriptor, malformed).unwrap();
+
+        let cancellation = CancellationToken::new();
+        let read = MetadataOperations::read_local(
+            &MetaInfoRequest {
+                source_set: "main".into(),
+                metadata_path: subscription,
+                sections: Vec::new(),
+                limit: 20,
+            },
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap();
+        let validation = MetadataOperations::validate_read(
+            &read.validation_subject,
+            &fixture.context,
+            &cancellation,
+        );
+        assert_eq!(validation.status, MetaValidationStatus::Failed);
+        assert!(
+            validation.diagnostics.iter().any(|diagnostic| {
+                diagnostic.field.as_deref() == Some("properties.handler")
+                    && diagnostic.message.contains("Global=false")
+            }),
+            "{:?}",
+            validation.diagnostics
+        );
+    }
+
+    fn replace_defined_type_members(root: &std::path::Path, name: &str, members: &[&str]) {
+        let path = root.join(format!("src/DefinedTypes/{name}.xml"));
+        let descriptor = fs::read_to_string(&path).unwrap();
+        let body = members
+            .iter()
+            .map(|member| {
+                let tag = if member.starts_with("DefinedType.") || !member.contains('.') {
+                    "TypeSet"
+                } else {
+                    "Type"
+                };
+                format!("\t\t\t\t<v8:{tag}>cfg:{member}</v8:{tag}>\n")
+            })
+            .collect::<String>();
+        let replacement = format!("\t\t\t<Type>\n{body}\t\t\t</Type>");
+        let changed = descriptor.replacen("\t\t\t<Type/>", &replacement, 1);
+        assert_ne!(changed, descriptor, "fixture must replace DefinedType Type");
+        fs::write(path, changed).unwrap();
+    }
+
+    #[test]
+    fn defined_type_event_source_expands_to_concrete_event_classes_and_dependencies() {
+        let fixture = Fixture::new("defined-type-event-source");
+        add_exported_event_handler(&fixture.root, &fixture.context);
+        let defined_type = fixture.add_object(MetadataKind::DefinedType, "CatalogObjects");
+        replace_defined_type_members(
+            &fixture.root,
+            "CatalogObjects",
+            &["CatalogObject.Editable", "CatalogObject"],
+        );
+        let cancellation = CancellationToken::new();
+        let prepared = MetadataOperations::prepare_mutation(
+            &MetadataRequest::Add(MetaAddRequest {
+                source_set: "main".into(),
+                kind: MetadataKind::EventSubscription,
+                name: "DefinedEvents".into(),
+                operations: vec![source_replace(vec![MetaEventSource::DefinedType {
+                    metadata_path: defined_type.clone(),
+                }])],
+                dry_run: false,
+            }),
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap();
+
+        for expected in [&defined_type, &fixture.target] {
+            assert!(
+                prepared
+                    .validation_subject()
+                    .resources
+                    .iter()
+                    .any(|resource| {
+                        matches!(
+                            &resource.role,
+                            MetadataResourceRole::Dependency { target } if target == expected
+                        )
+                    }),
+                "missing dependency evidence for {expected}"
+            );
+        }
+        let validation = MetadataOperations::validate(
+            prepared.validation_subject(),
+            &fixture.context,
+            &cancellation,
+        );
+        assert_eq!(
+            validation.status,
+            MetaValidationStatus::Passed,
+            "{:?}",
+            validation.diagnostics
+        );
+        prepared.publish(&cancellation).unwrap();
+    }
+
+    #[test]
+    fn meta_info_surfaces_a_strict_defined_type_member_parse_failure() {
+        let fixture = Fixture::new("defined-type-event-source-invalid-member");
+        add_exported_event_handler(&fixture.root, &fixture.context);
+        let defined_type = fixture.add_object(MetadataKind::DefinedType, "CatalogObjects");
+        replace_defined_type_members(&fixture.root, "CatalogObjects", &["CatalogObject.Editable"]);
+        let cancellation = CancellationToken::new();
+        MetadataOperations::prepare_mutation(
+            &MetadataRequest::Add(MetaAddRequest {
+                source_set: "main".into(),
+                kind: MetadataKind::EventSubscription,
+                name: "DefinedEvents".into(),
+                operations: vec![source_replace(vec![MetaEventSource::DefinedType {
+                    metadata_path: defined_type,
+                }])],
+                dry_run: false,
+            }),
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap()
+        .publish(&cancellation)
+        .unwrap();
+        let subscription = MetadataAddress::parse(
+            PLATFORM_XML_8_3_27_FORMAT_2_20,
+            "EventSubscription.DefinedEvents",
+        )
+        .unwrap();
+        let defined_type_descriptor = fixture.root.join("src/DefinedTypes/CatalogObjects.xml");
+        let descriptor = fs::read_to_string(&defined_type_descriptor).unwrap();
+        let malformed = descriptor.replacen("cfg:CatalogObject.Editable", "cfg:String", 1);
+        assert_ne!(
+            malformed, descriptor,
+            "fixture must corrupt DefinedType member"
+        );
+        fs::write(defined_type_descriptor, malformed).unwrap();
+
+        let read = MetadataOperations::read_local(
+            &MetaInfoRequest {
+                source_set: "main".into(),
+                metadata_path: subscription,
+                sections: Vec::new(),
+                limit: 20,
+            },
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap();
+        let validation = MetadataOperations::validate_read(
+            &read.validation_subject,
+            &fixture.context,
+            &cancellation,
+        );
+
+        assert_eq!(validation.status, MetaValidationStatus::Failed);
+        assert!(
+            validation.diagnostics.iter().any(|diagnostic| {
+                diagnostic
+                    .field
+                    .as_deref()
+                    .is_some_and(|field| field.starts_with("relations.source"))
+                    && diagnostic
+                        .message
+                        .contains("configuration type cfg:String is malformed")
+            }),
+            "{:?}",
+            validation.diagnostics
+        );
+    }
+
+    #[test]
+    fn defined_type_event_source_cycle_is_rejected_before_publication() {
+        let fixture = Fixture::new("defined-type-event-cycle");
+        add_exported_event_handler(&fixture.root, &fixture.context);
+        let first = fixture.add_object(MetadataKind::DefinedType, "First");
+        fixture.add_object(MetadataKind::DefinedType, "Second");
+        replace_defined_type_members(&fixture.root, "First", &["DefinedType.Second"]);
+        replace_defined_type_members(&fixture.root, "Second", &["DefinedType.First"]);
+        let cancellation = CancellationToken::new();
+        let failure = match MetadataOperations::prepare_mutation(
+            &MetadataRequest::Add(MetaAddRequest {
+                source_set: "main".into(),
+                kind: MetadataKind::EventSubscription,
+                name: "CyclicEvents".into(),
+                operations: vec![source_replace(vec![MetaEventSource::DefinedType {
+                    metadata_path: first,
+                }])],
+                dry_run: false,
+            }),
+            &fixture.context,
+            &cancellation,
+        ) {
+            Ok(_) => panic!("cyclic DefinedType event source unexpectedly prepared"),
+            Err(failure) => failure,
+        };
+        assert!(
+            failure.diagnostics.iter().any(|diagnostic| {
+                diagnostic.field.as_deref() == Some("relations.source")
+                    && diagnostic.message.contains("cycle")
+            }),
+            "{:?}",
+            failure.diagnostics
+        );
+        assert!(!fixture
+            .root
+            .join("src/EventSubscriptions/CyclicEvents.xml")
+            .exists());
     }
 
     fn assert_event_source_info_validation_fails(
@@ -805,7 +1097,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             read.local.relations.source,
-            vec![MetaEventSource::Reference {
+            vec![MetaEventSource::Object {
                 metadata_path: expected_source,
             }],
             "meta.info must retain typed partial data when dependency proof fails"
@@ -834,12 +1126,12 @@ mod tests {
     #[test]
     fn meta_info_rejects_missing_event_source_dependency_but_keeps_typed_readback() {
         let fixture = Fixture::new("event-source-info-missing-dependency");
-        let subscription = add_reference_event_subscription(&fixture, "CatalogEvents");
+        let subscription = add_object_event_subscription(&fixture, "CatalogEvents");
         let descriptor = fixture
             .root
             .join("src/EventSubscriptions/CatalogEvents.xml");
         let source = String::from_utf8(fs::read(&descriptor).unwrap()).unwrap();
-        let missing = source.replacen("cfg:CatalogRef.Editable", "cfg:CatalogRef.Missing", 1);
+        let missing = source.replacen("cfg:CatalogObject.Editable", "cfg:CatalogObject.Missing", 1);
         assert_ne!(missing, source, "fixture must rewrite the Source QName");
         fs::write(descriptor, missing).unwrap();
         let missing_target =
@@ -856,11 +1148,11 @@ mod tests {
     #[test]
     fn meta_info_rejects_event_source_dependency_with_wrong_generated_type() {
         let fixture = Fixture::new("event-source-info-generated-type");
-        let subscription = add_reference_event_subscription(&fixture, "CatalogEvents");
+        let subscription = add_object_event_subscription(&fixture, "CatalogEvents");
         let source = String::from_utf8(fs::read(&fixture.descriptor).unwrap()).unwrap();
         let malformed = source.replacen(
-            "name=\"CatalogRef.Editable\"",
-            "name=\"CatalogRef.Shadow\"",
+            "name=\"CatalogObject.Editable\"",
+            "name=\"CatalogObject.Shadow\"",
             1,
         );
         assert_ne!(malformed, source, "fixture must corrupt GeneratedType");
@@ -872,6 +1164,37 @@ mod tests {
             fixture.target.clone(),
             "GeneratedType",
         );
+    }
+
+    #[test]
+    fn meta_info_event_source_dependency_scan_honors_an_expired_deadline() {
+        let fixture = Fixture::new("event-source-info-deadline");
+        let subscription = add_object_event_subscription(&fixture, "CatalogEvents");
+        let cancellation = CancellationToken::new();
+        let resolved = resolve_typed_metadata_object(
+            "main",
+            &subscription,
+            "info",
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap();
+
+        let (local, _) = read_typed_meta_info(
+            &resolved,
+            "main",
+            &subscription,
+            &fixture.context,
+            ProviderDeadline::new(std::time::Instant::now() - std::time::Duration::from_millis(1)),
+            &cancellation,
+        )
+        .unwrap();
+
+        assert!(local.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == MetaDiagnosticCode::ProviderUnavailable
+                && diagnostic.field.as_deref() == Some("relations.source")
+                && diagnostic.message.contains("deadline")
+        }));
     }
 
     #[test]
@@ -902,9 +1225,7 @@ mod tests {
             MetaEventSource::Object {
                 metadata_path: fixture.target.clone(),
             },
-            MetaEventSource::Reference {
-                metadata_path: fixture.target.clone(),
-            },
+            source_family(crate::domain::metadata::EventSourceClass::CatalogObject),
         ];
         let request = MetadataRequest::Edit(MetaEditRequest {
             source_set: "main".into(),
@@ -1153,7 +1474,9 @@ mod tests {
         let request = MetadataRequest::Edit(MetaEditRequest {
             source_set: "main".into(),
             metadata_path: subscription,
-            operations: vec![source_replace(vec![MetaEventSource::Boolean])],
+            operations: vec![source_replace(vec![source_family(
+                crate::domain::metadata::EventSourceClass::CatalogObject,
+            )])],
             dry_run: false,
         });
         let prepared =
@@ -1214,10 +1537,13 @@ mod tests {
         .publish(&cancellation)
         .unwrap();
         let mut catalog = String::from_utf8(fs::read(&fixture.descriptor).unwrap()).unwrap();
-        assert_eq!(catalog.matches("name=\"CatalogRef.Editable\"").count(), 1);
+        assert_eq!(
+            catalog.matches("name=\"CatalogObject.Editable\"").count(),
+            1
+        );
         catalog = catalog.replacen(
-            "name=\"CatalogRef.Editable\"",
-            "name=\"CatalogRef.Shadow\"",
+            "name=\"CatalogObject.Editable\"",
+            "name=\"CatalogObject.Shadow\"",
             1,
         );
         fs::write(&fixture.descriptor, catalog.as_bytes()).unwrap();
@@ -1229,7 +1555,7 @@ mod tests {
         let request = MetadataRequest::Edit(MetaEditRequest {
             source_set: "main".into(),
             metadata_path: subscription,
-            operations: vec![source_replace(vec![MetaEventSource::Reference {
+            operations: vec![source_replace(vec![MetaEventSource::Object {
                 metadata_path: fixture.target.clone(),
             }])],
             dry_run: false,
@@ -1276,7 +1602,9 @@ mod tests {
         let request = MetadataRequest::Edit(MetaEditRequest {
             source_set: "main".into(),
             metadata_path: subscription,
-            operations: vec![source_replace(vec![MetaEventSource::Boolean])],
+            operations: vec![source_replace(vec![source_family(
+                crate::domain::metadata::EventSourceClass::CatalogObject,
+            )])],
             dry_run: false,
         });
         let descriptor = fixture
