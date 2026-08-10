@@ -1612,7 +1612,7 @@ XML-элемент: `<EventSubscription>`.
 
 | Свойство | Тип | Описание |
 |---|---|---|
-| `Source` | `v8:Type[]` / `v8:TypeSet[]` | Типы источников подписки: примитивы, порождаемые типы объектов и наборов записей, ссылки и определяемые типы |
+| `Source` | `v8:Type[]` / `v8:TypeSet[]` | Wire-описание типов платформы; логический контракт Unica принимает только классы, у которых можно доказать событие |
 | `Event` | enum | `BeforeWrite` \| `OnWrite` \| `AfterWrite` \| `BeforeDelete` \| `Posting` \| `UndoPosting` \| `FillCheckProcessing` и др. |
 | `Handler` | string | Обработчик вида `CommonModule.ИмяМодуля.ИмяПроцедуры` |
 
@@ -1621,43 +1621,50 @@ XML-элемент: `<EventSubscription>`.
 `cfg:AccumulationRegisterRecordSet.Xxx`, `cfg:AccountingRegisterRecordSet.Xxx`
 и `cfg:CalculationRegisterRecordSet.Xxx`.
 
-Публичный типизированный маршрут создания и редактирования подписки — операция
-`editRelations` с `relation: "source"`, `mode: "replace"` и массивом `targets`.
-Это один из пяти существующих тегов `op`, а не отдельный тег операции. Пустой
-`targets` очищает `Source`; частичные режимы для этой связи не поддерживаются.
-Массив является wire-представлением набора: порядок целей не участвует в
-семантическом сравнении. Перестановка тех же членов сохраняет точные байты XML;
-при действительном изменении цели выпускаются в детерминированном порядке по
-группе платформенного типа и семантическому ключу.
+Публичный типизированный маршрут создания и редактирования подписки проверяет
+одну итоговую связку `Source` → `Event` → `Handler`. `Source` меняется операцией
+`editRelations` с `relation: "source"`, `mode: "replace"`; `Event` и `Handler` —
+операцией `setProperties` в том же атомарном вызове. Это два из пяти существующих
+тегов `op`, а не отдельная операция подписки. Частичные режимы и пустой итоговый
+`Source` не поддерживаются. Порядок целей не участвует в семантическом сравнении.
 
 Каждый элемент `targets` принадлежит закрытому размеченному объединению:
 
 | `kind` | Поля | XML-представление |
 | --- | --- | --- |
-| `string` | `length: 0`, `allowedLength: "variable"` | `xs:string` и строковые квалификаторы |
-| `number` | `digits: 0..38`, `fraction: 0..digits`, `sign: "any" \| "nonNegative"` | `xs:decimal` и числовые квалификаторы |
-| `boolean` | — | `xs:boolean` |
-| `date` | `fractions: "date" \| "dateTime"` | `xs:dateTime` и квалификаторы даты |
-| `valueStorage` | — | `v8:ValueStorage`; этот элемент должен быть единственным источником |
 | `object` | `metadataPath` | `cfg:<ObjectGeneratedType>.<Имя>` |
-| `reference` | `metadataPath` | `cfg:<ReferenceGeneratedType>.<Имя>` |
-| `recordSet` | `metadataPath` | `cfg:<RegisterRecordSetGeneratedType>.<Имя>` |
+| `manager` | `metadataPath`; только для `Constant` также `sourceClass` | `cfg:<ManagerGeneratedType>.<Имя>` |
+| `recordSet` | `metadataPath` | `cfg:<RecordSetGeneratedType>.<Имя>` |
 | `definedType` | `metadataPath` | `<v8:TypeSet>cfg:DefinedType.<Имя></v8:TypeSet>` |
+| `family` | `sourceClass` | `<v8:TypeSet>cfg:<EventSourceClass></v8:TypeSet>` |
 
-Допустимые владельцы конфигурационных вариантов определяются видом цели:
-`object` — Catalog, Document, ChartOfAccounts,
-ChartOfCharacteristicTypes, ChartOfCalculationTypes, ExchangePlan,
-BusinessProcess, Task, Report или DataProcessor; `reference` — те же ссылочные
-виды без Report и DataProcessor, но с Enum; `recordSet` — InformationRegister,
-AccumulationRegister, AccountingRegister или CalculationRegister;
-`definedType` — только DefinedType.
+`sourceClass` — закрытое lower-camel-case перечисление каталога событий 8.3.27.
+У `manager` оно обязательно только для `Constant.<Name>`, где различает
+`constantManager` и `constantValueManager`; у остальных конкретных менеджеров
+поле запрещено. Набор записей перерасчёта адресуется как
+`CalculationRegister.<Register>.Recalculation.<Name>`, последовательности — как
+`Sequence.<Name>`. Конкретные цели `ExternalDataSource` пока не адресуются;
+соответствующие общие `family` остаются допустимы.
+
+Примитивы, `ValueStorage` и ссылочные типы синтаксически возможны в платформенном
+`TypeDescription`, но не входят в логическое объединение Unica: из них нельзя
+доказать класс и выбрать событие. Существующий такой wire-источник читается с
+диагностикой и должен быть заменён полной корректной связкой.
 
 Для каждого конфигурационного варианта регистрация в `ChildObjects`, дескриптор
 и совпадающий `xr:GeneratedType` разрешаются под тем же точным владельцем
 `Configuration.xml`, что и подписка. Владелец, дескрипторы зависимостей и
 целевой XML связываются одной транзакцией: отсутствующая, неоднозначная,
 несовместимая или конкурентно изменённая зависимость отклоняется до публикации.
-`unica.meta.info` читает тот же `Source` обратно в это типизированное
+`DefinedType` рекурсивно разворачивается до всех членов; пустой тип, цикл,
+примитив, ссылка или иной член без событий отклоняет всю цель. Для каждого
+полученного класса `Event` обязан существовать с одной и той же упорядоченной
+сигнатурой. `Handler` обязан иметь вид
+`CommonModule.<Module>.<Procedure>`; общий модуль явно содержит `Global=false`,
+`Server=true`, а BSL AST доказывает экспортную процедуру с числом параметров
+события плюс один параметр `Source`.
+
+`unica.meta.info` читает `Source`, `Event` и `Handler` обратно в то же логическое
 представление. Позиция элемента readback-массива не является частью его
 идентичности.
 

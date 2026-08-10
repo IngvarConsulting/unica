@@ -200,16 +200,35 @@ Unica. Каждая запись формулирует одно нормати�
 - **Rule:** `unica.meta.add` и `unica.meta.edit` заменяют
   `EventSubscription.Source` только существующей операцией `editRelations` с
   `relation: "source"`, `mode: "replace"` и закрытым типизированным массивом
-  `targets`, причём число и имена пяти значений `op` не меняются; применение
-  сравнивает цели как набор без учёта порядка, при изменении детерминированно
-  выпускает `v8:Type` или `v8:TypeSet` по виду цели, до публикации доказывает у
-  того же точного владельца регистрацию, описатель и совпадающий
-  `GeneratedType` каждой конфигурационной цели и связывает их точные байты с
-  транзакцией, а `unica.meta.info` возвращает тот же типизированный wire-массив.
-- **Decision:** ADR-0038
+  `targets`, причём число и имена пяти значений `op` не меняются; каждая цель
+  называет только логический объект с событиями, менеджер, набор записей,
+  определяемый тип или закрытый общий класс, а не произвольный вариант
+  `TypeDescription`; только неоднозначный менеджер `Constant.<Name>` обязан
+  различать `constantManager` и `constantValueManager` через закрытый
+  `sourceClass`, а у других конкретных менеджеров это поле запрещено; применение
+  сравнивает цели как набор без учёта порядка, до
+  публикации доказывает их регистрацию и описатели у того же точного владельца
+  и связывает точные байты с транзакцией, а `unica.meta.info` возвращает тот же
+  логический массив.
+- **Decision:** ADR-0039
 - **Check:** `ci-test` — `tests/ci/test_meta_surface_contract.py`
 - **Check:** `ci-test` — `crates/unica-coder/src/application/metadata.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/metadata_operations.rs`
+- **Scope:** source, packaged, runtime
+
+### INV-MCP-EVENT-BINDING — Подписка публикуется только как совместимая связка
+
+- **Rule:** Итоговый образ `EventSubscription` принимается только когда
+  непустые логические источники разрешены в классы профиля платформы, точное
+  каноническое `Event` существует у каждого класса с одной общей сигнатурой, а
+  канонический `Handler` разрешён в том же владельце в экспортную BSL-процедуру
+  неглобального серверного общего модуля с числом параметров события плюс один;
+  байты всех доказательств входят в ту же транзакцию, а читатель и писатель XML
+  не владеют этой матрицей совместимости.
+- **Decision:** ADR-0039
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/meta/validation.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/meta/edit.rs`
+- **Check:** `ci-test` — `tests/ci/test_meta_surface_contract.py`
 - **Scope:** source, packaged, runtime
 
 ### INV-MCP-META-FINDINGS — Перенесённые находки метаданных имеют устойчивую идентичность

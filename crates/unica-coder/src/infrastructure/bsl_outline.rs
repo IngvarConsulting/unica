@@ -229,6 +229,49 @@ fn parse_module(text: &str) -> Result<(Vec<CodeOutlineMethod>, Vec<OutlineRegion
     Ok((methods, pair_regions(&markers, &lines)))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BslMethodFacts {
+    pub(crate) is_procedure: bool,
+    pub(crate) is_export: bool,
+    pub(crate) parameter_count: usize,
+}
+
+/// Resolve one exact method from the parser AST. BSL identifiers are
+/// case-insensitive, including Cyrillic identifiers, so Unicode lowercasing is
+/// used instead of ASCII-only comparison.
+pub(crate) fn exact_bsl_method_facts(
+    text: &str,
+    method_name: &str,
+) -> Result<Option<BslMethodFacts>, String> {
+    let (methods, _) = parse_module(text)?;
+    let folded = method_name.to_lowercase();
+    Ok(methods
+        .iter()
+        .find(|method| method.name.to_lowercase() == folded)
+        .map(|method| BslMethodFacts {
+            is_procedure: method.kind == CodeOutlineMethodKind::Procedure,
+            is_export: method.is_export,
+            parameter_count: method.parameters.len(),
+        }))
+}
+
+/// Select the first exported procedure with the requested positional arity
+/// from the same AST used by outline and exact handler validation.
+pub(crate) fn first_exported_bsl_procedure(
+    text: &str,
+    parameter_count: usize,
+) -> Result<Option<String>, String> {
+    let (methods, _) = parse_module(text)?;
+    Ok(methods
+        .into_iter()
+        .find(|method| {
+            method.kind == CodeOutlineMethodKind::Procedure
+                && method.is_export
+                && method.parameters.len() == parameter_count
+        })
+        .map(|method| method.name))
+}
+
 fn method_outline(
     syntax: &SyntaxNode,
     lines: &LineIndex,
@@ -549,8 +592,8 @@ fn materialize_region(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_result, module_identity, pair_regions, parse_module, render_current_source_outline,
-        LineIndex, ModuleIdentity,
+        build_result, exact_bsl_method_facts, module_identity, pair_regions, parse_module,
+        render_current_source_outline, BslMethodFacts, LineIndex, ModuleIdentity,
     };
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::{
@@ -1153,5 +1196,32 @@ mod tests {
                 assert_eq!(index.line_of(offset), expected, "text {text:?} at {offset}");
             }
         }
+    }
+
+    #[test]
+    fn exact_method_facts_come_from_ast_not_text_fragments() {
+        let text = concat!(
+            "// Procedure Shadow(Source) Export\n",
+            "Function Handle(Source) Export\nEndFunction\n",
+            "Procedure Обработать(Source, Cancel) Export\nEndProcedure\n",
+        );
+
+        assert_eq!(exact_bsl_method_facts(text, "Shadow").unwrap(), None);
+        assert_eq!(
+            exact_bsl_method_facts(text, "Handle").unwrap(),
+            Some(BslMethodFacts {
+                is_procedure: false,
+                is_export: true,
+                parameter_count: 1,
+            })
+        );
+        assert_eq!(
+            exact_bsl_method_facts(text, "обработать").unwrap(),
+            Some(BslMethodFacts {
+                is_procedure: true,
+                is_export: true,
+                parameter_count: 2,
+            })
+        );
     }
 }

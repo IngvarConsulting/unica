@@ -231,15 +231,15 @@ impl AddressProfile {
         }
 
         let mut canonical = Vec::with_capacity(parts.len());
-        canonical.push(canonical_kind(parts[0])?);
+        let owner_kind = canonical_kind(parts[0])?;
+        canonical.push(owner_kind);
         canonical.push(parts[1]);
         if parts.len() >= 4 {
-            let child_kind = canonical_kind(parts[2])?;
-            if !matches!(child_kind, "Form" | "Template" | "Command") {
-                return Err(SourceTargetError::invalid(format!(
-                    "unsupported nested metadata kind `{}`",
-                    parts[2]
-                )));
+            let child_kind = canonical_nested_kind_for_owner(owner_kind, parts[2])?;
+            if child_kind == "Recalculation" && parts.len() != 4 {
+                return Err(SourceTargetError::invalid(
+                    "nested Recalculation metadata has no module terminal",
+                ));
             }
             canonical.push(child_kind);
             canonical.push(parts[3]);
@@ -286,12 +286,13 @@ impl AddressProfile {
         }
 
         let mut canonical = Vec::with_capacity(parts.len());
-        canonical.push(canonical_kind_or_collection(parts[0])?);
+        let owner_kind = canonical_kind_or_collection(parts[0])?;
+        canonical.push(owner_kind);
         canonical.push(parts[1]);
         match parts.len() {
             2 => {}
             3 => {
-                if let Ok(child_kind) = canonical_nested_kind(parts[2]) {
+                if let Ok(child_kind) = canonical_nested_kind_for_owner(owner_kind, parts[2]) {
                     canonical.push(child_kind);
                 } else if MODULE_TERMINALS
                     .iter()
@@ -306,11 +307,16 @@ impl AddressProfile {
                 }
             }
             4 => {
-                canonical.push(canonical_nested_kind(parts[2])?);
+                canonical.push(canonical_nested_kind_for_owner(owner_kind, parts[2])?);
                 canonical.push(parts[3]);
             }
             5 => {
-                let child_kind = canonical_nested_kind(parts[2])?;
+                let child_kind = canonical_nested_kind_for_owner(owner_kind, parts[2])?;
+                if child_kind == "Recalculation" {
+                    return Err(SourceTargetError::invalid(
+                        "nested Recalculation metadata has no module terminal",
+                    ));
+                }
                 canonical.push(child_kind);
                 canonical.push(parts[3]);
                 let terminal = match child_kind {
@@ -631,6 +637,25 @@ fn canonical_nested_kind(raw: &str) -> Result<&'static str, SourceTargetError> {
     }
 }
 
+fn canonical_nested_kind_for_owner(
+    owner_kind: &str,
+    raw: &str,
+) -> Result<&'static str, SourceTargetError> {
+    if owner_kind == "CalculationRegister" && RECALCULATION_KIND_SPELLINGS.contains(&raw) {
+        return Ok("Recalculation");
+    }
+    canonical_nested_kind(raw)
+}
+
+pub(crate) const RECALCULATION_KIND_SPELLINGS: &[&str] = &[
+    "Recalculation",
+    "Recalculations",
+    "Перерасчет",
+    "Перерасчёт",
+    "Перерасчеты",
+    "Перерасчёты",
+];
+
 const MODULE_TERMINALS: &[&str] = &[
     "Module",
     "ObjectModule",
@@ -675,6 +700,7 @@ mod tests {
     use super::{
         xml_ncname_is_valid, AddressProfile, MetadataAddress, MetadataAddressPrefix,
         SourceTargetErrorCode, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
+        RECALCULATION_KIND_SPELLINGS,
     };
 
     #[test]
@@ -718,6 +744,38 @@ mod tests {
         .unwrap();
 
         assert_eq!(address.as_str(), "CommonModule.eBayHTTP.Module");
+    }
+
+    #[test]
+    fn source_target_profile_addresses_calculation_register_recalculations_only() {
+        for spelling in RECALCULATION_KIND_SPELLINGS {
+            let address = MetadataAddress::parse(
+                PLATFORM_XML_8_3_27_FORMAT_2_20,
+                &format!("CalculationRegister.Payroll.{spelling}.Main"),
+            )
+            .unwrap();
+            assert_eq!(
+                address.as_str(),
+                "CalculationRegister.Payroll.Recalculation.Main"
+            );
+            assert_eq!(address.target_kind(), TargetKind::MetadataObject);
+
+            let prefix = MetadataAddressPrefix::parse(
+                PLATFORM_XML_8_3_27_FORMAT_2_20,
+                &format!("CalculationRegister.Payroll.{spelling}"),
+            )
+            .unwrap();
+            assert_eq!(prefix.as_str(), "CalculationRegister.Payroll.Recalculation");
+        }
+
+        for invalid in [
+            "Catalog.Items.Recalculation.Main",
+            "CalculationRegister.Payroll.Recalculation.Main.RecordSetModule",
+        ] {
+            let error =
+                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, invalid).unwrap_err();
+            assert_eq!(error.code, SourceTargetErrorCode::MetadataAddressInvalid);
+        }
     }
 
     #[test]

@@ -3760,19 +3760,13 @@ mod tests {
         };
         let source = relation("source");
         assert_eq!(source["properties"]["mode"]["enum"], json!(["replace"]));
-        let source_arrays = source["properties"]["targets"]["oneOf"]
+        let source_targets = &source["properties"]["targets"];
+        assert_eq!(source_targets["type"], "array");
+        assert_eq!(source_targets["minItems"], 1);
+        let target_variants = source_targets["items"]["oneOf"]
             .as_array()
-            .expect("source targets publish a closed array oneOf");
-        assert_eq!(source_arrays.len(), 3);
-        assert!(source_arrays.iter().any(|branch| branch["maxItems"] == 0));
-        let non_storage = source_arrays
-            .iter()
-            .find(|branch| branch["minItems"] == 1 && branch.get("maxItems").is_none())
-            .expect("source publishes a non-storage array branch");
-        let target_variants = non_storage["items"]["oneOf"]
-            .as_array()
-            .expect("non-storage source targets publish a closed oneOf");
-        assert_eq!(target_variants.len(), 8);
+            .expect("source targets publish a closed logical oneOf");
+        assert_eq!(target_variants.len(), 6);
         for target in target_variants {
             assert_eq!(target["type"], "object");
             assert_eq!(target["additionalProperties"], false);
@@ -3788,33 +3782,20 @@ mod tests {
         assert_eq!(
             event_kinds,
             [
-                "string",
-                "number",
-                "boolean",
-                "date",
                 "object",
-                "reference",
+                "manager",
+                "manager",
                 "recordSet",
                 "definedType",
+                "family",
             ]
         );
-        let value_storage = source_arrays
-            .iter()
-            .find(|branch| branch["minItems"] == 1 && branch["maxItems"] == 1)
-            .expect("source publishes a sole ValueStorage branch");
-        assert_eq!(
-            value_storage["items"]["properties"]["kind"]["const"],
-            "valueStorage"
-        );
-        assert_eq!(target_variants[0]["properties"]["length"]["const"], 0);
-        assert_eq!(
-            target_variants[0]["properties"]["allowedLength"]["const"],
-            "variable"
-        );
-        assert_eq!(
-            target_variants[3]["properties"]["fractions"]["enum"],
-            json!(["date", "dateTime"])
-        );
+        assert!(target_variants.iter().any(|target| {
+            target["properties"]["kind"]["const"] == "manager"
+                && target["required"] == json!(["kind", "metadataPath", "sourceClass"])
+                && target["properties"]["sourceClass"]["enum"]
+                    == json!(["constantManager", "constantValueManager"])
+        }));
         for name in ["owners", "registerRecords", "basedOn", "inputByString"] {
             let branch = relation(name);
             assert_eq!(

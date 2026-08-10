@@ -1,4 +1,4 @@
-use super::{MetaDiagnostic, MetaDiagnosticCode};
+use super::{EventSourceClass, MetaDiagnostic, MetaDiagnosticCode};
 use crate::domain::source_target::MetadataAddress;
 #[cfg(test)]
 use crate::domain::source_target::SourceTargetError;
@@ -83,13 +83,6 @@ pub(crate) enum DateFractions {
     DateTime,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) enum MetaEventSourceDateFractions {
-    Date,
-    DateTime,
-}
-
 /// One source type of an EventSubscription.
 ///
 /// This algebra is intentionally distinct from [`MetadataTypeVariant`]: an
@@ -102,25 +95,13 @@ pub(crate) enum MetaEventSourceDateFractions {
     tag = "kind"
 )]
 pub(crate) enum MetaEventSource {
-    String {
-        length: u32,
-        allowed_length: StringLengthMode,
-    },
-    Number {
-        digits: u32,
-        fraction: u32,
-        sign: NumberSign,
-    },
-    Boolean,
-    Date {
-        fractions: MetaEventSourceDateFractions,
-    },
-    ValueStorage,
     Object {
         metadata_path: MetadataAddress,
     },
-    Reference {
+    Manager {
         metadata_path: MetadataAddress,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        source_class: Option<EventSourceClass>,
     },
     RecordSet {
         metadata_path: MetadataAddress,
@@ -128,104 +109,156 @@ pub(crate) enum MetaEventSource {
     DefinedType {
         metadata_path: MetadataAddress,
     },
-}
-
-const META_EVENT_SOURCE_OBJECT_KINDS: &[MetadataKind] = &[
-    MetadataKind::Catalog,
-    MetadataKind::Document,
-    MetadataKind::ChartOfAccounts,
-    MetadataKind::ChartOfCharacteristicTypes,
-    MetadataKind::ChartOfCalculationTypes,
-    MetadataKind::ExchangePlan,
-    MetadataKind::BusinessProcess,
-    MetadataKind::Task,
-    MetadataKind::Report,
-    MetadataKind::DataProcessor,
-];
-
-const META_EVENT_SOURCE_REFERENCE_KINDS: &[MetadataKind] = &[
-    MetadataKind::Catalog,
-    MetadataKind::Document,
-    MetadataKind::Enum,
-    MetadataKind::ChartOfAccounts,
-    MetadataKind::ChartOfCharacteristicTypes,
-    MetadataKind::ChartOfCalculationTypes,
-    MetadataKind::ExchangePlan,
-    MetadataKind::BusinessProcess,
-    MetadataKind::Task,
-];
-
-const META_EVENT_SOURCE_RECORD_SET_KINDS: &[MetadataKind] = &[
-    MetadataKind::InformationRegister,
-    MetadataKind::AccumulationRegister,
-    MetadataKind::AccountingRegister,
-    MetadataKind::CalculationRegister,
-];
-const META_EVENT_SOURCE_DEFINED_TYPE_KINDS: &[MetadataKind] = &[MetadataKind::DefinedType];
-
-pub(crate) fn metadata_event_source_object_kinds() -> &'static [MetadataKind] {
-    META_EVENT_SOURCE_OBJECT_KINDS
-}
-
-pub(crate) fn metadata_event_source_reference_kinds() -> &'static [MetadataKind] {
-    META_EVENT_SOURCE_REFERENCE_KINDS
-}
-
-pub(crate) fn metadata_event_source_record_set_kinds() -> &'static [MetadataKind] {
-    META_EVENT_SOURCE_RECORD_SET_KINDS
+    Family {
+        source_class: EventSourceClass,
+    },
 }
 
 impl MetaEventSource {
     pub(crate) const fn as_str(&self) -> &'static str {
         match self {
-            Self::String { .. } => "string",
-            Self::Number { .. } => "number",
-            Self::Boolean => "boolean",
-            Self::Date { .. } => "date",
-            Self::ValueStorage => "valueStorage",
             Self::Object { .. } => "object",
-            Self::Reference { .. } => "reference",
+            Self::Manager { .. } => "manager",
             Self::RecordSet { .. } => "recordSet",
             Self::DefinedType { .. } => "definedType",
+            Self::Family { .. } => "family",
         }
     }
 
     pub(crate) fn metadata_path(&self) -> Option<&MetadataAddress> {
         match self {
             Self::Object { metadata_path }
-            | Self::Reference { metadata_path }
+            | Self::Manager { metadata_path, .. }
             | Self::RecordSet { metadata_path }
             | Self::DefinedType { metadata_path } => Some(metadata_path),
-            Self::String { .. }
-            | Self::Number { .. }
-            | Self::Boolean
-            | Self::Date { .. }
-            | Self::ValueStorage => None,
+            Self::Family { .. } => None,
         }
     }
 
-    pub(crate) const fn compatible_metadata_kinds(&self) -> Option<&'static [MetadataKind]> {
-        match self {
-            Self::Object { .. } => Some(META_EVENT_SOURCE_OBJECT_KINDS),
-            Self::Reference { .. } => Some(META_EVENT_SOURCE_REFERENCE_KINDS),
-            Self::RecordSet { .. } => Some(META_EVENT_SOURCE_RECORD_SET_KINDS),
-            Self::DefinedType { .. } => Some(META_EVENT_SOURCE_DEFINED_TYPE_KINDS),
-            Self::String { .. }
-            | Self::Number { .. }
-            | Self::Boolean
-            | Self::Date { .. }
-            | Self::ValueStorage => None,
-        }
-    }
-
-    /// Stable platform identity used for duplicate detection. Primitive
-    /// qualifiers describe the one primitive identity and therefore do not
-    /// make a second string/number/date source distinct.
+    /// Stable platform identity used for duplicate detection. A classified
+    /// `Manager` is distinct per source class, so the two Constant manager
+    /// classes over one path stay two identities.
     pub(crate) fn identity_key(&self) -> String {
+        match self {
+            Self::Family { source_class } => {
+                return format!("family:{}", source_class.as_str());
+            }
+            Self::Manager {
+                source_class: Some(source_class),
+                ..
+            } => {
+                return format!(
+                    "manager:{}:{}",
+                    self.metadata_path()
+                        .expect("manager has a path")
+                        .as_str()
+                        .to_lowercase(),
+                    source_class.as_str()
+                );
+            }
+            _ => {}
+        }
         match self.metadata_path() {
             Some(path) => format!("{}:{}", self.as_str(), path.as_str().to_lowercase()),
             None => self.as_str().to_string(),
         }
+    }
+
+    /// Resolve the platform event class without consulting XML or workspace
+    /// state. `DefinedType` is intentionally deferred because its members must
+    /// be expanded from the owning source set.
+    pub(crate) fn event_source_class(&self) -> Result<Option<EventSourceClass>, &'static str> {
+        let root = self
+            .metadata_path()
+            .and_then(|path| path.segments().next())
+            .unwrap_or_default();
+        let class = match self {
+            Self::Family { source_class } => return Ok(Some(*source_class)),
+            Self::DefinedType { .. } => return Ok(None),
+            Self::Object { .. } => match root {
+                "Catalog" => EventSourceClass::CatalogObject,
+                "Document" => EventSourceClass::DocumentObject,
+                "ChartOfAccounts" => EventSourceClass::ChartOfAccountsObject,
+                "ChartOfCharacteristicTypes" => EventSourceClass::ChartOfCharacteristicTypesObject,
+                "ChartOfCalculationTypes" => EventSourceClass::ChartOfCalculationTypesObject,
+                "ExchangePlan" => EventSourceClass::ExchangePlanObject,
+                "BusinessProcess" => EventSourceClass::BusinessProcessObject,
+                "Task" => EventSourceClass::TaskObject,
+                "Report" => EventSourceClass::ReportObject,
+                "DataProcessor" => EventSourceClass::DataProcessorObject,
+                _ => return Err("object source metadata root has no event-capable object class"),
+            },
+            Self::Manager { source_class, .. } => {
+                if root == "Constant" {
+                    match source_class {
+                        Some(EventSourceClass::ConstantManager) => {
+                            EventSourceClass::ConstantManager
+                        }
+                        Some(EventSourceClass::ConstantValueManager) => {
+                            EventSourceClass::ConstantValueManager
+                        }
+                        Some(_) => return Err("constant manager sourceClass is incompatible"),
+                        None => return Err("constant manager sourceClass is required"),
+                    }
+                } else {
+                    if source_class.is_some() {
+                        return Err("sourceClass is allowed only for a Constant manager");
+                    }
+                    match root {
+                        "Catalog" => EventSourceClass::CatalogManager,
+                        "Document" => EventSourceClass::DocumentManager,
+                        "Enum" => EventSourceClass::EnumManager,
+                        "InformationRegister" => EventSourceClass::InformationRegisterManager,
+                        "AccumulationRegister" => EventSourceClass::AccumulationRegisterManager,
+                        "AccountingRegister" => EventSourceClass::AccountingRegisterManager,
+                        "CalculationRegister" => EventSourceClass::CalculationRegisterManager,
+                        "ChartOfAccounts" => EventSourceClass::ChartOfAccountsManager,
+                        "ChartOfCharacteristicTypes" => {
+                            EventSourceClass::ChartOfCharacteristicTypesManager
+                        }
+                        "ChartOfCalculationTypes" => {
+                            EventSourceClass::ChartOfCalculationTypesManager
+                        }
+                        "BusinessProcess" => EventSourceClass::BusinessProcessManager,
+                        "Task" => EventSourceClass::TaskManager,
+                        "ExchangePlan" => EventSourceClass::ExchangePlanManager,
+                        "DocumentJournal" => EventSourceClass::DocumentJournalManager,
+                        "Report" => EventSourceClass::ReportManager,
+                        "DataProcessor" => EventSourceClass::DataProcessorManager,
+                        "FilterCriterion" => EventSourceClass::FilterCriterionManager,
+                        "SettingsStorage" => EventSourceClass::SettingsStorageManager,
+                        _ => {
+                            return Err(
+                                "manager source metadata root has no event-capable manager class",
+                            )
+                        }
+                    }
+                }
+            }
+            Self::RecordSet { metadata_path } => {
+                let segments = metadata_path.segments().collect::<Vec<_>>();
+                if segments.len() == 4
+                    && segments[0] == "CalculationRegister"
+                    && segments[2] == "Recalculation"
+                {
+                    EventSourceClass::RecalculationRecordSet
+                } else if segments.len() == 2 {
+                    match root {
+                        "InformationRegister" => EventSourceClass::InformationRegisterRecordSet,
+                        "AccumulationRegister" => EventSourceClass::AccumulationRegisterRecordSet,
+                        "AccountingRegister" => EventSourceClass::AccountingRegisterRecordSet,
+                        "CalculationRegister" => EventSourceClass::CalculationRegisterRecordSet,
+                        "Sequence" => EventSourceClass::SequenceRecordSet,
+                        _ => return Err(
+                            "recordSet source metadata root has no event-capable record-set class",
+                        ),
+                    }
+                } else {
+                    return Err("recordSet source metadataPath is not a register, sequence, or recalculation");
+                }
+            }
+        };
+        Ok(Some(class))
     }
 }
 
@@ -600,24 +633,44 @@ mod tests {
         let record_set =
             MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "InformationRegister.Facts")
                 .unwrap();
+        let manager =
+            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Products").unwrap();
         assert_eq!(
-            serde_json::to_value(MetaEventSource::String {
-                length: 0,
-                allowed_length: StringLengthMode::Variable,
+            serde_json::to_value(MetaEventSource::Manager {
+                metadata_path: manager,
+                source_class: None,
             })
             .unwrap(),
             serde_json::json!({
-                "kind": "string",
-                "length": 0,
-                "allowedLength": "variable",
+                "kind": "manager",
+                "metadataPath": "Catalog.Products",
             })
         );
         assert_eq!(
-            serde_json::to_value(MetaEventSource::Date {
-                fractions: MetaEventSourceDateFractions::DateTime,
+            serde_json::to_value(MetaEventSource::Family {
+                source_class: EventSourceClass::CatalogObject,
             })
             .unwrap(),
-            serde_json::json!({"kind": "date", "fractions": "dateTime"})
+            serde_json::json!({
+                "kind": "family",
+                "sourceClass": "catalogObject",
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(MetaEventSource::Manager {
+                metadata_path: MetadataAddress::parse(
+                    PLATFORM_XML_8_3_27_FORMAT_2_20,
+                    "Constant.Mode",
+                )
+                .unwrap(),
+                source_class: Some(EventSourceClass::ConstantManager),
+            })
+            .unwrap(),
+            serde_json::json!({
+                "kind": "manager",
+                "metadataPath": "Constant.Mode",
+                "sourceClass": "constantManager",
+            })
         );
         assert_eq!(
             serde_json::to_value(MetaEventSource::RecordSet {

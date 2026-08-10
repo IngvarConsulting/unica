@@ -859,7 +859,7 @@ Create one metadata object from a typed internal template and optionally configu
 
 - Создать минимальный справочник по логическому sourceSet
 - Одним вызовом создать и настроить объект через общий типизированный `operations` union
-- Создать подписку на событие и сразу задать источник через `editRelations.source`
+- Создать подписку и атомарно задать совместимые `Source`, `Event` и `Handler`
 - Предварительно проверить план создания объекта без записи файлов
 
 ### `unica.meta.edit`
@@ -873,7 +873,7 @@ Apply ordered typed metadata edit operations atomically.
 | `operations` | array | да | Ordered typed edit operations applied as one atomic change. |
 | `sourceSet` | string | да | Exact Configuration source-set name from v8project.yaml. |
 
-**Результат сейчас:** `structuredContent.data`: логический адрес, валидация, семантические `effects` по `operationIndex` и план атомарной публикации пяти вариантов typed-операций, включая замену `EventSubscription.Source` через `editRelations.source` (отвечают типизированным `data`)
+**Результат сейчас:** `structuredContent.data`: логический адрес, валидация, семантические `effects` по `operationIndex` и план атомарной публикации пяти вариантов typed-операций, включая проверку единой связки `EventSubscription.Source`/`Event`/`Handler` через `editRelations.source` и `setProperties` (отвечают типизированным `data`)
 
 **Целевой контракт:** достигнут
 
@@ -881,7 +881,7 @@ Apply ordered typed metadata edit operations atomically.
 
 - Добавить реквизит существующему документу
 - Назначить владельцев подчинённому справочнику
-- Заменить источник существующей подписки набором записей регистра сведений
+- Атомарно заменить источник, событие и обработчик существующей подписки
 
 ### `unica.meta.info`
 
@@ -894,7 +894,7 @@ Inspect one metadata object with validation, proven subsystem memberships, and s
 | `sections` | array | нет | Extra sections to compute, all read from the source tree: `roles`, `subscriptions` and `functionalOptions` land in `usage`, `predefinedItems` in its own field. Omit or pass [] to inspect the object alone. |
 | `sourceSet` | string | да | Exact Configuration source-set name from v8project.yaml. |
 
-**Результат сейчас:** `structuredContent.data`: локальная структура и валидация объекта, включая typed readback `relations.source` подписки; `functionalSubsystems` и `interfaceSubsystems` содержат только членства текущего объекта в зарегистрированной топологии как плоские `SubsystemAddress`, сопоставляя `Content` по адресу метаданных или UUID корневого дескриптора; доказанное отсутствие членств сериализуется как `[]`, а при недоступном или повреждённом доказательстве поля отсутствуют и диагностика содержит `provider_unavailable` (ADR-0036, INV-SOURCE-SUBSYSTEM-TOPOLOGY); явно выбранные секции читаются из дерева исходников в `usage` и `predefinedItems`, обращения к RLM нет ни при каких аргументах (отвечают типизированным `data`)
+**Результат сейчас:** `structuredContent.data`: локальная структура и валидация объекта, включая логический readback и совместимость `relations.source`, `Event`, `Handler` подписки; `functionalSubsystems` и `interfaceSubsystems` содержат только членства текущего объекта в зарегистрированной топологии как плоские `SubsystemAddress`, сопоставляя `Content` по адресу метаданных или UUID корневого дескриптора; доказанное отсутствие членств сериализуется как `[]`, а при недоступном или повреждённом доказательстве поля отсутствуют и диагностика содержит `provider_unavailable` (ADR-0036, INV-SOURCE-SUBSYSTEM-TOPOLOGY); явно выбранные секции читаются из дерева исходников в `usage` и `predefinedItems`, обращения к RLM нет ни при каких аргументах (отвечают типизированным `data`)
 
 **Целевой контракт:** достигнут
 
@@ -903,7 +903,7 @@ Inspect one metadata object with validation, proven subsystem memberships, and s
 - Изучить структуру справочника перед написанием запроса
 - Сравнить два объекта по подчинению и составу реквизитов
 - Уточнить длину кода и основное представление перед генерацией формы
-- Прочитать фактический типизированный список источников подписки на событие
+- Прочитать фактическую логическую связку источников, события и обработчика подписки
 - Увидеть функциональные и интерфейсные подсистемы, в которые входит объект
 
 ### `unica.meta.remove`

@@ -1819,6 +1819,7 @@ source-set:
                     self.assertEqual(
                         {diagnostic.get("code") for diagnostic in result["diagnostics"]},
                         {"provider_unavailable"},
+                        json.dumps(result, ensure_ascii=False, indent=2),
                     )
                 else:
                     self.assertTrue(result["ok"], json.dumps(result, ensure_ascii=False, indent=2))
@@ -2784,27 +2785,19 @@ def prepare_meta_add_skill_example(
     if arguments["kind"] != "EventSubscription":
         return
     source_root = source_roots[arguments["sourceSet"]]
-    module_name = "EventHandlers"
-    descriptor = source_root / "CommonModules" / f"{module_name}.xml"
-    descriptor.parent.mkdir(parents=True, exist_ok=True)
-    descriptor.write_text(
-        f'''<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
-  <CommonModule uuid="55555555-5555-4555-8555-555555555555">
-    <InternalInfo/>
-    <Properties><Name>{module_name}</Name></Properties>
-    <ChildObjects/>
-  </CommonModule>
-</MetaDataObject>
-''',
-        encoding="utf-8",
+    operations = arguments.get("operations", ())
+    if not operations:
+        write_meta_event_handler_fixture(
+            source_root,
+            "EventHandlers",
+            "OnBeforeWrite",
+            ("Source", "Cancel"),
+        )
+        return
+    prepare_event_subscription_binding_skill_example(
+        source_root,
+        operations,
     )
-    module = source_root / "CommonModules" / module_name / "Ext" / "Module.bsl"
-    module.parent.mkdir(parents=True, exist_ok=True)
-    module.write_text(
-        "Procedure OnBeforeWrite(Source, Cancel) Export\nEndProcedure\n",
-        encoding="utf-8",
-    )
-    register_meta_skill_object(source_root, "CommonModule", module_name)
 
 
 def prepare_meta_info_skill_example(
@@ -2894,21 +2887,10 @@ def prepare_meta_edit_skill_example(
     if kind == "EventSubscription":
         write_meta_event_subscription_fixture(object_path, name)
         register_meta_skill_object(source_root, kind, name)
-        for operation in arguments.get("operations", ()):
-            if operation.get("relation") != "source":
-                continue
-            for target in operation.get("targets", ()):
-                if target.get("kind") != "recordSet":
-                    continue
-                target_kind, separator, target_name = target[
-                    "metadataPath"
-                ].partition(".")
-                if not separator or target_kind != "InformationRegister":
-                    raise AssertionError(
-                        "typed Meta skill source fixture supports an "
-                        "InformationRegister recordSet target"
-                    )
-                write_meta_information_register_fixture(source_root, target_name)
+        prepare_event_subscription_binding_skill_example(
+            source_root,
+            arguments.get("operations", ()),
+        )
         return
 
     if not object_path.exists():
@@ -2998,12 +2980,142 @@ def write_meta_information_register_fixture(source_root: Path, name: str) -> Non
     register_meta_skill_object(source_root, "InformationRegister", name)
 
 
+def prepare_event_subscription_binding_skill_example(
+    source_root: Path,
+    operations: Iterable[dict[str, Any]],
+) -> None:
+    """Materialize every target named by a documented subscription binding."""
+    sources: list[dict[str, Any]] = []
+    properties: dict[str, Any] = {}
+    for operation in operations:
+        if operation.get("relation") == "source":
+            sources.extend(operation.get("targets", ()))
+        if operation.get("op") == "setProperties":
+            properties.update(operation.get("values", {}))
+
+    source_signatures: set[tuple[str, ...]] = set()
+    for source in sources:
+        source_kind = source.get("kind")
+        metadata_path = source.get("metadataPath")
+        if source_kind == "object" and isinstance(metadata_path, str):
+            target_kind, separator, target_name = metadata_path.partition(".")
+            if not separator or target_kind != "Catalog":
+                raise AssertionError(
+                    "typed Meta skill object source fixture supports a Catalog target"
+                )
+            write_meta_catalog_object_fixture(source_root, target_name)
+            source_signatures.add(("Source", "Cancel"))
+            continue
+        if source_kind == "recordSet" and isinstance(metadata_path, str):
+            target_kind, separator, target_name = metadata_path.partition(".")
+            if not separator or target_kind != "InformationRegister":
+                raise AssertionError(
+                    "typed Meta skill recordSet source fixture supports an "
+                    "InformationRegister target"
+                )
+            write_meta_information_register_fixture(source_root, target_name)
+            source_signatures.add(("Source", "Cancel", "Replacing"))
+            continue
+        raise AssertionError(
+            f"unsupported documented EventSubscription source fixture: {source!r}"
+        )
+
+    event = properties.get("Event")
+    if event != "BeforeWrite":
+        raise AssertionError(
+            f"unsupported documented EventSubscription event fixture: {event!r}"
+        )
+    if len(source_signatures) != 1:
+        raise AssertionError(
+            "documented EventSubscription sources must have one common signature"
+        )
+    handler = properties.get("Handler")
+    if not isinstance(handler, str):
+        raise AssertionError("documented EventSubscription binding has no Handler")
+    prefix, module_name, procedure_name, *tail = handler.split(".")
+    if prefix != "CommonModule" or tail:
+        raise AssertionError(f"invalid documented EventSubscription Handler: {handler}")
+    write_meta_event_handler_fixture(
+        source_root,
+        module_name,
+        procedure_name,
+        next(iter(source_signatures)),
+    )
+
+
+def write_meta_catalog_object_fixture(source_root: Path, name: str) -> None:
+    descriptor = source_root / "Catalogs" / f"{name}.xml"
+    descriptor.parent.mkdir(parents=True, exist_ok=True)
+    descriptor_uuid = stable_meta_skill_uuid(f"Catalog.{name}")
+    type_uuid = stable_meta_skill_v4_uuid(f"CatalogObject.{name}.type")
+    value_uuid = stable_meta_skill_v4_uuid(f"CatalogObject.{name}.value")
+    descriptor.write_text(
+        f'''<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20">
+  <Catalog uuid="{descriptor_uuid}">
+    <InternalInfo>
+      <xr:GeneratedType name="CatalogObject.{name}" category="Object">
+        <xr:TypeId>{type_uuid}</xr:TypeId>
+        <xr:ValueId>{value_uuid}</xr:ValueId>
+      </xr:GeneratedType>
+    </InternalInfo>
+    <Properties><Name>{name}</Name></Properties>
+    <ChildObjects/>
+  </Catalog>
+</MetaDataObject>
+''',
+        encoding="utf-8",
+    )
+    register_meta_skill_object(source_root, "Catalog", name)
+
+
+def write_meta_event_handler_fixture(
+    source_root: Path,
+    module_name: str,
+    procedure_name: str,
+    parameters: tuple[str, ...],
+) -> None:
+    descriptor = source_root / "CommonModules" / f"{module_name}.xml"
+    descriptor.parent.mkdir(parents=True, exist_ok=True)
+    descriptor_uuid = stable_meta_skill_uuid(f"CommonModule.{module_name}")
+    descriptor.write_text(
+        f'''<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <CommonModule uuid="{descriptor_uuid}">
+    <Properties>
+      <Name>{module_name}</Name>
+      <Global>false</Global>
+      <ClientManagedApplication>false</ClientManagedApplication>
+      <Server>true</Server>
+      <ExternalConnection>true</ExternalConnection>
+      <ClientOrdinaryApplication>false</ClientOrdinaryApplication>
+      <ServerCall>false</ServerCall>
+      <Privileged>false</Privileged>
+      <ReturnValuesReuse>DontUse</ReturnValuesReuse>
+    </Properties>
+  </CommonModule>
+</MetaDataObject>
+''',
+        encoding="utf-8",
+    )
+    module = source_root / "CommonModules" / module_name / "Ext" / "Module.bsl"
+    module.parent.mkdir(parents=True, exist_ok=True)
+    module.write_text(
+        f"Procedure {procedure_name}({', '.join(parameters)}) Export\nEndProcedure\n",
+        encoding="utf-8",
+    )
+    register_meta_skill_object(source_root, "CommonModule", module_name)
+
+
 def stable_meta_skill_uuid(identity: str) -> str:
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
     return (
         f"{digest[:8]}-{digest[8:12]}-{digest[12:16]}-"
         f"{digest[16:20]}-{digest[20:32]}"
     )
+
+
+def stable_meta_skill_v4_uuid(identity: str) -> str:
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
+    return str(uuid.UUID(hex=digest, version=4))
 
 
 def ensure_meta_edit_skill_tabular_section(
