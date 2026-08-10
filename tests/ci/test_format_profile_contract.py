@@ -133,6 +133,5 @@ class FormatProfileContractTests(unittest.TestCase):
                 self.assertNotIn("2.17", current)
                 self.assertNotIn("http://v8.3/", current)
 
-
 if __name__ == "__main__":
     unittest.main()

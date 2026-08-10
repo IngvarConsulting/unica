@@ -69,7 +69,8 @@
 
 ## Предложенные решения
 
-- [ADR-0040: `unica.meta.info` имеет отдельную полную read-model](0040-meta-info-complete-read-model.md)
+- [ADR-0041: `unica.meta.info` имеет отдельную полную read-model](0041-meta-info-complete-read-model.md)
+- [ADR-0042: Чтение метаданных не зависит от плана мутации](0042-meta-observation-does-not-depend-on-mutation.md)
 
 Запись в статусе `proposed` ещё не действует и не заменяет принятые решения;
 после ревью она либо переводится в `accepted` вместе с реализацией и
