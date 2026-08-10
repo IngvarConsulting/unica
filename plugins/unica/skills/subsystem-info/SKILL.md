@@ -166,6 +166,22 @@ allowed-tools:
 
 ```json
 {
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.subsystem.info",
+    "arguments": {
+      "cwd": "<workspace>",
+      "SubsystemPath": "Subsystems/Продажи/Subsystems/ОптовыеПродажи.xml"
+    }
+  }
+}
+```
+
+Типизированное `data` для зарегистрированной подсистемы имеет вид:
+
+```json
+{
   "name": "ОптовыеПродажи",
   "children": ["Возвраты"],
   "tree": [

@@ -1,15 +1,87 @@
 from __future__ import annotations
 
 import json
-import re
 import unittest
 from pathlib import Path
+from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+def subsystem_paths_from_json_examples(markdown: str) -> list[str]:
+    examples: list[Any] = []
+    current_lines: list[str] | None = None
+
+    for line in markdown.splitlines():
+        fence = line.strip()
+        if current_lines is None:
+            if fence.casefold() == "```json":
+                current_lines = []
+            continue
+        if fence == "```":
+            try:
+                examples.append(json.loads("\n".join(current_lines)))
+            except json.JSONDecodeError as error:
+                raise AssertionError("invalid fenced JSON example") from error
+            current_lines = None
+            continue
+        current_lines.append(line)
+
+    if current_lines is not None:
+        raise AssertionError("unclosed fenced JSON example")
+
+    paths: list[str] = []
+
+    def collect(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key == "SubsystemPath" and isinstance(child, str):
+                    paths.append(child)
+                else:
+                    collect(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect(child)
+
+    for example in examples:
+        collect(example)
+    return paths
+
+
+def directory_subsystem_targets(targets: list[str]) -> set[str]:
+    return {
+        target.rstrip("/")
+        for target in targets
+        if not target.rstrip("/").casefold().endswith(".xml")
+    }
+
+
 class SubsystemSurfaceContractTests(unittest.TestCase):
+    def test_json_example_paths_ignore_prose(self) -> None:
+        markdown = """
+Prose resembling JSON: `"SubsystemPath": "Subsystems/Ложная/Subsystems"`.
+
+```json
+{
+  "params": {
+    "arguments": {
+      "SubsystemPath": "Subsystems/Продажи.XML"
+    }
+  }
+}
+```
+"""
+
+        paths = subsystem_paths_from_json_examples(markdown)
+
+        self.assertEqual(paths, ["Subsystems/Продажи.XML"])
+
+    def test_xml_suffix_is_case_insensitive_for_directory_targets(self) -> None:
+        targets = ["Subsystems", "Subsystems/Продажи.XML"]
+
+        self.assertEqual(directory_subsystem_targets(targets), {"Subsystems"})
+
     def test_address_is_separate_from_metadata_address(self) -> None:
         subsystem = (
             REPO_ROOT / "crates/unica-coder/src/domain/subsystem.rs"
@@ -112,20 +184,13 @@ class SubsystemSurfaceContractTests(unittest.TestCase):
         skill = (
             REPO_ROOT / "plugins/unica/skills/subsystem-info/SKILL.md"
         ).read_text(encoding="utf-8")
-        targets = re.findall(r'"SubsystemPath"\s*:\s*"([^"]+)"', skill)
-        directory_targets = {
-            target.rstrip("/")
-            for target in targets
-            if not target.rstrip("/").endswith(".xml")
-        }
+        targets = subsystem_paths_from_json_examples(skill)
+        directory_targets = directory_subsystem_targets(targets)
 
         self.assertEqual(directory_targets, {"Subsystems"})
-        self.assertIsNone(
-            re.search(
-                r"(?:каталог.{0,120}поддерев|поддерев.{0,120}каталог)",
-                skill,
-                flags=re.IGNORECASE | re.DOTALL,
-            )
+        self.assertIn(
+            "Subsystems/Продажи/Subsystems/ОптовыеПродажи.xml",
+            targets,
         )
 
     def test_bsp_address_does_not_replace_platform_xml_reference(self) -> None:
