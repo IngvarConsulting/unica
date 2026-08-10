@@ -1000,7 +1000,7 @@ class CorpusAdapterTests(unittest.TestCase):
     def test_mandatory_corpus_includes_every_cfe_patch_module_layout(self):
         verifier = load_verifier()
 
-        self.assertEqual(len(verifier.MANDATORY_CASE_IDS), 66)
+        self.assertEqual(len(verifier.MANDATORY_CASE_IDS), 67)
         self.assertTrue(
             {
                 "cfe-patch-method-bsl-only",
@@ -1011,6 +1011,40 @@ class CorpusAdapterTests(unittest.TestCase):
                 "cfe-patch-method-constant-value-manager-module",
             }.issubset(verifier.MANDATORY_CASE_IDS)
         )
+
+    def test_next_mandatory_corpus_includes_event_source_case(self):
+        verifier = load_verifier()
+
+        self.assertIn("meta-edit-event-source", verifier.MANDATORY_CASE_IDS)
+
+    def test_current_default_inventory_is_pinned_to_reproducible_candidate(self):
+        verifier = load_verifier()
+        self.assertEqual(
+            verifier.EXPECTED_CASE_CONTRACT_SHA256,
+            "67832c726d5343561e8911f462c695aa5cab1fdfc7431e6578c09b2c699dd01c",
+        )
+        self.assertEqual(
+            verifier.LAST_VERIFIED_CASE_CONTRACT_SHA256,
+            verifier.EXPECTED_CASE_CONTRACT_SHA256,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cases = [
+                write_platform_case(root, case_id)
+                for case_id in sorted(verifier.MANDATORY_CASE_IDS)
+            ]
+            manifest = write_manifest(root, cases)
+
+            with self.assertRaisesRegex(
+                verifier.CorpusError,
+                r"case contract fields do not match the pinned public-writer inventory",
+            ):
+                verifier.load_corpus(
+                    manifest,
+                    repo_root=ROOT,
+                    home_root=Path.home(),
+                )
 
     def load_single(self, root: Path, case: dict | None = None, **kwargs):
         verifier = load_verifier()

@@ -31,7 +31,9 @@ impl MetadataOperations {
         )?;
         let (local, validation_subject) = read_typed_meta_info(
             &resolved,
+            &request.source_set,
             &request.metadata_path,
+            context,
             ProviderDeadline::new(std::time::Instant::now() + std::time::Duration::from_secs(5)),
             cancellation,
         )?;
@@ -202,9 +204,9 @@ mod tests {
     use crate::domain::events::DomainEvent;
     use crate::domain::metadata::{
         MetaCollection, MetaEditOperation, MetaElementInput, MetaElementUpdateInput,
-        MetaPropertyChanges, MetaPropertyInput, MetaPropertyValue, MetaPublicationAction,
-        MetaPublicationResource, MetaRelation, MetaScope, MetaValidationStatus, MetadataKind,
-        MetadataReference, RelationEditMode,
+        MetaEventSource, MetaPropertyChanges, MetaPropertyInput, MetaPropertyValue,
+        MetaPublicationAction, MetaPublicationResource, MetaRelation, MetaRelationTarget,
+        MetaScope, MetaValidationStatus, MetadataKind, MetadataReference, RelationEditMode,
     };
     use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
     use crate::infrastructure::application_ports::InfrastructureApplicationPorts;
@@ -212,6 +214,7 @@ mod tests {
     use crate::infrastructure::native_operations::compile_transaction::{
         with_before_rollback_mutation_hook, with_commit_failpoint, CommitFailpoint,
     };
+    use crate::infrastructure::native_operations::single_file_publisher::with_before_commit_hook;
     use crate::infrastructure::platform::filesystem::{
         create_dir_symlink_for_test, remove_dir_symlink_for_test,
     };
@@ -316,6 +319,113 @@ mod tests {
         fn notify_invalidation(&self, context: &WorkspaceContext, events: &[DomainEvent]) {
             self.inner.notify_invalidation(context, events);
         }
+    }
+
+    fn empty_workspace(label: &str) -> (PathBuf, WorkspaceContext) {
+        let root = std::env::temp_dir().join(format!(
+            "unica-meta-typed-{label}-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let context = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 0,
+        };
+        let args = Map::from_iter([
+            ("Name".to_string(), json!("MetaTyped")),
+            ("OutputDir".to_string(), json!("src")),
+        ]);
+        let outcome = create_configuration_scaffold(&args, &context);
+        assert!(outcome.ok, "{:?}", outcome.errors);
+        fs::write(
+            root.join("v8project.yaml"),
+            concat!(
+                "format: DESIGNER\n",
+                "source-set:\n",
+                "  - name: main\n",
+                "    type: CONFIGURATION\n",
+                "    path: src\n",
+            ),
+        )
+        .unwrap();
+        (root, context)
+    }
+
+    fn add_exported_event_handler(root: &std::path::Path, context: &WorkspaceContext) {
+        let cancellation = CancellationToken::new();
+        MetadataOperations::prepare_mutation(
+            &MetadataRequest::Add(MetaAddRequest {
+                source_set: "main".into(),
+                kind: MetadataKind::CommonModule,
+                name: "EventHandlers".into(),
+                operations: Vec::new(),
+                dry_run: false,
+            }),
+            context,
+            &cancellation,
+        )
+        .unwrap()
+        .publish(&cancellation)
+        .unwrap();
+        fs::write(
+            root.join("src/CommonModules/EventHandlers/Ext/Module.bsl"),
+            "Procedure OnEvent(Source, Cancel) Export\nEndProcedure\n",
+        )
+        .unwrap();
+    }
+
+    fn source_replace(sources: Vec<MetaEventSource>) -> MetaEditOperation {
+        MetaEditOperation::edit_relation_targets(
+            MetaRelation::Source,
+            RelationEditMode::Replace,
+            sources
+                .into_iter()
+                .map(MetaRelationTarget::EventSource)
+                .collect(),
+        )
+        .unwrap()
+    }
+
+    fn prepared_event_subscription_source_change(
+        label: &str,
+    ) -> (PathBuf, Box<dyn PreparedMetadataMutation>, PathBuf, Vec<u8>) {
+        let (root, context) = empty_workspace(label);
+        add_exported_event_handler(&root, &context);
+        let cancellation = CancellationToken::new();
+        MetadataOperations::prepare_mutation(
+            &MetadataRequest::Add(MetaAddRequest {
+                source_set: "main".into(),
+                kind: MetadataKind::EventSubscription,
+                name: "Events".into(),
+                operations: vec![source_replace(vec![MetaEventSource::Boolean])],
+                dry_run: false,
+            }),
+            &context,
+            &cancellation,
+        )
+        .unwrap()
+        .publish(&cancellation)
+        .unwrap();
+        let descriptor = root.join("src/EventSubscriptions/Events.xml");
+        let preimage = fs::read(&descriptor).unwrap();
+        let target =
+            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "EventSubscription.Events")
+                .unwrap();
+        let prepared = MetadataOperations::prepare_mutation(
+            &MetadataRequest::Edit(MetaEditRequest {
+                source_set: "main".into(),
+                metadata_path: target,
+                operations: vec![source_replace(Vec::new())],
+                dry_run: false,
+            }),
+            &context,
+            &cancellation,
+        )
+        .unwrap();
+        (root, prepared, descriptor, preimage)
     }
 
     struct Fixture {
@@ -540,6 +650,7 @@ mod tests {
                     register_records: Vec::new(),
                     based_on: Vec::new(),
                     input_by_string: Vec::new(),
+                    source: Vec::new(),
                 },
                 collections: crate::domain::metadata::MetaCollectionsData {
                     attributes: Vec::new(),
@@ -571,6 +682,675 @@ mod tests {
             "enrichment leaked workspace root: {rendered}"
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn meta_add_event_subscription_source_replace_needs_no_catalog_and_round_trips() {
+        let (root, context) = empty_workspace("event-source-add");
+        add_exported_event_handler(&root, &context);
+        let cancellation = CancellationToken::new();
+        let target = MetadataAddress::parse(
+            PLATFORM_XML_8_3_27_FORMAT_2_20,
+            "EventSubscription.AllEvents",
+        )
+        .unwrap();
+        let add = MetadataRequest::Add(MetaAddRequest {
+            source_set: "main".into(),
+            kind: MetadataKind::EventSubscription,
+            name: "AllEvents".into(),
+            operations: vec![source_replace(vec![MetaEventSource::Boolean])],
+            dry_run: false,
+        });
+
+        let prepared = MetadataOperations::prepare_mutation(&add, &context, &cancellation).unwrap();
+        assert!(prepared
+            .validation_subject()
+            .resources
+            .iter()
+            .all(|resource| {
+                !matches!(
+                    &resource.role,
+                    MetadataResourceRole::Dependency { target }
+                        if target.as_str().starts_with("Catalog.")
+                )
+            }));
+        let descriptor = prepared
+            .validation_subject()
+            .resources
+            .iter()
+            .find(|resource| matches!(resource.role, MetadataResourceRole::Descriptor))
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&descriptor.bytes).contains("<v8:Type>xs:boolean</v8:Type>")
+        );
+        assert_eq!(
+            prepared.preview().effects[1].after,
+            Some(json!([{ "kind": "boolean" }]))
+        );
+        prepared.publish(&cancellation).unwrap();
+
+        let read = MetadataOperations::read_local(
+            &MetaInfoRequest {
+                source_set: "main".into(),
+                metadata_path: target.clone(),
+                sections: Vec::new(),
+                limit: 20,
+            },
+            &context,
+            &cancellation,
+        )
+        .unwrap();
+        assert_eq!(read.local.relations.source, vec![MetaEventSource::Boolean]);
+
+        let noop = MetadataOperations::prepare_mutation(
+            &MetadataRequest::Edit(MetaEditRequest {
+                source_set: "main".into(),
+                metadata_path: target,
+                operations: vec![source_replace(vec![MetaEventSource::Boolean])],
+                dry_run: false,
+            }),
+            &context,
+            &cancellation,
+        )
+        .unwrap();
+        assert!(!noop.preview().changed);
+        assert!(noop.preview().publication_plan.is_empty());
+        noop.publish(&cancellation).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn add_reference_event_subscription(fixture: &Fixture, name: &str) -> MetadataAddress {
+        add_exported_event_handler(&fixture.root, &fixture.context);
+        let cancellation = CancellationToken::new();
+        MetadataOperations::prepare_mutation(
+            &MetadataRequest::Add(MetaAddRequest {
+                source_set: "main".into(),
+                kind: MetadataKind::EventSubscription,
+                name: name.into(),
+                operations: vec![source_replace(vec![MetaEventSource::Reference {
+                    metadata_path: fixture.target.clone(),
+                }])],
+                dry_run: false,
+            }),
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap()
+        .publish(&cancellation)
+        .unwrap();
+        MetadataAddress::parse(
+            PLATFORM_XML_8_3_27_FORMAT_2_20,
+            &format!("EventSubscription.{name}"),
+        )
+        .unwrap()
+    }
+
+    fn assert_event_source_info_validation_fails(
+        fixture: &Fixture,
+        target: MetadataAddress,
+        expected_source: MetadataAddress,
+        expected_message: &str,
+    ) {
+        let cancellation = CancellationToken::new();
+        let read = MetadataOperations::read_local(
+            &MetaInfoRequest {
+                source_set: "main".into(),
+                metadata_path: target,
+                sections: Vec::new(),
+                limit: 20,
+            },
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap();
+        assert_eq!(
+            read.local.relations.source,
+            vec![MetaEventSource::Reference {
+                metadata_path: expected_source,
+            }],
+            "meta.info must retain typed partial data when dependency proof fails"
+        );
+
+        let validation = MetadataOperations::validate_read(
+            &read.validation_subject,
+            &fixture.context,
+            &cancellation,
+        );
+        assert_eq!(
+            validation.status,
+            MetaValidationStatus::Failed,
+            "{:?}",
+            validation.diagnostics
+        );
+        assert!(validation.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .field
+                .as_deref()
+                .is_some_and(|field| field.starts_with("relations.source"))
+                && diagnostic.message.contains(expected_message)
+        }));
+    }
+
+    #[test]
+    fn meta_info_rejects_missing_event_source_dependency_but_keeps_typed_readback() {
+        let fixture = Fixture::new("event-source-info-missing-dependency");
+        let subscription = add_reference_event_subscription(&fixture, "CatalogEvents");
+        let descriptor = fixture
+            .root
+            .join("src/EventSubscriptions/CatalogEvents.xml");
+        let source = String::from_utf8(fs::read(&descriptor).unwrap()).unwrap();
+        let missing = source.replacen("cfg:CatalogRef.Editable", "cfg:CatalogRef.Missing", 1);
+        assert_ne!(missing, source, "fixture must rewrite the Source QName");
+        fs::write(descriptor, missing).unwrap();
+        let missing_target =
+            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Missing").unwrap();
+
+        assert_event_source_info_validation_fails(
+            &fixture,
+            subscription,
+            missing_target,
+            "unavailable",
+        );
+    }
+
+    #[test]
+    fn meta_info_rejects_event_source_dependency_with_wrong_generated_type() {
+        let fixture = Fixture::new("event-source-info-generated-type");
+        let subscription = add_reference_event_subscription(&fixture, "CatalogEvents");
+        let source = String::from_utf8(fs::read(&fixture.descriptor).unwrap()).unwrap();
+        let malformed = source.replacen(
+            "name=\"CatalogRef.Editable\"",
+            "name=\"CatalogRef.Shadow\"",
+            1,
+        );
+        assert_ne!(malformed, source, "fixture must corrupt GeneratedType");
+        fs::write(&fixture.descriptor, malformed).unwrap();
+
+        assert_event_source_info_validation_fails(
+            &fixture,
+            subscription,
+            fixture.target.clone(),
+            "GeneratedType",
+        );
+    }
+
+    #[test]
+    fn typed_event_source_generated_dependencies_are_aggregated_validated_and_guarded() {
+        let fixture = Fixture::new("event-source-dependencies");
+        add_exported_event_handler(&fixture.root, &fixture.context);
+        let cancellation = CancellationToken::new();
+        MetadataOperations::prepare_mutation(
+            &MetadataRequest::Add(MetaAddRequest {
+                source_set: "main".into(),
+                kind: MetadataKind::EventSubscription,
+                name: "CatalogEvents".into(),
+                operations: Vec::new(),
+                dry_run: false,
+            }),
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap()
+        .publish(&cancellation)
+        .unwrap();
+        let subscription = MetadataAddress::parse(
+            PLATFORM_XML_8_3_27_FORMAT_2_20,
+            "EventSubscription.CatalogEvents",
+        )
+        .unwrap();
+        let sources = vec![
+            MetaEventSource::Object {
+                metadata_path: fixture.target.clone(),
+            },
+            MetaEventSource::Reference {
+                metadata_path: fixture.target.clone(),
+            },
+        ];
+        let request = MetadataRequest::Edit(MetaEditRequest {
+            source_set: "main".into(),
+            metadata_path: subscription.clone(),
+            operations: vec![source_replace(sources.clone())],
+            dry_run: false,
+        });
+
+        let prepared =
+            MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+                .unwrap();
+        let dependency_count = prepared
+            .validation_subject()
+            .resources
+            .iter()
+            .filter(|resource| {
+                matches!(
+                    &resource.role,
+                    MetadataResourceRole::Dependency { target } if target == &fixture.target
+                )
+            })
+            .count();
+        assert_eq!(dependency_count, 1);
+        assert!(prepared
+            .validation_subject()
+            .resources
+            .iter()
+            .any(|resource| {
+                matches!(
+                    &resource.role,
+                    MetadataResourceRole::Module { owner }
+                        if owner.as_str() == "CommonModule.EventHandlers"
+                )
+            }));
+        let validation = MetadataOperations::validate(
+            prepared.validation_subject(),
+            &fixture.context,
+            &cancellation,
+        );
+        assert_eq!(
+            validation.status,
+            MetaValidationStatus::Passed,
+            "{:?}",
+            validation.diagnostics
+        );
+        prepared.publish(&cancellation).unwrap();
+        let read = MetadataOperations::read_local(
+            &MetaInfoRequest {
+                source_set: "main".into(),
+                metadata_path: subscription.clone(),
+                sections: Vec::new(),
+                limit: 20,
+            },
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap();
+        assert_eq!(read.local.relations.source, sources);
+        let read_validation = MetadataOperations::validate_read(
+            &read.validation_subject,
+            &fixture.context,
+            &cancellation,
+        );
+        assert_eq!(
+            read_validation.status,
+            MetaValidationStatus::Passed,
+            "{:?}",
+            read_validation.diagnostics
+        );
+
+        let subscription_before = fs::read(
+            fixture
+                .root
+                .join("src/EventSubscriptions/CatalogEvents.xml"),
+        )
+        .unwrap();
+        let noop = MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+            .unwrap();
+        assert!(!noop.preview().changed);
+        let mut external = fs::read(&fixture.descriptor).unwrap();
+        external.extend_from_slice(b"\n");
+        fs::write(&fixture.descriptor, &external).unwrap();
+        let failure = match noop.publish(&cancellation) {
+            Ok(_) => panic!("EventSubscription source dependency drift unexpectedly published"),
+            Err(failure) => failure,
+        };
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::ConcurrentModification
+        );
+        assert_eq!(fs::read(&fixture.descriptor).unwrap(), external);
+        assert_eq!(
+            fs::read(
+                fixture
+                    .root
+                    .join("src/EventSubscriptions/CatalogEvents.xml")
+            )
+            .unwrap(),
+            subscription_before
+        );
+    }
+
+    #[test]
+    fn typed_event_source_rejects_collection_membership_drift_after_prepare() {
+        let (root, prepared, descriptor, preimage) =
+            prepared_event_subscription_source_change("event-source-membership-drift");
+        let late = root.join("src/EventSubscriptions/Late.xml");
+        let late_bytes = b"<concurrent/>";
+        fs::write(&late, late_bytes).unwrap();
+
+        let failure = match prepared.publish(&CancellationToken::new()) {
+            Ok(_) => panic!("EventSubscription collection drift unexpectedly published"),
+            Err(failure) => failure,
+        };
+
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::ConcurrentModification
+        );
+        assert_eq!(fs::read(descriptor).unwrap(), preimage);
+        assert_eq!(fs::read(late).unwrap(), late_bytes);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn typed_event_source_rolls_back_for_collection_drift_during_commit() {
+        let (root, prepared, descriptor, preimage) =
+            prepared_event_subscription_source_change("event-source-membership-rollback");
+        let late = root.join("src/EventSubscriptions/Late.xml");
+        let late_for_hook = late.clone();
+        let late_bytes = b"<concurrent/>";
+
+        let result = with_before_commit_hook(
+            move |_| fs::write(&late_for_hook, late_bytes).unwrap(),
+            || prepared.publish(&CancellationToken::new()),
+        );
+        let failure = match result {
+            Ok(_) => panic!("late EventSubscription collection drift unexpectedly published"),
+            Err(failure) => failure,
+        };
+
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::ConcurrentModification
+        );
+        assert_eq!(fs::read(descriptor).unwrap(), preimage);
+        assert_eq!(fs::read(late).unwrap(), late_bytes);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn typed_event_source_rejects_dependency_ancestor_symlink_after_prepare() {
+        let fixture = Fixture::new("event-source-dependency-ancestor-symlink");
+        add_exported_event_handler(&fixture.root, &fixture.context);
+        let cancellation = CancellationToken::new();
+        MetadataOperations::prepare_mutation(
+            &MetadataRequest::Add(MetaAddRequest {
+                source_set: "main".into(),
+                kind: MetadataKind::EventSubscription,
+                name: "CatalogEvents".into(),
+                operations: Vec::new(),
+                dry_run: false,
+            }),
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap()
+        .publish(&cancellation)
+        .unwrap();
+        let subscription = MetadataAddress::parse(
+            PLATFORM_XML_8_3_27_FORMAT_2_20,
+            "EventSubscription.CatalogEvents",
+        )
+        .unwrap();
+        let request = MetadataRequest::Edit(MetaEditRequest {
+            source_set: "main".into(),
+            metadata_path: subscription,
+            operations: vec![source_replace(vec![MetaEventSource::Object {
+                metadata_path: fixture.target.clone(),
+            }])],
+            dry_run: false,
+        });
+        let prepared =
+            MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+                .unwrap();
+        let subscription_path = fixture
+            .root
+            .join("src/EventSubscriptions/CatalogEvents.xml");
+        let subscription_before = fs::read(&subscription_path).unwrap();
+        let dependency_before = fs::read(&fixture.descriptor).unwrap();
+        let dependency_directory = fixture.root.join("src/Catalogs");
+        let outside_directory = fixture.root.join("outside-catalogs");
+        fs::rename(&dependency_directory, &outside_directory).unwrap();
+        let Some(link_result) =
+            crate::infrastructure::platform::filesystem::create_dir_symlink_for_test(
+                &outside_directory,
+                &dependency_directory,
+            )
+        else {
+            fs::rename(&outside_directory, &dependency_directory).unwrap();
+            return;
+        };
+        if link_result.is_err() {
+            fs::rename(&outside_directory, &dependency_directory).unwrap();
+            return;
+        }
+
+        let failure = match prepared.publish(&cancellation) {
+            Ok(_) => panic!("symlinked EventSubscription source dependency unexpectedly published"),
+            Err(failure) => failure,
+        };
+
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::ConcurrentModification
+        );
+        assert_eq!(fs::read(subscription_path).unwrap(), subscription_before);
+        assert_eq!(
+            fs::read(outside_directory.join("Editable.xml")).unwrap(),
+            dependency_before
+        );
+    }
+
+    #[test]
+    fn typed_event_source_rejects_handler_module_ancestor_symlink_after_prepare() {
+        let fixture = Fixture::new("event-handler-module-ancestor-symlink");
+        add_exported_event_handler(&fixture.root, &fixture.context);
+        let cancellation = CancellationToken::new();
+        MetadataOperations::prepare_mutation(
+            &MetadataRequest::Add(MetaAddRequest {
+                source_set: "main".into(),
+                kind: MetadataKind::EventSubscription,
+                name: "Events".into(),
+                operations: Vec::new(),
+                dry_run: false,
+            }),
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap()
+        .publish(&cancellation)
+        .unwrap();
+        let subscription =
+            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "EventSubscription.Events")
+                .unwrap();
+        let request = MetadataRequest::Edit(MetaEditRequest {
+            source_set: "main".into(),
+            metadata_path: subscription,
+            operations: vec![source_replace(vec![MetaEventSource::Boolean])],
+            dry_run: false,
+        });
+        let prepared =
+            MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+                .unwrap();
+        let subscription_path = fixture.root.join("src/EventSubscriptions/Events.xml");
+        let subscription_before = fs::read(&subscription_path).unwrap();
+        let extension_directory = fixture.root.join("src/CommonModules/EventHandlers/Ext");
+        let outside_directory = fixture.root.join("outside-handler-ext");
+        fs::rename(&extension_directory, &outside_directory).unwrap();
+        let Some(link_result) =
+            crate::infrastructure::platform::filesystem::create_dir_symlink_for_test(
+                &outside_directory,
+                &extension_directory,
+            )
+        else {
+            fs::rename(&outside_directory, &extension_directory).unwrap();
+            return;
+        };
+        if link_result.is_err() {
+            fs::rename(&outside_directory, &extension_directory).unwrap();
+            return;
+        }
+
+        let failure = match prepared.publish(&cancellation) {
+            Ok(_) => panic!("symlinked EventSubscription handler module unexpectedly published"),
+            Err(failure) => failure,
+        };
+
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::ConcurrentModification
+        );
+        assert_eq!(fs::read(subscription_path).unwrap(), subscription_before);
+        assert_eq!(
+            fs::read(outside_directory.join("Module.bsl")).unwrap(),
+            b"Procedure OnEvent(Source, Cancel) Export\nEndProcedure\n"
+        );
+    }
+
+    #[test]
+    fn typed_event_source_rejects_generated_type_descriptor_mismatch() {
+        let fixture = Fixture::new("event-source-generated-type-mismatch");
+        add_exported_event_handler(&fixture.root, &fixture.context);
+        let cancellation = CancellationToken::new();
+        MetadataOperations::prepare_mutation(
+            &MetadataRequest::Add(MetaAddRequest {
+                source_set: "main".into(),
+                kind: MetadataKind::EventSubscription,
+                name: "CatalogEvents".into(),
+                operations: Vec::new(),
+                dry_run: false,
+            }),
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap()
+        .publish(&cancellation)
+        .unwrap();
+        let mut catalog = String::from_utf8(fs::read(&fixture.descriptor).unwrap()).unwrap();
+        assert_eq!(catalog.matches("name=\"CatalogRef.Editable\"").count(), 1);
+        catalog = catalog.replacen(
+            "name=\"CatalogRef.Editable\"",
+            "name=\"CatalogRef.Shadow\"",
+            1,
+        );
+        fs::write(&fixture.descriptor, catalog.as_bytes()).unwrap();
+        let subscription = MetadataAddress::parse(
+            PLATFORM_XML_8_3_27_FORMAT_2_20,
+            "EventSubscription.CatalogEvents",
+        )
+        .unwrap();
+        let request = MetadataRequest::Edit(MetaEditRequest {
+            source_set: "main".into(),
+            metadata_path: subscription,
+            operations: vec![source_replace(vec![MetaEventSource::Reference {
+                metadata_path: fixture.target.clone(),
+            }])],
+            dry_run: false,
+        });
+
+        let failure =
+            match MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation) {
+                Ok(_) => panic!("mismatched EventSubscription GeneratedType unexpectedly prepared"),
+                Err(failure) => failure,
+            };
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::ValidationFailed
+        );
+        assert!(failure.diagnostics[0]
+            .message
+            .contains("exactly one GeneratedType"));
+    }
+
+    #[test]
+    fn typed_event_source_obeys_profile_support_and_atomic_rollback_guards() {
+        let fixture = Fixture::new("event-source-guards-rollback");
+        add_exported_event_handler(&fixture.root, &fixture.context);
+        let cancellation = CancellationToken::new();
+        MetadataOperations::prepare_mutation(
+            &MetadataRequest::Add(MetaAddRequest {
+                source_set: "main".into(),
+                kind: MetadataKind::EventSubscription,
+                name: "GuardedEvents".into(),
+                operations: Vec::new(),
+                dry_run: false,
+            }),
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap()
+        .publish(&cancellation)
+        .unwrap();
+        let subscription = MetadataAddress::parse(
+            PLATFORM_XML_8_3_27_FORMAT_2_20,
+            "EventSubscription.GuardedEvents",
+        )
+        .unwrap();
+        let request = MetadataRequest::Edit(MetaEditRequest {
+            source_set: "main".into(),
+            metadata_path: subscription,
+            operations: vec![source_replace(vec![MetaEventSource::Boolean])],
+            dry_run: false,
+        });
+        let descriptor = fixture
+            .root
+            .join("src/EventSubscriptions/GuardedEvents.xml");
+        let descriptor_preimage = fs::read(&descriptor).unwrap();
+
+        let unsupported = String::from_utf8(descriptor_preimage.clone())
+            .unwrap()
+            .replacen("version=\"2.20\"", "version=\"2.19\"", 1);
+        fs::write(&descriptor, unsupported.as_bytes()).unwrap();
+        let failure =
+            match MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation) {
+                Ok(_) => panic!("unsupported EventSubscription source unexpectedly prepared"),
+                Err(failure) => failure,
+            };
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::CapabilityUnavailable
+        );
+        assert_eq!(fs::read(&descriptor).unwrap(), unsupported.as_bytes());
+        fs::write(&descriptor, &descriptor_preimage).unwrap();
+
+        let support = fixture.root.join("src/Ext/ParentConfigurations.bin");
+        fs::create_dir_all(support.parent().unwrap()).unwrap();
+        fs::write(
+            &support,
+            concat!(
+                "\u{feff}{6,1,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,",
+                "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",",
+                "\"VendorConf\",0,0,0}"
+            ),
+        )
+        .unwrap();
+        let failure =
+            match MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation) {
+                Ok(_) => panic!("support-locked EventSubscription source unexpectedly prepared"),
+                Err(failure) => failure,
+            };
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::SupportLocked
+        );
+        assert_eq!(fs::read(&descriptor).unwrap(), descriptor_preimage);
+        fs::remove_file(support).unwrap();
+
+        let guarded_paths = [
+            descriptor.clone(),
+            fixture.owner.clone(),
+            fixture.root.join("src/CommonModules/EventHandlers.xml"),
+            fixture
+                .root
+                .join("src/CommonModules/EventHandlers/Ext/Module.bsl"),
+        ];
+        let preimages = guarded_paths
+            .iter()
+            .map(|path| fs::read(path).unwrap())
+            .collect::<Vec<_>>();
+        let prepared =
+            MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
+                .unwrap();
+        let failure = match with_commit_failpoint(CommitFailpoint::AfterObjectFiles, || {
+            prepared.publish(&cancellation)
+        }) {
+            Ok(_) => panic!("EventSubscription source rollback failpoint unexpectedly published"),
+            Err(failure) => failure,
+        };
+        assert_eq!(
+            failure.diagnostics[0].code,
+            MetaDiagnosticCode::ProviderUnavailable
+        );
+        for (path, preimage) in guarded_paths.iter().zip(preimages) {
+            assert_eq!(fs::read(path).unwrap(), preimage, "{}", path.display());
+        }
     }
 
     #[test]

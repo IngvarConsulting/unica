@@ -95,7 +95,13 @@ EXPECTED_PLATFORM_VERSION = "8.3.27.2074"
 EXPECTED_IBCMD_SHA256 = "e00f3c945fb6f60bb2802151df1b4e7ee4f3caaf7c9e24a981020af575fda6e5"
 EXPECTED_PLATFORM_INSTALL_SHA256 = "5eb8897c4f7e95876572f2f36943439b0d57e47688314b622f5771e5a22df0ef"
 EXPECTED_PLATFORM_INSTALL_FILE_COUNT = 4337
-EXPECTED_CASE_CONTRACT_SHA256 = "5fa87fe0fa55a3960b61c8adf089f7e50ffa4726b1e1c28674fbd660dec4c8a5"
+LAST_VERIFIED_CASE_CONTRACT_SHA256 = (
+    "67832c726d5343561e8911f462c695aa5cab1fdfc7431e6578c09b2c699dd01c"
+)
+# The verified inventory includes the EventSubscription source relation. Two
+# independently generated corpora produced this same normalized digest and the
+# full exact 8.3.27.2074 gate passed all 67 checkpoints.
+EXPECTED_CASE_CONTRACT_SHA256: str | None = LAST_VERIFIED_CASE_CONTRACT_SHA256
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 300.0
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 CASE_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
@@ -172,6 +178,7 @@ MANDATORY_CASE_IDS = frozenset(
         "meta-compile-task",
         "meta-compile-web-service",
         "meta-edit-property",
+        "meta-edit-event-source",
         "meta-edit-resource-append",
         "meta-edit-resource-position-after",
         "meta-remove-object",
@@ -2811,14 +2818,20 @@ def load_corpus(
     contract_sha256 = case_contract_sha256(
         cases, normalized, empty_directory_paths
     )
-    if (
-        expected_ids == set(MANDATORY_CASE_IDS)
-        and contract_sha256 != EXPECTED_CASE_CONTRACT_SHA256
-    ):
-        raise CorpusError(
-            "corpus case contract fields do not match the pinned public-writer inventory; "
-            f"expected {EXPECTED_CASE_CONTRACT_SHA256}, got {contract_sha256}"
-        )
+    if expected_ids == set(MANDATORY_CASE_IDS):
+        if EXPECTED_CASE_CONTRACT_SHA256 is None:
+            raise CorpusError(
+                "required corpus case contract is not pinned for the current "
+                f"{len(MANDATORY_CASE_IDS)}-case public-writer inventory; "
+                f"last verified digest for the previous inventory was "
+                f"{LAST_VERIFIED_CASE_CONTRACT_SHA256}, candidate digest is "
+                f"{contract_sha256}; exact platform gate is pending"
+            )
+        if contract_sha256 != EXPECTED_CASE_CONTRACT_SHA256:
+            raise CorpusError(
+                "corpus case contract fields do not match the pinned public-writer inventory; "
+                f"expected {EXPECTED_CASE_CONTRACT_SHA256}, got {contract_sha256}"
+            )
     declared_xml_paths = [
         item["path"]
         for case in cases
@@ -4202,6 +4215,7 @@ def _build_gate_report(
             "corpusManifestSha256": manifest_sha256,
             "caseContractSha256": corpus["caseContractSha256"],
             "expectedCaseContractSha256": EXPECTED_CASE_CONTRACT_SHA256,
+            "lastVerifiedCaseContractSha256": LAST_VERIFIED_CASE_CONTRACT_SHA256,
             "expectedIbcmdSha256": EXPECTED_IBCMD_SHA256,
             "ibcmdSha256": platform.get("ibcmdSha256") if platform else None,
             "versionCheck": platform.get("command") if platform else None,
