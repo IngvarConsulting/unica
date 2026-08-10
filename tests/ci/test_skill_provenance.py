@@ -478,7 +478,7 @@ class SkillProvenanceTests(unittest.TestCase):
         self.assertEqual(locked_tools["v8-runner"]["sourceTag"], "master")
         self.assertEqual(
             locked_tools["v8-runner"]["sourceCommit"],
-            "72d346c0a8fcf8373d9388257d11e6bef0ad70b2",
+            "7ce1b062843d86644fe55741dbe0ee79f7ca767d",
         )
 
     def test_rlm_tools_are_locked_to_reviewed_1_29_1_pair(self) -> None:

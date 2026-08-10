@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "id": "2026-08-10-v8-runner-master-refresh",
+  "generatedAt": "2026-08-10",
+  "upstreamId": "v8-runner-rust",
+  "repository": "https://github.com/alkoleft/v8-runner-rust",
+  "trackingRef": "master",
+  "baselineCommit": "72d346c0a8fcf8373d9388257d11e6bef0ad70b2",
+  "targetCommit": "7ce1b062843d86644fe55741dbe0ee79f7ca767d",
+  "reviewedCommits": 36,
+  "releaseEvidence": {
+    "repository": "https://github.com/IngvarConsulting/unica-toolchain",
+    "tag": "v8-runner-nightly-master-build.2",
+    "workflowRun": "https://github.com/IngvarConsulting/unica-toolchain/actions/runs/31372368557",
+    "targets": [
+      "darwin-arm64",
+      "linux-x64",
+      "win-x64"
+    ]
+  },
+  "appliedGroups": [
+    {
+      "id": "ibcmd-data-isolation",
+      "decision": "bundled",
+      "notes": "IBCMD runtime data is isolated per infobase by the refreshed binary."
+    },
+    {
+      "id": "prepared-infobase-test-no-build",
+      "decision": "bundled-not-exposed",
+      "notes": "The upstream test --no-build capability is present in the binary, but this refresh does not add a public Unica MCP argument."
+    },
+    {
+      "id": "strict-platform-resolution",
+      "decision": "bundled-and-documented",
+      "notes": "tools.platform.strict is documented as project configuration without widening unica.runtime.execute."
+    },
+    {
+      "id": "windows-directory-publication",
+      "decision": "bundled",
+      "notes": "The refreshed binary contains the Windows directory publication and fsync repair."
+    },
+    {
+      "id": "windows-detached-stdio-isolation",
+      "decision": "bundled",
+      "notes": "The refreshed binary contains detached Windows stdio isolation."
+    }
+  ],
+  "integrationDecision": {
+    "binary": "refresh immutable package bytes and consumer lock",
+    "documentation": "document strict platform project configuration",
+    "publicMcpSurface": "unchanged",
+    "sourceSyncGuard": "unchanged"
+  },
+  "deferredGroups": [
+    {
+      "id": "public-test-no-build-argument",
+      "reason": "Requires a separate typed MCP contract decision and tests."
+    },
+    {
+      "id": "private-cdfi-shadow-publication",
+      "issue": "https://github.com/alkoleft/v8-runner-rust/issues/30",
+      "pullRequest": "https://github.com/alkoleft/v8-runner-rust/pull/39",
+      "reason": "The pull request is not merged into the pinned commit; applied incremental and partial dump remain fail-closed."
+    },
+    {
+      "id": "source-set-dependency-graph",
+      "issue": "https://github.com/alkoleft/v8-runner-rust/issues/32",
+      "pullRequest": "https://github.com/alkoleft/v8-runner-rust/pull/50",
+      "reason": "The dependency contract is not merged into the pinned commit and is outside this package refresh."
+    }
+  ]
+}
