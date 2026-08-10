@@ -12,7 +12,7 @@ pub mod provider;
 // внутрикрейтовый тест, со своим файлом, как и требует план.
 #[cfg(test)]
 mod real_installation;
-// Ретривал-гейт ADR-0035: golden-запросы #415 против той же реальной
+// Ретривал-гейт ADR-0036: golden-запросы #415 против той же реальной
 // установки, тем же пропуском без `UNICA_PLATFORM_HELP_DIR`.
 #[cfg(test)]
 mod retrieval_gate;
