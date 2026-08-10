@@ -150,9 +150,10 @@ Verify `merge_sha` is the Task 1 merge commit. Select only a new run whose
 run_id=$(gh run list \
   --repo IngvarConsulting/unica-toolchain \
   --workflow "Build tool release" \
+  --commit "$merge_sha" \
   --limit 10 \
-  --json databaseId,headSha \
-  --jq --arg sha "$merge_sha" '[.[] | select(.headSha == $sha)][0].databaseId')
+  --json databaseId \
+  --jq '.[0].databaseId')
 test -n "$run_id"
 gh run watch "$run_id" --repo IngvarConsulting/unica-toolchain --exit-status
 gh release view v8-runner-nightly-master-build.2 \
